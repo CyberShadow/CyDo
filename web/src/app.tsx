@@ -55,6 +55,8 @@ export interface DisplayMessage {
   };
   // System status
   statusText?: string;
+  // Extra fields not explicitly handled — displayed so nothing is silently lost
+  extraFields?: Record<string, unknown>;
 }
 
 export interface ToolResult {
@@ -94,6 +96,55 @@ interface SessionState {
   alive: boolean;
   msgIdCounter: number;
 }
+
+// Extract unknown fields from a raw message by removing known keys.
+// Returns undefined if there are no extra fields.
+function extractExtra(raw: Record<string, unknown>, knownKeys: string[]): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  for (const key of Object.keys(raw)) {
+    if (!knownKeys.includes(key)) {
+      extra[key] = raw[key];
+    }
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+// Known keys per message type, matching format-claude-session's suppression lists.
+// "sid" is injected by our backend and always stripped.
+const KNOWN_SYSTEM_INIT = [
+  "type", "subtype", "session_id", "uuid", "model", "cwd", "tools",
+  "claude_code_version", "permissionMode", "mcp_servers", "agents",
+  "apiKeySource", "skills", "plugins", "fast_mode_state",
+  "version", "gitBranch", "slash_commands", "output_style", "sid",
+];
+const KNOWN_SYSTEM_STATUS = [
+  "type", "subtype", "status", "uuid", "session_id", "sid",
+];
+const KNOWN_SYSTEM_COMPACT = [
+  "type", "subtype", "compact_metadata", "uuid", "session_id", "sid",
+];
+const KNOWN_ASSISTANT = [
+  "type", "message", "isSidechain", "parentUuid", "cwd", "sessionId",
+  "version", "gitBranch", "requestId", "uuid", "timestamp",
+  "parent_tool_use_id", "session_id", "userType", "sid",
+];
+const KNOWN_USER = [
+  "type", "message", "isSidechain", "parentUuid", "cwd", "sessionId",
+  "version", "gitBranch", "uuid", "timestamp", "toolUseResult",
+  "tool_use_result", "parent_tool_use_id", "session_id", "userType",
+  "isReplay", "sid",
+];
+const KNOWN_RESULT = [
+  "type", "subtype", "is_error", "duration_ms", "duration_api_ms",
+  "num_turns", "result", "session_id", "total_cost_usd", "usage",
+  "modelUsage", "permission_denials", "uuid", "stop_reason", "sid",
+];
+const KNOWN_SUMMARY = [
+  "type", "summary", "leafUuid", "sid",
+];
+const KNOWN_RATE_LIMIT = [
+  "type", "rate_limit_info", "uuid", "session_id", "sid",
+];
 
 function makeSessionState(sid: number, alive: boolean = false): SessionState {
   return {
@@ -141,26 +192,37 @@ export function App() {
       case "system":
         if ("subtype" in msg) {
           if (msg.subtype === "init") {
-            updateSession(sid, (s) => ({
-              ...s,
-              sessionInfo: {
-                model: msg.model,
-                version: msg.claude_code_version,
-                sessionId: msg.session_id,
-                cwd: msg.cwd,
-                tools: msg.tools,
-                permissionMode: msg.permissionMode,
-                mcp_servers: msg.mcp_servers,
-                agents: msg.agents,
-                apiKeySource: msg.apiKeySource,
-                skills: msg.skills,
-                plugins: msg.plugins,
-                fast_mode_state: msg.fast_mode_state,
-              },
-              isProcessing: true,
-              streamingBlocks: [],
-            }));
+            const initExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_INIT);
+            updateSession(sid, (s) => {
+              const initMsg: DisplayMessage | undefined = initExtra ? {
+                id: `init-${++s.msgIdCounter}`,
+                type: "system" as const,
+                content: [],
+                extraFields: initExtra,
+              } : undefined;
+              return {
+                ...s,
+                sessionInfo: {
+                  model: msg.model,
+                  version: msg.claude_code_version,
+                  sessionId: msg.session_id,
+                  cwd: msg.cwd,
+                  tools: msg.tools,
+                  permissionMode: msg.permissionMode,
+                  mcp_servers: msg.mcp_servers,
+                  agents: msg.agents,
+                  apiKeySource: msg.apiKeySource,
+                  skills: msg.skills,
+                  plugins: msg.plugins,
+                  fast_mode_state: msg.fast_mode_state,
+                },
+                isProcessing: true,
+                streamingBlocks: [],
+                messages: initMsg ? [...s.messages, initMsg] : s.messages,
+              };
+            });
           } else if (msg.subtype === "status") {
+            const statusExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_STATUS);
             updateSession(sid, (s) => {
               const id = `status-${++s.msgIdCounter}`;
               return {
@@ -172,11 +234,13 @@ export function App() {
                     type: "system" as const,
                     content: [],
                     statusText: (msg as any).status || "clear",
+                    extraFields: statusExtra,
                   },
                 ],
               };
             });
           } else if (msg.subtype === "compact_boundary") {
+            const compactExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_COMPACT);
             updateSession(sid, (s) => {
               const id = `compact-${++s.msgIdCounter}`;
               const cm = (msg as any).compact_metadata;
@@ -189,6 +253,7 @@ export function App() {
                     type: "compact_boundary" as const,
                     content: [],
                     compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
+                    extraFields: compactExtra,
                   },
                 ],
               };
@@ -228,7 +293,8 @@ export function App() {
         handleResultMessage(sid, msg as ResultMessage);
         break;
 
-      case "summary":
+      case "summary": {
+        const summaryExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SUMMARY);
         updateSession(sid, (s) => {
           const id = `summary-${++s.msgIdCounter}`;
           return {
@@ -239,13 +305,16 @@ export function App() {
                 id,
                 type: "summary" as const,
                 content: [{ type: "text" as const, text: (msg as any).summary || "" }],
+                extraFields: summaryExtra,
               },
             ],
           };
         });
         break;
+      }
 
-      case "rate_limit_event":
+      case "rate_limit_event": {
+        const rlExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_RATE_LIMIT);
         updateSession(sid, (s) => {
           const id = `ratelimit-${++s.msgIdCounter}`;
           return {
@@ -257,11 +326,13 @@ export function App() {
                 type: "rate_limit" as const,
                 content: [],
                 rateLimitInfo: (msg as any).rate_limit_info,
+                extraFields: rlExtra,
               },
             ],
           };
         });
         break;
+      }
 
       case "exit":
         updateSession(sid, (s) => ({ ...s, isProcessing: false, streamingBlocks: [], alive: false }));
@@ -304,6 +375,7 @@ export function App() {
 
   const handleAssistantMessage = useCallback((sid: number, msg: AssistantMessage) => {
     const msgId = msg.message.id;
+    const extra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_ASSISTANT);
     updateSession(sid, (s) => {
       const existing = s.messages.findIndex((m) => m.id === msgId);
       if (existing >= 0) {
@@ -313,6 +385,10 @@ export function App() {
         // Update usage if present (later messages may have updated counts)
         if (msg.message.usage) {
           existingMsg.usage = msg.message.usage;
+        }
+        // Merge extra fields
+        if (extra) {
+          existingMsg.extraFields = { ...existingMsg.extraFields, ...extra };
         }
         updated[existing] = existingMsg;
         return { ...s, messages: updated, streamingBlocks: [] };
@@ -330,6 +406,7 @@ export function App() {
             isSidechain: msg.isSidechain,
             parentToolUseId: msg.parent_tool_use_id,
             usage: msg.message.usage,
+            extraFields: extra,
           },
         ],
         streamingBlocks: [],
@@ -340,6 +417,8 @@ export function App() {
   const handleUserEcho = useCallback((sid: number, msg: any) => {
     const content = msg.message?.content;
     if (!content) return;
+
+    const userExtra = extractExtra(msg as Record<string, unknown>, KNOWN_USER);
 
     // Collect text blocks and tool_result blocks separately
     const textBlocks: string[] = [];
@@ -401,6 +480,7 @@ export function App() {
               content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
               isSidechain: msg.isSidechain,
               parentToolUseId: msg.parent_tool_use_id,
+              extraFields: userExtra,
             },
           ],
         };
@@ -409,6 +489,7 @@ export function App() {
   }, [updateSession]);
 
   const handleResultMessage = useCallback((sid: number, msg: ResultMessage) => {
+    const resultExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_RESULT);
     updateSession(sid, (s) => {
       const id = `result-${++s.msgIdCounter}`;
       return {
@@ -422,6 +503,7 @@ export function App() {
             id,
             type: "result" as const,
             content: [],
+            extraFields: resultExtra,
             resultData: {
               subtype: msg.subtype,
               isError: msg.is_error,

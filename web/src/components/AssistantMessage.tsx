@@ -2,6 +2,7 @@ import { h } from "preact";
 import type { DisplayMessage } from "../app";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
+import { ExtraFields } from "./ExtraFields";
 
 interface Props {
   message: DisplayMessage;
@@ -56,6 +57,7 @@ export function AssistantMessage({ message }: Props) {
           </div>
         );
       })}
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }

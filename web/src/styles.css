@@ -949,6 +949,49 @@ html, body, #app {
   text-decoration: underline;
 }
 
+/* Extra/unknown fields on messages */
+.extra-fields {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.extra-fields summary {
+  cursor: pointer;
+  color: #ff9800;
+  user-select: none;
+  font-size: 11px;
+}
+
+.extra-fields-content {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: rgba(255, 152, 0, 0.06);
+  border: 1px solid rgba(255, 152, 0, 0.15);
+  border-radius: 4px;
+}
+
+.extra-field {
+  margin: 2px 0;
+}
+
+.extra-field-key {
+  color: #7ec8e3;
+}
+
+.extra-field-value {
+  color: var(--text-dim);
+}
+
+pre.extra-field-value {
+  margin: 2px 0 2px 16px;
+  padding: 4px 8px;
+  background: rgba(0,0,0,0.15);
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

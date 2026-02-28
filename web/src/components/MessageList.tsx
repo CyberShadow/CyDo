@@ -4,6 +4,7 @@ import type { DisplayMessage, StreamingBlock } from "../app";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
+import { ExtraFields } from "./ExtraFields";
 
 interface Props {
   messages: DisplayMessage[];
@@ -44,6 +45,7 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         </details>
       )}
       {d.result && <div class="result-text">{d.result}</div>}
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -58,6 +60,7 @@ function SummaryMessageView({ message }: { message: DisplayMessage }) {
     <div class="message summary-message">
       <div class="summary-header">Session Summary</div>
       <Markdown text={text} class="summary-text" />
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -82,6 +85,7 @@ function RateLimitMessageView({ message }: { message: DisplayMessage }) {
           </span>
         )}
       </div>
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -93,6 +97,7 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
       <span class="compact-label">Context Compacted</span>
       {cm?.trigger && <span class="compact-detail">[{cm.trigger}]</span>}
       {cm?.preTokens && <span class="compact-detail">{cm.preTokens.toLocaleString()} tokens before</span>}
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -101,6 +106,7 @@ function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
   return (
     <div class="message system-status-message">
       status: {message.statusText}
+      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -152,6 +158,7 @@ export function MessageList({ messages, streamingBlocks, isProcessing }: Props) 
             return (
               <div key={msg.id} class="message system-message">
                 <pre>{text}</pre>
+                <ExtraFields fields={msg.extraFields} />
               </div>
             );
           }
