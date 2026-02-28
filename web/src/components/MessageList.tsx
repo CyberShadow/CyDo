@@ -3,6 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import type { DisplayMessage, StreamingBlock } from "../app";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
+import { Markdown } from "./Markdown";
 
 interface Props {
   messages: DisplayMessage[];
@@ -55,12 +56,12 @@ export function MessageList({ messages, streamingBlocks, isProcessing }: Props) 
               {block.type === "thinking" && (
                 <details open>
                   <summary>Thinking...</summary>
-                  <pre class="thinking-text">{block.text}</pre>
+                  <Markdown text={block.text} class="thinking-text" />
                 </details>
               )}
               {block.type === "text" && (
-                <div class="text-content">
-                  {block.text}
+                <div class="text-content streaming-text">
+                  <Markdown text={block.text} />
                   <span class="cursor" />
                 </div>
               )}

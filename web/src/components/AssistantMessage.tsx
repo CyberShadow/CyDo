@@ -1,5 +1,6 @@
 import { h } from "preact";
 import type { DisplayMessage } from "../app";
+import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 
 interface Props {
@@ -14,7 +15,7 @@ export function AssistantMessage({ message }: Props) {
           return (
             <details key={i} class="thinking-block">
               <summary>Thinking</summary>
-              <pre class="thinking-text">{block.thinking}</pre>
+              <Markdown text={block.thinking} class="thinking-text" />
             </details>
           );
         }
@@ -30,11 +31,7 @@ export function AssistantMessage({ message }: Props) {
           );
         }
         if (block.type === "text") {
-          return (
-            <div key={i} class="text-content">
-              {block.text}
-            </div>
-          );
+          return <Markdown key={i} text={block.text} class="text-content" />;
         }
         return null;
       })}

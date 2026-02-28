@@ -6,6 +6,7 @@
     "dev": "esbuild src/main.tsx --bundle --outdir=dist --jsx=automatic --jsx-import-source=preact --watch"
   },
   "dependencies": {
+    "marked": "^17.0.3",
     "preact": "^10.25.4"
   },
   "devDependencies": {
