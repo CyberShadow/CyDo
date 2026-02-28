@@ -1,0 +1,15 @@
+{
+  "name": "cydo-web",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.tsx --bundle --minify --outdir=dist --jsx=automatic --jsx-import-source=preact",
+    "dev": "esbuild src/main.tsx --bundle --outdir=dist --jsx=automatic --jsx-import-source=preact --watch"
+  },
+  "dependencies": {
+    "preact": "^10.25.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

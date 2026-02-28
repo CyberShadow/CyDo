@@ -44,7 +44,7 @@ init messages as turn boundaries rather than new sessions.
 | `--resume ID`, `-r ID` | Resume specific session by ID |
 | `--session-id UUID` | Use specific UUID for a new session |
 | `--fork-session` | When resuming, create a new session branched from the original |
-| `--replay-user-messages` | When resuming, replay historical user messages (marked with `isReplay: true`) |
+| `--replay-user-messages` | Echo user messages from stdin back on stdout for acknowledgment (marked with `isReplay: true`). Requires stream-json I/O. |
 | `--max-turns N` | Limit agentic turns (tool-use loops) per input message |
 | `--max-budget-usd N` | Maximum spend before stopping |
 | `--no-session-persistence` | Don't persist session to disk (cannot resume later) |
@@ -490,8 +490,9 @@ directory without needing the session ID.
 original session is preserved unchanged. Useful for exploring alternative
 approaches or for interrogation (see VISION.md Phase 7).
 
-**`--replay-user-messages`** causes historical user messages to be re-emitted in
-the output stream when resuming. These are marked with `isReplay: true`:
+**`--replay-user-messages`** echoes user messages sent on stdin back on stdout
+for acknowledgment, similar to IRCv3 `echo-message`. The echoed messages are
+marked with `isReplay: true` to distinguish them from tool-result user messages:
 
 ```typescript
 type UserMessageReplay = {
@@ -500,14 +501,14 @@ type UserMessageReplay = {
   session_id: string;
   message: MessageParam;
   parent_tool_use_id: string | null;
-  isReplay: true;              // Distinguishes replayed from live messages
+  isReplay: true;              // Distinguishes echoed input from tool results
   isSynthetic?: boolean;
   tool_use_result?: unknown;
 };
 ```
 
-This enables the consumer to reconstruct the conversation history in the UI
-when connecting to an existing session.
+This lets the consumer confirm message delivery and display user messages
+from the single authoritative output stream rather than tracking them separately.
 
 ### Session Listing (SDK)
 

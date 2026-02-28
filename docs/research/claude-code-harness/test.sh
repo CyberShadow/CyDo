@@ -61,6 +61,7 @@ trap 'rm -f "$OUTPUT"' EXIT
     --input-format stream-json \
     --output-format stream-json \
     --verbose \
+    --replay-user-messages \
     --model "$MODEL" \
     --max-turns "$MAX_TURNS" \
     --permission-mode dontAsk \

@@ -1,0 +1,10 @@
+name "cydo"
+description "CyDo - Multi-agent orchestration with Claude Code"
+
+targetType "executable"
+targetPath "build"
+
+sourcePaths "source"
+
+dependency "ae" path="../ae-container/ae"
+subConfiguration "ae" "library"
