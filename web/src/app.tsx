@@ -18,6 +18,7 @@ export interface DisplayMessage {
   content: AssistantContentBlock[];
   toolResults?: Map<string, ToolResult>;
   model?: string;
+  pending?: boolean;
 }
 
 export interface ToolResult {
@@ -68,14 +69,14 @@ export function App() {
 
       case "user":
         if ("isReplay" in msg && (msg as any).isReplay) {
-          // Echoed user input from --replay-user-messages
+          // Echoed user input — remove pending and reinsert as confirmed at end
           const content = (msg as any).message?.content;
           const text = typeof content === "string" ? content : "";
-          const id = `user-${++msgIdCounter.current}`;
-          setMessages((prev) => [
-            ...prev,
-            { id, type: "user" as const, content: [{ type: "text" as const, text }] },
-          ]);
+          setMessages((prev) => {
+            const filtered = prev.filter((m) => !(m.pending && m.type === "user"));
+            const id = `user-${++msgIdCounter.current}`;
+            return [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }] }];
+          });
         } else if ("message" in msg && msg.message) {
           // Tool results from --verbose
           handleUserEcho(msg);
@@ -212,6 +213,11 @@ export function App() {
 
   const handleSend = useCallback(
     (text: string) => {
+      const id = `pending-${++msgIdCounter.current}`;
+      setMessages((prev) => [
+        ...prev,
+        { id, type: "user" as const, content: [{ type: "text" as const, text }], pending: true },
+      ]);
       connRef.current?.sendMessage(text);
     },
     []

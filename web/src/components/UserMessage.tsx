@@ -12,7 +12,7 @@ export function UserMessage({ message }: Props) {
     .join("\n");
 
   return (
-    <div class="message user-message">
+    <div class={`message user-message${message.pending ? " pending" : ""}`}>
       <div class="user-text">{text}</div>
     </div>
   );

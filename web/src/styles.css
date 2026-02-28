@@ -120,6 +120,11 @@ html, body, #app {
   word-break: break-word;
 }
 
+.user-message.pending {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
 .assistant-message {
   background: var(--assistant-bg);
   border-left: 3px solid #555;
