@@ -10,6 +10,21 @@ interface Props {
 export function AssistantMessage({ message }: Props) {
   return (
     <div class="message assistant-message">
+      {(message.isSidechain || message.parentToolUseId || message.usage) && (
+        <div class="message-meta">
+          {message.isSidechain && <span class="meta-badge sidechain">sub-agent</span>}
+          {message.parentToolUseId && (
+            <span class="meta-detail" title={message.parentToolUseId}>
+              parent: {message.parentToolUseId.slice(0, 12)}...
+            </span>
+          )}
+          {message.usage && (
+            <span class="meta-detail">
+              {message.usage.input_tokens.toLocaleString()} in / {message.usage.output_tokens.toLocaleString()} out
+            </span>
+          )}
+        </div>
+      )}
       {message.content.map((block, i) => {
         if (block.type === "thinking") {
           return (
@@ -33,7 +48,13 @@ export function AssistantMessage({ message }: Props) {
         if (block.type === "text") {
           return <Markdown key={i} text={block.text} class="text-content" />;
         }
-        return null;
+        // Unknown content block type - display it rather than silently dropping
+        return (
+          <div key={i} class="unknown-block">
+            <div class="unknown-block-label">Unknown block type: {(block as any).type}</div>
+            <pre>{JSON.stringify(block, null, 2)}</pre>
+          </div>
+        );
       })}
     </div>
   );

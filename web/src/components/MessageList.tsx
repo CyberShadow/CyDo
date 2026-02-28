@@ -11,6 +11,100 @@ interface Props {
   isProcessing: boolean;
 }
 
+function ResultMessageView({ message }: { message: DisplayMessage }) {
+  const d = message.resultData!;
+  const durationSec = d.durationMs ? Math.floor(d.durationMs / 1000) : 0;
+  const apiSec = d.durationApiMs ? Math.floor(d.durationApiMs / 1000) : 0;
+
+  return (
+    <div class={`message result-message ${d.isError ? "result-error" : "result-success"}`}>
+      <div class="result-header">
+        {d.isError ? "Session Failed" : "Session Complete"}
+        <span class="result-subtype">[{d.subtype}]</span>
+      </div>
+      <div class="result-meta">
+        {d.numTurns > 0 && <span>Turns: {d.numTurns}</span>}
+        {durationSec > 0 && <span>Duration: {durationSec}s{apiSec > 0 && ` (${apiSec}s API)`}</span>}
+        {d.totalCostUsd > 0 && <span>Cost: ${d.totalCostUsd.toFixed(4)}</span>}
+        {d.usage && (
+          <span>{d.usage.input_tokens.toLocaleString()} in / {d.usage.output_tokens.toLocaleString()} out</span>
+        )}
+        {d.stopReason && d.stopReason !== null && <span>Stop: {d.stopReason}</span>}
+      </div>
+      {d.modelUsage && Object.keys(d.modelUsage).length > 0 && (
+        <details class="result-details">
+          <summary>Per-model usage</summary>
+          <pre>{JSON.stringify(d.modelUsage, null, 2)}</pre>
+        </details>
+      )}
+      {d.permissionDenials && d.permissionDenials.length > 0 && (
+        <details class="result-details">
+          <summary>Permission denials ({d.permissionDenials.length})</summary>
+          <pre>{JSON.stringify(d.permissionDenials, null, 2)}</pre>
+        </details>
+      )}
+      {d.result && <div class="result-text">{d.result}</div>}
+    </div>
+  );
+}
+
+function SummaryMessageView({ message }: { message: DisplayMessage }) {
+  const text = message.content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+
+  return (
+    <div class="message summary-message">
+      <div class="summary-header">Session Summary</div>
+      <Markdown text={text} class="summary-text" />
+    </div>
+  );
+}
+
+function RateLimitMessageView({ message }: { message: DisplayMessage }) {
+  const info = message.rateLimitInfo!;
+  const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleString() : null;
+
+  return (
+    <div class="message rate-limit-message">
+      <div class="rate-limit-header">
+        Rate Limit
+        {info.status && <span class="rate-limit-badge">[{info.status}]</span>}
+        {info.rateLimitType && <span class="rate-limit-badge">[{info.rateLimitType}]</span>}
+      </div>
+      <div class="rate-limit-meta">
+        {resetsAt && <span>Resets at: {resetsAt}</span>}
+        {info.overageStatus && (
+          <span>
+            Overage: {info.overageStatus}
+            {info.overageDisabledReason && ` (${info.overageDisabledReason})`}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
+  const cm = message.compactMetadata;
+  return (
+    <div class="message compact-boundary-message">
+      <span class="compact-label">Context Compacted</span>
+      {cm?.trigger && <span class="compact-detail">[{cm.trigger}]</span>}
+      {cm?.preTokens && <span class="compact-detail">{cm.preTokens.toLocaleString()} tokens before</span>}
+    </div>
+  );
+}
+
+function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
+  return (
+    <div class="message system-status-message">
+      status: {message.statusText}
+    </div>
+  );
+}
+
 export function MessageList({ messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
@@ -33,21 +127,41 @@ export function MessageList({ messages, streamingBlocks, isProcessing }: Props) 
   return (
     <div class="message-list" ref={containerRef} onScroll={handleScroll}>
       {messages.map((msg) => {
-        if (msg.type === "user") {
-          return <UserMessage key={msg.id} message={msg} />;
+        switch (msg.type) {
+          case "user":
+            return <UserMessage key={msg.id} message={msg} />;
+          case "assistant":
+            return <AssistantMessage key={msg.id} message={msg} />;
+          case "result":
+            return <ResultMessageView key={msg.id} message={msg} />;
+          case "summary":
+            return <SummaryMessageView key={msg.id} message={msg} />;
+          case "rate_limit":
+            return <RateLimitMessageView key={msg.id} message={msg} />;
+          case "compact_boundary":
+            return <CompactBoundaryMessageView key={msg.id} message={msg} />;
+          case "system": {
+            // System status vs stderr
+            if (msg.statusText !== undefined) {
+              return <SystemStatusMessageView key={msg.id} message={msg} />;
+            }
+            const text = msg.content
+              .filter((b): b is { type: "text"; text: string } => b.type === "text")
+              .map((b) => b.text)
+              .join("\n");
+            return (
+              <div key={msg.id} class="message system-message">
+                <pre>{text}</pre>
+              </div>
+            );
+          }
+          default:
+            return (
+              <div key={msg.id} class="message system-message">
+                <pre>Unknown display type: {(msg as any).type}{"\n"}{JSON.stringify(msg, null, 2)}</pre>
+              </div>
+            );
         }
-        if (msg.type === "system") {
-          const text = msg.content
-            .filter((b): b is { type: "text"; text: string } => b.type === "text")
-            .map((b) => b.text)
-            .join("\n");
-          return (
-            <div key={msg.id} class="message system-message">
-              <pre>{text}</pre>
-            </div>
-          );
-        }
-        return <AssistantMessage key={msg.id} message={msg} />;
       })}
       {streamingBlocks.length > 0 && (
         <div class="message assistant-message streaming">

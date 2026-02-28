@@ -10,6 +10,32 @@ export interface SystemInitMessage {
   tools: string[];
   claude_code_version: string;
   permissionMode: string;
+  // Optional fields that format-claude-session also handles
+  mcp_servers?: unknown[];
+  agents?: unknown[];
+  apiKeySource?: string;
+  skills?: string[];
+  plugins?: unknown[];
+  fast_mode_state?: string;
+}
+
+export interface SystemStatusMessage {
+  type: "system";
+  subtype: "status";
+  uuid?: string;
+  session_id?: string;
+  status?: string;
+}
+
+export interface SystemCompactBoundaryMessage {
+  type: "system";
+  subtype: "compact_boundary";
+  uuid?: string;
+  session_id?: string;
+  compact_metadata?: {
+    trigger?: string;
+    pre_tokens?: number;
+  };
 }
 
 export interface AssistantMessage {
@@ -17,6 +43,7 @@ export interface AssistantMessage {
   uuid: string;
   session_id: string;
   parent_tool_use_id: string | null;
+  isSidechain?: boolean;
   message: {
     id: string;
     role: "assistant";
@@ -41,7 +68,9 @@ export interface UserEchoMessage {
     content: UserContentBlock[];
   };
   parent_tool_use_id: string | null;
+  isSidechain?: boolean;
   tool_use_result?: unknown;
+  toolUseResult?: unknown;
 }
 
 export type UserContentBlock =
@@ -57,8 +86,31 @@ export interface ResultMessage {
   result: string;
   num_turns: number;
   duration_ms: number;
+  duration_api_ms?: number;
   total_cost_usd: number;
   usage: Usage;
+  modelUsage?: Record<string, Usage>;
+  permission_denials?: string[];
+  stop_reason?: string | null;
+}
+
+export interface SummaryMessage {
+  type: "summary";
+  summary: string;
+  leafUuid?: string;
+}
+
+export interface RateLimitEventMessage {
+  type: "rate_limit_event";
+  uuid?: string;
+  session_id?: string;
+  rate_limit_info: {
+    status?: string;
+    rateLimitType?: string;
+    resetsAt?: number;
+    overageStatus?: string;
+    overageDisabledReason?: string;
+  };
 }
 
 export interface StreamEventMessage {
@@ -117,9 +169,13 @@ export type ControlMessage = SessionCreatedMessage | SessionsListMessage;
 
 export type ClaudeMessage =
   | SystemInitMessage
+  | SystemStatusMessage
+  | SystemCompactBoundaryMessage
   | AssistantMessage
   | UserEchoMessage
   | ResultMessage
+  | SummaryMessage
+  | RateLimitEventMessage
   | StreamEventMessage
   | ExitMessage
   | StderrMessage;

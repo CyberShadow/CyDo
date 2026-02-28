@@ -7,6 +7,7 @@ import type {
   AssistantContentBlock,
   StreamEvent,
   ControlMessage,
+  ResultMessage,
 } from "./protocol";
 import { SystemBanner } from "./components/SystemBanner";
 import { MessageList } from "./components/MessageList";
@@ -16,11 +17,44 @@ import { Sidebar } from "./components/Sidebar";
 // Display types for the UI
 export interface DisplayMessage {
   id: string;
-  type: "user" | "assistant" | "tool_result" | "system";
+  type: "user" | "assistant" | "tool_result" | "system" | "result" | "summary" | "rate_limit" | "compact_boundary";
   content: AssistantContentBlock[];
   toolResults?: Map<string, ToolResult>;
   model?: string;
   pending?: boolean;
+  // Additional metadata for richer display
+  isSidechain?: boolean;
+  parentToolUseId?: string | null;
+  usage?: { input_tokens: number; output_tokens: number };
+  // Result message fields
+  resultData?: {
+    subtype: string;
+    isError: boolean;
+    result: string;
+    numTurns: number;
+    durationMs: number;
+    durationApiMs?: number;
+    totalCostUsd: number;
+    usage: { input_tokens: number; output_tokens: number };
+    modelUsage?: Record<string, { input_tokens: number; output_tokens: number }>;
+    permissionDenials?: string[];
+    stopReason?: string | null;
+  };
+  // Rate limit fields
+  rateLimitInfo?: {
+    status?: string;
+    rateLimitType?: string;
+    resetsAt?: number;
+    overageStatus?: string;
+    overageDisabledReason?: string;
+  };
+  // Compact boundary fields
+  compactMetadata?: {
+    trigger?: string;
+    preTokens?: number;
+  };
+  // System status
+  statusText?: string;
 }
 
 export interface ToolResult {
@@ -39,6 +73,15 @@ export interface SessionInfo {
   model: string;
   version: string;
   sessionId: string;
+  cwd: string;
+  tools: string[];
+  permissionMode: string;
+  mcp_servers?: unknown[];
+  agents?: unknown[];
+  apiKeySource?: string;
+  skills?: string[];
+  plugins?: unknown[];
+  fast_mode_state?: string;
 }
 
 interface SessionState {
@@ -96,17 +139,61 @@ export function App() {
 
     switch (msg.type) {
       case "system":
-        if ("subtype" in msg && msg.subtype === "init") {
-          updateSession(sid, (s) => ({
-            ...s,
-            sessionInfo: {
-              model: msg.model,
-              version: msg.claude_code_version,
-              sessionId: msg.session_id,
-            },
-            isProcessing: true,
-            streamingBlocks: [],
-          }));
+        if ("subtype" in msg) {
+          if (msg.subtype === "init") {
+            updateSession(sid, (s) => ({
+              ...s,
+              sessionInfo: {
+                model: msg.model,
+                version: msg.claude_code_version,
+                sessionId: msg.session_id,
+                cwd: msg.cwd,
+                tools: msg.tools,
+                permissionMode: msg.permissionMode,
+                mcp_servers: msg.mcp_servers,
+                agents: msg.agents,
+                apiKeySource: msg.apiKeySource,
+                skills: msg.skills,
+                plugins: msg.plugins,
+                fast_mode_state: msg.fast_mode_state,
+              },
+              isProcessing: true,
+              streamingBlocks: [],
+            }));
+          } else if (msg.subtype === "status") {
+            updateSession(sid, (s) => {
+              const id = `status-${++s.msgIdCounter}`;
+              return {
+                ...s,
+                messages: [
+                  ...s.messages,
+                  {
+                    id,
+                    type: "system" as const,
+                    content: [],
+                    statusText: (msg as any).status || "clear",
+                  },
+                ],
+              };
+            });
+          } else if (msg.subtype === "compact_boundary") {
+            updateSession(sid, (s) => {
+              const id = `compact-${++s.msgIdCounter}`;
+              const cm = (msg as any).compact_metadata;
+              return {
+                ...s,
+                messages: [
+                  ...s.messages,
+                  {
+                    id,
+                    type: "compact_boundary" as const,
+                    content: [],
+                    compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
+                  },
+                ],
+              };
+            });
+          }
         }
         break;
 
@@ -138,16 +225,42 @@ export function App() {
         break;
 
       case "result":
-        if ("total_cost_usd" in msg) {
-          updateSession(sid, (s) => ({
+        handleResultMessage(sid, msg as ResultMessage);
+        break;
+
+      case "summary":
+        updateSession(sid, (s) => {
+          const id = `summary-${++s.msgIdCounter}`;
+          return {
             ...s,
-            totalCost: msg.total_cost_usd,
-            isProcessing: false,
-            streamingBlocks: [],
-          }));
-        } else {
-          updateSession(sid, (s) => ({ ...s, isProcessing: false, streamingBlocks: [] }));
-        }
+            messages: [
+              ...s.messages,
+              {
+                id,
+                type: "summary" as const,
+                content: [{ type: "text" as const, text: (msg as any).summary || "" }],
+              },
+            ],
+          };
+        });
+        break;
+
+      case "rate_limit_event":
+        updateSession(sid, (s) => {
+          const id = `ratelimit-${++s.msgIdCounter}`;
+          return {
+            ...s,
+            messages: [
+              ...s.messages,
+              {
+                id,
+                type: "rate_limit" as const,
+                content: [],
+                rateLimitInfo: (msg as any).rate_limit_info,
+              },
+            ],
+          };
+        });
         break;
 
       case "exit":
@@ -167,6 +280,25 @@ export function App() {
         });
         break;
       }
+
+      default: {
+        // Unknown message type - display it so nothing is silently lost
+        updateSession(sid, (s) => {
+          const id = `unknown-${++s.msgIdCounter}`;
+          return {
+            ...s,
+            messages: [
+              ...s.messages,
+              {
+                id,
+                type: "system" as const,
+                content: [{ type: "text" as const, text: `Unknown message type: ${(msg as any).type}\n${JSON.stringify(msg, null, 2)}` }],
+              },
+            ],
+          };
+        });
+        break;
+      }
     }
   }, [updateSession]);
 
@@ -178,6 +310,10 @@ export function App() {
         const updated = [...s.messages];
         const existingMsg = { ...updated[existing] };
         existingMsg.content = [...existingMsg.content, ...msg.message.content];
+        // Update usage if present (later messages may have updated counts)
+        if (msg.message.usage) {
+          existingMsg.usage = msg.message.usage;
+        }
         updated[existing] = existingMsg;
         return { ...s, messages: updated, streamingBlocks: [] };
       }
@@ -191,6 +327,9 @@ export function App() {
             content: [...msg.message.content],
             toolResults: new Map(),
             model: msg.message.model,
+            isSidechain: msg.isSidechain,
+            parentToolUseId: msg.parent_tool_use_id,
+            usage: msg.message.usage,
           },
         ],
         streamingBlocks: [],
@@ -202,10 +341,23 @@ export function App() {
     const content = msg.message?.content;
     if (!content) return;
 
+    // Collect text blocks and tool_result blocks separately
+    const textBlocks: string[] = [];
+    const toolResults: Array<{ tool_use_id: string; content: string; is_error?: boolean }> = [];
+
     for (const block of content) {
       if (block.type === "tool_result") {
-        updateSession(sid, (s) => {
-          const updated = [...s.messages];
+        toolResults.push(block);
+      } else if (block.type === "text") {
+        textBlocks.push(block.text);
+      }
+    }
+
+    // Link tool results to their parent assistant messages
+    if (toolResults.length > 0) {
+      updateSession(sid, (s) => {
+        const updated = [...s.messages];
+        for (const block of toolResults) {
           for (let i = updated.length - 1; i >= 0; i--) {
             const m = updated[i];
             if (m.type === "assistant") {
@@ -220,14 +372,73 @@ export function App() {
                   isError: block.is_error,
                 });
                 updated[i] = newMsg;
-                return { ...s, messages: updated };
+                break;
               }
             }
           }
-          return s;
-        });
-      }
+        }
+        return { ...s, messages: updated };
+      });
     }
+
+    // If there are text blocks (actual user text, not just tool results), show as user message
+    // Skip if all text blocks are empty system-reminder type content
+    const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
+    if (meaningfulText.length > 0 && toolResults.length === 0) {
+      // Only show user echo text when it's not a tool-result-only message
+      // (tool result messages are user echos that just carry results back)
+      updateSession(sid, (s) => {
+        // Remove any pending user message that matches
+        const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
+        const id = `user-echo-${++s.msgIdCounter}`;
+        return {
+          ...s,
+          messages: [
+            ...filtered,
+            {
+              id,
+              type: "user" as const,
+              content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
+              isSidechain: msg.isSidechain,
+              parentToolUseId: msg.parent_tool_use_id,
+            },
+          ],
+        };
+      });
+    }
+  }, [updateSession]);
+
+  const handleResultMessage = useCallback((sid: number, msg: ResultMessage) => {
+    updateSession(sid, (s) => {
+      const id = `result-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        totalCost: msg.total_cost_usd || s.totalCost,
+        isProcessing: false,
+        streamingBlocks: [],
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "result" as const,
+            content: [],
+            resultData: {
+              subtype: msg.subtype,
+              isError: msg.is_error,
+              result: msg.result,
+              numTurns: msg.num_turns,
+              durationMs: msg.duration_ms,
+              durationApiMs: msg.duration_api_ms,
+              totalCostUsd: msg.total_cost_usd,
+              usage: msg.usage,
+              modelUsage: msg.modelUsage,
+              permissionDenials: msg.permission_denials,
+              stopReason: msg.stop_reason,
+            },
+          },
+        ],
+      };
+    });
   }, [updateSession]);
 
   const handleStreamEvent = useCallback((sid: number, event: StreamEvent) => {
