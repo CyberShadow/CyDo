@@ -93,25 +93,32 @@ Deliverable: Web UI which allows interacting Claude Code with same capabilities 
 
 - Web UI gains a sidebar that allows selecting and interacting with all running sessions
 
-### 3. Custom tools
+### 3. Persistence
+
+- Define the data model for sessions and messages
+- Persist all state so that no data is lost on backend restart
+  - Running agent processes will be stopped, but their session history is preserved
+  - On restart, the UI can display all previous sessions and their full message logs
+
+### 4. Custom tools
 
 - CyDo gains an MCP server (or other tool delivery mechanism) which replaces and allows extending the basic set of tools
 - The "task" tool is replaced with a child session that is visible in the UI directly
 
-### 4. Agentic Tasks
+### 5. Agentic Tasks
 
-- Agents are taught how to 
+- Agents are taught how to
   - Split their work into sub-tasks
   - Create detached tasks for future work (which will be executed stand-alone)
 
-### 5. Merge train
+### 6. Merge train
 
 - TBD
 
-### 6. Stewards
+### 7. Stewards
 
 - TBD
 
-### 7. Interrogation
+### 8. Interrogation
 
 - TBD
