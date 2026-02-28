@@ -84,7 +84,7 @@ Foundation:
   - In principle compatible with Codex, Claude Code..
   - For now targeting only Claude Code CLI
 - Claude Code implementation of the interface above (`claude --input-format stream-json --output-format stream-json`)
-  - Implementation hint: see ~/libexec/format-claude-session - an existing parser of the output format
+  - Implementation hint: see ./docs/research/claude-code-harness (researched spec + test script) and ~/libexec/format-claude-session (an existing parser of the output format).
 - Web UI which renders the session and allows interacting with it
 
 Deliverable: Web UI which allows interacting Claude Code with same capabilities as the first-party CLI
