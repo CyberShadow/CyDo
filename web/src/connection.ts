@@ -1,10 +1,11 @@
-import type { ClaudeMessage } from "./protocol";
+import type { ClaudeMessage, ControlMessage } from "./protocol";
 
 export class Connection {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  onMessage: ((msg: ClaudeMessage) => void) | null = null;
+  onSessionMessage: ((sid: number, msg: ClaudeMessage) => void) | null = null;
+  onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
   connect() {
@@ -26,20 +27,28 @@ export class Connection {
 
     this.ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as ClaudeMessage;
-        this.onMessage?.(msg);
+        const raw = JSON.parse(ev.data);
+        if (raw.type === "session_created" || raw.type === "sessions_list") {
+          this.onControlMessage?.(raw as ControlMessage);
+        } else if ("sid" in raw && typeof raw.sid === "number") {
+          this.onSessionMessage?.(raw.sid, raw as ClaudeMessage);
+        }
       } catch {
         // ignore malformed messages
       }
     };
   }
 
-  sendMessage(content: string) {
-    this.ws?.send(JSON.stringify({ type: "message", content }));
+  sendMessage(sid: number, content: string) {
+    this.ws?.send(JSON.stringify({ type: "message", sid, content }));
   }
 
-  sendInterrupt() {
-    this.ws?.send(JSON.stringify({ type: "interrupt" }));
+  sendInterrupt(sid: number) {
+    this.ws?.send(JSON.stringify({ type: "interrupt", sid }));
+  }
+
+  createSession() {
+    this.ws?.send(JSON.stringify({ type: "create_session" }));
   }
 
   private scheduleReconnect() {

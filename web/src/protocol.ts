@@ -99,6 +99,22 @@ export interface StderrMessage {
   text: string;
 }
 
+// Control messages from backend
+export interface SessionCreatedMessage {
+  type: "session_created";
+  sid: number;
+}
+
+export interface SessionsListMessage {
+  type: "sessions_list";
+  sessions: { sid: number; alive: boolean }[];
+}
+
+// Session messages have sid injected by backend
+export type SessionMessage = ClaudeMessage & { sid: number };
+
+export type ControlMessage = SessionCreatedMessage | SessionsListMessage;
+
 export type ClaudeMessage =
   | SystemInitMessage
   | AssistantMessage

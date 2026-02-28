@@ -23,9 +23,9 @@ void main()
 class App
 {
 	private HttpServer server;
-	private AgentSession session;
 	private WebSocketAdapter[] clients;
-	private string[] messageHistory;
+	private SessionData[int] sessions;
+	private int nextSid = 1;
 
 	void start()
 	{
@@ -68,9 +68,13 @@ class App
 		ws.sendBinary = false; // text frames for JSON
 		clients ~= ws;
 
-		// Replay message history to new client
-		foreach (msg; messageHistory)
-			ws.send(Data(msg.representation));
+		// Send sessions list to new client
+		sendTo(ws, buildSessionsList());
+
+		// Replay each session's history (already has sid injected)
+		foreach (ref sd; sessions)
+			foreach (msg; sd.history)
+				sendTo(ws, msg);
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -86,50 +90,103 @@ class App
 	{
 		import ae.utils.json : jsonParse, toJson;
 
-		// Parse incoming WebSocket message
 		auto json = jsonParse!WsMessage(text);
 
-		if (json.type == "message")
+		if (json.type == "create_session")
 		{
-			ensureSession();
-			session.sendMessage(json.content);
+			auto sid = createSession();
+			broadcast(toJson(SessionCreatedMessage("session_created", sid)));
+		}
+		else if (json.type == "message")
+		{
+			auto sid = json.sid;
+			if (sid < 0 || sid !in sessions)
+				return;
+			ensureSessionAgent(sid);
+			sessions[sid].agent.sendMessage(json.content);
 		}
 		else if (json.type == "interrupt")
 		{
-			if (session)
-				session.interrupt();
+			auto sid = json.sid;
+			if (sid < 0 || sid !in sessions)
+				return;
+			auto sd = &sessions[sid];
+			if (sd.agent)
+				sd.agent.interrupt();
 		}
 	}
 
-	private void ensureSession()
+	private int createSession()
 	{
-		if (session && session.alive)
+		auto sid = nextSid++;
+		sessions[sid] = SessionData(sid);
+		return sid;
+	}
+
+	private void ensureSessionAgent(int sid)
+	{
+		auto sd = &sessions[sid];
+		if (sd.agent && sd.agent.alive)
 			return;
 
-		session = new ClaudeCodeSession();
+		sd.agent = new ClaudeCodeSession();
 
-		session.onOutput = (string line) {
-			broadcast(line);
+		sd.agent.onOutput = (string line) {
+			broadcastSession(sid, line);
 		};
 
-		session.onStderr = (string line) {
+		sd.agent.onStderr = (string line) {
 			import ae.utils.json : toJson;
-			broadcast(toJson(StderrMessage("stderr", line)));
+			broadcastSession(sid, toJson(StderrMessage("stderr", line)));
 		};
 
-		session.onExit = (int status) {
+		sd.agent.onExit = (int status) {
 			import ae.utils.json : toJson;
-			broadcast(toJson(ExitMessage("exit", status)));
-			session = null;
+			broadcastSession(sid, toJson(ExitMessage("exit", status)));
+			if (sid in sessions)
+				sessions[sid].alive = false;
 		};
+
+		sd.alive = true;
+	}
+
+	private void broadcastSession(int sid, string rawLine)
+	{
+		// Inject "sid":N, at the start of the JSON object
+		string injected;
+		if (rawLine.length > 0 && rawLine[0] == '{')
+			injected = `{"sid":` ~ format!"%d"(sid) ~ `,` ~ rawLine[1 .. $];
+		else
+			injected = rawLine; // non-JSON line, pass through as-is
+
+		if (sid in sessions)
+			sessions[sid].history ~= injected;
+
+		auto data = Data(injected.representation);
+		foreach (ws; clients)
+			ws.send(data);
 	}
 
 	private void broadcast(string message)
 	{
-		messageHistory ~= message;
 		auto data = Data(message.representation);
 		foreach (ws; clients)
 			ws.send(data);
+	}
+
+	private void sendTo(WebSocketAdapter ws, string msg)
+	{
+		ws.send(Data(msg.representation));
+	}
+
+	private string buildSessionsList()
+	{
+		import ae.utils.json : toJson;
+
+		SessionListEntry[] entries;
+		foreach (ref sd; sessions)
+			entries ~= SessionListEntry(sd.sid, sd.alive);
+		return toJson(SessionsListMessage("sessions_list", entries));
 	}
 
 	private void removeClient(WebSocketAdapter ws)
@@ -141,10 +198,19 @@ class App
 
 private:
 
+struct SessionData
+{
+	int sid;
+	AgentSession agent;
+	string[] history;
+	bool alive = false;
+}
+
 struct WsMessage
 {
 	string type;
 	string content;
+	int sid = -1;
 }
 
 struct ExitMessage
@@ -157,4 +223,22 @@ struct StderrMessage
 {
 	string type;
 	string text;
+}
+
+struct SessionCreatedMessage
+{
+	string type;
+	int sid;
+}
+
+struct SessionsListMessage
+{
+	string type;
+	SessionListEntry[] sessions;
+}
+
+struct SessionListEntry
+{
+	int sid;
+	bool alive;
 }
