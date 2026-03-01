@@ -24,6 +24,7 @@ Goal: mostly-autonomous software development while maintaining rigorous quality 
     - Metadata:
       - Link to a parent issue
       - Role of the agent who will handle this issue
+      - Optional existing session to resume, and optionally from where (session forking)
       - Dependencies
       - Approvals
         - Operator
