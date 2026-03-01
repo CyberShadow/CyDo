@@ -2,15 +2,16 @@
   "name": "cydo-web",
   "private": true,
   "scripts": {
-    "build": "cp src/styles.css dist/styles.css && esbuild src/main.tsx --bundle --minify --outdir=dist --jsx=automatic --jsx-import-source=preact",
-    "dev": "cp src/styles.css dist/styles.css && esbuild src/main.tsx --bundle --outdir=dist --jsx=automatic --jsx-import-source=preact --watch"
+    "build": "vite build",
+    "dev": "vite"
   },
   "dependencies": {
     "marked": "^17.0.3",
     "preact": "^10.25.4"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
-    "typescript": "^5.7.0"
+    "@preact/preset-vite": "^2.10.3",
+    "typescript": "^5.7.0",
+    "vite": "^7.3.1"
   }
 }
