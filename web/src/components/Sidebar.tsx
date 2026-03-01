@@ -3,6 +3,7 @@ import { h } from "preact";
 export interface SidebarSession {
   sid: number;
   alive: boolean;
+  resumable: boolean;
   totalCost: number;
 }
 
@@ -27,7 +28,7 @@ export function Sidebar({ sessions, activeSessionId, onSelectSession, onNewSessi
             class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}`}
             onClick={() => onSelectSession(s.sid)}
           >
-            <span class={`sidebar-dot${s.alive ? " alive" : ""}`} />
+            <span class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`} />
             <span class="sidebar-label">Session {s.sid}</span>
             {s.totalCost > 0 && (
               <span class="sidebar-cost">${s.totalCost.toFixed(4)}</span>

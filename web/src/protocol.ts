@@ -159,7 +159,7 @@ export interface SessionCreatedMessage {
 
 export interface SessionsListMessage {
   type: "sessions_list";
-  sessions: { sid: number; alive: boolean }[];
+  sessions: { sid: number; alive: boolean; resumable: boolean }[];
 }
 
 // Session messages have sid injected by backend

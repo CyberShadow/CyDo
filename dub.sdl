@@ -7,4 +7,5 @@ targetPath "build"
 sourcePaths "source"
 
 dependency "ae" path="../ae-container/ae"
+dependency "ae:sqlite" path="../ae-container/ae"
 subConfiguration "ae" "library"

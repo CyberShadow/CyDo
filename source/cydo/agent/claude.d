@@ -15,9 +15,9 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 
-	this()
+	this(string resumeSessionId = null)
 	{
-		process = new AgentProcess([
+		string[] args = [
 			"claude",
 			"-p",
 			"--input-format", "stream-json",
@@ -26,7 +26,12 @@ class ClaudeCodeSession : AgentSession
 			"--include-partial-messages",
 			"--replay-user-messages",
 			"--dangerously-skip-permissions",
-		]);
+		];
+
+		if (resumeSessionId !is null)
+			args ~= ["--resume", resumeSessionId];
+
+		process = new AgentProcess(args);
 
 		process.onStdoutLine = (string line) {
 			if (outputHandler)

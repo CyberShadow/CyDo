@@ -12,6 +12,7 @@ import ae.sys.data : Data;
 
 import cydo.agent.claude : ClaudeCodeSession;
 import cydo.agent.session : AgentSession;
+import cydo.persist : Persistence, loadSessionHistory;
 
 void main()
 {
@@ -25,10 +26,22 @@ class App
 	private HttpServer server;
 	private WebSocketAdapter[] clients;
 	private SessionData[int] sessions;
-	private int nextSid = 1;
+	private Persistence persistence;
 
 	void start()
 	{
+		persistence = Persistence("data/cydo.db");
+
+		// Load persisted sessions
+		foreach (row; persistence.loadSessions())
+		{
+			auto sd = SessionData(row.sid);
+			sd.claudeSessionId = row.claudeSessionId;
+			if (row.claudeSessionId.length > 0)
+				sd.history = loadSessionHistory(row.sid, row.claudeSessionId);
+			sessions[row.sid] = sd;
+		}
+
 		server = new HttpServer();
 		server.handleRequest = &handleRequest;
 		auto port = server.listen(3456);
@@ -102,8 +115,30 @@ class App
 			auto sid = json.sid;
 			if (sid < 0 || sid !in sessions)
 				return;
+			auto sd = &sessions[sid];
+			// Only auto-spawn for new sessions (no claudeSessionId yet).
+			// Resumable sessions require an explicit "resume" first.
+			if (sd.agent is null || !sd.agent.alive)
+			{
+				if (sd.claudeSessionId.length > 0)
+					return; // resumable but not resumed — ignore
+				ensureSessionAgent(sid);
+			}
+			sd.agent.sendMessage(json.content);
+		}
+		else if (json.type == "resume")
+		{
+			auto sid = json.sid;
+			if (sid < 0 || sid !in sessions)
+				return;
+			auto sd = &sessions[sid];
+			// Only resume if we have a Claude session ID and no running process
+			if (sd.claudeSessionId.length == 0)
+				return;
+			if (sd.agent !is null && sd.agent.alive)
+				return;
 			ensureSessionAgent(sid);
-			sessions[sid].agent.sendMessage(json.content);
+			broadcast(buildSessionsList());
 		}
 		else if (json.type == "interrupt")
 		{
@@ -118,7 +153,7 @@ class App
 
 	private int createSession()
 	{
-		auto sid = nextSid++;
+		auto sid = persistence.createSession();
 		sessions[sid] = SessionData(sid);
 		return sid;
 	}
@@ -129,7 +164,7 @@ class App
 		if (sd.agent && sd.agent.alive)
 			return;
 
-		sd.agent = new ClaudeCodeSession();
+		sd.agent = new ClaudeCodeSession(sd.claudeSessionId);
 
 		sd.agent.onOutput = (string line) {
 			broadcastSession(sid, line);
@@ -160,11 +195,50 @@ class App
 			injected = rawLine; // non-JSON line, pass through as-is
 
 		if (sid in sessions)
+		{
 			sessions[sid].history ~= injected;
+
+			// Extract Claude session ID from system.init messages
+			if (sessions[sid].claudeSessionId.length == 0)
+				tryExtractClaudeSessionId(sid, rawLine);
+		}
 
 		auto data = Data(injected.representation);
 		foreach (ws; clients)
 			ws.send(data);
+	}
+
+	/// Parse system.init messages to extract the Claude session UUID.
+	private void tryExtractClaudeSessionId(int sid, string rawLine)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+		import std.algorithm : canFind;
+
+		// Quick string check before parsing
+		if (!rawLine.canFind(`"subtype":"init"`))
+			return;
+
+		@JSONPartial
+		static struct InitProbe
+		{
+			string type;
+			string subtype;
+			string session_id;
+		}
+
+		try
+		{
+			auto probe = jsonParse!InitProbe(rawLine);
+			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
+			{
+				sessions[sid].claudeSessionId = probe.session_id;
+				persistence.setClaudeSessionId(sid, probe.session_id);
+			}
+		}
+		catch (Exception)
+		{
+			// Not a valid init message, ignore
+		}
 	}
 
 	private void broadcast(string message)
@@ -185,7 +259,7 @@ class App
 
 		SessionListEntry[] entries;
 		foreach (ref sd; sessions)
-			entries ~= SessionListEntry(sd.sid, sd.alive);
+			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive);
 		return toJson(SessionsListMessage("sessions_list", entries));
 	}
 
@@ -203,6 +277,7 @@ struct SessionData
 	int sid;
 	AgentSession agent;
 	string[] history;
+	string claudeSessionId;
 	bool alive = false;
 }
 
@@ -241,4 +316,5 @@ struct SessionListEntry
 {
 	int sid;
 	bool alive;
+	bool resumable;
 }

@@ -47,6 +47,10 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "interrupt", sid }));
   }
 
+  resumeSession(sid: number) {
+    this.ws?.send(JSON.stringify({ type: "resume", sid }));
+  }
+
   createSession() {
     this.ws?.send(JSON.stringify({ type: "create_session" }));
   }

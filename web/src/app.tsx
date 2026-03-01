@@ -98,6 +98,7 @@ interface SessionState {
   isProcessing: boolean;
   totalCost: number;
   alive: boolean;
+  resumable: boolean;
   msgIdCounter: number;
 }
 
@@ -150,7 +151,7 @@ const KNOWN_RATE_LIMIT = [
   "type", "rate_limit_info", "uuid", "session_id", "sid",
 ];
 
-function makeSessionState(sid: number, alive: boolean = false): SessionState {
+function makeSessionState(sid: number, alive: boolean = false, resumable: boolean = false): SessionState {
   return {
     sid,
     messages: [],
@@ -159,6 +160,7 @@ function makeSessionState(sid: number, alive: boolean = false): SessionState {
     isProcessing: false,
     totalCost: 0,
     alive,
+    resumable,
     msgIdCounter: 0,
   };
 }
@@ -598,10 +600,10 @@ export function App() {
           const next = new Map(prev);
           for (const entry of msg.sessions) {
             if (!next.has(entry.sid)) {
-              next.set(entry.sid, makeSessionState(entry.sid, entry.alive));
+              next.set(entry.sid, makeSessionState(entry.sid, entry.alive, entry.resumable));
             } else {
               const s = next.get(entry.sid)!;
-              next.set(entry.sid, { ...s, alive: entry.alive });
+              next.set(entry.sid, { ...s, alive: entry.alive, resumable: entry.resumable });
             }
           }
           return next;
@@ -689,13 +691,20 @@ export function App() {
     connRef.current?.createSession();
   }, []);
 
+  const handleResume = useCallback(() => {
+    if (activeSessionId !== null) {
+      connRef.current?.resumeSession(activeSessionId);
+      updateSession(activeSessionId, (s) => ({ ...s, alive: true, resumable: false }));
+    }
+  }, [activeSessionId, updateSession]);
+
   const active = activeSessionId !== null ? sessions.get(activeSessionId) ?? null : null;
   const hasSessions = sessions.size > 0;
 
   // Build sidebar session list sorted by sid
   const sidebarSessions = Array.from(sessions.values())
     .sort((a, b) => a.sid - b.sid)
-    .map((s) => ({ sid: s.sid, alive: s.alive, totalCost: s.totalCost }));
+    .map((s) => ({ sid: s.sid, alive: s.alive, resumable: s.resumable, totalCost: s.totalCost }));
 
   if (!hasSessions) {
     // Welcome screen — no sessions yet
@@ -734,12 +743,20 @@ export function App() {
         streamingBlocks={active?.streamingBlocks ?? []}
         isProcessing={active?.isProcessing ?? false}
       />
-      <InputBox
-        onSend={handleSend}
-        onInterrupt={handleInterrupt}
-        isProcessing={active?.isProcessing ?? false}
-        disabled={!connected}
-      />
+      {active?.resumable ? (
+        <div class="resume-bar">
+          <button class="btn btn-resume" onClick={handleResume}>
+            Resume Session
+          </button>
+        </div>
+      ) : (
+        <InputBox
+          onSend={handleSend}
+          onInterrupt={handleInterrupt}
+          isProcessing={active?.isProcessing ?? false}
+          disabled={!connected}
+        />
+      )}
     </div>
   );
 }
