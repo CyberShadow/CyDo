@@ -59,9 +59,13 @@ export interface DisplayMessage {
   extraFields?: Record<string, unknown>;
 }
 
+export type ToolResultContent =
+  | string
+  | Array<{ type: string; text?: string; [key: string]: unknown }>;
+
 export interface ToolResult {
   toolUseId: string;
-  content: string;
+  content: ToolResultContent;
   isError?: boolean;
 }
 

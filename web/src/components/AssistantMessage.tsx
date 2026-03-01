@@ -3,22 +3,19 @@ import type { DisplayMessage } from "../app";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { ExtraFields } from "./ExtraFields";
+import { UserMessage } from "./UserMessage";
 
 interface Props {
   message: DisplayMessage;
+  childrenByParent?: Map<string, DisplayMessage[]>;
 }
 
-export function AssistantMessage({ message }: Props) {
+export function AssistantMessage({ message, childrenByParent }: Props) {
   return (
     <div class="message assistant-message">
-      {(message.isSidechain || message.parentToolUseId || message.usage) && (
+      {(message.isSidechain || message.usage) && (
         <div class="message-meta">
           {message.isSidechain && <span class="meta-badge sidechain">sub-agent</span>}
-          {message.parentToolUseId && (
-            <span class="meta-detail" title={message.parentToolUseId}>
-              parent: {message.parentToolUseId.slice(0, 12)}...
-            </span>
-          )}
           {message.usage && (
             <span class="meta-detail">
               {message.usage.input_tokens.toLocaleString()} in / {message.usage.output_tokens.toLocaleString()} out
@@ -37,13 +34,28 @@ export function AssistantMessage({ message }: Props) {
         }
         if (block.type === "tool_use") {
           const result = message.toolResults?.get(block.id);
+          const nested = childrenByParent?.get(block.id);
           return (
             <ToolCall
               key={i}
               name={block.name}
               input={block.input}
               result={result}
-            />
+            >
+              {nested && nested.length > 0 && (
+                <div class="sub-agent-messages">
+                  {nested.map((child) => {
+                    if (child.type === "assistant") {
+                      return <AssistantMessage key={child.id} message={child} childrenByParent={childrenByParent} />;
+                    }
+                    if (child.type === "user") {
+                      return <UserMessage key={child.id} message={child} />;
+                    }
+                    return null;
+                  })}
+                </div>
+              )}
+            </ToolCall>
           );
         }
         if (block.type === "text") {

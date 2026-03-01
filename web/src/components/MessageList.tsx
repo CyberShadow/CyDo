@@ -130,14 +130,30 @@ export function MessageList({ messages, streamingBlocks, isProcessing }: Props) 
     }
   }, [messages, streamingBlocks]);
 
+  // Partition messages: top-level vs nested under a parent tool_use_id
+  const childrenByParent = new Map<string, DisplayMessage[]>();
+  const topLevelMessages: DisplayMessage[] = [];
+  for (const msg of messages) {
+    if (msg.parentToolUseId) {
+      let list = childrenByParent.get(msg.parentToolUseId);
+      if (!list) {
+        list = [];
+        childrenByParent.set(msg.parentToolUseId, list);
+      }
+      list.push(msg);
+    } else {
+      topLevelMessages.push(msg);
+    }
+  }
+
   return (
     <div class="message-list" ref={containerRef} onScroll={handleScroll}>
-      {messages.map((msg) => {
+      {topLevelMessages.map((msg) => {
         switch (msg.type) {
           case "user":
             return <UserMessage key={msg.id} message={msg} />;
           case "assistant":
-            return <AssistantMessage key={msg.id} message={msg} />;
+            return <AssistantMessage key={msg.id} message={msg} childrenByParent={childrenByParent} />;
           case "result":
             return <ResultMessageView key={msg.id} message={msg} />;
           case "summary":

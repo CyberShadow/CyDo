@@ -384,7 +384,16 @@ html, body, #app {
   overflow-y: auto;
 }
 
-.tool-result.error {
+.tool-result-blocks {
+  padding: 8px 12px;
+  font-size: 12px;
+  background: rgba(0,0,0,0.2);
+  border-top: 1px solid var(--border);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.tool-result.error, .tool-result-blocks.error {
   color: var(--error);
 }
 
@@ -617,6 +626,17 @@ html, body, #app {
 
 .meta-detail {
   color: var(--text-dim);
+}
+
+/* Nested sub-agent messages inside a tool call */
+.sub-agent-messages {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 2px solid rgba(126, 200, 227, 0.3);
+}
+
+.sub-agent-messages > .message {
+  margin: 4px 0;
 }
 
 /* Result message */

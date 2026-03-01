@@ -1,11 +1,13 @@
-import { h, Fragment } from "preact";
+import { h, Fragment, ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
-import type { ToolResult } from "../app";
+import type { ToolResult, ToolResultContent } from "../app";
+import { Markdown } from "./Markdown";
 
 interface Props {
   name: string;
   input: Record<string, unknown>;
   result?: ToolResult;
+  children?: ComponentChildren;
 }
 
 function computeDiff(oldStr: string, newStr: string): h.JSX.Element {
@@ -160,7 +162,27 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
   return formatGenericInput(input);
 }
 
-export function ToolCall({ name, input, result }: Props) {
+function renderResultContent(content: ToolResultContent, isError?: boolean): h.JSX.Element {
+  if (typeof content === "string") {
+    return (
+      <pre class={`tool-result ${isError ? "error" : ""}`}>
+        {content}
+      </pre>
+    );
+  }
+  return (
+    <div class={`tool-result-blocks ${isError ? "error" : ""}`}>
+      {content.map((block, i) => {
+        if (block.type === "text" && block.text) {
+          return <Markdown key={i} text={block.text} class="text-content" />;
+        }
+        return <pre key={i}>{JSON.stringify(block, null, 2)}</pre>;
+      })}
+    </div>
+  );
+}
+
+export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
 
@@ -172,6 +194,7 @@ export function ToolCall({ name, input, result }: Props) {
         {!result && <span class="tool-spinner" />}
       </div>
       {inputOpen && formatInput(name, input)}
+      {children}
       {result && (
         <div class="tool-result-section">
           <div
@@ -180,11 +203,7 @@ export function ToolCall({ name, input, result }: Props) {
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result
           </div>
-          {resultOpen && (
-            <pre class={`tool-result ${result.isError ? "error" : ""}`}>
-              {result.content}
-            </pre>
-          )}
+          {resultOpen && renderResultContent(result.content, result.isError)}
         </div>
       )}
     </div>
