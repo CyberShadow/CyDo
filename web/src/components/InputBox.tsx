@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useState, useRef } from "preact/hooks";
+import { useState, useRef, useCallback } from "preact/hooks";
 
 interface Props {
   onSend: (text: string) => void;
@@ -11,6 +11,13 @@ interface Props {
 export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResize = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
+  }, []);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -24,6 +31,7 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props)
     if (!trimmed || isProcessing) return;
     onSend(trimmed);
     setText("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     textareaRef.current?.focus();
   };
 
@@ -33,7 +41,10 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props)
         ref={textareaRef}
         class="input-textarea"
         value={text}
-        onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
+        onInput={(e) => {
+          setText((e.target as HTMLTextAreaElement).value);
+          autoResize();
+        }}
         onKeyDown={handleKeyDown}
         placeholder={disabled ? "Connecting..." : "Type a message..."}
         disabled={disabled || isProcessing}

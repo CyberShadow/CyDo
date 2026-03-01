@@ -532,6 +532,7 @@ html, body, #app {
   font-size: 14px;
   resize: none;
   outline: none;
+  overflow-y: auto;
   min-height: 40px;
   max-height: 200px;
 }
