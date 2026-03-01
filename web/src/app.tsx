@@ -618,18 +618,45 @@ export function App() {
   useEffect(() => {
     const conn = new Connection();
     connRef.current = conn;
+
+    // Buffer incoming messages and flush on rAF so that hundreds of replay
+    // messages are processed in a single render pass instead of one-per-message.
+    type BufferedMsg =
+      | { kind: "session"; sid: number; msg: ClaudeMessage }
+      | { kind: "control"; msg: ControlMessage };
+    let buffer: BufferedMsg[] = [];
+    let rafId: number | null = null;
+
+    const flush = () => {
+      rafId = null;
+      const batch = buffer;
+      buffer = [];
+      for (const item of batch) {
+        if (item.kind === "control") handleControlMessage(item.msg);
+        else handleSessionMessage(item.sid, item.msg);
+      }
+    };
+
     conn.onStatusChange = (connected) => {
       setConnected(connected);
       if (!connected) {
-        // Clear state on disconnect — will be replayed on reconnect
         setSessions(new Map());
         setActiveSessionId(null);
       }
     };
-    conn.onSessionMessage = handleSessionMessage;
-    conn.onControlMessage = handleControlMessage;
+    conn.onSessionMessage = (sid, msg) => {
+      buffer.push({ kind: "session", sid, msg });
+      if (rafId === null) rafId = requestAnimationFrame(flush);
+    };
+    conn.onControlMessage = (msg) => {
+      buffer.push({ kind: "control", msg });
+      if (rafId === null) rafId = requestAnimationFrame(flush);
+    };
     conn.connect();
-    return () => conn.disconnect();
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      conn.disconnect();
+    };
   }, [handleSessionMessage, handleControlMessage]);
 
   const handleSend = useCallback(
