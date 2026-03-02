@@ -1,17 +1,22 @@
 :root {
-  --bg: #1a1a2e;
-  --bg-secondary: #16213e;
-  --bg-tertiary: #0f3460;
+  --bg: #111;
+  --bg-secondary: #191919;
+  --bg-tertiary: #2a2a2a;
   --text: #e0e0e0;
   --text-dim: #888;
-  --accent: #e94560;
-  --accent-dim: #a33;
-  --user-bg: #0f3460;
-  --assistant-bg: #1e1e3a;
-  --tool-bg: #12122a;
+  --accent: #aaa;
+  --accent-dim: #888;
+  --info: #88a0b0;
+  --warn: #b09870;
+  --special: #a090b0;
+  --user-bg: #222;
+  --assistant-bg: #1a1a1a;
+  --tool-bg: #141414;
   --border: #333;
-  --success: #4caf50;
+  --success: hsl(122, 40%, 50%);
   --error: #f44336;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 }
 
@@ -21,12 +26,14 @@
   box-sizing: border-box;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 14px;
+  font-family: var(--font-sans);
+  font-size: 15px;
 }
 
 .app {
@@ -123,7 +130,6 @@ html, body, #app {
   width: 28px;
   height: 28px;
   border: 1px solid var(--border);
-  border-radius: 4px;
   background: transparent;
   color: var(--text);
   font-size: 18px;
@@ -131,7 +137,6 @@ html, body, #app {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-mono);
 }
 
 .sidebar-new-btn:hover {
@@ -160,14 +165,13 @@ html, body, #app {
 }
 
 .sidebar-item.active {
-  background: rgba(233, 69, 96, 0.1);
+  background: rgba(192, 136, 152, 0.1);
   border-left-color: var(--accent);
 }
 
 .sidebar-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
   background: var(--text-dim);
   flex-shrink: 0;
 }
@@ -177,7 +181,8 @@ html, body, #app {
 }
 
 .sidebar-dot.resumable {
-  background: var(--accent);
+  background: var(--success);
+  opacity: 0.4;
 }
 
 .sidebar-label {
@@ -186,7 +191,7 @@ html, body, #app {
 
 .sidebar-cost {
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* Banner */
@@ -236,8 +241,7 @@ html, body, #app {
 
 .banner-status {
   padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .banner-status.connected {
@@ -261,13 +265,12 @@ html, body, #app {
 .message {
   margin-bottom: 16px;
   padding: 12px 16px;
-  border-radius: 8px;
   max-width: 100%;
 }
 
 .user-message {
   background: var(--user-bg);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid #aaa;
 }
 
 .user-text {
@@ -282,11 +285,11 @@ html, body, #app {
 
 .assistant-message {
   background: var(--assistant-bg);
-  border-left: 3px solid #555;
+  border-left: 3px solid #444;
 }
 
 .assistant-message.streaming {
-  border-left-color: var(--accent);
+  border-left-color: var(--info);
 }
 
 .system-message {
@@ -321,8 +324,7 @@ html, body, #app {
 .thinking-text {
   margin-top: 8px;
   padding: 8px;
-  background: rgba(0,0,0,0.2);
-  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
   font-size: 12px;
   color: var(--text-dim);
   word-break: break-word;
@@ -335,7 +337,6 @@ html, body, #app {
   margin: 8px 0;
   background: var(--tool-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -353,7 +354,7 @@ html, body, #app {
 }
 
 .tool-header:hover {
-  background: rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .tool-icon {
@@ -365,7 +366,7 @@ html, body, #app {
 .tool-name {
   font-weight: bold;
   font-size: 13px;
-  color: #7ec8e3;
+  color: var(--info);
 }
 
 .tool-spinner {
@@ -377,12 +378,13 @@ html, body, #app {
   animation: spin 0.8s linear infinite;
 }
 
-.tool-input, .tool-result {
+.tool-input,
+.tool-result {
   padding: 8px 12px;
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   border-top: 1px solid var(--border);
   max-height: 400px;
   overflow-y: auto;
@@ -391,13 +393,14 @@ html, body, #app {
 .tool-result-blocks {
   padding: 8px 12px;
   font-size: 12px;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   border-top: 1px solid var(--border);
   max-height: 400px;
   overflow-y: auto;
 }
 
-.tool-result.error, .tool-result-blocks.error {
+.tool-result.error,
+.tool-result-blocks.error {
   color: var(--error);
 }
 
@@ -440,27 +443,34 @@ html, body, #app {
   margin-bottom: 0;
 }
 
-.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
   margin: 0.8em 0 0.4em;
   color: #fff;
 }
 
-.markdown h1 { font-size: 1.4em; }
-.markdown h2 { font-size: 1.2em; }
-.markdown h3 { font-size: 1.1em; }
+.markdown h1 {
+  font-size: 1.4em;
+}
+.markdown h2 {
+  font-size: 1.2em;
+}
+.markdown h3 {
+  font-size: 1.1em;
+}
 
 .markdown code {
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   padding: 2px 5px;
-  border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 0.9em;
 }
 
 .markdown pre {
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   padding: 12px;
-  border-radius: 6px;
   overflow-x: auto;
   margin: 0.5em 0;
 }
@@ -468,10 +478,10 @@ html, body, #app {
 .markdown pre code {
   background: none;
   padding: 0;
-  border-radius: 0;
 }
 
-.markdown ul, .markdown ol {
+.markdown ul,
+.markdown ol {
   margin: 0.5em 0;
   padding-left: 1.5em;
 }
@@ -488,7 +498,7 @@ html, body, #app {
 }
 
 .markdown a {
-  color: #7ec8e3;
+  color: var(--info);
   text-decoration: none;
 }
 
@@ -501,13 +511,14 @@ html, body, #app {
   margin: 0.5em 0;
 }
 
-.markdown th, .markdown td {
+.markdown th,
+.markdown td {
   border: 1px solid var(--border);
   padding: 6px 10px;
 }
 
 .markdown th {
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .markdown hr {
@@ -540,8 +551,7 @@ html, body, #app {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: var(--font-mono);
+  font-family: inherit;
   font-size: 14px;
   resize: none;
   outline: none;
@@ -561,8 +571,6 @@ html, body, #app {
 .btn {
   padding: 10px 20px;
   border: none;
-  border-radius: 6px;
-  font-family: var(--font-mono);
   font-size: 14px;
   cursor: pointer;
   transition: background 0.2s;
@@ -575,7 +583,7 @@ html, body, #app {
 
 .btn-send {
   background: var(--accent);
-  color: white;
+  color: var(--bg);
 }
 
 .btn-send:hover:not(:disabled) {
@@ -606,11 +614,9 @@ html, body, #app {
 
 .btn-resume {
   background: var(--accent);
-  color: white;
+  color: var(--bg);
   padding: 10px 32px;
   border: none;
-  border-radius: 6px;
-  font-family: var(--font-mono);
   font-size: 14px;
   cursor: pointer;
   transition: background 0.2s;
@@ -622,16 +628,25 @@ html, body, #app {
 
 /* Animations */
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes blink {
-  50% { opacity: 0; }
+  50% {
+    opacity: 0;
+  }
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* Message metadata (isSidechain, usage, parentToolUseId) */
@@ -640,32 +655,27 @@ html, body, #app {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .meta-badge {
   padding: 1px 6px;
-  border-radius: 3px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .meta-badge.sidechain {
-  background: rgba(126, 200, 227, 0.15);
-  color: #7ec8e3;
-  border: 1px solid rgba(126, 200, 227, 0.3);
-}
-
-.meta-detail {
-  color: var(--text-dim);
+  background: rgba(136, 160, 176, 0.12);
+  color: var(--info);
+  border: 1px solid rgba(136, 160, 176, 0.3);
 }
 
 /* Nested sub-agent messages inside a tool call */
 .sub-agent-messages {
   margin: 8px 0;
   padding-left: 12px;
-  border-left: 2px solid rgba(126, 200, 227, 0.3);
+  border-left: 2px solid rgba(136, 160, 176, 0.3);
 }
 
 .sub-agent-messages > .message {
@@ -674,7 +684,6 @@ html, body, #app {
 
 /* Result message */
 .result-message {
-  border-radius: 8px;
   padding: 12px 16px;
 }
 
@@ -732,9 +741,8 @@ html, body, #app {
 .result-details pre {
   margin-top: 4px;
   padding: 8px;
-  background: rgba(0,0,0,0.2);
-  border-radius: 4px;
-  font-size: 11px;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -748,14 +756,14 @@ html, body, #app {
 
 /* Summary message */
 .summary-message {
-  background: rgba(255, 193, 7, 0.08);
-  border-left: 3px solid #ffc107;
+  background: rgba(176, 152, 112, 0.06);
+  border-left: 3px solid var(--warn);
 }
 
 .summary-header {
   font-weight: bold;
   font-size: 13px;
-  color: #ffc107;
+  color: var(--warn);
   margin-bottom: 8px;
 }
 
@@ -765,20 +773,20 @@ html, body, #app {
 
 /* Rate limit message */
 .rate-limit-message {
-  background: rgba(255, 152, 0, 0.08);
-  border-left: 3px solid #ff9800;
+  background: rgba(176, 152, 112, 0.06);
+  border-left: 3px solid var(--warn);
 }
 
 .rate-limit-header {
   font-weight: bold;
   font-size: 13px;
-  color: #ff9800;
+  color: var(--warn);
   margin-bottom: 4px;
 }
 
 .rate-limit-badge {
   font-weight: normal;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
   margin-left: 6px;
 }
@@ -793,8 +801,8 @@ html, body, #app {
 
 /* Compact boundary message */
 .compact-boundary-message {
-  background: rgba(156, 39, 176, 0.08);
-  border-left: 3px solid #9c27b0;
+  background: rgba(160, 144, 176, 0.06);
+  border-left: 3px solid var(--special);
   font-size: 12px;
   display: flex;
   align-items: center;
@@ -802,7 +810,7 @@ html, body, #app {
 }
 
 .compact-label {
-  color: #ce93d8;
+  color: var(--special);
   font-weight: bold;
 }
 
@@ -823,20 +831,19 @@ html, body, #app {
 .unknown-block {
   margin: 8px 0;
   padding: 8px;
-  background: rgba(255, 152, 0, 0.1);
-  border: 1px solid rgba(255, 152, 0, 0.3);
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
 }
 
 .unknown-block-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: bold;
-  color: #ff9800;
+  color: var(--warn);
   margin-bottom: 4px;
 }
 
 .unknown-block pre {
-  font-size: 11px;
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -845,7 +852,7 @@ html, body, #app {
 .tool-input-formatted {
   padding: 8px 12px;
   font-size: 12px;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   border-top: 1px solid var(--border);
 }
 
@@ -862,14 +869,13 @@ html, body, #app {
 }
 
 .field-value-path {
-  color: #7ec8e3;
+  color: var(--info);
 }
 
 .field-value-block {
   margin: 4px 0 4px 16px;
   padding: 4px 8px;
-  background: rgba(0,0,0,0.15);
-  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
@@ -878,12 +884,13 @@ html, body, #app {
 /* Diff view for Edit tool */
 .diff-view {
   margin-top: 6px;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.4;
 }
 
 .diff-header {
-  color: #7ec8e3;
+  color: var(--info);
   margin-bottom: 2px;
 }
 
@@ -911,8 +918,7 @@ html, body, #app {
 .write-content {
   margin-top: 6px;
   padding: 8px;
-  background: rgba(0,0,0,0.15);
-  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -939,23 +945,35 @@ html, body, #app {
   font-size: 12px;
 }
 
-.todo-completed .todo-status { color: var(--success); }
-.todo-in_progress .todo-status { color: #ffc107; }
-.todo-pending .todo-status { color: var(--text-dim); }
+.todo-completed .todo-status {
+  color: var(--success);
+}
+.todo-in_progress .todo-status {
+  color: var(--warn);
+}
+.todo-pending .todo-status {
+  color: var(--text-dim);
+}
 
 .todo-content {
   flex: 1;
 }
 
-.todo-completed .todo-content { color: var(--text-dim); }
-.todo-in_progress .todo-content { color: var(--text); }
-.todo-pending .todo-content { color: var(--text-dim); }
+.todo-completed .todo-content {
+  color: var(--text-dim);
+}
+.todo-in_progress .todo-content {
+  color: var(--text);
+}
+.todo-pending .todo-content {
+  color: var(--text-dim);
+}
 
 /* Banner details panel */
 .banner-details {
   width: 100%;
   padding: 8px 16px;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   border-top: 1px solid var(--border);
   font-size: 12px;
 }
@@ -980,9 +998,8 @@ html, body, #app {
   display: inline-block;
   margin: 2px 0;
   padding: 4px 8px;
-  background: rgba(0,0,0,0.15);
-  border-radius: 3px;
-  font-size: 11px;
+  background: rgba(0, 0, 0, 0.15);
+  font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -990,8 +1007,7 @@ html, body, #app {
 .banner-perms {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 3px;
-  background: rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text-dim);
 }
 
@@ -1006,22 +1022,21 @@ html, body, #app {
 /* Extra/unknown fields on messages */
 .extra-fields {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .extra-fields summary {
   cursor: pointer;
-  color: #ff9800;
+  color: var(--warn);
   user-select: none;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .extra-fields-content {
   margin-top: 4px;
   padding: 6px 8px;
-  background: rgba(255, 152, 0, 0.06);
-  border: 1px solid rgba(255, 152, 0, 0.15);
-  border-radius: 4px;
+  background: rgba(176, 152, 112, 0.06);
+  border: 1px solid rgba(176, 152, 112, 0.15);
 }
 
 .extra-field {
@@ -1029,7 +1044,7 @@ html, body, #app {
 }
 
 .extra-field-key {
-  color: #7ec8e3;
+  color: var(--info);
 }
 
 .extra-field-value {
@@ -1039,11 +1054,10 @@ html, body, #app {
 pre.extra-field-value {
   margin: 2px 0 2px 16px;
   padding: 4px 8px;
-  background: rgba(0,0,0,0.15);
-  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.15);
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .extra-fields-group + .extra-fields-group {
@@ -1051,7 +1065,7 @@ pre.extra-field-value {
 }
 
 .extra-fields-path {
-  color: #ff9800;
+  color: var(--warn);
   opacity: 0.7;
   font-family: monospace;
   font-size: 10px;
@@ -1069,7 +1083,6 @@ pre.extra-field-value {
 
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
