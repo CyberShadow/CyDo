@@ -8,7 +8,21 @@ import type {
   StreamEvent,
   ControlMessage,
   ResultMessage,
-} from "./protocol";
+} from "./schemas";
+import {
+  SystemInitSchema,
+  SystemStatusSchema,
+  SystemCompactBoundarySchema,
+  AssistantMessageSchema,
+  UserEchoSchema,
+  ResultSchema,
+  SummarySchema,
+  RateLimitEventSchema,
+  ExitMessageSchema,
+  StderrMessageSchema,
+} from "./schemas";
+import { extractExtras, type ExtraField } from "./extractExtras";
+import type { ZodTypeAny } from "zod";
 import { SystemBanner } from "./components/SystemBanner";
 import { MessageList } from "./components/MessageList";
 import { InputBox } from "./components/InputBox";
@@ -56,7 +70,7 @@ export interface DisplayMessage {
   // System status
   statusText?: string;
   // Extra fields not explicitly handled — displayed so nothing is silently lost
-  extraFields?: Record<string, unknown>;
+  extraFields?: ExtraField[];
 }
 
 export type ToolResultContent =
@@ -102,54 +116,39 @@ interface SessionState {
   msgIdCounter: number;
 }
 
-// Extract unknown fields from a raw message by removing known keys.
-// Returns undefined if there are no extra fields.
-function extractExtra(raw: Record<string, unknown>, knownKeys: string[]): Record<string, unknown> | undefined {
-  const extra: Record<string, unknown> = {};
-  for (const key of Object.keys(raw)) {
-    if (!knownKeys.includes(key)) {
-      extra[key] = raw[key];
-    }
+// Select the Zod schema for a raw Claude message (after stripping `sid`).
+// Returns null for unknown types and stream_event (transient, not stored).
+function schemaForMessage(raw: Record<string, unknown>): ZodTypeAny | null {
+  switch (raw.type) {
+    case "system":
+      switch (raw.subtype) {
+        case "init": return SystemInitSchema;
+        case "status": return SystemStatusSchema;
+        case "compact_boundary": return SystemCompactBoundarySchema;
+        default: return null;
+      }
+    case "assistant": return AssistantMessageSchema;
+    case "user": return UserEchoSchema;
+    case "result": return ResultSchema;
+    case "summary": return SummarySchema;
+    case "rate_limit_event": return RateLimitEventSchema;
+    case "stream_event": return null; // transient — never stored as DisplayMessage
+    case "exit": return ExitMessageSchema;
+    case "stderr": return StderrMessageSchema;
+    default: return null;
   }
-  return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
-// Known keys per message type, matching format-claude-session's suppression lists.
-// "sid" is injected by our backend and always stripped.
-const KNOWN_SYSTEM_INIT = [
-  "type", "subtype", "session_id", "uuid", "model", "cwd", "tools",
-  "claude_code_version", "permissionMode", "mcp_servers", "agents",
-  "apiKeySource", "skills", "plugins", "fast_mode_state",
-  "version", "gitBranch", "slash_commands", "output_style", "sid",
-];
-const KNOWN_SYSTEM_STATUS = [
-  "type", "subtype", "status", "uuid", "session_id", "sid",
-];
-const KNOWN_SYSTEM_COMPACT = [
-  "type", "subtype", "compact_metadata", "uuid", "session_id", "sid",
-];
-const KNOWN_ASSISTANT = [
-  "type", "message", "isSidechain", "parentUuid", "cwd", "sessionId",
-  "version", "gitBranch", "requestId", "uuid", "timestamp",
-  "parent_tool_use_id", "session_id", "userType", "sid",
-];
-const KNOWN_USER = [
-  "type", "message", "isSidechain", "parentUuid", "cwd", "sessionId",
-  "version", "gitBranch", "uuid", "timestamp", "toolUseResult",
-  "tool_use_result", "parent_tool_use_id", "session_id", "userType",
-  "isReplay", "sid",
-];
-const KNOWN_RESULT = [
-  "type", "subtype", "is_error", "duration_ms", "duration_api_ms",
-  "num_turns", "result", "session_id", "total_cost_usd", "usage",
-  "modelUsage", "permission_denials", "uuid", "stop_reason", "sid",
-];
-const KNOWN_SUMMARY = [
-  "type", "summary", "leafUuid", "sid",
-];
-const KNOWN_RATE_LIMIT = [
-  "type", "rate_limit_info", "uuid", "session_id", "sid",
-];
+// Extract extra fields from a raw message using its Zod schema.
+function messageExtras(msg: unknown): ExtraField[] | undefined {
+  const raw = msg as Record<string, unknown>;
+  // Strip `sid` — injected by our backend, not part of Claude's protocol
+  const { sid: _sid, ...withoutSid } = raw;
+  const schema = schemaForMessage(withoutSid);
+  if (!schema) return undefined;
+  const extras = extractExtras(withoutSid, schema);
+  return extras.length > 0 ? extras : undefined;
+}
 
 function makeSessionState(sid: number, alive: boolean = false, resumable: boolean = false): SessionState {
   return {
@@ -194,17 +193,18 @@ export function App() {
       return prev;
     });
 
+    const extras = messageExtras(msg);
+
     switch (msg.type) {
       case "system":
         if ("subtype" in msg) {
           if (msg.subtype === "init") {
-            const initExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_INIT);
             updateSession(sid, (s) => {
-              const initMsg: DisplayMessage | undefined = initExtra ? {
+              const initMsg: DisplayMessage | undefined = extras ? {
                 id: `init-${++s.msgIdCounter}`,
                 type: "system" as const,
                 content: [],
-                extraFields: initExtra,
+                extraFields: extras,
               } : undefined;
               return {
                 ...s,
@@ -228,7 +228,6 @@ export function App() {
               };
             });
           } else if (msg.subtype === "status") {
-            const statusExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_STATUS);
             updateSession(sid, (s) => {
               const id = `status-${++s.msgIdCounter}`;
               return {
@@ -240,13 +239,12 @@ export function App() {
                     type: "system" as const,
                     content: [],
                     statusText: (msg as any).status || "clear",
-                    extraFields: statusExtra,
+                    extraFields: extras,
                   },
                 ],
               };
             });
           } else if (msg.subtype === "compact_boundary") {
-            const compactExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SYSTEM_COMPACT);
             updateSession(sid, (s) => {
               const id = `compact-${++s.msgIdCounter}`;
               const cm = (msg as any).compact_metadata;
@@ -259,7 +257,7 @@ export function App() {
                     type: "compact_boundary" as const,
                     content: [],
                     compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
-                    extraFields: compactExtra,
+                    extraFields: extras,
                   },
                 ],
               };
@@ -300,7 +298,6 @@ export function App() {
         break;
 
       case "summary": {
-        const summaryExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_SUMMARY);
         updateSession(sid, (s) => {
           const id = `summary-${++s.msgIdCounter}`;
           return {
@@ -311,7 +308,7 @@ export function App() {
                 id,
                 type: "summary" as const,
                 content: [{ type: "text" as const, text: (msg as any).summary || "" }],
-                extraFields: summaryExtra,
+                extraFields: extras,
               },
             ],
           };
@@ -320,7 +317,6 @@ export function App() {
       }
 
       case "rate_limit_event": {
-        const rlExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_RATE_LIMIT);
         updateSession(sid, (s) => {
           const id = `ratelimit-${++s.msgIdCounter}`;
           return {
@@ -332,7 +328,7 @@ export function App() {
                 type: "rate_limit" as const,
                 content: [],
                 rateLimitInfo: (msg as any).rate_limit_info,
-                extraFields: rlExtra,
+                extraFields: extras,
               },
             ],
           };
@@ -381,7 +377,7 @@ export function App() {
 
   const handleAssistantMessage = useCallback((sid: number, msg: AssistantMessage) => {
     const msgId = msg.message.id;
-    const extra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_ASSISTANT);
+    const extras = messageExtras(msg);
     updateSession(sid, (s) => {
       const existing = s.messages.findIndex((m) => m.id === msgId);
       if (existing >= 0) {
@@ -392,9 +388,12 @@ export function App() {
         if (msg.message.usage) {
           existingMsg.usage = msg.message.usage;
         }
-        // Merge extra fields
-        if (extra) {
-          existingMsg.extraFields = { ...existingMsg.extraFields, ...extra };
+        // Merge extra fields (deduplicate by path+key)
+        if (extras) {
+          const prev = existingMsg.extraFields || [];
+          const seen = new Set(prev.map((e) => `${e.path}\0${e.key}`));
+          const novel = extras.filter((e) => !seen.has(`${e.path}\0${e.key}`));
+          existingMsg.extraFields = novel.length > 0 ? [...prev, ...novel] : prev;
         }
         updated[existing] = existingMsg;
         return { ...s, messages: updated, streamingBlocks: [] };
@@ -412,7 +411,7 @@ export function App() {
             isSidechain: msg.isSidechain,
             parentToolUseId: msg.parent_tool_use_id,
             usage: msg.message.usage,
-            extraFields: extra,
+            extraFields: extras,
           },
         ],
         streamingBlocks: [],
@@ -424,7 +423,7 @@ export function App() {
     const content = msg.message?.content;
     if (!content) return;
 
-    const userExtra = extractExtra(msg as Record<string, unknown>, KNOWN_USER);
+    const extras = messageExtras(msg);
 
     // Collect text blocks and tool_result blocks separately
     const textBlocks: string[] = [];
@@ -486,7 +485,7 @@ export function App() {
               content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
               isSidechain: msg.isSidechain,
               parentToolUseId: msg.parent_tool_use_id,
-              extraFields: userExtra,
+              extraFields: extras,
             },
           ],
         };
@@ -495,7 +494,7 @@ export function App() {
   }, [updateSession]);
 
   const handleResultMessage = useCallback((sid: number, msg: ResultMessage) => {
-    const resultExtra = extractExtra(msg as unknown as Record<string, unknown>, KNOWN_RESULT);
+    const extras = messageExtras(msg);
     updateSession(sid, (s) => {
       const id = `result-${++s.msgIdCounter}`;
       return {
@@ -509,7 +508,7 @@ export function App() {
             id,
             type: "result" as const,
             content: [],
-            extraFields: resultExtra,
+            extraFields: extras,
             resultData: {
               subtype: msg.subtype,
               isError: msg.is_error,

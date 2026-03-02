@@ -1,4 +1,4 @@
-import type { ClaudeMessage, ControlMessage } from "./protocol";
+import type { ClaudeMessage, ControlMessage } from "./schemas";
 
 export class Connection {
   private ws: WebSocket | null = null;

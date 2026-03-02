@@ -1046,6 +1046,18 @@ pre.extra-field-value {
   font-size: 11px;
 }
 
+.extra-fields-group + .extra-fields-group {
+  margin-top: 6px;
+}
+
+.extra-fields-path {
+  color: #ff9800;
+  opacity: 0.7;
+  font-family: monospace;
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
