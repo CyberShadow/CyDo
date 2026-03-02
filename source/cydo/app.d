@@ -1,5 +1,7 @@
 module cydo.app;
 
+import core.lifetime : move;
+
 import std.format : format;
 import std.string : startsWith, representation;
 
@@ -9,6 +11,7 @@ import ae.net.http.responseex : HttpResponseEx;
 import ae.net.http.server : HttpServer, HttpServerConnection;
 import ae.net.http.websocket : WebSocketAdapter, accept;
 import ae.sys.data : Data;
+import ae.sys.dataset : DataVec;
 
 import cydo.agent.claude : ClaudeCodeSession;
 import cydo.agent.session : AgentSession;
@@ -39,7 +42,7 @@ class App
 			sd.claudeSessionId = row.claudeSessionId;
 			if (row.claudeSessionId.length > 0)
 				sd.history = loadSessionHistory(row.sid, row.claudeSessionId);
-			sessions[row.sid] = sd;
+			sessions[row.sid] = move(sd);
 		}
 
 		server = new HttpServer();
@@ -82,12 +85,12 @@ class App
 		clients ~= ws;
 
 		// Send sessions list to new client
-		sendTo(ws, buildSessionsList());
+		ws.send(Data(buildSessionsList().representation));
 
 		// Replay each session's history (already has sid injected)
 		foreach (ref sd; sessions)
 			foreach (msg; sd.history)
-				sendTo(ws, msg);
+				ws.send(msg);
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -194,16 +197,17 @@ class App
 		else
 			injected = rawLine; // non-JSON line, pass through as-is
 
+		auto data = Data(injected.representation);
+
 		if (sid in sessions)
 		{
-			sessions[sid].history ~= injected;
+			sessions[sid].history ~= data;
 
 			// Extract Claude session ID from system.init messages
 			if (sessions[sid].claudeSessionId.length == 0)
 				tryExtractClaudeSessionId(sid, rawLine);
 		}
 
-		auto data = Data(injected.representation);
 		foreach (ws; clients)
 			ws.send(data);
 	}
@@ -248,11 +252,6 @@ class App
 			ws.send(data);
 	}
 
-	private void sendTo(WebSocketAdapter ws, string msg)
-	{
-		ws.send(Data(msg.representation));
-	}
-
 	private string buildSessionsList()
 	{
 		import ae.utils.json : toJson;
@@ -276,7 +275,7 @@ struct SessionData
 {
 	int sid;
 	AgentSession agent;
-	string[] history;
+	DataVec history;
 	string claudeSessionId;
 	bool alive = false;
 }
