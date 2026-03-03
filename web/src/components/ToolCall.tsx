@@ -247,10 +247,11 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
 }
 
 const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode", "Task"]);
+const defaultExpandedResults = new Set(["Bash", "Task"]);
 
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
-  const [resultOpen, setResultOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(defaultExpandedResults.has(name));
   const subtitle = getHeaderSubtitle(name, input);
 
   return (
