@@ -262,6 +262,7 @@ body,
   overflow-y: auto;
   padding: 16px;
   contain: strict;
+  overflow-anchor: none;
 }
 
 /* Messages */

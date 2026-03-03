@@ -22,6 +22,7 @@ export function SessionView({ session, connected, onSend, onInterrupt, onResume 
         isProcessing={session.isProcessing}
       />
       <MessageList
+        sessionId={session.sid}
         messages={session.messages}
         streamingBlocks={session.streamingBlocks}
         isProcessing={session.isProcessing}

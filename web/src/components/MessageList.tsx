@@ -8,6 +8,7 @@ import { ExtraFields } from "./ExtraFields";
 import { ToolCall } from "./ToolCall";
 
 interface Props {
+  sessionId: number;
   messages: DisplayMessage[];
   streamingBlocks: StreamingBlock[];
   isProcessing: boolean;
@@ -141,24 +142,37 @@ function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
   );
 }
 
-export function MessageList({ messages, streamingBlocks, isProcessing }: Props) {
+export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScroll = useRef(true);
+  const wantScroll = useRef(true);
 
-  // Track if user has scrolled up
+  // On session switch, always scroll to bottom
+  const prevSessionId = useRef(sessionId);
+  if (prevSessionId.current !== sessionId) {
+    prevSessionId.current = sessionId;
+    wantScroll.current = true;
+  }
+
+  // Track user scroll position via DOM events. This is the only place
+  // wantScroll is set to false (user scrolled away from bottom).
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    shouldAutoScroll.current = atBottom;
+    wantScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
   };
 
-  // Auto-scroll on new content
   useEffect(() => {
-    if (shouldAutoScroll.current && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [messages, streamingBlocks]);
+    const el = containerRef.current;
+    if (!el || !wantScroll.current) return;
+    el.scrollTop = el.scrollHeight;
+    // content-visibility: auto defers rendering of off-screen elements.
+    // After scrolling, newly-visible elements get their actual sizes,
+    // which changes scrollHeight. Re-scroll after the browser settles.
+    const id = setTimeout(() => {
+      el.scrollTop = el.scrollHeight;
+    }, 50);
+    return () => clearTimeout(id);
+  });
 
   // Partition messages: top-level vs nested under a parent tool_use_id
   const childrenByParent = new Map<string, DisplayMessage[]>();
