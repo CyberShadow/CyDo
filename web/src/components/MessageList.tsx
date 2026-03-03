@@ -207,7 +207,6 @@ function MessageView({ msg, children }: { msg: DisplayMessage; children: Compone
 export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wantScroll = useRef(true);
-  const scrolling = useRef(false);
 
   // On session switch, always scroll to bottom
   const prevSessionId = useRef(sessionId);
@@ -216,28 +215,51 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
     wantScroll.current = true;
   }
 
-  // Track user scroll position via DOM events. Ignore scroll events
-  // triggered by our own programmatic scrollTop assignments.
-  const handleScroll = () => {
-    if (scrolling.current) return;
+  // Track user scroll intent via input events (wheel/touch) instead of
+  // the generic 'scroll' event. 'scroll' fires for both user and
+  // programmatic scrolls, causing races with content-visibility layout
+  // recalculations that incorrectly clear wantScroll.
+  useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    wantScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-  };
 
+    let userActive = false;
+    let activeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const markActive = () => {
+      userActive = true;
+      if (activeTimer !== null) clearTimeout(activeTimer);
+      activeTimer = setTimeout(() => { userActive = false; activeTimer = null; }, 200);
+    };
+
+    const onScroll = () => {
+      if (!userActive) return;
+      wantScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+    };
+
+    el.addEventListener("wheel", markActive, { passive: true });
+    el.addEventListener("touchmove", markActive, { passive: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", markActive);
+      el.removeEventListener("touchmove", markActive);
+      el.removeEventListener("scroll", onScroll);
+      if (activeTimer !== null) clearTimeout(activeTimer);
+    };
+  }, []);
+
+  // Auto-scroll to bottom after every render when wantScroll is set.
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !wantScroll.current) return;
-    scrolling.current = true;
     el.scrollTop = el.scrollHeight;
     // content-visibility: auto defers rendering of off-screen elements.
     // After scrolling, newly-visible elements get their actual sizes,
     // which changes scrollHeight. Re-scroll after the browser settles.
     const id = setTimeout(() => {
       el.scrollTop = el.scrollHeight;
-      scrolling.current = false;
     }, 50);
-    return () => { clearTimeout(id); scrolling.current = false; };
+    return () => clearTimeout(id);
   });
 
   // Partition messages: top-level vs nested under a parent tool_use_id
@@ -257,7 +279,7 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   }
 
   return (
-    <div class="message-list" ref={containerRef} onScroll={handleScroll}>
+    <div class="message-list" ref={containerRef}>
       {topLevelMessages.map((msg) => {
         let inner;
         switch (msg.type) {
