@@ -21,7 +21,7 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props)
 
   const send = () => {
     const trimmed = text.trim();
-    if (!trimmed || isProcessing) return;
+    if (!trimmed) return;
     onSend(trimmed);
     setText("");
     textareaRef.current?.focus();
@@ -38,18 +38,17 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props)
         }}
         onKeyDown={handleKeyDown}
         placeholder={disabled ? "Connecting..." : "Type a message..."}
-        disabled={disabled || isProcessing}
+        disabled={disabled}
         rows={1}
       />
-      {isProcessing ? (
+      {isProcessing && (
         <button class="btn btn-stop" onClick={onInterrupt}>
           Stop
         </button>
-      ) : (
-        <button class="btn btn-send" onClick={send} disabled={disabled || !text.trim()}>
-          Send
-        </button>
       )}
+      <button class="btn btn-send" onClick={send} disabled={disabled || !text.trim()}>
+        Send
+      </button>
     </div>
   );
 }
