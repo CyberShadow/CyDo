@@ -2,6 +2,7 @@ module cydo.app;
 
 import core.lifetime : move;
 
+import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
 import std.string : startsWith, representation;
@@ -191,13 +192,15 @@ class App
 
 	private void broadcastSession(int sid, string rawLine)
 	{
-		// Wrap the event with a session envelope
-		string injected = `{"sid":` ~ format!"%d"(sid) ~ `,"event":` ~ rawLine ~ `}`;
+		// Wrap the event with a session envelope including timestamp
+		auto now = Clock.currTime.toISOExtString();
+		string injected = `{"sid":` ~ format!"%d"(sid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ rawLine ~ `}`;
 
 		auto data = Data(injected.representation);
 
 		if (sid in sessions)
 		{
+			sessions[sid].lastActivity = now;
 			sessions[sid].history ~= data;
 
 			// Extract Claude session ID from system.init messages
@@ -255,7 +258,7 @@ class App
 
 		SessionListEntry[] entries;
 		foreach (ref sd; sessions)
-			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive);
+			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive, sd.lastActivity);
 		return toJson(SessionsListMessage("sessions_list", entries));
 	}
 
@@ -275,6 +278,7 @@ struct SessionData
 	DataVec history;
 	string claudeSessionId;
 	bool alive = false;
+	string lastActivity;
 }
 
 struct WsMessage
@@ -313,4 +317,5 @@ struct SessionListEntry
 	int sid;
 	bool alive;
 	bool resumable;
+	string lastActivity;
 }

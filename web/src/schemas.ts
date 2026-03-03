@@ -444,6 +444,6 @@ export interface SessionCreatedMessage {
 }
 export interface SessionsListMessage {
   type: "sessions_list";
-  sessions: { sid: number; alive: boolean; resumable: boolean }[];
+  sessions: { sid: number; alive: boolean; resumable: boolean; lastActivity: string }[];
 }
 export type ControlMessage = SessionCreatedMessage | SessionsListMessage;

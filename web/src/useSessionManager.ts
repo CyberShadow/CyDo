@@ -109,9 +109,11 @@ export function useSessionManager(): SessionManager {
           }
           return next;
         });
-        // Navigate to most recent session if no session is selected
+        // Navigate to most recently active session if no session is selected
         if (msg.sessions.length > 0 && parseSidFromPath(location.pathname) === null) {
-          const latest = msg.sessions.reduce((a, b) => (b.sid > a.sid ? b : a));
+          const latest = msg.sessions.reduce((a, b) =>
+            (b.lastActivity || "") > (a.lastActivity || "") ? b : a
+          );
           routeRef.current(`/session/${latest.sid}`, true);
         }
         break;
