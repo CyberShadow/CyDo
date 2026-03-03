@@ -13,14 +13,9 @@ interface Props {
 export function AssistantMessage({ message, childrenByParent }: Props) {
   return (
     <div class="message assistant-message">
-      {(message.isSidechain || message.usage) && (
+      {message.isSidechain && (
         <div class="message-meta">
-          {message.isSidechain && <span class="meta-badge sidechain">sub-agent</span>}
-          {message.usage && (
-            <span class="meta-detail">
-              {message.usage.input_tokens.toLocaleString()} in / {message.usage.output_tokens.toLocaleString()} out
-            </span>
-          )}
+          <span class="meta-badge sidechain">sub-agent</span>
         </div>
       )}
       {message.content.map((block, i) => {

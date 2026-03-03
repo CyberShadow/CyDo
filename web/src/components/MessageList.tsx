@@ -72,9 +72,7 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         {d.numTurns > 0 && <span>Turns: {d.numTurns}</span>}
         {durationSec > 0 && <span>Duration: {durationSec}s{apiSec > 0 && ` (${apiSec}s API)`}</span>}
         {d.totalCostUsd > 0 && <span>Cost: ${d.totalCostUsd.toFixed(4)}</span>}
-        {d.usage && (
-          <span>{d.usage.input_tokens.toLocaleString()} in / {d.usage.output_tokens.toLocaleString()} out</span>
-        )}
+
         {d.stopReason && d.stopReason !== null && <span>Stop: {d.stopReason}</span>}
       </div>
       {d.modelUsage && Object.keys(d.modelUsage).length > 0 && (
