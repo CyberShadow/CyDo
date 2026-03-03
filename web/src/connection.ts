@@ -3,6 +3,7 @@ import type { ClaudeMessage, ClaudeFileMessage, ControlMessage } from "./schemas
 export class Connection {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
 
   onSessionMessage: ((sid: number, msg: ClaudeMessage) => void) | null = null;
   onFileMessage: ((sid: number, msg: ClaudeFileMessage) => void) | null = null;
@@ -65,7 +66,7 @@ export class Connection {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimer) return;
+    if (this.reconnectTimer || this.disposed) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
@@ -73,6 +74,7 @@ export class Connection {
   }
 
   disconnect() {
+    this.disposed = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
