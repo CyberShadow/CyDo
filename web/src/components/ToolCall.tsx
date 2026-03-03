@@ -187,8 +187,10 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
   );
 }
 
+const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode"]);
+
 export function ToolCall({ name, input, result, children }: Props) {
-  const [inputOpen, setInputOpen] = useState(false);
+  const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
   const [resultOpen, setResultOpen] = useState(false);
 
   return (
