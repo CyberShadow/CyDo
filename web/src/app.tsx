@@ -1,9 +1,8 @@
 import { h } from "preact";
 import { useSessionManager } from "./useSessionManager";
-import { SystemBanner } from "./components/SystemBanner";
-import { MessageList } from "./components/MessageList";
 import { InputBox } from "./components/InputBox";
 import { Sidebar } from "./components/Sidebar";
+import { SessionView } from "./components/SessionView";
 
 export function App() {
   const {
@@ -40,29 +39,13 @@ export function App() {
         onSelectSession={setActiveSessionId}
         onNewSession={newSession}
       />
-      <SystemBanner
-        sessionInfo={active?.sessionInfo ?? null}
-        connected={connected}
-        totalCost={active?.totalCost ?? 0}
-        isProcessing={active?.isProcessing ?? false}
-      />
-      <MessageList
-        messages={active?.messages ?? []}
-        streamingBlocks={active?.streamingBlocks ?? []}
-        isProcessing={active?.isProcessing ?? false}
-      />
-      {active?.resumable ? (
-        <div class="resume-bar">
-          <button class="btn btn-resume" onClick={resume}>
-            Resume Session
-          </button>
-        </div>
-      ) : (
-        <InputBox
+      {active && (
+        <SessionView
+          session={active}
+          connected={connected}
           onSend={send}
           onInterrupt={interrupt}
-          isProcessing={active?.isProcessing ?? false}
-          disabled={!connected}
+          onResume={resume}
         />
       )}
     </div>
