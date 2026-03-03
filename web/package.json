@@ -6,6 +6,7 @@
     "dev": "vite"
   },
   "dependencies": {
+    "diff": "^8.0.3",
     "marked": "^17.0.3",
     "preact": "^10.25.4",
     "preact-iso": "^2.11.1",

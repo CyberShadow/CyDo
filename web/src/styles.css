@@ -1042,6 +1042,14 @@ body,
   word-break: break-word;
 }
 
+.diff-word-removed {
+  background: rgba(244, 67, 54, 0.3);
+}
+
+.diff-word-added {
+  background: rgba(76, 175, 80, 0.3);
+}
+
 /* Write tool content preview */
 .write-content {
   margin-top: 6px;

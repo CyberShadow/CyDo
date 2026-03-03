@@ -1,5 +1,6 @@
 import { h, Fragment, ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
+import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import type { ToolResult, ToolResultContent } from "../types";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
@@ -26,54 +27,227 @@ function renderTokenLines(tokens: ThemedToken[][]): h.JSX.Element {
   );
 }
 
+/** Split a diffLines change value into individual line strings. */
+function splitChangeLines(value: string): string[] {
+  const lines = value.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+interface AnnotatedSpan {
+  content: string;
+  color?: string;
+  emphasized: boolean;
+}
+
+/**
+ * Overlay word-level diff segments onto syntax highlighting tokens.
+ * Both cover the same text split at different boundaries; we walk both
+ * in parallel, splitting at whichever boundary comes first.
+ */
+function overlayDiff(
+  syntaxTokens: ThemedToken[] | null,
+  wordChanges: Change[],
+  side: "old" | "new"
+): AnnotatedSpan[] {
+  const relevant = wordChanges.filter((c) =>
+    side === "old" ? !c.added : !c.removed
+  );
+
+  if (!syntaxTokens) {
+    return relevant.map((c) => ({
+      content: c.value,
+      emphasized: side === "old" ? !!c.removed : !!c.added,
+    }));
+  }
+
+  const result: AnnotatedSpan[] = [];
+  let tIdx = 0;
+  let tOff = 0;
+
+  for (const change of relevant) {
+    let remaining = change.value.length;
+    const emphasized = side === "old" ? !!change.removed : !!change.added;
+
+    while (remaining > 0 && tIdx < syntaxTokens.length) {
+      const token = syntaxTokens[tIdx];
+      const available = token.content.length - tOff;
+      const take = Math.min(remaining, available);
+
+      result.push({
+        content: token.content.slice(tOff, tOff + take),
+        color: token.color,
+        emphasized,
+      });
+
+      remaining -= take;
+      tOff += take;
+      if (tOff >= token.content.length) {
+        tIdx++;
+        tOff = 0;
+      }
+    }
+  }
+
+  return result;
+}
+
+function renderAnnotatedSpans(
+  spans: AnnotatedSpan[],
+  side: "removed" | "added"
+): h.JSX.Element {
+  return (
+    <Fragment>
+      {spans.map((s, i) => (
+        <span
+          key={i}
+          class={s.emphasized ? (side === "removed" ? "diff-word-removed" : "diff-word-added") : undefined}
+          style={s.color ? { color: s.color } : undefined}
+        >
+          {s.content}
+        </span>
+      ))}
+    </Fragment>
+  );
+}
+
+/** Dice coefficient: ratio of shared content between two sides of a word diff. */
+function wordDiffSimilarity(wordChanges: Change[]): number {
+  let commonLen = 0;
+  let oldLen = 0;
+  let newLen = 0;
+  for (const c of wordChanges) {
+    if (!c.added && !c.removed) {
+      commonLen += c.value.length;
+      oldLen += c.value.length;
+      newLen += c.value.length;
+    } else if (c.removed) {
+      oldLen += c.value.length;
+    } else {
+      newLen += c.value.length;
+    }
+  }
+  const total = oldLen + newLen;
+  return total > 0 ? (2 * commonLen) / total : 1;
+}
+
+const WORD_DIFF_THRESHOLD = 0.4;
+
 function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string; filePath?: string }) {
   const lang = filePath ? langFromPath(filePath) : null;
   const oldTokens = useHighlight(oldStr, lang);
   const newTokens = useHighlight(newStr, lang);
 
-  const oldLines = oldStr.split("\n");
-  const newLines = newStr.split("\n");
-  const minLen = Math.min(oldLines.length, newLines.length);
+  const changes = diffLines(oldStr, newStr);
 
-  let prefix = 0;
-  for (let i = 0; i < minLen; i++) {
-    if (oldLines[i] === newLines[i]) prefix++;
-    else break;
+  const elements: h.JSX.Element[] = [];
+  let oldLineIdx = 0;
+  let newLineIdx = 0;
+
+  for (let ci = 0; ci < changes.length; ci++) {
+    const change = changes[ci];
+    const lines = splitChangeLines(change.value);
+
+    if (!change.added && !change.removed) {
+      // Context
+      for (let i = 0; i < lines.length; i++) {
+        const idx = oldLineIdx++;
+        newLineIdx++;
+        elements.push(
+          <div key={`c${idx}`} class="diff-context">
+            {"  "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+          </div>
+        );
+      }
+    } else if (change.removed) {
+      const next = ci + 1 < changes.length ? changes[ci + 1] : null;
+
+      if (next?.added) {
+        // Adjacent removed+added block: compute word-level diffs for
+        // positional pairs, but only apply emphasis when similarity is
+        // above threshold. Always render removed-first, added-second.
+        const addedLines = splitChangeLines(next.value);
+        const pairCount = Math.min(lines.length, addedLines.length);
+
+        // Pre-compute word diffs and similarity for each pair
+        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
+        for (let i = 0; i < pairCount; i++) {
+          const wc = diffWordsWithSpace(lines[i], addedLines[i]);
+          wordDiffs.push({ changes: wc, similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD });
+        }
+
+        // All removed lines (with word emphasis on similar pairs)
+        for (let i = 0; i < lines.length; i++) {
+          const idx = oldLineIdx + i;
+          if (i < pairCount && wordDiffs[i].similar) {
+            const spans = overlayDiff(oldTokens?.[idx] ?? null, wordDiffs[i].changes, "old");
+            elements.push(
+              <div key={`r${idx}`} class="diff-removed">
+                {"- "}{renderAnnotatedSpans(spans, "removed")}
+              </div>
+            );
+          } else {
+            elements.push(
+              <div key={`r${idx}`} class="diff-removed">
+                {"- "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+              </div>
+            );
+          }
+        }
+
+        // All added lines (with word emphasis on similar pairs)
+        for (let i = 0; i < addedLines.length; i++) {
+          const idx = newLineIdx + i;
+          if (i < pairCount && wordDiffs[i].similar) {
+            const spans = overlayDiff(newTokens?.[idx] ?? null, wordDiffs[i].changes, "new");
+            elements.push(
+              <div key={`a${idx}`} class="diff-added">
+                {"+ "}{renderAnnotatedSpans(spans, "added")}
+              </div>
+            );
+          } else {
+            elements.push(
+              <div key={`a${idx}`} class="diff-added">
+                {"+ "}{newTokens?.[idx] ? renderTokens(newTokens[idx]) : addedLines[i]}
+              </div>
+            );
+          }
+        }
+
+        oldLineIdx += lines.length;
+        newLineIdx += addedLines.length;
+        ci++; // skip the paired added change
+      } else {
+        // Pure removed lines
+        for (let i = 0; i < lines.length; i++) {
+          const idx = oldLineIdx++;
+          elements.push(
+            <div key={`r${idx}`} class="diff-removed">
+              {"- "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+            </div>
+          );
+        }
+      }
+    } else {
+      // Pure added lines
+      for (let i = 0; i < lines.length; i++) {
+        const idx = newLineIdx++;
+        elements.push(
+          <div key={`a${idx}`} class="diff-added">
+            {"+ "}{newTokens?.[idx] ? renderTokens(newTokens[idx]) : lines[i]}
+          </div>
+        );
+      }
+    }
   }
 
-  let suffix = 0;
-  for (let i = 0; i < minLen - prefix; i++) {
-    if (oldLines[oldLines.length - 1 - i] === newLines[newLines.length - 1 - i]) suffix++;
-    else break;
-  }
-
-  const oldEnd = oldLines.length - suffix;
-  const newEnd = newLines.length - suffix;
-
-  function line(idx: number, source: "old" | "new") {
-    const tokens = source === "old" ? oldTokens : newTokens;
-    const lines = source === "old" ? oldLines : newLines;
-    return tokens?.[idx] ? renderTokens(tokens[idx]) : lines[idx];
-  }
+  const oldLineCount = oldStr.split("\n").length;
+  const newLineCount = newStr.split("\n").length;
 
   return (
     <div class="diff-view">
-      <div class="diff-header">@@ -{oldLines.length} +{newLines.length} @@</div>
-      {oldLines.slice(0, prefix).map((_, i) => (
-        <div key={`p${i}`} class="diff-context">{"  "}{line(i, "old")}</div>
-      ))}
-      {Array.from({ length: oldEnd - prefix }, (_, j) => {
-        const i = prefix + j;
-        return <div key={`r${i}`} class="diff-removed">{"- "}{line(i, "old")}</div>;
-      })}
-      {Array.from({ length: newEnd - prefix }, (_, j) => {
-        const i = prefix + j;
-        return <div key={`a${i}`} class="diff-added">{"+ "}{line(i, "new")}</div>;
-      })}
-      {oldLines.slice(oldEnd).map((_, j) => {
-        const i = oldEnd + j;
-        return <div key={`s${i}`} class="diff-context">{"  "}{line(i, "old")}</div>;
-      })}
+      <div class="diff-header">@@ -{oldLineCount} +{newLineCount} @@</div>
+      {elements}
     </div>
   );
 }
