@@ -4,6 +4,7 @@ import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import type { ToolResult, ToolResultContent } from "../types";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
+import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
 
 interface Props {
@@ -463,7 +464,7 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
   if (typeof content === "string") {
     return (
       <pre class={`tool-result ${isError ? "error" : ""}`}>
-        {content}
+        {hasAnsi(content) ? renderAnsi(content) : content}
       </pre>
     );
   }
