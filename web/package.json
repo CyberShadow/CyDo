@@ -8,6 +8,7 @@
   "dependencies": {
     "marked": "^17.0.3",
     "preact": "^10.25.4",
+    "preact-iso": "^2.11.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

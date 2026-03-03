@@ -207,6 +207,7 @@ function MessageView({ msg, children }: { msg: DisplayMessage; children: Compone
 export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wantScroll = useRef(true);
+  const scrolling = useRef(false);
 
   // On session switch, always scroll to bottom
   const prevSessionId = useRef(sessionId);
@@ -215,9 +216,10 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
     wantScroll.current = true;
   }
 
-  // Track user scroll position via DOM events. This is the only place
-  // wantScroll is set to false (user scrolled away from bottom).
+  // Track user scroll position via DOM events. Ignore scroll events
+  // triggered by our own programmatic scrollTop assignments.
   const handleScroll = () => {
+    if (scrolling.current) return;
     const el = containerRef.current;
     if (!el) return;
     wantScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
@@ -226,14 +228,16 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !wantScroll.current) return;
+    scrolling.current = true;
     el.scrollTop = el.scrollHeight;
     // content-visibility: auto defers rendering of off-screen elements.
     // After scrolling, newly-visible elements get their actual sizes,
     // which changes scrollHeight. Re-scroll after the browser settles.
     const id = setTimeout(() => {
       el.scrollTop = el.scrollHeight;
+      scrolling.current = false;
     }, 50);
-    return () => clearTimeout(id);
+    return () => { clearTimeout(id); scrolling.current = false; };
   });
 
   // Partition messages: top-level vs nested under a parent tool_use_id

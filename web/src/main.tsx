@@ -1,5 +1,11 @@
 import { h, render } from "preact";
+import { LocationProvider } from "preact-iso";
 import "./styles.css";
 import { App } from "./app";
 
-render(<App />, document.getElementById("app")!);
+render(
+  <LocationProvider>
+    <App />
+  </LocationProvider>,
+  document.getElementById("app")!,
+);

@@ -2,6 +2,7 @@ module cydo.app;
 
 import core.lifetime : move;
 
+import std.file : exists, isFile;
 import std.format : format;
 import std.string : startsWith, representation;
 
@@ -60,10 +61,10 @@ class App
 			return;
 		}
 
-		// Serve static files from web/dist/
+		// Serve static files from web/dist/, with SPA fallback
 		auto response = new HttpResponseEx();
 		auto path = request.resource[1 .. $]; // strip leading /
-		if (path == "")
+		if (path == "" || !exists("web/dist/" ~ path) || !isFile("web/dist/" ~ path))
 			path = "index.html";
 		conn.sendResponse(response.serveFile(path, "web/dist/"));
 	}

@@ -1,6 +1,7 @@
 // Custom hook: WebSocket connection, rAF message buffering, session state, and user actions.
 
-import { useState, useEffect, useRef, useCallback } from "preact/hooks";
+import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks";
+import { useLocation } from "preact-iso";
 import { Connection } from "./connection";
 import type {
   ClaudeMessage,
@@ -23,20 +24,22 @@ export interface SessionManager {
   sidebarSessions: Array<{ sid: number; alive: boolean; resumable: boolean; totalCost: number }>;
 }
 
+function parseSidFromPath(path: string): number | null {
+  const m = path.match(/^\/session\/(\d+)$/);
+  return m ? Number(m[1]) : null;
+}
+
 export function useSessionManager(): SessionManager {
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<Map<number, SessionState>>(new Map());
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(() => {
-    const stored = localStorage.getItem("activeSessionId");
-    return stored !== null ? Number(stored) : null;
-  });
-  useEffect(() => {
-    if (activeSessionId !== null) {
-      localStorage.setItem("activeSessionId", String(activeSessionId));
-    } else {
-      localStorage.removeItem("activeSessionId");
-    }
-  }, [activeSessionId]);
+  const { path, route } = useLocation();
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const activeSessionId = useMemo(() => parseSidFromPath(path), [path]);
+  const setActiveSessionId = useCallback(
+    (sid: number) => routeRef.current(`/session/${sid}`),
+    [],
+  );
 
   const connRef = useRef<Connection | null>(null);
   // When we create a session and want to send a message once it's confirmed
@@ -82,7 +85,7 @@ export function useSessionManager(): SessionManager {
           next.set(sid, makeSessionState(sid, false));
           return next;
         });
-        setActiveSessionId(sid);
+        routeRef.current(`/session/${sid}`);
 
         // If we have a pending first message, send it now
         const text = pendingFirstMessage.current;
@@ -106,9 +109,10 @@ export function useSessionManager(): SessionManager {
           }
           return next;
         });
-        // Set active to first session if we don't have one
-        if (msg.sessions.length > 0) {
-          setActiveSessionId((prev) => prev ?? msg.sessions[0].sid);
+        // Navigate to most recent session if no session is selected
+        if (msg.sessions.length > 0 && parseSidFromPath(location.pathname) === null) {
+          const latest = msg.sessions.reduce((a, b) => (b.sid > a.sid ? b : a));
+          routeRef.current(`/session/${latest.sid}`, true);
         }
         break;
       }
@@ -143,7 +147,7 @@ export function useSessionManager(): SessionManager {
       setConnected(connected);
       if (!connected) {
         setSessions(new Map());
-        setActiveSessionId(null);
+        routeRef.current("/", true);
       }
     };
     conn.onSessionMessage = (sid, msg) => {
