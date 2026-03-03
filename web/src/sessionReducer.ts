@@ -439,7 +439,8 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
       return reduceSummary(s, msg, extras);
 
     case "rate_limit_event":
-      return reduceRateLimit(s, msg, extras);
+      // Global event, not session-scoped; will be handled by the backend in the future.
+      return s;
 
     case "exit":
       return reduceExit(s);
@@ -496,7 +497,8 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
       return reduceSummary(s, msg, extras);
 
     case "rate_limit_event":
-      return reduceRateLimit(s, msg, extras);
+      // Global event, not session-scoped; will be handled by the backend in the future.
+      return s;
 
     // JSONL-only types — intentionally not rendered:
     // progress: transient hook/bash/agent execution trace, already resolved.
