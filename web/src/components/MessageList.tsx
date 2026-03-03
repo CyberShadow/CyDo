@@ -1,5 +1,5 @@
-import { h } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { h, type ComponentChildren } from "preact";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { DisplayMessage, StreamingBlock } from "../types";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
@@ -142,6 +142,35 @@ function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
   );
 }
 
+function jsonReplacer(_key: string, value: unknown) {
+  return value instanceof Map ? Object.fromEntries(value) : value;
+}
+
+function MessageView({ msg, children }: { msg: DisplayMessage; children: ComponentChildren }) {
+  const [showSource, setShowSource] = useState(false);
+  return (
+    <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
+      {msg.rawSource != null && (
+        <button
+          class="view-source-btn"
+          onClick={() => setShowSource(!showSource)}
+          title="View source"
+        >
+          {"{}"}
+        </button>
+      )}
+      {showSource
+        ? (
+          <div class="message source-view">
+            <pre>{JSON.stringify(msg.rawSource, jsonReplacer, 2)}</pre>
+          </div>
+        )
+        : children
+      }
+    </div>
+  );
+}
+
 export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wantScroll = useRef(true);
@@ -193,42 +222,51 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   return (
     <div class="message-list" ref={containerRef} onScroll={handleScroll}>
       {topLevelMessages.map((msg) => {
+        let inner;
         switch (msg.type) {
           case "user":
-            return <UserMessage key={msg.id} message={msg} />;
+            inner = <UserMessage message={msg} />;
+            break;
           case "assistant":
-            return <AssistantMessage key={msg.id} message={msg} childrenByParent={childrenByParent} />;
+            inner = <AssistantMessage message={msg} childrenByParent={childrenByParent} />;
+            break;
           case "result":
-            return <ResultMessageView key={msg.id} message={msg} />;
+            inner = <ResultMessageView message={msg} />;
+            break;
           case "summary":
-            return <SummaryMessageView key={msg.id} message={msg} />;
+            inner = <SummaryMessageView message={msg} />;
+            break;
           case "rate_limit":
-            return <RateLimitMessageView key={msg.id} message={msg} />;
+            inner = <RateLimitMessageView message={msg} />;
+            break;
           case "compact_boundary":
-            return <CompactBoundaryMessageView key={msg.id} message={msg} />;
+            inner = <CompactBoundaryMessageView message={msg} />;
+            break;
           case "system": {
-            // System status vs stderr
             if (msg.statusText !== undefined) {
-              return <SystemStatusMessageView key={msg.id} message={msg} />;
+              inner = <SystemStatusMessageView message={msg} />;
+            } else {
+              const text = msg.content
+                .filter((b): b is { type: "text"; text: string } => b.type === "text")
+                .map((b) => b.text)
+                .join("\n");
+              inner = (
+                <div class="message system-message">
+                  <pre>{text}</pre>
+                  <ExtraFields fields={msg.extraFields} />
+                </div>
+              );
             }
-            const text = msg.content
-              .filter((b): b is { type: "text"; text: string } => b.type === "text")
-              .map((b) => b.text)
-              .join("\n");
-            return (
-              <div key={msg.id} class="message system-message">
-                <pre>{text}</pre>
-                <ExtraFields fields={msg.extraFields} />
-              </div>
-            );
+            break;
           }
           default:
-            return (
-              <div key={msg.id} class="message system-message">
+            inner = (
+              <div class="message system-message">
                 <pre>Unknown display type: {(msg as any).type}{"\n"}{JSON.stringify(msg, null, 2)}</pre>
               </div>
             );
         }
+        return <MessageView key={msg.id} msg={msg}>{inner}</MessageView>;
       })}
       {streamingBlocks.length > 0 && (
         <div class="message assistant-message streaming">

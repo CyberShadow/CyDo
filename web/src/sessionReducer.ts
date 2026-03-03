@@ -31,6 +31,7 @@ export function reduceParseError(s: SessionState, source: "stdout" | "file", lab
         id,
         type: "system" as const,
         content: [{ type: "text" as const, text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}` }],
+        rawSource: raw,
       },
     ],
   };
@@ -42,6 +43,7 @@ export function reduceSystemInit(s: SessionState, msg: any, extras: ExtraField[]
     type: "system" as const,
     content: [],
     extraFields: extras,
+    rawSource: msg,
   } : undefined;
   return {
     ...s,
@@ -77,6 +79,7 @@ export function reduceSystemStatus(s: SessionState, msg: any, extras: ExtraField
         content: [],
         statusText: msg.status || "clear",
         extraFields: extras,
+        rawSource: msg,
       },
     ],
   };
@@ -95,6 +98,7 @@ export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraFi
         content: [],
         compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
         extraFields: extras,
+        rawSource: msg,
       },
     ],
   };
@@ -111,6 +115,7 @@ export function reduceSummary(s: SessionState, msg: any, extras: ExtraField[] | 
         type: "summary" as const,
         content: [{ type: "text" as const, text: msg.summary || "" }],
         extraFields: extras,
+        rawSource: msg,
       },
     ],
   };
@@ -128,6 +133,7 @@ export function reduceRateLimit(s: SessionState, msg: any, extras: ExtraField[] 
         content: [],
         rateLimitInfo: msg.rate_limit_info,
         extraFields: extras,
+        rawSource: msg,
       },
     ],
   };
@@ -144,6 +150,9 @@ export function reduceAssistantMessage(s: SessionState, msg: AssistantMessage | 
     if (msg.message.usage) {
       existingMsg.usage = msg.message.usage;
     }
+    // Accumulate raw sources
+    const prev = existingMsg.rawSource;
+    existingMsg.rawSource = Array.isArray(prev) ? [...prev, msg] : [prev, msg];
     // Merge extra fields (deduplicate by path+key)
     if (extras) {
       const prev = existingMsg.extraFields || [];
@@ -168,6 +177,7 @@ export function reduceAssistantMessage(s: SessionState, msg: AssistantMessage | 
         parentToolUseId: msg.parent_tool_use_id,
         usage: msg.message.usage,
         extraFields: extras,
+        rawSource: msg,
       },
     ],
     streamingBlocks: [],
@@ -181,6 +191,7 @@ export function reduceUserEcho(
   isSidechain: boolean | undefined,
   parentToolUseId: string | null | undefined,
   extras: ExtraField[] | undefined,
+  rawMsg: unknown,
 ): SessionState {
   // Collect text blocks and tool_result blocks separately
   const textBlocks: string[] = [];
@@ -239,6 +250,7 @@ export function reduceUserEcho(
           isSidechain,
           parentToolUseId,
           extraFields: extras,
+          rawSource: rawMsg,
         },
       ],
     };
@@ -247,7 +259,7 @@ export function reduceUserEcho(
   return state;
 }
 
-export function reduceUserReplay(s: SessionState, contentBlocks: any[]): SessionState {
+export function reduceUserReplay(s: SessionState, contentBlocks: any[], rawMsg: unknown): SessionState {
   const text = contentBlocks
     .filter((b: any) => b.type === "text")
     .map((b: any) => b.text)
@@ -256,7 +268,7 @@ export function reduceUserReplay(s: SessionState, contentBlocks: any[]): Session
   const id = `user-${++s.msgIdCounter}`;
   return {
     ...s,
-    messages: [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }] }],
+    messages: [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }], rawSource: rawMsg }],
   };
 }
 
@@ -274,6 +286,7 @@ export function reduceResultMessage(s: SessionState, msg: ResultMessage, extras:
         type: "result" as const,
         content: [],
         extraFields: extras,
+        rawSource: msg,
         resultData: {
           subtype: msg.subtype,
           isError: msg.is_error,
@@ -336,7 +349,7 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
     ...s,
     messages: [
       ...s.messages,
-      { id, type: "system" as const, content: [{ type: "text" as const, text }] },
+      { id, type: "system" as const, content: [{ type: "text" as const, text }], rawSource: text },
     ],
   };
 }
@@ -385,9 +398,9 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
         : rawContent;
 
       if ("isReplay" in msg && (msg as any).isReplay) {
-        return reduceUserReplay(s, contentBlocks);
+        return reduceUserReplay(s, contentBlocks, msg);
       } else {
-        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras);
+        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras, msg);
       }
     }
 
@@ -446,7 +459,7 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
       const content: any[] = typeof rawContent === "string"
         ? [{ type: "text", text: rawContent }]
         : rawContent ?? [];
-      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras);
+      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras, msg);
     }
 
     case "result":

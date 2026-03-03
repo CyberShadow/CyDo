@@ -265,6 +265,61 @@ body,
   overflow-anchor: none;
 }
 
+/* Message wrapper (view-source toggle) */
+.message-wrapper {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.message-wrapper > .message {
+  margin-bottom: 0;
+}
+
+.view-source-btn {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: var(--bg-tertiary);
+  color: var(--warn);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-wrapper:hover > .view-source-btn,
+.message-wrapper.show-source > .view-source-btn {
+  opacity: 1;
+}
+
+.view-source-btn:hover {
+  border-color: var(--warn);
+}
+
+.source-view {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--text-dim);
+}
+
+.source-view pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
 /* Messages */
 .message {
   margin-bottom: 16px;

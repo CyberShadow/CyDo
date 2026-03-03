@@ -48,6 +48,8 @@ export interface DisplayMessage {
   statusText?: string;
   // Extra fields not explicitly handled — displayed so nothing is silently lost
   extraFields?: ExtraField[];
+  // Original wire-protocol message(s) for "view source"
+  rawSource?: unknown;
 }
 
 export type ToolResultContent =
