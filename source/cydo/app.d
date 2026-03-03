@@ -87,7 +87,7 @@ class App
 		// Send sessions list to new client
 		ws.send(Data(buildSessionsList().representation));
 
-		// Replay each session's history (already has sid injected)
+		// Replay each session's history (already wrapped with sid envelope)
 		foreach (ref sd; sessions)
 			foreach (msg; sd.history)
 				ws.send(msg);
@@ -190,12 +190,8 @@ class App
 
 	private void broadcastSession(int sid, string rawLine)
 	{
-		// Inject "sid":N, at the start of the JSON object
-		string injected;
-		if (rawLine.length > 0 && rawLine[0] == '{')
-			injected = `{"sid":` ~ format!"%d"(sid) ~ `,` ~ rawLine[1 .. $];
-		else
-			injected = rawLine; // non-JSON line, pass through as-is
+		// Wrap the event with a session envelope
+		string injected = `{"sid":` ~ format!"%d"(sid) ~ `,"event":` ~ rawLine ~ `}`;
 
 		auto data = Data(injected.representation);
 

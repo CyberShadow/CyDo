@@ -58,7 +58,7 @@ struct Persistence
 }
 
 /// Load session history from Claude Code's JSONL file.
-/// Returns lines with `sid` injected and `session_id` fixed.
+/// Returns lines wrapped in session envelope with `session_id` fixed.
 DataVec loadSessionHistory(int sid, string claudeSessionId)
 {
 	import std.file : exists, readText;
@@ -78,12 +78,8 @@ DataVec loadSessionHistory(int sid, string claudeSessionId)
 		// Fix session_id: null -> actual value
 		auto fixed = replaceSubstring(line, `"session_id":null`, sessionIdReplacement);
 
-		// Inject "sid":N at the start of each JSON object
-		string injected;
-		if (fixed.length > 0 && fixed[0] == '{')
-			injected = format!`{"sid":%d,`(sid) ~ fixed[1 .. $];
-		else
-			injected = fixed;
+		// Wrap with session envelope (must match broadcastSession format)
+		string injected = format!`{"sid":%d,"event":`(sid) ~ fixed ~ `}`;
 		history ~= Data(injected.representation);
 	}
 	return move(history);

@@ -30,8 +30,8 @@ export class Connection {
         const raw = JSON.parse(ev.data);
         if (raw.type === "session_created" || raw.type === "sessions_list") {
           this.onControlMessage?.(raw as ControlMessage);
-        } else if ("sid" in raw && typeof raw.sid === "number") {
-          this.onSessionMessage?.(raw.sid, raw as ClaudeMessage);
+        } else if ("sid" in raw && typeof raw.sid === "number" && "event" in raw) {
+          this.onSessionMessage?.(raw.sid, raw.event as ClaudeMessage);
         }
       } catch {
         // ignore malformed messages

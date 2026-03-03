@@ -304,7 +304,7 @@ export type ClaudeMessage =
   | ExitMessage
   | StderrMessage;
 
-export type SessionMessage = ClaudeMessage & { sid: number };
+export type SessionMessage = { sid: number; event: ClaudeMessage };
 
 // Control messages from our backend (not Claude Code) — plain interfaces, no Zod needed
 export interface SessionCreatedMessage {
