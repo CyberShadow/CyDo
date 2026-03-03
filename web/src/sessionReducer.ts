@@ -1,0 +1,468 @@
+// Pure session state reducers — no React dependency.
+//
+// Each function takes a SessionState and returns a new SessionState.
+// Convention: functions pre-increment s.msgIdCounter in place before spreading
+// into the return value. This is safe because the caller always replaces the
+// old state with the returned state (the old reference is never reused).
+
+import type { SessionState, DisplayMessage, ToolResultContent } from "./types";
+import type {
+  ClaudeMessage,
+  ClaudeFileMessage,
+  AssistantMessage,
+  AssistantFileMessage,
+  StreamEvent,
+  ResultMessage,
+} from "./schemas";
+import type { ExtraField } from "./extractExtras";
+import { schemaForStdout, schemaForFile, validateWith } from "./validate";
+
+// ---------------------------------------------------------------------------
+// Individual reducers
+// ---------------------------------------------------------------------------
+
+export function reduceParseError(s: SessionState, source: "stdout" | "file", label: string, detail: string, raw: unknown): SessionState {
+  const id = `parse-error-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "system" as const,
+        content: [{ type: "text" as const, text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}` }],
+      },
+    ],
+  };
+}
+
+export function reduceSystemInit(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const initMsg: DisplayMessage | undefined = extras ? {
+    id: `init-${++s.msgIdCounter}`,
+    type: "system" as const,
+    content: [],
+    extraFields: extras,
+  } : undefined;
+  return {
+    ...s,
+    sessionInfo: {
+      model: msg.model,
+      version: msg.claude_code_version,
+      sessionId: msg.session_id,
+      cwd: msg.cwd,
+      tools: msg.tools,
+      permissionMode: msg.permissionMode,
+      mcp_servers: msg.mcp_servers,
+      agents: msg.agents,
+      apiKeySource: msg.apiKeySource,
+      skills: msg.skills,
+      plugins: msg.plugins,
+      fast_mode_state: msg.fast_mode_state,
+    },
+    isProcessing: true,
+    streamingBlocks: [],
+    messages: initMsg ? [...s.messages, initMsg] : s.messages,
+  };
+}
+
+export function reduceSystemStatus(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const id = `status-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "system" as const,
+        content: [],
+        statusText: msg.status || "clear",
+        extraFields: extras,
+      },
+    ],
+  };
+}
+
+export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const id = `compact-${++s.msgIdCounter}`;
+  const cm = msg.compact_metadata;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "compact_boundary" as const,
+        content: [],
+        compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
+        extraFields: extras,
+      },
+    ],
+  };
+}
+
+export function reduceSummary(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const id = `summary-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "summary" as const,
+        content: [{ type: "text" as const, text: msg.summary || "" }],
+        extraFields: extras,
+      },
+    ],
+  };
+}
+
+export function reduceRateLimit(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const id = `ratelimit-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "rate_limit" as const,
+        content: [],
+        rateLimitInfo: msg.rate_limit_info,
+        extraFields: extras,
+      },
+    ],
+  };
+}
+
+export function reduceAssistantMessage(s: SessionState, msg: AssistantMessage | AssistantFileMessage, extras: ExtraField[] | undefined): SessionState {
+  const msgId = msg.message.id;
+  const existing = s.messages.findIndex((m) => m.id === msgId);
+  if (existing >= 0) {
+    const updated = [...s.messages];
+    const existingMsg = { ...updated[existing] };
+    existingMsg.content = [...existingMsg.content, ...msg.message.content];
+    // Update usage if present (later messages may have updated counts)
+    if (msg.message.usage) {
+      existingMsg.usage = msg.message.usage;
+    }
+    // Merge extra fields (deduplicate by path+key)
+    if (extras) {
+      const prev = existingMsg.extraFields || [];
+      const seen = new Set(prev.map((e) => `${e.path}\0${e.key}`));
+      const novel = extras.filter((e) => !seen.has(`${e.path}\0${e.key}`));
+      existingMsg.extraFields = novel.length > 0 ? [...prev, ...novel] : prev;
+    }
+    updated[existing] = existingMsg;
+    return { ...s, messages: updated, streamingBlocks: [] };
+  }
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id: msgId,
+        type: "assistant" as const,
+        content: [...msg.message.content],
+        toolResults: new Map(),
+        model: msg.message.model,
+        isSidechain: msg.isSidechain,
+        parentToolUseId: msg.parent_tool_use_id,
+        usage: msg.message.usage,
+        extraFields: extras,
+      },
+    ],
+    streamingBlocks: [],
+  };
+}
+
+// Applies both tool-result linking and user-text echo in a single pass.
+export function reduceUserEcho(
+  s: SessionState,
+  content: any[],
+  isSidechain: boolean | undefined,
+  parentToolUseId: string | null | undefined,
+  extras: ExtraField[] | undefined,
+): SessionState {
+  // Collect text blocks and tool_result blocks separately
+  const textBlocks: string[] = [];
+  const toolResults: Array<{ tool_use_id: string; content: ToolResultContent; is_error?: boolean }> = [];
+
+  for (const block of content) {
+    if (block.type === "tool_result") {
+      toolResults.push(block);
+    } else if (block.type === "text") {
+      textBlocks.push(block.text);
+    }
+  }
+
+  let state = s;
+
+  // Link tool results to their parent assistant messages
+  if (toolResults.length > 0) {
+    const updated = [...state.messages];
+    for (const block of toolResults) {
+      for (let i = updated.length - 1; i >= 0; i--) {
+        const m = updated[i];
+        if (m.type === "assistant") {
+          const hasToolUse = m.content.some(
+            (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id
+          );
+          if (hasToolUse) {
+            const newMsg = { ...m, toolResults: new Map(m.toolResults) };
+            newMsg.toolResults!.set(block.tool_use_id, {
+              toolUseId: block.tool_use_id,
+              content: block.content,
+              isError: block.is_error,
+            });
+            updated[i] = newMsg;
+            break;
+          }
+        }
+      }
+    }
+    state = { ...state, messages: updated };
+  }
+
+  // If there are text blocks (actual user text, not just tool results), show as user message
+  const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
+  if (meaningfulText.length > 0 && toolResults.length === 0) {
+    // Only show user echo text when it's not a tool-result-only message
+    const filtered = state.messages.filter((m) => !(m.pending && m.type === "user"));
+    const id = `user-echo-${++state.msgIdCounter}`;
+    state = {
+      ...state,
+      messages: [
+        ...filtered,
+        {
+          id,
+          type: "user" as const,
+          content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
+          isSidechain,
+          parentToolUseId,
+          extraFields: extras,
+        },
+      ],
+    };
+  }
+
+  return state;
+}
+
+export function reduceUserReplay(s: SessionState, contentBlocks: any[]): SessionState {
+  const text = contentBlocks
+    .filter((b: any) => b.type === "text")
+    .map((b: any) => b.text)
+    .join("");
+  const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
+  const id = `user-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }] }],
+  };
+}
+
+export function reduceResultMessage(s: SessionState, msg: ResultMessage, extras: ExtraField[] | undefined): SessionState {
+  const id = `result-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    totalCost: msg.total_cost_usd || s.totalCost,
+    isProcessing: false,
+    streamingBlocks: [],
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "result" as const,
+        content: [],
+        extraFields: extras,
+        resultData: {
+          subtype: msg.subtype,
+          isError: msg.is_error,
+          result: msg.result,
+          numTurns: msg.num_turns,
+          durationMs: msg.duration_ms,
+          durationApiMs: msg.duration_api_ms,
+          totalCostUsd: msg.total_cost_usd,
+          usage: msg.usage,
+          modelUsage: msg.modelUsage,
+          permissionDenials: msg.permission_denials,
+          stopReason: msg.stop_reason,
+        },
+      },
+    ],
+  };
+}
+
+export function reduceStreamEvent(s: SessionState, event: StreamEvent): SessionState {
+  switch (event.type) {
+    case "content_block_start":
+      return {
+        ...s,
+        streamingBlocks: [
+          ...s.streamingBlocks,
+          { index: event.index, type: event.content_block.type, text: "" },
+        ],
+      };
+    case "content_block_delta":
+      return {
+        ...s,
+        streamingBlocks: s.streamingBlocks.map((b) => {
+          if (b.index !== event.index) return b;
+          const delta = event.delta;
+          let append = "";
+          if (delta.type === "text_delta") append = delta.text;
+          else if (delta.type === "thinking_delta") append = delta.thinking;
+          else if (delta.type === "input_json_delta") append = delta.partial_json;
+          return { ...b, text: b.text + append };
+        }),
+      };
+    case "content_block_stop":
+      return {
+        ...s,
+        streamingBlocks: s.streamingBlocks.filter((b) => b.index !== event.index),
+      };
+    default:
+      return s;
+  }
+}
+
+export function reduceStderr(s: SessionState, text: string): SessionState {
+  const id = `stderr-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      { id, type: "system" as const, content: [{ type: "text" as const, text }] },
+    ],
+  };
+}
+
+export function reduceExit(s: SessionState): SessionState {
+  return { ...s, isProcessing: false, streamingBlocks: [], alive: false };
+}
+
+export function reducePendingUserMessage(s: SessionState, text: string): SessionState {
+  const id = `pending-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [...s.messages, { id, type: "user" as const, content: [{ type: "text" as const, text }], pending: true }],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Top-level dispatchers: validate + route to individual reducers
+// ---------------------------------------------------------------------------
+
+export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): SessionState {
+  const { extras, schemaError } = validateWith(schemaForStdout, msg);
+  if (schemaError) {
+    s = reduceParseError(s, "stdout", "Schema validation failed", schemaError, msg);
+  }
+
+  switch (msg.type) {
+    case "system":
+      if ("subtype" in msg && msg.subtype === "init") {
+        return reduceSystemInit(s, msg, extras);
+      } else if ("subtype" in msg && msg.subtype === "status") {
+        return reduceSystemStatus(s, msg, extras);
+      } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
+        return reduceCompactBoundary(s, msg, extras);
+      } else {
+        return reduceParseError(s, "stdout", "Unknown system subtype", String((msg as any).subtype), msg);
+      }
+
+    case "assistant":
+      return reduceAssistantMessage(s, msg as AssistantMessage, extras);
+
+    case "user": {
+      const rawContent = msg.message.content;
+      const contentBlocks: any[] = typeof rawContent === "string"
+        ? [{ type: "text", text: rawContent }]
+        : rawContent;
+
+      if ("isReplay" in msg && (msg as any).isReplay) {
+        return reduceUserReplay(s, contentBlocks);
+      } else {
+        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras);
+      }
+    }
+
+    case "stream_event":
+      return reduceStreamEvent(s, (msg as any).event);
+
+    case "result":
+      return reduceResultMessage(s, msg as ResultMessage, extras);
+
+    case "summary":
+      return reduceSummary(s, msg, extras);
+
+    case "rate_limit_event":
+      return reduceRateLimit(s, msg, extras);
+
+    case "exit":
+      return reduceExit(s);
+
+    case "stderr":
+      return reduceStderr(s, msg.text);
+
+    default:
+      return reduceParseError(s, "stdout", "Unknown message type", (msg as any).type, msg);
+  }
+}
+
+export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): SessionState {
+  const { extras, schemaError } = validateWith(schemaForFile, msg);
+  if (schemaError) {
+    s = reduceParseError(s, "file", "Schema validation failed", schemaError, msg);
+  }
+
+  switch (msg.type) {
+    case "system":
+      if ("subtype" in msg && msg.subtype === "init") {
+        return reduceSystemInit(s, msg, extras);
+      } else if ("subtype" in msg && msg.subtype === "status") {
+        return reduceSystemStatus(s, msg, extras);
+      } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
+        return reduceCompactBoundary(s, msg, extras);
+      } else if ("subtype" in msg && (msg.subtype === "api_error" || msg.subtype === "turn_duration")) {
+        // JSONL-only bookkeeping subtypes — intentionally not rendered.
+        // api_error: transient retry attempts already resolved by the time we see them.
+        // turn_duration: internal timing metadata with no user-facing value.
+        return s;
+      } else {
+        return reduceParseError(s, "file", "Unknown system subtype", String((msg as any).subtype), msg);
+      }
+
+    case "assistant":
+      return reduceAssistantMessage(s, msg as AssistantFileMessage, extras);
+
+    case "user": {
+      // JSONL user messages store content as a plain string; normalize to block array
+      const rawContent = (msg as any).message?.content;
+      const content: any[] = typeof rawContent === "string"
+        ? [{ type: "text", text: rawContent }]
+        : rawContent ?? [];
+      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras);
+    }
+
+    case "result":
+      return reduceResultMessage(s, msg as ResultMessage, extras);
+
+    case "summary":
+      return reduceSummary(s, msg, extras);
+
+    case "rate_limit_event":
+      return reduceRateLimit(s, msg, extras);
+
+    // JSONL-only types — intentionally not rendered:
+    // progress: transient hook/bash/agent execution trace, already resolved.
+    // queue-operation: internal enqueue/dequeue bookkeeping.
+    // file-history-snapshot: file state snapshots for undo, no user-facing value.
+    case "progress":
+    case "queue-operation":
+    case "file-history-snapshot":
+      return s;
+
+    default:
+      return reduceParseError(s, "file", "Unknown message type", (msg as any).type, msg);
+  }
+}
