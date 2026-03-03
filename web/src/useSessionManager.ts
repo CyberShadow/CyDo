@@ -26,7 +26,18 @@ export interface SessionManager {
 export function useSessionManager(): SessionManager {
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<Map<number, SessionState>>(new Map());
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(() => {
+    const stored = localStorage.getItem("activeSessionId");
+    return stored !== null ? Number(stored) : null;
+  });
+  useEffect(() => {
+    if (activeSessionId !== null) {
+      localStorage.setItem("activeSessionId", String(activeSessionId));
+    } else {
+      localStorage.removeItem("activeSessionId");
+    }
+  }, [activeSessionId]);
+
   const connRef = useRef<Connection | null>(null);
   // When we create a session and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
