@@ -15,6 +15,7 @@ export interface DisplayMessage {
   pending?: boolean;
   // Additional metadata for richer display
   isSidechain?: boolean;
+  isSynthetic?: boolean;
   parentToolUseId?: string | null;
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields
@@ -28,7 +29,7 @@ export interface DisplayMessage {
     totalCostUsd: number;
     usage: { input_tokens: number; output_tokens: number };
     modelUsage?: Record<string, Record<string, unknown>>;
-    permissionDenials?: string[];
+    permissionDenials?: unknown[];
     stopReason?: string | null;
   };
   // Rate limit fields

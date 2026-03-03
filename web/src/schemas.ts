@@ -14,9 +14,20 @@ import { z } from "zod";
 export const UsageSchema = z.object({
   input_tokens: z.number(),
   output_tokens: z.number(),
-  // TODO: review — observed from Anthropic API but not yet consumed by UI
-  // cache_creation_input_tokens, cache_read_input_tokens, cache_creation,
-  // service_tier, inference_geo
+  cache_creation_input_tokens: z.number().optional(),
+  cache_read_input_tokens: z.number().optional(),
+  cache_creation: z.object({
+    ephemeral_5m_input_tokens: z.number().optional(),
+    ephemeral_1h_input_tokens: z.number().optional(),
+  }).passthrough().optional(),
+  service_tier: z.literal("standard").optional(),
+  inference_geo: z.union([z.literal("not_available"), z.literal("")]).optional(),
+  server_tool_use: z.object({
+    web_search_requests: z.number(),
+    web_fetch_requests: z.number(),
+  }).passthrough().optional(),
+  iterations: z.array(z.unknown()).optional(),
+  speed: z.literal("standard").optional(),
 }).passthrough();
 
 // Per-model usage in result messages — camelCase, different fields from top-level usage
@@ -26,6 +37,9 @@ export const ModelUsageSchema = z.object({
   cacheReadInputTokens: z.number().optional(),
   cacheCreationInputTokens: z.number().optional(),
   costUSD: z.number().optional(),
+  webSearchRequests: z.number().optional(),
+  contextWindow: z.number().optional(),
+  maxOutputTokens: z.number().optional(),
 }).passthrough();
 
 // -- Assistant content blocks (discriminated on "type") --
@@ -40,6 +54,7 @@ const ToolUseContentBlock = z.object({
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.unknown()), // opaque — tool inputs are arbitrary JSON
+  caller: z.object({ type: z.literal("direct") }).passthrough().optional(),
 }).passthrough();
 
 const ThinkingContentBlock = z.object({
@@ -197,13 +212,14 @@ export const SystemCompactBoundarySchema = z.object({
 
 const AssistantInnerMessage = z.object({
   id: z.string(),
+  type: z.literal("message").optional(),
   role: z.literal("assistant"),
   content: z.array(AssistantContentBlockSchema),
   model: z.string(),
   stop_reason: z.string().nullable(),
+  stop_sequence: z.null().optional(),
   usage: UsageSchema,
-  // TODO: review
-  // type, stop_sequence, context_management
+  context_management: z.null().optional(),
 }).passthrough();
 
 export const AssistantMessageSchema = z.object({
@@ -229,6 +245,7 @@ export const UserEchoSchema = z.object({
   toolUseResult: z.unknown().optional(),
   // consumed: checked in handleSessionMessage to skip echo for replayed messages
   isReplay: z.boolean().optional(),
+  isSynthetic: z.boolean().optional(),
   uuid: z.string().optional(),
 }).passthrough();
 
@@ -245,7 +262,11 @@ export const ResultSchema = z.object({
   total_cost_usd: z.number(),
   usage: UsageSchema,
   modelUsage: z.record(z.string(), ModelUsageSchema).optional(),
-  permission_denials: z.array(z.string()).optional(),
+  permission_denials: z.array(z.union([z.string(), z.object({
+    tool_name: z.string(),
+    tool_use_id: z.string(),
+    tool_input: z.record(z.string(), z.unknown()),
+  }).passthrough()])).optional(),
   stop_reason: z.string().nullable().optional(),
 }).passthrough();
 
@@ -331,6 +352,7 @@ export const UserFileSchema = z.object({
   // ignored: legacy duplicate of tool results in content blocks
   tool_use_result: z.unknown().optional(),
   toolUseResult: z.unknown().optional(),
+  isSynthetic: z.literal(true).optional(),
   uuid: z.string().optional(),
 }).passthrough();
 

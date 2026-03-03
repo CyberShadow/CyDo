@@ -215,6 +215,7 @@ export function reduceUserEcho(
   parentToolUseId: string | null | undefined,
   extras: ExtraField[] | undefined,
   rawMsg: unknown,
+  isSynthetic?: boolean,
 ): SessionState {
   // Collect text blocks and tool_result blocks separately
   const textBlocks: string[] = [];
@@ -271,6 +272,7 @@ export function reduceUserEcho(
           type: "user" as const,
           content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
           isSidechain,
+          isSynthetic: isSynthetic || undefined,
           parentToolUseId,
           extraFields: extras,
           rawSource: rawMsg,
@@ -425,7 +427,7 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
       if ("isReplay" in msg && (msg as any).isReplay) {
         return reduceUserReplay(s, contentBlocks, msg);
       } else {
-        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras, msg);
+        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras, msg, (msg as any).isSynthetic);
       }
     }
 
@@ -487,7 +489,7 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
       const content: any[] = typeof rawContent === "string"
         ? [{ type: "text", text: rawContent }]
         : rawContent ?? [];
-      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras, msg);
+      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras, msg, (msg as any).isSynthetic);
     }
 
     case "result":

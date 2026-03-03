@@ -1,6 +1,7 @@
 import { h } from "preact";
 import type { DisplayMessage } from "../types";
 import { ExtraFields } from "./ExtraFields";
+import { Markdown } from "./Markdown";
 
 interface Props {
   message: DisplayMessage;
@@ -14,7 +15,10 @@ export function UserMessage({ message }: Props) {
 
   return (
     <div class={`message user-message${message.pending ? " pending" : ""}`}>
-      <div class="user-text">{text}</div>
+      {message.isSynthetic
+        ? <Markdown text={text} />
+        : <div class="user-text">{text}</div>
+      }
       <ExtraFields fields={message.extraFields} />
     </div>
   );
