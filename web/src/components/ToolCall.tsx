@@ -63,16 +63,14 @@ function computeDiff(oldStr: string, newStr: string): h.JSX.Element {
 }
 
 function formatEditInput(input: Record<string, unknown>): h.JSX.Element {
-  const filePath = input.file_path as string;
   const oldString = input.old_string as string;
   const newString = input.new_string as string;
   const remaining = Object.entries(input).filter(
-    ([k]) => !["file_path", "old_string", "new_string"].includes(k)
+    ([k]) => !["file_path", "old_string", "new_string", "replace_all"].includes(k)
   );
 
   return (
     <div class="tool-input-formatted">
-      <div class="tool-input-field"><span class="field-label">file:</span> <span class="field-value-path">{filePath}</span></div>
       {remaining.map(([k, v]) => (
         <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
       ))}
@@ -82,7 +80,6 @@ function formatEditInput(input: Record<string, unknown>): h.JSX.Element {
 }
 
 function formatWriteInput(input: Record<string, unknown>): h.JSX.Element {
-  const filePath = input.file_path as string;
   const content = input.content as string;
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "content"].includes(k)
@@ -90,7 +87,6 @@ function formatWriteInput(input: Record<string, unknown>): h.JSX.Element {
 
   return (
     <div class="tool-input-formatted">
-      <div class="tool-input-field"><span class="field-label">file:</span> <span class="field-value-path">{filePath}</span></div>
       {remaining.map(([k, v]) => (
         <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
       ))}
@@ -150,6 +146,49 @@ function formatGenericInput(input: Record<string, unknown>, children?: Component
   );
 }
 
+function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.Element | null {
+  const filePath = typeof input.file_path === "string" ? input.file_path : null;
+
+  if (name === "Edit" && filePath) {
+    return (
+      <Fragment>
+        <span class="tool-subtitle-path">{filePath}</span>
+        {input.replace_all && <span class="tool-subtitle-tag">all</span>}
+      </Fragment>
+    );
+  }
+  if (name === "Write" && filePath) {
+    return <span class="tool-subtitle-path">{filePath}</span>;
+  }
+  if (name === "Read" && filePath) {
+    const offset = typeof input.offset === "number" ? input.offset : null;
+    const limit = typeof input.limit === "number" ? input.limit : null;
+    const range = offset != null && limit != null ? `(${offset}–${offset + limit - 1})`
+      : offset != null ? `(${offset}–)`
+      : limit != null ? `(1–${limit})`
+      : null;
+    return (
+      <Fragment>
+        <span class="tool-subtitle-path">{filePath}</span>
+        {range && <span class="tool-subtitle">{range}</span>}
+      </Fragment>
+    );
+  }
+  if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
+    const path = typeof input.path === "string" ? input.path : null;
+    return (
+      <Fragment>
+        <code class="tool-subtitle-pattern">{input.pattern}</code>
+        {path && <Fragment>{" in "}<code class="tool-subtitle-path">{path}</code></Fragment>}
+      </Fragment>
+    );
+  }
+  if (name === "Bash" && typeof input.description === "string") {
+    return <span class="tool-subtitle">{input.description}</span>;
+  }
+  return null;
+}
+
 function formatInput(name: string, input: Record<string, unknown>): h.JSX.Element {
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return formatEditInput(input);
@@ -163,6 +202,18 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
     const { plan, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={plan} />);
+  }
+  if (name === "Bash" && typeof input.command === "string") {
+    const { command, description, ...remaining } = input;
+    return formatGenericInput(remaining, <pre class="write-content">{command}</pre>);
+  }
+  if (name === "Read" && typeof input.file_path === "string") {
+    const { file_path, offset, limit, ...remaining } = input;
+    return formatGenericInput(remaining);
+  }
+  if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
+    const { pattern, path, ...remaining } = input;
+    return formatGenericInput(remaining);
   }
   return formatGenericInput(input);
 }
@@ -192,12 +243,14 @@ const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode"]);
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
   const [resultOpen, setResultOpen] = useState(false);
+  const subtitle = getHeaderSubtitle(name, input);
 
   return (
     <div class={`tool-call ${result?.isError ? "tool-error" : ""}`}>
       <div class="tool-header" onClick={() => setInputOpen(!inputOpen)}>
         <span class="tool-icon">{result ? (result.isError ? "!" : "\u2713") : "\u2026"}</span>
         <span class="tool-name">{name}</span>
+        {subtitle}
         {!result && <span class="tool-spinner" />}
       </div>
       {inputOpen && formatInput(name, input)}

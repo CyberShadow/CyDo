@@ -9,6 +9,8 @@
   --info: #88a0b0;
   --warn: #b09870;
   --special: #a090b0;
+  --filepath: #8ab080;
+  --pattern: #b0a068;
   --user-bg: #222;
   --assistant-bg: #1a1a1a;
   --tool-bg: #141414;
@@ -370,6 +372,42 @@ body,
   font-weight: bold;
   font-size: 13px;
   color: var(--info);
+  flex-shrink: 0;
+}
+
+.tool-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subtitle-path {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--filepath);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subtitle-pattern {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--pattern);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-subtitle-tag {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 
 .tool-spinner {
