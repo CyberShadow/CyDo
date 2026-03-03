@@ -147,6 +147,27 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
   );
 }
 
+function SystemInitView({ message }: { message: DisplayMessage }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!expanded) {
+    return (
+      <div class="result-divider" onClick={() => setExpanded(true)}>
+        <hr />
+        <span class="result-divider-icon">{"☀"}</span>
+        <hr />
+      </div>
+    );
+  }
+
+  return (
+    <div class="message system-message init-message" onClick={() => setExpanded(false)}>
+      <div class="init-header">Session Init</div>
+      <ExtraFields fields={message.extraFields} />
+    </div>
+  );
+}
+
 function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
   return (
     <div class="message system-status-message">
@@ -257,7 +278,9 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
             inner = <CompactBoundaryMessageView message={msg} />;
             break;
           case "system": {
-            if (msg.statusText !== undefined) {
+            if ((msg.rawSource as any)?.subtype === "init") {
+              inner = <SystemInitView message={msg} />;
+            } else if (msg.statusText !== undefined) {
               inner = <SystemStatusMessageView message={msg} />;
             } else {
               const text = msg.content

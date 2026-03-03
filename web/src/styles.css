@@ -929,6 +929,18 @@ body,
   color: var(--text-dim);
 }
 
+/* System init message (expanded state) */
+.init-message {
+  cursor: pointer;
+}
+
+.init-header {
+  font-weight: bold;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
 /* Compact boundary message */
 .compact-boundary-message {
   background: rgba(160, 144, 176, 0.06);
