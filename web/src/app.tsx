@@ -336,6 +336,12 @@ export function App() {
         break;
       }
 
+      // JSONL-only types — not rendered
+      case "progress":
+      case "queue-operation":
+      case "file-history-snapshot":
+        break;
+
       case "exit":
         updateSession(sid, (s) => ({ ...s, isProcessing: false, streamingBlocks: [], alive: false }));
         break;

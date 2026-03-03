@@ -32,9 +32,11 @@ export class Connection {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("sid" in raw && typeof raw.sid === "number" && "event" in raw) {
           this.onSessionMessage?.(raw.sid, raw.event as ClaudeMessage);
+        } else {
+          console.warn("Unknown WebSocket message:", raw);
         }
-      } catch {
-        // ignore malformed messages
+      } catch (e) {
+        console.warn("Failed to parse WebSocket message:", ev.data, e);
       }
     };
   }

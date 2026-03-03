@@ -252,6 +252,42 @@ export const RateLimitEventSchema = z.object({
   session_id: z.string().optional(),
 }).passthrough();
 
+// -- JSONL-only system subtypes (not present in stream-json stdout) --
+
+export const SystemApiErrorSchema = z.object({
+  type: z.literal("system"),
+  subtype: z.literal("api_error"),
+  level: z.string().optional(),
+  error: z.unknown(),
+  retryInMs: z.number().optional(),
+  retryAttempt: z.number().optional(),
+  maxRetries: z.number().optional(),
+}).passthrough();
+
+export const SystemTurnDurationSchema = z.object({
+  type: z.literal("system"),
+  subtype: z.literal("turn_duration"),
+  durationMs: z.number(),
+}).passthrough();
+
+// -- JSONL-only top-level types (not present in stream-json stdout) --
+
+export const ProgressSchema = z.object({
+  type: z.literal("progress"),
+  data: z.object({ type: z.string() }).passthrough(),
+}).passthrough();
+
+export const QueueOperationSchema = z.object({
+  type: z.literal("queue-operation"),
+  operation: z.string(),
+}).passthrough();
+
+export const FileHistorySnapshotSchema = z.object({
+  type: z.literal("file-history-snapshot"),
+  messageId: z.string().optional(),
+  snapshot: z.unknown(),
+}).passthrough();
+
 export const StreamEventMessageSchema = z.object({
   type: z.literal("stream_event"),
   uuid: z.string(),
@@ -290,17 +326,27 @@ export type ContentDelta = z.infer<typeof ContentDeltaSchema>;
 export type Usage = z.infer<typeof UsageSchema>;
 export type ExitMessage = z.infer<typeof ExitMessageSchema>;
 export type StderrMessage = z.infer<typeof StderrMessageSchema>;
+export type SystemApiErrorMessage = z.infer<typeof SystemApiErrorSchema>;
+export type SystemTurnDurationMessage = z.infer<typeof SystemTurnDurationSchema>;
+export type ProgressMessage = z.infer<typeof ProgressSchema>;
+export type QueueOperationMessage = z.infer<typeof QueueOperationSchema>;
+export type FileHistorySnapshotMessage = z.infer<typeof FileHistorySnapshotSchema>;
 
 export type ClaudeMessage =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
+  | SystemApiErrorMessage
+  | SystemTurnDurationMessage
   | AssistantMessage
   | UserEchoMessage
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
   | StreamEventMessage
+  | ProgressMessage
+  | QueueOperationMessage
+  | FileHistorySnapshotMessage
   | ExitMessage
   | StderrMessage;
 
