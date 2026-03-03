@@ -1,5 +1,5 @@
 import { h } from "preact";
-import type { DisplayMessage } from "../app";
+import type { DisplayMessage } from "../types";
 import { ExtraFields } from "./ExtraFields";
 
 interface Props {

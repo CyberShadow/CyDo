@@ -1,6 +1,6 @@
 import { h, Fragment, ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
-import type { ToolResult, ToolResultContent } from "../app";
+import type { ToolResult, ToolResultContent } from "../types";
 import { Markdown } from "./Markdown";
 
 interface Props {

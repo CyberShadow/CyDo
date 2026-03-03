@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { useState } from "preact/hooks";
-import type { SessionInfo } from "../app";
+import type { SessionInfo } from "../types";
 
 interface Props {
   sessionInfo: SessionInfo | null;

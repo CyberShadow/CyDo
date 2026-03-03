@@ -1,0 +1,108 @@
+// Shared display types for the UI.
+//
+// These are the frontend's internal representations — distinct from the Claude
+// Code wire-protocol types in schemas.ts.
+
+import type { AssistantContentBlock } from "./schemas";
+import type { ExtraField } from "./extractExtras";
+
+export interface DisplayMessage {
+  id: string;
+  type: "user" | "assistant" | "tool_result" | "system" | "result" | "summary" | "rate_limit" | "compact_boundary";
+  content: AssistantContentBlock[];
+  toolResults?: Map<string, ToolResult>;
+  model?: string;
+  pending?: boolean;
+  // Additional metadata for richer display
+  isSidechain?: boolean;
+  parentToolUseId?: string | null;
+  usage?: { input_tokens: number; output_tokens: number };
+  // Result message fields
+  resultData?: {
+    subtype: string;
+    isError: boolean;
+    result: string;
+    numTurns: number;
+    durationMs: number;
+    durationApiMs?: number;
+    totalCostUsd: number;
+    usage: { input_tokens: number; output_tokens: number };
+    modelUsage?: Record<string, Record<string, unknown>>;
+    permissionDenials?: string[];
+    stopReason?: string | null;
+  };
+  // Rate limit fields
+  rateLimitInfo?: {
+    status?: string;
+    rateLimitType?: string;
+    resetsAt?: number;
+    overageStatus?: string;
+    overageDisabledReason?: string;
+  };
+  // Compact boundary fields
+  compactMetadata?: {
+    trigger?: string;
+    preTokens?: number;
+  };
+  // System status
+  statusText?: string;
+  // Extra fields not explicitly handled — displayed so nothing is silently lost
+  extraFields?: ExtraField[];
+}
+
+export type ToolResultContent =
+  | string
+  | Array<{ type: string; text?: string; [key: string]: unknown }>;
+
+export interface ToolResult {
+  toolUseId: string;
+  content: ToolResultContent;
+  isError?: boolean;
+}
+
+export interface StreamingBlock {
+  index: number;
+  type: string;
+  text: string;
+}
+
+export interface SessionInfo {
+  model: string;
+  version: string;
+  sessionId: string;
+  cwd: string;
+  tools: string[];
+  permissionMode: string;
+  mcp_servers?: unknown[];
+  agents?: unknown[];
+  apiKeySource?: string;
+  skills?: string[];
+  plugins?: unknown[];
+  fast_mode_state?: string;
+}
+
+export interface SessionState {
+  sid: number;
+  messages: DisplayMessage[];
+  streamingBlocks: StreamingBlock[];
+  sessionInfo: SessionInfo | null;
+  isProcessing: boolean;
+  totalCost: number;
+  alive: boolean;
+  resumable: boolean;
+  msgIdCounter: number;
+}
+
+export function makeSessionState(sid: number, alive: boolean = false, resumable: boolean = false): SessionState {
+  return {
+    sid,
+    messages: [],
+    streamingBlocks: [],
+    sessionInfo: null,
+    isProcessing: false,
+    totalCost: 0,
+    alive,
+    resumable,
+    msgIdCounter: 0,
+  };
+}

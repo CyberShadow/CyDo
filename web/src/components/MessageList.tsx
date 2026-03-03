@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import type { DisplayMessage, StreamingBlock } from "../app";
+import type { DisplayMessage, StreamingBlock } from "../types";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";

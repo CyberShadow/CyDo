@@ -1,5 +1,5 @@
 import { h } from "preact";
-import type { DisplayMessage } from "../app";
+import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { ExtraFields } from "./ExtraFields";
