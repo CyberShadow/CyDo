@@ -104,6 +104,29 @@ export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraFi
   };
 }
 
+export function reduceTaskLifecycle(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+  const id = `task-${++s.msgIdCounter}`;
+  let text: string;
+  if (msg.subtype === "task_started") {
+    text = `Task started: ${msg.description || msg.task_id}`;
+  } else {
+    text = `Task ${msg.status}: ${msg.summary || msg.task_id}`;
+  }
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "system" as const,
+        content: [{ type: "text" as const, text }],
+        extraFields: extras,
+        rawSource: msg,
+      },
+    ],
+  };
+}
+
 export function reduceSummary(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
@@ -384,6 +407,8 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
         return reduceSystemStatus(s, msg, extras);
       } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
         return reduceCompactBoundary(s, msg, extras);
+      } else if ("subtype" in msg && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+        return reduceTaskLifecycle(s, msg as any, extras);
       } else {
         return reduceParseError(s, "stdout", "Unknown system subtype", String((msg as any).subtype), msg);
       }
@@ -441,6 +466,8 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
         return reduceSystemStatus(s, msg, extras);
       } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
         return reduceCompactBoundary(s, msg, extras);
+      } else if ("subtype" in msg && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+        return reduceTaskLifecycle(s, msg as any, extras);
       } else if ("subtype" in msg && (msg.subtype === "api_error" || msg.subtype === "turn_duration")) {
         // JSONL-only bookkeeping subtypes — intentionally not rendered.
         // api_error: transient retry attempts already resolved by the time we see them.

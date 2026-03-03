@@ -64,7 +64,7 @@ const UserTextBlock = z.object({
 const UserToolResultBlock = z.object({
   type: z.literal("tool_result"),
   tool_use_id: z.string(),
-  content: z.string(),
+  content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string() }).passthrough())]),
   is_error: z.boolean().optional(),
 }).passthrough();
 
@@ -73,17 +73,10 @@ export const UserContentBlockSchema = z.discriminatedUnion("type", [
   UserToolResultBlock,
 ]);
 
-// File variant: tool_result content can be a string or array of text blocks
-const UserToolResultFileBlock = z.object({
-  type: z.literal("tool_result"),
-  tool_use_id: z.string(),
-  content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string() }).passthrough())]),
-  is_error: z.boolean().optional(),
-}).passthrough();
-
+// Alias — stdout and file formats use the same content shape
 export const UserFileContentBlockSchema = z.discriminatedUnion("type", [
   UserTextBlock,
-  UserToolResultFileBlock,
+  UserToolResultBlock,
 ]);
 
 // -- Stream event deltas --
@@ -277,6 +270,28 @@ export const RateLimitEventSchema = z.object({
   session_id: z.string().optional(),
 }).passthrough();
 
+// -- Task/subagent lifecycle system subtypes --
+
+export const SystemTaskStartedSchema = z.object({
+  type: z.literal("system"),
+  subtype: z.literal("task_started"),
+  task_id: z.string(),
+  tool_use_id: z.string().optional(),
+  uuid: z.string(),
+  session_id: z.string(),
+}).passthrough();
+
+export const SystemTaskNotificationSchema = z.object({
+  type: z.literal("system"),
+  subtype: z.literal("task_notification"),
+  task_id: z.string(),
+  status: z.string(),
+  output_file: z.string().optional(),
+  summary: z.string().optional(),
+  uuid: z.string(),
+  session_id: z.string(),
+}).passthrough();
+
 // -- JSONL-only system subtypes (not present in stream-json stdout) --
 
 export const SystemApiErrorSchema = z.object({
@@ -377,6 +392,8 @@ export type ExitMessage = z.infer<typeof ExitMessageSchema>;
 export type StderrMessage = z.infer<typeof StderrMessageSchema>;
 export type AssistantFileMessage = z.infer<typeof AssistantFileSchema>;
 export type UserFileMessage = z.infer<typeof UserFileSchema>;
+export type SystemTaskStartedMessage = z.infer<typeof SystemTaskStartedSchema>;
+export type SystemTaskNotificationMessage = z.infer<typeof SystemTaskNotificationSchema>;
 export type SystemApiErrorMessage = z.infer<typeof SystemApiErrorSchema>;
 export type SystemTurnDurationMessage = z.infer<typeof SystemTurnDurationSchema>;
 export type ProgressMessage = z.infer<typeof ProgressSchema>;
@@ -388,6 +405,8 @@ export type ClaudeMessage =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
+  | SystemTaskStartedMessage
+  | SystemTaskNotificationMessage
   | AssistantMessage
   | UserEchoMessage
   | ResultMessage
@@ -404,6 +423,8 @@ export type ClaudeFileMessage =
   | SystemCompactBoundaryMessage
   | SystemApiErrorMessage
   | SystemTurnDurationMessage
+  | SystemTaskStartedMessage
+  | SystemTaskNotificationMessage
   | AssistantFileMessage
   | UserFileMessage
   | ResultMessage

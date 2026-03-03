@@ -6,6 +6,8 @@ import {
   SystemInitSchema,
   SystemStatusSchema,
   SystemCompactBoundarySchema,
+  SystemTaskStartedSchema,
+  SystemTaskNotificationSchema,
   SystemApiErrorSchema,
   SystemTurnDurationSchema,
   AssistantMessageSchema,
@@ -33,6 +35,8 @@ export const schemaForStdout: SchemaLookup = (raw) => {
         case "init": return SystemInitSchema;
         case "status": return SystemStatusSchema;
         case "compact_boundary": return SystemCompactBoundarySchema;
+        case "task_started": return SystemTaskStartedSchema;
+        case "task_notification": return SystemTaskNotificationSchema;
         default: return null;
       }
     case "assistant": return AssistantMessageSchema;
@@ -57,6 +61,8 @@ export const schemaForFile: SchemaLookup = (raw) => {
         case "compact_boundary": return SystemCompactBoundarySchema;
         case "api_error": return SystemApiErrorSchema;
         case "turn_duration": return SystemTurnDurationSchema;
+        case "task_started": return SystemTaskStartedSchema;
+        case "task_notification": return SystemTaskNotificationSchema;
         default: return null;
       }
     case "assistant": return AssistantFileSchema;
