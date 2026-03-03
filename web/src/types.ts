@@ -64,6 +64,7 @@ export interface StreamingBlock {
   index: number;
   type: string;
   text: string;
+  name?: string;
 }
 
 export interface SessionInfo {

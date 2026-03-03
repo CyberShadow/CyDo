@@ -5,11 +5,41 @@ import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
 import { ExtraFields } from "./ExtraFields";
+import { ToolCall } from "./ToolCall";
 
 interface Props {
   messages: DisplayMessage[];
   streamingBlocks: StreamingBlock[];
   isProcessing: boolean;
+}
+
+/** Best-effort parse of an incomplete JSON string by closing open delimiters. */
+function tryParsePartialJson(partial: string): Record<string, unknown> | null {
+  if (!partial) return {};
+  // Try as-is first (might already be complete)
+  try { return JSON.parse(partial); } catch {}
+  // Close open strings, arrays, objects
+  let attempt = partial;
+  // Count unescaped open quotes
+  let inString = false;
+  for (let i = 0; i < attempt.length; i++) {
+    if (attempt[i] === "\\" && inString) { i++; continue; }
+    if (attempt[i] === '"') inString = !inString;
+  }
+  if (inString) attempt += '"';
+  // Close open brackets/braces
+  const stack: string[] = [];
+  inString = false;
+  for (let i = 0; i < attempt.length; i++) {
+    if (attempt[i] === "\\" && inString) { i++; continue; }
+    if (attempt[i] === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (attempt[i] === "{") stack.push("}");
+    else if (attempt[i] === "[") stack.push("]");
+    else if (attempt[i] === "}" || attempt[i] === "]") stack.pop();
+  }
+  attempt += stack.reverse().join("");
+  try { return JSON.parse(attempt); } catch { return null; }
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -202,7 +232,18 @@ export function MessageList({ messages, streamingBlocks, isProcessing }: Props) 
                   <span class="cursor" />
                 </div>
               )}
-              {block.type === "tool_use" && (
+              {block.type === "tool_use" && block.name && (() => {
+                const parsed = tryParsePartialJson(block.text);
+                return parsed
+                  ? <ToolCall name={block.name} input={parsed} />
+                  : (
+                    <div class="tool-streaming">
+                      <span class="tool-label">{block.name}</span>
+                      <pre>{block.text}</pre>
+                    </div>
+                  );
+              })()}
+              {block.type === "tool_use" && !block.name && (
                 <div class="tool-streaming">
                   <span class="tool-label">Tool call building...</span>
                   <pre>{block.text}</pre>

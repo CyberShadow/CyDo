@@ -345,6 +345,10 @@ body,
   overflow: hidden;
 }
 
+.streaming .tool-call {
+  opacity: 0.6;
+}
+
 .tool-call.tool-error {
   border-color: var(--error);
 }

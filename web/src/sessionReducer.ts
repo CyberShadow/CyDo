@@ -299,7 +299,12 @@ export function reduceStreamEvent(s: SessionState, event: StreamEvent): SessionS
         ...s,
         streamingBlocks: [
           ...s.streamingBlocks,
-          { index: event.index, type: event.content_block.type, text: "" },
+          {
+            index: event.index,
+            type: event.content_block.type,
+            text: "",
+            name: (event.content_block as Record<string, unknown>).name as string | undefined,
+          },
         ],
       };
     case "content_block_delta":
