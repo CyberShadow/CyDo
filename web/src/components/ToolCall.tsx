@@ -1,6 +1,8 @@
 import { h, Fragment, ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import type { ToolResult, ToolResultContent } from "../types";
+import type { ThemedToken } from "../highlight";
+import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { Markdown } from "./Markdown";
 
 interface Props {
@@ -10,19 +12,35 @@ interface Props {
   children?: ComponentChildren;
 }
 
-function computeDiff(oldStr: string, newStr: string): h.JSX.Element {
+/** Render an array of token lines (no trailing newline). */
+function renderTokenLines(tokens: ThemedToken[][]): h.JSX.Element {
+  return (
+    <Fragment>
+      {tokens.map((line, i) => (
+        <Fragment key={i}>
+          {i > 0 && "\n"}
+          {renderTokens(line)}
+        </Fragment>
+      ))}
+    </Fragment>
+  );
+}
+
+function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string; filePath?: string }) {
+  const lang = filePath ? langFromPath(filePath) : null;
+  const oldTokens = useHighlight(oldStr, lang);
+  const newTokens = useHighlight(newStr, lang);
+
   const oldLines = oldStr.split("\n");
   const newLines = newStr.split("\n");
   const minLen = Math.min(oldLines.length, newLines.length);
 
-  // Find common prefix
   let prefix = 0;
   for (let i = 0; i < minLen; i++) {
     if (oldLines[i] === newLines[i]) prefix++;
     else break;
   }
 
-  // Find common suffix
   let suffix = 0;
   for (let i = 0; i < minLen - prefix; i++) {
     if (oldLines[oldLines.length - 1 - i] === newLines[newLines.length - 1 - i]) suffix++;
@@ -32,39 +50,38 @@ function computeDiff(oldStr: string, newStr: string): h.JSX.Element {
   const oldEnd = oldLines.length - suffix;
   const newEnd = newLines.length - suffix;
 
-  const parts: h.JSX.Element[] = [];
-
-  // Context before
-  if (prefix > 0) {
-    parts.push(<Fragment key="ctx-before">{oldLines.slice(0, prefix).map((l, i) => <div key={`p${i}`} class="diff-context">{"  "}{l}</div>)}</Fragment>);
-  }
-
-  // Removed lines
-  for (let i = prefix; i < oldEnd; i++) {
-    parts.push(<div key={`r${i}`} class="diff-removed">{"- "}{oldLines[i]}</div>);
-  }
-
-  // Added lines
-  for (let i = prefix; i < newEnd; i++) {
-    parts.push(<div key={`a${i}`} class="diff-added">{"+ "}{newLines[i]}</div>);
-  }
-
-  // Context after
-  if (suffix > 0) {
-    parts.push(<Fragment key="ctx-after">{oldLines.slice(oldEnd).map((l, i) => <div key={`s${i}`} class="diff-context">{"  "}{l}</div>)}</Fragment>);
+  function line(idx: number, source: "old" | "new") {
+    const tokens = source === "old" ? oldTokens : newTokens;
+    const lines = source === "old" ? oldLines : newLines;
+    return tokens?.[idx] ? renderTokens(tokens[idx]) : lines[idx];
   }
 
   return (
     <div class="diff-view">
       <div class="diff-header">@@ -{oldLines.length} +{newLines.length} @@</div>
-      {parts}
+      {oldLines.slice(0, prefix).map((_, i) => (
+        <div key={`p${i}`} class="diff-context">{"  "}{line(i, "old")}</div>
+      ))}
+      {Array.from({ length: oldEnd - prefix }, (_, j) => {
+        const i = prefix + j;
+        return <div key={`r${i}`} class="diff-removed">{"- "}{line(i, "old")}</div>;
+      })}
+      {Array.from({ length: newEnd - prefix }, (_, j) => {
+        const i = prefix + j;
+        return <div key={`a${i}`} class="diff-added">{"+ "}{line(i, "new")}</div>;
+      })}
+      {oldLines.slice(oldEnd).map((_, j) => {
+        const i = oldEnd + j;
+        return <div key={`s${i}`} class="diff-context">{"  "}{line(i, "old")}</div>;
+      })}
     </div>
   );
 }
 
-function formatEditInput(input: Record<string, unknown>): h.JSX.Element {
+function EditInput({ input }: { input: Record<string, unknown> }) {
   const oldString = input.old_string as string;
   const newString = input.new_string as string;
+  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "old_string", "new_string", "replace_all"].includes(k)
   );
@@ -74,13 +91,16 @@ function formatEditInput(input: Record<string, unknown>): h.JSX.Element {
       {remaining.map(([k, v]) => (
         <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
       ))}
-      {computeDiff(oldString, newString)}
+      <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
     </div>
   );
 }
 
-function formatWriteInput(input: Record<string, unknown>): h.JSX.Element {
+function WriteInput({ input }: { input: Record<string, unknown> }) {
   const content = input.content as string;
+  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
+  const lang = filePath ? langFromPath(filePath) : null;
+  const tokens = useHighlight(content, lang);
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "content"].includes(k)
   );
@@ -90,8 +110,48 @@ function formatWriteInput(input: Record<string, unknown>): h.JSX.Element {
       {remaining.map(([k, v]) => (
         <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
       ))}
-      <pre class="write-content">{content}</pre>
+      <pre class="write-content">{tokens ? renderTokenLines(tokens) : content}</pre>
     </div>
+  );
+}
+
+function BashInput({ input }: { input: Record<string, unknown> }) {
+  const command = input.command as string;
+  const tokens = useHighlight(command, "bash");
+  const remaining: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k !== "command" && k !== "description") remaining[k] = v;
+  }
+
+  return formatGenericInput(
+    remaining,
+    <pre class="write-content">{tokens ? renderTokenLines(tokens) : command}</pre>
+  );
+}
+
+function ReadResult({ content, filePath }: { content: string; filePath: string }) {
+  const rawLines = content.split("\n");
+  // Parse cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
+  const parsed = rawLines.map((line) => {
+    const match = line.match(/^(\s*\d+[\u2192\t])(.*)/);
+    if (match) return { prefix: match[1], code: match[2] };
+    return { prefix: "", code: line };
+  });
+
+  const codeOnly = parsed.map((p) => p.code).join("\n");
+  const lang = langFromPath(filePath);
+  const tokens = useHighlight(codeOnly, lang);
+
+  return (
+    <pre class="tool-result">
+      {parsed.map((p, i) => (
+        <Fragment key={i}>
+          {i > 0 && "\n"}
+          {p.prefix && <span class="line-number">{p.prefix}</span>}
+          {tokens?.[i] ? renderTokens(tokens[i]) : p.code}
+        </Fragment>
+      ))}
+    </pre>
   );
 }
 
@@ -163,9 +223,9 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
   if (name === "Read" && filePath) {
     const offset = typeof input.offset === "number" ? input.offset : null;
     const limit = typeof input.limit === "number" ? input.limit : null;
-    const range = offset != null && limit != null ? `(${offset}–${offset + limit - 1})`
-      : offset != null ? `(${offset}–)`
-      : limit != null ? `(1–${limit})`
+    const range = offset != null && limit != null ? `(${offset}\u2013${offset + limit - 1})`
+      : offset != null ? `(${offset}\u2013)`
+      : limit != null ? `(1\u2013${limit})`
       : null;
     return (
       <Fragment>
@@ -195,10 +255,10 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
 
 function formatInput(name: string, input: Record<string, unknown>): h.JSX.Element {
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
-    return formatEditInput(input);
+    return <EditInput input={input} />;
   }
   if (name === "Write" && "file_path" in input && "content" in input) {
-    return formatWriteInput(input);
+    return <WriteInput input={input} />;
   }
   if ((name === "TodoWrite" || "todos" in input) && Array.isArray(input.todos)) {
     return formatTodoWriteInput(input);
@@ -212,8 +272,7 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
     return formatGenericInput(remaining, <Markdown text={prompt} />);
   }
   if (name === "Bash" && typeof input.command === "string") {
-    const { command, description, ...remaining } = input;
-    return formatGenericInput(remaining, <pre class="write-content">{command}</pre>);
+    return <BashInput input={input} />;
   }
   if (name === "Read" && typeof input.file_path === "string") {
     const { file_path, offset, limit, ...remaining } = input;
@@ -254,6 +313,9 @@ export function ToolCall({ name, input, result, children }: Props) {
   const [resultOpen, setResultOpen] = useState(defaultExpandedResults.has(name));
   const subtitle = getHeaderSubtitle(name, input);
 
+  const filePath = typeof input.file_path === "string" ? input.file_path : null;
+  const useReadHighlight = name === "Read" && filePath && result && !result.isError && typeof result.content === "string";
+
   return (
     <div class={`tool-call ${result?.isError ? "tool-error" : ""}`}>
       <div class="tool-header" onClick={() => setInputOpen(!inputOpen)}>
@@ -272,7 +334,11 @@ export function ToolCall({ name, input, result, children }: Props) {
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result
           </div>
-          {resultOpen && renderResultContent(result.content, result.isError)}
+          {resultOpen && (
+            useReadHighlight
+              ? <ReadResult content={result.content as string} filePath={filePath!} />
+              : renderResultContent(result.content, result.isError)
+          )}
         </div>
       )}
     </div>

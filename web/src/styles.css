@@ -1047,11 +1047,18 @@ body,
   margin-top: 6px;
   padding: 8px;
   background: rgba(0, 0, 0, 0.15);
+  font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 400px;
   overflow-y: auto;
+}
+
+/* Line numbers in Read results */
+.line-number {
+  color: var(--text-dim);
+  user-select: none;
 }
 
 /* TodoWrite formatting */

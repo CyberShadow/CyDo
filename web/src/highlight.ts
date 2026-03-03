@@ -1,0 +1,153 @@
+import { createHighlighter, type ThemedToken } from "shiki";
+import type { Highlighter } from "shiki";
+import { h, Fragment } from "preact";
+import { useState, useEffect } from "preact/hooks";
+
+export type { ThemedToken };
+
+let highlighterPromise: Promise<Highlighter> | null = null;
+
+const EXT_TO_LANG: Record<string, string> = {
+  ".ts": "typescript",
+  ".tsx": "tsx",
+  ".js": "javascript",
+  ".jsx": "jsx",
+  ".mjs": "javascript",
+  ".cjs": "javascript",
+  ".mts": "typescript",
+  ".cts": "typescript",
+  ".py": "python",
+  ".rs": "rust",
+  ".go": "go",
+  ".d": "d",
+  ".c": "c",
+  ".cpp": "cpp",
+  ".cc": "cpp",
+  ".cxx": "cpp",
+  ".h": "c",
+  ".hpp": "cpp",
+  ".hxx": "cpp",
+  ".java": "java",
+  ".kt": "kotlin",
+  ".rb": "ruby",
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".css": "css",
+  ".scss": "scss",
+  ".less": "less",
+  ".html": "html",
+  ".htm": "html",
+  ".vue": "vue",
+  ".svelte": "svelte",
+  ".json": "json",
+  ".jsonc": "jsonc",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".toml": "toml",
+  ".md": "markdown",
+  ".mdx": "mdx",
+  ".sql": "sql",
+  ".xml": "xml",
+  ".svg": "xml",
+  ".nix": "nix",
+  ".zig": "zig",
+  ".lua": "lua",
+  ".vim": "viml",
+  ".ex": "elixir",
+  ".exs": "elixir",
+  ".erl": "erlang",
+  ".hs": "haskell",
+  ".ml": "ocaml",
+  ".php": "php",
+  ".swift": "swift",
+  ".cs": "csharp",
+  ".fs": "fsharp",
+  ".r": "r",
+  ".R": "r",
+  ".pl": "perl",
+  ".clj": "clojure",
+  ".scala": "scala",
+  ".proto": "protobuf",
+  ".graphql": "graphql",
+  ".gql": "graphql",
+  ".ini": "ini",
+  ".diff": "diff",
+  ".patch": "diff",
+  ".prisma": "prisma",
+};
+
+const FILENAME_TO_LANG: Record<string, string> = {
+  Dockerfile: "dockerfile",
+  Makefile: "makefile",
+  "CMakeLists.txt": "cmake",
+};
+
+export function langFromPath(filePath: string): string | null {
+  const basename = filePath.split("/").pop() || "";
+  if (FILENAME_TO_LANG[basename]) return FILENAME_TO_LANG[basename];
+  const dot = basename.lastIndexOf(".");
+  if (dot === -1) return null;
+  const ext = basename.slice(dot);
+  return EXT_TO_LANG[ext] || EXT_TO_LANG[ext.toLowerCase()] || null;
+}
+
+function getHighlighter(): Promise<Highlighter> {
+  if (!highlighterPromise) {
+    highlighterPromise = createHighlighter({
+      themes: ["github-dark"],
+      langs: [],
+    });
+  }
+  return highlighterPromise;
+}
+
+const loadedLangs = new Set<string>();
+
+export async function tokenize(
+  code: string,
+  lang: string
+): Promise<ThemedToken[][] | null> {
+  const hl = await getHighlighter();
+  if (!loadedLangs.has(lang)) {
+    try {
+      await hl.loadLanguage(lang as Parameters<Highlighter["loadLanguage"]>[0]);
+      loadedLangs.add(lang);
+    } catch {
+      return null;
+    }
+  }
+  const result = hl.codeToTokens(code, { lang: lang as any, theme: "github-dark" });
+  return result.tokens;
+}
+
+export function useHighlight(
+  code: string | null | undefined,
+  lang: string | null | undefined
+): ThemedToken[][] | null {
+  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
+
+  useEffect(() => {
+    if (!code || !lang) {
+      setTokens(null);
+      return;
+    }
+    let cancelled = false;
+    tokenize(code, lang).then((t) => {
+      if (!cancelled) setTokens(t);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, lang]);
+
+  return tokens;
+}
+
+export function renderTokens(tokens: ThemedToken[]): h.JSX.Element {
+  return h(
+    Fragment,
+    null,
+    tokens.map((t, i) => h("span", { key: i, style: { color: t.color } }, t.content))
+  );
+}
