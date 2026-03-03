@@ -26,10 +26,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
       {message.content.map((block, i) => {
         if (block.type === "thinking") {
           return (
-            <details key={i} class="thinking-block">
-              <summary>Thinking</summary>
-              <Markdown text={block.thinking} class="thinking-text" />
-            </details>
+            <Markdown key={i} text={block.thinking} class="thinking-text" />
           );
         }
         if (block.type === "tool_use") {

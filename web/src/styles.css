@@ -371,26 +371,12 @@ body,
   line-height: 1.5;
 }
 
-.thinking-block {
-  margin: 8px 0;
-}
-
-.thinking-block summary {
-  cursor: pointer;
-  color: var(--text-dim);
-  font-size: 12px;
-  user-select: none;
-}
-
 .thinking-text {
-  margin-top: 8px;
   padding: 8px;
   background: rgba(0, 0, 0, 0.2);
   font-size: 12px;
   color: var(--text-dim);
   word-break: break-word;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 /* Tool calls */

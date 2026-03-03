@@ -310,10 +310,7 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
           {streamingBlocks.map((block) => (
             <div key={block.index} class={`content-block ${block.type}`}>
               {block.type === "thinking" && (
-                <details open>
-                  <summary>Thinking...</summary>
-                  <Markdown text={block.text} class="thinking-text" />
-                </details>
+                <Markdown text={block.text} class="thinking-text" />
               )}
               {block.type === "text" && (
                 <div class="text-content streaming-text">
