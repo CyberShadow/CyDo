@@ -186,6 +186,10 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
   if (name === "Bash" && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
+  if (name === "Task" && typeof input.description === "string") {
+    const prefix = typeof input.subagent_type === "string" ? `${input.subagent_type}: ` : "";
+    return <span class="tool-subtitle">{prefix}{input.description}</span>;
+  }
   return null;
 }
 
@@ -202,6 +206,10 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
     const { plan, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={plan} />);
+  }
+  if (name === "Task" && typeof input.prompt === "string") {
+    const { prompt, description, subagent_type, ...remaining } = input;
+    return formatGenericInput(remaining, <Markdown text={prompt} />);
   }
   if (name === "Bash" && typeof input.command === "string") {
     const { command, description, ...remaining } = input;
@@ -238,7 +246,7 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
   );
 }
 
-const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode"]);
+const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode", "Task"]);
 
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
