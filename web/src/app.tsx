@@ -3,7 +3,9 @@ import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import { Connection } from "./connection";
 import type {
   ClaudeMessage,
+  ClaudeFileMessage,
   AssistantMessage,
+  AssistantFileMessage,
   AssistantContentBlock,
   StreamEvent,
   ControlMessage,
@@ -13,11 +15,19 @@ import {
   SystemInitSchema,
   SystemStatusSchema,
   SystemCompactBoundarySchema,
+  SystemApiErrorSchema,
+  SystemTurnDurationSchema,
   AssistantMessageSchema,
+  AssistantFileSchema,
   UserEchoSchema,
+  UserFileSchema,
   ResultSchema,
   SummarySchema,
   RateLimitEventSchema,
+  StreamEventMessageSchema,
+  ProgressSchema,
+  QueueOperationSchema,
+  FileHistorySnapshotSchema,
   ExitMessageSchema,
   StderrMessageSchema,
 } from "./schemas";
@@ -50,7 +60,7 @@ export interface DisplayMessage {
     durationApiMs?: number;
     totalCostUsd: number;
     usage: { input_tokens: number; output_tokens: number };
-    modelUsage?: Record<string, { input_tokens: number; output_tokens: number }>;
+    modelUsage?: Record<string, Record<string, unknown>>;
     permissionDenials?: string[];
     stopReason?: string | null;
   };
@@ -116,9 +126,10 @@ interface SessionState {
   msgIdCounter: number;
 }
 
-// Select the Zod schema for a raw Claude message (after stripping `sid`).
-// Returns null for unknown types and stream_event (transient, not stored).
-function schemaForMessage(raw: Record<string, unknown>): ZodTypeAny | null {
+type SchemaLookup = (raw: Record<string, unknown>) => ZodTypeAny | null;
+
+// Schema lookup for live stdout (stream-json) messages.
+const schemaForStdout: SchemaLookup = (raw) => {
   switch (raw.type) {
     case "system":
       switch (raw.subtype) {
@@ -132,22 +143,61 @@ function schemaForMessage(raw: Record<string, unknown>): ZodTypeAny | null {
     case "result": return ResultSchema;
     case "summary": return SummarySchema;
     case "rate_limit_event": return RateLimitEventSchema;
-    case "stream_event": return null; // transient — never stored as DisplayMessage
+    case "stream_event": return StreamEventMessageSchema;
     case "exit": return ExitMessageSchema;
     case "stderr": return StderrMessageSchema;
     default: return null;
   }
+};
+
+// Schema lookup for on-disk JSONL file messages.
+const schemaForFile: SchemaLookup = (raw) => {
+  switch (raw.type) {
+    case "system":
+      switch (raw.subtype) {
+        case "init": return SystemInitSchema;
+        case "status": return SystemStatusSchema;
+        case "compact_boundary": return SystemCompactBoundarySchema;
+        case "api_error": return SystemApiErrorSchema;
+        case "turn_duration": return SystemTurnDurationSchema;
+        default: return null;
+      }
+    case "assistant": return AssistantFileSchema;
+    case "user": return UserFileSchema;
+    case "result": return ResultSchema;
+    case "summary": return SummarySchema;
+    case "rate_limit_event": return RateLimitEventSchema;
+    case "progress": return ProgressSchema;
+    case "queue-operation": return QueueOperationSchema;
+    case "file-history-snapshot": return FileHistorySnapshotSchema;
+    default: return null;
+  }
+};
+
+interface MessageValidation {
+  extras: ExtraField[] | undefined;
+  /** Non-null when the message fails schema validation or has no schema. */
+  schemaError: string | null;
 }
 
-// Extract extra fields from a raw message using its Zod schema.
-function messageExtras(msg: unknown): ExtraField[] | undefined {
+// Validate a raw message against a schema set and extract extra fields.
+function validateWith(lookup: SchemaLookup, msg: unknown): MessageValidation {
   const raw = msg as Record<string, unknown>;
-  // Strip `sid` — injected by our backend, not part of Claude's protocol
-  const { sid: _sid, ...withoutSid } = raw;
-  const schema = schemaForMessage(withoutSid);
-  if (!schema) return undefined;
-  const extras = extractExtras(withoutSid, schema);
-  return extras.length > 0 ? extras : undefined;
+  const schema = lookup(raw);
+  if (!schema) {
+    return {
+      extras: undefined,
+      schemaError: `No schema for message type: ${raw.type}` +
+        (raw.subtype ? ` subtype: ${raw.subtype}` : ""),
+    };
+  }
+  const result = schema.safeParse(raw);
+  const extras = extractExtras(raw, schema);
+  return {
+    extras: extras.length > 0 ? extras : undefined,
+    schemaError: result.success ? null :
+      result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+  };
 }
 
 function makeSessionState(sid: number, alive: boolean = false, resumable: boolean = false): SessionState {
@@ -182,6 +232,136 @@ export function App() {
     });
   }, []);
 
+  // Helper: append a parse-error display message to a session.
+  // `source` identifies which schema set was attempted (stdout vs file).
+  const appendParseError = useCallback((sid: number, source: "stdout" | "file", label: string, detail: string, raw: unknown) => {
+    updateSession(sid, (s) => {
+      const id = `parse-error-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "system" as const,
+            content: [{ type: "text" as const, text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}` }],
+          },
+        ],
+      };
+    });
+  }, [updateSession]);
+
+  // -- Shared rendering helpers (used by both stdout and file handlers) --
+
+  const renderSystemInit = useCallback((sid: number, msg: any, extras: ExtraField[] | undefined) => {
+    updateSession(sid, (s) => {
+      const initMsg: DisplayMessage | undefined = extras ? {
+        id: `init-${++s.msgIdCounter}`,
+        type: "system" as const,
+        content: [],
+        extraFields: extras,
+      } : undefined;
+      return {
+        ...s,
+        sessionInfo: {
+          model: msg.model,
+          version: msg.claude_code_version,
+          sessionId: msg.session_id,
+          cwd: msg.cwd,
+          tools: msg.tools,
+          permissionMode: msg.permissionMode,
+          mcp_servers: msg.mcp_servers,
+          agents: msg.agents,
+          apiKeySource: msg.apiKeySource,
+          skills: msg.skills,
+          plugins: msg.plugins,
+          fast_mode_state: msg.fast_mode_state,
+        },
+        isProcessing: true,
+        streamingBlocks: [],
+        messages: initMsg ? [...s.messages, initMsg] : s.messages,
+      };
+    });
+  }, [updateSession]);
+
+  const renderSystemStatus = useCallback((sid: number, msg: any, extras: ExtraField[] | undefined) => {
+    updateSession(sid, (s) => {
+      const id = `status-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "system" as const,
+            content: [],
+            statusText: msg.status || "clear",
+            extraFields: extras,
+          },
+        ],
+      };
+    });
+  }, [updateSession]);
+
+  const renderCompactBoundary = useCallback((sid: number, msg: any, extras: ExtraField[] | undefined) => {
+    updateSession(sid, (s) => {
+      const id = `compact-${++s.msgIdCounter}`;
+      const cm = msg.compact_metadata;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "compact_boundary" as const,
+            content: [],
+            compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
+            extraFields: extras,
+          },
+        ],
+      };
+    });
+  }, [updateSession]);
+
+  const renderSummary = useCallback((sid: number, msg: any, extras: ExtraField[] | undefined) => {
+    updateSession(sid, (s) => {
+      const id = `summary-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "summary" as const,
+            content: [{ type: "text" as const, text: msg.summary || "" }],
+            extraFields: extras,
+          },
+        ],
+      };
+    });
+  }, [updateSession]);
+
+  const renderRateLimit = useCallback((sid: number, msg: any, extras: ExtraField[] | undefined) => {
+    updateSession(sid, (s) => {
+      const id = `ratelimit-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "rate_limit" as const,
+            content: [],
+            rateLimitInfo: msg.rate_limit_info,
+            extraFields: extras,
+          },
+        ],
+      };
+    });
+  }, [updateSession]);
+
+  // -- Live stdout message handler --
+
   const handleSessionMessage = useCallback((sid: number, msg: ClaudeMessage) => {
     // Ensure session exists in our map (might arrive before sessions_list on replay)
     setSessions((prev) => {
@@ -193,87 +373,41 @@ export function App() {
       return prev;
     });
 
-    const extras = messageExtras(msg);
+    const { extras, schemaError } = validateWith(schemaForStdout, msg);
+    if (schemaError) {
+      appendParseError(sid, "stdout", "Schema validation failed", schemaError, msg);
+    }
 
     switch (msg.type) {
       case "system":
-        if ("subtype" in msg) {
-          if (msg.subtype === "init") {
-            updateSession(sid, (s) => {
-              const initMsg: DisplayMessage | undefined = extras ? {
-                id: `init-${++s.msgIdCounter}`,
-                type: "system" as const,
-                content: [],
-                extraFields: extras,
-              } : undefined;
-              return {
-                ...s,
-                sessionInfo: {
-                  model: msg.model,
-                  version: msg.claude_code_version,
-                  sessionId: msg.session_id,
-                  cwd: msg.cwd,
-                  tools: msg.tools,
-                  permissionMode: msg.permissionMode,
-                  mcp_servers: msg.mcp_servers,
-                  agents: msg.agents,
-                  apiKeySource: msg.apiKeySource,
-                  skills: msg.skills,
-                  plugins: msg.plugins,
-                  fast_mode_state: msg.fast_mode_state,
-                },
-                isProcessing: true,
-                streamingBlocks: [],
-                messages: initMsg ? [...s.messages, initMsg] : s.messages,
-              };
-            });
-          } else if (msg.subtype === "status") {
-            updateSession(sid, (s) => {
-              const id = `status-${++s.msgIdCounter}`;
-              return {
-                ...s,
-                messages: [
-                  ...s.messages,
-                  {
-                    id,
-                    type: "system" as const,
-                    content: [],
-                    statusText: (msg as any).status || "clear",
-                    extraFields: extras,
-                  },
-                ],
-              };
-            });
-          } else if (msg.subtype === "compact_boundary") {
-            updateSession(sid, (s) => {
-              const id = `compact-${++s.msgIdCounter}`;
-              const cm = (msg as any).compact_metadata;
-              return {
-                ...s,
-                messages: [
-                  ...s.messages,
-                  {
-                    id,
-                    type: "compact_boundary" as const,
-                    content: [],
-                    compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
-                    extraFields: extras,
-                  },
-                ],
-              };
-            });
-          }
+        if ("subtype" in msg && msg.subtype === "init") {
+          renderSystemInit(sid, msg, extras);
+        } else if ("subtype" in msg && msg.subtype === "status") {
+          renderSystemStatus(sid, msg, extras);
+        } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
+          renderCompactBoundary(sid, msg, extras);
+        } else {
+          appendParseError(sid, "stdout", "Unknown system subtype", String((msg as any).subtype), msg);
         }
         break;
 
       case "assistant":
-        handleAssistantMessage(sid, msg as AssistantMessage);
+        handleAssistantMessage(sid, msg as AssistantMessage, extras);
         break;
 
-      case "user":
+      case "user": {
+        // Normalize content: string (replay) or array (live echo)
+        const rawContent = msg.message.content;
+        const contentBlocks: any[] = typeof rawContent === "string"
+          ? [{ type: "text", text: rawContent }]
+          : rawContent;
+
         if ("isReplay" in msg && (msg as any).isReplay) {
-          const content = (msg as any).message?.content;
-          const text = typeof content === "string" ? content : "";
+          // Replay echo during session resume — replace pending user message
+          const text = contentBlocks
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("");
           updateSession(sid, (s) => {
             const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
             const id = `user-${++s.msgIdCounter}`;
@@ -282,64 +416,26 @@ export function App() {
               messages: [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }] }],
             };
           });
-        } else if ("message" in msg && msg.message) {
-          handleUserEcho(sid, msg);
+        } else {
+          handleUserEcho(sid, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras);
         }
         break;
+      }
 
       case "stream_event":
-        if ("event" in msg) {
-          handleStreamEvent(sid, msg.event);
-        }
+        handleStreamEvent(sid, (msg as any).event);
         break;
 
       case "result":
-        handleResultMessage(sid, msg as ResultMessage);
+        handleResultMessage(sid, msg as ResultMessage, extras);
         break;
 
-      case "summary": {
-        updateSession(sid, (s) => {
-          const id = `summary-${++s.msgIdCounter}`;
-          return {
-            ...s,
-            messages: [
-              ...s.messages,
-              {
-                id,
-                type: "summary" as const,
-                content: [{ type: "text" as const, text: (msg as any).summary || "" }],
-                extraFields: extras,
-              },
-            ],
-          };
-        });
+      case "summary":
+        renderSummary(sid, msg, extras);
         break;
-      }
 
-      case "rate_limit_event": {
-        updateSession(sid, (s) => {
-          const id = `ratelimit-${++s.msgIdCounter}`;
-          return {
-            ...s,
-            messages: [
-              ...s.messages,
-              {
-                id,
-                type: "rate_limit" as const,
-                content: [],
-                rateLimitInfo: (msg as any).rate_limit_info,
-                extraFields: extras,
-              },
-            ],
-          };
-        });
-        break;
-      }
-
-      // JSONL-only types — not rendered
-      case "progress":
-      case "queue-operation":
-      case "file-history-snapshot":
+      case "rate_limit_event":
+        renderRateLimit(sid, msg, extras);
         break;
 
       case "exit":
@@ -360,30 +456,14 @@ export function App() {
         break;
       }
 
-      default: {
-        // Unknown message type - display it so nothing is silently lost
-        updateSession(sid, (s) => {
-          const id = `unknown-${++s.msgIdCounter}`;
-          return {
-            ...s,
-            messages: [
-              ...s.messages,
-              {
-                id,
-                type: "system" as const,
-                content: [{ type: "text" as const, text: `Unknown message type: ${(msg as any).type}\n${JSON.stringify(msg, null, 2)}` }],
-              },
-            ],
-          };
-        });
+      default:
+        appendParseError(sid, "stdout", "Unknown message type", (msg as any).type, msg);
         break;
-      }
     }
-  }, [updateSession]);
+  }, [updateSession, appendParseError, renderSystemInit, renderSystemStatus, renderCompactBoundary, renderSummary, renderRateLimit]);
 
-  const handleAssistantMessage = useCallback((sid: number, msg: AssistantMessage) => {
+  const handleAssistantMessage = useCallback((sid: number, msg: AssistantMessage | AssistantFileMessage, extras: ExtraField[] | undefined) => {
     const msgId = msg.message.id;
-    const extras = messageExtras(msg);
     updateSession(sid, (s) => {
       const existing = s.messages.findIndex((m) => m.id === msgId);
       if (existing >= 0) {
@@ -425,15 +505,17 @@ export function App() {
     });
   }, [updateSession]);
 
-  const handleUserEcho = useCallback((sid: number, msg: any) => {
-    const content = msg.message?.content;
-    if (!content) return;
-
-    const extras = messageExtras(msg);
-
+  // Shared user echo handler — accepts pre-normalized content blocks.
+  const handleUserEcho = useCallback((
+    sid: number,
+    content: any[],
+    isSidechain: boolean | undefined,
+    parentToolUseId: string | null | undefined,
+    extras: ExtraField[] | undefined,
+  ) => {
     // Collect text blocks and tool_result blocks separately
     const textBlocks: string[] = [];
-    const toolResults: Array<{ tool_use_id: string; content: string; is_error?: boolean }> = [];
+    const toolResults: Array<{ tool_use_id: string; content: ToolResultContent; is_error?: boolean }> = [];
 
     for (const block of content) {
       if (block.type === "tool_result") {
@@ -489,8 +571,8 @@ export function App() {
               id,
               type: "user" as const,
               content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
-              isSidechain: msg.isSidechain,
-              parentToolUseId: msg.parent_tool_use_id,
+              isSidechain,
+              parentToolUseId,
               extraFields: extras,
             },
           ],
@@ -499,8 +581,7 @@ export function App() {
     }
   }, [updateSession]);
 
-  const handleResultMessage = useCallback((sid: number, msg: ResultMessage) => {
-    const extras = messageExtras(msg);
+  const handleResultMessage = useCallback((sid: number, msg: ResultMessage, extras: ExtraField[] | undefined) => {
     updateSession(sid, (s) => {
       const id = `result-${++s.msgIdCounter}`;
       return {
@@ -568,6 +649,82 @@ export function App() {
     }
   }, [updateSession]);
 
+  // -- JSONL file message handler --
+
+  const handleFileMessage = useCallback((sid: number, msg: ClaudeFileMessage) => {
+    // Ensure session exists in our map
+    setSessions((prev) => {
+      if (!prev.has(sid)) {
+        const next = new Map(prev);
+        next.set(sid, makeSessionState(sid));
+        return next;
+      }
+      return prev;
+    });
+
+    const { extras, schemaError } = validateWith(schemaForFile, msg);
+    if (schemaError) {
+      appendParseError(sid, "file", "Schema validation failed", schemaError, msg);
+    }
+
+    switch (msg.type) {
+      case "system":
+        if ("subtype" in msg && msg.subtype === "init") {
+          renderSystemInit(sid, msg, extras);
+        } else if ("subtype" in msg && msg.subtype === "status") {
+          renderSystemStatus(sid, msg, extras);
+        } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
+          renderCompactBoundary(sid, msg, extras);
+        } else if ("subtype" in msg && (msg.subtype === "api_error" || msg.subtype === "turn_duration")) {
+          // JSONL-only bookkeeping subtypes — intentionally not rendered.
+          // api_error: transient retry attempts already resolved by the time we see them.
+          // turn_duration: internal timing metadata with no user-facing value.
+        } else {
+          appendParseError(sid, "file", "Unknown system subtype", String((msg as any).subtype), msg);
+        }
+        break;
+
+      case "assistant":
+        handleAssistantMessage(sid, msg as AssistantFileMessage, extras);
+        break;
+
+      case "user": {
+        // JSONL user messages store content as a plain string; normalize to block array
+        const rawContent = (msg as any).message?.content;
+        const content: any[] = typeof rawContent === "string"
+          ? [{ type: "text", text: rawContent }]
+          : rawContent ?? [];
+        handleUserEcho(sid, content, msg.isSidechain, msg.parent_tool_use_id, extras);
+        break;
+      }
+
+      case "result":
+        handleResultMessage(sid, msg as ResultMessage, extras);
+        break;
+
+      case "summary":
+        renderSummary(sid, msg, extras);
+        break;
+
+      case "rate_limit_event":
+        renderRateLimit(sid, msg, extras);
+        break;
+
+      // JSONL-only types — intentionally not rendered:
+      // progress: transient hook/bash/agent execution trace, already resolved.
+      // queue-operation: internal enqueue/dequeue bookkeeping.
+      // file-history-snapshot: file state snapshots for undo, no user-facing value.
+      case "progress":
+      case "queue-operation":
+      case "file-history-snapshot":
+        break;
+
+      default:
+        appendParseError(sid, "file", "Unknown message type", (msg as any).type, msg);
+        break;
+    }
+  }, [updateSession, appendParseError, renderSystemInit, renderSystemStatus, renderCompactBoundary, renderSummary, renderRateLimit, handleAssistantMessage, handleUserEcho, handleResultMessage]);
+
   const handleControlMessage = useCallback((msg: ControlMessage) => {
     switch (msg.type) {
       case "session_created": {
@@ -630,6 +787,7 @@ export function App() {
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
       | { kind: "session"; sid: number; msg: ClaudeMessage }
+      | { kind: "file"; sid: number; msg: ClaudeFileMessage }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let rafId: number | null = null;
@@ -640,6 +798,7 @@ export function App() {
       buffer = [];
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
+        else if (item.kind === "file") handleFileMessage(item.sid, item.msg);
         else handleSessionMessage(item.sid, item.msg);
       }
     };
@@ -655,6 +814,10 @@ export function App() {
       buffer.push({ kind: "session", sid, msg });
       if (rafId === null) rafId = requestAnimationFrame(flush);
     };
+    conn.onFileMessage = (sid, msg) => {
+      buffer.push({ kind: "file", sid, msg });
+      if (rafId === null) rafId = requestAnimationFrame(flush);
+    };
     conn.onControlMessage = (msg) => {
       buffer.push({ kind: "control", msg });
       if (rafId === null) rafId = requestAnimationFrame(flush);
@@ -664,7 +827,7 @@ export function App() {
       if (rafId !== null) cancelAnimationFrame(rafId);
       conn.disconnect();
     };
-  }, [handleSessionMessage, handleControlMessage]);
+  }, [handleSessionMessage, handleFileMessage, handleControlMessage]);
 
   const handleSend = useCallback(
     (text: string) => {

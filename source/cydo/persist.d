@@ -58,7 +58,7 @@ struct Persistence
 }
 
 /// Load session history from Claude Code's JSONL file.
-/// Returns lines wrapped in session envelope with `session_id` fixed.
+/// Returns lines wrapped in file-event envelope (distinct from live stdout events).
 DataVec loadSessionHistory(int sid, string claudeSessionId)
 {
 	import std.file : exists, readText;
@@ -69,31 +69,16 @@ DataVec loadSessionHistory(int sid, string claudeSessionId)
 		return DataVec();
 
 	DataVec history;
-	auto sessionIdReplacement = `"session_id":"` ~ claudeSessionId ~ `"`;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
 		if (line.length == 0)
 			continue;
 
-		// Fix session_id: null -> actual value
-		auto fixed = replaceSubstring(line, `"session_id":null`, sessionIdReplacement);
-
-		// Wrap with session envelope (must match broadcastSession format)
-		string injected = format!`{"sid":%d,"event":`(sid) ~ fixed ~ `}`;
+		// Wrap with file-event envelope (frontend dispatches on "fileEvent" vs "event")
+		string injected = format!`{"sid":%d,"fileEvent":`(sid) ~ line ~ `}`;
 		history ~= Data(injected.representation);
 	}
 	return move(history);
-}
-
-/// Replace first occurrence of `from` with `to` in `s`.
-private string replaceSubstring(string s, string from, string to)
-{
-	import std.algorithm.searching : findSplit;
-
-	auto parts = s.findSplit(from);
-	if (parts[1].length == 0)
-		return s;
-	return parts[0] ~ to ~ parts[2];
 }
 
 /// Compute the path to Claude Code's JSONL file for a given session UUID.

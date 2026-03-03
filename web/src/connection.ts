@@ -1,10 +1,11 @@
-import type { ClaudeMessage, ControlMessage } from "./schemas";
+import type { ClaudeMessage, ClaudeFileMessage, ControlMessage } from "./schemas";
 
 export class Connection {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   onSessionMessage: ((sid: number, msg: ClaudeMessage) => void) | null = null;
+  onFileMessage: ((sid: number, msg: ClaudeFileMessage) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -30,8 +31,14 @@ export class Connection {
         const raw = JSON.parse(ev.data);
         if (raw.type === "session_created" || raw.type === "sessions_list") {
           this.onControlMessage?.(raw as ControlMessage);
-        } else if ("sid" in raw && typeof raw.sid === "number" && "event" in raw) {
-          this.onSessionMessage?.(raw.sid, raw.event as ClaudeMessage);
+        } else if ("sid" in raw && typeof raw.sid === "number") {
+          if ("event" in raw) {
+            this.onSessionMessage?.(raw.sid, raw.event as ClaudeMessage);
+          } else if ("fileEvent" in raw) {
+            this.onFileMessage?.(raw.sid, raw.fileEvent as ClaudeFileMessage);
+          } else {
+            console.warn("Unknown session envelope (no event or fileEvent):", raw);
+          }
         } else {
           console.warn("Unknown WebSocket message:", raw);
         }

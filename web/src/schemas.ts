@@ -1,8 +1,9 @@
-// Claude Code stream-json protocol schemas (Zod)
+// Claude Code protocol schemas (Zod)
 //
-// Single source of truth for both TypeScript types and runtime known-keys.
-// Only fields that are (a) consumed by the UI or (b) explicitly ignored with
-// rationale are included.  Everything else surfaces as "extra fields" in the UI.
+// Two schema sets — stdout (live stream-json) and file (on-disk JSONL) — each
+// strict for its own format, sharing inner types.  Only fields that are
+// (a) consumed by the UI or (b) explicitly ignored with rationale are included.
+// Everything else surfaces as "extra fields" in the UI.
 
 import { z } from "zod";
 
@@ -16,6 +17,15 @@ export const UsageSchema = z.object({
   // TODO: review — observed from Anthropic API but not yet consumed by UI
   // cache_creation_input_tokens, cache_read_input_tokens, cache_creation,
   // service_tier, inference_geo
+}).passthrough();
+
+// Per-model usage in result messages — camelCase, different fields from top-level usage
+export const ModelUsageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheReadInputTokens: z.number().optional(),
+  cacheCreationInputTokens: z.number().optional(),
+  costUSD: z.number().optional(),
 }).passthrough();
 
 // -- Assistant content blocks (discriminated on "type") --
@@ -63,6 +73,19 @@ export const UserContentBlockSchema = z.discriminatedUnion("type", [
   UserToolResultBlock,
 ]);
 
+// File variant: tool_result content can be a string or array of text blocks
+const UserToolResultFileBlock = z.object({
+  type: z.literal("tool_result"),
+  tool_use_id: z.string(),
+  content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string() }).passthrough())]),
+  is_error: z.boolean().optional(),
+}).passthrough();
+
+export const UserFileContentBlockSchema = z.discriminatedUnion("type", [
+  UserTextBlock,
+  UserToolResultFileBlock,
+]);
+
 // -- Stream event deltas --
 
 const ThinkingDelta = z.object({
@@ -80,10 +103,16 @@ const InputJsonDelta = z.object({
   partial_json: z.string(),
 }).passthrough();
 
+const SignatureDelta = z.object({
+  type: z.literal("signature_delta"),
+  signature: z.string(),
+}).passthrough();
+
 export const ContentDeltaSchema = z.discriminatedUnion("type", [
   ThinkingDelta,
   TextDelta,
   InputJsonDelta,
+  SignatureDelta,
 ]);
 
 // -- Stream events --
@@ -191,8 +220,6 @@ export const AssistantMessageSchema = z.object({
   parent_tool_use_id: z.string().nullable(),
   isSidechain: z.boolean().optional(),
   message: AssistantInnerMessage,
-  // TODO: review — these were in the old KNOWN list but are not consumed by the UI
-  // parentUuid, cwd, sessionId, version, gitBranch, requestId, timestamp, userType
 }).passthrough();
 
 export const UserEchoSchema = z.object({
@@ -200,7 +227,7 @@ export const UserEchoSchema = z.object({
   session_id: z.string(),
   message: z.object({
     role: z.literal("user"),
-    content: z.array(UserContentBlockSchema),
+    content: z.union([z.string(), z.array(UserContentBlockSchema)]), // string when isReplay
   }).passthrough(),
   parent_tool_use_id: z.string().nullable(),
   isSidechain: z.boolean().optional(),
@@ -210,8 +237,6 @@ export const UserEchoSchema = z.object({
   // consumed: checked in handleSessionMessage to skip echo for replayed messages
   isReplay: z.boolean().optional(),
   uuid: z.string().optional(),
-  // TODO: review — these were in the old KNOWN list but are not consumed by the UI
-  // parentUuid, cwd, sessionId, version, gitBranch, timestamp, userType
 }).passthrough();
 
 export const ResultSchema = z.object({
@@ -226,7 +251,7 @@ export const ResultSchema = z.object({
   duration_api_ms: z.number().optional(),
   total_cost_usd: z.number(),
   usage: UsageSchema,
-  modelUsage: z.record(z.string(), UsageSchema).optional(),
+  modelUsage: z.record(z.string(), ModelUsageSchema).optional(),
   permission_denials: z.array(z.string()).optional(),
   stop_reason: z.string().nullable().optional(),
 }).passthrough();
@@ -268,6 +293,30 @@ export const SystemTurnDurationSchema = z.object({
   type: z.literal("system"),
   subtype: z.literal("turn_duration"),
   durationMs: z.number(),
+}).passthrough();
+
+// -- JSONL file schemas (strict for the on-disk format) --
+
+export const AssistantFileSchema = z.object({
+  type: z.literal("assistant"),
+  uuid: z.string(),
+  parent_tool_use_id: z.string().nullable().optional(),
+  isSidechain: z.boolean().optional(),
+  message: AssistantInnerMessage,
+}).passthrough();
+
+export const UserFileSchema = z.object({
+  type: z.literal("user"),
+  message: z.object({
+    role: z.literal("user"),
+    content: z.union([z.string(), z.array(UserFileContentBlockSchema)]),
+  }).passthrough(),
+  parent_tool_use_id: z.string().nullable().optional(),
+  isSidechain: z.boolean().optional(),
+  // ignored: legacy duplicate of tool results in content blocks
+  tool_use_result: z.unknown().optional(),
+  toolUseResult: z.unknown().optional(),
+  uuid: z.string().optional(),
 }).passthrough();
 
 // -- JSONL-only top-level types (not present in stream-json stdout) --
@@ -326,31 +375,46 @@ export type ContentDelta = z.infer<typeof ContentDeltaSchema>;
 export type Usage = z.infer<typeof UsageSchema>;
 export type ExitMessage = z.infer<typeof ExitMessageSchema>;
 export type StderrMessage = z.infer<typeof StderrMessageSchema>;
+export type AssistantFileMessage = z.infer<typeof AssistantFileSchema>;
+export type UserFileMessage = z.infer<typeof UserFileSchema>;
 export type SystemApiErrorMessage = z.infer<typeof SystemApiErrorSchema>;
 export type SystemTurnDurationMessage = z.infer<typeof SystemTurnDurationSchema>;
 export type ProgressMessage = z.infer<typeof ProgressSchema>;
 export type QueueOperationMessage = z.infer<typeof QueueOperationSchema>;
 export type FileHistorySnapshotMessage = z.infer<typeof FileHistorySnapshotSchema>;
 
+// Stdout (live stream-json) message union
 export type ClaudeMessage =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
-  | SystemApiErrorMessage
-  | SystemTurnDurationMessage
   | AssistantMessage
   | UserEchoMessage
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
   | StreamEventMessage
-  | ProgressMessage
-  | QueueOperationMessage
-  | FileHistorySnapshotMessage
   | ExitMessage
   | StderrMessage;
 
+// JSONL file message union (excludes exit/stderr — those are synthetic from our backend)
+export type ClaudeFileMessage =
+  | SystemInitMessage
+  | SystemStatusMessage
+  | SystemCompactBoundaryMessage
+  | SystemApiErrorMessage
+  | SystemTurnDurationMessage
+  | AssistantFileMessage
+  | UserFileMessage
+  | ResultMessage
+  | SummaryMessage
+  | RateLimitEventMessage
+  | ProgressMessage
+  | QueueOperationMessage
+  | FileHistorySnapshotMessage;
+
 export type SessionMessage = { sid: number; event: ClaudeMessage };
+export type FileMessage = { sid: number; fileEvent: ClaudeFileMessage };
 
 // Control messages from our backend (not Claude Code) — plain interfaces, no Zod needed
 export interface SessionCreatedMessage {
