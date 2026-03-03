@@ -128,7 +128,7 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   );
 }
 
-function formatGenericInput(input: Record<string, unknown>): h.JSX.Element {
+function formatGenericInput(input: Record<string, unknown>, children?: ComponentChildren): h.JSX.Element {
   const entries = Object.entries(input);
   return (
     <div class="tool-input-formatted">
@@ -145,6 +145,7 @@ function formatGenericInput(input: Record<string, unknown>): h.JSX.Element {
           </div>
         );
       })}
+      {children}
     </div>
   );
 }
@@ -158,6 +159,10 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
   }
   if ((name === "TodoWrite" || "todos" in input) && Array.isArray(input.todos)) {
     return formatTodoWriteInput(input);
+  }
+  if (name === "ExitPlanMode" && typeof input.plan === "string") {
+    const { plan, ...remaining } = input;
+    return formatGenericInput(remaining, <Markdown text={plan} />);
   }
   return formatGenericInput(input);
 }
