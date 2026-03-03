@@ -149,7 +149,6 @@ export function useSessionManager(): SessionManager {
       setConnected(connected);
       if (!connected) {
         setSessions(new Map());
-        routeRef.current("/", true);
       }
     };
     conn.onSessionMessage = (sid, msg) => {
