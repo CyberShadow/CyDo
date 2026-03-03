@@ -246,7 +246,7 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
   );
 }
 
-const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode", "Task"]);
+const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode", "Task", "TodoWrite"]);
 const defaultExpandedResults = new Set(["Bash", "Task"]);
 
 export function ToolCall({ name, input, result, children }: Props) {
