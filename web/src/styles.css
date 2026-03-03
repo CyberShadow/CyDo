@@ -784,9 +784,37 @@ body,
   margin: 4px 0;
 }
 
-/* Result message */
+/* Result divider (collapsed state) */
+.result-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.result-divider hr {
+  flex: 1;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.result-divider-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.result-divider.result-success .result-divider-icon {
+  color: var(--success);
+}
+
+.result-divider.result-error .result-divider-icon {
+  color: var(--error);
+}
+
+/* Result message (expanded state) */
 .result-message {
   padding: 12px 16px;
+  cursor: pointer;
 }
 
 .result-message.result-success {

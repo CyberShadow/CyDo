@@ -47,9 +47,23 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
   const d = message.resultData!;
   const durationSec = d.durationMs ? Math.floor(d.durationMs / 1000) : 0;
   const apiSec = d.durationApiMs ? Math.floor(d.durationApiMs / 1000) : 0;
+  const [expanded, setExpanded] = useState(d.isError);
+
+  if (!expanded) {
+    return (
+      <div class={`result-divider ${d.isError ? "result-error" : "result-success"}`} onClick={() => setExpanded(true)}>
+        <hr />
+        <span class="result-divider-icon">{d.isError ? "!" : "\u2713"}</span>
+        <hr />
+      </div>
+    );
+  }
 
   return (
-    <div class={`message result-message ${d.isError ? "result-error" : "result-success"}`}>
+    <div
+      class={`message result-message ${d.isError ? "result-error" : "result-success"}`}
+      onClick={() => setExpanded(false)}
+    >
       <div class="result-header">
         {d.isError ? "Session Failed" : "Session Complete"}
         <span class="result-subtype">[{d.subtype}]</span>
@@ -64,13 +78,13 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         {d.stopReason && d.stopReason !== null && <span>Stop: {d.stopReason}</span>}
       </div>
       {d.modelUsage && Object.keys(d.modelUsage).length > 0 && (
-        <details class="result-details">
+        <details class="result-details" onClick={(e) => e.stopPropagation()}>
           <summary>Per-model usage</summary>
           <pre>{JSON.stringify(d.modelUsage, null, 2)}</pre>
         </details>
       )}
       {d.permissionDenials && d.permissionDenials.length > 0 && (
-        <details class="result-details">
+        <details class="result-details" onClick={(e) => e.stopPropagation()}>
           <summary>Permission denials ({d.permissionDenials.length})</summary>
           <pre>{JSON.stringify(d.permissionDenials, null, 2)}</pre>
         </details>
