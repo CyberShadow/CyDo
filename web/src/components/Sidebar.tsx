@@ -42,9 +42,13 @@ export function Sidebar({
             class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}${attention.has(s.sid) ? " attention" : ""}`}
             onClick={() => onSelectSession(s.sid)}
           >
-            <span
-              class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`}
-            />
+            {attention.has(s.sid) ? (
+              <span class="sidebar-dot check">&#x2713;</span>
+            ) : (
+              <span
+                class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`}
+              />
+            )}
             <span class="sidebar-label" title={s.title || `Session ${s.sid}`}>
               {s.title || `Session ${s.sid}`}
             </span>
