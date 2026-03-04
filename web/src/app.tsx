@@ -1,4 +1,5 @@
 import { h } from "preact";
+import { useEffect } from "preact/hooks";
 import { useSessionManager } from "./useSessionManager";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
@@ -22,6 +23,10 @@ export function App() {
 
   const active =
     activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
+
+  useEffect(() => {
+    document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
+  }, [active?.title]);
 
   if (sessions.size === 0) {
     // Welcome screen — no sessions yet

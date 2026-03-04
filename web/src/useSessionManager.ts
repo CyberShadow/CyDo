@@ -35,7 +35,6 @@ export interface SessionManager {
     sid: number;
     alive: boolean;
     resumable: boolean;
-    totalCost: number;
     title?: string;
   }>;
 }
@@ -261,12 +260,11 @@ export function useSessionManager(): SessionManager {
 
   // Build sidebar session list sorted by sid
   const sidebarSessions = Array.from(sessions.values())
-    .sort((a, b) => a.sid - b.sid)
+    .sort((a, b) => b.sid - a.sid)
     .map((s) => ({
       sid: s.sid,
       alive: s.alive,
       resumable: s.resumable,
-      totalCost: s.totalCost,
       title: s.title,
     }));
 

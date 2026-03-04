@@ -4,7 +4,6 @@ export interface SidebarSession {
   sid: number;
   alive: boolean;
   resumable: boolean;
-  totalCost: number;
   title?: string;
 }
 
@@ -46,9 +45,6 @@ export function Sidebar({
             <span class="sidebar-label" title={s.title || `Session ${s.sid}`}>
               {s.title || `Session ${s.sid}`}
             </span>
-            {s.totalCost > 0 && (
-              <span class="sidebar-cost">${s.totalCost.toFixed(4)}</span>
-            )}
           </div>
         ))}
       </div>
