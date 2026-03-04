@@ -421,6 +421,39 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   );
 }
 
+interface AskQuestion {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect?: boolean;
+}
+
+function AskUserQuestionInput({ input }: { input: Record<string, unknown> }) {
+  const questions = input.questions as AskQuestion[];
+
+  return (
+    <div class="tool-input-formatted">
+      {questions.map((q, qi) => (
+        <div key={qi} class="ask-question">
+          <div class="ask-question-header">{q.header}</div>
+          <div class="ask-question-text">{q.question}</div>
+          <div class="ask-options">
+            {q.options.map((opt, oi) => (
+              <div key={oi} class="ask-option">
+                <div class="ask-option-label">{opt.label}</div>
+                <Markdown text={opt.description} class="ask-option-desc" />
+              </div>
+            ))}
+          </div>
+          {q.multiSelect && (
+            <div class="ask-multi-hint">Multiple selections allowed</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatGenericInput(
   input: Record<string, unknown>,
   children?: ComponentChildren,
@@ -496,6 +529,13 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
+  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+    const questions = input.questions as AskQuestion[];
+    if (questions.length === 1) {
+      return <span class="tool-subtitle">{questions[0].header}</span>;
+    }
+    return <span class="tool-subtitle">{questions.length} questions</span>;
+  }
   if (name === "Bash" && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
@@ -527,6 +567,9 @@ function formatInput(
     Array.isArray(input.todos)
   ) {
     return formatTodoWriteInput(input);
+  }
+  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+    return <AskUserQuestionInput input={input} />;
   }
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
     const { plan, ...remaining } = input;
@@ -580,6 +623,7 @@ const defaultExpandedTools = new Set([
   "ExitPlanMode",
   "Task",
   "TodoWrite",
+  "AskUserQuestion",
 ]);
 const defaultExpandedResults = new Set(["Bash", "Task"]);
 

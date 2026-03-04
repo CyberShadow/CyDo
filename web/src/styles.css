@@ -1168,6 +1168,54 @@ body,
   color: var(--text-dim);
 }
 
+/* AskUserQuestion */
+.ask-question {
+  margin-top: 4px;
+}
+.ask-question + .ask-question {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.ask-question-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.ask-question-text {
+  margin-bottom: 8px;
+}
+.ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ask-option {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--overlay-dark);
+}
+.ask-option-label {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.ask-option-desc {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.ask-option-desc p {
+  margin: 0;
+}
+.ask-multi-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* Banner details panel */
 .banner-details {
   width: 100%;
