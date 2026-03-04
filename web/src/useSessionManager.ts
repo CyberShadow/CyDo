@@ -21,6 +21,7 @@ import {
   reduceFileMessage,
   reducePendingUserMessage,
 } from "./sessionReducer";
+import { notifyTransition, initSnapshot } from "./useNotifications";
 
 export interface SessionManager {
   sessions: Map<number, SessionState>;
@@ -45,6 +46,12 @@ function parseSidFromPath(path: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// Mutable mirror of session states, updated synchronously outside Preact's
+// render cycle.  Used so that reducers and notification checks run immediately
+// when WebSocket messages arrive, even when Preact defers state updates in
+// background tabs.
+const liveStates = new Map<number, SessionState>();
+
 export function useSessionManager(): SessionManager {
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState<Map<number, SessionState>>(
@@ -63,27 +70,19 @@ export function useSessionManager(): SessionManager {
   // When we create a session and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
 
-  const updateSession = useCallback(
-    (sid: number, updater: (s: SessionState) => SessionState) => {
-      setSessions((prev) => {
-        const s = prev.get(sid);
-        if (!s) return prev;
-        const next = new Map(prev);
-        next.set(sid, updater(s));
-        return next;
-      });
-    },
-    [],
-  );
-
   // -- Live stdout message handler --
-  // Ensures session exists, then delegates to the pure reducer.
+  // Reduces against the mutable liveStates map (synchronous), fires
+  // notifications, then enqueues a Preact state update for rendering.
   const handleSessionMessage = useCallback(
     (sid: number, msg: ClaudeMessage) => {
-      setSessions((prev) => {
-        const s = prev.get(sid) ?? makeSessionState(sid, true);
-        const next = new Map(prev);
-        next.set(sid, reduceStdoutMessage(s, msg));
+      const prev = liveStates.get(sid) ?? makeSessionState(sid, true);
+      const updated = reduceStdoutMessage(prev, msg);
+      liveStates.set(sid, updated);
+      notifyTransition(sid, prev, updated);
+
+      setSessions((map) => {
+        const next = new Map(map);
+        next.set(sid, updated);
         return next;
       });
     },
@@ -93,10 +92,15 @@ export function useSessionManager(): SessionManager {
   // -- JSONL file message handler --
   const handleFileMessage = useCallback(
     (sid: number, msg: ClaudeFileMessage) => {
-      setSessions((prev) => {
-        const s = prev.get(sid) ?? makeSessionState(sid);
-        const next = new Map(prev);
-        next.set(sid, reduceFileMessage(s, msg));
+      const prev = liveStates.get(sid) ?? makeSessionState(sid);
+      const updated = reduceFileMessage(prev, msg);
+      liveStates.set(sid, updated);
+      // File replay: seed snapshot without notifying (historical data)
+      initSnapshot(sid, updated);
+
+      setSessions((map) => {
+        const next = new Map(map);
+        next.set(sid, updated);
         return next;
       });
     },
@@ -107,9 +111,12 @@ export function useSessionManager(): SessionManager {
     switch (msg.type) {
       case "session_created": {
         const sid = msg.sid;
+        const s = makeSessionState(sid, false);
+        liveStates.set(sid, s);
+        initSnapshot(sid, s);
         setSessions((prev) => {
           const next = new Map(prev);
-          next.set(sid, makeSessionState(sid, false));
+          next.set(sid, s);
           return next;
         });
         routeRef.current(`/session/${sid}`);
@@ -118,7 +125,13 @@ export function useSessionManager(): SessionManager {
         const text = pendingFirstMessage.current;
         if (text !== null) {
           pendingFirstMessage.current = null;
-          updateSession(sid, (s) => reducePendingUserMessage(s, text));
+          const withMsg = reducePendingUserMessage(s, text);
+          liveStates.set(sid, withMsg);
+          setSessions((prev) => {
+            const next = new Map(prev);
+            next.set(sid, withMsg);
+            return next;
+          });
           connRef.current?.sendMessage(sid, text);
         }
         break;
@@ -128,23 +141,26 @@ export function useSessionManager(): SessionManager {
           const next = new Map(prev);
           for (const entry of msg.sessions) {
             if (!next.has(entry.sid)) {
-              next.set(
+              const s = makeSessionState(
                 entry.sid,
-                makeSessionState(
-                  entry.sid,
-                  entry.alive,
-                  entry.resumable,
-                  entry.title,
-                ),
+                entry.alive,
+                entry.resumable,
+                entry.title,
               );
+              liveStates.set(entry.sid, s);
+              initSnapshot(entry.sid, s);
+              next.set(entry.sid, s);
             } else {
               const s = next.get(entry.sid)!;
-              next.set(entry.sid, {
+              const updated = {
                 ...s,
                 alive: entry.alive,
                 resumable: entry.resumable,
                 title: entry.title || s.title,
-              });
+              };
+              liveStates.set(entry.sid, updated);
+              initSnapshot(entry.sid, updated);
+              next.set(entry.sid, updated);
             }
           }
           return next;
@@ -163,36 +179,43 @@ export function useSessionManager(): SessionManager {
       }
       case "session_reload": {
         const { sid } = msg;
+        const s = liveStates.get(sid);
+        if (!s) break;
+        // Collect user message texts to detect unsaved prompts after replay
+        const userTexts = s.messages
+          .filter((m) => m.type === "user")
+          .map((m) =>
+            m.content
+              .filter((b) => b.type === "text")
+              .map((b) => ("text" in b ? b.text : ""))
+              .join(""),
+          )
+          .filter((t) => t.length > 0);
+        const reset = {
+          ...makeSessionState(sid, false, s.resumable, s.title),
+          resumable: s.resumable,
+          preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
+        };
+        liveStates.set(sid, reset);
+        initSnapshot(sid, reset);
         setSessions((prev) => {
-          const s = prev.get(sid);
-          if (!s) return prev;
-          // Collect user message texts to detect unsaved prompts after replay
-          const userTexts = s.messages
-            .filter((m) => m.type === "user")
-            .map((m) =>
-              m.content
-                .filter((b) => b.type === "text")
-                .map((b) => ("text" in b ? b.text : ""))
-                .join(""),
-            )
-            .filter((t) => t.length > 0);
+          if (!prev.has(sid)) return prev;
           const next = new Map(prev);
-          next.set(sid, {
-            ...makeSessionState(sid, false, s.resumable, s.title),
-            resumable: s.resumable,
-            preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
-          });
+          next.set(sid, reset);
           return next;
         });
         break;
       }
       case "title_update": {
         const { sid, title } = msg;
+        const s = liveStates.get(sid);
+        if (!s) break;
+        const updated = { ...s, title };
+        liveStates.set(sid, updated);
         setSessions((prev) => {
-          const s = prev.get(sid);
-          if (!s) return prev;
+          if (!prev.has(sid)) return prev;
           const next = new Map(prev);
-          next.set(sid, { ...s, title });
+          next.set(sid, updated);
           return next;
         });
         break;
@@ -224,20 +247,40 @@ export function useSessionManager(): SessionManager {
       }
     };
 
-    // Use rAF when visible for render-aligned batching; fall back to
-    // setTimeout when hidden since browsers throttle/pause rAF.
-    const scheduleFlush = () => {
-      if (flushId !== null) return;
-      if (document.hidden) {
-        flushId = window.setTimeout(flush, 0);
-      } else {
-        flushId = requestAnimationFrame(flush);
+    // Batch via rAF when visible for render-aligned updates. When hidden,
+    // flush synchronously — there's no rendering benefit to batching, and
+    // browsers throttle timers / pause rAF in background tabs.
+    const cancelPendingFlush = () => {
+      if (flushId !== null) {
+        cancelAnimationFrame(flushId);
+        flushId = null;
       }
     };
+
+    const scheduleFlush = () => {
+      if (document.hidden) {
+        cancelPendingFlush();
+        flush();
+        return;
+      }
+      if (flushId !== null) return;
+      flushId = requestAnimationFrame(flush);
+    };
+
+    // If the tab becomes hidden while a rAF is pending, it will never fire.
+    // Flush immediately so notifications can still trigger.
+    const onVisibilityChange = () => {
+      if (document.hidden && buffer.length > 0) {
+        cancelPendingFlush();
+        flush();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     conn.onStatusChange = (connected) => {
       setConnected(connected);
       if (!connected) {
+        liveStates.clear();
         setSessions(new Map());
       }
     };
@@ -255,10 +298,8 @@ export function useSessionManager(): SessionManager {
     };
     conn.connect();
     return () => {
-      if (flushId !== null) {
-        cancelAnimationFrame(flushId);
-        clearTimeout(flushId);
-      }
+      cancelPendingFlush();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };
   }, [handleSessionMessage, handleFileMessage, handleControlMessage]);
@@ -271,10 +312,19 @@ export function useSessionManager(): SessionManager {
         connRef.current?.createSession();
         return;
       }
-      updateSession(activeSessionId, (s) => reducePendingUserMessage(s, text));
+      const s = liveStates.get(activeSessionId);
+      if (s) {
+        const updated = reducePendingUserMessage(s, text);
+        liveStates.set(activeSessionId, updated);
+        setSessions((prev) => {
+          const next = new Map(prev);
+          next.set(activeSessionId, updated);
+          return next;
+        });
+      }
       connRef.current?.sendMessage(activeSessionId, text);
     },
-    [activeSessionId, updateSession],
+    [activeSessionId],
   );
 
   const interrupt = useCallback(() => {
@@ -290,13 +340,18 @@ export function useSessionManager(): SessionManager {
   const resume = useCallback(() => {
     if (activeSessionId !== null) {
       connRef.current?.resumeSession(activeSessionId);
-      updateSession(activeSessionId, (s) => ({
-        ...s,
-        alive: true,
-        resumable: false,
-      }));
+      const s = liveStates.get(activeSessionId);
+      if (s) {
+        const updated = { ...s, alive: true, resumable: false };
+        liveStates.set(activeSessionId, updated);
+        setSessions((prev) => {
+          const next = new Map(prev);
+          next.set(activeSessionId, updated);
+          return next;
+        });
+      }
     }
-  }, [activeSessionId, updateSession]);
+  }, [activeSessionId]);
 
   // Build sidebar session list sorted by sid
   const sidebarSessions = Array.from(sessions.values())

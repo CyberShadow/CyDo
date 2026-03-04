@@ -21,7 +21,7 @@ export function App() {
   } = useSessionManager();
 
   const { theme, toggleTheme } = useTheme();
-  const attention = useNotifications(sessions, activeSessionId);
+  const attention = useNotifications(activeSessionId);
 
   const active =
     activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
