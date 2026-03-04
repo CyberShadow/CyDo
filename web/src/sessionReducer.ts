@@ -642,7 +642,7 @@ export function reduceFileMessage(
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
           : (rawContent ?? []);
-      return reduceUserEcho(
+      s = reduceUserEcho(
         s,
         content,
         msg.isSidechain,
@@ -651,6 +651,25 @@ export function reduceFileMessage(
         msg,
         (msg as any).isSynthetic,
       );
+      // Remove matched user text from preReloadDrafts
+      if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
+        const text = content
+          .filter((b: any) => b.type === "text")
+          .map((b: any) => b.text ?? "")
+          .join("");
+        if (text) {
+          const idx = s.preReloadDrafts.indexOf(text);
+          if (idx !== -1) {
+            const drafts = [...s.preReloadDrafts];
+            drafts.splice(idx, 1);
+            s = {
+              ...s,
+              preReloadDrafts: drafts.length > 0 ? drafts : undefined,
+            };
+          }
+        }
+      }
+      return s;
     }
 
     case "result":

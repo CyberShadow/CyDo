@@ -104,6 +104,8 @@ export interface SessionState {
   resumable: boolean;
   msgIdCounter: number;
   title?: string;
+  /** User message texts from before a reload, not yet matched by file replay. */
+  preReloadDrafts?: string[];
 }
 
 export function makeSessionState(

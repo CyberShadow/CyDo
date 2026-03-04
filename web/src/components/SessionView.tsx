@@ -53,6 +53,7 @@ export function SessionView({
           isProcessing={session.isProcessing}
           disabled={!connected}
           sessionId={session.sid}
+          preReloadDrafts={session.preReloadDrafts}
         />
       )}
     </>

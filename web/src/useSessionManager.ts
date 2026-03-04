@@ -165,10 +165,21 @@ export function useSessionManager(): SessionManager {
         setSessions((prev) => {
           const s = prev.get(sid);
           if (!s) return prev;
+          // Collect user message texts to detect unsaved prompts after replay
+          const userTexts = s.messages
+            .filter((m) => m.type === "user")
+            .map((m) =>
+              m.content
+                .filter((b) => b.type === "text")
+                .map((b) => ("text" in b ? b.text : ""))
+                .join(""),
+            )
+            .filter((t) => t.length > 0);
           const next = new Map(prev);
           next.set(sid, {
             ...makeSessionState(sid, false, s.resumable, s.title),
             resumable: s.resumable,
+            preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
           });
           return next;
         });
