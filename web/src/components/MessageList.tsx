@@ -249,17 +249,30 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   }, []);
 
   // Auto-scroll to bottom after every render when wantScroll is set.
+  // content-visibility: auto defers rendering of off-screen elements.
+  // After scrolling, newly-visible elements get their actual sizes,
+  // which changes scrollHeight. Keep re-scrolling until stable.
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !wantScroll.current) return;
-    el.scrollTop = el.scrollHeight;
-    // content-visibility: auto defers rendering of off-screen elements.
-    // After scrolling, newly-visible elements get their actual sizes,
-    // which changes scrollHeight. Re-scroll after the browser settles.
-    const id = setTimeout(() => {
+
+    let rafId: number;
+    let lastHeight = -1;
+    let settled = 0;
+
+    const tick = () => {
       el.scrollTop = el.scrollHeight;
-    }, 50);
-    return () => clearTimeout(id);
+      if (el.scrollHeight === lastHeight) {
+        if (++settled >= 3) return;
+      } else {
+        settled = 0;
+        lastHeight = el.scrollHeight;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    tick();
+    return () => cancelAnimationFrame(rafId);
   });
 
   // Partition messages: top-level vs nested under a parent tool_use_id
