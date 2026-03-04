@@ -461,7 +461,13 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
 }
 
 export function reduceExit(s: SessionState): SessionState {
-  return { ...s, isProcessing: false, streamingBlocks: [], alive: false };
+  return {
+    ...s,
+    isProcessing: false,
+    streamingBlocks: [],
+    alive: false,
+    resumable: s.sessionInfo !== null,
+  };
 }
 
 export function reducePendingUserMessage(

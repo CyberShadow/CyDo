@@ -160,6 +160,20 @@ export function useSessionManager(): SessionManager {
         }
         break;
       }
+      case "session_reload": {
+        const { sid } = msg;
+        setSessions((prev) => {
+          const s = prev.get(sid);
+          if (!s) return prev;
+          const next = new Map(prev);
+          next.set(sid, {
+            ...makeSessionState(sid, false, s.resumable, s.title),
+            resumable: s.resumable,
+          });
+          return next;
+        });
+        break;
+      }
       case "title_update": {
         const { sid, title } = msg;
         setSessions((prev) => {

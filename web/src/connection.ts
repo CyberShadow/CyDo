@@ -37,6 +37,7 @@ export class Connection {
         if (
           raw.type === "session_created" ||
           raw.type === "sessions_list" ||
+          raw.type === "session_reload" ||
           raw.type === "title_update"
         ) {
           this.onControlMessage?.(raw as ControlMessage);

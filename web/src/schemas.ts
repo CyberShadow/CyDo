@@ -590,6 +590,10 @@ export interface SessionsListMessage {
     title?: string;
   }[];
 }
+export interface SessionReloadMessage {
+  type: "session_reload";
+  sid: number;
+}
 export interface TitleUpdateMessage {
   type: "title_update";
   sid: number;
@@ -598,4 +602,5 @@ export interface TitleUpdateMessage {
 export type ControlMessage =
   | SessionCreatedMessage
   | SessionsListMessage
+  | SessionReloadMessage
   | TitleUpdateMessage;

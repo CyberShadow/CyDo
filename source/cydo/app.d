@@ -194,8 +194,20 @@ class App
 		sd.agent.onExit = (int status) {
 			import ae.utils.json : toJson;
 			broadcastSession(sid, toJson(ExitMessage("exit", status)));
-			if (sid in sessions)
-				sessions[sid].alive = false;
+			if (sid !in sessions)
+				return;
+			sessions[sid].alive = false;
+			// Reload history from disk and send to all clients so they
+			// see the final state that will be resumed.
+			if (sessions[sid].claudeSessionId.length > 0)
+			{
+				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId);
+				broadcast(toJson(SessionReloadMessage("session_reload", sid)));
+				foreach (msg; sessions[sid].history)
+					foreach (ws; clients)
+						ws.send(msg);
+			}
+			broadcast(buildSessionsList());
 		};
 
 		sd.alive = true;
@@ -400,6 +412,12 @@ struct SessionListEntry
 	bool resumable;
 	string lastActivity;
 	string title;
+}
+
+struct SessionReloadMessage
+{
+	string type = "session_reload";
+	int sid;
 }
 
 struct TitleUpdateMessage
