@@ -1,6 +1,7 @@
 import { h } from "preact";
 import { useEffect } from "preact/hooks";
 import { useSessionManager } from "./useSessionManager";
+import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
 import { Sidebar } from "./components/Sidebar";
@@ -20,6 +21,7 @@ export function App() {
   } = useSessionManager();
 
   const { theme, toggleTheme } = useTheme();
+  const attention = useNotifications(sessions, activeSessionId);
 
   const active =
     activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
@@ -55,6 +57,7 @@ export function App() {
         <Sidebar
           sessions={sidebarSessions}
           activeSessionId={activeSessionId}
+          attention={attention}
           onSelectSession={setActiveSessionId}
           onNewSession={newSession}
         />

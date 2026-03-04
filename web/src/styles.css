@@ -220,6 +220,10 @@ body,
   background: var(--success);
 }
 
+.sidebar-item.attention {
+  background: rgba(192, 136, 152, 0.15);
+}
+
 .sidebar-dot.resumable {
   background: var(--success);
   opacity: 0.4;

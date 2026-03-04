@@ -35,6 +35,7 @@ export interface SessionManager {
     sid: number;
     alive: boolean;
     resumable: boolean;
+    isProcessing: boolean;
     title?: string;
   }>;
 }
@@ -210,16 +211,27 @@ export function useSessionManager(): SessionManager {
       | { kind: "file"; sid: number; msg: ClaudeFileMessage }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
-    let rafId: number | null = null;
+    let flushId: number | null = null;
 
     const flush = () => {
-      rafId = null;
+      flushId = null;
       const batch = buffer;
       buffer = [];
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "file") handleFileMessage(item.sid, item.msg);
         else handleSessionMessage(item.sid, item.msg);
+      }
+    };
+
+    // Use rAF when visible for render-aligned batching; fall back to
+    // setTimeout when hidden since browsers throttle/pause rAF.
+    const scheduleFlush = () => {
+      if (flushId !== null) return;
+      if (document.hidden) {
+        flushId = window.setTimeout(flush, 0);
+      } else {
+        flushId = requestAnimationFrame(flush);
       }
     };
 
@@ -231,19 +243,22 @@ export function useSessionManager(): SessionManager {
     };
     conn.onSessionMessage = (sid, msg) => {
       buffer.push({ kind: "session", sid, msg });
-      if (rafId === null) rafId = requestAnimationFrame(flush);
+      scheduleFlush();
     };
     conn.onFileMessage = (sid, msg) => {
       buffer.push({ kind: "file", sid, msg });
-      if (rafId === null) rafId = requestAnimationFrame(flush);
+      scheduleFlush();
     };
     conn.onControlMessage = (msg) => {
       buffer.push({ kind: "control", msg });
-      if (rafId === null) rafId = requestAnimationFrame(flush);
+      scheduleFlush();
     };
     conn.connect();
     return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (flushId !== null) {
+        cancelAnimationFrame(flushId);
+        clearTimeout(flushId);
+      }
       conn.disconnect();
     };
   }, [handleSessionMessage, handleFileMessage, handleControlMessage]);
@@ -290,6 +305,7 @@ export function useSessionManager(): SessionManager {
       sid: s.sid,
       alive: s.alive,
       resumable: s.resumable,
+      isProcessing: s.isProcessing,
       title: s.title,
     }));
 

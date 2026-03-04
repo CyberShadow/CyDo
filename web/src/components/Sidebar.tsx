@@ -4,12 +4,14 @@ export interface SidebarSession {
   sid: number;
   alive: boolean;
   resumable: boolean;
+  isProcessing: boolean;
   title?: string;
 }
 
 interface Props {
   sessions: SidebarSession[];
   activeSessionId: number | null;
+  attention: Set<number>;
   onSelectSession: (sid: number) => void;
   onNewSession: () => void;
 }
@@ -17,6 +19,7 @@ interface Props {
 export function Sidebar({
   sessions,
   activeSessionId,
+  attention,
   onSelectSession,
   onNewSession,
 }: Props) {
@@ -36,7 +39,7 @@ export function Sidebar({
         {sessions.map((s) => (
           <div
             key={s.sid}
-            class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}`}
+            class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}${attention.has(s.sid) ? " attention" : ""}`}
             onClick={() => onSelectSession(s.sid)}
           >
             <span
