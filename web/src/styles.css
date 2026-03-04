@@ -322,6 +322,7 @@ body,
   padding: 16px;
   display: flex;
   flex-direction: column-reverse;
+  overflow-anchor: none;
 }
 
 /* Message wrapper (view-source toggle) */
