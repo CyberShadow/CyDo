@@ -1,5 +1,5 @@
 import { h, type ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { DisplayMessage, StreamingBlock } from "../types";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
@@ -206,73 +206,15 @@ function MessageView({ msg, children }: { msg: DisplayMessage; children: Compone
 
 export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const wantScroll = useRef(true);
 
-  // On session switch, always scroll to bottom
+  // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
   const prevSessionId = useRef(sessionId);
-  if (prevSessionId.current !== sessionId) {
-    prevSessionId.current = sessionId;
-    wantScroll.current = true;
-  }
-
-  // Track user scroll intent via input events (wheel/touch) instead of
-  // the generic 'scroll' event. 'scroll' fires for both user and
-  // programmatic scrolls, causing races with content-visibility layout
-  // recalculations that incorrectly clear wantScroll.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    let userActive = false;
-    let activeTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const markActive = () => {
-      userActive = true;
-      if (activeTimer !== null) clearTimeout(activeTimer);
-      activeTimer = setTimeout(() => { userActive = false; activeTimer = null; }, 200);
-    };
-
-    const onScroll = () => {
-      if (!userActive) return;
-      wantScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    };
-
-    el.addEventListener("wheel", markActive, { passive: true });
-    el.addEventListener("touchmove", markActive, { passive: true });
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("wheel", markActive);
-      el.removeEventListener("touchmove", markActive);
-      el.removeEventListener("scroll", onScroll);
-      if (activeTimer !== null) clearTimeout(activeTimer);
-    };
-  }, []);
-
-  // Auto-scroll to bottom after every render when wantScroll is set.
-  // content-visibility: auto defers rendering of off-screen elements.
-  // After scrolling, newly-visible elements get their actual sizes,
-  // which changes scrollHeight. Keep re-scrolling until stable.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !wantScroll.current) return;
-
-    let rafId: number;
-    let lastHeight = -1;
-    let settled = 0;
-
-    const tick = () => {
-      el.scrollTop = el.scrollHeight;
-      if (el.scrollHeight === lastHeight) {
-        if (++settled >= 3) return;
-      } else {
-        settled = 0;
-        lastHeight = el.scrollHeight;
-      }
-      rafId = requestAnimationFrame(tick);
-    };
-
-    tick();
-    return () => cancelAnimationFrame(rafId);
+  useLayoutEffect(() => {
+    if (prevSessionId.current !== sessionId) {
+      prevSessionId.current = sessionId;
+      const el = containerRef.current;
+      if (el) el.scrollTop = 0;
+    }
   });
 
   // Partition messages: top-level vs nested under a parent tool_use_id
@@ -293,6 +235,7 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
 
   return (
     <div class="message-list" ref={containerRef}>
+      <div class="message-list-inner">
       {topLevelMessages.map((msg) => {
         let inner;
         switch (msg.type) {
@@ -376,6 +319,7 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

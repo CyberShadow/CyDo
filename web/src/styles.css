@@ -261,8 +261,8 @@ body,
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-  contain: strict;
-  overflow-anchor: none;
+  display: flex;
+  flex-direction: column-reverse;
 }
 
 /* Message wrapper (view-source toggle) */
