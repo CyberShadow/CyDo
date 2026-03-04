@@ -39,6 +39,7 @@ export function SessionView({ session, connected, onSend, onInterrupt, onResume 
           onInterrupt={onInterrupt}
           isProcessing={session.isProcessing}
           disabled={!connected}
+          sessionId={session.sid}
         />
       )}
     </>

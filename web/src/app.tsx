@@ -25,6 +25,7 @@ export function App() {
             onInterrupt={interrupt}
             isProcessing={false}
             disabled={!connected}
+            sessionId={0}
           />
         </div>
       </div>

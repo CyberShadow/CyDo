@@ -1,16 +1,26 @@
 import { h } from "preact";
-import { useState, useRef } from "preact/hooks";
+import { useState, useRef, useEffect } from "preact/hooks";
+
+const drafts = new Map<number, string>();
 
 interface Props {
   onSend: (text: string) => void;
   onInterrupt: () => void;
   isProcessing: boolean;
   disabled: boolean;
+  sessionId: number;
 }
 
-export function InputBox({ onSend, onInterrupt, isProcessing, disabled }: Props) {
-  const [text, setText] = useState("");
+export function InputBox({ onSend, onInterrupt, isProcessing, disabled, sessionId }: Props) {
+  const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+
+  useEffect(() => {
+    setText(drafts.get(sessionId) ?? "");
+    return () => { drafts.set(sessionId, textRef.current); };
+  }, [sessionId]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
