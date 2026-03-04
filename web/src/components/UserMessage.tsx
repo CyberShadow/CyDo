@@ -15,7 +15,7 @@ export function UserMessage({ message }: Props) {
 
   return (
     <div class={`message user-message${message.pending ? " pending" : ""}`}>
-      {message.isSynthetic ? (
+      {message.isSynthetic || message.parentToolUseId ? (
         <Markdown text={text} />
       ) : (
         <div class="user-text">{text}</div>

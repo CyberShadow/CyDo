@@ -621,7 +621,6 @@ const defaultExpandedTools = new Set([
   "Write",
   "Bash",
   "ExitPlanMode",
-  "Task",
   "TodoWrite",
   "AskUserQuestion",
 ]);
