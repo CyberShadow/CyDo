@@ -103,12 +103,14 @@ export interface SessionState {
   alive: boolean;
   resumable: boolean;
   msgIdCounter: number;
+  title?: string;
 }
 
 export function makeSessionState(
   sid: number,
   alive: boolean = false,
   resumable: boolean = false,
+  title?: string,
 ): SessionState {
   return {
     sid,
@@ -120,5 +122,6 @@ export function makeSessionState(
     alive,
     resumable,
     msgIdCounter: 0,
+    title,
   };
 }

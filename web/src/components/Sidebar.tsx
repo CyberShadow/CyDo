@@ -5,6 +5,7 @@ export interface SidebarSession {
   alive: boolean;
   resumable: boolean;
   totalCost: number;
+  title?: string;
 }
 
 interface Props {
@@ -42,7 +43,9 @@ export function Sidebar({
             <span
               class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`}
             />
-            <span class="sidebar-label">Session {s.sid}</span>
+            <span class="sidebar-label" title={s.title || `Session ${s.sid}`}>
+              {s.title || `Session ${s.sid}`}
+            </span>
             {s.totalCost > 0 && (
               <span class="sidebar-cost">${s.totalCost.toFixed(4)}</span>
             )}

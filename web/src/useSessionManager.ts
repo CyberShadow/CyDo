@@ -36,6 +36,7 @@ export interface SessionManager {
     alive: boolean;
     resumable: boolean;
     totalCost: number;
+    title?: string;
   }>;
 }
 
@@ -129,7 +130,12 @@ export function useSessionManager(): SessionManager {
             if (!next.has(entry.sid)) {
               next.set(
                 entry.sid,
-                makeSessionState(entry.sid, entry.alive, entry.resumable),
+                makeSessionState(
+                  entry.sid,
+                  entry.alive,
+                  entry.resumable,
+                  entry.title,
+                ),
               );
             } else {
               const s = next.get(entry.sid)!;
@@ -137,6 +143,7 @@ export function useSessionManager(): SessionManager {
                 ...s,
                 alive: entry.alive,
                 resumable: entry.resumable,
+                title: entry.title || s.title,
               });
             }
           }
@@ -152,6 +159,17 @@ export function useSessionManager(): SessionManager {
           );
           routeRef.current(`/session/${latest.sid}`, true);
         }
+        break;
+      }
+      case "title_update": {
+        const { sid, title } = msg;
+        setSessions((prev) => {
+          const s = prev.get(sid);
+          if (!s) return prev;
+          const next = new Map(prev);
+          next.set(sid, { ...s, title });
+          return next;
+        });
         break;
       }
     }
@@ -249,6 +267,7 @@ export function useSessionManager(): SessionManager {
       alive: s.alive,
       resumable: s.resumable,
       totalCost: s.totalCost,
+      title: s.title,
     }));
 
   return {

@@ -5,6 +5,7 @@ import core.lifetime : move;
 import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
+import std.stdio : writefln;
 import std.string : startsWith, representation;
 
 import ae.net.asockets : socketManager, DisconnectType;
@@ -16,6 +17,7 @@ import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 
 import cydo.agent.claude : ClaudeCodeSession;
+import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.persist : Persistence, loadSessionHistory;
 
@@ -42,6 +44,8 @@ class App
 		{
 			auto sd = SessionData(row.sid);
 			sd.claudeSessionId = row.claudeSessionId;
+			sd.title = row.title;
+			sd.titleGenDone = row.title.length > 0;
 			if (row.claudeSessionId.length > 0)
 				sd.history = loadSessionHistory(row.sid, row.claudeSessionId);
 			sessions[row.sid] = move(sd);
@@ -50,7 +54,6 @@ class App
 		server = new HttpServer();
 		server.handleRequest = &handleRequest;
 		auto port = server.listen(3456);
-		import std.stdio : writefln;
 		writefln("CyDo server listening on http://localhost:%d", port);
 	}
 
@@ -130,6 +133,14 @@ class App
 				ensureSessionAgent(sid);
 			}
 			sd.agent.sendMessage(json.content);
+
+			// Set initial title from first user message (truncated)
+			if (sd.title.length == 0)
+			{
+				sd.title = truncateTitle(json.content, 80);
+				persistence.setTitle(sid, sd.title);
+				broadcastTitleUpdate(sid, sd.title);
+			}
 		}
 		else if (json.type == "resume")
 		{
@@ -206,6 +217,10 @@ class App
 			// Extract Claude session ID from system.init messages
 			if (sessions[sid].claudeSessionId.length == 0)
 				tryExtractClaudeSessionId(sid, rawLine);
+
+			// Generate LLM title after first turn completes
+			if (sessions[sid].titleGenProcess is null)
+				tryGenerateTitle(sid, rawLine);
 		}
 
 		foreach (ws; clients)
@@ -245,6 +260,69 @@ class App
 		}
 	}
 
+	private void broadcastTitleUpdate(int sid, string title)
+	{
+		import ae.utils.json : toJson;
+		broadcast(toJson(TitleUpdateMessage("title_update", sid, title)));
+	}
+
+	/// After the first assistant turn completes, spawn a lightweight
+	/// claude process to generate a concise title.
+	private void tryGenerateTitle(int sid, string rawLine)
+	{
+		import std.algorithm : canFind;
+
+		if (!rawLine.canFind(`"type":"result"`))
+			return;
+
+		auto sd = &sessions[sid];
+
+		// Only generate once
+		if (sd.title.length == 0 || sd.titleGenDone || sd.titleGenProcess !is null)
+			return;
+
+		auto msg = sd.title.length > 500 ? sd.title[0 .. 500] : sd.title;
+
+		sd.titleGenProcess = new AgentProcess([
+			"claude",
+			"-p",
+			"Generate a concise title (max 8 words) for a coding session. " ~
+			"Reply with ONLY the title, nothing else. No quotes, no period at the end. " ~
+			"User's request: " ~ msg,
+			"--output-format", "stream-json",
+			"--model", "haiku",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		], null, null, true); // noStdin
+
+		string titleText;
+
+		sd.titleGenProcess.onStdoutLine = (string line) {
+			titleText ~= extractAssistantText(line);
+		};
+
+		sd.titleGenProcess.onExit = (int status) {
+			if (sid !in sessions)
+				return;
+			sessions[sid].titleGenProcess = null;
+			sessions[sid].titleGenDone = true;
+
+			if (status != 0)
+				return;
+
+			import std.string : strip;
+			auto title = titleText.strip();
+
+			if (title.length > 0 && title.length < 200)
+			{
+				sessions[sid].title = title;
+				persistence.setTitle(sid, title);
+				broadcastTitleUpdate(sid, title);
+			}
+		};
+	}
+
 	private void broadcast(string message)
 	{
 		auto data = Data(message.representation);
@@ -258,7 +336,7 @@ class App
 
 		SessionListEntry[] entries;
 		foreach (ref sd; sessions)
-			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive, sd.lastActivity);
+			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive, sd.lastActivity, sd.title);
 		return toJson(SessionsListMessage("sessions_list", entries));
 	}
 
@@ -279,6 +357,9 @@ struct SessionData
 	string claudeSessionId;
 	bool alive = false;
 	string lastActivity;
+	string title;
+	bool titleGenDone; // true after LLM title generation completed
+	AgentProcess titleGenProcess; // prevent GC while running
 }
 
 struct WsMessage
@@ -318,4 +399,72 @@ struct SessionListEntry
 	bool alive;
 	bool resumable;
 	string lastActivity;
+	string title;
+}
+
+struct TitleUpdateMessage
+{
+	string type = "title_update";
+	int sid;
+	string title;
+}
+
+/// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
+string truncateTitle(string text, size_t maxLen)
+{
+	import std.regex : ctRegex, replaceAll;
+
+	auto cleaned = text.replaceAll(ctRegex!`\s+`, " ");
+	if (cleaned.length <= maxLen)
+		return cleaned;
+	return cleaned[0 .. maxLen] ~ "…";
+}
+
+/// Extract text content from a stream-json assistant message line.
+/// Returns the concatenated text blocks, or empty string if not an assistant message.
+string extractAssistantText(string line)
+{
+	import ae.utils.json : jsonParse, JSONPartial;
+	import std.algorithm : canFind;
+
+	if (!line.canFind(`"type":"assistant"`))
+		return "";
+
+	// Parse just enough to get the text content
+	@JSONPartial
+	static struct ContentBlock
+	{
+		string type;
+		string text;
+	}
+
+	@JSONPartial
+	static struct Message
+	{
+		ContentBlock[] content;
+	}
+
+	@JSONPartial
+	static struct AssistantProbe
+	{
+		string type;
+		Message message;
+	}
+
+	try
+	{
+		auto probe = jsonParse!AssistantProbe(line);
+		if (probe.type != "assistant")
+			return "";
+
+		string result;
+		foreach (ref block; probe.message.content)
+			if (block.type == "text")
+				result ~= block.text;
+		return result;
+	}
+	catch (Exception)
+	{
+		return "";
+	}
 }

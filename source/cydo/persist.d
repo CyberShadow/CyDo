@@ -24,7 +24,8 @@ struct Persistence
 			"CREATE TABLE sessions (" ~
 			"    sid INTEGER PRIMARY KEY AUTOINCREMENT," ~
 			"    claude_session_id TEXT" ~
-			");"
+			");",
+			"ALTER TABLE sessions ADD COLUMN title TEXT;",
 		]);
 	}
 
@@ -39,19 +40,25 @@ struct Persistence
 		db.stmt!"UPDATE sessions SET claude_session_id = ? WHERE sid = ?".exec(claudeSessionId, sid);
 	}
 
+	void setTitle(int sid, string title)
+	{
+		db.stmt!"UPDATE sessions SET title = ? WHERE sid = ?".exec(title, sid);
+	}
+
 	struct SessionRow
 	{
 		int sid;
 		string claudeSessionId;
+		string title;
 	}
 
 	SessionRow[] loadSessions()
 	{
 		SessionRow[] result;
-		foreach (int sid, string claudeSessionId;
-			db.stmt!"SELECT sid, claude_session_id FROM sessions".iterate())
+		foreach (int sid, string claudeSessionId, string title;
+			db.stmt!"SELECT sid, claude_session_id, title FROM sessions".iterate())
 		{
-			result ~= SessionRow(sid, claudeSessionId);
+			result ~= SessionRow(sid, claudeSessionId, title);
 		}
 		return result;
 	}

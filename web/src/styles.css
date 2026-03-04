@@ -227,6 +227,9 @@ body,
 
 .sidebar-label {
   flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-cost {

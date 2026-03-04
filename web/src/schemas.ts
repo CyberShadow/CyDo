@@ -587,6 +587,15 @@ export interface SessionsListMessage {
     alive: boolean;
     resumable: boolean;
     lastActivity: string;
+    title?: string;
   }[];
 }
-export type ControlMessage = SessionCreatedMessage | SessionsListMessage;
+export interface TitleUpdateMessage {
+  type: "title_update";
+  sid: number;
+  title: string;
+}
+export type ControlMessage =
+  | SessionCreatedMessage
+  | SessionsListMessage
+  | TitleUpdateMessage;

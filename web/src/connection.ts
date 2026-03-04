@@ -34,7 +34,11 @@ export class Connection {
     this.ws.onmessage = (ev) => {
       try {
         const raw = JSON.parse(ev.data);
-        if (raw.type === "session_created" || raw.type === "sessions_list") {
+        if (
+          raw.type === "session_created" ||
+          raw.type === "sessions_list" ||
+          raw.type === "title_update"
+        ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("sid" in raw && typeof raw.sid === "number") {
           if ("event" in raw) {
