@@ -106,7 +106,7 @@ const loadedLangs = new Set<string>();
 
 export async function tokenize(
   code: string,
-  lang: string
+  lang: string,
 ): Promise<ThemedToken[][] | null> {
   const hl = await getHighlighter();
   if (!loadedLangs.has(lang)) {
@@ -117,13 +117,16 @@ export async function tokenize(
       return null;
     }
   }
-  const result = hl.codeToTokens(code, { lang: lang as any, theme: "github-dark" });
+  const result = hl.codeToTokens(code, {
+    lang: lang as any,
+    theme: "github-dark",
+  });
   return result.tokens;
 }
 
 export function useHighlight(
   code: string | null | undefined,
-  lang: string | null | undefined
+  lang: string | null | undefined,
 ): ThemedToken[][] | null {
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
 
@@ -148,6 +151,8 @@ export function renderTokens(tokens: ThemedToken[]): h.JSX.Element {
   return h(
     Fragment,
     null,
-    tokens.map((t, i) => h("span", { key: i, style: { color: t.color } }, t.content))
+    tokens.map((t, i) =>
+      h("span", { key: i, style: { color: t.color } }, t.content),
+    ),
   );
 }

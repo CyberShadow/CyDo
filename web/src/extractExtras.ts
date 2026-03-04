@@ -16,19 +16,28 @@ import {
 } from "zod";
 
 export interface ExtraField {
-  path: string;   // e.g. "", "message.usage", "message.content[2]"
-  key: string;    // the unknown field name
+  path: string; // e.g. "", "message.usage", "message.content[2]"
+  key: string; // the unknown field name
   value: unknown; // the unknown field value
 }
 
 /** Extract all unknown fields from `data` relative to `schema`, at every nesting level. */
-export function extractExtras(data: unknown, schema: ZodTypeAny, path: string = ""): ExtraField[] {
+export function extractExtras(
+  data: unknown,
+  schema: ZodTypeAny,
+  path: string = "",
+): ExtraField[] {
   const extras: ExtraField[] = [];
   collectExtras(data, schema, path, extras);
   return extras;
 }
 
-function collectExtras(data: unknown, schema: ZodTypeAny, path: string, out: ExtraField[]): void {
+function collectExtras(
+  data: unknown,
+  schema: ZodTypeAny,
+  path: string,
+  out: ExtraField[],
+): void {
   const inner = unwrap(schema);
 
   if (inner instanceof ZodObject) {
@@ -112,7 +121,8 @@ function collectFromDiscriminatedUnion(
     if (!lit) return false;
     const def = lit._def as any;
     // Zod v4: ZodLiteral uses _def.values (array), not _def.value
-    const values: unknown[] = def?.values ?? (def?.value !== undefined ? [def.value] : []);
+    const values: unknown[] =
+      def?.values ?? (def?.value !== undefined ? [def.value] : []);
     return values.includes(discValue);
   });
 
@@ -120,7 +130,11 @@ function collectFromDiscriminatedUnion(
     collectExtras(data, matchingSchema, path, out);
   } else {
     // Unknown variant — report the whole object so it's visible
-    out.push({ path, key: `(unknown ${discriminator}=${JSON.stringify(discValue)})`, value: data });
+    out.push({
+      path,
+      key: `(unknown ${discriminator}=${JSON.stringify(discValue)})`,
+      value: data,
+    });
   }
 }
 

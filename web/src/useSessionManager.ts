@@ -1,6 +1,12 @@
 // Custom hook: WebSocket connection, rAF message buffering, session state, and user actions.
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "preact/hooks";
 import { useLocation } from "preact-iso";
 import { Connection } from "./connection";
 import type {
@@ -10,7 +16,11 @@ import type {
 } from "./schemas";
 import type { SessionState } from "./types";
 import { makeSessionState } from "./types";
-import { reduceStdoutMessage, reduceFileMessage, reducePendingUserMessage } from "./sessionReducer";
+import {
+  reduceStdoutMessage,
+  reduceFileMessage,
+  reducePendingUserMessage,
+} from "./sessionReducer";
 
 export interface SessionManager {
   sessions: Map<number, SessionState>;
@@ -21,7 +31,12 @@ export interface SessionManager {
   interrupt: () => void;
   newSession: () => void;
   resume: () => void;
-  sidebarSessions: Array<{ sid: number; alive: boolean; resumable: boolean; totalCost: number }>;
+  sidebarSessions: Array<{
+    sid: number;
+    alive: boolean;
+    resumable: boolean;
+    totalCost: number;
+  }>;
 }
 
 function parseSidFromPath(path: string): number | null {
@@ -31,7 +46,9 @@ function parseSidFromPath(path: string): number | null {
 
 export function useSessionManager(): SessionManager {
   const [connected, setConnected] = useState(false);
-  const [sessions, setSessions] = useState<Map<number, SessionState>>(new Map());
+  const [sessions, setSessions] = useState<Map<number, SessionState>>(
+    new Map(),
+  );
   const { path, route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -45,36 +62,45 @@ export function useSessionManager(): SessionManager {
   // When we create a session and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
 
-  const updateSession = useCallback((sid: number, updater: (s: SessionState) => SessionState) => {
-    setSessions((prev) => {
-      const s = prev.get(sid);
-      if (!s) return prev;
-      const next = new Map(prev);
-      next.set(sid, updater(s));
-      return next;
-    });
-  }, []);
+  const updateSession = useCallback(
+    (sid: number, updater: (s: SessionState) => SessionState) => {
+      setSessions((prev) => {
+        const s = prev.get(sid);
+        if (!s) return prev;
+        const next = new Map(prev);
+        next.set(sid, updater(s));
+        return next;
+      });
+    },
+    [],
+  );
 
   // -- Live stdout message handler --
   // Ensures session exists, then delegates to the pure reducer.
-  const handleSessionMessage = useCallback((sid: number, msg: ClaudeMessage) => {
-    setSessions((prev) => {
-      const s = prev.get(sid) ?? makeSessionState(sid, true);
-      const next = new Map(prev);
-      next.set(sid, reduceStdoutMessage(s, msg));
-      return next;
-    });
-  }, []);
+  const handleSessionMessage = useCallback(
+    (sid: number, msg: ClaudeMessage) => {
+      setSessions((prev) => {
+        const s = prev.get(sid) ?? makeSessionState(sid, true);
+        const next = new Map(prev);
+        next.set(sid, reduceStdoutMessage(s, msg));
+        return next;
+      });
+    },
+    [],
+  );
 
   // -- JSONL file message handler --
-  const handleFileMessage = useCallback((sid: number, msg: ClaudeFileMessage) => {
-    setSessions((prev) => {
-      const s = prev.get(sid) ?? makeSessionState(sid);
-      const next = new Map(prev);
-      next.set(sid, reduceFileMessage(s, msg));
-      return next;
-    });
-  }, []);
+  const handleFileMessage = useCallback(
+    (sid: number, msg: ClaudeFileMessage) => {
+      setSessions((prev) => {
+        const s = prev.get(sid) ?? makeSessionState(sid);
+        const next = new Map(prev);
+        next.set(sid, reduceFileMessage(s, msg));
+        return next;
+      });
+    },
+    [],
+  );
 
   const handleControlMessage = useCallback((msg: ControlMessage) => {
     switch (msg.type) {
@@ -101,18 +127,28 @@ export function useSessionManager(): SessionManager {
           const next = new Map(prev);
           for (const entry of msg.sessions) {
             if (!next.has(entry.sid)) {
-              next.set(entry.sid, makeSessionState(entry.sid, entry.alive, entry.resumable));
+              next.set(
+                entry.sid,
+                makeSessionState(entry.sid, entry.alive, entry.resumable),
+              );
             } else {
               const s = next.get(entry.sid)!;
-              next.set(entry.sid, { ...s, alive: entry.alive, resumable: entry.resumable });
+              next.set(entry.sid, {
+                ...s,
+                alive: entry.alive,
+                resumable: entry.resumable,
+              });
             }
           }
           return next;
         });
         // Navigate to most recently active session if no session is selected
-        if (msg.sessions.length > 0 && parseSidFromPath(location.pathname) === null) {
+        if (
+          msg.sessions.length > 0 &&
+          parseSidFromPath(location.pathname) === null
+        ) {
           const latest = msg.sessions.reduce((a, b) =>
-            (b.lastActivity || "") > (a.lastActivity || "") ? b : a
+            (b.lastActivity || "") > (a.lastActivity || "") ? b : a,
           );
           routeRef.current(`/session/${latest.sid}`, true);
         }
@@ -181,7 +217,7 @@ export function useSessionManager(): SessionManager {
       updateSession(activeSessionId, (s) => reducePendingUserMessage(s, text));
       connRef.current?.sendMessage(activeSessionId, text);
     },
-    [activeSessionId, updateSession]
+    [activeSessionId, updateSession],
   );
 
   const interrupt = useCallback(() => {
@@ -197,14 +233,23 @@ export function useSessionManager(): SessionManager {
   const resume = useCallback(() => {
     if (activeSessionId !== null) {
       connRef.current?.resumeSession(activeSessionId);
-      updateSession(activeSessionId, (s) => ({ ...s, alive: true, resumable: false }));
+      updateSession(activeSessionId, (s) => ({
+        ...s,
+        alive: true,
+        resumable: false,
+      }));
     }
   }, [activeSessionId, updateSession]);
 
   // Build sidebar session list sorted by sid
   const sidebarSessions = Array.from(sessions.values())
     .sort((a, b) => a.sid - b.sid)
-    .map((s) => ({ sid: s.sid, alive: s.alive, resumable: s.resumable, totalCost: s.totalCost }));
+    .map((s) => ({
+      sid: s.sid,
+      alive: s.alive,
+      resumable: s.resumable,
+      totalCost: s.totalCost,
+    }));
 
   return {
     sessions,

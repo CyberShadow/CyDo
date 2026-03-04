@@ -21,7 +21,13 @@ import { schemaForStdout, schemaForFile, validateWith } from "./validate";
 // Individual reducers
 // ---------------------------------------------------------------------------
 
-export function reduceParseError(s: SessionState, source: "stdout" | "file", label: string, detail: string, raw: unknown): SessionState {
+export function reduceParseError(
+  s: SessionState,
+  source: "stdout" | "file",
+  label: string,
+  detail: string,
+  raw: unknown,
+): SessionState {
   const id = `parse-error-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -30,21 +36,32 @@ export function reduceParseError(s: SessionState, source: "stdout" | "file", lab
       {
         id,
         type: "system" as const,
-        content: [{ type: "text" as const, text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}`,
+          },
+        ],
         rawSource: raw,
       },
     ],
   };
 }
 
-export function reduceSystemInit(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
-  const initMsg: DisplayMessage | undefined = extras ? {
-    id: `init-${++s.msgIdCounter}`,
-    type: "system" as const,
-    content: [],
-    extraFields: extras,
-    rawSource: msg,
-  } : undefined;
+export function reduceSystemInit(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
+  const initMsg: DisplayMessage | undefined = extras
+    ? {
+        id: `init-${++s.msgIdCounter}`,
+        type: "system" as const,
+        content: [],
+        extraFields: extras,
+        rawSource: msg,
+      }
+    : undefined;
   return {
     ...s,
     sessionInfo: {
@@ -67,7 +84,11 @@ export function reduceSystemInit(s: SessionState, msg: any, extras: ExtraField[]
   };
 }
 
-export function reduceSystemStatus(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+export function reduceSystemStatus(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `status-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -85,7 +106,11 @@ export function reduceSystemStatus(s: SessionState, msg: any, extras: ExtraField
   };
 }
 
-export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+export function reduceCompactBoundary(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `compact-${++s.msgIdCounter}`;
   const cm = msg.compact_metadata;
   return {
@@ -96,7 +121,9 @@ export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraFi
         id,
         type: "compact_boundary" as const,
         content: [],
-        compactMetadata: cm ? { trigger: cm.trigger, preTokens: cm.pre_tokens } : undefined,
+        compactMetadata: cm
+          ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
+          : undefined,
         extraFields: extras,
         rawSource: msg,
       },
@@ -104,7 +131,11 @@ export function reduceCompactBoundary(s: SessionState, msg: any, extras: ExtraFi
   };
 }
 
-export function reduceTaskLifecycle(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+export function reduceTaskLifecycle(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
   if (msg.subtype === "task_started") {
@@ -127,7 +158,11 @@ export function reduceTaskLifecycle(s: SessionState, msg: any, extras: ExtraFiel
   };
 }
 
-export function reduceSummary(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+export function reduceSummary(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -144,7 +179,11 @@ export function reduceSummary(s: SessionState, msg: any, extras: ExtraField[] | 
   };
 }
 
-export function reduceRateLimit(s: SessionState, msg: any, extras: ExtraField[] | undefined): SessionState {
+export function reduceRateLimit(
+  s: SessionState,
+  msg: any,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `ratelimit-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -162,7 +201,11 @@ export function reduceRateLimit(s: SessionState, msg: any, extras: ExtraField[] 
   };
 }
 
-export function reduceAssistantMessage(s: SessionState, msg: AssistantMessage | AssistantFileMessage, extras: ExtraField[] | undefined): SessionState {
+export function reduceAssistantMessage(
+  s: SessionState,
+  msg: AssistantMessage | AssistantFileMessage,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const msgId = msg.message.id;
   const existing = s.messages.findIndex((m) => m.id === msgId);
   if (existing >= 0) {
@@ -219,7 +262,11 @@ export function reduceUserEcho(
 ): SessionState {
   // Collect text blocks and tool_result blocks separately
   const textBlocks: string[] = [];
-  const toolResults: Array<{ tool_use_id: string; content: ToolResultContent; is_error?: boolean }> = [];
+  const toolResults: Array<{
+    tool_use_id: string;
+    content: ToolResultContent;
+    is_error?: boolean;
+  }> = [];
 
   for (const block of content) {
     if (block.type === "tool_result") {
@@ -239,7 +286,7 @@ export function reduceUserEcho(
         const m = updated[i];
         if (m.type === "assistant") {
           const hasToolUse = m.content.some(
-            (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id
+            (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id,
           );
           if (hasToolUse) {
             const newMsg = { ...m, toolResults: new Map(m.toolResults) };
@@ -261,7 +308,9 @@ export function reduceUserEcho(
   const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
   if (meaningfulText.length > 0 && toolResults.length === 0) {
     // Only show user echo text when it's not a tool-result-only message
-    const filtered = state.messages.filter((m) => !(m.pending && m.type === "user"));
+    const filtered = state.messages.filter(
+      (m) => !(m.pending && m.type === "user"),
+    );
     const id = `user-echo-${++state.msgIdCounter}`;
     state = {
       ...state,
@@ -270,7 +319,10 @@ export function reduceUserEcho(
         {
           id,
           type: "user" as const,
-          content: meaningfulText.map((t) => ({ type: "text" as const, text: t })),
+          content: meaningfulText.map((t) => ({
+            type: "text" as const,
+            text: t,
+          })),
           isSidechain,
           isSynthetic: isSynthetic || undefined,
           parentToolUseId,
@@ -284,7 +336,11 @@ export function reduceUserEcho(
   return state;
 }
 
-export function reduceUserReplay(s: SessionState, contentBlocks: any[], rawMsg: unknown): SessionState {
+export function reduceUserReplay(
+  s: SessionState,
+  contentBlocks: any[],
+  rawMsg: unknown,
+): SessionState {
   const text = contentBlocks
     .filter((b: any) => b.type === "text")
     .map((b: any) => b.text)
@@ -293,11 +349,23 @@ export function reduceUserReplay(s: SessionState, contentBlocks: any[], rawMsg: 
   const id = `user-${++s.msgIdCounter}`;
   return {
     ...s,
-    messages: [...filtered, { id, type: "user" as const, content: [{ type: "text" as const, text }], rawSource: rawMsg }],
+    messages: [
+      ...filtered,
+      {
+        id,
+        type: "user" as const,
+        content: [{ type: "text" as const, text }],
+        rawSource: rawMsg,
+      },
+    ],
   };
 }
 
-export function reduceResultMessage(s: SessionState, msg: ResultMessage, extras: ExtraField[] | undefined): SessionState {
+export function reduceResultMessage(
+  s: SessionState,
+  msg: ResultMessage,
+  extras: ExtraField[] | undefined,
+): SessionState {
   const id = `result-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -330,7 +398,10 @@ export function reduceResultMessage(s: SessionState, msg: ResultMessage, extras:
   };
 }
 
-export function reduceStreamEvent(s: SessionState, event: StreamEvent): SessionState {
+export function reduceStreamEvent(
+  s: SessionState,
+  event: StreamEvent,
+): SessionState {
   switch (event.type) {
     case "content_block_start":
       return {
@@ -341,7 +412,9 @@ export function reduceStreamEvent(s: SessionState, event: StreamEvent): SessionS
             index: event.index,
             type: event.content_block.type,
             text: "",
-            name: (event.content_block as Record<string, unknown>).name as string | undefined,
+            name: (event.content_block as Record<string, unknown>).name as
+              | string
+              | undefined,
           },
         ],
       };
@@ -354,14 +427,17 @@ export function reduceStreamEvent(s: SessionState, event: StreamEvent): SessionS
           let append = "";
           if (delta.type === "text_delta") append = delta.text;
           else if (delta.type === "thinking_delta") append = delta.thinking;
-          else if (delta.type === "input_json_delta") append = delta.partial_json;
+          else if (delta.type === "input_json_delta")
+            append = delta.partial_json;
           return { ...b, text: b.text + append };
         }),
       };
     case "content_block_stop":
       return {
         ...s,
-        streamingBlocks: s.streamingBlocks.filter((b) => b.index !== event.index),
+        streamingBlocks: s.streamingBlocks.filter(
+          (b) => b.index !== event.index,
+        ),
       };
     default:
       return s;
@@ -374,7 +450,12 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
     ...s,
     messages: [
       ...s.messages,
-      { id, type: "system" as const, content: [{ type: "text" as const, text }], rawSource: text },
+      {
+        id,
+        type: "system" as const,
+        content: [{ type: "text" as const, text }],
+        rawSource: text,
+      },
     ],
   };
 }
@@ -383,11 +464,22 @@ export function reduceExit(s: SessionState): SessionState {
   return { ...s, isProcessing: false, streamingBlocks: [], alive: false };
 }
 
-export function reducePendingUserMessage(s: SessionState, text: string): SessionState {
+export function reducePendingUserMessage(
+  s: SessionState,
+  text: string,
+): SessionState {
   const id = `pending-${++s.msgIdCounter}`;
   return {
     ...s,
-    messages: [...s.messages, { id, type: "user" as const, content: [{ type: "text" as const, text }], pending: true }],
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "user" as const,
+        content: [{ type: "text" as const, text }],
+        pending: true,
+      },
+    ],
   };
 }
 
@@ -395,10 +487,19 @@ export function reducePendingUserMessage(s: SessionState, text: string): Session
 // Top-level dispatchers: validate + route to individual reducers
 // ---------------------------------------------------------------------------
 
-export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): SessionState {
+export function reduceStdoutMessage(
+  s: SessionState,
+  msg: ClaudeMessage,
+): SessionState {
   const { extras, schemaError } = validateWith(schemaForStdout, msg);
   if (schemaError) {
-    s = reduceParseError(s, "stdout", "Schema validation failed", schemaError, msg);
+    s = reduceParseError(
+      s,
+      "stdout",
+      "Schema validation failed",
+      schemaError,
+      msg,
+    );
   }
 
   switch (msg.type) {
@@ -409,10 +510,19 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
         return reduceSystemStatus(s, msg, extras);
       } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
         return reduceCompactBoundary(s, msg, extras);
-      } else if ("subtype" in msg && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+      } else if (
+        "subtype" in msg &&
+        (msg.subtype === "task_started" || msg.subtype === "task_notification")
+      ) {
         return reduceTaskLifecycle(s, msg as any, extras);
       } else {
-        return reduceParseError(s, "stdout", "Unknown system subtype", String((msg as any).subtype), msg);
+        return reduceParseError(
+          s,
+          "stdout",
+          "Unknown system subtype",
+          String((msg as any).subtype),
+          msg,
+        );
       }
 
     case "assistant":
@@ -420,14 +530,23 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
 
     case "user": {
       const rawContent = msg.message.content;
-      const contentBlocks: any[] = typeof rawContent === "string"
-        ? [{ type: "text", text: rawContent }]
-        : rawContent;
+      const contentBlocks: any[] =
+        typeof rawContent === "string"
+          ? [{ type: "text", text: rawContent }]
+          : rawContent;
 
       if ("isReplay" in msg && (msg as any).isReplay) {
         return reduceUserReplay(s, contentBlocks, msg);
       } else {
-        return reduceUserEcho(s, contentBlocks, msg.isSidechain, msg.parent_tool_use_id, extras, msg, (msg as any).isSynthetic);
+        return reduceUserEcho(
+          s,
+          contentBlocks,
+          msg.isSidechain,
+          msg.parent_tool_use_id,
+          extras,
+          msg,
+          (msg as any).isSynthetic,
+        );
       }
     }
 
@@ -451,14 +570,29 @@ export function reduceStdoutMessage(s: SessionState, msg: ClaudeMessage): Sessio
       return reduceStderr(s, msg.text);
 
     default:
-      return reduceParseError(s, "stdout", "Unknown message type", (msg as any).type, msg);
+      return reduceParseError(
+        s,
+        "stdout",
+        "Unknown message type",
+        (msg as any).type,
+        msg,
+      );
   }
 }
 
-export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): SessionState {
+export function reduceFileMessage(
+  s: SessionState,
+  msg: ClaudeFileMessage,
+): SessionState {
   const { extras, schemaError } = validateWith(schemaForFile, msg);
   if (schemaError) {
-    s = reduceParseError(s, "file", "Schema validation failed", schemaError, msg);
+    s = reduceParseError(
+      s,
+      "file",
+      "Schema validation failed",
+      schemaError,
+      msg,
+    );
   }
 
   switch (msg.type) {
@@ -469,15 +603,27 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
         return reduceSystemStatus(s, msg, extras);
       } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
         return reduceCompactBoundary(s, msg, extras);
-      } else if ("subtype" in msg && (msg.subtype === "task_started" || msg.subtype === "task_notification")) {
+      } else if (
+        "subtype" in msg &&
+        (msg.subtype === "task_started" || msg.subtype === "task_notification")
+      ) {
         return reduceTaskLifecycle(s, msg as any, extras);
-      } else if ("subtype" in msg && (msg.subtype === "api_error" || msg.subtype === "turn_duration")) {
+      } else if (
+        "subtype" in msg &&
+        (msg.subtype === "api_error" || msg.subtype === "turn_duration")
+      ) {
         // JSONL-only bookkeeping subtypes — intentionally not rendered.
         // api_error: transient retry attempts already resolved by the time we see them.
         // turn_duration: internal timing metadata with no user-facing value.
         return s;
       } else {
-        return reduceParseError(s, "file", "Unknown system subtype", String((msg as any).subtype), msg);
+        return reduceParseError(
+          s,
+          "file",
+          "Unknown system subtype",
+          String((msg as any).subtype),
+          msg,
+        );
       }
 
     case "assistant":
@@ -486,10 +632,19 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
     case "user": {
       // JSONL user messages store content as a plain string; normalize to block array
       const rawContent = (msg as any).message?.content;
-      const content: any[] = typeof rawContent === "string"
-        ? [{ type: "text", text: rawContent }]
-        : rawContent ?? [];
-      return reduceUserEcho(s, content, msg.isSidechain, msg.parent_tool_use_id, extras, msg, (msg as any).isSynthetic);
+      const content: any[] =
+        typeof rawContent === "string"
+          ? [{ type: "text", text: rawContent }]
+          : (rawContent ?? []);
+      return reduceUserEcho(
+        s,
+        content,
+        msg.isSidechain,
+        msg.parent_tool_use_id,
+        extras,
+        msg,
+        (msg as any).isSynthetic,
+      );
     }
 
     case "result":
@@ -512,6 +667,12 @@ export function reduceFileMessage(s: SessionState, msg: ClaudeFileMessage): Sess
       return s;
 
     default:
-      return reduceParseError(s, "file", "Unknown message type", (msg as any).type, msg);
+      return reduceParseError(
+        s,
+        "file",
+        "Unknown message type",
+        (msg as any).type,
+        msg,
+      );
   }
 }

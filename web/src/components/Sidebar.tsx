@@ -14,12 +14,23 @@ interface Props {
   onNewSession: () => void;
 }
 
-export function Sidebar({ sessions, activeSessionId, onSelectSession, onNewSession }: Props) {
+export function Sidebar({
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onNewSession,
+}: Props) {
   return (
     <div class="sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">Sessions</span>
-        <button class="sidebar-new-btn" onClick={onNewSession} title="New session">+</button>
+        <button
+          class="sidebar-new-btn"
+          onClick={onNewSession}
+          title="New session"
+        >
+          +
+        </button>
       </div>
       <div class="sidebar-list">
         {sessions.map((s) => (
@@ -28,7 +39,9 @@ export function Sidebar({ sessions, activeSessionId, onSelectSession, onNewSessi
             class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}`}
             onClick={() => onSelectSession(s.sid)}
           >
-            <span class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`} />
+            <span
+              class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`}
+            />
             <span class="sidebar-label">Session {s.sid}</span>
             {s.totalCost > 0 && (
               <span class="sidebar-cost">${s.totalCost.toFixed(4)}</span>

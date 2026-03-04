@@ -32,22 +32,37 @@ export const schemaForStdout: SchemaLookup = (raw) => {
   switch (raw.type) {
     case "system":
       switch (raw.subtype) {
-        case "init": return SystemInitSchema;
-        case "status": return SystemStatusSchema;
-        case "compact_boundary": return SystemCompactBoundarySchema;
-        case "task_started": return SystemTaskStartedSchema;
-        case "task_notification": return SystemTaskNotificationSchema;
-        default: return null;
+        case "init":
+          return SystemInitSchema;
+        case "status":
+          return SystemStatusSchema;
+        case "compact_boundary":
+          return SystemCompactBoundarySchema;
+        case "task_started":
+          return SystemTaskStartedSchema;
+        case "task_notification":
+          return SystemTaskNotificationSchema;
+        default:
+          return null;
       }
-    case "assistant": return AssistantMessageSchema;
-    case "user": return UserEchoSchema;
-    case "result": return ResultSchema;
-    case "summary": return SummarySchema;
-    case "rate_limit_event": return RateLimitEventSchema;
-    case "stream_event": return StreamEventMessageSchema;
-    case "exit": return ExitMessageSchema;
-    case "stderr": return StderrMessageSchema;
-    default: return null;
+    case "assistant":
+      return AssistantMessageSchema;
+    case "user":
+      return UserEchoSchema;
+    case "result":
+      return ResultSchema;
+    case "summary":
+      return SummarySchema;
+    case "rate_limit_event":
+      return RateLimitEventSchema;
+    case "stream_event":
+      return StreamEventMessageSchema;
+    case "exit":
+      return ExitMessageSchema;
+    case "stderr":
+      return StderrMessageSchema;
+    default:
+      return null;
   }
 };
 
@@ -56,24 +71,41 @@ export const schemaForFile: SchemaLookup = (raw) => {
   switch (raw.type) {
     case "system":
       switch (raw.subtype) {
-        case "init": return SystemInitSchema;
-        case "status": return SystemStatusSchema;
-        case "compact_boundary": return SystemCompactBoundarySchema;
-        case "api_error": return SystemApiErrorSchema;
-        case "turn_duration": return SystemTurnDurationSchema;
-        case "task_started": return SystemTaskStartedSchema;
-        case "task_notification": return SystemTaskNotificationSchema;
-        default: return null;
+        case "init":
+          return SystemInitSchema;
+        case "status":
+          return SystemStatusSchema;
+        case "compact_boundary":
+          return SystemCompactBoundarySchema;
+        case "api_error":
+          return SystemApiErrorSchema;
+        case "turn_duration":
+          return SystemTurnDurationSchema;
+        case "task_started":
+          return SystemTaskStartedSchema;
+        case "task_notification":
+          return SystemTaskNotificationSchema;
+        default:
+          return null;
       }
-    case "assistant": return AssistantFileSchema;
-    case "user": return UserFileSchema;
-    case "result": return ResultSchema;
-    case "summary": return SummarySchema;
-    case "rate_limit_event": return RateLimitEventSchema;
-    case "progress": return ProgressSchema;
-    case "queue-operation": return QueueOperationSchema;
-    case "file-history-snapshot": return FileHistorySnapshotSchema;
-    default: return null;
+    case "assistant":
+      return AssistantFileSchema;
+    case "user":
+      return UserFileSchema;
+    case "result":
+      return ResultSchema;
+    case "summary":
+      return SummarySchema;
+    case "rate_limit_event":
+      return RateLimitEventSchema;
+    case "progress":
+      return ProgressSchema;
+    case "queue-operation":
+      return QueueOperationSchema;
+    case "file-history-snapshot":
+      return FileHistorySnapshotSchema;
+    default:
+      return null;
   }
 };
 
@@ -84,13 +116,17 @@ export interface MessageValidation {
 }
 
 // Validate a raw message against a schema set and extract extra fields.
-export function validateWith(lookup: SchemaLookup, msg: unknown): MessageValidation {
+export function validateWith(
+  lookup: SchemaLookup,
+  msg: unknown,
+): MessageValidation {
   const raw = msg as Record<string, unknown>;
   const schema = lookup(raw);
   if (!schema) {
     return {
       extras: undefined,
-      schemaError: `No schema for message type: ${raw.type}` +
+      schemaError:
+        `No schema for message type: ${raw.type}` +
         (raw.subtype ? ` subtype: ${raw.subtype}` : ""),
     };
   }
@@ -98,7 +134,10 @@ export function validateWith(lookup: SchemaLookup, msg: unknown): MessageValidat
   const extras = extractExtras(raw, schema);
   return {
     extras: extras.length > 0 ? extras : undefined,
-    schemaError: result.success ? null :
-      result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+    schemaError: result.success
+      ? null
+      : result.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
   };
 }

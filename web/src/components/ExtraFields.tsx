@@ -26,21 +26,21 @@ export function ExtraFields({ fields }: Props) {
       <div class="extra-fields-content">
         {Array.from(groups.entries()).map(([path, groupFields]) => (
           <div key={path} class="extra-fields-group">
-            {groups.size > 1 && (
-              <div class="extra-fields-path">{path}</div>
-            )}
+            {groups.size > 1 && <div class="extra-fields-path">{path}</div>}
             {groupFields.map((field) => {
-              const str = typeof field.value === "string"
-                ? field.value
-                : JSON.stringify(field.value, null, 2);
+              const str =
+                typeof field.value === "string"
+                  ? field.value
+                  : JSON.stringify(field.value, null, 2);
               const isMultiline = str.includes("\n");
               return (
                 <div key={`${path}.${field.key}`} class="extra-field">
                   <span class="extra-field-key">{field.key}:</span>
-                  {isMultiline
-                    ? <pre class="extra-field-value">{str}</pre>
-                    : <span class="extra-field-value"> {str}</span>
-                  }
+                  {isMultiline ? (
+                    <pre class="extra-field-value">{str}</pre>
+                  ) : (
+                    <span class="extra-field-value"> {str}</span>
+                  )}
                 </div>
               );
             })}

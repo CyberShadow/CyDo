@@ -38,7 +38,13 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
                 <div class="sub-agent-messages">
                   {nested.map((child) => {
                     if (child.type === "assistant") {
-                      return <AssistantMessage key={child.id} message={child} childrenByParent={childrenByParent} />;
+                      return (
+                        <AssistantMessage
+                          key={child.id}
+                          message={child}
+                          childrenByParent={childrenByParent}
+                        />
+                      );
                     }
                     if (child.type === "user") {
                       return <UserMessage key={child.id} message={child} />;
@@ -56,7 +62,9 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
         // Unknown content block type - display it rather than silently dropping
         return (
           <div key={i} class="unknown-block">
-            <div class="unknown-block-label">Unknown block type: {(block as any).type}</div>
+            <div class="unknown-block-label">
+              Unknown block type: {(block as any).type}
+            </div>
             <pre>{JSON.stringify(block, null, 2)}</pre>
           </div>
         );

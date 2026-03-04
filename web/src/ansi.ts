@@ -9,9 +9,23 @@ import { h, Fragment } from "preact";
 // VS Code dark terminal palette
 const COLORS_16 = [
   // Normal: black, red, green, yellow, blue, magenta, cyan, white
-  "#666666", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+  "#666666",
+  "#cd3131",
+  "#0dbc79",
+  "#e5e510",
+  "#2472c8",
+  "#bc3fbc",
+  "#11a8cd",
+  "#e5e5e5",
   // Bright: black, red, green, yellow, blue, magenta, cyan, white
-  "#888888", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
+  "#888888",
+  "#f14c4c",
+  "#23d18b",
+  "#f5f543",
+  "#3b8eea",
+  "#d670d6",
+  "#29b8db",
+  "#ffffff",
 ];
 
 function color256(n: number): string {
@@ -94,15 +108,18 @@ function applyCodes(codes: number[], style: AnsiStyle): void {
 }
 
 // Matches CSI sequences (\x1b[...X) and OSC sequences (\x1b]...\x07 or \x1b]...\x1b\\)
-const ESCAPE_RE = /\x1b\[([0-9;]*?)([A-Za-z])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const ESCAPE_RE =
+  /\x1b\[([0-9;]*?)([A-Za-z])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 function hasStyleProps(style: AnsiStyle): boolean {
-  return style.color !== undefined
-    || style.backgroundColor !== undefined
-    || style.fontWeight !== undefined
-    || style.fontStyle !== undefined
-    || style.textDecoration !== undefined
-    || style.opacity !== undefined;
+  return (
+    style.color !== undefined ||
+    style.backgroundColor !== undefined ||
+    style.fontWeight !== undefined ||
+    style.fontStyle !== undefined ||
+    style.textDecoration !== undefined ||
+    style.opacity !== undefined
+  );
 }
 
 export function hasAnsi(text: string): boolean {

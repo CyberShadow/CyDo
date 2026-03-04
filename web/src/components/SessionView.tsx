@@ -12,7 +12,13 @@ interface Props {
   onResume: () => void;
 }
 
-export function SessionView({ session, connected, onSend, onInterrupt, onResume }: Props) {
+export function SessionView({
+  session,
+  connected,
+  onSend,
+  onInterrupt,
+  onResume,
+}: Props) {
   return (
     <>
       <SystemBanner

@@ -1,4 +1,8 @@
-import type { ClaudeMessage, ClaudeFileMessage, ControlMessage } from "./schemas";
+import type {
+  ClaudeMessage,
+  ClaudeFileMessage,
+  ControlMessage,
+} from "./schemas";
 
 export class Connection {
   private ws: WebSocket | null = null;
@@ -38,7 +42,10 @@ export class Connection {
           } else if ("fileEvent" in raw) {
             this.onFileMessage?.(raw.sid, raw.fileEvent as ClaudeFileMessage);
           } else {
-            console.warn("Unknown session envelope (no event or fileEvent):", raw);
+            console.warn(
+              "Unknown session envelope (no event or fileEvent):",
+              raw,
+            );
           }
         } else {
           console.warn("Unknown WebSocket message:", raw);

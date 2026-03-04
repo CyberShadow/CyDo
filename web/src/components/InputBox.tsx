@@ -11,7 +11,13 @@ interface Props {
   sessionId: number;
 }
 
-export function InputBox({ onSend, onInterrupt, isProcessing, disabled, sessionId }: Props) {
+export function InputBox({
+  onSend,
+  onInterrupt,
+  isProcessing,
+  disabled,
+  sessionId,
+}: Props) {
   const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef(text);
@@ -19,7 +25,9 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled, sessionI
 
   useEffect(() => {
     setText(drafts.get(sessionId) ?? "");
-    return () => { drafts.set(sessionId, textRef.current); };
+    return () => {
+      drafts.set(sessionId, textRef.current);
+    };
   }, [sessionId]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -56,7 +64,11 @@ export function InputBox({ onSend, onInterrupt, isProcessing, disabled, sessionI
           Stop
         </button>
       )}
-      <button class="btn btn-send" onClick={send} disabled={disabled || !text.trim()}>
+      <button
+        class="btn btn-send"
+        onClick={send}
+        disabled={disabled || !text.trim()}
+      >
         Send
       </button>
     </div>

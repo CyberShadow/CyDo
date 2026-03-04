@@ -19,13 +19,18 @@ interface Props {
 function tryParsePartialJson(partial: string): Record<string, unknown> | null {
   if (!partial) return {};
   // Try as-is first (might already be complete)
-  try { return JSON.parse(partial); } catch {}
+  try {
+    return JSON.parse(partial);
+  } catch {}
   // Close open strings, arrays, objects
   let attempt = partial;
   // Count unescaped open quotes
   let inString = false;
   for (let i = 0; i < attempt.length; i++) {
-    if (attempt[i] === "\\" && inString) { i++; continue; }
+    if (attempt[i] === "\\" && inString) {
+      i++;
+      continue;
+    }
     if (attempt[i] === '"') inString = !inString;
   }
   if (inString) attempt += '"';
@@ -33,15 +38,25 @@ function tryParsePartialJson(partial: string): Record<string, unknown> | null {
   const stack: string[] = [];
   inString = false;
   for (let i = 0; i < attempt.length; i++) {
-    if (attempt[i] === "\\" && inString) { i++; continue; }
-    if (attempt[i] === '"') { inString = !inString; continue; }
+    if (attempt[i] === "\\" && inString) {
+      i++;
+      continue;
+    }
+    if (attempt[i] === '"') {
+      inString = !inString;
+      continue;
+    }
     if (inString) continue;
     if (attempt[i] === "{") stack.push("}");
     else if (attempt[i] === "[") stack.push("]");
     else if (attempt[i] === "}" || attempt[i] === "]") stack.pop();
   }
   attempt += stack.reverse().join("");
-  try { return JSON.parse(attempt); } catch { return null; }
+  try {
+    return JSON.parse(attempt);
+  } catch {
+    return null;
+  }
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -52,7 +67,10 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
 
   if (!expanded) {
     return (
-      <div class={`result-divider ${d.isError ? "result-error" : "result-success"}`} onClick={() => setExpanded(true)}>
+      <div
+        class={`result-divider ${d.isError ? "result-error" : "result-success"}`}
+        onClick={() => setExpanded(true)}
+      >
         <hr />
         <span class="result-divider-icon">{d.isError ? "!" : "\u2713"}</span>
         <hr />
@@ -71,10 +89,16 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
       </div>
       <div class="result-meta">
         {d.numTurns > 0 && <span>Turns: {d.numTurns}</span>}
-        {durationSec > 0 && <span>Duration: {durationSec}s{apiSec > 0 && ` (${apiSec}s API)`}</span>}
+        {durationSec > 0 && (
+          <span>
+            Duration: {durationSec}s{apiSec > 0 && ` (${apiSec}s API)`}
+          </span>
+        )}
         {d.totalCostUsd > 0 && <span>Cost: ${d.totalCostUsd.toFixed(4)}</span>}
 
-        {d.stopReason && d.stopReason !== null && <span>Stop: {d.stopReason}</span>}
+        {d.stopReason && d.stopReason !== null && (
+          <span>Stop: {d.stopReason}</span>
+        )}
       </div>
       {d.modelUsage && Object.keys(d.modelUsage).length > 0 && (
         <details class="result-details" onClick={(e) => e.stopPropagation()}>
@@ -111,14 +135,18 @@ function SummaryMessageView({ message }: { message: DisplayMessage }) {
 
 function RateLimitMessageView({ message }: { message: DisplayMessage }) {
   const info = message.rateLimitInfo!;
-  const resetsAt = info.resetsAt ? new Date(info.resetsAt * 1000).toLocaleString() : null;
+  const resetsAt = info.resetsAt
+    ? new Date(info.resetsAt * 1000).toLocaleString()
+    : null;
 
   return (
     <div class="message rate-limit-message">
       <div class="rate-limit-header">
         Rate Limit
         {info.status && <span class="rate-limit-badge">[{info.status}]</span>}
-        {info.rateLimitType && <span class="rate-limit-badge">[{info.rateLimitType}]</span>}
+        {info.rateLimitType && (
+          <span class="rate-limit-badge">[{info.rateLimitType}]</span>
+        )}
       </div>
       <div class="rate-limit-meta">
         {resetsAt && <span>Resets at: {resetsAt}</span>}
@@ -140,7 +168,11 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
     <div class="message compact-boundary-message">
       <span class="compact-label">Context Compacted</span>
       {cm?.trigger && <span class="compact-detail">[{cm.trigger}]</span>}
-      {cm?.preTokens && <span class="compact-detail">{cm.preTokens.toLocaleString()} tokens before</span>}
+      {cm?.preTokens && (
+        <span class="compact-detail">
+          {cm.preTokens.toLocaleString()} tokens before
+        </span>
+      )}
       <ExtraFields fields={message.extraFields} />
     </div>
   );
@@ -160,7 +192,10 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
   }
 
   return (
-    <div class="message system-message init-message" onClick={() => setExpanded(false)}>
+    <div
+      class="message system-message init-message"
+      onClick={() => setExpanded(false)}
+    >
       <div class="init-header">Session Init</div>
       <ExtraFields fields={message.extraFields} />
     </div>
@@ -180,32 +215,39 @@ function jsonReplacer(_key: string, value: unknown) {
   return value instanceof Map ? Object.fromEntries(value) : value;
 }
 
-const MessageView = memo(({ msg, children }: { msg: DisplayMessage; children: ComponentChildren }) => {
-  const [showSource, setShowSource] = useState(false);
-  return (
-    <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
-      {msg.rawSource != null && (
-        <button
-          class="view-source-btn"
-          onClick={() => setShowSource(!showSource)}
-          title="View source"
-        >
-          {"{}"}
-        </button>
-      )}
-      {showSource
-        ? (
+const MessageView = memo(
+  ({ msg, children }: { msg: DisplayMessage; children: ComponentChildren }) => {
+    const [showSource, setShowSource] = useState(false);
+    return (
+      <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
+        {msg.rawSource != null && (
+          <button
+            class="view-source-btn"
+            onClick={() => setShowSource(!showSource)}
+            title="View source"
+          >
+            {"{}"}
+          </button>
+        )}
+        {showSource ? (
           <div class="message source-view">
             <pre>{JSON.stringify(msg.rawSource, jsonReplacer, 2)}</pre>
           </div>
-        )
-        : children
-      }
-    </div>
-  );
-}, (prev, next) => prev.msg === next.msg);
+        ) : (
+          children
+        )}
+      </div>
+    );
+  },
+  (prev, next) => prev.msg === next.msg,
+);
 
-export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
+export function MessageList({
+  sessionId,
+  messages,
+  streamingBlocks,
+  isProcessing,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
@@ -240,89 +282,107 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   return (
     <div class="message-list" ref={containerRef}>
       <div class="message-list-inner">
-      {topLevelMessages.map((msg) => {
-        let inner;
-        switch (msg.type) {
-          case "user":
-            inner = <UserMessage message={msg} />;
-            break;
-          case "assistant":
-            inner = <AssistantMessage message={msg} childrenByParent={childrenByParent} />;
-            break;
-          case "result":
-            inner = <ResultMessageView message={msg} />;
-            break;
-          case "summary":
-            inner = <SummaryMessageView message={msg} />;
-            break;
-          case "rate_limit":
-            inner = <RateLimitMessageView message={msg} />;
-            break;
-          case "compact_boundary":
-            inner = <CompactBoundaryMessageView message={msg} />;
-            break;
-          case "system": {
-            if ((msg.rawSource as any)?.subtype === "init") {
-              inner = <SystemInitView message={msg} />;
-            } else if (msg.statusText !== undefined) {
-              inner = <SystemStatusMessageView message={msg} />;
-            } else {
-              const text = msg.content
-                .filter((b): b is { type: "text"; text: string } => b.type === "text")
-                .map((b) => b.text)
-                .join("\n");
+        {topLevelMessages.map((msg) => {
+          let inner;
+          switch (msg.type) {
+            case "user":
+              inner = <UserMessage message={msg} />;
+              break;
+            case "assistant":
+              inner = (
+                <AssistantMessage
+                  message={msg}
+                  childrenByParent={childrenByParent}
+                />
+              );
+              break;
+            case "result":
+              inner = <ResultMessageView message={msg} />;
+              break;
+            case "summary":
+              inner = <SummaryMessageView message={msg} />;
+              break;
+            case "rate_limit":
+              inner = <RateLimitMessageView message={msg} />;
+              break;
+            case "compact_boundary":
+              inner = <CompactBoundaryMessageView message={msg} />;
+              break;
+            case "system": {
+              if ((msg.rawSource as any)?.subtype === "init") {
+                inner = <SystemInitView message={msg} />;
+              } else if (msg.statusText !== undefined) {
+                inner = <SystemStatusMessageView message={msg} />;
+              } else {
+                const text = msg.content
+                  .filter(
+                    (b): b is { type: "text"; text: string } =>
+                      b.type === "text",
+                  )
+                  .map((b) => b.text)
+                  .join("\n");
+                inner = (
+                  <div class="message system-message">
+                    <pre>{text}</pre>
+                    <ExtraFields fields={msg.extraFields} />
+                  </div>
+                );
+              }
+              break;
+            }
+            default:
               inner = (
                 <div class="message system-message">
-                  <pre>{text}</pre>
-                  <ExtraFields fields={msg.extraFields} />
+                  <pre>
+                    Unknown display type: {(msg as any).type}
+                    {"\n"}
+                    {JSON.stringify(msg, null, 2)}
+                  </pre>
                 </div>
               );
-            }
-            break;
           }
-          default:
-            inner = (
-              <div class="message system-message">
-                <pre>Unknown display type: {(msg as any).type}{"\n"}{JSON.stringify(msg, null, 2)}</pre>
+          return (
+            <MessageView key={msg.id} msg={msg}>
+              {inner}
+            </MessageView>
+          );
+        })}
+        {streamingBlocks.length > 0 && (
+          <div class="message assistant-message streaming">
+            {streamingBlocks.map((block) => (
+              <div key={block.index} class={`content-block ${block.type}`}>
+                {block.type === "thinking" && (
+                  <Markdown text={block.text} class="thinking-text" />
+                )}
+                {block.type === "text" && (
+                  <div class="text-content streaming-text">
+                    <Markdown text={block.text} />
+                    <span class="cursor" />
+                  </div>
+                )}
+                {block.type === "tool_use" &&
+                  block.name &&
+                  (() => {
+                    const parsed = tryParsePartialJson(block.text);
+                    return parsed ? (
+                      <ToolCall name={block.name} input={parsed} />
+                    ) : (
+                      <div class="tool-streaming">
+                        <span class="tool-label">{block.name}</span>
+                        <pre>{block.text}</pre>
+                      </div>
+                    );
+                  })()}
+                {block.type === "tool_use" && !block.name && (
+                  <div class="tool-streaming">
+                    <span class="tool-label">Tool call building...</span>
+                    <pre>{block.text}</pre>
+                  </div>
+                )}
               </div>
-            );
-        }
-        return <MessageView key={msg.id} msg={msg}>{inner}</MessageView>;
-      })}
-      {streamingBlocks.length > 0 && (
-        <div class="message assistant-message streaming">
-          {streamingBlocks.map((block) => (
-            <div key={block.index} class={`content-block ${block.type}`}>
-              {block.type === "thinking" && (
-                <Markdown text={block.text} class="thinking-text" />
-              )}
-              {block.type === "text" && (
-                <div class="text-content streaming-text">
-                  <Markdown text={block.text} />
-                  <span class="cursor" />
-                </div>
-              )}
-              {block.type === "tool_use" && block.name && (() => {
-                const parsed = tryParsePartialJson(block.text);
-                return parsed
-                  ? <ToolCall name={block.name} input={parsed} />
-                  : (
-                    <div class="tool-streaming">
-                      <span class="tool-label">{block.name}</span>
-                      <pre>{block.text}</pre>
-                    </div>
-                  );
-              })()}
-              {block.type === "tool_use" && !block.name && (
-                <div class="tool-streaming">
-                  <span class="tool-label">Tool call building...</span>
-                  <pre>{block.text}</pre>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

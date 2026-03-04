@@ -6,12 +6,19 @@ import { SessionView } from "./components/SessionView";
 
 export function App() {
   const {
-    sessions, activeSessionId, setActiveSessionId,
-    connected, send, interrupt, newSession, resume,
+    sessions,
+    activeSessionId,
+    setActiveSessionId,
+    connected,
+    send,
+    interrupt,
+    newSession,
+    resume,
     sidebarSessions,
   } = useSessionManager();
 
-  const active = activeSessionId !== null ? sessions.get(activeSessionId) ?? null : null;
+  const active =
+    activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
 
   if (sessions.size === 0) {
     // Welcome screen — no sessions yet

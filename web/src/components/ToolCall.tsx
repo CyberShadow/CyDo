@@ -49,10 +49,10 @@ interface AnnotatedSpan {
 function overlayDiff(
   syntaxTokens: ThemedToken[] | null,
   wordChanges: Change[],
-  side: "old" | "new"
+  side: "old" | "new",
 ): AnnotatedSpan[] {
   const relevant = wordChanges.filter((c) =>
-    side === "old" ? !c.added : !c.removed
+    side === "old" ? !c.added : !c.removed,
   );
 
   if (!syntaxTokens) {
@@ -95,14 +95,20 @@ function overlayDiff(
 
 function renderAnnotatedSpans(
   spans: AnnotatedSpan[],
-  side: "removed" | "added"
+  side: "removed" | "added",
 ): h.JSX.Element {
   return (
     <Fragment>
       {spans.map((s, i) => (
         <span
           key={i}
-          class={s.emphasized ? (side === "removed" ? "diff-word-removed" : "diff-word-added") : undefined}
+          class={
+            s.emphasized
+              ? side === "removed"
+                ? "diff-word-removed"
+                : "diff-word-added"
+              : undefined
+          }
           style={s.color ? { color: s.color } : undefined}
         >
           {s.content}
@@ -134,7 +140,15 @@ function wordDiffSimilarity(wordChanges: Change[]): number {
 
 const WORD_DIFF_THRESHOLD = 0.4;
 
-function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string; filePath?: string }) {
+function DiffView({
+  oldStr,
+  newStr,
+  filePath,
+}: {
+  oldStr: string;
+  newStr: string;
+  filePath?: string;
+}) {
   const lang = filePath ? langFromPath(filePath) : null;
   const oldTokens = useHighlight(oldStr, lang);
   const newTokens = useHighlight(newStr, lang);
@@ -156,8 +170,9 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
         newLineIdx++;
         elements.push(
           <div key={`c${idx}`} class="diff-context">
-            {"  "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-          </div>
+            {"  "}
+            {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+          </div>,
         );
       }
     } else if (change.removed) {
@@ -174,24 +189,33 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
         const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
         for (let i = 0; i < pairCount; i++) {
           const wc = diffWordsWithSpace(lines[i], addedLines[i]);
-          wordDiffs.push({ changes: wc, similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD });
+          wordDiffs.push({
+            changes: wc,
+            similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
+          });
         }
 
         // All removed lines (with word emphasis on similar pairs)
         for (let i = 0; i < lines.length; i++) {
           const idx = oldLineIdx + i;
           if (i < pairCount && wordDiffs[i].similar) {
-            const spans = overlayDiff(oldTokens?.[idx] ?? null, wordDiffs[i].changes, "old");
+            const spans = overlayDiff(
+              oldTokens?.[idx] ?? null,
+              wordDiffs[i].changes,
+              "old",
+            );
             elements.push(
               <div key={`r${idx}`} class="diff-removed">
-                {"- "}{renderAnnotatedSpans(spans, "removed")}
-              </div>
+                {"- "}
+                {renderAnnotatedSpans(spans, "removed")}
+              </div>,
             );
           } else {
             elements.push(
               <div key={`r${idx}`} class="diff-removed">
-                {"- "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-              </div>
+                {"- "}
+                {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+              </div>,
             );
           }
         }
@@ -200,17 +224,25 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
         for (let i = 0; i < addedLines.length; i++) {
           const idx = newLineIdx + i;
           if (i < pairCount && wordDiffs[i].similar) {
-            const spans = overlayDiff(newTokens?.[idx] ?? null, wordDiffs[i].changes, "new");
+            const spans = overlayDiff(
+              newTokens?.[idx] ?? null,
+              wordDiffs[i].changes,
+              "new",
+            );
             elements.push(
               <div key={`a${idx}`} class="diff-added">
-                {"+ "}{renderAnnotatedSpans(spans, "added")}
-              </div>
+                {"+ "}
+                {renderAnnotatedSpans(spans, "added")}
+              </div>,
             );
           } else {
             elements.push(
               <div key={`a${idx}`} class="diff-added">
-                {"+ "}{newTokens?.[idx] ? renderTokens(newTokens[idx]) : addedLines[i]}
-              </div>
+                {"+ "}
+                {newTokens?.[idx]
+                  ? renderTokens(newTokens[idx])
+                  : addedLines[i]}
+              </div>,
             );
           }
         }
@@ -224,8 +256,9 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
           const idx = oldLineIdx++;
           elements.push(
             <div key={`r${idx}`} class="diff-removed">
-              {"- "}{oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-            </div>
+              {"- "}
+              {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
+            </div>,
           );
         }
       }
@@ -235,8 +268,9 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
         const idx = newLineIdx++;
         elements.push(
           <div key={`a${idx}`} class="diff-added">
-            {"+ "}{newTokens?.[idx] ? renderTokens(newTokens[idx]) : lines[i]}
-          </div>
+            {"+ "}
+            {newTokens?.[idx] ? renderTokens(newTokens[idx]) : lines[i]}
+          </div>,
         );
       }
     }
@@ -247,7 +281,9 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
 
   return (
     <div class="diff-view">
-      <div class="diff-header">@@ -{oldLineCount} +{newLineCount} @@</div>
+      <div class="diff-header">
+        @@ -{oldLineCount} +{newLineCount} @@
+      </div>
       {elements}
     </div>
   );
@@ -256,15 +292,20 @@ function DiffView({ oldStr, newStr, filePath }: { oldStr: string; newStr: string
 function EditInput({ input }: { input: Record<string, unknown> }) {
   const oldString = input.old_string as string;
   const newString = input.new_string as string;
-  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
+  const filePath =
+    typeof input.file_path === "string" ? input.file_path : undefined;
   const remaining = Object.entries(input).filter(
-    ([k]) => !["file_path", "old_string", "new_string", "replace_all"].includes(k)
+    ([k]) =>
+      !["file_path", "old_string", "new_string", "replace_all"].includes(k),
   );
 
   return (
     <div class="tool-input-formatted">
       {remaining.map(([k, v]) => (
-        <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
+        <div key={k} class="tool-input-field">
+          <span class="field-label">{k}:</span>{" "}
+          <span class="field-value">{String(v)}</span>
+        </div>
       ))}
       <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
     </div>
@@ -273,19 +314,25 @@ function EditInput({ input }: { input: Record<string, unknown> }) {
 
 function WriteInput({ input }: { input: Record<string, unknown> }) {
   const content = input.content as string;
-  const filePath = typeof input.file_path === "string" ? input.file_path : undefined;
+  const filePath =
+    typeof input.file_path === "string" ? input.file_path : undefined;
   const lang = filePath ? langFromPath(filePath) : null;
   const tokens = useHighlight(content, lang);
   const remaining = Object.entries(input).filter(
-    ([k]) => !["file_path", "content"].includes(k)
+    ([k]) => !["file_path", "content"].includes(k),
   );
 
   return (
     <div class="tool-input-formatted">
       {remaining.map(([k, v]) => (
-        <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
+        <div key={k} class="tool-input-field">
+          <span class="field-label">{k}:</span>{" "}
+          <span class="field-value">{String(v)}</span>
+        </div>
       ))}
-      <pre class="write-content">{tokens ? renderTokenLines(tokens) : content}</pre>
+      <pre class="write-content">
+        {tokens ? renderTokenLines(tokens) : content}
+      </pre>
     </div>
   );
 }
@@ -300,11 +347,19 @@ function BashInput({ input }: { input: Record<string, unknown> }) {
 
   return formatGenericInput(
     remaining,
-    <pre class="write-content">{tokens ? renderTokenLines(tokens) : command}</pre>
+    <pre class="write-content">
+      {tokens ? renderTokenLines(tokens) : command}
+    </pre>,
   );
 }
 
-function ReadResult({ content, filePath }: { content: string; filePath: string }) {
+function ReadResult({
+  content,
+  filePath,
+}: {
+  content: string;
+  filePath: string;
+}) {
   const rawLines = content.split("\n");
   // Parse cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
   const parsed = rawLines.map((line) => {
@@ -343,13 +398,20 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   return (
     <div class="tool-input-formatted">
       {remaining.map(([k, v]) => (
-        <div key={k} class="tool-input-field"><span class="field-label">{k}:</span> <span class="field-value">{String(v)}</span></div>
+        <div key={k} class="tool-input-field">
+          <span class="field-label">{k}:</span>{" "}
+          <span class="field-value">{String(v)}</span>
+        </div>
       ))}
       <div class="todo-list">
         {todos.map((item, i) => (
           <div key={i} class={`todo-item todo-${item.status}`}>
             <span class="todo-status">
-              {item.status === "completed" ? "\u2713" : item.status === "in_progress" ? "\u25B6" : "\u25CB"}
+              {item.status === "completed"
+                ? "\u2713"
+                : item.status === "in_progress"
+                  ? "\u25B6"
+                  : "\u25CB"}
             </span>
             <span class="todo-content">{item.content}</span>
           </div>
@@ -359,7 +421,10 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   );
 }
 
-function formatGenericInput(input: Record<string, unknown>, children?: ComponentChildren): h.JSX.Element {
+function formatGenericInput(
+  input: Record<string, unknown>,
+  children?: ComponentChildren,
+): h.JSX.Element {
   const entries = Object.entries(input);
   return (
     <div class="tool-input-formatted">
@@ -369,10 +434,11 @@ function formatGenericInput(input: Record<string, unknown>, children?: Component
         return (
           <div key={k} class="tool-input-field">
             <span class="field-label">{k}:</span>
-            {isMultiline
-              ? <pre class="field-value-block">{str}</pre>
-              : <span class="field-value"> {str}</span>
-            }
+            {isMultiline ? (
+              <pre class="field-value-block">{str}</pre>
+            ) : (
+              <span class="field-value"> {str}</span>
+            )}
           </div>
         );
       })}
@@ -381,7 +447,10 @@ function formatGenericInput(input: Record<string, unknown>, children?: Component
   );
 }
 
-function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.Element | null {
+function getHeaderSubtitle(
+  name: string,
+  input: Record<string, unknown>,
+): h.JSX.Element | null {
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
 
   if (name === "Edit" && filePath) {
@@ -398,10 +467,14 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
   if (name === "Read" && filePath) {
     const offset = typeof input.offset === "number" ? input.offset : null;
     const limit = typeof input.limit === "number" ? input.limit : null;
-    const range = offset != null && limit != null ? `(${offset}\u2013${offset + limit - 1})`
-      : offset != null ? `(${offset}\u2013)`
-      : limit != null ? `(1\u2013${limit})`
-      : null;
+    const range =
+      offset != null && limit != null
+        ? `(${offset}\u2013${offset + limit - 1})`
+        : offset != null
+          ? `(${offset}\u2013)`
+          : limit != null
+            ? `(1\u2013${limit})`
+            : null;
     return (
       <Fragment>
         <span class="tool-subtitle-path">{filePath}</span>
@@ -414,7 +487,12 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
     return (
       <Fragment>
         <code class="tool-subtitle-pattern">{input.pattern}</code>
-        {path && <Fragment>{" in "}<code class="tool-subtitle-path">{path}</code></Fragment>}
+        {path && (
+          <Fragment>
+            {" in "}
+            <code class="tool-subtitle-path">{path}</code>
+          </Fragment>
+        )}
       </Fragment>
     );
   }
@@ -422,20 +500,32 @@ function getHeaderSubtitle(name: string, input: Record<string, unknown>): h.JSX.
     return <span class="tool-subtitle">{input.description}</span>;
   }
   if (name === "Task" && typeof input.description === "string") {
-    const prefix = typeof input.subagent_type === "string" ? `${input.subagent_type}: ` : "";
-    return <span class="tool-subtitle">{prefix}{input.description}</span>;
+    const prefix =
+      typeof input.subagent_type === "string" ? `${input.subagent_type}: ` : "";
+    return (
+      <span class="tool-subtitle">
+        {prefix}
+        {input.description}
+      </span>
+    );
   }
   return null;
 }
 
-function formatInput(name: string, input: Record<string, unknown>): h.JSX.Element {
+function formatInput(
+  name: string,
+  input: Record<string, unknown>,
+): h.JSX.Element {
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return <EditInput input={input} />;
   }
   if (name === "Write" && "file_path" in input && "content" in input) {
     return <WriteInput input={input} />;
   }
-  if ((name === "TodoWrite" || "todos" in input) && Array.isArray(input.todos)) {
+  if (
+    (name === "TodoWrite" || "todos" in input) &&
+    Array.isArray(input.todos)
+  ) {
     return formatTodoWriteInput(input);
   }
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
@@ -460,7 +550,10 @@ function formatInput(name: string, input: Record<string, unknown>): h.JSX.Elemen
   return formatGenericInput(input);
 }
 
-function renderResultContent(content: ToolResultContent, isError?: boolean): h.JSX.Element {
+function renderResultContent(
+  content: ToolResultContent,
+  isError?: boolean,
+): h.JSX.Element {
   if (typeof content === "string") {
     return (
       <pre class={`tool-result ${isError ? "error" : ""}`}>
@@ -480,21 +573,37 @@ function renderResultContent(content: ToolResultContent, isError?: boolean): h.J
   );
 }
 
-const defaultExpandedTools = new Set(["Edit", "Write", "Bash", "ExitPlanMode", "Task", "TodoWrite"]);
+const defaultExpandedTools = new Set([
+  "Edit",
+  "Write",
+  "Bash",
+  "ExitPlanMode",
+  "Task",
+  "TodoWrite",
+]);
 const defaultExpandedResults = new Set(["Bash", "Task"]);
 
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
-  const [resultOpen, setResultOpen] = useState(defaultExpandedResults.has(name));
+  const [resultOpen, setResultOpen] = useState(
+    defaultExpandedResults.has(name),
+  );
   const subtitle = getHeaderSubtitle(name, input);
 
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
-  const useReadHighlight = name === "Read" && filePath && result && !result.isError && typeof result.content === "string";
+  const useReadHighlight =
+    name === "Read" &&
+    filePath &&
+    result &&
+    !result.isError &&
+    typeof result.content === "string";
 
   return (
     <div class={`tool-call ${result?.isError ? "tool-error" : ""}`}>
       <div class="tool-header" onClick={() => setInputOpen(!inputOpen)}>
-        <span class="tool-icon">{result ? (result.isError ? "!" : "\u2713") : "\u2026"}</span>
+        <span class="tool-icon">
+          {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
+        </span>
         <span class="tool-name">{name}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
@@ -509,11 +618,15 @@ export function ToolCall({ name, input, result, children }: Props) {
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result
           </div>
-          {resultOpen && (
-            useReadHighlight
-              ? <ReadResult content={result.content as string} filePath={filePath!} />
-              : renderResultContent(result.content, result.isError)
-          )}
+          {resultOpen &&
+            (useReadHighlight ? (
+              <ReadResult
+                content={result.content as string}
+                filePath={filePath!}
+              />
+            ) : (
+              renderResultContent(result.content, result.isError)
+            ))}
         </div>
       )}
     </div>

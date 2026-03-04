@@ -8,7 +8,15 @@ import type { ExtraField } from "./extractExtras";
 
 export interface DisplayMessage {
   id: string;
-  type: "user" | "assistant" | "tool_result" | "system" | "result" | "summary" | "rate_limit" | "compact_boundary";
+  type:
+    | "user"
+    | "assistant"
+    | "tool_result"
+    | "system"
+    | "result"
+    | "summary"
+    | "rate_limit"
+    | "compact_boundary";
   content: AssistantContentBlock[];
   toolResults?: Map<string, ToolResult>;
   model?: string;
@@ -97,7 +105,11 @@ export interface SessionState {
   msgIdCounter: number;
 }
 
-export function makeSessionState(sid: number, alive: boolean = false, resumable: boolean = false): SessionState {
+export function makeSessionState(
+  sid: number,
+  alive: boolean = false,
+  resumable: boolean = false,
+): SessionState {
   return {
     sid,
     messages: [],

@@ -13,7 +13,17 @@ interface Props {
   class?: string;
 }
 
-export const Markdown: FunctionComponent<Props> = memo(({ text, class: className }: Props) => {
-  const html = useMemo(() => marked.parse(text, { async: false }) as string, [text]);
-  return <div class={`markdown ${className ?? ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
-});
+export const Markdown: FunctionComponent<Props> = memo(
+  ({ text, class: className }: Props) => {
+    const html = useMemo(
+      () => marked.parse(text, { async: false }) as string,
+      [text],
+    );
+    return (
+      <div
+        class={`markdown ${className ?? ""}`}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  },
+);
