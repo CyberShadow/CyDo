@@ -21,7 +21,12 @@ import {
   reduceFileMessage,
   reducePendingUserMessage,
 } from "./sessionReducer";
-import { notifyTransition, initSnapshot } from "./useNotifications";
+import {
+  notifyTransition,
+  initSnapshot,
+  resetReplay,
+  markReplayDone,
+} from "./useNotifications";
 
 export interface SessionManager {
   sessions: Map<number, SessionState>;
@@ -277,28 +282,51 @@ export function useSessionManager(): SessionManager {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
+    let replayTimerId: ReturnType<typeof setTimeout> | null = null;
+
     conn.onStatusChange = (connected) => {
       setConnected(connected);
-      if (!connected) {
+      if (connected) {
+        // Suppress notifications during initial replay; mark done after
+        // messages settle (debounced in onSessionMessage/onFileMessage).
+        resetReplay();
+      } else {
+        resetReplay();
+        if (replayTimerId) {
+          clearTimeout(replayTimerId);
+          replayTimerId = null;
+        }
         liveStates.clear();
         setSessions(new Map());
       }
     };
+    const debounceReplay = () => {
+      if (replayTimerId) clearTimeout(replayTimerId);
+      replayTimerId = setTimeout(() => {
+        markReplayDone();
+        replayTimerId = null;
+      }, 1000);
+    };
+
     conn.onSessionMessage = (sid, msg) => {
       buffer.push({ kind: "session", sid, msg });
       scheduleFlush();
+      debounceReplay();
     };
     conn.onFileMessage = (sid, msg) => {
       buffer.push({ kind: "file", sid, msg });
       scheduleFlush();
+      debounceReplay();
     };
     conn.onControlMessage = (msg) => {
       buffer.push({ kind: "control", msg });
       scheduleFlush();
+      debounceReplay();
     };
     conn.connect();
     return () => {
       cancelPendingFlush();
+      if (replayTimerId) clearTimeout(replayTimerId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };

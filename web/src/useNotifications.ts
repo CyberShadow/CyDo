@@ -21,6 +21,19 @@ interface Snapshot {
 
 const snapshots = new Map<number, Snapshot>();
 
+// Suppresses notifications/attention during initial WebSocket replay.
+let replayDone = false;
+
+/** Call when connection opens to reset replay state. */
+export function resetReplay() {
+  replayDone = false;
+}
+
+/** Call after replay messages have settled to enable notifications. */
+export function markReplayDone() {
+  replayDone = true;
+}
+
 function lastMessageText(s: SessionState): string {
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const msg = s.messages[i];
@@ -41,7 +54,12 @@ type AttentionListener = (sids: Set<number>) => void;
 const attentionListeners = new Set<AttentionListener>();
 let attentionSet = new Set<number>();
 
+// Currently viewed session — suppresses attention when tab is visible.
+let activeVisibleSid: number | null = null;
+
 function addAttention(sid: number) {
+  if (!replayDone) return;
+  if (sid === activeVisibleSid && !document.hidden) return;
   if (attentionSet.has(sid)) return;
   attentionSet = new Set(attentionSet);
   attentionSet.add(sid);
@@ -66,7 +84,7 @@ export function notifyTransition(
 ) {
   const p = snapshots.get(sid);
   snapshots.set(sid, { alive: next.alive, isProcessing: next.isProcessing });
-  if (!p) return;
+  if (!p || !replayDone) return;
 
   const finished = p.alive && !next.alive;
   const awaiting = p.isProcessing && !next.isProcessing && next.alive;
@@ -102,9 +120,18 @@ var ports = [];
 var replayDone = false;
 var replayTimer = null;
 
+var portFocus = [];
+
 self.onconnect = function(e) {
   var port = e.ports[0];
+  var idx = ports.length;
   ports.push(port);
+  portFocus.push(false);
+  port.onmessage = function(msg) {
+    if (msg.data && msg.data.type === "tab-state") {
+      portFocus[idx] = msg.data.hasFocus;
+    }
+  };
   port.start();
 };
 
@@ -183,18 +210,27 @@ function handleMessage(raw) {
   }
 }
 
+function anyTabFocused() {
+  for (var i = 0; i < portFocus.length; i++) {
+    if (portFocus[i]) return true;
+  }
+  return false;
+}
+
 function checkTransition(sid, prev, next) {
   var finished = prev.alive && !next.alive;
   var awaiting = prev.isProcessing && !next.isProcessing && next.alive;
   if (!finished && !awaiting) return;
 
-  var title = next.title || ("Session " + sid);
-  var body = finished ? "Session finished" : "Awaiting input";
-  try { new Notification(title, { body: body, tag: "cydo-" + sid }); } catch (e) {}
-
   for (var j = 0; j < ports.length; j++) {
     ports[j].postMessage({ type: "attention", sid: sid });
   }
+
+  if (anyTabFocused()) return;
+
+  var title = next.title || ("Session " + sid);
+  var body = finished ? "Session finished" : "Awaiting input";
+  try { new Notification(title, { body: body, tag: "cydo-" + sid }); } catch (e) {}
 }
 
 connect();
@@ -251,13 +287,29 @@ export function useNotifications(activeSessionId: number | null) {
     }
   }, []);
 
-  // Start the SharedWorker
+  // Start the SharedWorker and report focus state
   useEffect(() => {
     startWorker();
+    const sendFocus = () => {
+      worker?.port.postMessage({
+        type: "tab-state",
+        hasFocus: document.hasFocus(),
+      });
+    };
+    sendFocus();
+    window.addEventListener("focus", sendFocus);
+    window.addEventListener("blur", sendFocus);
+    document.addEventListener("visibilitychange", sendFocus);
+    return () => {
+      window.removeEventListener("focus", sendFocus);
+      window.removeEventListener("blur", sendFocus);
+      document.removeEventListener("visibilitychange", sendFocus);
+    };
   }, []);
 
-  // Clear attention for the active session when tab is visible
+  // Track active session and clear attention when it's visible
   useEffect(() => {
+    activeVisibleSid = activeSessionId;
     if (activeSessionId === null) return;
 
     const clear = () => {
@@ -266,7 +318,10 @@ export function useNotifications(activeSessionId: number | null) {
 
     clear();
     document.addEventListener("visibilitychange", clear);
-    return () => document.removeEventListener("visibilitychange", clear);
+    return () => {
+      document.removeEventListener("visibilitychange", clear);
+      activeVisibleSid = null;
+    };
   }, [activeSessionId]);
 
   return attention;
