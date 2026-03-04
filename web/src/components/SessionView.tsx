@@ -1,5 +1,6 @@
 import { h } from "preact";
 import type { SessionState } from "../types";
+import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
@@ -10,6 +11,8 @@ interface Props {
   onSend: (text: string) => void;
   onInterrupt: () => void;
   onResume: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
 }
 
 export function SessionView({
@@ -18,6 +21,8 @@ export function SessionView({
   onSend,
   onInterrupt,
   onResume,
+  theme,
+  onToggleTheme,
 }: Props) {
   return (
     <>
@@ -26,6 +31,8 @@ export function SessionView({
         connected={connected}
         totalCost={session.totalCost}
         isProcessing={session.isProcessing}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
       />
       <MessageList
         sessionId={session.sid}

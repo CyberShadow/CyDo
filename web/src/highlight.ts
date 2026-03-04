@@ -2,6 +2,7 @@ import { createHighlighter, type ThemedToken } from "shiki";
 import type { Highlighter } from "shiki";
 import { h, Fragment } from "preact";
 import { useState, useEffect } from "preact/hooks";
+import { useCurrentTheme } from "./useTheme";
 
 export type { ThemedToken };
 
@@ -92,10 +93,12 @@ export function langFromPath(filePath: string): string | null {
   return EXT_TO_LANG[ext] || EXT_TO_LANG[ext.toLowerCase()] || null;
 }
 
+export type ShikiTheme = "github-dark" | "github-light";
+
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ["github-dark"],
+      themes: ["github-dark", "github-light"],
       langs: [],
     });
   }
@@ -107,6 +110,7 @@ const loadedLangs = new Set<string>();
 export async function tokenize(
   code: string,
   lang: string,
+  theme: ShikiTheme = "github-dark",
 ): Promise<ThemedToken[][] | null> {
   const hl = await getHighlighter();
   if (!loadedLangs.has(lang)) {
@@ -119,7 +123,7 @@ export async function tokenize(
   }
   const result = hl.codeToTokens(code, {
     lang: lang as any,
-    theme: "github-dark",
+    theme,
   });
   return result.tokens;
 }
@@ -128,6 +132,9 @@ export function useHighlight(
   code: string | null | undefined,
   lang: string | null | undefined,
 ): ThemedToken[][] | null {
+  const appTheme = useCurrentTheme();
+  const shikiTheme: ShikiTheme =
+    appTheme === "light" ? "github-light" : "github-dark";
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
 
   useEffect(() => {
@@ -136,13 +143,13 @@ export function useHighlight(
       return;
     }
     let cancelled = false;
-    tokenize(code, lang).then((t) => {
+    tokenize(code, lang, shikiTheme).then((t) => {
       if (!cancelled) setTokens(t);
     });
     return () => {
       cancelled = true;
     };
-  }, [code, lang]);
+  }, [code, lang, shikiTheme]);
 
   return tokens;
 }

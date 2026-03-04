@@ -1,5 +1,6 @@
 import { h } from "preact";
 import { useSessionManager } from "./useSessionManager";
+import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
 import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
@@ -17,45 +18,53 @@ export function App() {
     sidebarSessions,
   } = useSessionManager();
 
+  const { theme, toggleTheme } = useTheme();
+
   const active =
     activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
 
   if (sessions.size === 0) {
     // Welcome screen — no sessions yet
     return (
-      <div class="app welcome">
-        <div class="welcome-box">
-          <h1 class="welcome-title">CyDo</h1>
-          <p class="welcome-subtitle">Multi-agent orchestration system</p>
-          <InputBox
-            onSend={send}
-            onInterrupt={interrupt}
-            isProcessing={false}
-            disabled={!connected}
-            sessionId={0}
-          />
+      <ThemeContext.Provider value={theme}>
+        <div class="app welcome">
+          <div class="welcome-box">
+            <h1 class="welcome-title">CyDo</h1>
+            <p class="welcome-subtitle">Multi-agent orchestration system</p>
+            <InputBox
+              onSend={send}
+              onInterrupt={interrupt}
+              isProcessing={false}
+              disabled={!connected}
+              sessionId={0}
+            />
+          </div>
         </div>
-      </div>
+      </ThemeContext.Provider>
     );
   }
 
   return (
-    <div class="app has-sidebar">
-      <Sidebar
-        sessions={sidebarSessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={setActiveSessionId}
-        onNewSession={newSession}
-      />
-      {active && (
-        <SessionView
-          session={active}
-          connected={connected}
-          onSend={send}
-          onInterrupt={interrupt}
-          onResume={resume}
+    <ThemeContext.Provider value={theme}>
+      <div class="app has-sidebar">
+        <Sidebar
+          sessions={sidebarSessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={setActiveSessionId}
+          onNewSession={newSession}
         />
-      )}
-    </div>
+        {active && (
+          <SessionView
+            session={active}
+            connected={connected}
+            onSend={send}
+            onInterrupt={interrupt}
+            onResume={resume}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
+        )}
+      </div>
+    </ThemeContext.Provider>
   );
 }

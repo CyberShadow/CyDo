@@ -17,10 +17,47 @@
   --border: #333;
   --success: hsl(122, 40%, 50%);
   --error: #f44336;
+  --user-border: #aaa;
+  --assistant-border: #444;
+  --heading-color: #fff;
+  --overlay-dark: rgba(0, 0, 0, 0.2);
+  --overlay-faint: rgba(0, 0, 0, 0.15);
+  --overlay-light: rgba(255, 255, 255, 0.05);
+  --overlay-light-more: rgba(255, 255, 255, 0.1);
+  --scrollbar-hover: #555;
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+[data-theme="light"] {
+  --bg: #f5f5f5;
+  --bg-secondary: #e8e8e8;
+  --bg-tertiary: #ddd;
+  --text: #1a1a1a;
+  --text-dim: #666;
+  --accent: #555;
+  --accent-dim: #777;
+  --info: #3a6a8a;
+  --warn: #8a6a30;
+  --special: #6a4a8a;
+  --filepath: #3a7a3a;
+  --pattern: #7a6a20;
+  --user-bg: #e0e0e0;
+  --assistant-bg: #ebebeb;
+  --tool-bg: #f0f0f0;
+  --border: #ccc;
+  --success: hsl(122, 40%, 40%);
+  --error: #d32f2f;
+  --user-border: #888;
+  --assistant-border: #bbb;
+  --heading-color: #111;
+  --overlay-dark: rgba(0, 0, 0, 0.06);
+  --overlay-faint: rgba(0, 0, 0, 0.04);
+  --overlay-light: rgba(0, 0, 0, 0.04);
+  --overlay-light-more: rgba(0, 0, 0, 0.07);
+  --scrollbar-hover: #999;
 }
 
 * {
@@ -164,7 +201,7 @@ body,
 }
 
 .sidebar-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-light);
 }
 
 .sidebar-item.active {
@@ -240,6 +277,24 @@ body,
 
 .banner-cost {
   color: var(--text-dim);
+}
+
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .banner-status {
@@ -332,7 +387,7 @@ body,
 
 .user-message {
   background: var(--user-bg);
-  border-left: 3px solid #aaa;
+  border-left: 3px solid var(--user-border);
 }
 
 .user-text {
@@ -347,7 +402,7 @@ body,
 
 .assistant-message {
   background: var(--assistant-bg);
-  border-left: 3px solid #444;
+  border-left: 3px solid var(--assistant-border);
 }
 
 .assistant-message.streaming {
@@ -374,7 +429,7 @@ body,
 
 .thinking-text {
   padding: 8px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   font-size: 12px;
   color: var(--text-dim);
   word-break: break-word;
@@ -406,7 +461,7 @@ body,
 }
 
 .tool-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-light);
 }
 
 .tool-icon {
@@ -451,7 +506,7 @@ body,
 .tool-subtitle-tag {
   font-size: 11px;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-light-more);
   padding: 1px 5px;
   border-radius: 3px;
   flex-shrink: 0;
@@ -472,7 +527,7 @@ body,
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   border-top: 1px solid var(--border);
   max-height: 400px;
   overflow-y: auto;
@@ -481,7 +536,7 @@ body,
 .tool-result-blocks {
   padding: 8px 12px;
   font-size: 12px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   border-top: 1px solid var(--border);
   max-height: 400px;
   overflow-y: auto;
@@ -536,7 +591,7 @@ body,
 .markdown h3,
 .markdown h4 {
   margin: 0.8em 0 0.4em;
-  color: #fff;
+  color: var(--heading-color);
 }
 
 .markdown h1 {
@@ -550,14 +605,14 @@ body,
 }
 
 .markdown code {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--overlay-dark);
   padding: 2px 5px;
   font-family: var(--font-mono);
   font-size: 0.9em;
 }
 
 .markdown pre {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--overlay-dark);
   padding: 12px;
   overflow-x: auto;
   margin: 0.5em 0;
@@ -606,7 +661,7 @@ body,
 }
 
 .markdown th {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
 }
 
 .markdown hr {
@@ -858,7 +913,7 @@ body,
 .result-details pre {
   margin-top: 4px;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -960,7 +1015,7 @@ body,
 .unknown-block {
   margin: 8px 0;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-light);
   border: 1px solid var(--border);
 }
 
@@ -981,7 +1036,7 @@ body,
 .tool-input-formatted {
   padding: 8px 12px;
   font-size: 12px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   border-top: 1px solid var(--border);
 }
 
@@ -1004,7 +1059,7 @@ body,
 .field-value-block {
   margin: 4px 0 4px 16px;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-faint);
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
@@ -1055,7 +1110,7 @@ body,
 .write-content {
   margin-top: 6px;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-faint);
   font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
@@ -1117,7 +1172,7 @@ body,
 .banner-details {
   width: 100%;
   padding: 8px 16px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--overlay-dark);
   border-top: 1px solid var(--border);
   font-size: 12px;
 }
@@ -1142,7 +1197,7 @@ body,
   display: inline-block;
   margin: 2px 0;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-faint);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1151,7 +1206,7 @@ body,
 .banner-perms {
   font-size: 10px;
   padding: 1px 6px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--overlay-light);
   color: var(--text-dim);
 }
 
@@ -1198,7 +1253,7 @@ body,
 pre.extra-field-value {
   margin: 2px 0 2px 16px;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--overlay-faint);
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
@@ -1230,5 +1285,5 @@ pre.extra-field-value {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: var(--scrollbar-hover);
 }

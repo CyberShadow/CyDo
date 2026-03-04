@@ -1,12 +1,15 @@
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
+import type { Theme } from "../useTheme";
 
 interface Props {
   sessionInfo: SessionInfo | null;
   connected: boolean;
   totalCost: number;
   isProcessing: boolean;
+  theme: Theme;
+  onToggleTheme: () => void;
 }
 
 export function SystemBanner({
@@ -14,6 +17,8 @@ export function SystemBanner({
   connected,
   totalCost,
   isProcessing,
+  theme,
+  onToggleTheme,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -44,6 +49,13 @@ export function SystemBanner({
         >
           {connected ? "Connected" : "Disconnected"}
         </span>
+        <button
+          class="theme-toggle"
+          onClick={onToggleTheme}
+          title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        >
+          {theme === "dark" ? "\u2600" : "\u263E"}
+        </button>
       </div>
       {detailsOpen && sessionInfo && (
         <div class="banner-details">
