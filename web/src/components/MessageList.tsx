@@ -1,5 +1,6 @@
 import { h, type ComponentChildren } from "preact";
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { memo } from "preact/compat";
+import { useLayoutEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { DisplayMessage, StreamingBlock } from "../types";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
@@ -179,7 +180,7 @@ function jsonReplacer(_key: string, value: unknown) {
   return value instanceof Map ? Object.fromEntries(value) : value;
 }
 
-function MessageView({ msg, children }: { msg: DisplayMessage; children: ComponentChildren }) {
+const MessageView = memo(({ msg, children }: { msg: DisplayMessage; children: ComponentChildren }) => {
   const [showSource, setShowSource] = useState(false);
   return (
     <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
@@ -202,7 +203,7 @@ function MessageView({ msg, children }: { msg: DisplayMessage; children: Compone
       }
     </div>
   );
-}
+}, (prev, next) => prev.msg === next.msg);
 
 export function MessageList({ sessionId, messages, streamingBlocks, isProcessing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -218,20 +219,23 @@ export function MessageList({ sessionId, messages, streamingBlocks, isProcessing
   });
 
   // Partition messages: top-level vs nested under a parent tool_use_id
-  const childrenByParent = new Map<string, DisplayMessage[]>();
-  const topLevelMessages: DisplayMessage[] = [];
-  for (const msg of messages) {
-    if (msg.parentToolUseId) {
-      let list = childrenByParent.get(msg.parentToolUseId);
-      if (!list) {
-        list = [];
-        childrenByParent.set(msg.parentToolUseId, list);
+  const { childrenByParent, topLevelMessages } = useMemo(() => {
+    const childrenByParent = new Map<string, DisplayMessage[]>();
+    const topLevelMessages: DisplayMessage[] = [];
+    for (const msg of messages) {
+      if (msg.parentToolUseId) {
+        let list = childrenByParent.get(msg.parentToolUseId);
+        if (!list) {
+          list = [];
+          childrenByParent.set(msg.parentToolUseId, list);
+        }
+        list.push(msg);
+      } else {
+        topLevelMessages.push(msg);
       }
-      list.push(msg);
-    } else {
-      topLevelMessages.push(msg);
     }
-  }
+    return { childrenByParent, topLevelMessages };
+  }, [messages]);
 
   return (
     <div class="message-list" ref={containerRef}>
