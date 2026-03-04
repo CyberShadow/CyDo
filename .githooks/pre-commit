@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+# Format staged frontend files with Prettier
+root="$(git rev-parse --show-toplevel)"
+
+# Get staged .ts/.tsx/.css files under web/src/ (paths relative to repo root)
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '^web/src/.*\.\(ts\|tsx\|css\)$')
+
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+# Run prettier from web/ so it finds node_modules and config
+cd "$root/web" || exit 0
+
+# Strip web/ prefix for prettier
+echo "$staged" | sed 's|^web/||' | xargs npx prettier --write
+
+# Re-stage formatted files (using full paths from repo root)
+cd "$root"
+echo "$staged" | xargs git add
