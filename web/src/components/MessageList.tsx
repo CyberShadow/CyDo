@@ -1,6 +1,12 @@
 import { h, type ComponentChildren } from "preact";
 import { memo } from "preact/compat";
-import { useLayoutEffect, useRef, useState, useMemo } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useMemo,
+} from "preact/hooks";
 import type { DisplayMessage } from "../types";
 import { useHighlight, renderTokens } from "../highlight";
 import { AssistantMessage } from "./AssistantMessage";
@@ -227,12 +233,28 @@ export function MessageList({ sessionId, messages, isProcessing }: Props) {
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
   const prevSessionId = useRef(sessionId);
   useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
     if (prevSessionId.current !== sessionId) {
       prevSessionId.current = sessionId;
-      const el = containerRef.current;
-      if (el) el.scrollTop = 0;
+      el.scrollTop = 0;
     }
+    // Toggle overflow-anchor based on scroll position:
+    // - At bottom: disable so column-reverse naturally sticks to bottom
+    // - Scrolled up: enable so browser anchors viewport when content grows
+    el.style.overflowAnchor = el.scrollTop >= -1 ? "none" : "auto";
   });
+
+  // Also toggle on user scroll (which happens between renders).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      el.style.overflowAnchor = el.scrollTop >= -1 ? "none" : "auto";
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Partition messages: top-level vs nested under a parent tool_use_id
   const { childrenByParent, topLevelMessages } = useMemo(() => {
