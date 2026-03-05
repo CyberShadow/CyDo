@@ -2,6 +2,7 @@ import { h, type ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import { useLayoutEffect, useRef, useState, useMemo } from "preact/hooks";
 import type { DisplayMessage } from "../types";
+import { useHighlight, renderTokens } from "../highlight";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
@@ -169,6 +170,28 @@ function jsonReplacer(_key: string, value: unknown) {
   return value instanceof Map ? Object.fromEntries(value) : value;
 }
 
+function SourceView({ msg }: { msg: DisplayMessage }) {
+  const jsonText = useMemo(
+    () => JSON.stringify(msg.rawSource ?? msg, jsonReplacer, 2),
+    [msg.rawSource ?? msg],
+  );
+  const tokens = useHighlight(jsonText, "json");
+  return (
+    <div class="message source-view">
+      <pre>
+        {tokens
+          ? tokens.map((line, i) => (
+              <span key={i}>
+                {i > 0 && "\n"}
+                {renderTokens(line)}
+              </span>
+            ))
+          : jsonText}
+      </pre>
+    </div>
+  );
+}
+
 const MessageView = memo(
   function MessageView({
     msg,
@@ -189,13 +212,7 @@ const MessageView = memo(
             {"{}"}
           </button>
         )}
-        {showSource ? (
-          <div class="message source-view">
-            <pre>{JSON.stringify(msg.rawSource ?? msg, jsonReplacer, 2)}</pre>
-          </div>
-        ) : (
-          children
-        )}
+        {showSource ? <SourceView msg={msg} /> : children}
       </div>
     );
   },
