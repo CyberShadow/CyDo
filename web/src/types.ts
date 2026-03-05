@@ -21,6 +21,8 @@ export interface DisplayMessage {
   toolResults?: Map<string, ToolResult>;
   model?: string;
   pending?: boolean;
+  // In-progress streaming content blocks (text/tool_use/thinking being received)
+  streamingBlocks?: StreamingBlock[];
   // Additional metadata for richer display
   isSidechain?: boolean;
   isSynthetic?: boolean;
@@ -96,7 +98,6 @@ export interface SessionInfo {
 export interface SessionState {
   sid: number;
   messages: DisplayMessage[];
-  streamingBlocks: StreamingBlock[];
   sessionInfo: SessionInfo | null;
   isProcessing: boolean;
   totalCost: number;
@@ -117,7 +118,6 @@ export function makeSessionState(
   return {
     sid,
     messages: [],
-    streamingBlocks: [],
     sessionInfo: null,
     isProcessing: false,
     totalCost: 0,

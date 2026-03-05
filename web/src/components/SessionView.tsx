@@ -37,7 +37,6 @@ export function SessionView({
       <MessageList
         sessionId={session.sid}
         messages={session.messages}
-        streamingBlocks={session.streamingBlocks}
         isProcessing={session.isProcessing}
       />
       {session.resumable ? (

@@ -79,7 +79,6 @@ export function reduceSystemInit(
       fast_mode_state: msg.fast_mode_state,
     },
     isProcessing: true,
-    streamingBlocks: [],
     messages: initMsg ? [...s.messages, initMsg] : s.messages,
   };
 }
@@ -207,18 +206,48 @@ export function reduceAssistantMessage(
   extras: ExtraField[] | undefined,
 ): SessionState {
   const msgId = msg.message.id;
-  const existing = s.messages.findIndex((m) => m.id === msgId);
-  if (existing >= 0) {
+  let idx = s.messages.findIndex((m) => m.id === msgId);
+
+  // If not found by real ID, search backwards for a streaming placeholder
+  // to adopt (it was created by content_block_start before the full
+  // assistant message arrived, and may no longer be the last message if
+  // a user echo was inserted after it).
+  if (idx < 0) {
+    for (let i = s.messages.length - 1; i >= 0; i--) {
+      const m = s.messages[i];
+      if (
+        m.type === "assistant" &&
+        m.id.startsWith("streaming-") &&
+        m.streamingBlocks?.length
+      ) {
+        idx = i;
+        break;
+      }
+    }
+  }
+
+  if (idx >= 0) {
     const updated = [...s.messages];
-    const existingMsg = { ...updated[existing] };
+    const existingMsg = { ...updated[idx] };
+    // Replace temp ID with real one when adopting a streaming placeholder
+    if (existingMsg.id !== msgId) existingMsg.id = msgId;
     existingMsg.content = [...existingMsg.content, ...msg.message.content];
+    existingMsg.streamingBlocks = [];
     // Update usage if present (later messages may have updated counts)
     if (msg.message.usage) {
       existingMsg.usage = msg.message.usage;
     }
+    // Set fields that may not have been on the placeholder
+    existingMsg.model ??= msg.message.model;
+    existingMsg.isSidechain ??= msg.isSidechain;
+    existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
     // Accumulate raw sources
     const prev = existingMsg.rawSource;
-    existingMsg.rawSource = Array.isArray(prev) ? [...prev, msg] : [prev, msg];
+    existingMsg.rawSource = prev
+      ? Array.isArray(prev)
+        ? [...prev, msg]
+        : [prev, msg]
+      : msg;
     // Merge extra fields (deduplicate by path+key)
     if (extras) {
       const prev = existingMsg.extraFields || [];
@@ -226,8 +255,8 @@ export function reduceAssistantMessage(
       const novel = extras.filter((e) => !seen.has(`${e.path}\0${e.key}`));
       existingMsg.extraFields = novel.length > 0 ? [...prev, ...novel] : prev;
     }
-    updated[existing] = existingMsg;
-    return { ...s, messages: updated, streamingBlocks: [] };
+    updated[idx] = existingMsg;
+    return { ...s, messages: updated };
   }
   return {
     ...s,
@@ -246,7 +275,6 @@ export function reduceAssistantMessage(
         rawSource: msg,
       },
     ],
-    streamingBlocks: [],
   };
 }
 
@@ -307,29 +335,29 @@ export function reduceUserEcho(
   // If there are text blocks (actual user text, not just tool results), show as user message
   const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
   if (meaningfulText.length > 0 && toolResults.length === 0) {
-    // Only show user echo text when it's not a tool-result-only message
+    const id = `user-echo-${++state.msgIdCounter}`;
+    const echoMsg: DisplayMessage = {
+      id,
+      type: "user" as const,
+      content: meaningfulText.map((t) => ({
+        type: "text" as const,
+        text: t,
+      })),
+      isSidechain,
+      isSynthetic: isSynthetic || undefined,
+      parentToolUseId,
+      extraFields: extras,
+      rawSource: rawMsg,
+    };
+    // Remove the pending placeholder, then insert the echo before any
+    // in-progress streaming message so user text always precedes the
+    // assistant's response.
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
     );
-    const id = `user-echo-${++state.msgIdCounter}`;
     state = {
       ...state,
-      messages: [
-        ...filtered,
-        {
-          id,
-          type: "user" as const,
-          content: meaningfulText.map((t) => ({
-            type: "text" as const,
-            text: t,
-          })),
-          isSidechain,
-          isSynthetic: isSynthetic || undefined,
-          parentToolUseId,
-          extraFields: extras,
-          rawSource: rawMsg,
-        },
-      ],
+      messages: insertBeforeStreaming(filtered, echoMsg),
     };
   }
 
@@ -345,19 +373,20 @@ export function reduceUserReplay(
     .filter((b: any) => b.type === "text")
     .map((b: any) => b.text)
     .join("");
-  const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
   const id = `user-${++s.msgIdCounter}`;
+  const echoMsg: DisplayMessage = {
+    id,
+    type: "user" as const,
+    content: [{ type: "text" as const, text }],
+    rawSource: rawMsg,
+  };
+  // Remove the pending placeholder, then insert the echo before any
+  // in-progress streaming message so user text always precedes the
+  // assistant's response.
+  const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
   return {
     ...s,
-    messages: [
-      ...filtered,
-      {
-        id,
-        type: "user" as const,
-        content: [{ type: "text" as const, text }],
-        rawSource: rawMsg,
-      },
-    ],
+    messages: insertBeforeStreaming(filtered, echoMsg),
   };
 }
 
@@ -371,7 +400,6 @@ export function reduceResultMessage(
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
     isProcessing: false,
-    streamingBlocks: [],
     messages: [
       ...s.messages,
       {
@@ -398,47 +426,126 @@ export function reduceResultMessage(
   };
 }
 
+/** Insert a message before any in-progress streaming assistant message.
+ *  User messages should always precede the assistant's response, but the
+ *  protocol may deliver the user echo after streaming has already started. */
+function insertBeforeStreaming(
+  messages: DisplayMessage[],
+  msg: DisplayMessage,
+): DisplayMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (
+      messages[i].type === "assistant" &&
+      messages[i].streamingBlocks !== undefined
+    ) {
+      const result = [...messages];
+      result.splice(i, 0, msg);
+      return result;
+    }
+  }
+  return [...messages, msg];
+}
+
+/** Find the last assistant message with active streaming blocks. */
+function findStreamingMsg(messages: DisplayMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].streamingBlocks?.length) return i;
+  }
+  return -1;
+}
+
+/** Find or create the in-progress assistant message for streaming blocks. */
+function getStreamingMessage(s: SessionState): {
+  messages: DisplayMessage[];
+  msgIdx: number;
+} {
+  const messages = s.messages.slice();
+  // Search backwards for an assistant message with active streaming
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === "assistant" && messages[i].streamingBlocks) {
+      messages[i] = { ...messages[i] };
+      return { messages, msgIdx: i };
+    }
+  }
+  // Create a streaming placeholder
+  const placeholder: DisplayMessage = {
+    id: `streaming-${++s.msgIdCounter}`,
+    type: "assistant" as const,
+    content: [],
+    toolResults: new Map(),
+    streamingBlocks: [],
+  };
+  messages.push(placeholder);
+  return { messages, msgIdx: messages.length - 1 };
+}
+
 export function reduceStreamEvent(
   s: SessionState,
   event: StreamEvent,
 ): SessionState {
   switch (event.type) {
-    case "content_block_start":
-      return {
-        ...s,
-        streamingBlocks: [
-          ...s.streamingBlocks,
-          {
-            index: event.index,
-            type: event.content_block.type,
-            text: "",
-            name: (event.content_block as Record<string, unknown>).name as
-              | string
-              | undefined,
-          },
-        ],
-      };
-    case "content_block_delta":
-      return {
-        ...s,
-        streamingBlocks: s.streamingBlocks.map((b) => {
-          if (b.index !== event.index) return b;
-          const delta = event.delta;
-          let append = "";
-          if (delta.type === "text_delta") append = delta.text;
-          else if (delta.type === "thinking_delta") append = delta.thinking;
-          else if (delta.type === "input_json_delta")
-            append = delta.partial_json;
-          return { ...b, text: b.text + append };
-        }),
-      };
-    case "content_block_stop":
-      return {
-        ...s,
-        streamingBlocks: s.streamingBlocks.filter(
-          (b) => b.index !== event.index,
-        ),
-      };
+    case "content_block_start": {
+      const { messages, msgIdx } = getStreamingMessage(s);
+      const msg = messages[msgIdx];
+      msg.streamingBlocks = [
+        ...(msg.streamingBlocks || []),
+        {
+          index: event.index,
+          type: event.content_block.type,
+          text: "",
+          name: (event.content_block as Record<string, unknown>).name as
+            | string
+            | undefined,
+        },
+      ];
+      return { ...s, messages };
+    }
+    case "content_block_delta": {
+      const targetIdx = findStreamingMsg(s.messages);
+      if (targetIdx < 0) return s;
+      const messages = s.messages.slice();
+      const msg = { ...messages[targetIdx] };
+      messages[targetIdx] = msg;
+      msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
+        if (b.index !== event.index) return b;
+        const delta = event.delta;
+        let append = "";
+        if (delta.type === "text_delta") append = delta.text;
+        else if (delta.type === "thinking_delta") append = delta.thinking;
+        else if (delta.type === "input_json_delta") append = delta.partial_json;
+        return { ...b, text: b.text + append };
+      });
+      return { ...s, messages };
+    }
+    case "content_block_stop": {
+      const targetIdx = findStreamingMsg(s.messages);
+      if (targetIdx < 0) return s;
+      const messages = s.messages.slice();
+      const msg = { ...messages[targetIdx] };
+      messages[targetIdx] = msg;
+      msg.streamingBlocks = msg.streamingBlocks!.filter(
+        (b) => b.index !== event.index,
+      );
+      return { ...s, messages };
+    }
+    case "message_stop": {
+      // Mark the assistant message as no longer streaming so the next
+      // response creates a fresh message instead of reusing this one.
+      // Must match getStreamingMessage's check (truthy streamingBlocks),
+      // not findStreamingMsg (which requires length > 0), because
+      // reduceAssistantMessage may have already set streamingBlocks = [].
+      for (let i = s.messages.length - 1; i >= 0; i--) {
+        if (
+          s.messages[i].type === "assistant" &&
+          s.messages[i].streamingBlocks
+        ) {
+          const messages = s.messages.slice();
+          messages[i] = { ...messages[i], streamingBlocks: undefined };
+          return { ...s, messages };
+        }
+      }
+      return s;
+    }
     default:
       return s;
   }
@@ -464,7 +571,6 @@ export function reduceExit(s: SessionState): SessionState {
   return {
     ...s,
     isProcessing: false,
-    streamingBlocks: [],
     alive: false,
     resumable: s.sessionInfo !== null,
   };
