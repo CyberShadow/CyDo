@@ -232,7 +232,11 @@ export function reduceAssistantMessage(
     // Replace temp ID with real one when adopting a streaming placeholder
     if (existingMsg.id !== msgId) existingMsg.id = msgId;
     existingMsg.content = [...existingMsg.content, ...msg.message.content];
-    existingMsg.streamingBlocks = [];
+    // Only keep streamingBlocks active if it was a streaming placeholder;
+    // during JSONL replay there's no streaming so leave it undefined.
+    if (existingMsg.streamingBlocks !== undefined) {
+      existingMsg.streamingBlocks = [];
+    }
     // Update usage if present (later messages may have updated counts)
     if (msg.message.usage) {
       existingMsg.usage = msg.message.usage;

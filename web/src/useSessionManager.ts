@@ -77,12 +77,29 @@ export function useSessionManager(): SessionManager {
   // Track which sessions have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
+  // Buffer for live messages that arrive before history is loaded.
+  // Keyed by sid; drained on session_history_end.
+  const pendingLiveRef = useRef(new Map<number, ClaudeMessage[]>());
+
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
   const handleSessionMessage = useCallback(
     (sid: number, msg: ClaudeMessage) => {
-      const prev = liveStates.get(sid) ?? makeSessionState(sid, true);
+      // If history has been requested but not yet loaded, buffer live
+      // messages so they are processed after history.
+      const s = liveStates.get(sid);
+      if (s && !s.historyLoaded && requestedHistoryRef.current.has(sid)) {
+        let buf = pendingLiveRef.current.get(sid);
+        if (!buf) {
+          buf = [];
+          pendingLiveRef.current.set(sid, buf);
+        }
+        buf.push(msg);
+        return;
+      }
+
+      const prev = s ?? makeSessionState(sid, true);
       const updated = reduceStdoutMessage(prev, msg);
       liveStates.set(sid, updated);
       notifyTransition(sid, prev, updated);
@@ -216,14 +233,28 @@ export function useSessionManager(): SessionManager {
       }
       case "session_history_end": {
         const { sid } = msg;
-        const s = liveStates.get(sid);
+        let s = liveStates.get(sid);
         if (!s) break;
-        const updated = { ...s, historyLoaded: true };
-        liveStates.set(sid, updated);
+        s = { ...s, historyLoaded: true };
+        liveStates.set(sid, s);
+
+        // Drain any live messages that were buffered while history was loading
+        const buffered = pendingLiveRef.current.get(sid);
+        if (buffered) {
+          pendingLiveRef.current.delete(sid);
+          for (const liveMsg of buffered) {
+            const prev = liveStates.get(sid)!;
+            const next = reduceStdoutMessage(prev, liveMsg);
+            liveStates.set(sid, next);
+            notifyTransition(sid, prev, next);
+          }
+          s = liveStates.get(sid)!;
+        }
+
         setSessions((prev) => {
           if (!prev.has(sid)) return prev;
           const next = new Map(prev);
-          next.set(sid, updated);
+          next.set(sid, s);
           return next;
         });
         break;
