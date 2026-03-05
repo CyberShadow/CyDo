@@ -129,6 +129,10 @@ class App
 			foreach (msg; sd.fileHistory)
 				ws.send(msg);
 
+			// Send live history (events since agent started, before JSONL is written)
+			foreach (msg; sd.liveHistory)
+				ws.send(msg);
+
 			// Send end marker
 			ws.send(Data(toJson(SessionHistoryEndMessage("session_history_end", sid)).representation));
 		}
