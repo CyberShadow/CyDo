@@ -180,7 +180,7 @@ const MessageView = memo(
     const [showSource, setShowSource] = useState(false);
     return (
       <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
-        {msg.rawSource != null && (
+        {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
           <button
             class="view-source-btn"
             onClick={() => setShowSource(!showSource)}
@@ -191,7 +191,7 @@ const MessageView = memo(
         )}
         {showSource ? (
           <div class="message source-view">
-            <pre>{JSON.stringify(msg.rawSource, jsonReplacer, 2)}</pre>
+            <pre>{JSON.stringify(msg.rawSource ?? msg, jsonReplacer, 2)}</pre>
           </div>
         ) : (
           children
