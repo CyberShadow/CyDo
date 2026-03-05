@@ -39,15 +39,13 @@ class App
 	{
 		persistence = Persistence("data/cydo.db");
 
-		// Load persisted sessions
+		// Load persisted sessions (metadata only — history loaded on demand)
 		foreach (row; persistence.loadSessions())
 		{
 			auto sd = SessionData(row.sid);
 			sd.claudeSessionId = row.claudeSessionId;
 			sd.title = row.title;
 			sd.titleGenDone = row.title.length > 0;
-			if (row.claudeSessionId.length > 0)
-				sd.history = loadSessionHistory(row.sid, row.claudeSessionId);
 			sessions[row.sid] = move(sd);
 		}
 
@@ -89,17 +87,12 @@ class App
 		ws.sendBinary = false; // text frames for JSON
 		clients ~= ws;
 
-		// Send sessions list to new client
+		// Send sessions list to new client (history loaded on demand)
 		ws.send(Data(buildSessionsList().representation));
-
-		// Replay each session's history (already wrapped with sid envelope)
-		foreach (ref sd; sessions)
-			foreach (msg; sd.history)
-				ws.send(msg);
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
-			handleWsMessage(text);
+			handleWsMessage(ws, text);
 		};
 
 		ws.handleDisconnect = (string reason, DisconnectType type) {
@@ -107,7 +100,7 @@ class App
 		};
 	}
 
-	private void handleWsMessage(string text)
+	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
 		import ae.utils.json : jsonParse, toJson;
 
@@ -117,6 +110,27 @@ class App
 		{
 			auto sid = createSession();
 			broadcast(toJson(SessionCreatedMessage("session_created", sid)));
+		}
+		else if (json.type == "request_history")
+		{
+			auto sid = json.sid;
+			if (sid < 0 || sid !in sessions)
+				return;
+			auto sd = &sessions[sid];
+
+			// Load JSONL from disk if not already cached
+			if (!sd.historyLoaded && sd.claudeSessionId.length > 0)
+			{
+				sd.fileHistory = loadSessionHistory(sid, sd.claudeSessionId);
+				sd.historyLoaded = true;
+			}
+
+			// Send file history to requesting client only
+			foreach (msg; sd.fileHistory)
+				ws.send(msg);
+
+			// Send end marker
+			ws.send(Data(toJson(SessionHistoryEndMessage("session_history_end", sid)).representation));
 		}
 		else if (json.type == "message")
 		{
@@ -140,6 +154,7 @@ class App
 				sd.title = truncateTitle(json.content, 80);
 				persistence.setTitle(sid, sd.title);
 				broadcastTitleUpdate(sid, sd.title);
+				generateTitle(sid, json.content);
 			}
 		}
 		else if (json.type == "resume")
@@ -197,15 +212,13 @@ class App
 			if (sid !in sessions)
 				return;
 			sessions[sid].alive = false;
-			// Reload history from disk and send to all clients so they
-			// see the final state that will be resumed.
+			// Reload history from disk; clients will re-request if needed.
 			if (sessions[sid].claudeSessionId.length > 0)
 			{
-				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId);
+				sessions[sid].fileHistory = loadSessionHistory(sid, sessions[sid].claudeSessionId);
+				sessions[sid].liveHistory = DataVec.init;
+				sessions[sid].historyLoaded = true;
 				broadcast(toJson(SessionReloadMessage("session_reload", sid)));
-				foreach (msg; sessions[sid].history)
-					foreach (ws; clients)
-						ws.send(msg);
 			}
 			broadcast(buildSessionsList());
 		};
@@ -224,15 +237,12 @@ class App
 		if (sid in sessions)
 		{
 			sessions[sid].lastActivity = now;
-			sessions[sid].history ~= data;
+			sessions[sid].liveHistory ~= data;
 
 			// Extract Claude session ID from system.init messages
 			if (sessions[sid].claudeSessionId.length == 0)
 				tryExtractClaudeSessionId(sid, rawLine);
 
-			// Generate LLM title after first turn completes
-			if (sessions[sid].titleGenProcess is null)
-				tryGenerateTitle(sid, rawLine);
 		}
 
 		foreach (ws; clients)
@@ -278,22 +288,16 @@ class App
 		broadcast(toJson(TitleUpdateMessage("title_update", sid, title)));
 	}
 
-	/// After the first assistant turn completes, spawn a lightweight
-	/// claude process to generate a concise title.
-	private void tryGenerateTitle(int sid, string rawLine)
+	/// Spawn a lightweight claude process to generate a concise title
+	/// from the user's initial message.
+	private void generateTitle(int sid, string userMessage)
 	{
-		import std.algorithm : canFind;
-
-		if (!rawLine.canFind(`"type":"result"`))
-			return;
-
 		auto sd = &sessions[sid];
 
-		// Only generate once
-		if (sd.title.length == 0 || sd.titleGenDone || sd.titleGenProcess !is null)
+		if (sd.titleGenDone || sd.titleGenProcess !is null)
 			return;
 
-		auto msg = sd.title.length > 500 ? sd.title[0 .. 500] : sd.title;
+		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
 
 		sd.titleGenProcess = new AgentProcess([
 			"claude",
@@ -365,13 +369,21 @@ struct SessionData
 {
 	int sid;
 	AgentSession agent;
-	DataVec history;
+	DataVec fileHistory;      // loaded from JSONL on demand
+	DataVec liveHistory;      // accumulated live events during current run
+	bool historyLoaded;       // whether fileHistory has been loaded from disk
 	string claudeSessionId;
 	bool alive = false;
 	string lastActivity;
 	string title;
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
+}
+
+struct SessionHistoryEndMessage
+{
+	string type = "session_history_end";
+	int sid;
 }
 
 struct WsMessage

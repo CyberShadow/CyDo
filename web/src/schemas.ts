@@ -599,8 +599,13 @@ export interface TitleUpdateMessage {
   sid: number;
   title: string;
 }
+export interface SessionHistoryEndMessage {
+  type: "session_history_end";
+  sid: number;
+}
 export type ControlMessage =
   | SessionCreatedMessage
   | SessionsListMessage
   | SessionReloadMessage
-  | TitleUpdateMessage;
+  | TitleUpdateMessage
+  | SessionHistoryEndMessage;

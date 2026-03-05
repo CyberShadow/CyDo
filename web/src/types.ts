@@ -105,6 +105,8 @@ export interface SessionState {
   resumable: boolean;
   msgIdCounter: number;
   title?: string;
+  /** Whether the session's JSONL history has been loaded from the backend. */
+  historyLoaded: boolean;
   /** User message texts from before a reload, not yet matched by file replay. */
   preReloadDrafts?: string[];
 }
@@ -114,6 +116,7 @@ export function makeSessionState(
   alive: boolean = false,
   resumable: boolean = false,
   title?: string,
+  historyLoaded: boolean = false,
 ): SessionState {
   return {
     sid,
@@ -125,5 +128,6 @@ export function makeSessionState(
     resumable,
     msgIdCounter: 0,
     title,
+    historyLoaded,
   };
 }

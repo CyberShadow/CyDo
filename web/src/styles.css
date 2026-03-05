@@ -759,6 +759,25 @@ body,
   background: #d32f2f;
 }
 
+.session-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.app.has-sidebar .session-loading {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.session-loading span {
+  color: var(--text-dim);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 12px 24px;
+}
+
 .resume-bar {
   display: flex;
   justify-content: center;

@@ -38,7 +38,8 @@ export class Connection {
           raw.type === "session_created" ||
           raw.type === "sessions_list" ||
           raw.type === "session_reload" ||
-          raw.type === "title_update"
+          raw.type === "title_update" ||
+          raw.type === "session_history_end"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("sid" in raw && typeof raw.sid === "number") {
@@ -75,6 +76,10 @@ export class Connection {
 
   createSession() {
     this.ws?.send(JSON.stringify({ type: "create_session" }));
+  }
+
+  requestHistory(sid: number) {
+    this.ws?.send(JSON.stringify({ type: "request_history", sid }));
   }
 
   private scheduleReconnect() {

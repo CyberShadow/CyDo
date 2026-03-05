@@ -24,6 +24,14 @@ export function SessionView({
   theme,
   onToggleTheme,
 }: Props) {
+  if (!session.historyLoaded) {
+    return (
+      <div class="session-loading">
+        <span>Loading session…</span>
+      </div>
+    );
+  }
+
   return (
     <>
       <SystemBanner

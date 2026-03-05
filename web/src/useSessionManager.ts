@@ -74,6 +74,8 @@ export function useSessionManager(): SessionManager {
   const connRef = useRef<Connection | null>(null);
   // When we create a session and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
+  // Track which sessions have had history requested (avoid duplicate requests)
+  const requestedHistoryRef = useRef(new Set<number>());
 
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
@@ -116,7 +118,7 @@ export function useSessionManager(): SessionManager {
     switch (msg.type) {
       case "session_created": {
         const sid = msg.sid;
-        const s = makeSessionState(sid, false);
+        const s = makeSessionState(sid, false, false, undefined, true);
         liveStates.set(sid, s);
         initSnapshot(sid, s);
         setSessions((prev) => {
@@ -184,6 +186,7 @@ export function useSessionManager(): SessionManager {
       }
       case "session_reload": {
         const { sid } = msg;
+        requestedHistoryRef.current.delete(sid);
         const s = liveStates.get(sid);
         if (!s) break;
         // Collect user message texts to detect unsaved prompts after replay
@@ -197,7 +200,7 @@ export function useSessionManager(): SessionManager {
           )
           .filter((t) => t.length > 0);
         const reset = {
-          ...makeSessionState(sid, false, s.resumable, s.title),
+          ...makeSessionState(sid, false, s.resumable, s.title, false),
           resumable: s.resumable,
           preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
         };
@@ -207,6 +210,20 @@ export function useSessionManager(): SessionManager {
           if (!prev.has(sid)) return prev;
           const next = new Map(prev);
           next.set(sid, reset);
+          return next;
+        });
+        break;
+      }
+      case "session_history_end": {
+        const { sid } = msg;
+        const s = liveStates.get(sid);
+        if (!s) break;
+        const updated = { ...s, historyLoaded: true };
+        liveStates.set(sid, updated);
+        setSessions((prev) => {
+          if (!prev.has(sid)) return prev;
+          const next = new Map(prev);
+          next.set(sid, updated);
           return next;
         });
         break;
@@ -297,6 +314,7 @@ export function useSessionManager(): SessionManager {
           replayTimerId = null;
         }
         liveStates.clear();
+        requestedHistoryRef.current.clear();
         setSessions(new Map());
       }
     };
@@ -331,6 +349,16 @@ export function useSessionManager(): SessionManager {
       conn.disconnect();
     };
   }, [handleSessionMessage, handleFileMessage, handleControlMessage]);
+
+  // Request history when the active session changes and hasn't been loaded yet
+  useEffect(() => {
+    if (!connected || activeSessionId === null) return;
+    if (requestedHistoryRef.current.has(activeSessionId)) return;
+    const s = liveStates.get(activeSessionId);
+    if (s?.historyLoaded) return;
+    requestedHistoryRef.current.add(activeSessionId);
+    connRef.current?.requestHistory(activeSessionId);
+  }, [connected, activeSessionId]);
 
   const send = useCallback(
     (text: string) => {
