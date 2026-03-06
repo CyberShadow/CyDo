@@ -313,6 +313,7 @@ export function reduceUserEcho(
   // Link tool results to their parent assistant messages
   if (toolResults.length > 0) {
     const updated = [...state.messages];
+    const touchedIndices = new Set<number>();
     for (const block of toolResults) {
       for (let i = updated.length - 1; i >= 0; i--) {
         const m = updated[i];
@@ -328,10 +329,23 @@ export function reduceUserEcho(
               isError: block.is_error,
             });
             updated[i] = newMsg;
+            touchedIndices.add(i);
             break;
           }
         }
       }
+    }
+    // Append the raw user message (carrying tool results) to each
+    // touched assistant message's rawSource so "view source" shows
+    // the complete round-trip.
+    for (const i of touchedIndices) {
+      const msg = updated[i];
+      const prev = msg.rawSource;
+      msg.rawSource = prev
+        ? Array.isArray(prev)
+          ? [...prev, rawMsg]
+          : [prev, rawMsg]
+        : rawMsg;
     }
     state = { ...state, messages: updated };
   }
