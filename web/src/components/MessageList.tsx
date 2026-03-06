@@ -204,6 +204,7 @@ const MessageView = memo(
     children,
   }: {
     msg: DisplayMessage;
+    hasNested?: boolean;
     children: ComponentChildren;
   }) {
     const [showSource, setShowSource] = useState(false);
@@ -223,6 +224,8 @@ const MessageView = memo(
     );
   },
   (prev, next) => {
+    // Always re-render messages with nested children (subagent messages)
+    if (prev.hasNested || next.hasNested) return false;
     return prev.msg === next.msg;
   },
 );
@@ -338,7 +341,16 @@ export function MessageList({ sessionId, messages, isProcessing }: Props) {
               );
           }
           return (
-            <MessageView key={msg.id} msg={msg}>
+            <MessageView
+              key={msg.id}
+              msg={msg}
+              hasNested={
+                msg.type === "assistant" &&
+                msg.content.some(
+                  (b) => b.type === "tool_use" && childrenByParent.has(b.id),
+                )
+              }
+            >
               {inner}
             </MessageView>
           );
