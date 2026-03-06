@@ -211,15 +211,15 @@ export function reduceAssistantMessage(
   // If not found by real ID, search backwards for a streaming placeholder
   // to adopt (it was created by content_block_start before the full
   // assistant message arrived, and may no longer be the last message if
-  // a user echo was inserted after it).
+  // a user echo was inserted after it).  Once adopted, the placeholder's
+  // ID is replaced with the real one, so previously-adopted placeholders
+  // won't re-match.  We intentionally don't require active streamingBlocks
+  // here because during batched replay message_stop may have already
+  // cleared them before the full assistant message is processed.
   if (idx < 0) {
     for (let i = s.messages.length - 1; i >= 0; i--) {
       const m = s.messages[i];
-      if (
-        m.type === "assistant" &&
-        m.id.startsWith("streaming-") &&
-        m.streamingBlocks?.length
-      ) {
+      if (m.type === "assistant" && m.id.startsWith("streaming-")) {
         idx = i;
         break;
       }
