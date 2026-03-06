@@ -68,7 +68,18 @@ class App
 		auto path = request.resource[1 .. $]; // strip leading /
 		if (path == "" || !exists("web/dist/" ~ path) || !isFile("web/dist/" ~ path))
 			path = "index.html";
-		conn.sendResponse(response.serveFile(path, "web/dist/"));
+		response.serveFile(path, "web/dist/");
+		response.headers["Content-Security-Policy"] =
+			"default-src 'self'; " ~
+			"script-src 'self' 'wasm-unsafe-eval'; " ~
+			"style-src 'self' 'unsafe-inline'; " ~
+			"worker-src blob:; " ~
+			"connect-src 'self' ws: wss:; " ~
+			"img-src 'self' data:; " ~
+			"object-src 'none'; " ~
+			"base-uri 'self'; " ~
+			"frame-ancestors 'none'";
+		conn.sendResponse(response);
 	}
 
 	private void handleWebSocket(HttpRequest request, HttpServerConnection conn)
