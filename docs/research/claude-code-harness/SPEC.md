@@ -74,12 +74,21 @@ init messages as turn boundaries rather than new sessions.
 
 All input is NDJSON: one JSON object per line.
 
+The CLI accepts four top-level message types:
+
+| Type | Purpose |
+|:-----|:--------|
+| `user` | Send a user message (conversation input) |
+| `control_request` | Send control commands (interrupt, settings, MCP, etc.) |
+| `control_response` | Respond to CLI-initiated requests (permission prompts, hooks) |
+| `control_cancel_request` | Cancel a pending control request |
+
+(`assistant` and `system` are also parsed but only used internally for replay/injection.)
+
 ### User Message
 
-The only input message type:
-
 ```typescript
-type InputMessage = {
+type UserMessage = {
   type: "user";
   message: {
     role: "user";
@@ -87,14 +96,24 @@ type InputMessage = {
   };
   session_id: string;            // "default" for all messages (session is managed by the process)
   parent_tool_use_id: string | null;
+  priority?: "now" | "next" | "later";  // Controls queue ordering (default: "next")
+  uuid?: string;
+  isSynthetic?: boolean;
+  tool_use_result?: unknown;
 };
 
 type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
 ```
 
-### Examples
+The `priority` field controls message ordering in the queue:
+- `"now"` (priority 0) — processed immediately
+- `"next"` (priority 1, default) — next in queue
+- `"later"` (priority 2) — low priority
+
+#### Examples
 
 **Text message:**
 ```json
@@ -105,6 +124,264 @@ type ContentBlock =
 ```json
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR..."}}]},"session_id":"default","parent_tool_use_id":null}
 ```
+
+### Control Request
+
+Control requests use a request/response protocol. Each request gets a unique
+`request_id` which is echoed in the response on stdout.
+
+```typescript
+type ControlRequest = {
+  type: "control_request";
+  request_id: string;
+  request: ControlRequestInner;  // See subtypes below
+};
+```
+
+The CLI responds on stdout with:
+```typescript
+type ControlResponse = {
+  type: "control_response";
+  response: {
+    subtype: "success";
+    request_id: string;
+    response?: Record<string, unknown>;
+  } | {
+    subtype: "error";
+    request_id: string;
+    error: string;
+    pending_permission_requests?: ControlRequest[];
+  };
+};
+```
+
+#### Interrupt (`subtype: "interrupt"`)
+
+Interrupts the currently running conversation turn. This is the primary "stop" mechanism.
+
+```json
+{"type":"control_request","request_id":"abc123","request":{"subtype":"interrupt"}}
+```
+
+#### Stop Task (`subtype: "stop_task"`)
+
+Stops a running subagent/task by ID.
+
+```typescript
+{ subtype: "stop_task"; task_id: string }
+```
+
+#### Initialize (`subtype: "initialize"`)
+
+Initializes the SDK session. Can configure hooks, MCP servers, system prompt, and agents.
+
+```typescript
+{
+  subtype: "initialize";
+  hooks?: Partial<Record<HookEvent, SDKHookCallbackMatcher[]>>;
+  sdkMcpServers?: string[];
+  jsonSchema?: Record<string, unknown>;
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
+  agents?: Record<string, AgentDefinition>;
+  promptSuggestions?: boolean;
+}
+```
+
+Response includes:
+```typescript
+{
+  commands: SlashCommand[];
+  agents: AgentInfo[];
+  output_style: string;
+  available_output_styles: string[];
+  models: ModelInfo[];
+  account: AccountInfo;
+  fast_mode_state?: FastModeState;
+}
+```
+
+#### Set Model (`subtype: "set_model"`)
+
+Changes the model for subsequent turns at runtime.
+
+```typescript
+{ subtype: "set_model"; model?: string }  // e.g. "sonnet", "opus", "haiku", or full model name
+```
+
+#### Set Permission Mode (`subtype: "set_permission_mode"`)
+
+Changes the permission mode at runtime.
+
+```typescript
+{ subtype: "set_permission_mode"; mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" }
+```
+
+#### Set Max Thinking Tokens (`subtype: "set_max_thinking_tokens"`)
+
+Controls extended thinking token budget.
+
+```typescript
+{ subtype: "set_max_thinking_tokens"; max_thinking_tokens: number | null }  // null to clear limit
+```
+
+#### Get Settings (`subtype: "get_settings"`)
+
+Returns the effective merged settings and the raw per-source settings.
+
+Response: `{ effective: Record<string, unknown>, sources: Array<{ source: string, ... }> }`
+
+#### Apply Flag Settings (`subtype: "apply_flag_settings"`)
+
+Merges the provided settings into the flag settings layer at runtime.
+
+```typescript
+{ subtype: "apply_flag_settings"; settings: Record<string, unknown> }
+```
+
+#### Rewind Files (`subtype: "rewind_files"`)
+
+Rewinds file changes made since a specific user message. Supports dry run.
+
+```typescript
+{ subtype: "rewind_files"; user_message_id: string; dry_run?: boolean }
+```
+
+Response: `{ canRewind: boolean, error?: string, filesChanged?: string[], insertions?: number, deletions?: number }`
+
+#### MCP Status (`subtype: "mcp_status"`)
+
+Queries the current status of all MCP server connections.
+
+Response: `{ mcpServers: McpServerStatus[] }`
+
+#### MCP Set Servers (`subtype: "mcp_set_servers"`)
+
+Replaces the set of dynamically managed MCP servers.
+
+```typescript
+{ subtype: "mcp_set_servers"; servers: Record<string, McpServerConfig> }
+```
+
+Response: `{ added: string[], removed: string[], errors: Record<string, string> }`
+
+#### MCP Reconnect (`subtype: "mcp_reconnect"`)
+
+Reconnects a disconnected or failed MCP server.
+
+```typescript
+{ subtype: "mcp_reconnect"; serverName: string }
+```
+
+#### MCP Toggle (`subtype: "mcp_toggle"`)
+
+Enables or disables an MCP server.
+
+```typescript
+{ subtype: "mcp_toggle"; serverName: string; enabled: boolean }
+```
+
+#### MCP Message (`subtype: "mcp_message"`)
+
+Sends a raw JSON-RPC message to a specific MCP server.
+
+```typescript
+{ subtype: "mcp_message"; server_name: string; message: JSONRPCMessage }
+```
+
+#### MCP Authenticate (`subtype: "mcp_authenticate"`)
+
+Triggers OAuth authentication flow for an MCP server.
+
+```typescript
+{ subtype: "mcp_authenticate"; serverName: string }
+```
+
+#### MCP Clear Auth (`subtype: "mcp_clear_auth"`)
+
+Clears stored OAuth credentials for an MCP server.
+
+```typescript
+{ subtype: "mcp_clear_auth"; serverName: string }
+```
+
+#### MCP OAuth Callback URL (`subtype: "mcp_oauth_callback_url"`)
+
+Provides the OAuth callback URL after browser redirect.
+
+```typescript
+{ subtype: "mcp_oauth_callback_url"; serverName: string; callbackUrl: string }
+```
+
+#### Hook Callback (`subtype: "hook_callback"`)
+
+Delivers a hook callback with its input data.
+
+```typescript
+{ subtype: "hook_callback"; callback_id: string; input: HookInput; tool_use_id?: string }
+```
+
+#### Elicitation (`subtype: "elicitation"`)
+
+Handles an MCP elicitation (user input request).
+
+```typescript
+{
+  subtype: "elicitation";
+  mcp_server_name: string;
+  message: string;
+  mode?: "form" | "url";
+  url?: string;
+  elicitation_id?: string;
+  requested_schema?: Record<string, unknown>;
+}
+```
+
+#### Remote Control (`subtype: "remote_control"`)
+
+Enables or disables the remote control bridge.
+
+```typescript
+{ subtype: "remote_control"; enabled: boolean }
+```
+
+### Control Response (stdin → CLI)
+
+Sent in response to control requests that the CLI initiated on stdout (e.g.,
+permission prompts via `can_use_tool`, hook callbacks):
+
+```typescript
+type ControlResponseInput = {
+  type: "control_response";
+  response: {
+    subtype: "success";
+    request_id: string;
+    response?: Record<string, unknown>;
+  } | {
+    subtype: "error";
+    request_id: string;
+    error: string;
+  };
+};
+```
+
+### Control Cancel Request
+
+Cancels a pending control request (e.g., if the user cancels a permission prompt):
+
+```typescript
+type ControlCancelRequest = {
+  type: "control_cancel_request";
+  request_id: string;
+};
+```
+
+### Token Usage
+
+There is no dedicated "query token usage" input message. Token and cost
+information is provided in the `result` output message at the end of each turn
+(`usage`, `total_cost_usd`, `modelUsage` fields), and in streaming `assistant`
+message `usage` fields during the turn.
 
 ---
 
