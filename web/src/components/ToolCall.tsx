@@ -454,6 +454,94 @@ function AskUserQuestionInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
+interface WebSearchLink {
+  title: string;
+  url: string;
+}
+
+function parseWebSearchResult(content: string): {
+  links: WebSearchLink[];
+  body: string;
+} | null {
+  const lines = content.split("\n");
+  let links: WebSearchLink[] = [];
+  let bodyStart = 0;
+
+  // Find the "Links:" line (typically line index 2, but search flexibly)
+  for (let i = 0; i < Math.min(lines.length, 5); i++) {
+    if (lines[i].startsWith("Links: ")) {
+      try {
+        const parsed = JSON.parse(lines[i].slice(7));
+        if (Array.isArray(parsed)) {
+          links = parsed.filter(
+            (l: unknown): l is WebSearchLink =>
+              typeof l === "object" &&
+              l !== null &&
+              typeof (l as WebSearchLink).title === "string" &&
+              typeof (l as WebSearchLink).url === "string",
+          );
+        }
+      } catch {
+        // invalid JSON, skip
+      }
+      bodyStart = i + 1;
+      break;
+    }
+    // Skip the header line ("Web search results for query: ...")
+    if (lines[i].startsWith("Web search results for query:")) {
+      bodyStart = i + 1;
+      continue;
+    }
+  }
+
+  if (links.length === 0 && bodyStart === 0) return null;
+
+  // Strip trailing REMINDER line
+  let bodyEnd = lines.length;
+  for (let i = lines.length - 1; i >= bodyStart; i--) {
+    if (lines[i].startsWith("REMINDER:")) {
+      bodyEnd = i;
+      // Also strip blank line before REMINDER
+      if (bodyEnd > bodyStart && lines[bodyEnd - 1].trim() === "") bodyEnd--;
+      break;
+    }
+  }
+
+  // Strip leading blank lines from body
+  while (bodyStart < bodyEnd && lines[bodyStart].trim() === "") bodyStart++;
+
+  const body = lines.slice(bodyStart, bodyEnd).join("\n");
+  return { links, body };
+}
+
+function WebSearchResult({ content }: { content: string }) {
+  const parsed = parseWebSearchResult(content);
+  if (!parsed) {
+    return <pre class="tool-result">{content}</pre>;
+  }
+
+  return (
+    <div class="tool-result-blocks">
+      {parsed.links.length > 0 && (
+        <div class="web-search-links">
+          {parsed.links.map((link, i) => (
+            <a
+              key={i}
+              class="web-search-link"
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {link.title}
+            </a>
+          ))}
+        </div>
+      )}
+      {parsed.body && <Markdown text={parsed.body} class="text-content" />}
+    </div>
+  );
+}
+
 function formatGenericInput(
   input: Record<string, unknown>,
   children?: ComponentChildren,
@@ -536,6 +624,9 @@ function getHeaderSubtitle(
     }
     return <span class="tool-subtitle">{questions.length} questions</span>;
   }
+  if (name === "WebSearch" && typeof input.query === "string") {
+    return <span class="tool-subtitle">{input.query}</span>;
+  }
   if (name === "Bash" && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
@@ -578,6 +669,10 @@ function formatInput(
   if (name === "Task" && typeof input.prompt === "string") {
     const { prompt, description, subagent_type, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={prompt} />);
+  }
+  if (name === "WebSearch" && typeof input.query === "string") {
+    const { query, ...remaining } = input;
+    return formatGenericInput(remaining);
   }
   if (name === "Bash" && typeof input.command === "string") {
     return <BashInput input={input} />;
@@ -624,7 +719,7 @@ const defaultExpandedTools = new Set([
   "TodoWrite",
   "AskUserQuestion",
 ]);
-const defaultExpandedResults = new Set(["Bash", "Task"]);
+const defaultExpandedResults = new Set(["Bash", "Task", "WebSearch"]);
 
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
@@ -637,6 +732,11 @@ export function ToolCall({ name, input, result, children }: Props) {
   const useReadHighlight =
     name === "Read" &&
     filePath &&
+    result &&
+    !result.isError &&
+    typeof result.content === "string";
+  const useWebSearchResult =
+    name === "WebSearch" &&
     result &&
     !result.isError &&
     typeof result.content === "string";
@@ -667,6 +767,8 @@ export function ToolCall({ name, input, result, children }: Props) {
                 content={result.content as string}
                 filePath={filePath!}
               />
+            ) : useWebSearchResult ? (
+              <WebSearchResult content={result.content as string} />
             ) : (
               renderResultContent(result.content, result.isError)
             ))}
