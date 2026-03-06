@@ -6,8 +6,6 @@ backend:
 frontend:
 	cd web && npm install
 	cd web && npm run build
-	cp web/index.html web/dist/index.html
-	cp web/src/styles.css web/dist/styles.css
 
 run: all
 	dub run
