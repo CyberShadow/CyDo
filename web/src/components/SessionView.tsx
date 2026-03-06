@@ -1,4 +1,5 @@
 import { h } from "preact";
+import { useRef, useEffect } from "preact/hooks";
 import type { SessionState } from "../types";
 import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
@@ -24,6 +25,25 @@ export function SessionView({
   theme,
   onToggleTheme,
 }: Props) {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      )
+        return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length !== 1) return;
+
+      inputRef.current?.focus();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   if (!session.historyLoaded) {
     return (
       <div class="session-loading">
@@ -61,6 +81,7 @@ export function SessionView({
           disabled={!connected}
           sessionId={session.sid}
           preReloadDrafts={session.preReloadDrafts}
+          inputRef={inputRef}
         />
       )}
     </>

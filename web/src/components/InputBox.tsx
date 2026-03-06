@@ -1,4 +1,4 @@
-import { h } from "preact";
+import { h, RefObject } from "preact";
 import { useState, useRef, useEffect } from "preact/hooks";
 
 const drafts = new Map<number, string>();
@@ -10,6 +10,7 @@ interface Props {
   disabled: boolean;
   sessionId: number;
   preReloadDrafts?: string[];
+  inputRef?: RefObject<HTMLTextAreaElement>;
 }
 
 export function InputBox({
@@ -19,9 +20,11 @@ export function InputBox({
   disabled,
   sessionId,
   preReloadDrafts,
+  inputRef,
 }: Props) {
   const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const internalRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = inputRef ?? internalRef;
   const textRef = useRef(text);
   textRef.current = text;
 
