@@ -238,7 +238,9 @@ export function useSessionManager(): SessionManager {
         s = { ...s, historyLoaded: true };
         liveStates.set(sid, s);
 
-        // Drain any live messages that were buffered while history was loading
+        // Drain any live messages that were buffered while history was loading.
+        // The backend uses a unified history model (JSONL + live events are
+        // disjoint), so no deduplication is needed here.
         const buffered = pendingLiveRef.current.get(sid);
         if (buffered) {
           pendingLiveRef.current.delete(sid);

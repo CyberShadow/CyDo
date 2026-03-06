@@ -6,7 +6,7 @@ import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
 import std.stdio : writefln;
-import std.string : startsWith, representation;
+import std.string : representation;
 
 import ae.net.asockets : socketManager, DisconnectType;
 import ae.net.http.common : HttpRequest, HttpStatusCode;
@@ -118,19 +118,15 @@ class App
 				return;
 			auto sd = &sessions[sid];
 
-			// Load JSONL from disk if not already cached
+			// Load JSONL from disk if not already loaded
 			if (!sd.historyLoaded && sd.claudeSessionId.length > 0)
 			{
-				sd.fileHistory = loadSessionHistory(sid, sd.claudeSessionId);
+				sd.history = loadSessionHistory(sid, sd.claudeSessionId);
 				sd.historyLoaded = true;
 			}
 
-			// Send file history to requesting client only
-			foreach (msg; sd.fileHistory)
-				ws.send(msg);
-
-			// Send live history (events since agent started, before JSONL is written)
-			foreach (msg; sd.liveHistory)
+			// Send unified history to requesting client
+			foreach (msg; sd.history)
 				ws.send(msg);
 
 			// Send end marker
@@ -216,11 +212,11 @@ class App
 			if (sid !in sessions)
 				return;
 			sessions[sid].alive = false;
-			// Reload history from disk; clients will re-request if needed.
+			// Discard all history and reload from JSONL (canonical source).
+			// Frontends are notified to discard their state and re-request.
 			if (sessions[sid].claudeSessionId.length > 0)
 			{
-				sessions[sid].fileHistory = loadSessionHistory(sid, sessions[sid].claudeSessionId);
-				sessions[sid].liveHistory = DataVec.init;
+				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId);
 				sessions[sid].historyLoaded = true;
 				broadcast(toJson(SessionReloadMessage("session_reload", sid)));
 			}
@@ -241,12 +237,11 @@ class App
 		if (sid in sessions)
 		{
 			sessions[sid].lastActivity = now;
-			sessions[sid].liveHistory ~= data;
+			sessions[sid].history ~= data;
 
 			// Extract Claude session ID from system.init messages
 			if (sessions[sid].claudeSessionId.length == 0)
 				tryExtractClaudeSessionId(sid, rawLine);
-
 		}
 
 		foreach (ws; clients)
@@ -373,9 +368,8 @@ struct SessionData
 {
 	int sid;
 	AgentSession agent;
-	DataVec fileHistory;      // loaded from JSONL on demand
-	DataVec liveHistory;      // accumulated live events during current run
-	bool historyLoaded;       // whether fileHistory has been loaded from disk
+	DataVec history;          // unified: JSONL file events + live stdout events
+	bool historyLoaded;       // whether JSONL has been loaded into history
 	string claudeSessionId;
 	bool alive = false;
 	string lastActivity;
