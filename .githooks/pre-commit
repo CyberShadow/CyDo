@@ -13,8 +13,8 @@ fi
 # Run prettier from web/ so it finds node_modules and config
 cd "$root/web" || exit 0
 
-# Strip web/ prefix for prettier
-echo "$staged" | sed 's|^web/||' | xargs npx prettier --write
+# Strip web/ prefix for prettier (use node_modules directly to avoid npx lockfile churn)
+echo "$staged" | sed 's|^web/||' | xargs ./node_modules/.bin/prettier --write
 
 # Re-stage formatted files (using full paths from repo root)
 cd "$root"
