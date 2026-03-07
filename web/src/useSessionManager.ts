@@ -47,6 +47,7 @@ export interface SessionManager {
   interrupt: () => void;
   newSession: (workspace?: string, projectPath?: string) => void;
   resume: () => void;
+  fork: (sid: number, afterUuid: string) => void;
   sidebarSessions: Array<{
     sid: number;
     alive: boolean;
@@ -297,10 +298,16 @@ export function useSessionManager(): SessionManager {
               next.set(entry.sid, s);
             } else {
               const s = next.get(entry.sid)!;
+              // If a session becomes resumable but has no messages loaded,
+              // reset historyLoaded so JSONL history gets requested
+              // (e.g. forked sessions with pre-existing JSONL).
+              const needsHistory =
+                entry.resumable && s.messages.length === 0 && s.historyLoaded;
               const updated = {
                 ...s,
                 alive: entry.alive,
                 resumable: entry.resumable,
+                historyLoaded: needsHistory ? false : s.historyLoaded,
                 title: entry.title || s.title,
                 workspace: workspace || s.workspace,
                 projectPath: projectPath || s.projectPath,
@@ -579,6 +586,10 @@ export function useSessionManager(): SessionManager {
     connRef.current?.createSession(workspace, projectPath);
   }, []);
 
+  const fork = useCallback((sid: number, afterUuid: string) => {
+    connRef.current?.forkSession(sid, afterUuid);
+  }, []);
+
   const resume = useCallback(() => {
     if (activeSessionId !== null) {
       connRef.current?.resumeSession(activeSessionId);
@@ -629,6 +640,7 @@ export function useSessionManager(): SessionManager {
     interrupt,
     newSession,
     resume,
+    fork,
     sidebarSessions,
     workspaces,
     activeWorkspace,

@@ -12,6 +12,7 @@ interface Props {
   onSend: (text: string) => void;
   onInterrupt: () => void;
   onResume: () => void;
+  onFork: (sid: number, afterUuid: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
 }
@@ -22,6 +23,7 @@ export function SessionView({
   onSend,
   onInterrupt,
   onResume,
+  onFork,
   theme,
   onToggleTheme,
 }: Props) {
@@ -74,6 +76,7 @@ export function SessionView({
           sessionId={session.sid}
           messages={session.messages}
           isProcessing={session.isProcessing}
+          onFork={onFork}
         />
       )}
       {session.resumable ? (

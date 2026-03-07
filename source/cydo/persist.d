@@ -95,7 +95,7 @@ DataVec loadSessionHistory(int sid, string claudeSessionId, string projectPath =
 
 /// Compute the path to Claude Code's JSONL file for a given session UUID.
 /// Uses projectPath as the directory to mangle; falls back to getcwd() when empty.
-private string claudeJsonlPath(string sessionId, string projectPath = "")
+string claudeJsonlPath(string sessionId, string projectPath = "")
 {
 	import std.file : getcwd;
 	import std.process : environment;
@@ -111,4 +111,75 @@ private string claudeJsonlPath(string sessionId, string projectPath = "")
 	string mangledCwd = buf.idup;
 
 	return buildPath(home, ".claude", "projects", mangledCwd, sessionId ~ ".jsonl");
+}
+
+struct ForkResult
+{
+	int sid = -1;
+	string claudeSessionId;
+}
+
+/// Fork a session by truncating its JSONL after the given message UUID.
+/// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
+ForkResult forkSession(ref Persistence persistence, string sourceClaudeId, string afterUuid,
+	string projectPath, string workspace, string title)
+{
+	import std.algorithm : canFind;
+	import std.file : exists, readText, write;
+	import std.string : lineSplitter, replace;
+
+	auto sourcePath = claudeJsonlPath(sourceClaudeId, projectPath);
+	if (!exists(sourcePath))
+		return ForkResult.init;
+
+	auto newClaudeId = generateUUID();
+	auto destPath = claudeJsonlPath(newClaudeId, projectPath);
+
+	// Read source, rewrite sessionId, truncate after target UUID
+	string output;
+	bool found = false;
+	foreach (line; readText(sourcePath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+
+		auto rewritten = line
+			.replace(`"sessionId":"` ~ sourceClaudeId ~ `"`, `"sessionId":"` ~ newClaudeId ~ `"`)
+			.replace(`"session_id":"` ~ sourceClaudeId ~ `"`, `"session_id":"` ~ newClaudeId ~ `"`);
+		output ~= rewritten ~ "\n";
+
+		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		{
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
+		return ForkResult.init;
+
+	write(destPath, output);
+
+	// Create DB entry with the new claude session ID
+	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "";
+	persistence.db.stmt!"INSERT INTO sessions (claude_session_id, title, workspace, project_path) VALUES (?, ?, ?, ?)"
+		.exec(newClaudeId, forkTitle, workspace, projectPath);
+	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
+}
+
+/// Generate a random v4 UUID string.
+private string generateUUID()
+{
+	import std.random : uniform;
+
+	ubyte[16] bytes;
+	foreach (ref b; bytes)
+		b = cast(ubyte) uniform(0, 256);
+	bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+	bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 1
+	return format!"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x"(
+		bytes[0], bytes[1], bytes[2], bytes[3],
+		bytes[4], bytes[5], bytes[6], bytes[7],
+		bytes[8], bytes[9], bytes[10], bytes[11],
+		bytes[12], bytes[13], bytes[14], bytes[15]);
 }

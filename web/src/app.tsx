@@ -18,6 +18,7 @@ export function App() {
     interrupt,
     newSession,
     resume,
+    fork,
     sidebarSessions,
     workspaces,
     activeWorkspace,
@@ -86,6 +87,7 @@ export function App() {
             onSend={send}
             onInterrupt={interrupt}
             onResume={resume}
+            onFork={fork}
             theme={theme}
             onToggleTheme={toggleTheme}
           />

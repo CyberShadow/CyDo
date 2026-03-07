@@ -89,6 +89,12 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "request_history", sid }));
   }
 
+  forkSession(sid: number, afterUuid: string) {
+    this.ws?.send(
+      JSON.stringify({ type: "fork_session", sid, after_uuid: afterUuid }),
+    );
+  }
+
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;
     this.reconnectTimer = setTimeout(() => {

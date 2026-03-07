@@ -344,7 +344,7 @@ body,
   overflow-anchor: none;
 }
 
-/* Message wrapper (view-source toggle) */
+/* Message wrapper (action buttons) */
 .message-wrapper {
   position: relative;
   margin-bottom: 16px;
@@ -354,12 +354,30 @@ body,
   margin-bottom: 0;
 }
 
-.view-source-btn {
+.message-actions {
   position: absolute;
   top: 0;
   right: 16px;
   transform: translateY(-50%);
   z-index: 1;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+}
+
+.message-actions-bottom {
+  top: auto;
+  bottom: 0;
+  transform: translateY(50%);
+}
+
+.message-wrapper:hover > .message-actions,
+.message-wrapper:hover > .message-actions-bottom,
+.message-wrapper.show-source > .message-actions {
+  opacity: 1;
+}
+
+.msg-action-btn {
   width: 22px;
   height: 22px;
   padding: 0;
@@ -369,18 +387,12 @@ body,
   color: var(--warn);
   border: 1px solid var(--border);
   cursor: pointer;
-  opacity: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.message-wrapper:hover > .view-source-btn,
-.message-wrapper.show-source > .view-source-btn {
-  opacity: 1;
-}
-
-.view-source-btn:hover {
+.msg-action-btn:hover {
   border-color: var(--warn);
 }
 

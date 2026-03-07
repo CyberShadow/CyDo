@@ -18,6 +18,7 @@ interface Props {
   sessionId: number;
   messages: DisplayMessage[];
   isProcessing: boolean;
+  onFork?: (sid: number, afterUuid: string) => void;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -201,37 +202,64 @@ function SourceView({ msg }: { msg: DisplayMessage }) {
 const MessageView = memo(
   function MessageView({
     msg,
+    onFork,
     children,
   }: {
     msg: DisplayMessage;
     hasNested?: boolean;
+    onFork?: (afterUuid: string) => void;
     children: ComponentChildren;
   }) {
     const [showSource, setShowSource] = useState(false);
+    const raw = Array.isArray(msg.rawSource) ? msg.rawSource[0] : msg.rawSource;
+    const uuid = (raw as any)?.uuid as string | undefined;
     return (
       <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
-        {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
-          <button
-            class="view-source-btn"
-            onClick={() => setShowSource(!showSource)}
-            title="View source"
-          >
-            {"{}"}
-          </button>
-        )}
+        <div class="message-actions">
+          {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
+            <button
+              class="msg-action-btn view-source-btn"
+              onClick={() => setShowSource(!showSource)}
+              title="View source"
+            >
+              {"{}"}
+            </button>
+          )}
+        </div>
         {showSource ? <SourceView msg={msg} /> : children}
+        {uuid && onFork && (
+          <div class="message-actions message-actions-bottom">
+            <button
+              class="msg-action-btn fork-btn"
+              onClick={() => onFork(uuid)}
+              title="Fork session after this point"
+            >
+              {"\u2442"}
+            </button>
+          </div>
+        )}
       </div>
     );
   },
   (prev, next) => {
     // Always re-render messages with nested children (subagent messages)
     if (prev.hasNested || next.hasNested) return false;
-    return prev.msg === next.msg;
+    return prev.msg === next.msg && prev.onFork === next.onFork;
   },
 );
 
-export function MessageList({ sessionId, messages, isProcessing }: Props) {
+export function MessageList({
+  sessionId,
+  messages,
+  isProcessing,
+  onFork,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const handleFork = useMemo(
+    () =>
+      onFork ? (afterUuid: string) => onFork(sessionId, afterUuid) : undefined,
+    [onFork, sessionId],
+  );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
   const prevSessionId = useRef(sessionId);
@@ -350,6 +378,7 @@ export function MessageList({ sessionId, messages, isProcessing }: Props) {
                   (b) => b.type === "tool_use" && childrenByParent.has(b.id),
                 )
               }
+              onFork={handleFork}
             >
               {inner}
             </MessageView>

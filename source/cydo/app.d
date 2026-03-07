@@ -22,7 +22,7 @@ import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : Persistence, loadSessionHistory;
+import cydo.persist : ForkResult, Persistence, forkSession, loadSessionHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 
 void main()
@@ -216,6 +216,31 @@ class App
 			auto sd = &sessions[sid];
 			if (sd.session)
 				sd.session.interrupt();
+		}
+		else if (json.type == "fork_session")
+		{
+			auto sid = json.sid;
+			if (sid < 0 || sid !in sessions)
+				return;
+			auto sd = &sessions[sid];
+			if (sd.claudeSessionId.length == 0)
+				return; // nothing to fork
+
+			auto result = forkSession(persistence, sd.claudeSessionId, json.after_uuid,
+				sd.projectPath, sd.workspace, sd.title);
+			if (result.sid < 0)
+				return; // fork failed (uuid not found or no JSONL)
+
+			auto newSd = SessionData(result.sid);
+			newSd.workspace = sd.workspace;
+			newSd.projectPath = sd.projectPath;
+			newSd.title = sd.title.length > 0 ? sd.title ~ " (fork)" : "";
+			newSd.claudeSessionId = result.claudeSessionId;
+			sessions[result.sid] = move(newSd);
+
+			import ae.utils.json : toJson;
+			broadcast(toJson(SessionCreatedMessage("session_created", result.sid, sd.workspace, sd.projectPath)));
+			broadcast(buildSessionsList());
 		}
 	}
 
@@ -457,6 +482,7 @@ struct WsMessage
 	int sid = -1;
 	string workspace;
 	string project_path;
+	string after_uuid;
 }
 
 struct ExitMessage
