@@ -13,6 +13,9 @@ interface AgentSession
 	/// Stop the agent (SIGTERM).
 	void stop();
 
+	/// Close stdin to signal EOF — agent exits gracefully.
+	void closeStdin();
+
 	/// Callback: called for each line of output from the agent.
 	@property void onOutput(void delegate(string line) dg);
 

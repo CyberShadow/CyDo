@@ -142,6 +142,16 @@ class AgentProcess
 			kill(pid, sig);
 	}
 
+	/// Close stdin to signal EOF — the process will exit gracefully.
+	void closeStdin()
+	{
+		if (stdinConn !is null)
+		{
+			stdinConn.disconnect("closing stdin");
+			stdinConn = null;
+		}
+	}
+
 	/// Send SIGINT.
 	void interrupt()
 	{

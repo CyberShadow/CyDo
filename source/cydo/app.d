@@ -15,8 +15,12 @@ import ae.net.http.server : HttpServer, HttpServerConnection;
 import ae.net.http.websocket : WebSocketAdapter, accept;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
+import ae.utils.json : JSONFragment;
+import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent;
+import cydo.mcp : McpResult;
+
+import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.claude : ClaudeCodeAgent;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
@@ -25,6 +29,8 @@ import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
 	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
+import cydo.tasktype : TaskTypeDef, loadTaskTypes, validateTaskTypes, modelClassToAlias, renderPrompt,
+	formatCreatableTaskTypes;
 
 void main(string[] args)
 {
@@ -33,6 +39,12 @@ void main(string[] args)
 	{
 		import cydo.mcp.server : runMcpServer;
 		runMcpServer();
+		return;
+	}
+	if (args.canFind("--simulate"))
+	{
+		import cydo.tasktype : runSimulator;
+		runSimulator(args);
 		return;
 	}
 
@@ -52,6 +64,11 @@ class App
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent;
+	// Task type definitions loaded from YAML
+	private TaskTypeDef[string] taskTypes;
+	private string taskTypesDir;
+	// Pending sub-task promises (childTid → promise fulfilled on task exit)
+	private Promise!(McpResult)[int] pendingSubTasks;
 	// inotify watches for JSONL file tracking (tid → watch descriptor)
 	private INotify.WatchDescriptor[int] jsonlFileWatches;
 	private INotify.WatchDescriptor[int] jsonlDirWatches;
@@ -62,6 +79,21 @@ class App
 		persistence = Persistence("data/cydo.db");
 		config = loadConfig();
 		agent = new ClaudeCodeAgent();
+
+		// Load task type definitions
+		try
+		{
+			import std.path : dirName;
+			enum typesPath = "docs/task-types/types.yaml";
+			taskTypes = loadTaskTypes(typesPath);
+			taskTypesDir = dirName(typesPath);
+			auto errors = validateTaskTypes(taskTypes);
+			foreach (e; errors)
+				writefln("  WARN: task type: %s", e);
+			writefln("Loaded %d task types", taskTypes.length);
+		}
+		catch (Exception e)
+			writefln("Warning: could not load task types: %s", e.msg);
 
 		// Discover projects in all workspaces
 		foreach (ref ws; config.workspaces)
@@ -165,14 +197,8 @@ class App
 
 	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
 	{
-		import ae.net.http.responseex : HttpResponseEx;
 		import ae.sys.dataset : joinData;
-		import ae.utils.json : jsonParse, toJson, JSONFragment, JSONPartial;
-		import ae.utils.text : asText;
-
-		import cydo.mcp : McpResult;
-		import cydo.mcp.binding : mcpToolDispatcher;
-		import cydo.mcp.tools : CydoTools, CydoToolsImpl;
+		import ae.utils.json : jsonParse, toJson, JSONPartial;
 
 		auto response = new HttpResponseEx();
 		response.headers["Content-Type"] = "application/json";
@@ -198,16 +224,123 @@ class App
 			return;
 		}
 
+		// Unified async dispatch — all tools return Promise!McpResult
+		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
+			auto resultJson = toJson(McpContentResult(
+				[McpContentItem("text", result.text)],
+				result.isError,
+			));
+			conn.sendResponse(response.serveData(resultJson));
+		});
+	}
+
+	/// Dispatch an MCP tool call. Returns a promise that resolves when the
+	/// tool completes — immediately for sync tools, later for async tools.
+	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args)
+	{
+		if (tool == "CreateTask")
+			return handleCreateTask(tid, args);
+
+		// Sync dispatch for other tools
+		import cydo.mcp.binding : mcpToolDispatcher;
+		import cydo.mcp.tools : CydoTools, CydoToolsImpl;
+
 		auto impl = new CydoToolsImpl();
 		auto dispatcher = mcpToolDispatcher!CydoTools(impl);
-		auto result = dispatcher.dispatch(call.tool, call.args);
+		return resolve(dispatcher.dispatch(tool, args));
+	}
 
-		// Format as MCP content result
-		auto resultJson = toJson(McpContentResult(
-			[McpContentItem("text", result.text)],
-			result.isError,
-		));
-		conn.sendResponse(response.serveData(resultJson));
+	/// Handle CreateTask — returns a promise that resolves when the child task completes.
+	private Promise!McpResult handleCreateTask(string callerTid, JSONFragment rawArgs)
+	{
+		import ae.utils.json : jsonParse, toJson, JSONPartial;
+		import std.algorithm : canFind;
+		import std.array : join;
+		import std.conv : to;
+
+		@JSONPartial
+		static struct CreateTaskArgs
+		{
+			string task_type;
+			string description;
+		}
+
+		CreateTaskArgs args;
+		try
+			args = jsonParse!CreateTaskArgs(rawArgs.json);
+		catch (Exception e)
+			return resolve(McpResult("Invalid CreateTask arguments: " ~ e.msg, true));
+
+		// Look up calling task
+		int parentTid;
+		try
+			parentTid = to!int(callerTid);
+		catch (Exception)
+			return resolve(McpResult("Invalid calling task ID", true));
+
+		auto parentTd = parentTid in tasks;
+		if (parentTd is null)
+			return resolve(McpResult("Calling task not found", true));
+
+		// Validate task_type against parent's creatable_tasks
+		auto parentTypeDef = parentTd.taskType in taskTypes;
+		if (parentTypeDef !is null &&
+			parentTypeDef.creatable_tasks.length > 0 &&
+			!parentTypeDef.creatable_tasks.canFind(args.task_type))
+		{
+			return resolve(McpResult(
+				"Task type '" ~ args.task_type ~ "' is not in creatable_tasks for '" ~
+				parentTd.taskType ~ "'. Allowed: " ~
+				parentTypeDef.creatable_tasks.join(", "), true));
+		}
+
+		// Validate child task type exists
+		auto childTypeDef = args.task_type in taskTypes;
+		if (childTypeDef is null)
+			return resolve(McpResult("Unknown task type: " ~ args.task_type, true));
+
+		// Create child task
+		auto childTid = createTask(parentTd.workspace, parentTd.projectPath);
+		auto childTd = &tasks[childTid];
+		childTd.taskType = args.task_type;
+		childTd.description = args.description;
+		childTd.parentTid = parentTid;
+		childTd.relationType = "subtask";
+		childTd.title = truncateTitle(args.description, 80);
+
+		// Persist metadata
+		persistence.setTaskType(childTid, args.task_type);
+		persistence.setDescription(childTid, args.description);
+		persistence.setParentTid(childTid, parentTid);
+		persistence.setRelationType(childTid, "subtask");
+		persistence.setTitle(childTid, childTd.title);
+
+		// Create promise — fulfilled when child task exits
+		auto promise = new Promise!McpResult;
+		pendingSubTasks[childTid] = promise;
+
+		// Broadcast to UI
+		broadcast(toJson(TaskCreatedMessage("task_created", childTid,
+			parentTd.workspace, parentTd.projectPath, parentTid, "subtask")));
+		broadcast(buildTasksList());
+
+		// Configure and spawn child agent
+		auto sessionConfig = SessionConfig(
+			modelClassToAlias(childTypeDef.model_class),
+		);
+		ensureTaskAgent(childTid, sessionConfig);
+
+		// Send rendered prompt template as first user message
+		if (childTd.session !is null)
+		{
+			auto prompt = renderPrompt(*childTypeDef, args.description, taskTypesDir);
+			childTd.session.sendMessage(prompt);
+		}
+
+		generateTitle(childTid, args.description);
+		writefln("CreateTask: tid=%d type=%s parent=%d", childTid, args.task_type, parentTid);
+
+		return promise;
 	}
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
@@ -349,11 +482,15 @@ class App
 		return tid;
 	}
 
-	private void ensureTaskAgent(int tid)
+	private void ensureTaskAgent(int tid, SessionConfig sessionConfig = SessionConfig.init)
 	{
 		auto td = &tasks[tid];
 		if (td.session && td.session.alive)
 			return;
+
+		// Populate creatable task types description if not already set
+		if (sessionConfig.creatableTaskTypes.length == 0)
+			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 
@@ -362,7 +499,7 @@ class App
 		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, workDir);
 
-		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix);
+		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
 		if (auto cAgent = cast(ClaudeCodeAgent) agent)
@@ -377,6 +514,16 @@ class App
 
 		td.session.onOutput = (string line) {
 			broadcastTask(tid, line);
+
+			// For sub-tasks: detect turn completion and close stdin.
+			// In stream-json mode with -p, the process stays alive waiting
+			// for more input. Closing stdin signals EOF so it exits cleanly.
+			if (tid in pendingSubTasks)
+			{
+				import std.algorithm : canFind;
+				if (line.canFind(`"type":"result"`))
+					td.session.closeStdin();
+			}
 		};
 
 		td.session.onStderr = (string line) {
@@ -394,6 +541,16 @@ class App
 			persistence.setStatus(tid, tasks[tid].status);
 			cleanup(tasks[tid].sandbox);
 			stopJsonlWatch(tid);
+
+			// Fulfill pending sub-task promise (if this is a child task)
+			if (auto pending = tid in pendingSubTasks)
+			{
+				auto output = collectTaskOutput(tid);
+				auto success = tasks[tid].status == "completed";
+				pending.fulfill(McpResult(output.length > 0 ? output : "(no output)", !success));
+				pendingSubTasks.remove(tid);
+			}
+
 			// Discard all history and reload from JSONL (canonical source).
 			// Frontends are notified to discard their state and re-request.
 			if (tasks[tid].claudeSessionId.length > 0)
@@ -684,6 +841,23 @@ class App
 		import std.algorithm : remove;
 		clients = clients.remove!(c => c is ws);
 	}
+
+	/// Collect all assistant text output from a task's history.
+	private string collectTaskOutput(int tid)
+	{
+		if (tid !in tasks)
+			return "";
+
+		string output;
+		foreach (ref d; tasks[tid].history)
+		{
+			auto envelope = cast(string) d.toGC();
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length > 0)
+				output ~= extractAssistantText(event);
+		}
+		return output;
+	}
 }
 
 private:
@@ -885,4 +1059,27 @@ string extractAssistantText(string line)
 	{
 		return "";
 	}
+}
+
+/// Extract the "event" field from a task envelope JSON string.
+/// Envelopes have the form: {"tid":N,"timestamp":"...","event":{...}}
+string extractEventFromEnvelope(string envelope)
+{
+	import std.string : indexOf;
+
+	// Find "event": prefix — the value is everything after it until the closing }
+	auto key = `"event":`;
+	auto idx = envelope.indexOf(key);
+	if (idx < 0)
+		return "";
+
+	auto start = idx + key.length;
+	if (start >= envelope.length)
+		return "";
+
+	// The event value is a JSON object/string that extends to the second-to-last char
+	// (the envelope's closing }). This works because "event" is the last field.
+	if (envelope[$ - 1] == '}')
+		return envelope[start .. $ - 1];
+	return envelope[start .. $];
 }

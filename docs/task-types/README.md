@@ -1,0 +1,158 @@
+# Task Type System
+
+Task types define agent behavior, capabilities, and flow control. Each task
+type is a template that determines how an agent approaches work, what tools it
+has, and what happens when it finishes.
+
+Concrete definitions are in [types.yaml](types.yaml).
+
+## Schema
+
+```yaml
+name: string                          # unique key (the YAML map key)
+description: string                   # human-readable comment
+agent_description: string             # LLM-visible; explains when to use this type
+prompt_template: string | path        # system prompt wrapping the task description
+model_class: small | medium | large   # maps to haiku / sonnet / opus
+tool_preset: full | read-only | code | execute
+output_type: commit | patch | report  # what the task produces
+
+# Flow control
+creatable_tasks: string[]             # task types this agent can spawn (modal)
+continuations:                        # successors on completion (exec-style)
+  <name>:                             # agent picks one on completion
+    task_type: string
+    requires_approval: bool           # all stewards must approve first
+
+# Execution
+parallelizable: bool                  # multiple instances can run concurrently
+serial: bool                          # one at a time, queued (steward pattern)
+max_turns: int?                       # resource limit
+
+# Visibility
+user_visible: bool                    # can users create this type directly
+
+# Steward
+steward: bool                         # registers as an approver
+steward_domain: string                # what this steward cares about
+knowledge_base: path?                 # persistent state directory
+```
+
+## Output Types
+
+- **commit** — Standalone reviewable code changes. Runs in its own worktree.
+  Goes through CI and steward review before landing.
+- **patch** — Incremental code changes on the parent's working tree. Part of a
+  larger effort, not independently reviewable.
+- **report** — Text output, no code changes. Plans, analyses, verdicts.
+
+## Tool Presets
+
+- **full** — Read, write, execute. Full autonomy.
+- **read-only** — Read files, search, web access. No modifications.
+- **code** — Read and write files. Limited/no shell execution.
+- **execute** — Run commands, no file writes. For CI tasks.
+
+## Flow Control
+
+Two mechanisms for chaining tasks:
+
+**Continuation (exec-style):** The agent completes and declares which successor
+should take over. Defined in the task type's `continuations` field. The current
+session ends — failures propagate to the parent. Approval gates can block the
+successor until stewards approve.
+
+**Modal sub-task (fork+exec-style):** The agent creates sub-tasks via a tool
+during execution. The agent's session is suspended and resumed when sub-tasks
+complete. The agent sees results and can retry on failure, create more
+sub-tasks, or eventually complete (possibly picking a continuation).
+
+The two compose: an agent can do modal work during its lifetime, then use a
+continuation when it's truly done.
+
+## Approval
+
+When a continuation has `requires_approval: true`, the system finds all task
+types with `steward: true` and creates one approval task per steward. Steward
+agents use `approve()` / `reject(reason)` tools to deliver verdicts. All
+stewards must approve before the successor spawns.
+
+Adding a steward to a project requires no changes to core workflow definitions —
+just add the steward type definition and it's automatically included in all
+approval gates.
+
+On rejection: feedback propagates to the caller (the task that completed and
+triggered the continuation). The caller's session is resumed with the rejection
+context. It can revise and retry, or propagate the failure to its parent.
+
+## Stewards
+
+Stewards are not a special construct — they're task types with `steward: true`.
+They have two invocation contexts:
+
+**Approval:** Input is an artifact (plan or patch). Output is a verdict
+(approve/reject). Runs in parallel across stewards. Blocks the continuation.
+
+**Upkeep:** Input is a landed diff. The steward updates its knowledge base if
+the change is relevant to its domain. Async, no gate.
+
+Both use the same task type and knowledge base. The difference is in the task
+description (structured by the system) and available tools (approval has
+`approve()`/`reject()`, upkeep doesn't).
+
+The steward's "statefulness" is files in its `knowledge_base` directory. Its
+"serial queue" is the `serial: true` flag. Steward knowledge base updates
+produce commits that go through steward review themselves.
+
+## Task Lifecycle
+
+```
+pending → active → awaiting_approval → completed → (successor spawned)
+                 → failed             → rejected  → (caller resumed)
+```
+
+## Example Workflows
+
+### Bug fix (small)
+
+```
+user creates bug "Login fails with special characters"
+  → bug agent investigates, reproduces, identifies fix
+  → continuation: small_fix → implement
+    → implement agent writes the fix in a worktree
+    → continuation: done (requires approval)
+      → steward_quality reviews → approve
+      → steward_security reviews → approve
+      → review agent verifies
+      → commit lands via merge train
+```
+
+### Feature (needs decomposition)
+
+```
+user creates conversation "Add OAuth2 support"
+  → conversation agent discusses with user, creates plan sub-task (modal)
+    → plan agent produces implementation plan
+    → continuation: decompose (requires approval)
+      → steward_quality reviews plan → approve
+      → steward_security reviews plan → approve
+      → decompose agent splits into 3 implement tasks (modal)
+        → implement "OAuth2 provider config" (parallel)
+        → implement "Token exchange flow" (parallel)
+        → implement "Session middleware" (parallel)
+        → all complete, each through steward approval
+      → decompose reports to conversation
+```
+
+### Steward rejection
+
+```
+plan agent produces plan
+  → continuation: implement (requires approval)
+    → steward_quality reviews → reject("Missing error handling")
+    → plan agent resumed with rejection feedback
+    → plan agent revises
+    → continuation: implement (requires approval)
+      → all stewards approve
+      → implement agent proceeds
+```

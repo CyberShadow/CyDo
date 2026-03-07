@@ -6,7 +6,7 @@ import std.path : dirName, expandTilde;
 
 import ae.utils.json : toJson;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -43,10 +43,11 @@ class ClaudeCodeAgent : Agent
 	/// Exposed for cleanup tracking by the caller.
 	string lastMcpConfigPath;
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix)
+	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
+		SessionConfig config = SessionConfig.init)
 	{
-		lastMcpConfigPath = generateMcpConfig(tid);
-		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath);
+		lastMcpConfigPath = generateMcpConfig(tid, config.creatableTaskTypes);
+		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath, config);
 	}
 }
 
@@ -58,7 +59,8 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 
-	this(string resumeSessionId = null, string[] bwrapPrefix = null, string mcpConfigPath = null)
+	this(string resumeSessionId = null, string[] bwrapPrefix = null,
+		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
 		string[] claudeArgs = [
 			"claude",
@@ -76,6 +78,12 @@ class ClaudeCodeSession : AgentSession
 
 		if (resumeSessionId !is null)
 			claudeArgs ~= ["--resume", resumeSessionId];
+
+		if (config.model.length > 0)
+			claudeArgs ~= ["--model", config.model];
+
+		if (config.appendSystemPrompt.length > 0)
+			claudeArgs ~= ["--append-system-prompt", config.appendSystemPrompt];
 
 		// When sandboxed, bwrap handles workDir via --chdir
 		string[] args;
@@ -124,6 +132,11 @@ class ClaudeCodeSession : AgentSession
 		process.terminate();
 	}
 
+	void closeStdin()
+	{
+		process.closeStdin();
+	}
+
 	@property void onOutput(void delegate(string line) dg)
 	{
 		outputHandler = dg;
@@ -162,7 +175,8 @@ struct ClaudeInputMessage
 }
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
-string generateMcpConfig(int tid)
+/// creatableTaskTypes is pre-formatted text describing available task types.
+string generateMcpConfig(int tid, string creatableTaskTypes = "")
 {
 	import std.file : exists, mkdirRecurse, write;
 	import std.path : buildPath;
@@ -177,7 +191,8 @@ string generateMcpConfig(int tid)
 	// MCP config pointing to our binary in MCP server mode
 	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
 		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_PORT":"3456"}}}}`;
+		~ to!string(tid) ~ `","CYDO_PORT":"3456","CYDO_CREATABLE_TYPES":"`
+		~ escapeJsonString(creatableTaskTypes) ~ `"}}}}`;
 
 	write(configPath, config);
 	return configPath;
@@ -201,7 +216,7 @@ string cydoBinaryDir()
 string escapeJsonString(string s)
 {
 	import std.array : replace;
-	return s.replace(`\`, `\\`).replace(`"`, `\"`);
+	return s.replace(`\`, `\\`).replace(`"`, `\"`).replace("\n", `\n`).replace("\r", `\r`).replace("\t", `\t`);
 }
 
 /// Resolve the claude binary path by searching PATH.

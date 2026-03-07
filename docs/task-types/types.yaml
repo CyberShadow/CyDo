@@ -1,0 +1,166 @@
+# CyDo Task Type Definitions
+#
+# Types define agent behavior, capabilities, and flow control.
+#
+# Flow control:
+#   - creatable_tasks: modal sub-tasks (agent stays alive, gets results back)
+#   - continuations: exec-style successors (agent is done, next task takes over)
+#   - requires_approval: all stewards must approve before successor spawns
+
+task_types:
+
+  # -------------------------------------------------------------------------
+  # User-visible types
+  # -------------------------------------------------------------------------
+
+  conversation:
+    description: "Open-ended interactive session with the user"
+    prompt_template: prompts/conversation.md
+    model_class: large
+    tool_preset: full
+    output_type: report
+    creatable_tasks: [plan, research, implement, bug]
+    parallelizable: true
+    user_visible: true
+
+  bug:
+    description: "Investigate a bug report — reproduce, find root cause, fix"
+    agent_description: >
+      Use for investigating and fixing bugs. The agent will reproduce the issue,
+      identify the root cause, and either fix it directly or create a plan for
+      larger fixes.
+    prompt_template: prompts/bug.md
+    model_class: large
+    tool_preset: full
+    output_type: patch
+    creatable_tasks: [research]
+    continuations:
+      small_fix:
+        task_type: implement
+      needs_plan:
+        task_type: plan
+    parallelizable: true
+    user_visible: true
+
+  plan:
+    description: "Create a detailed implementation plan"
+    agent_description: >
+      Use when work needs to be planned before implementation. The agent reads
+      the codebase, designs an approach, and produces a plan document. Does not
+      write code.
+    prompt_template: prompts/plan.md
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    continuations:
+      implement:
+        task_type: implement
+        requires_approval: true
+      decompose:
+        task_type: decompose
+        requires_approval: true
+    parallelizable: true
+    user_visible: true
+
+  research:
+    description: "Investigate a topic, gather information, produce findings"
+    agent_description: >
+      Use when you need information before making a decision. The agent explores
+      the codebase, reads documentation, and produces a report. No code changes.
+    prompt_template: prompts/research.md
+    model_class: medium
+    tool_preset: read-only
+    output_type: report
+    parallelizable: true
+    user_visible: true
+
+  # -------------------------------------------------------------------------
+  # Agent-initiated types (not directly user-visible)
+  # -------------------------------------------------------------------------
+
+  decompose:
+    description: "Split a plan into parallel sub-tasks"
+    agent_description: >
+      Use when a plan is too large for a single implementation task. Creates
+      multiple parallel implement tasks and waits for all to complete.
+    prompt_template: prompts/decompose.md
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    creatable_tasks: [implement, plan]
+    parallelizable: true
+    user_visible: false
+
+  implement:
+    description: "Execute a specific, pre-planned coding task"
+    agent_description: >
+      Use for well-scoped coding tasks with a clear plan. Produces a commit
+      in its own worktree. Can create test sub-tasks.
+    prompt_template: prompts/implement.md
+    model_class: medium
+    tool_preset: full
+    output_type: commit
+    creatable_tasks: [test]
+    continuations:
+      done:
+        task_type: review
+        requires_approval: true
+    parallelizable: true
+    user_visible: false
+
+  test:
+    description: "Write or fix tests for implemented changes"
+    agent_description: >
+      Use to add test coverage for new or changed code. Works on the same
+      tree as the parent implementation task.
+    prompt_template: prompts/test.md
+    model_class: medium
+    tool_preset: full
+    output_type: patch
+    parallelizable: true
+    user_visible: false
+
+  review:
+    description: "Review code changes for correctness and quality"
+    agent_description: >
+      Final code review after steward approval. Verifies the implementation
+      matches the plan and is ready to land.
+    prompt_template: prompts/review.md
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    parallelizable: true
+    user_visible: false
+
+  # -------------------------------------------------------------------------
+  # Stewards
+  # -------------------------------------------------------------------------
+
+  steward_quality:
+    description: "Review artifacts for code quality and project conventions"
+    prompt_template: prompts/steward_quality.md
+    steward: true
+    steward_domain: >
+      Code quality, project conventions, antipatterns, consistency.
+      Ensures code follows established patterns and doesn't introduce
+      technical debt.
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    serial: true
+    knowledge_base: .cydo/stewards/quality/
+    user_visible: false
+
+  steward_security:
+    description: "Review artifacts for security vulnerabilities"
+    prompt_template: prompts/steward_security.md
+    steward: true
+    steward_domain: >
+      Security vulnerabilities, unsafe patterns, injection risks,
+      authentication/authorization issues, data exposure.
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    serial: true
+    knowledge_base: .cydo/stewards/security/
+    user_visible: false

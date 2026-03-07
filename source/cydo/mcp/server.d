@@ -10,7 +10,7 @@ import std.process : environment;
 import std.stdio : stderr;
 
 import ae.net.asockets : socketManager;
-import ae.net.http.client : httpPost;
+import ae.net.http.client : HttpClient;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.net.jsonrpc.stdio : stdioLDJsonRpcConnection;
 import ae.sys.data : Data;
@@ -48,8 +48,19 @@ private:
 /// MCP protocol version
 enum MCP_PROTOCOL_VERSION = "2024-11-05";
 
-/// tools/list result JSON (generated at compile time from the CydoTools interface)
-enum TOOLS_LIST_JSON = mcpToolListJson!CydoTools;
+/// tools/list result JSON template (generated at compile time from the CydoTools interface).
+/// Contains {{creatable_task_types}} placeholder, substituted at runtime.
+enum TOOLS_LIST_TEMPLATE = mcpToolListJson!CydoTools;
+
+/// Build the final tools/list JSON by substituting placeholders.
+string buildToolsListJson()
+{
+	import std.array : replace;
+	import cydo.mcp.binding : jsonEscapeRuntime;
+	auto creatableTypes = environment.get("CYDO_CREATABLE_TYPES", "(none available)");
+	// Value is substituted inside a JSON string, so it must be JSON-escaped
+	return TOOLS_LIST_TEMPLATE.replace("{{creatable_task_types}}", jsonEscapeRuntime(creatableTypes));
+}
 
 Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string tid)
 {
@@ -64,7 +75,7 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl,
 			return resolve(JsonRpcResponse.success(request.id));
 
 		case "tools/list":
-			return resolve(JsonRpcResponse.success(request.id, JSONFragment(TOOLS_LIST_JSON)));
+			return resolve(JsonRpcResponse.success(request.id, JSONFragment(buildToolsListJson())));
 
 		case "tools/call":
 			return handleToolsCall(request, backendUrl, tid);
@@ -97,24 +108,35 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUr
 
 	stderr.writefln("MCP proxy: tools/call %s → backend", params.name);
 
-	httpPost(backendUrl, DataVec(Data(bodyJson.asBytes)), "application/json",
-		(Data response) {
-			try
-			{
-				// Backend returns {content: [{type, text}], isError: bool}
-				// Pass through as the tools/call result
-				auto responseText = cast(string) response.toGC();
-				promise.fulfill(JsonRpcResponse.success(request.id, JSONFragment(responseText)));
-			}
-			catch (Exception e)
-				promise.fulfill(JsonRpcResponse.failure(request.id,
-					JsonRpcErrorCode.internalError, "Failed to parse backend response: " ~ e.msg));
-		},
-		(string error) {
+	// Use HttpClient with no timeout — sub-tasks can run for minutes/hours
+	import ae.net.http.common : HttpRequest, HttpResponse;
+	import core.time : Duration;
+
+	auto httpReq = new HttpRequest;
+	httpReq.resource = backendUrl;
+	httpReq.method = "POST";
+	httpReq.headers["Content-Type"] = "application/json";
+	httpReq.data = DataVec(Data(bodyJson.asBytes));
+
+	auto client = new HttpClient(Duration.zero);
+	client.handleResponse = (HttpResponse response, string disconnectReason) {
+		if (response is null)
+		{
 			promise.fulfill(JsonRpcResponse.failure(request.id,
-				JsonRpcErrorCode.internalError, "Backend connection failed: " ~ error));
+				JsonRpcErrorCode.internalError, "Backend connection failed: " ~ disconnectReason));
+			return;
 		}
-	);
+		try
+		{
+			import ae.sys.dataset : joinData;
+			auto responseText = cast(string) response.data[].joinData().toGC();
+			promise.fulfill(JsonRpcResponse.success(request.id, JSONFragment(responseText)));
+		}
+		catch (Exception e)
+			promise.fulfill(JsonRpcResponse.failure(request.id,
+				JsonRpcErrorCode.internalError, "Failed to parse backend response: " ~ e.msg));
+	};
+	client.request(httpReq);
 
 	return promise;
 }

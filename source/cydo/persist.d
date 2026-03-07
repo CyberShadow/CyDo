@@ -80,6 +80,21 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET status = ? WHERE tid = ?".exec(status, tid);
 	}
 
+	void setTaskType(int tid, string taskType)
+	{
+		db.stmt!"UPDATE tasks SET task_type = ? WHERE tid = ?".exec(taskType, tid);
+	}
+
+	void setParentTid(int tid, int parentTid)
+	{
+		db.stmt!"UPDATE tasks SET parent_tid = ? WHERE tid = ?".exec(parentTid, tid);
+	}
+
+	void setRelationType(int tid, string relationType)
+	{
+		db.stmt!"UPDATE tasks SET relation_type = ? WHERE tid = ?".exec(relationType, tid);
+	}
+
 	struct TaskRow
 	{
 		int tid;

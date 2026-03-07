@@ -201,6 +201,9 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 	return McpToolDispatcher!I(impl);
 }
 
+/// Runtime-callable JSON string escaping (same logic as jsonEscape).
+string jsonEscapeRuntime(string s) { return jsonEscape(s); }
+
 /// Escape a string for embedding in a JSON string literal.
 /// Usable at compile time (CTFE-compatible).
 private string jsonEscape(string s)

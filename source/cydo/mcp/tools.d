@@ -13,9 +13,21 @@ interface CydoTools
 		@Description("The absolute path to the file to read")
 		string file_path
 	);
+
+	@Description("Create a sub-task that runs autonomously and returns its output. "
+		~ "Use this to delegate work to a specialized agent.\n\n"
+		~ "Available task types:\n{{creatable_task_types}}")
+	@McpName("CreateTask")
+	McpResult createTask(
+		@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
+		string task_type,
+		@Description("Description of what the sub-task should accomplish")
+		string description
+	);
 }
 
 /// Tool implementation — executed by the backend.
+/// Note: CreateTask is intercepted in handleMcpCall and never reaches this class.
 class CydoToolsImpl : CydoTools
 {
 	McpResult read(string file_path)
@@ -35,5 +47,10 @@ class CydoToolsImpl : CydoTools
 		}
 		catch (Exception e)
 			return McpResult("Error reading file: " ~ e.msg, true);
+	}
+
+	McpResult createTask(string task_type, string description)
+	{
+		return McpResult("CreateTask is handled by the server", true);
 	}
 }

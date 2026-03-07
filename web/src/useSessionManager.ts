@@ -135,6 +135,8 @@ export function useTaskManager(): TaskManager {
   workspacesRef.current = workspaces;
 
   const parsed = useMemo(() => parseFromPath(path), [path]);
+  const activeTaskIdRef = useRef(parsed.tid);
+  activeTaskIdRef.current = parsed.tid;
   const activeTaskId = parsed.tid;
   const activeWorkspace = parsed.workspace;
   const activeProject = parsed.project;
@@ -202,6 +204,16 @@ export function useTaskManager(): TaskManager {
     liveStates.set(tid, updated);
     notifyTransition(tid, prev, updated);
 
+    // When a sub-task finishes and it's currently focused, switch to parent
+    if (prev.alive && !updated.alive && updated.parentTid) {
+      if (activeTaskIdRef.current === tid) {
+        const parent = liveStates.get(updated.parentTid);
+        if (parent) {
+          setActiveTaskId(updated.parentTid);
+        }
+      }
+    }
+
     setTasks((map) => {
       const next = new Map(map);
       next.set(tid, updated);
@@ -259,21 +271,26 @@ export function useTaskManager(): TaskManager {
           return next;
         });
 
-        // Navigate to the new task
-        if (workspace && projectPath) {
-          const projName = findProjectName(
-            workspacesRef.current,
-            workspace,
-            projectPath,
-          );
-          if (projName) {
-            const encodedProject = projName.replace(/\//g, ":");
-            routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
+        // Navigate to the new task only if:
+        // - it has no parent (user-created), or
+        // - its parent is currently focused
+        const shouldFocus = !parentTid || activeTaskIdRef.current === parentTid;
+        if (shouldFocus) {
+          if (workspace && projectPath) {
+            const projName = findProjectName(
+              workspacesRef.current,
+              workspace,
+              projectPath,
+            );
+            if (projName) {
+              const encodedProject = projName.replace(/\//g, ":");
+              routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
+            } else {
+              routeRef.current(`/task/${tid}`);
+            }
           } else {
             routeRef.current(`/task/${tid}`);
           }
-        } else {
-          routeRef.current(`/task/${tid}`);
         }
 
         // If we have a pending first message, send it now
