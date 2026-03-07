@@ -62,11 +62,20 @@ export function SessionView({
         theme={theme}
         onToggleTheme={onToggleTheme}
       />
-      <MessageList
-        sessionId={session.sid}
-        messages={session.messages}
-        isProcessing={session.isProcessing}
-      />
+      {session.messages.length === 0 && !session.isProcessing ? (
+        <div class="message-list welcome-prompt">
+          <div class="welcome-box">
+            <h1 class="welcome-title">CyDo</h1>
+            <p class="welcome-subtitle">Multi-agent orchestration system</p>
+          </div>
+        </div>
+      ) : (
+        <MessageList
+          sessionId={session.sid}
+          messages={session.messages}
+          isProcessing={session.isProcessing}
+        />
+      )}
       {session.resumable ? (
         <div class="resume-bar">
           <button class="btn btn-resume" onClick={onResume}>

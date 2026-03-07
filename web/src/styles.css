@@ -109,6 +109,13 @@ body,
   grid-row: 3;
 }
 
+/* Welcome prompt (empty session with sidebar) */
+.welcome-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Welcome screen */
 .app.welcome {
   justify-content: center;
