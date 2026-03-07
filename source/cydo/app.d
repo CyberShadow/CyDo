@@ -16,12 +16,14 @@ import ae.net.http.websocket : WebSocketAdapter, accept;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 
-import cydo.agent.claude : ClaudeCodeSession;
+import cydo.agent.agent : Agent;
+import cydo.agent.claude : ClaudeCodeAgent;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
-import cydo.config : CydoConfig, WorkspaceConfig, loadConfig;
+import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : Persistence, loadSessionHistory;
+import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 
 void main()
 {
@@ -38,11 +40,13 @@ class App
 	private Persistence persistence;
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
+	private Agent agent;
 
 	void start()
 	{
 		persistence = Persistence("data/cydo.db");
 		config = loadConfig();
+		agent = new ClaudeCodeAgent();
 
 		// Discover projects in all workspaces
 		foreach (ref ws; config.workspaces)
@@ -173,13 +177,13 @@ class App
 			auto sd = &sessions[sid];
 			// Only auto-spawn for new sessions (no claudeSessionId yet).
 			// Resumable sessions require an explicit "resume" first.
-			if (sd.agent is null || !sd.agent.alive)
+			if (sd.session is null || !sd.session.alive)
 			{
 				if (sd.claudeSessionId.length > 0)
 					return; // resumable but not resumed — ignore
 				ensureSessionAgent(sid);
 			}
-			sd.agent.sendMessage(json.content);
+			sd.session.sendMessage(json.content);
 
 			// Set initial title from first user message (truncated)
 			if (sd.title.length == 0)
@@ -199,7 +203,7 @@ class App
 			// Only resume if we have a Claude session ID and no running process
 			if (sd.claudeSessionId.length == 0)
 				return;
-			if (sd.agent !is null && sd.agent.alive)
+			if (sd.session !is null && sd.session.alive)
 				return;
 			ensureSessionAgent(sid);
 			broadcast(buildSessionsList());
@@ -210,8 +214,8 @@ class App
 			if (sid < 0 || sid !in sessions)
 				return;
 			auto sd = &sessions[sid];
-			if (sd.agent)
-				sd.agent.interrupt();
+			if (sd.session)
+				sd.session.interrupt();
 		}
 	}
 
@@ -228,27 +232,34 @@ class App
 	private void ensureSessionAgent(int sid)
 	{
 		auto sd = &sessions[sid];
-		if (sd.agent && sd.agent.alive)
+		if (sd.session && sd.session.alive)
 			return;
 
 		auto workDir = sd.projectPath.length > 0 ? sd.projectPath : null;
-		sd.agent = new ClaudeCodeSession(sd.claudeSessionId, workDir);
 
-		sd.agent.onOutput = (string line) {
+		// Resolve sandbox config: agent defaults + global + per-workspace
+		auto wsSandbox = findWorkspaceSandbox(sd.workspace);
+		sd.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
+		auto bwrapPrefix = buildBwrapArgs(sd.sandbox, workDir);
+
+		sd.session = agent.createSession(sd.claudeSessionId, bwrapPrefix);
+
+		sd.session.onOutput = (string line) {
 			broadcastSession(sid, line);
 		};
 
-		sd.agent.onStderr = (string line) {
+		sd.session.onStderr = (string line) {
 			import ae.utils.json : toJson;
 			broadcastSession(sid, toJson(StderrMessage("stderr", line)));
 		};
 
-		sd.agent.onExit = (int status) {
+		sd.session.onExit = (int status) {
 			import ae.utils.json : toJson;
 			broadcastSession(sid, toJson(ExitMessage("exit", status)));
 			if (sid !in sessions)
 				return;
 			sessions[sid].alive = false;
+			cleanup(sessions[sid].sandbox);
 			// Discard all history and reload from JSONL (canonical source).
 			// Frontends are notified to discard their state and re-request.
 			if (sessions[sid].claudeSessionId.length > 0)
@@ -261,6 +272,14 @@ class App
 		};
 
 		sd.alive = true;
+	}
+
+	private SandboxConfig findWorkspaceSandbox(string workspaceName)
+	{
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName)
+				return ws.sandbox;
+		return SandboxConfig.init;
 	}
 
 	private void broadcastSession(int sid, string rawLine)
@@ -411,7 +430,8 @@ private:
 struct SessionData
 {
 	int sid;
-	AgentSession agent;
+	AgentSession session;
+	ResolvedSandbox sandbox;
 	DataVec history;          // unified: JSONL file events + live stdout events
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	string claudeSessionId;

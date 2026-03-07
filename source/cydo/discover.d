@@ -18,6 +18,10 @@ struct DiscoveredProject
 /// Otherwise, scans recursively up to max_depth for .git directories.
 DiscoveredProject[] discoverProjects(WorkspaceConfig ws)
 {
+	import std.path : expandTilde;
+
+	ws.root = expandTilde(ws.root);
+
 	if (!exists(ws.root) || !isDir(ws.root))
 		return null;
 
