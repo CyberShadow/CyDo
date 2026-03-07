@@ -40,7 +40,9 @@ export class Connection {
           raw.type === "session_reload" ||
           raw.type === "title_update" ||
           raw.type === "session_history_end" ||
-          raw.type === "workspaces_list"
+          raw.type === "workspaces_list" ||
+          raw.type === "forkable_uuids" ||
+          raw.type === "error"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("sid" in raw && typeof raw.sid === "number") {

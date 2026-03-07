@@ -77,6 +77,7 @@ export function SessionView({
           messages={session.messages}
           isProcessing={session.isProcessing}
           onFork={onFork}
+          forkableUuids={session.forkableUuids}
         />
       )}
       {session.resumable ? (

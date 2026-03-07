@@ -111,6 +111,8 @@ export interface SessionState {
   preReloadDrafts?: string[];
   workspace?: string;
   projectPath?: string;
+  /** UUIDs confirmed in the on-disk JSONL file — only these are forkable. */
+  forkableUuids: Set<string>;
 }
 
 export function makeSessionState(
@@ -135,5 +137,6 @@ export function makeSessionState(
     historyLoaded,
     workspace,
     projectPath,
+    forkableUuids: new Set(),
   };
 }

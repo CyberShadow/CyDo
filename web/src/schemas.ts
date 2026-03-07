@@ -614,10 +614,22 @@ export interface WorkspacesListMessage {
     projects: { name: string; path: string }[];
   }[];
 }
+export interface ForkableUuidsMessage {
+  type: "forkable_uuids";
+  sid: number;
+  uuids: string[];
+}
+export interface ErrorMessage {
+  type: "error";
+  message: string;
+  sid?: number;
+}
 export type ControlMessage =
   | SessionCreatedMessage
   | SessionsListMessage
   | SessionReloadMessage
   | TitleUpdateMessage
   | SessionHistoryEndMessage
-  | WorkspacesListMessage;
+  | WorkspacesListMessage
+  | ForkableUuidsMessage
+  | ErrorMessage;

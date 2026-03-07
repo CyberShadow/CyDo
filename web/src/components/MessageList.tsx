@@ -19,6 +19,7 @@ interface Props {
   messages: DisplayMessage[];
   isProcessing: boolean;
   onFork?: (sid: number, afterUuid: string) => void;
+  forkableUuids?: Set<string>;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -203,11 +204,13 @@ const MessageView = memo(
   function MessageView({
     msg,
     onFork,
+    forkable,
     children,
   }: {
     msg: DisplayMessage;
     hasNested?: boolean;
     onFork?: (afterUuid: string) => void;
+    forkable?: boolean;
     children: ComponentChildren;
   }) {
     const [showSource, setShowSource] = useState(false);
@@ -227,7 +230,7 @@ const MessageView = memo(
           )}
         </div>
         {showSource ? <SourceView msg={msg} /> : children}
-        {uuid && onFork && (
+        {uuid && forkable && onFork && (
           <div class="message-actions message-actions-bottom">
             <button
               class="msg-action-btn fork-btn"
@@ -242,9 +245,12 @@ const MessageView = memo(
     );
   },
   (prev, next) => {
-    // Always re-render messages with nested children (subagent messages)
     if (prev.hasNested || next.hasNested) return false;
-    return prev.msg === next.msg && prev.onFork === next.onFork;
+    return (
+      prev.msg === next.msg &&
+      prev.onFork === next.onFork &&
+      prev.forkable === next.forkable
+    );
   },
 );
 
@@ -253,6 +259,7 @@ export function MessageList({
   messages,
   isProcessing,
   onFork,
+  forkableUuids,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
@@ -368,6 +375,12 @@ export function MessageList({
                 </div>
               );
           }
+          const rawSrc = Array.isArray(msg.rawSource)
+            ? msg.rawSource[0]
+            : msg.rawSource;
+          const msgUuid = (rawSrc as any)?.uuid as string | undefined;
+          const isForkable =
+            !!msgUuid && !!forkableUuids && forkableUuids.has(msgUuid);
           return (
             <MessageView
               key={msg.id}
@@ -379,6 +392,7 @@ export function MessageList({
                 )
               }
               onFork={handleFork}
+              forkable={isForkable}
             >
               {inner}
             </MessageView>

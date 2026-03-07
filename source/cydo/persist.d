@@ -167,6 +167,43 @@ ForkResult forkSession(ref Persistence persistence, string sourceClaudeId, strin
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
 }
 
+/// Extract forkable UUIDs from JSONL content (user and assistant messages).
+string[] extractForkableUuids(string content)
+{
+	import std.algorithm : canFind;
+	import std.string : lineSplitter;
+
+	string[] uuids;
+	foreach (line; content.lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+		// Only user and assistant lines have meaningful UUIDs
+		if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
+			continue;
+		// Extract uuid value with string scanning (avoid full JSON parse)
+		auto uuidVal = extractJsonField(line, `"uuid":"`);
+		if (uuidVal.length > 0)
+			uuids ~= uuidVal;
+	}
+	return uuids;
+}
+
+/// Extract a string field value from a JSON line by prefix scanning.
+private string extractJsonField(string line, string prefix)
+{
+	import std.string : indexOf;
+
+	auto idx = line.indexOf(prefix);
+	if (idx < 0)
+		return null;
+	auto start = idx + prefix.length;
+	auto end = line.indexOf('"', start);
+	if (end < 0)
+		return null;
+	return line[start .. end];
+}
+
 /// Generate a random v4 UUID string.
 private string generateUUID()
 {

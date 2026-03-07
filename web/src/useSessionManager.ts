@@ -424,6 +424,26 @@ export function useSessionManager(): SessionManager {
         });
         break;
       }
+      case "forkable_uuids": {
+        const { sid, uuids } = msg;
+        const s = liveStates.get(sid);
+        if (!s) break;
+        const merged = new Set(s.forkableUuids);
+        for (const u of uuids) merged.add(u);
+        const updated = { ...s, forkableUuids: merged };
+        liveStates.set(sid, updated);
+        setSessions((prev) => {
+          if (!prev.has(sid)) return prev;
+          const next = new Map(prev);
+          next.set(sid, updated);
+          return next;
+        });
+        break;
+      }
+      case "error": {
+        console.error("Server error:", msg.message, "sid:", msg.sid);
+        break;
+      }
     }
   }, []);
 

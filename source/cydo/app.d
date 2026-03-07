@@ -5,7 +5,7 @@ import core.lifetime : move;
 import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
-import std.stdio : writefln;
+import std.stdio : File, writefln;
 import std.string : representation;
 
 import ae.net.asockets : socketManager, DisconnectType;
@@ -22,7 +22,8 @@ import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : ForkResult, Persistence, forkSession, loadSessionHistory;
+import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
+	forkSession, loadSessionHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 
 void main()
@@ -34,6 +35,8 @@ void main()
 
 class App
 {
+	import ae.sys.inotify : INotify, iNotify;
+
 	private HttpServer server;
 	private WebSocketAdapter[] clients;
 	private SessionData[int] sessions;
@@ -41,6 +44,10 @@ class App
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent;
+	// inotify watches for JSONL file tracking (sid → watch descriptor)
+	private INotify.WatchDescriptor[int] jsonlFileWatches;
+	private INotify.WatchDescriptor[int] jsonlDirWatches;
+	private size_t[int] jsonlReadPos;
 
 	void start()
 	{
@@ -166,6 +173,10 @@ class App
 			foreach (msg; sd.history)
 				ws.send(msg);
 
+			// Send forkable UUIDs extracted from JSONL
+			if (sd.claudeSessionId.length > 0)
+				sendForkableUuidsFromFile(ws, sid, sd.claudeSessionId, sd.projectPath);
+
 			// Send end marker
 			ws.send(Data(toJson(SessionHistoryEndMessage("session_history_end", sid)).representation));
 		}
@@ -224,12 +235,19 @@ class App
 				return;
 			auto sd = &sessions[sid];
 			if (sd.claudeSessionId.length == 0)
-				return; // nothing to fork
+			{
+				ws.send(Data(toJson(ErrorMessage("error", "Session has no Claude session ID", sid)).representation));
+				return;
+			}
 
 			auto result = forkSession(persistence, sd.claudeSessionId, json.after_uuid,
 				sd.projectPath, sd.workspace, sd.title);
 			if (result.sid < 0)
-				return; // fork failed (uuid not found or no JSONL)
+			{
+				ws.send(Data(toJson(ErrorMessage("error",
+					"Fork failed: message UUID not found in session history", sid)).representation));
+				return;
+			}
 
 			auto newSd = SessionData(result.sid);
 			newSd.workspace = sd.workspace;
@@ -269,6 +287,12 @@ class App
 
 		sd.session = agent.createSession(sd.claudeSessionId, bwrapPrefix);
 
+		// Start watching the JSONL file for forkable UUIDs.
+		// For resumed sessions claudeSessionId is already set; for new sessions
+		// it will be set later in tryExtractClaudeSessionId which also calls this.
+		if (sd.claudeSessionId.length > 0)
+			startJsonlWatch(sid);
+
 		sd.session.onOutput = (string line) {
 			broadcastSession(sid, line);
 		};
@@ -285,6 +309,7 @@ class App
 				return;
 			sessions[sid].alive = false;
 			cleanup(sessions[sid].sandbox);
+			stopJsonlWatch(sid);
 			// Discard all history and reload from JSONL (canonical source).
 			// Frontends are notified to discard their state and re-request.
 			if (sessions[sid].claudeSessionId.length > 0)
@@ -354,6 +379,7 @@ class App
 			{
 				sessions[sid].claudeSessionId = probe.session_id;
 				persistence.setClaudeSessionId(sid, probe.session_id);
+				startJsonlWatch(sid);
 			}
 		}
 		catch (Exception)
@@ -366,6 +392,129 @@ class App
 	{
 		import ae.utils.json : toJson;
 		broadcast(toJson(TitleUpdateMessage("title_update", sid, title)));
+	}
+
+	/// Start watching the JSONL file (or directory if file doesn't exist yet).
+	private void startJsonlWatch(int sid)
+	{
+		import std.file : exists;
+		import std.path : baseName, dirName;
+
+		if (sid !in sessions)
+			return;
+		if (sid in jsonlFileWatches || sid in jsonlDirWatches)
+			return; // already watching
+		auto sd = &sessions[sid];
+		if (sd.claudeSessionId.length == 0)
+			return;
+
+		auto jsonlPath = claudeJsonlPath(sd.claudeSessionId, sd.projectPath);
+
+		if (exists(jsonlPath))
+		{
+			watchJsonlFile(sid, jsonlPath);
+		}
+		else
+		{
+			// File doesn't exist yet — watch directory for its creation
+			auto dirPath = dirName(jsonlPath);
+			auto fileName = baseName(jsonlPath);
+			jsonlDirWatches[sid] = iNotify.add(dirPath, INotify.Mask.create,
+				(in char[] name, INotify.Mask mask, uint cookie)
+				{
+					if (name == fileName)
+					{
+						// File appeared — switch to file watch
+						if (auto p = sid in jsonlDirWatches)
+						{
+							iNotify.remove(*p);
+							jsonlDirWatches.remove(sid);
+						}
+						watchJsonlFile(sid, jsonlPath);
+					}
+				}
+			);
+		}
+	}
+
+	/// Start watching a JSONL file for modifications.
+	private void watchJsonlFile(int sid, string jsonlPath)
+	{
+		// Read any existing content
+		processNewJsonlContent(sid, jsonlPath);
+
+		jsonlFileWatches[sid] = iNotify.add(jsonlPath, INotify.Mask.modify,
+			(in char[] name, INotify.Mask mask, uint cookie)
+			{
+				processNewJsonlContent(sid, jsonlPath);
+			}
+		);
+	}
+
+	/// Read new content from the JSONL file and broadcast forkable UUIDs.
+	private void processNewJsonlContent(int sid, string jsonlPath)
+	{
+		import std.file : getSize;
+
+		auto fileSize = getSize(jsonlPath);
+		auto lastPos = jsonlReadPos.get(sid, 0);
+		if (fileSize <= lastPos)
+			return;
+
+		// Read only the new portion
+		auto f = File(jsonlPath, "r");
+		f.seek(lastPos);
+		char[] buf;
+		buf.length = cast(size_t)(fileSize - lastPos);
+		auto got = f.rawRead(buf);
+		jsonlReadPos[sid] = cast(size_t) fileSize;
+
+		auto newContent = cast(string) got;
+		auto uuids = extractForkableUuids(newContent);
+		if (uuids.length > 0)
+			broadcastForkableUuids(sid, uuids);
+	}
+
+	/// Send forkable UUIDs from the full JSONL file (used during history load).
+	private void sendForkableUuidsFromFile(WebSocketAdapter ws, int sid,
+		string claudeSessionId, string projectPath)
+	{
+		import std.file : exists, readText;
+
+		auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+		if (!exists(jsonlPath))
+			return;
+
+		auto content = readText(jsonlPath);
+		auto uuids = extractForkableUuids(content);
+		if (uuids.length > 0)
+		{
+			import ae.utils.json : toJson;
+			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", sid, uuids)).representation));
+		}
+	}
+
+	/// Broadcast forkable UUIDs to all clients.
+	private void broadcastForkableUuids(int sid, string[] uuids)
+	{
+		import ae.utils.json : toJson;
+		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", sid, uuids)));
+	}
+
+	/// Stop watching the JSONL file for a session.
+	private void stopJsonlWatch(int sid)
+	{
+		if (auto p = sid in jsonlFileWatches)
+		{
+			iNotify.remove(*p);
+			jsonlFileWatches.remove(sid);
+		}
+		if (auto p = sid in jsonlDirWatches)
+		{
+			iNotify.remove(*p);
+			jsonlDirWatches.remove(sid);
+		}
+		jsonlReadPos.remove(sid);
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title
@@ -551,6 +700,20 @@ struct TitleUpdateMessage
 	string type = "title_update";
 	int sid;
 	string title;
+}
+
+struct ForkableUuidsMessage
+{
+	string type = "forkable_uuids";
+	int sid;
+	string[] uuids;
+}
+
+struct ErrorMessage
+{
+	string type = "error";
+	string message;
+	int sid = -1;
 }
 
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
