@@ -28,6 +28,16 @@ interface CydoTools
 		~ "- The sub-task runs to completion and returns a structured summary\n"
 		~ "- Results are also visible in the CyDo web UI task tree\n"
 		~ "- Sub-tasks are persisted and survive backend restarts\n\n"
+		~ "## Usage notes\n"
+		~ "- Sub-tasks protect your context window from excessive search results "
+		~ "and long outputs. Use them to keep your main conversation focused.\n"
+		~ "- Avoid duplicating work that sub-tasks are already doing — if you "
+		~ "delegate research to a sub-task, do not also perform the same searches yourself.\n"
+		~ "- Provide clear, detailed prompts so the agent can work autonomously "
+		~ "and return exactly the information you need.\n"
+		~ "- Clearly tell the agent whether you expect it to write code or just "
+		~ "do research, since it is not aware of the user's intent.\n"
+		~ "- The agent's outputs should generally be trusted.\n\n"
 		~ "Available task types:\n{{creatable_task_types}}"
 	)
 	@McpName("Task")
