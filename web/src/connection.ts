@@ -39,7 +39,8 @@ export class Connection {
           raw.type === "sessions_list" ||
           raw.type === "session_reload" ||
           raw.type === "title_update" ||
-          raw.type === "session_history_end"
+          raw.type === "session_history_end" ||
+          raw.type === "workspaces_list"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("sid" in raw && typeof raw.sid === "number") {
@@ -74,8 +75,14 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "resume", sid }));
   }
 
-  createSession() {
-    this.ws?.send(JSON.stringify({ type: "create_session" }));
+  createSession(workspace?: string, projectPath?: string) {
+    this.ws?.send(
+      JSON.stringify({
+        type: "create_session",
+        workspace: workspace ?? "",
+        project_path: projectPath ?? "",
+      }),
+    );
   }
 
   requestHistory(sid: number) {

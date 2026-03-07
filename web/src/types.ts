@@ -109,6 +109,8 @@ export interface SessionState {
   historyLoaded: boolean;
   /** User message texts from before a reload, not yet matched by file replay. */
   preReloadDrafts?: string[];
+  workspace?: string;
+  projectPath?: string;
 }
 
 export function makeSessionState(
@@ -117,6 +119,8 @@ export function makeSessionState(
   resumable: boolean = false,
   title?: string,
   historyLoaded: boolean = false,
+  workspace?: string,
+  projectPath?: string,
 ): SessionState {
   return {
     sid,
@@ -129,5 +133,7 @@ export function makeSessionState(
     msgIdCounter: 0,
     title,
     historyLoaded,
+    workspace,
+    projectPath,
   };
 }

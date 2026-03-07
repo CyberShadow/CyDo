@@ -14,6 +14,9 @@ interface Props {
   attention: Set<number>;
   onSelectSession: (sid: number) => void;
   onNewSession: () => void;
+  showBackButton?: boolean;
+  onBack?: () => void;
+  projectName?: string;
 }
 
 export function Sidebar({
@@ -22,11 +25,23 @@ export function Sidebar({
   attention,
   onSelectSession,
   onNewSession,
+  showBackButton,
+  onBack,
+  projectName,
 }: Props) {
   return (
     <div class="sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-title">Sessions</span>
+        {showBackButton && onBack && (
+          <button
+            class="sidebar-back-btn"
+            onClick={onBack}
+            title="Back to home"
+          >
+            ←
+          </button>
+        )}
+        <span class="sidebar-title">{projectName || "Sessions"}</span>
         <button
           class="sidebar-new-btn"
           onClick={onNewSession}

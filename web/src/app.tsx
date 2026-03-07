@@ -6,6 +6,7 @@ import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
 import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
+import { WelcomePage } from "./components/WelcomePage";
 
 export function App() {
   const {
@@ -18,6 +19,11 @@ export function App() {
     newSession,
     resume,
     sidebarSessions,
+    workspaces,
+    activeWorkspace,
+    activeProject,
+    navigateHome,
+    navigateToProject,
   } = useSessionManager();
 
   const { theme, toggleTheme } = useTheme();
@@ -30,26 +36,35 @@ export function App() {
     document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
   }, [active?.title]);
 
-  if (sessions.size === 0) {
-    // Welcome screen — no sessions yet
+  // Welcome page: no workspace selected (on /)
+  if (activeWorkspace === null && activeSessionId === null) {
     return (
       <ThemeContext.Provider value={theme}>
-        <div class="app welcome">
-          <div class="welcome-box">
-            <h1 class="welcome-title">CyDo</h1>
-            <p class="welcome-subtitle">Multi-agent orchestration system</p>
-            <InputBox
-              onSend={send}
-              onInterrupt={interrupt}
-              isProcessing={false}
-              disabled={!connected}
-              sessionId={0}
-            />
-          </div>
+        <div class="app welcome-page-container">
+          <WelcomePage
+            workspaces={workspaces}
+            sessions={sessions}
+            attention={attention}
+            onNewSession={newSession}
+            onSelectSession={setActiveSessionId}
+            onNavigateToProject={navigateToProject}
+          />
         </div>
       </ThemeContext.Provider>
     );
   }
+
+  // Project view with sidebar
+  const handleNewSession = () => {
+    if (activeWorkspace && activeProject) {
+      // Find the absolute project path
+      const ws = workspaces.find((w) => w.name === activeWorkspace);
+      const proj = ws?.projects.find((p) => p.name === activeProject);
+      newSession(activeWorkspace, proj?.path || "");
+    } else {
+      newSession();
+    }
+  };
 
   return (
     <ThemeContext.Provider value={theme}>
@@ -59,9 +74,12 @@ export function App() {
           activeSessionId={activeSessionId}
           attention={attention}
           onSelectSession={setActiveSessionId}
-          onNewSession={newSession}
+          onNewSession={handleNewSession}
+          showBackButton={true}
+          onBack={navigateHome}
+          projectName={activeProject || undefined}
         />
-        {active && (
+        {active ? (
           <SessionView
             session={active}
             connected={connected}
@@ -71,6 +89,19 @@ export function App() {
             theme={theme}
             onToggleTheme={toggleTheme}
           />
+        ) : (
+          <div class="session-empty">
+            <div class="session-empty-inner">
+              <p>Select a session or create a new one</p>
+              <InputBox
+                onSend={send}
+                onInterrupt={interrupt}
+                isProcessing={false}
+                disabled={!connected}
+                sessionId={0}
+              />
+            </div>
+          </div>
         )}
       </div>
     </ThemeContext.Provider>

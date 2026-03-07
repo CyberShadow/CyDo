@@ -15,7 +15,7 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 
-	this(string resumeSessionId = null)
+	this(string resumeSessionId = null, string workDir = null)
 	{
 		string[] args = [
 			"claude",
@@ -31,7 +31,7 @@ class ClaudeCodeSession : AgentSession
 		if (resumeSessionId !is null)
 			args ~= ["--resume", resumeSessionId];
 
-		process = new AgentProcess(args);
+		process = new AgentProcess(args, null, workDir);
 
 		process.onStdoutLine = (string line) {
 			if (outputHandler)

@@ -1,0 +1,9 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"ae": {"path":"../ae-container/ae"},
+		"configy": "2.2.0",
+		"dyaml": "0.10.0",
+		"tinyendian": "0.2.0"
+	}
+}

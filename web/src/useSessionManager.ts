@@ -28,6 +28,16 @@ import {
   markReplayDone,
 } from "./useNotifications";
 
+export interface ProjectInfo {
+  name: string;
+  path: string;
+}
+
+export interface WorkspaceInfo {
+  name: string;
+  projects: ProjectInfo[];
+}
+
 export interface SessionManager {
   sessions: Map<number, SessionState>;
   activeSessionId: number | null;
@@ -35,7 +45,7 @@ export interface SessionManager {
   connected: boolean;
   send: (text: string) => void;
   interrupt: () => void;
-  newSession: () => void;
+  newSession: (workspace?: string, projectPath?: string) => void;
   resume: () => void;
   sidebarSessions: Array<{
     sid: number;
@@ -44,11 +54,48 @@ export interface SessionManager {
     isProcessing: boolean;
     title?: string;
   }>;
+  workspaces: WorkspaceInfo[];
+  activeWorkspace: string | null;
+  activeProject: string | null;
+  navigateHome: () => void;
+  navigateToProject: (workspace: string, projectName: string) => void;
 }
 
-function parseSidFromPath(path: string): number | null {
-  const m = path.match(/^\/session\/(\d+)$/);
-  return m ? Number(m[1]) : null;
+interface ParsedPath {
+  workspace: string | null;
+  project: string | null;
+  sid: number | null;
+}
+
+function parseFromPath(path: string): ParsedPath {
+  // Legacy: /session/:sid
+  const legacyMatch = path.match(/^\/session\/(\d+)$/);
+  if (legacyMatch) {
+    return { workspace: null, project: null, sid: Number(legacyMatch[1]) };
+  }
+
+  // /:workspace/:project/session/:sid
+  const sessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/(\d+)$/);
+  if (sessionMatch) {
+    return {
+      workspace: sessionMatch[1],
+      project: sessionMatch[2].replace(/:/g, "/"),
+      sid: Number(sessionMatch[3]),
+    };
+  }
+
+  // /:workspace/:project
+  const projectMatch = path.match(/^\/([^/]+)\/([^/]+)$/);
+  if (projectMatch) {
+    return {
+      workspace: projectMatch[1],
+      project: projectMatch[2].replace(/:/g, "/"),
+      sid: null,
+    };
+  }
+
+  // / (welcome page) or anything else
+  return { workspace: null, project: null, sid: null };
 }
 
 // Mutable mirror of session states, updated synchronously outside Preact's
@@ -62,12 +109,46 @@ export function useSessionManager(): SessionManager {
   const [sessions, setSessions] = useState<Map<number, SessionState>>(
     new Map(),
   );
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const { path, route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
-  const activeSessionId = useMemo(() => parseSidFromPath(path), [path]);
-  const setActiveSessionId = useCallback(
-    (sid: number) => routeRef.current(`/session/${sid}`),
+  const workspacesRef = useRef(workspaces);
+  workspacesRef.current = workspaces;
+
+  const parsed = useMemo(() => parseFromPath(path), [path]);
+  const activeSessionId = parsed.sid;
+  const activeWorkspace = parsed.workspace;
+  const activeProject = parsed.project;
+
+  const setActiveSessionId = useCallback((sid: number) => {
+    // Look up the session to build the full URL
+    const s = liveStates.get(sid);
+    if (s?.workspace && s?.projectPath) {
+      // Find the project name from workspaces
+      const projName = findProjectName(
+        workspacesRef.current,
+        s.workspace,
+        s.projectPath,
+      );
+      if (projName) {
+        const encodedProject = projName.replace(/\//g, ":");
+        routeRef.current(`/${s.workspace}/${encodedProject}/session/${sid}`);
+        return;
+      }
+    }
+    routeRef.current(`/session/${sid}`);
+  }, []);
+
+  const navigateHome = useCallback(() => {
+    routeRef.current("/");
+  }, []);
+
+  const navigateToProject = useCallback(
+    (workspace: string, projectName: string) => {
+      const encodedProject = projectName.replace(/\//g, ":");
+      routeRef.current(`/${workspace}/${encodedProject}`);
+    },
     [],
   );
 
@@ -76,6 +157,11 @@ export function useSessionManager(): SessionManager {
   const pendingFirstMessage = useRef<string | null>(null);
   // Track which sessions have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
+  // Track workspace/projectPath for pending session creation
+  const pendingSessionContext = useRef<{
+    workspace?: string;
+    projectPath?: string;
+  } | null>(null);
 
   // Buffer for live messages that arrive before history is loaded.
   // Keyed by sid; drained on session_history_end.
@@ -133,9 +219,23 @@ export function useSessionManager(): SessionManager {
 
   const handleControlMessage = useCallback((msg: ControlMessage) => {
     switch (msg.type) {
+      case "workspaces_list": {
+        setWorkspaces(msg.workspaces);
+        break;
+      }
       case "session_created": {
         const sid = msg.sid;
-        const s = makeSessionState(sid, false, false, undefined, true);
+        const workspace = msg.workspace || "";
+        const projectPath = msg.project_path || "";
+        const s = makeSessionState(
+          sid,
+          false,
+          false,
+          undefined,
+          true,
+          workspace,
+          projectPath,
+        );
         liveStates.set(sid, s);
         initSnapshot(sid, s);
         setSessions((prev) => {
@@ -143,7 +243,23 @@ export function useSessionManager(): SessionManager {
           next.set(sid, s);
           return next;
         });
-        routeRef.current(`/session/${sid}`);
+
+        // Navigate to the new session
+        if (workspace && projectPath) {
+          const projName = findProjectName(
+            workspacesRef.current,
+            workspace,
+            projectPath,
+          );
+          if (projName) {
+            const encodedProject = projName.replace(/\//g, ":");
+            routeRef.current(`/${workspace}/${encodedProject}/session/${sid}`);
+          } else {
+            routeRef.current(`/session/${sid}`);
+          }
+        } else {
+          routeRef.current(`/session/${sid}`);
+        }
 
         // If we have a pending first message, send it now
         const text = pendingFirstMessage.current;
@@ -164,12 +280,17 @@ export function useSessionManager(): SessionManager {
         setSessions((prev) => {
           const next = new Map(prev);
           for (const entry of msg.sessions) {
+            const workspace = entry.workspace || "";
+            const projectPath = entry.project_path || "";
             if (!next.has(entry.sid)) {
               const s = makeSessionState(
                 entry.sid,
                 entry.alive,
                 entry.resumable,
                 entry.title,
+                false,
+                workspace,
+                projectPath,
               );
               liveStates.set(entry.sid, s);
               initSnapshot(entry.sid, s);
@@ -181,6 +302,8 @@ export function useSessionManager(): SessionManager {
                 alive: entry.alive,
                 resumable: entry.resumable,
                 title: entry.title || s.title,
+                workspace: workspace || s.workspace,
+                projectPath: projectPath || s.projectPath,
               };
               liveStates.set(entry.sid, updated);
               initSnapshot(entry.sid, updated);
@@ -189,11 +312,22 @@ export function useSessionManager(): SessionManager {
           }
           return next;
         });
-        // Navigate to most recently active session if no session is selected
+        // Navigate to most recently active session if on a project page without a session
+        // Do NOT auto-navigate when on welcome page (/)
+        const currentParsed = parseFromPath(location.pathname);
         if (
           msg.sessions.length > 0 &&
-          parseSidFromPath(location.pathname) === null
+          currentParsed.sid === null &&
+          currentParsed.workspace !== null
         ) {
+          // On a project page — auto-select latest session for this project
+        } else if (
+          msg.sessions.length > 0 &&
+          currentParsed.workspace === null &&
+          currentParsed.sid === null &&
+          location.pathname !== "/"
+        ) {
+          // Legacy: no path structure, not welcome page
           const latest = msg.sessions.reduce((a, b) =>
             (b.lastActivity || "") > (a.lastActivity || "") ? b : a,
           );
@@ -217,7 +351,15 @@ export function useSessionManager(): SessionManager {
           )
           .filter((t) => t.length > 0);
         const reset = {
-          ...makeSessionState(sid, false, s.resumable, s.title, false),
+          ...makeSessionState(
+            sid,
+            false,
+            s.resumable,
+            s.title,
+            false,
+            s.workspace,
+            s.projectPath,
+          ),
           resumable: s.resumable,
           preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
         };
@@ -396,9 +538,20 @@ export function useSessionManager(): SessionManager {
   const send = useCallback(
     (text: string) => {
       if (activeSessionId === null) {
-        // No sessions — create one and queue the message
+        // No active session — create one in the current project context and queue the message
         pendingFirstMessage.current = text;
-        connRef.current?.createSession();
+        const parsed = parseFromPath(location.pathname);
+        if (parsed.workspace && parsed.project) {
+          // Find the absolute project path from workspaces
+          const projPath = findProjectPath(
+            workspacesRef.current,
+            parsed.workspace,
+            parsed.project,
+          );
+          connRef.current?.createSession(parsed.workspace, projPath || "");
+        } else {
+          connRef.current?.createSession();
+        }
         return;
       }
       const s = liveStates.get(activeSessionId);
@@ -422,8 +575,8 @@ export function useSessionManager(): SessionManager {
     }
   }, [activeSessionId]);
 
-  const newSession = useCallback(() => {
-    connRef.current?.createSession();
+  const newSession = useCallback((workspace?: string, projectPath?: string) => {
+    connRef.current?.createSession(workspace, projectPath);
   }, []);
 
   const resume = useCallback(() => {
@@ -442,16 +595,30 @@ export function useSessionManager(): SessionManager {
     }
   }, [activeSessionId]);
 
-  // Build sidebar session list sorted by sid
-  const sidebarSessions = Array.from(sessions.values())
-    .sort((a, b) => b.sid - a.sid)
-    .map((s) => ({
-      sid: s.sid,
-      alive: s.alive,
-      resumable: s.resumable,
-      isProcessing: s.isProcessing,
-      title: s.title,
-    }));
+  // Build sidebar session list filtered by active workspace/project and sorted by sid
+  const sidebarSessions = useMemo(() => {
+    let filtered = Array.from(sessions.values());
+    if (activeWorkspace !== null && activeProject !== null) {
+      filtered = filtered.filter((s) => {
+        if (!s.workspace || !s.projectPath) return false;
+        const projName = findProjectName(
+          workspaces,
+          s.workspace,
+          s.projectPath,
+        );
+        return s.workspace === activeWorkspace && projName === activeProject;
+      });
+    }
+    return filtered
+      .sort((a, b) => b.sid - a.sid)
+      .map((s) => ({
+        sid: s.sid,
+        alive: s.alive,
+        resumable: s.resumable,
+        isProcessing: s.isProcessing,
+        title: s.title,
+      }));
+  }, [sessions, activeWorkspace, activeProject, workspaces]);
 
   return {
     sessions,
@@ -463,5 +630,34 @@ export function useSessionManager(): SessionManager {
     newSession,
     resume,
     sidebarSessions,
+    workspaces,
+    activeWorkspace,
+    activeProject,
+    navigateHome,
+    navigateToProject,
   };
+}
+
+/** Find the relative project name given workspace name and absolute project path. */
+function findProjectName(
+  workspaces: WorkspaceInfo[],
+  workspace: string,
+  projectPath: string,
+): string | null {
+  const ws = workspaces.find((w) => w.name === workspace);
+  if (!ws) return null;
+  const proj = ws.projects.find((p) => p.path === projectPath);
+  return proj?.name ?? null;
+}
+
+/** Find the absolute project path given workspace name and relative project name. */
+function findProjectPath(
+  workspaces: WorkspaceInfo[],
+  workspace: string,
+  projectName: string,
+): string | null {
+  const ws = workspaces.find((w) => w.name === workspace);
+  if (!ws) return null;
+  const proj = ws.projects.find((p) => p.name === projectName);
+  return proj?.path ?? null;
 }

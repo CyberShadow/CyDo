@@ -579,6 +579,8 @@ export type FileMessage = { sid: number; fileEvent: ClaudeFileMessage };
 export interface SessionCreatedMessage {
   type: "session_created";
   sid: number;
+  workspace?: string;
+  project_path?: string;
 }
 export interface SessionsListMessage {
   type: "sessions_list";
@@ -588,6 +590,8 @@ export interface SessionsListMessage {
     resumable: boolean;
     lastActivity: string;
     title?: string;
+    workspace?: string;
+    project_path?: string;
   }[];
 }
 export interface SessionReloadMessage {
@@ -603,9 +607,17 @@ export interface SessionHistoryEndMessage {
   type: "session_history_end";
   sid: number;
 }
+export interface WorkspacesListMessage {
+  type: "workspaces_list";
+  workspaces: {
+    name: string;
+    projects: { name: string; path: string }[];
+  }[];
+}
 export type ControlMessage =
   | SessionCreatedMessage
   | SessionsListMessage
   | SessionReloadMessage
   | TitleUpdateMessage
-  | SessionHistoryEndMessage;
+  | SessionHistoryEndMessage
+  | WorkspacesListMessage;

@@ -1382,6 +1382,135 @@ pre.extra-field-value {
   margin-bottom: 2px;
 }
 
+/* Welcome page */
+.welcome-page-container {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.welcome-page {
+  padding: 32px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.welcome-page-header {
+  margin-bottom: 32px;
+}
+
+.welcome-page-header h1 {
+  font-size: 28px;
+  color: var(--accent);
+}
+
+.workspace-group {
+  margin-bottom: 32px;
+}
+
+.workspace-group-title {
+  font-size: 16px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  font-weight: normal;
+}
+
+.project-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.project-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.project-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-card-title {
+  font-weight: bold;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.project-card-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.project-card-sessions {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.project-card-sessions .sidebar-item {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-left: none;
+}
+
+.project-card-empty {
+  padding: 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Sidebar back button */
+.sidebar-back-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar-back-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Session empty state (project view without active session) */
+.session-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.session-empty-inner {
+  width: 100%;
+  max-width: 600px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.session-empty-inner .input-box {
+  border-top: none;
+  background: none;
+  padding: 16px 0 0;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

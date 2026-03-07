@@ -19,6 +19,8 @@ import ae.sys.dataset : DataVec;
 import cydo.agent.claude : ClaudeCodeSession;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
+import cydo.config : CydoConfig, WorkspaceConfig, loadConfig;
+import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : Persistence, loadSessionHistory;
 
 void main()
@@ -34,10 +36,27 @@ class App
 	private WebSocketAdapter[] clients;
 	private SessionData[int] sessions;
 	private Persistence persistence;
+	private CydoConfig config;
+	private WorkspaceInfo[] workspacesInfo;
 
 	void start()
 	{
 		persistence = Persistence("data/cydo.db");
+		config = loadConfig();
+
+		// Discover projects in all workspaces
+		foreach (ref ws; config.workspaces)
+		{
+			auto projects = discoverProjects(ws);
+			ProjectInfo[] projInfos;
+			foreach (ref p; projects)
+				projInfos ~= ProjectInfo(p.name, p.path);
+			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
+
+			writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
+			foreach (ref p; projects)
+				writefln("  - %s (%s)", p.name, p.path);
+		}
 
 		// Load persisted sessions (metadata only — history loaded on demand)
 		foreach (row; persistence.loadSessions())
@@ -46,6 +65,8 @@ class App
 			sd.claudeSessionId = row.claudeSessionId;
 			sd.title = row.title;
 			sd.titleGenDone = row.title.length > 0;
+			sd.workspace = row.workspace;
+			sd.projectPath = row.projectPath;
 			sessions[row.sid] = move(sd);
 		}
 
@@ -98,7 +119,8 @@ class App
 		ws.sendBinary = false; // text frames for JSON
 		clients ~= ws;
 
-		// Send sessions list to new client (history loaded on demand)
+		// Send workspaces list and sessions list to new client
+		ws.send(Data(buildWorkspacesList().representation));
 		ws.send(Data(buildSessionsList().representation));
 
 		ws.handleReadData = (Data data) {
@@ -119,8 +141,8 @@ class App
 
 		if (json.type == "create_session")
 		{
-			auto sid = createSession();
-			broadcast(toJson(SessionCreatedMessage("session_created", sid)));
+			auto sid = createSession(json.workspace, json.project_path);
+			broadcast(toJson(SessionCreatedMessage("session_created", sid, json.workspace, json.project_path)));
 		}
 		else if (json.type == "request_history")
 		{
@@ -132,7 +154,7 @@ class App
 			// Load JSONL from disk if not already loaded
 			if (!sd.historyLoaded && sd.claudeSessionId.length > 0)
 			{
-				sd.history = loadSessionHistory(sid, sd.claudeSessionId);
+				sd.history = loadSessionHistory(sid, sd.claudeSessionId, sd.projectPath);
 				sd.historyLoaded = true;
 			}
 
@@ -193,10 +215,13 @@ class App
 		}
 	}
 
-	private int createSession()
+	private int createSession(string workspace = "", string projectPath = "")
 	{
-		auto sid = persistence.createSession();
-		sessions[sid] = SessionData(sid);
+		auto sid = persistence.createSession(workspace, projectPath);
+		auto sd = SessionData(sid);
+		sd.workspace = workspace;
+		sd.projectPath = projectPath;
+		sessions[sid] = move(sd);
 		return sid;
 	}
 
@@ -206,7 +231,8 @@ class App
 		if (sd.agent && sd.agent.alive)
 			return;
 
-		sd.agent = new ClaudeCodeSession(sd.claudeSessionId);
+		auto workDir = sd.projectPath.length > 0 ? sd.projectPath : null;
+		sd.agent = new ClaudeCodeSession(sd.claudeSessionId, workDir);
 
 		sd.agent.onOutput = (string line) {
 			broadcastSession(sid, line);
@@ -227,7 +253,7 @@ class App
 			// Frontends are notified to discard their state and re-request.
 			if (sessions[sid].claudeSessionId.length > 0)
 			{
-				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId);
+				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId, sessions[sid].projectPath);
 				sessions[sid].historyLoaded = true;
 				broadcast(toJson(SessionReloadMessage("session_reload", sid)));
 			}
@@ -362,8 +388,15 @@ class App
 
 		SessionListEntry[] entries;
 		foreach (ref sd; sessions)
-			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive, sd.lastActivity, sd.title);
+			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive,
+				sd.lastActivity, sd.title, sd.workspace, sd.projectPath);
 		return toJson(SessionsListMessage("sessions_list", entries));
+	}
+
+	private string buildWorkspacesList()
+	{
+		import ae.utils.json : toJson;
+		return toJson(WorkspacesListMessage("workspaces_list", workspacesInfo));
 	}
 
 	private void removeClient(WebSocketAdapter ws)
@@ -387,6 +420,8 @@ struct SessionData
 	string title;
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
+	string workspace;
+	string projectPath;
 }
 
 struct SessionHistoryEndMessage
@@ -400,6 +435,8 @@ struct WsMessage
 	string type;
 	string content;
 	int sid = -1;
+	string workspace;
+	string project_path;
 }
 
 struct ExitMessage
@@ -418,6 +455,8 @@ struct SessionCreatedMessage
 {
 	string type;
 	int sid;
+	string workspace;
+	string project_path;
 }
 
 struct SessionsListMessage
@@ -433,6 +472,26 @@ struct SessionListEntry
 	bool resumable;
 	string lastActivity;
 	string title;
+	string workspace;
+	string project_path;
+}
+
+struct ProjectInfo
+{
+	string name;      // relative path within workspace
+	string path;      // absolute path
+}
+
+struct WorkspaceInfo
+{
+	string name;
+	ProjectInfo[] projects;
+}
+
+struct WorkspacesListMessage
+{
+	string type = "workspaces_list";
+	WorkspaceInfo[] workspaces;
 }
 
 struct SessionReloadMessage

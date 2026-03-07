@@ -26,12 +26,14 @@ struct Persistence
 			"    claude_session_id TEXT" ~
 			");",
 			"ALTER TABLE sessions ADD COLUMN title TEXT;",
+			"ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '';" ~
+			"ALTER TABLE sessions ADD COLUMN project_path TEXT NOT NULL DEFAULT '';",
 		]);
 	}
 
-	int createSession()
+	int createSession(string workspace = "", string projectPath = "")
 	{
-		db.stmt!"INSERT INTO sessions DEFAULT VALUES".exec();
+		db.stmt!"INSERT INTO sessions (workspace, project_path) VALUES (?, ?)".exec(workspace, projectPath);
 		return cast(int) db.db.lastInsertRowID;
 	}
 
@@ -50,15 +52,17 @@ struct Persistence
 		int sid;
 		string claudeSessionId;
 		string title;
+		string workspace;
+		string projectPath;
 	}
 
 	SessionRow[] loadSessions()
 	{
 		SessionRow[] result;
-		foreach (int sid, string claudeSessionId, string title;
-			db.stmt!"SELECT sid, claude_session_id, title FROM sessions".iterate())
+		foreach (int sid, string claudeSessionId, string title, string workspace, string projectPath;
+			db.stmt!"SELECT sid, claude_session_id, title, workspace, project_path FROM sessions".iterate())
 		{
-			result ~= SessionRow(sid, claudeSessionId, title);
+			result ~= SessionRow(sid, claudeSessionId, title, workspace, projectPath);
 		}
 		return result;
 	}
@@ -66,12 +70,13 @@ struct Persistence
 
 /// Load session history from Claude Code's JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
-DataVec loadSessionHistory(int sid, string claudeSessionId)
+/// projectPath is the project's absolute path; falls back to getcwd() when empty (legacy sessions).
+DataVec loadSessionHistory(int sid, string claudeSessionId, string projectPath = "")
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = claudeJsonlPath(claudeSessionId);
+	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return DataVec();
 
@@ -89,13 +94,14 @@ DataVec loadSessionHistory(int sid, string claudeSessionId)
 }
 
 /// Compute the path to Claude Code's JSONL file for a given session UUID.
-private string claudeJsonlPath(string sessionId)
+/// Uses projectPath as the directory to mangle; falls back to getcwd() when empty.
+private string claudeJsonlPath(string sessionId, string projectPath = "")
 {
 	import std.file : getcwd;
 	import std.process : environment;
 
 	auto home = environment.get("HOME", "/tmp");
-	auto cwd = getcwd();
+	auto cwd = projectPath.length > 0 ? projectPath : getcwd();
 
 	// Mangle cwd: replace / with -
 	auto buf = cwd.dup;

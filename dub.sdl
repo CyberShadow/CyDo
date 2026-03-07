@@ -8,4 +8,5 @@ sourcePaths "source"
 
 dependency "ae" path="../ae-container/ae"
 dependency "ae:sqlite" path="../ae-container/ae"
+dependency "configy" version="~>2.2.0"
 subConfiguration "ae" "library"
