@@ -498,6 +498,10 @@ class App
 		if (sessionConfig.creatableTaskTypes.length == 0)
 			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
 
+		// Disable built-in Task tool — our MCP Task tool replaces it
+		if (sessionConfig.disallowedTools.length == 0)
+			sessionConfig.disallowedTools = "Task";
+
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 
 		// Resolve sandbox config: agent defaults + global + per-workspace

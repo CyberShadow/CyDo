@@ -9,6 +9,7 @@ struct SessionConfig
 	string model;              /// CLI model alias (e.g., "haiku", "sonnet", "opus"); null = default
 	string appendSystemPrompt; /// Appended to the default system prompt; null = none
 	string creatableTaskTypes; /// Pre-formatted description of available task types for MCP tool
+	string disallowedTools;    /// Comma-separated list of tools to remove from context
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,

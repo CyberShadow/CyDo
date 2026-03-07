@@ -85,6 +85,9 @@ class ClaudeCodeSession : AgentSession
 		if (config.appendSystemPrompt.length > 0)
 			claudeArgs ~= ["--append-system-prompt", config.appendSystemPrompt];
 
+		if (config.disallowedTools.length > 0)
+			claudeArgs ~= ["--disallowedTools", config.disallowedTools];
+
 		// When sandboxed, bwrap handles workDir via --chdir
 		string[] args;
 		if (bwrapPrefix !is null)
