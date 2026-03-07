@@ -28,7 +28,9 @@ task_types:
     agent_description: >
       Use for investigating and fixing bugs. The agent will reproduce the issue,
       identify the root cause, and either fix it directly or create a plan for
-      larger fixes.
+      larger fixes. Can create 'research' sub-tasks to gather context. Provide
+      the bug description, reproduction steps, or error messages in the task
+      description.
     prompt_template: prompts/bug.md
     model_class: large
     tool_preset: full
@@ -45,9 +47,12 @@ task_types:
   plan:
     description: "Create a detailed implementation plan"
     agent_description: >
-      Use when work needs to be planned before implementation. The agent reads
-      the codebase, designs an approach, and produces a plan document. Does not
-      write code.
+      Software architect agent for designing implementation plans. Use this when
+      you need to plan the implementation strategy for a task. The agent reads the
+      codebase, identifies critical files, considers architectural trade-offs, and
+      returns a step-by-step plan. Does not write code — use 'implement' for that.
+      Especially useful when a task has multiple valid approaches, touches many files,
+      or requires understanding existing patterns before making changes.
     prompt_template: prompts/plan.md
     model_class: large
     tool_preset: read-only
@@ -65,8 +70,13 @@ task_types:
   research:
     description: "Investigate a topic, gather information, produce findings"
     agent_description: >
-      Use when you need information before making a decision. The agent explores
-      the codebase, reads documentation, and produces a report. No code changes.
+      Fast agent specialized for exploring codebases and gathering information.
+      Use this when you need to quickly find files by patterns (e.g. "src/**/*.ts"),
+      search code for keywords (e.g. "API endpoints"), or answer questions about the
+      codebase (e.g. "how does authentication work?"). Also useful for reading
+      documentation, understanding architecture, and investigating unfamiliar code.
+      No code changes are made. Returns a structured report with findings and
+      recommendations.
     prompt_template: prompts/research.md
     model_class: medium
     tool_preset: read-only
@@ -94,8 +104,10 @@ task_types:
   implement:
     description: "Execute a specific, pre-planned coding task"
     agent_description: >
-      Use for well-scoped coding tasks with a clear plan. Produces a commit
-      in its own worktree. Can create test sub-tasks.
+      Use for well-scoped coding tasks with a clear plan. The agent works in its
+      own isolated worktree and produces a commit. Best when the task description
+      includes a specific plan or clear requirements — for open-ended work, use
+      'plan' first. Can create 'test' sub-tasks to validate changes.
     prompt_template: prompts/implement.md
     model_class: medium
     tool_preset: full
