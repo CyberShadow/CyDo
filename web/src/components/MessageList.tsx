@@ -214,7 +214,9 @@ const MessageView = memo(
     children: ComponentChildren;
   }) {
     const [showSource, setShowSource] = useState(false);
-    const raw = Array.isArray(msg.rawSource) ? msg.rawSource[0] : msg.rawSource;
+    const raw = Array.isArray(msg.rawSource)
+      ? msg.rawSource[msg.rawSource.length - 1]
+      : msg.rawSource;
     const uuid = (raw as any)?.uuid as string | undefined;
     return (
       <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
@@ -376,7 +378,7 @@ export function MessageList({
               );
           }
           const rawSrc = Array.isArray(msg.rawSource)
-            ? msg.rawSource[0]
+            ? msg.rawSource[msg.rawSource.length - 1]
             : msg.rawSource;
           const msgUuid = (rawSrc as any)?.uuid as string | undefined;
           const isForkable =
