@@ -118,6 +118,21 @@ function parseFromPath(path: string): ParsedPath {
   return { workspace: null, project: null, tid: null };
 }
 
+/// Extract text content from a user message event (for unconfirmed display).
+function extractTextContent(msg: ClaudeMessage): string {
+  const raw = msg as any;
+  if (raw?.message?.content) {
+    if (typeof raw.message.content === "string") return raw.message.content;
+    if (Array.isArray(raw.message.content)) {
+      return raw.message.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("");
+    }
+  }
+  return "";
+}
+
 // Mutable mirror of task states, updated synchronously outside Preact's
 // render cycle.  Used so that reducers and notification checks run immediately
 // when WebSocket messages arrive, even when Preact defers state updates in
@@ -185,41 +200,46 @@ export function useTaskManager(): TaskManager {
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
-  const handleTaskMessage = useCallback((tid: number, msg: ClaudeMessage) => {
-    // If history has been requested but not yet loaded, buffer live
-    // messages so they are processed after history.
-    const t = liveStates.get(tid);
-    if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
-      let buf = pendingLiveRef.current.get(tid);
-      if (!buf) {
-        buf = [];
-        pendingLiveRef.current.set(tid, buf);
+  const handleTaskMessage = useCallback(
+    (tid: number, msg: ClaudeMessage, isUnconfirmed?: boolean) => {
+      // If history has been requested but not yet loaded, buffer live
+      // messages so they are processed after history.
+      const t = liveStates.get(tid);
+      if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
+        let buf = pendingLiveRef.current.get(tid);
+        if (!buf) {
+          buf = [];
+          pendingLiveRef.current.set(tid, buf);
+        }
+        buf.push(msg);
+        return;
       }
-      buf.push(msg);
-      return;
-    }
 
-    const prev = t ?? makeTaskState(tid, true);
-    const updated = reduceStdoutMessage(prev, msg);
-    liveStates.set(tid, updated);
-    notifyTransition(tid, prev, updated);
+      const prev = t ?? makeTaskState(tid, true);
+      const updated = isUnconfirmed
+        ? reducePendingUserMessage(prev, extractTextContent(msg))
+        : reduceStdoutMessage(prev, msg);
+      liveStates.set(tid, updated);
+      notifyTransition(tid, prev, updated);
 
-    // When a sub-task finishes and it's currently focused, switch to parent
-    if (prev.alive && !updated.alive && updated.parentTid) {
-      if (activeTaskIdRef.current === tid) {
-        const parent = liveStates.get(updated.parentTid);
-        if (parent) {
-          setActiveTaskId(updated.parentTid);
+      // When a sub-task finishes and it's currently focused, switch to parent
+      if (prev.alive && !updated.alive && updated.parentTid) {
+        if (activeTaskIdRef.current === tid) {
+          const parent = liveStates.get(updated.parentTid);
+          if (parent) {
+            setActiveTaskId(updated.parentTid);
+          }
         }
       }
-    }
 
-    setTasks((map) => {
-      const next = new Map(map);
-      next.set(tid, updated);
-      return next;
-    });
-  }, []);
+      setTasks((map) => {
+        const next = new Map(map);
+        next.set(tid, updated);
+        return next;
+      });
+    },
+    [],
+  );
 
   // -- JSONL file message handler --
   const handleFileMessage = useCallback(
@@ -293,17 +313,11 @@ export function useTaskManager(): TaskManager {
           }
         }
 
-        // If we have a pending first message, send it now
+        // If we have a pending first message, send it now.
+        // The backend will broadcast an unconfirmed echo to all clients.
         const text = pendingFirstMessage.current;
         if (text !== null) {
           pendingFirstMessage.current = null;
-          const withMsg = reducePendingUserMessage(t, text);
-          liveStates.set(tid, withMsg);
-          setTasks((prev) => {
-            const next = new Map(prev);
-            next.set(tid, withMsg);
-            return next;
-          });
           connRef.current?.sendMessage(tid, text);
         }
         break;
@@ -488,7 +502,12 @@ export function useTaskManager(): TaskManager {
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | { kind: "task"; tid: number; msg: ClaudeMessage }
+      | {
+          kind: "task";
+          tid: number;
+          msg: ClaudeMessage;
+          isUnconfirmed?: boolean;
+        }
       | { kind: "file"; tid: number; msg: ClaudeFileMessage }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
@@ -501,7 +520,7 @@ export function useTaskManager(): TaskManager {
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "file") handleFileMessage(item.tid, item.msg);
-        else handleTaskMessage(item.tid, item.msg);
+        else handleTaskMessage(item.tid, item.msg, item.isUnconfirmed);
       }
     };
 
@@ -562,8 +581,8 @@ export function useTaskManager(): TaskManager {
       }, 1000);
     };
 
-    conn.onTaskMessage = (tid, msg) => {
-      buffer.push({ kind: "task", tid, msg });
+    conn.onTaskMessage = (tid, msg, isUnconfirmed) => {
+      buffer.push({ kind: "task", tid, msg, isUnconfirmed });
       scheduleFlush();
       debounceReplay();
     };
@@ -614,16 +633,6 @@ export function useTaskManager(): TaskManager {
           connRef.current?.createTask();
         }
         return;
-      }
-      const t = liveStates.get(activeTaskId);
-      if (t) {
-        const updated = reducePendingUserMessage(t, text);
-        liveStates.set(activeTaskId, updated);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(activeTaskId, updated);
-          return next;
-        });
       }
       connRef.current?.sendMessage(activeTaskId, text);
     },

@@ -335,6 +335,7 @@ class App
 		{
 			auto prompt = renderPrompt(*childTypeDef, args.description, taskTypesDir);
 			childTd.session.sendMessage(prompt);
+			broadcastUnconfirmedUserMessage(childTid, prompt);
 		}
 
 		generateTitle(childTid, args.description);
@@ -394,6 +395,7 @@ class App
 				ensureTaskAgent(tid);
 			}
 			td.session.sendMessage(json.content);
+			broadcastUnconfirmedUserMessage(tid, json.content);
 
 			// Store first message as task description
 			if (td.description.length == 0)
@@ -573,6 +575,32 @@ class App
 			if (ws.name == workspaceName)
 				return ws.sandbox;
 		return SandboxConfig.init;
+	}
+
+	/// Broadcast an unconfirmed user message to all clients.
+	/// This is shown as pending until Claude echoes it back with isReplay.
+	private void broadcastUnconfirmedUserMessage(int tid, string content)
+	{
+		import ae.utils.json : toJson;
+
+		auto now = Clock.currTime.toISOExtString();
+		// Build a user message event matching Claude's replay format
+		auto userEvent = toJson(SyntheticUserEvent("user",
+			SyntheticUserEventMessage("user", content)));
+		string injected = `{"tid":` ~ format!"%d"(tid)
+			~ `,"timestamp":"` ~ now
+			~ `","isUnconfirmed":true,"event":` ~ userEvent ~ `}`;
+
+		auto data = Data(injected.representation);
+
+		if (tid in tasks)
+		{
+			tasks[tid].lastActivity = now;
+			tasks[tid].history ~= data;
+		}
+
+		foreach (ws; clients)
+			ws.send(data);
 	}
 
 	private void broadcastTask(int tid, string rawLine)
@@ -987,6 +1015,18 @@ struct ErrorMessage
 	string type = "error";
 	string message;
 	int tid = -1;
+}
+
+struct SyntheticUserEventMessage
+{
+	string role;
+	string content;
+}
+
+struct SyntheticUserEvent
+{
+	string type;
+	SyntheticUserEventMessage message;
 }
 
 struct McpContentItem
