@@ -747,6 +747,52 @@ body,
   margin: 1em 0;
 }
 
+/* Markdown toggle */
+.markdown-wrap {
+  position: relative;
+}
+
+.markdown-toggle-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+  line-height: 1;
+}
+
+.markdown-wrap:hover > .markdown-toggle-btn,
+.markdown-raw > .markdown-toggle-btn {
+  opacity: 1;
+}
+
+.markdown-toggle-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.markdown-source {
+  background: var(--overlay-dark);
+  padding: 12px;
+  overflow-x: auto;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 /* Cursor animation */
 .cursor::after {
   content: "\2588";
