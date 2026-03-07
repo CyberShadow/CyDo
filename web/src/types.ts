@@ -111,6 +111,10 @@ export interface SessionState {
   preReloadDrafts?: string[];
   workspace?: string;
   projectPath?: string;
+  /** Parent session ID (0 or undefined = no parent). */
+  parentSid?: number;
+  /** Relation type to parent (e.g. "fork"). */
+  relationType?: string;
   /** UUIDs confirmed in the on-disk JSONL file — only these are forkable. */
   forkableUuids: Set<string>;
 }
@@ -123,6 +127,8 @@ export function makeSessionState(
   historyLoaded: boolean = false,
   workspace?: string,
   projectPath?: string,
+  parentSid?: number,
+  relationType?: string,
 ): SessionState {
   return {
     sid,
@@ -137,6 +143,8 @@ export function makeSessionState(
     historyLoaded,
     workspace,
     projectPath,
+    parentSid,
+    relationType,
     forkableUuids: new Set(),
   };
 }

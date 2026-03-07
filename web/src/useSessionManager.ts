@@ -54,6 +54,8 @@ export interface SessionManager {
     resumable: boolean;
     isProcessing: boolean;
     title?: string;
+    parentSid?: number;
+    relationType?: string;
   }>;
   workspaces: WorkspaceInfo[];
   activeWorkspace: string | null;
@@ -228,6 +230,8 @@ export function useSessionManager(): SessionManager {
         const sid = msg.sid;
         const workspace = msg.workspace || "";
         const projectPath = msg.project_path || "";
+        const parentSid = msg.parent_sid || undefined;
+        const relationType = msg.relation_type || undefined;
         const s = makeSessionState(
           sid,
           false,
@@ -236,6 +240,8 @@ export function useSessionManager(): SessionManager {
           true,
           workspace,
           projectPath,
+          parentSid,
+          relationType,
         );
         liveStates.set(sid, s);
         initSnapshot(sid, s);
@@ -292,6 +298,8 @@ export function useSessionManager(): SessionManager {
                 false,
                 workspace,
                 projectPath,
+                entry.parent_sid || undefined,
+                entry.relation_type || undefined,
               );
               liveStates.set(entry.sid, s);
               initSnapshot(entry.sid, s);
@@ -311,6 +319,8 @@ export function useSessionManager(): SessionManager {
                 title: entry.title || s.title,
                 workspace: workspace || s.workspace,
                 projectPath: projectPath || s.projectPath,
+                parentSid: entry.parent_sid || s.parentSid,
+                relationType: entry.relation_type || s.relationType,
               };
               liveStates.set(entry.sid, updated);
               initSnapshot(entry.sid, updated);
@@ -366,6 +376,8 @@ export function useSessionManager(): SessionManager {
             false,
             s.workspace,
             s.projectPath,
+            s.parentSid,
+            s.relationType,
           ),
           resumable: s.resumable,
           preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
@@ -648,6 +660,8 @@ export function useSessionManager(): SessionManager {
         resumable: s.resumable,
         isProcessing: s.isProcessing,
         title: s.title,
+        parentSid: s.parentSid,
+        relationType: s.relationType,
       }));
   }, [sessions, activeWorkspace, activeProject, workspaces]);
 

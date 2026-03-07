@@ -28,6 +28,8 @@ struct Persistence
 			"ALTER TABLE sessions ADD COLUMN title TEXT;",
 			"ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '';" ~
 			"ALTER TABLE sessions ADD COLUMN project_path TEXT NOT NULL DEFAULT '';",
+			"ALTER TABLE sessions ADD COLUMN parent_sid INTEGER;" ~
+			"ALTER TABLE sessions ADD COLUMN relation_type TEXT NOT NULL DEFAULT '';",
 		]);
 	}
 
@@ -54,15 +56,18 @@ struct Persistence
 		string title;
 		string workspace;
 		string projectPath;
+		int parentSid;
+		string relationType;
 	}
 
 	SessionRow[] loadSessions()
 	{
 		SessionRow[] result;
-		foreach (int sid, string claudeSessionId, string title, string workspace, string projectPath;
-			db.stmt!"SELECT sid, claude_session_id, title, workspace, project_path FROM sessions".iterate())
+		foreach (int sid, string claudeSessionId, string title, string workspace, string projectPath,
+			int parentSid, string relationType;
+			db.stmt!"SELECT sid, claude_session_id, title, workspace, project_path, COALESCE(parent_sid, 0), COALESCE(relation_type, '') FROM sessions".iterate())
 		{
-			result ~= SessionRow(sid, claudeSessionId, title, workspace, projectPath);
+			result ~= SessionRow(sid, claudeSessionId, title, workspace, projectPath, parentSid, relationType);
 		}
 		return result;
 	}
@@ -121,7 +126,7 @@ struct ForkResult
 
 /// Fork a session by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
-ForkResult forkSession(ref Persistence persistence, string sourceClaudeId, string afterUuid,
+ForkResult forkSession(ref Persistence persistence, int sourceSid, string sourceClaudeId, string afterUuid,
 	string projectPath, string workspace, string title)
 {
 	import std.algorithm : canFind;
@@ -162,8 +167,8 @@ ForkResult forkSession(ref Persistence persistence, string sourceClaudeId, strin
 
 	// Create DB entry with the new claude session ID
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "";
-	persistence.db.stmt!"INSERT INTO sessions (claude_session_id, title, workspace, project_path) VALUES (?, ?, ?, ?)"
-		.exec(newClaudeId, forkTitle, workspace, projectPath);
+	persistence.db.stmt!"INSERT INTO sessions (claude_session_id, title, workspace, project_path, parent_sid, relation_type) VALUES (?, ?, ?, ?, ?, ?)"
+		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceSid, "fork");
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
 }
 

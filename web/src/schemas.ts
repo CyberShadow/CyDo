@@ -581,6 +581,8 @@ export interface SessionCreatedMessage {
   sid: number;
   workspace?: string;
   project_path?: string;
+  parent_sid?: number;
+  relation_type?: string;
 }
 export interface SessionsListMessage {
   type: "sessions_list";
@@ -592,6 +594,8 @@ export interface SessionsListMessage {
     title?: string;
     workspace?: string;
     project_path?: string;
+    parent_sid?: number;
+    relation_type?: string;
   }[];
 }
 export interface SessionReloadMessage {

@@ -78,6 +78,8 @@ class App
 			sd.titleGenDone = row.title.length > 0;
 			sd.workspace = row.workspace;
 			sd.projectPath = row.projectPath;
+			sd.parentSid = row.parentSid;
+			sd.relationType = row.relationType;
 			sessions[row.sid] = move(sd);
 		}
 
@@ -153,7 +155,7 @@ class App
 		if (json.type == "create_session")
 		{
 			auto sid = createSession(json.workspace, json.project_path);
-			broadcast(toJson(SessionCreatedMessage("session_created", sid, json.workspace, json.project_path)));
+			broadcast(toJson(SessionCreatedMessage("session_created", sid, json.workspace, json.project_path, 0, "")));
 		}
 		else if (json.type == "request_history")
 		{
@@ -240,7 +242,7 @@ class App
 				return;
 			}
 
-			auto result = forkSession(persistence, sd.claudeSessionId, json.after_uuid,
+			auto result = forkSession(persistence, sid, sd.claudeSessionId, json.after_uuid,
 				sd.projectPath, sd.workspace, sd.title);
 			if (result.sid < 0)
 			{
@@ -254,10 +256,12 @@ class App
 			newSd.projectPath = sd.projectPath;
 			newSd.title = sd.title.length > 0 ? sd.title ~ " (fork)" : "";
 			newSd.claudeSessionId = result.claudeSessionId;
+			newSd.parentSid = sid;
+			newSd.relationType = "fork";
 			sessions[result.sid] = move(newSd);
 
 			import ae.utils.json : toJson;
-			broadcast(toJson(SessionCreatedMessage("session_created", result.sid, sd.workspace, sd.projectPath)));
+			broadcast(toJson(SessionCreatedMessage("session_created", result.sid, sd.workspace, sd.projectPath, sid, "fork")));
 			broadcast(buildSessionsList());
 		}
 	}
@@ -582,7 +586,7 @@ class App
 		SessionListEntry[] entries;
 		foreach (ref sd; sessions)
 			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive,
-				sd.lastActivity, sd.title, sd.workspace, sd.projectPath);
+				sd.lastActivity, sd.title, sd.workspace, sd.projectPath, sd.parentSid, sd.relationType);
 		return toJson(SessionsListMessage("sessions_list", entries));
 	}
 
@@ -616,6 +620,8 @@ struct SessionData
 	AgentProcess titleGenProcess; // prevent GC while running
 	string workspace;
 	string projectPath;
+	int parentSid;
+	string relationType;
 }
 
 struct SessionHistoryEndMessage
@@ -652,6 +658,8 @@ struct SessionCreatedMessage
 	int sid;
 	string workspace;
 	string project_path;
+	int parent_sid;
+	string relation_type;
 }
 
 struct SessionsListMessage
@@ -669,6 +677,8 @@ struct SessionListEntry
 	string title;
 	string workspace;
 	string project_path;
+	int parent_sid;
+	string relation_type;
 }
 
 struct ProjectInfo
