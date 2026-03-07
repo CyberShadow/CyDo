@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { useEffect } from "preact/hooks";
-import { useSessionManager } from "./useSessionManager";
+import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
@@ -10,44 +10,44 @@ import { WelcomePage } from "./components/WelcomePage";
 
 export function App() {
   const {
-    sessions,
-    activeSessionId,
-    setActiveSessionId,
+    tasks,
+    activeTaskId,
+    setActiveTaskId,
     connected,
     send,
     interrupt,
-    newSession,
+    newTask,
     resume,
     fork,
-    sidebarSessions,
+    sidebarTasks,
     workspaces,
     activeWorkspace,
     activeProject,
     navigateHome,
     navigateToProject,
-  } = useSessionManager();
+  } = useTaskManager();
 
   const { theme, toggleTheme } = useTheme();
-  const attention = useNotifications(activeSessionId);
+  const attention = useNotifications(activeTaskId);
 
   const active =
-    activeSessionId !== null ? (sessions.get(activeSessionId) ?? null) : null;
+    activeTaskId !== null ? (tasks.get(activeTaskId) ?? null) : null;
 
   useEffect(() => {
     document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
   }, [active?.title]);
 
   // Welcome page: no workspace selected (on /)
-  if (activeWorkspace === null && activeSessionId === null) {
+  if (activeWorkspace === null && activeTaskId === null) {
     return (
       <ThemeContext.Provider value={theme}>
         <div class="app welcome-page-container">
           <WelcomePage
             workspaces={workspaces}
-            sessions={sessions}
+            tasks={tasks}
             attention={attention}
-            onNewSession={newSession}
-            onSelectSession={setActiveSessionId}
+            onNewTask={newTask}
+            onSelectTask={setActiveTaskId}
             onNavigateToProject={navigateToProject}
           />
         </div>
@@ -56,14 +56,14 @@ export function App() {
   }
 
   // Project view with sidebar
-  const handleNewSession = () => {
+  const handleNewTask = () => {
     if (activeWorkspace && activeProject) {
       // Find the absolute project path
       const ws = workspaces.find((w) => w.name === activeWorkspace);
       const proj = ws?.projects.find((p) => p.name === activeProject);
-      newSession(activeWorkspace, proj?.path || "");
+      newTask(activeWorkspace, proj?.path || "");
     } else {
-      newSession();
+      newTask();
     }
   };
 
@@ -71,18 +71,18 @@ export function App() {
     <ThemeContext.Provider value={theme}>
       <div class="app has-sidebar">
         <Sidebar
-          sessions={sidebarSessions}
-          activeSessionId={activeSessionId}
+          tasks={sidebarTasks}
+          activeTaskId={activeTaskId}
           attention={attention}
-          onSelectSession={setActiveSessionId}
-          onNewSession={handleNewSession}
+          onSelectTask={setActiveTaskId}
+          onNewTask={handleNewTask}
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}
         />
         {active ? (
           <SessionView
-            session={active}
+            task={active}
             connected={connected}
             onSend={send}
             onInterrupt={interrupt}
@@ -94,7 +94,7 @@ export function App() {
         ) : (
           <div class="session-empty">
             <div class="session-empty-inner">
-              <p>Select a session or create a new one</p>
+              <p>Select a task or create a new one</p>
               <InputBox
                 onSend={send}
                 onInterrupt={interrupt}

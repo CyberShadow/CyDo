@@ -1,4 +1,4 @@
-// Custom hook: WebSocket connection, rAF message buffering, session state, and user actions.
+// Custom hook: WebSocket connection, rAF message buffering, task state, and user actions.
 
 import {
   useState,
@@ -14,8 +14,8 @@ import type {
   ClaudeFileMessage,
   ControlMessage,
 } from "./schemas";
-import type { SessionState } from "./types";
-import { makeSessionState } from "./types";
+import type { TaskState } from "./types";
+import { makeTaskState } from "./types";
 import {
   reduceStdoutMessage,
   reduceFileMessage,
@@ -38,24 +38,25 @@ export interface WorkspaceInfo {
   projects: ProjectInfo[];
 }
 
-export interface SessionManager {
-  sessions: Map<number, SessionState>;
-  activeSessionId: number | null;
-  setActiveSessionId: (sid: number) => void;
+export interface TaskManager {
+  tasks: Map<number, TaskState>;
+  activeTaskId: number | null;
+  setActiveTaskId: (tid: number) => void;
   connected: boolean;
   send: (text: string) => void;
   interrupt: () => void;
-  newSession: (workspace?: string, projectPath?: string) => void;
+  newTask: (workspace?: string, projectPath?: string) => void;
   resume: () => void;
-  fork: (sid: number, afterUuid: string) => void;
-  sidebarSessions: Array<{
-    sid: number;
+  fork: (tid: number, afterUuid: string) => void;
+  sidebarTasks: Array<{
+    tid: number;
     alive: boolean;
     resumable: boolean;
     isProcessing: boolean;
     title?: string;
-    parentSid?: number;
+    parentTid?: number;
     relationType?: string;
+    status?: string;
   }>;
   workspaces: WorkspaceInfo[];
   activeWorkspace: string | null;
@@ -67,23 +68,39 @@ export interface SessionManager {
 interface ParsedPath {
   workspace: string | null;
   project: string | null;
-  sid: number | null;
+  tid: number | null;
 }
 
 function parseFromPath(path: string): ParsedPath {
-  // Legacy: /session/:sid
+  // Legacy: /session/:sid (redirect handled elsewhere)
   const legacyMatch = path.match(/^\/session\/(\d+)$/);
   if (legacyMatch) {
-    return { workspace: null, project: null, sid: Number(legacyMatch[1]) };
+    return { workspace: null, project: null, tid: Number(legacyMatch[1]) };
   }
 
-  // /:workspace/:project/session/:sid
-  const sessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/(\d+)$/);
-  if (sessionMatch) {
+  // /task/:tid (no workspace context)
+  const taskMatch = path.match(/^\/task\/(\d+)$/);
+  if (taskMatch) {
+    return { workspace: null, project: null, tid: Number(taskMatch[1]) };
+  }
+
+  // /:workspace/:project/task/:tid
+  const wpTaskMatch = path.match(/^\/([^/]+)\/([^/]+)\/task\/(\d+)$/);
+  if (wpTaskMatch) {
     return {
-      workspace: sessionMatch[1],
-      project: sessionMatch[2].replace(/:/g, "/"),
-      sid: Number(sessionMatch[3]),
+      workspace: wpTaskMatch[1],
+      project: wpTaskMatch[2].replace(/:/g, "/"),
+      tid: Number(wpTaskMatch[3]),
+    };
+  }
+
+  // Legacy: /:workspace/:project/session/:sid
+  const wpSessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/(\d+)$/);
+  if (wpSessionMatch) {
+    return {
+      workspace: wpSessionMatch[1],
+      project: wpSessionMatch[2].replace(/:/g, "/"),
+      tid: Number(wpSessionMatch[3]),
     };
   }
 
@@ -93,25 +110,23 @@ function parseFromPath(path: string): ParsedPath {
     return {
       workspace: projectMatch[1],
       project: projectMatch[2].replace(/:/g, "/"),
-      sid: null,
+      tid: null,
     };
   }
 
   // / (welcome page) or anything else
-  return { workspace: null, project: null, sid: null };
+  return { workspace: null, project: null, tid: null };
 }
 
-// Mutable mirror of session states, updated synchronously outside Preact's
+// Mutable mirror of task states, updated synchronously outside Preact's
 // render cycle.  Used so that reducers and notification checks run immediately
 // when WebSocket messages arrive, even when Preact defers state updates in
 // background tabs.
-const liveStates = new Map<number, SessionState>();
+const liveStates = new Map<number, TaskState>();
 
-export function useSessionManager(): SessionManager {
+export function useTaskManager(): TaskManager {
   const [connected, setConnected] = useState(false);
-  const [sessions, setSessions] = useState<Map<number, SessionState>>(
-    new Map(),
-  );
+  const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const { path, route } = useLocation();
   const routeRef = useRef(route);
@@ -120,27 +135,27 @@ export function useSessionManager(): SessionManager {
   workspacesRef.current = workspaces;
 
   const parsed = useMemo(() => parseFromPath(path), [path]);
-  const activeSessionId = parsed.sid;
+  const activeTaskId = parsed.tid;
   const activeWorkspace = parsed.workspace;
   const activeProject = parsed.project;
 
-  const setActiveSessionId = useCallback((sid: number) => {
-    // Look up the session to build the full URL
-    const s = liveStates.get(sid);
-    if (s?.workspace && s?.projectPath) {
+  const setActiveTaskId = useCallback((tid: number) => {
+    // Look up the task to build the full URL
+    const t = liveStates.get(tid);
+    if (t?.workspace && t?.projectPath) {
       // Find the project name from workspaces
       const projName = findProjectName(
         workspacesRef.current,
-        s.workspace,
-        s.projectPath,
+        t.workspace,
+        t.projectPath,
       );
       if (projName) {
         const encodedProject = projName.replace(/\//g, ":");
-        routeRef.current(`/${s.workspace}/${encodedProject}/session/${sid}`);
+        routeRef.current(`/${t.workspace}/${encodedProject}/task/${tid}`);
         return;
       }
     }
-    routeRef.current(`/session/${sid}`);
+    routeRef.current(`/task/${tid}`);
   }, []);
 
   const navigateHome = useCallback(() => {
@@ -156,64 +171,56 @@ export function useSessionManager(): SessionManager {
   );
 
   const connRef = useRef<Connection | null>(null);
-  // When we create a session and want to send a message once it's confirmed
+  // When we create a task and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
-  // Track which sessions have had history requested (avoid duplicate requests)
+  // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
-  // Track workspace/projectPath for pending session creation
-  const pendingSessionContext = useRef<{
-    workspace?: string;
-    projectPath?: string;
-  } | null>(null);
 
   // Buffer for live messages that arrive before history is loaded.
-  // Keyed by sid; drained on session_history_end.
+  // Keyed by tid; drained on task_history_end.
   const pendingLiveRef = useRef(new Map<number, ClaudeMessage[]>());
 
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
-  const handleSessionMessage = useCallback(
-    (sid: number, msg: ClaudeMessage) => {
-      // If history has been requested but not yet loaded, buffer live
-      // messages so they are processed after history.
-      const s = liveStates.get(sid);
-      if (s && !s.historyLoaded && requestedHistoryRef.current.has(sid)) {
-        let buf = pendingLiveRef.current.get(sid);
-        if (!buf) {
-          buf = [];
-          pendingLiveRef.current.set(sid, buf);
-        }
-        buf.push(msg);
-        return;
+  const handleTaskMessage = useCallback((tid: number, msg: ClaudeMessage) => {
+    // If history has been requested but not yet loaded, buffer live
+    // messages so they are processed after history.
+    const t = liveStates.get(tid);
+    if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
+      let buf = pendingLiveRef.current.get(tid);
+      if (!buf) {
+        buf = [];
+        pendingLiveRef.current.set(tid, buf);
       }
+      buf.push(msg);
+      return;
+    }
 
-      const prev = s ?? makeSessionState(sid, true);
-      const updated = reduceStdoutMessage(prev, msg);
-      liveStates.set(sid, updated);
-      notifyTransition(sid, prev, updated);
+    const prev = t ?? makeTaskState(tid, true);
+    const updated = reduceStdoutMessage(prev, msg);
+    liveStates.set(tid, updated);
+    notifyTransition(tid, prev, updated);
 
-      setSessions((map) => {
-        const next = new Map(map);
-        next.set(sid, updated);
-        return next;
-      });
-    },
-    [],
-  );
+    setTasks((map) => {
+      const next = new Map(map);
+      next.set(tid, updated);
+      return next;
+    });
+  }, []);
 
   // -- JSONL file message handler --
   const handleFileMessage = useCallback(
-    (sid: number, msg: ClaudeFileMessage) => {
-      const prev = liveStates.get(sid) ?? makeSessionState(sid);
+    (tid: number, msg: ClaudeFileMessage) => {
+      const prev = liveStates.get(tid) ?? makeTaskState(tid);
       const updated = reduceFileMessage(prev, msg);
-      liveStates.set(sid, updated);
+      liveStates.set(tid, updated);
       // File replay: seed snapshot without notifying (historical data)
-      initSnapshot(sid, updated);
+      initSnapshot(tid, updated);
 
-      setSessions((map) => {
+      setTasks((map) => {
         const next = new Map(map);
-        next.set(sid, updated);
+        next.set(tid, updated);
         return next;
       });
     },
@@ -226,32 +233,33 @@ export function useSessionManager(): SessionManager {
         setWorkspaces(msg.workspaces);
         break;
       }
-      case "session_created": {
-        const sid = msg.sid;
+      case "task_created": {
+        const tid = msg.tid;
         const workspace = msg.workspace || "";
         const projectPath = msg.project_path || "";
-        const parentSid = msg.parent_sid || undefined;
+        const parentTid = msg.parent_tid || undefined;
         const relationType = msg.relation_type || undefined;
-        const s = makeSessionState(
-          sid,
+        const t = makeTaskState(
+          tid,
           false,
           false,
           undefined,
           true,
           workspace,
           projectPath,
-          parentSid,
+          parentTid,
           relationType,
+          "pending",
         );
-        liveStates.set(sid, s);
-        initSnapshot(sid, s);
-        setSessions((prev) => {
+        liveStates.set(tid, t);
+        initSnapshot(tid, t);
+        setTasks((prev) => {
           const next = new Map(prev);
-          next.set(sid, s);
+          next.set(tid, t);
           return next;
         });
 
-        // Navigate to the new session
+        // Navigate to the new task
         if (workspace && projectPath) {
           const projName = findProjectName(
             workspacesRef.current,
@@ -260,105 +268,101 @@ export function useSessionManager(): SessionManager {
           );
           if (projName) {
             const encodedProject = projName.replace(/\//g, ":");
-            routeRef.current(`/${workspace}/${encodedProject}/session/${sid}`);
+            routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
           } else {
-            routeRef.current(`/session/${sid}`);
+            routeRef.current(`/task/${tid}`);
           }
         } else {
-          routeRef.current(`/session/${sid}`);
+          routeRef.current(`/task/${tid}`);
         }
 
         // If we have a pending first message, send it now
         const text = pendingFirstMessage.current;
         if (text !== null) {
           pendingFirstMessage.current = null;
-          const withMsg = reducePendingUserMessage(s, text);
-          liveStates.set(sid, withMsg);
-          setSessions((prev) => {
+          const withMsg = reducePendingUserMessage(t, text);
+          liveStates.set(tid, withMsg);
+          setTasks((prev) => {
             const next = new Map(prev);
-            next.set(sid, withMsg);
+            next.set(tid, withMsg);
             return next;
           });
-          connRef.current?.sendMessage(sid, text);
+          connRef.current?.sendMessage(tid, text);
         }
         break;
       }
-      case "sessions_list": {
-        setSessions((prev) => {
+      case "tasks_list": {
+        setTasks((prev) => {
           const next = new Map(prev);
-          for (const entry of msg.sessions) {
+          for (const entry of msg.tasks) {
             const workspace = entry.workspace || "";
             const projectPath = entry.project_path || "";
-            if (!next.has(entry.sid)) {
-              const s = makeSessionState(
-                entry.sid,
+            if (!next.has(entry.tid)) {
+              const t = makeTaskState(
+                entry.tid,
                 entry.alive,
                 entry.resumable,
                 entry.title,
                 false,
                 workspace,
                 projectPath,
-                entry.parent_sid || undefined,
+                entry.parent_tid || undefined,
                 entry.relation_type || undefined,
+                entry.status || "pending",
               );
-              liveStates.set(entry.sid, s);
-              initSnapshot(entry.sid, s);
-              next.set(entry.sid, s);
+              liveStates.set(entry.tid, t);
+              initSnapshot(entry.tid, t);
+              next.set(entry.tid, t);
             } else {
-              const s = next.get(entry.sid)!;
-              // If a session becomes resumable but has no messages loaded,
+              const t = next.get(entry.tid)!;
+              // If a task becomes resumable but has no messages loaded,
               // reset historyLoaded so JSONL history gets requested
-              // (e.g. forked sessions with pre-existing JSONL).
+              // (e.g. forked tasks with pre-existing JSONL).
               const needsHistory =
-                entry.resumable && s.messages.length === 0 && s.historyLoaded;
+                entry.resumable && t.messages.length === 0 && t.historyLoaded;
               const updated = {
-                ...s,
+                ...t,
                 alive: entry.alive,
                 resumable: entry.resumable,
-                historyLoaded: needsHistory ? false : s.historyLoaded,
-                title: entry.title || s.title,
-                workspace: workspace || s.workspace,
-                projectPath: projectPath || s.projectPath,
-                parentSid: entry.parent_sid || s.parentSid,
-                relationType: entry.relation_type || s.relationType,
+                historyLoaded: needsHistory ? false : t.historyLoaded,
+                title: entry.title || t.title,
+                workspace: workspace || t.workspace,
+                projectPath: projectPath || t.projectPath,
+                parentTid: entry.parent_tid || t.parentTid,
+                relationType: entry.relation_type || t.relationType,
+                status: entry.status || t.status,
               };
-              liveStates.set(entry.sid, updated);
-              initSnapshot(entry.sid, updated);
-              next.set(entry.sid, updated);
+              liveStates.set(entry.tid, updated);
+              initSnapshot(entry.tid, updated);
+              next.set(entry.tid, updated);
             }
           }
           return next;
         });
-        // Navigate to most recently active session if on a project page without a session
+        // Navigate to most recently active task if on a project page without a task
         // Do NOT auto-navigate when on welcome page (/)
         const currentParsed = parseFromPath(location.pathname);
         if (
-          msg.sessions.length > 0 &&
-          currentParsed.sid === null &&
-          currentParsed.workspace !== null
-        ) {
-          // On a project page — auto-select latest session for this project
-        } else if (
-          msg.sessions.length > 0 &&
+          msg.tasks.length > 0 &&
+          currentParsed.tid === null &&
           currentParsed.workspace === null &&
-          currentParsed.sid === null &&
           location.pathname !== "/"
         ) {
           // Legacy: no path structure, not welcome page
-          const latest = msg.sessions.reduce((a, b) =>
+          const latest = msg.tasks.reduce((a, b) =>
             (b.lastActivity || "") > (a.lastActivity || "") ? b : a,
           );
-          routeRef.current(`/session/${latest.sid}`, true);
+          routeRef.current(`/task/${latest.tid}`, true);
         }
         break;
       }
-      case "session_reload": {
-        const { sid } = msg;
-        requestedHistoryRef.current.delete(sid);
-        const s = liveStates.get(sid);
-        if (!s) break;
+      case "task_reload": {
+        const { tid } = msg;
+        requestedHistoryRef.current.delete(tid);
+        const t = liveStates.get(tid);
+        if (!t) break;
         // Collect user message texts to detect unsaved prompts after replay
-        const userTexts = s.messages
+        const userTexts = t.messages
           .filter((m) => m.type === "user")
           .map((m) =>
             m.content
@@ -368,92 +372,93 @@ export function useSessionManager(): SessionManager {
           )
           .filter((t) => t.length > 0);
         const reset = {
-          ...makeSessionState(
-            sid,
+          ...makeTaskState(
+            tid,
             false,
-            s.resumable,
-            s.title,
+            t.resumable,
+            t.title,
             false,
-            s.workspace,
-            s.projectPath,
-            s.parentSid,
-            s.relationType,
+            t.workspace,
+            t.projectPath,
+            t.parentTid,
+            t.relationType,
+            t.status,
           ),
-          resumable: s.resumable,
+          resumable: t.resumable,
           preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
         };
-        liveStates.set(sid, reset);
-        initSnapshot(sid, reset);
-        setSessions((prev) => {
-          if (!prev.has(sid)) return prev;
+        liveStates.set(tid, reset);
+        initSnapshot(tid, reset);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
           const next = new Map(prev);
-          next.set(sid, reset);
+          next.set(tid, reset);
           return next;
         });
         break;
       }
-      case "session_history_end": {
-        const { sid } = msg;
-        let s = liveStates.get(sid);
-        if (!s) break;
-        s = { ...s, historyLoaded: true };
-        liveStates.set(sid, s);
+      case "task_history_end": {
+        const { tid } = msg;
+        let t = liveStates.get(tid);
+        if (!t) break;
+        t = { ...t, historyLoaded: true };
+        liveStates.set(tid, t);
 
         // Drain any live messages that were buffered while history was loading.
         // The backend uses a unified history model (JSONL + live events are
         // disjoint), so no deduplication is needed here.
-        const buffered = pendingLiveRef.current.get(sid);
+        const buffered = pendingLiveRef.current.get(tid);
         if (buffered) {
-          pendingLiveRef.current.delete(sid);
+          pendingLiveRef.current.delete(tid);
           for (const liveMsg of buffered) {
-            const prev = liveStates.get(sid)!;
+            const prev = liveStates.get(tid)!;
             const next = reduceStdoutMessage(prev, liveMsg);
-            liveStates.set(sid, next);
-            notifyTransition(sid, prev, next);
+            liveStates.set(tid, next);
+            notifyTransition(tid, prev, next);
           }
-          s = liveStates.get(sid)!;
+          t = liveStates.get(tid)!;
         }
 
-        setSessions((prev) => {
-          if (!prev.has(sid)) return prev;
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
           const next = new Map(prev);
-          next.set(sid, s);
+          next.set(tid, t);
           return next;
         });
         break;
       }
       case "title_update": {
-        const { sid, title } = msg;
-        const s = liveStates.get(sid);
-        if (!s) break;
-        const updated = { ...s, title };
-        liveStates.set(sid, updated);
-        setSessions((prev) => {
-          if (!prev.has(sid)) return prev;
+        const { tid, title } = msg;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        const updated = { ...t, title };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
           const next = new Map(prev);
-          next.set(sid, updated);
+          next.set(tid, updated);
           return next;
         });
         break;
       }
       case "forkable_uuids": {
-        const { sid, uuids } = msg;
-        const s = liveStates.get(sid);
-        if (!s) break;
-        const merged = new Set(s.forkableUuids);
+        const { tid, uuids } = msg;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        const merged = new Set(t.forkableUuids);
         for (const u of uuids) merged.add(u);
-        const updated = { ...s, forkableUuids: merged };
-        liveStates.set(sid, updated);
-        setSessions((prev) => {
-          if (!prev.has(sid)) return prev;
+        const updated = { ...t, forkableUuids: merged };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
           const next = new Map(prev);
-          next.set(sid, updated);
+          next.set(tid, updated);
           return next;
         });
         break;
       }
       case "error": {
-        console.error("Server error:", msg.message, "sid:", msg.sid);
+        console.error("Server error:", msg.message, "tid:", msg.tid);
         break;
       }
     }
@@ -466,8 +471,8 @@ export function useSessionManager(): SessionManager {
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | { kind: "session"; sid: number; msg: ClaudeMessage }
-      | { kind: "file"; sid: number; msg: ClaudeFileMessage }
+      | { kind: "task"; tid: number; msg: ClaudeMessage }
+      | { kind: "file"; tid: number; msg: ClaudeFileMessage }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
@@ -478,8 +483,8 @@ export function useSessionManager(): SessionManager {
       buffer = [];
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
-        else if (item.kind === "file") handleFileMessage(item.sid, item.msg);
-        else handleSessionMessage(item.sid, item.msg);
+        else if (item.kind === "file") handleFileMessage(item.tid, item.msg);
+        else handleTaskMessage(item.tid, item.msg);
       }
     };
 
@@ -519,7 +524,7 @@ export function useSessionManager(): SessionManager {
       setConnected(connected);
       if (connected) {
         // Suppress notifications during initial replay; mark done after
-        // messages settle (debounced in onSessionMessage/onFileMessage).
+        // messages settle (debounced in onTaskMessage/onFileMessage).
         resetReplay();
       } else {
         resetReplay();
@@ -529,7 +534,7 @@ export function useSessionManager(): SessionManager {
         }
         liveStates.clear();
         requestedHistoryRef.current.clear();
-        setSessions(new Map());
+        setTasks(new Map());
       }
     };
     const debounceReplay = () => {
@@ -540,13 +545,13 @@ export function useSessionManager(): SessionManager {
       }, 1000);
     };
 
-    conn.onSessionMessage = (sid, msg) => {
-      buffer.push({ kind: "session", sid, msg });
+    conn.onTaskMessage = (tid, msg) => {
+      buffer.push({ kind: "task", tid, msg });
       scheduleFlush();
       debounceReplay();
     };
-    conn.onFileMessage = (sid, msg) => {
-      buffer.push({ kind: "file", sid, msg });
+    conn.onFileMessage = (tid, msg) => {
+      buffer.push({ kind: "file", tid, msg });
       scheduleFlush();
       debounceReplay();
     };
@@ -562,22 +567,22 @@ export function useSessionManager(): SessionManager {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };
-  }, [handleSessionMessage, handleFileMessage, handleControlMessage]);
+  }, [handleTaskMessage, handleFileMessage, handleControlMessage]);
 
-  // Request history when the active session changes and hasn't been loaded yet
+  // Request history when the active task changes and hasn't been loaded yet
   useEffect(() => {
-    if (!connected || activeSessionId === null) return;
-    if (requestedHistoryRef.current.has(activeSessionId)) return;
-    const s = liveStates.get(activeSessionId);
-    if (s?.historyLoaded) return;
-    requestedHistoryRef.current.add(activeSessionId);
-    connRef.current?.requestHistory(activeSessionId);
-  }, [connected, activeSessionId]);
+    if (!connected || activeTaskId === null) return;
+    if (requestedHistoryRef.current.has(activeTaskId)) return;
+    const t = liveStates.get(activeTaskId);
+    if (t?.historyLoaded) return;
+    requestedHistoryRef.current.add(activeTaskId);
+    connRef.current?.requestHistory(activeTaskId);
+  }, [connected, activeTaskId]);
 
   const send = useCallback(
     (text: string) => {
-      if (activeSessionId === null) {
-        // No active session — create one in the current project context and queue the message
+      if (activeTaskId === null) {
+        // No active task — create one in the current project context and queue the message
         pendingFirstMessage.current = text;
         const parsed = parseFromPath(location.pathname);
         if (parsed.workspace && parsed.project) {
@@ -587,95 +592,101 @@ export function useSessionManager(): SessionManager {
             parsed.workspace,
             parsed.project,
           );
-          connRef.current?.createSession(parsed.workspace, projPath || "");
+          connRef.current?.createTask(parsed.workspace, projPath || "");
         } else {
-          connRef.current?.createSession();
+          connRef.current?.createTask();
         }
         return;
       }
-      const s = liveStates.get(activeSessionId);
-      if (s) {
-        const updated = reducePendingUserMessage(s, text);
-        liveStates.set(activeSessionId, updated);
-        setSessions((prev) => {
+      const t = liveStates.get(activeTaskId);
+      if (t) {
+        const updated = reducePendingUserMessage(t, text);
+        liveStates.set(activeTaskId, updated);
+        setTasks((prev) => {
           const next = new Map(prev);
-          next.set(activeSessionId, updated);
+          next.set(activeTaskId, updated);
           return next;
         });
       }
-      connRef.current?.sendMessage(activeSessionId, text);
+      connRef.current?.sendMessage(activeTaskId, text);
     },
-    [activeSessionId],
+    [activeTaskId],
   );
 
   const interrupt = useCallback(() => {
-    if (activeSessionId !== null) {
-      connRef.current?.sendInterrupt(activeSessionId);
+    if (activeTaskId !== null) {
+      connRef.current?.sendInterrupt(activeTaskId);
     }
-  }, [activeSessionId]);
+  }, [activeTaskId]);
 
-  const newSession = useCallback((workspace?: string, projectPath?: string) => {
-    connRef.current?.createSession(workspace, projectPath);
+  const newTask = useCallback((workspace?: string, projectPath?: string) => {
+    connRef.current?.createTask(workspace, projectPath);
   }, []);
 
-  const fork = useCallback((sid: number, afterUuid: string) => {
-    connRef.current?.forkSession(sid, afterUuid);
+  const fork = useCallback((tid: number, afterUuid: string) => {
+    connRef.current?.forkTask(tid, afterUuid);
   }, []);
 
   const resume = useCallback(() => {
-    if (activeSessionId !== null) {
-      connRef.current?.resumeSession(activeSessionId);
-      const s = liveStates.get(activeSessionId);
-      if (s) {
-        const updated = { ...s, alive: true, resumable: false };
-        liveStates.set(activeSessionId, updated);
-        setSessions((prev) => {
+    if (activeTaskId !== null) {
+      connRef.current?.resumeTask(activeTaskId);
+      const t = liveStates.get(activeTaskId);
+      if (t) {
+        const updated = {
+          ...t,
+          alive: true,
+          resumable: false,
+          status: "active",
+        };
+        liveStates.set(activeTaskId, updated);
+        setTasks((prev) => {
           const next = new Map(prev);
-          next.set(activeSessionId, updated);
+          next.set(activeTaskId, updated);
           return next;
         });
       }
     }
-  }, [activeSessionId]);
+  }, [activeTaskId]);
 
-  // Build sidebar session list filtered by active workspace/project and sorted by sid
-  const sidebarSessions = useMemo(() => {
-    let filtered = Array.from(sessions.values());
+  // Build sidebar task list filtered by active workspace/project and sorted by tid
+  const sidebarTasks = useMemo(() => {
+    let filtered = Array.from(tasks.values());
     if (activeWorkspace !== null && activeProject !== null) {
-      filtered = filtered.filter((s) => {
-        if (!s.workspace || !s.projectPath) return false;
+      filtered = filtered.filter((t) => {
+        if (!t.workspace || !t.projectPath) return false;
         const projName = findProjectName(
           workspaces,
-          s.workspace,
-          s.projectPath,
+          t.workspace,
+          t.projectPath,
         );
-        return s.workspace === activeWorkspace && projName === activeProject;
+        return t.workspace === activeWorkspace && projName === activeProject;
       });
     }
     return filtered
-      .sort((a, b) => b.sid - a.sid)
-      .map((s) => ({
-        sid: s.sid,
-        alive: s.alive,
-        resumable: s.resumable,
-        isProcessing: s.isProcessing,
-        title: s.title,
-        parentSid: s.parentSid,
-        relationType: s.relationType,
+      .sort((a, b) => b.tid - a.tid)
+      .map((t) => ({
+        tid: t.tid,
+        alive: t.alive,
+        resumable: t.resumable,
+        isProcessing: t.isProcessing,
+        title: t.title,
+        parentTid: t.parentTid,
+        relationType: t.relationType,
+        status: t.status,
       }));
-  }, [sessions, activeWorkspace, activeProject, workspaces]);
+  }, [tasks, activeWorkspace, activeProject, workspaces]);
 
   return {
-    sessions,
-    activeSessionId,
-    setActiveSessionId,
+    tasks,
+    activeTaskId,
+    setActiveTaskId,
     connected,
     send,
     interrupt,
-    newSession,
+    newTask,
     resume,
     fork,
-    sidebarSessions,
+    sidebarTasks,
     workspaces,
     activeWorkspace,
     activeProject,

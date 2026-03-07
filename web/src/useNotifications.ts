@@ -8,7 +8,7 @@
 //    so notifications fire even when the browser is on another workspace.
 
 import { useEffect, useState } from "preact/hooks";
-import type { SessionState } from "./types";
+import type { TaskState as SessionState } from "./types";
 
 // ---------------------------------------------------------------------------
 // Imperative notification tracker — for the inline (WebSocket) path
@@ -54,22 +54,22 @@ type AttentionListener = (sids: Set<number>) => void;
 const attentionListeners = new Set<AttentionListener>();
 let attentionSet = new Set<number>();
 
-// Currently viewed session — suppresses attention when tab is visible.
-let activeVisibleSid: number | null = null;
+// Currently viewed task — suppresses attention when tab is visible.
+let activeVisibleTid: number | null = null;
 
-function addAttention(sid: number) {
+function addAttention(tid: number) {
   if (!replayDone) return;
-  if (sid === activeVisibleSid && !document.hidden) return;
-  if (attentionSet.has(sid)) return;
+  if (tid === activeVisibleTid && !document.hidden) return;
+  if (attentionSet.has(tid)) return;
   attentionSet = new Set(attentionSet);
-  attentionSet.add(sid);
+  attentionSet.add(tid);
   for (const fn of attentionListeners) fn(attentionSet);
 }
 
-export function removeAttention(sid: number) {
-  if (!attentionSet.has(sid)) return;
+export function removeAttention(tid: number) {
+  if (!attentionSet.has(tid)) return;
   attentionSet = new Set(attentionSet);
-  attentionSet.delete(sid);
+  attentionSet.delete(tid);
   for (const fn of attentionListeners) fn(attentionSet);
 }
 
@@ -78,34 +78,34 @@ export function removeAttention(sid: number) {
  * notifications synchronously, independent of React rendering.
  */
 export function notifyTransition(
-  sid: number,
+  tid: number,
   prev: SessionState,
   next: SessionState,
 ) {
-  const p = snapshots.get(sid);
-  snapshots.set(sid, { alive: next.alive, isProcessing: next.isProcessing });
+  const p = snapshots.get(tid);
+  snapshots.set(tid, { alive: next.alive, isProcessing: next.isProcessing });
   if (!p || !replayDone) return;
 
   const finished = p.alive && !next.alive;
   const awaiting = p.isProcessing && !next.isProcessing && next.alive;
   if (!finished && !awaiting) return;
 
-  addAttention(sid);
+  addAttention(tid);
 
   if (
     !document.hasFocus() &&
     "Notification" in window &&
     Notification.permission === "granted"
   ) {
-    const title = next.title || `Session ${sid}`;
+    const title = next.title || `Task ${tid}`;
     const body = lastMessageText(next);
-    new Notification(title, { body, tag: `cydo-${sid}` });
+    new Notification(title, { body, tag: `cydo-${tid}` });
   }
 }
 
 /** Update snapshot without firing notifications (e.g. initial load). */
-export function initSnapshot(sid: number, state: SessionState) {
-  snapshots.set(sid, { alive: state.alive, isProcessing: state.isProcessing });
+export function initSnapshot(tid: number, state: SessionState) {
+  snapshots.set(tid, { alive: state.alive, isProcessing: state.isProcessing });
 }
 
 // ---------------------------------------------------------------------------
@@ -163,36 +163,36 @@ function connect() {
 }
 
 function handleMessage(raw) {
-  if (raw.type === "sessions_list") {
-    var entries = raw.sessions || [];
+  if (raw.type === "tasks_list") {
+    var entries = raw.tasks || [];
     for (var i = 0; i < entries.length; i++) {
       var entry = entries[i];
-      var prev = snapshots.get(entry.sid);
+      var prev = snapshots.get(entry.tid);
       if (!prev) {
-        snapshots.set(entry.sid, { alive: entry.alive, isProcessing: false, title: entry.title || "" });
+        snapshots.set(entry.tid, { alive: entry.alive, isProcessing: false, title: entry.title || "" });
       } else {
         var old = { alive: prev.alive, isProcessing: prev.isProcessing };
         prev.alive = entry.alive;
         if (entry.title) prev.title = entry.title;
-        if (replayDone) checkTransition(entry.sid, old, prev);
+        if (replayDone) checkTransition(entry.tid, old, prev);
       }
     }
     return;
   }
 
   if (raw.type === "title_update") {
-    var snap = snapshots.get(raw.sid);
+    var snap = snapshots.get(raw.tid);
     if (snap) snap.title = raw.title;
     return;
   }
 
-  if (typeof raw.sid === "number" && raw.event) {
-    var sid = raw.sid;
+  if (typeof raw.tid === "number" && raw.event) {
+    var tid = raw.tid;
     var event = raw.event;
-    var snap = snapshots.get(sid);
+    var snap = snapshots.get(tid);
     if (!snap) {
       snap = { alive: true, isProcessing: false, title: "" };
-      snapshots.set(sid, snap);
+      snapshots.set(tid, snap);
     }
     var prev = { alive: snap.alive, isProcessing: snap.isProcessing };
 
@@ -206,7 +206,7 @@ function handleMessage(raw) {
       snap.isProcessing = false;
     }
 
-    if (replayDone) checkTransition(sid, prev, snap);
+    if (replayDone) checkTransition(tid, prev, snap);
   }
 }
 
@@ -223,14 +223,14 @@ function checkTransition(sid, prev, next) {
   if (!finished && !awaiting) return;
 
   for (var j = 0; j < ports.length; j++) {
-    ports[j].postMessage({ type: "attention", sid: sid });
+    ports[j].postMessage({ type: "attention", tid: tid });
   }
 
   if (anyTabFocused()) return;
 
-  var title = next.title || ("Session " + sid);
-  var body = finished ? "Session finished" : "Awaiting input";
-  try { new Notification(title, { body: body, tag: "cydo-" + sid }); } catch (e) {}
+  var title = next.title || ("Task " + tid);
+  var body = finished ? "Task finished" : "Awaiting input";
+  try { new Notification(title, { body: body, tag: "cydo-" + tid }); } catch (e) {}
 }
 
 connect();
@@ -254,7 +254,7 @@ function startWorker() {
     };
     worker.port.onmessage = (e) => {
       if (e.data?.type === "attention") {
-        addAttention(e.data.sid);
+        addAttention(e.data.tid);
       }
     };
     worker.port.start();
@@ -268,7 +268,7 @@ function startWorker() {
 // React hook — permission request, attention set, worker lifecycle
 // ---------------------------------------------------------------------------
 
-export function useNotifications(activeSessionId: number | null) {
+export function useNotifications(activeTaskId: number | null) {
   const [attention, setAttention] = useState<Set<number>>(attentionSet);
 
   // Subscribe to imperative attention changes
@@ -309,20 +309,20 @@ export function useNotifications(activeSessionId: number | null) {
 
   // Track active session and clear attention when it's visible
   useEffect(() => {
-    activeVisibleSid = activeSessionId;
-    if (activeSessionId === null) return;
+    activeVisibleTid = activeTaskId;
+    if (activeTaskId === null) return;
 
     const clear = () => {
-      if (!document.hidden) removeAttention(activeSessionId);
+      if (!document.hidden) removeAttention(activeTaskId);
     };
 
     clear();
     document.addEventListener("visibilitychange", clear);
     return () => {
       document.removeEventListener("visibilitychange", clear);
-      activeVisibleSid = null;
+      activeVisibleTid = null;
     };
-  }, [activeSessionId]);
+  }, [activeTaskId]);
 
   return attention;
 }

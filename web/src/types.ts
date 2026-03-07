@@ -95,8 +95,9 @@ export interface SessionInfo {
   fast_mode_state?: string;
 }
 
-export interface SessionState {
-  sid: number;
+export interface TaskState {
+  tid: number;
+  status: string; // pending, active, completed, failed
   messages: DisplayMessage[];
   sessionInfo: SessionInfo | null;
   isProcessing: boolean;
@@ -105,33 +106,35 @@ export interface SessionState {
   resumable: boolean;
   msgIdCounter: number;
   title?: string;
-  /** Whether the session's JSONL history has been loaded from the backend. */
+  /** Whether the task's JSONL history has been loaded from the backend. */
   historyLoaded: boolean;
   /** User message texts from before a reload, not yet matched by file replay. */
   preReloadDrafts?: string[];
   workspace?: string;
   projectPath?: string;
-  /** Parent session ID (0 or undefined = no parent). */
-  parentSid?: number;
+  /** Parent task ID (0 or undefined = no parent). */
+  parentTid?: number;
   /** Relation type to parent (e.g. "fork"). */
   relationType?: string;
   /** UUIDs confirmed in the on-disk JSONL file — only these are forkable. */
   forkableUuids: Set<string>;
 }
 
-export function makeSessionState(
-  sid: number,
+export function makeTaskState(
+  tid: number,
   alive: boolean = false,
   resumable: boolean = false,
   title?: string,
   historyLoaded: boolean = false,
   workspace?: string,
   projectPath?: string,
-  parentSid?: number,
+  parentTid?: number,
   relationType?: string,
-): SessionState {
+  status: string = "pending",
+): TaskState {
   return {
-    sid,
+    tid,
+    status,
     messages: [],
     sessionInfo: null,
     isProcessing: false,
@@ -143,7 +146,7 @@ export function makeSessionState(
     historyLoaded,
     workspace,
     projectPath,
-    parentSid,
+    parentTid,
     relationType,
     forkableUuids: new Set(),
   };

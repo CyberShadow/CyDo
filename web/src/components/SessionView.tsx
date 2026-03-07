@@ -1,24 +1,24 @@
 import { h } from "preact";
 import { useRef, useEffect } from "preact/hooks";
-import type { SessionState } from "../types";
+import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
 
 interface Props {
-  session: SessionState;
+  task: TaskState;
   connected: boolean;
   onSend: (text: string) => void;
   onInterrupt: () => void;
   onResume: () => void;
-  onFork: (sid: number, afterUuid: string) => void;
+  onFork: (tid: number, afterUuid: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
 }
 
 export function SessionView({
-  session,
+  task,
   connected,
   onSend,
   onInterrupt,
@@ -46,7 +46,7 @@ export function SessionView({
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
-  if (!session.historyLoaded) {
+  if (!task.historyLoaded) {
     return (
       <div class="session-loading">
         <span>Loading session…</span>
@@ -57,14 +57,14 @@ export function SessionView({
   return (
     <>
       <SystemBanner
-        sessionInfo={session.sessionInfo}
+        sessionInfo={task.sessionInfo}
         connected={connected}
-        totalCost={session.totalCost}
-        isProcessing={session.isProcessing}
+        totalCost={task.totalCost}
+        isProcessing={task.isProcessing}
         theme={theme}
         onToggleTheme={onToggleTheme}
       />
-      {session.messages.length === 0 && !session.isProcessing ? (
+      {task.messages.length === 0 && !task.isProcessing ? (
         <div class="message-list welcome-prompt">
           <div class="welcome-box">
             <h1 class="welcome-title">CyDo</h1>
@@ -73,14 +73,14 @@ export function SessionView({
         </div>
       ) : (
         <MessageList
-          sessionId={session.sid}
-          messages={session.messages}
-          isProcessing={session.isProcessing}
+          sessionId={task.tid}
+          messages={task.messages}
+          isProcessing={task.isProcessing}
           onFork={onFork}
-          forkableUuids={session.forkableUuids}
+          forkableUuids={task.forkableUuids}
         />
       )}
-      {session.resumable ? (
+      {task.resumable ? (
         <div class="resume-bar">
           <button class="btn btn-resume" onClick={onResume}>
             Resume Session
@@ -90,10 +90,10 @@ export function SessionView({
         <InputBox
           onSend={onSend}
           onInterrupt={onInterrupt}
-          isProcessing={session.isProcessing}
+          isProcessing={task.isProcessing}
           disabled={!connected}
-          sessionId={session.sid}
-          preReloadDrafts={session.preReloadDrafts}
+          sessionId={task.tid}
+          preReloadDrafts={task.preReloadDrafts}
           inputRef={inputRef}
         />
       )}

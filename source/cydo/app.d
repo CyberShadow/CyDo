@@ -23,7 +23,7 @@ import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
-	forkSession, loadSessionHistory;
+	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 
 void main(string[] args)
@@ -47,12 +47,12 @@ class App
 
 	private HttpServer server;
 	private WebSocketAdapter[] clients;
-	private SessionData[int] sessions;
+	private TaskData[int] tasks;
 	private Persistence persistence;
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent;
-	// inotify watches for JSONL file tracking (sid → watch descriptor)
+	// inotify watches for JSONL file tracking (tid → watch descriptor)
 	private INotify.WatchDescriptor[int] jsonlFileWatches;
 	private INotify.WatchDescriptor[int] jsonlDirWatches;
 	private size_t[int] jsonlReadPos;
@@ -77,18 +77,21 @@ class App
 				writefln("  - %s (%s)", p.name, p.path);
 		}
 
-		// Load persisted sessions (metadata only — history loaded on demand)
-		foreach (row; persistence.loadSessions())
+		// Load persisted tasks (metadata only — history loaded on demand)
+		foreach (row; persistence.loadTasks())
 		{
-			auto sd = SessionData(row.sid);
-			sd.claudeSessionId = row.claudeSessionId;
-			sd.title = row.title;
-			sd.titleGenDone = row.title.length > 0;
-			sd.workspace = row.workspace;
-			sd.projectPath = row.projectPath;
-			sd.parentSid = row.parentSid;
-			sd.relationType = row.relationType;
-			sessions[row.sid] = move(sd);
+			auto td = TaskData(row.tid);
+			td.claudeSessionId = row.claudeSessionId;
+			td.description = row.description;
+			td.taskType = row.taskType;
+			td.parentTid = row.parentTid;
+			td.relationType = row.relationType;
+			td.workspace = row.workspace;
+			td.projectPath = row.projectPath;
+			td.title = row.title;
+			td.status = row.status;
+			td.titleGenDone = row.title.length > 0;
+			tasks[row.tid] = move(td);
 		}
 
 		server = new HttpServer();
@@ -146,9 +149,9 @@ class App
 		ws.sendBinary = false; // text frames for JSON
 		clients ~= ws;
 
-		// Send workspaces list and sessions list to new client
+		// Send workspaces list and tasks list to new client
 		ws.send(Data(buildWorkspacesList().representation));
-		ws.send(Data(buildSessionsList().representation));
+		ws.send(Data(buildTasksList().representation));
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -177,7 +180,7 @@ class App
 		@JSONPartial
 		static struct McpCallRequest
 		{
-			string sid;
+			string tid;
 			string tool;
 			JSONFragment args;
 		}
@@ -213,185 +216,198 @@ class App
 
 		auto json = jsonParse!WsMessage(text);
 
-		if (json.type == "create_session")
+		if (json.type == "create_task")
 		{
-			auto sid = createSession(json.workspace, json.project_path);
-			broadcast(toJson(SessionCreatedMessage("session_created", sid, json.workspace, json.project_path, 0, "")));
+			auto tid = createTask(json.workspace, json.project_path);
+			broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
 		}
 		else if (json.type == "request_history")
 		{
-			auto sid = json.sid;
-			if (sid < 0 || sid !in sessions)
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
 				return;
-			auto sd = &sessions[sid];
+			auto td = &tasks[tid];
 
 			// Load JSONL from disk if not already loaded
-			if (!sd.historyLoaded && sd.claudeSessionId.length > 0)
+			if (!td.historyLoaded && td.claudeSessionId.length > 0)
 			{
-				sd.history = loadSessionHistory(sid, sd.claudeSessionId, sd.projectPath);
-				sd.historyLoaded = true;
+				td.history = loadTaskHistory(tid, td.claudeSessionId, td.projectPath);
+				td.historyLoaded = true;
 			}
 
 			// Send unified history to requesting client
-			foreach (msg; sd.history)
+			foreach (msg; td.history)
 				ws.send(msg);
 
 			// Send forkable UUIDs extracted from JSONL
-			if (sd.claudeSessionId.length > 0)
-				sendForkableUuidsFromFile(ws, sid, sd.claudeSessionId, sd.projectPath);
+			if (td.claudeSessionId.length > 0)
+				sendForkableUuidsFromFile(ws, tid, td.claudeSessionId, td.projectPath);
 
 			// Send end marker
-			ws.send(Data(toJson(SessionHistoryEndMessage("session_history_end", sid)).representation));
+			ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
 		}
 		else if (json.type == "message")
 		{
-			auto sid = json.sid;
-			if (sid < 0 || sid !in sessions)
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
 				return;
-			auto sd = &sessions[sid];
-			// Only auto-spawn for new sessions (no claudeSessionId yet).
-			// Resumable sessions require an explicit "resume" first.
-			if (sd.session is null || !sd.session.alive)
+			auto td = &tasks[tid];
+			// Auto-spawn agent session if task has no session yet.
+			// Resumable tasks (completed with claudeSessionId) require explicit "resume".
+			if (td.session is null || !td.session.alive)
 			{
-				if (sd.claudeSessionId.length > 0)
+				if (td.claudeSessionId.length > 0)
 					return; // resumable but not resumed — ignore
-				ensureSessionAgent(sid);
+				ensureTaskAgent(tid);
 			}
-			sd.session.sendMessage(json.content);
+			td.session.sendMessage(json.content);
+
+			// Store first message as task description
+			if (td.description.length == 0)
+			{
+				td.description = json.content;
+				persistence.setDescription(tid, json.content);
+			}
 
 			// Set initial title from first user message (truncated)
-			if (sd.title.length == 0)
+			if (td.title.length == 0)
 			{
-				sd.title = truncateTitle(json.content, 80);
-				persistence.setTitle(sid, sd.title);
-				broadcastTitleUpdate(sid, sd.title);
-				generateTitle(sid, json.content);
+				td.title = truncateTitle(json.content, 80);
+				persistence.setTitle(tid, td.title);
+				broadcastTitleUpdate(tid, td.title);
+				generateTitle(tid, json.content);
 			}
 		}
 		else if (json.type == "resume")
 		{
-			auto sid = json.sid;
-			if (sid < 0 || sid !in sessions)
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
 				return;
-			auto sd = &sessions[sid];
+			auto td = &tasks[tid];
 			// Only resume if we have a Claude session ID and no running process
-			if (sd.claudeSessionId.length == 0)
+			if (td.claudeSessionId.length == 0)
 				return;
-			if (sd.session !is null && sd.session.alive)
+			if (td.session !is null && td.session.alive)
 				return;
-			ensureSessionAgent(sid);
-			broadcast(buildSessionsList());
+			ensureTaskAgent(tid);
+			td.status = "active";
+			persistence.setStatus(tid, "active");
+			broadcast(buildTasksList());
 		}
 		else if (json.type == "interrupt")
 		{
-			auto sid = json.sid;
-			if (sid < 0 || sid !in sessions)
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
 				return;
-			auto sd = &sessions[sid];
-			if (sd.session)
-				sd.session.interrupt();
+			auto td = &tasks[tid];
+			if (td.session)
+				td.session.interrupt();
 		}
-		else if (json.type == "fork_session")
+		else if (json.type == "fork_task")
 		{
-			auto sid = json.sid;
-			if (sid < 0 || sid !in sessions)
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
 				return;
-			auto sd = &sessions[sid];
-			if (sd.claudeSessionId.length == 0)
+			auto td = &tasks[tid];
+			if (td.claudeSessionId.length == 0)
 			{
-				ws.send(Data(toJson(ErrorMessage("error", "Session has no Claude session ID", sid)).representation));
+				ws.send(Data(toJson(ErrorMessage("error", "Task has no Claude session ID", tid)).representation));
 				return;
 			}
 
-			auto result = forkSession(persistence, sid, sd.claudeSessionId, json.after_uuid,
-				sd.projectPath, sd.workspace, sd.title);
-			if (result.sid < 0)
+			auto result = forkTask(persistence, tid, td.claudeSessionId, json.after_uuid,
+				td.projectPath, td.workspace, td.title);
+			if (result.tid < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: message UUID not found in session history", sid)).representation));
+					"Fork failed: message UUID not found in task history", tid)).representation));
 				return;
 			}
 
-			auto newSd = SessionData(result.sid);
-			newSd.workspace = sd.workspace;
-			newSd.projectPath = sd.projectPath;
-			newSd.title = sd.title.length > 0 ? sd.title ~ " (fork)" : "";
-			newSd.claudeSessionId = result.claudeSessionId;
-			newSd.parentSid = sid;
-			newSd.relationType = "fork";
-			sessions[result.sid] = move(newSd);
+			auto newTd = TaskData(result.tid);
+			newTd.workspace = td.workspace;
+			newTd.projectPath = td.projectPath;
+			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "";
+			newTd.claudeSessionId = result.claudeSessionId;
+			newTd.parentTid = tid;
+			newTd.relationType = "fork";
+			newTd.status = "completed";
+			tasks[result.tid] = move(newTd);
 
-			import ae.utils.json : toJson;
-			broadcast(toJson(SessionCreatedMessage("session_created", result.sid, sd.workspace, sd.projectPath, sid, "fork")));
-			broadcast(buildSessionsList());
+			broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
+			broadcast(buildTasksList());
 		}
 	}
 
-	private int createSession(string workspace = "", string projectPath = "")
+	private int createTask(string workspace = "", string projectPath = "")
 	{
-		auto sid = persistence.createSession(workspace, projectPath);
-		auto sd = SessionData(sid);
-		sd.workspace = workspace;
-		sd.projectPath = projectPath;
-		sessions[sid] = move(sd);
-		return sid;
+		auto tid = persistence.createTask(workspace, projectPath);
+		auto td = TaskData(tid);
+		td.workspace = workspace;
+		td.projectPath = projectPath;
+		tasks[tid] = move(td);
+		return tid;
 	}
 
-	private void ensureSessionAgent(int sid)
+	private void ensureTaskAgent(int tid)
 	{
-		auto sd = &sessions[sid];
-		if (sd.session && sd.session.alive)
+		auto td = &tasks[tid];
+		if (td.session && td.session.alive)
 			return;
 
-		auto workDir = sd.projectPath.length > 0 ? sd.projectPath : null;
+		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 
 		// Resolve sandbox config: agent defaults + global + per-workspace
-		auto wsSandbox = findWorkspaceSandbox(sd.workspace);
-		sd.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
-		auto bwrapPrefix = buildBwrapArgs(sd.sandbox, workDir);
+		auto wsSandbox = findWorkspaceSandbox(td.workspace);
+		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
+		auto bwrapPrefix = buildBwrapArgs(td.sandbox, workDir);
 
-		sd.session = agent.createSession(sid, sd.claudeSessionId, bwrapPrefix);
+		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix);
 
 		// Track MCP config temp file for cleanup
 		if (auto cAgent = cast(ClaudeCodeAgent) agent)
 			if (cAgent.lastMcpConfigPath.length > 0)
-				sd.sandbox.tempFiles ~= cAgent.lastMcpConfigPath;
+				td.sandbox.tempFiles ~= cAgent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
-		// For resumed sessions claudeSessionId is already set; for new sessions
+		// For resumed tasks claudeSessionId is already set; for new tasks
 		// it will be set later in tryExtractClaudeSessionId which also calls this.
-		if (sd.claudeSessionId.length > 0)
-			startJsonlWatch(sid);
+		if (td.claudeSessionId.length > 0)
+			startJsonlWatch(tid);
 
-		sd.session.onOutput = (string line) {
-			broadcastSession(sid, line);
+		td.session.onOutput = (string line) {
+			broadcastTask(tid, line);
 		};
 
-		sd.session.onStderr = (string line) {
+		td.session.onStderr = (string line) {
 			import ae.utils.json : toJson;
-			broadcastSession(sid, toJson(StderrMessage("stderr", line)));
+			broadcastTask(tid, toJson(StderrMessage("stderr", line)));
 		};
 
-		sd.session.onExit = (int status) {
+		td.session.onExit = (int exitCode) {
 			import ae.utils.json : toJson;
-			broadcastSession(sid, toJson(ExitMessage("exit", status)));
-			if (sid !in sessions)
+			broadcastTask(tid, toJson(ExitMessage("exit", exitCode)));
+			if (tid !in tasks)
 				return;
-			sessions[sid].alive = false;
-			cleanup(sessions[sid].sandbox);
-			stopJsonlWatch(sid);
+			tasks[tid].alive = false;
+			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
+			persistence.setStatus(tid, tasks[tid].status);
+			cleanup(tasks[tid].sandbox);
+			stopJsonlWatch(tid);
 			// Discard all history and reload from JSONL (canonical source).
 			// Frontends are notified to discard their state and re-request.
-			if (sessions[sid].claudeSessionId.length > 0)
+			if (tasks[tid].claudeSessionId.length > 0)
 			{
-				sessions[sid].history = loadSessionHistory(sid, sessions[sid].claudeSessionId, sessions[sid].projectPath);
-				sessions[sid].historyLoaded = true;
-				broadcast(toJson(SessionReloadMessage("session_reload", sid)));
+				tasks[tid].history = loadTaskHistory(tid, tasks[tid].claudeSessionId, tasks[tid].projectPath);
+				tasks[tid].historyLoaded = true;
+				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 			}
-			broadcast(buildSessionsList());
+			broadcast(buildTasksList());
 		};
 
-		sd.alive = true;
+		td.alive = true;
+		td.status = "active";
+		persistence.setStatus(tid, "active");
 	}
 
 	private SandboxConfig findWorkspaceSandbox(string workspaceName)
@@ -402,22 +418,22 @@ class App
 		return SandboxConfig.init;
 	}
 
-	private void broadcastSession(int sid, string rawLine)
+	private void broadcastTask(int tid, string rawLine)
 	{
-		// Wrap the event with a session envelope including timestamp
+		// Wrap the event with a task envelope including timestamp
 		auto now = Clock.currTime.toISOExtString();
-		string injected = `{"sid":` ~ format!"%d"(sid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ rawLine ~ `}`;
+		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ rawLine ~ `}`;
 
 		auto data = Data(injected.representation);
 
-		if (sid in sessions)
+		if (tid in tasks)
 		{
-			sessions[sid].lastActivity = now;
-			sessions[sid].history ~= data;
+			tasks[tid].lastActivity = now;
+			tasks[tid].history ~= data;
 
 			// Extract Claude session ID from system.init messages
-			if (sessions[sid].claudeSessionId.length == 0)
-				tryExtractClaudeSessionId(sid, rawLine);
+			if (tasks[tid].claudeSessionId.length == 0)
+				tryExtractClaudeSessionId(tid, rawLine);
 		}
 
 		foreach (ws; clients)
@@ -425,7 +441,7 @@ class App
 	}
 
 	/// Parse system.init messages to extract the Claude session UUID.
-	private void tryExtractClaudeSessionId(int sid, string rawLine)
+	private void tryExtractClaudeSessionId(int tid, string rawLine)
 	{
 		import ae.utils.json : jsonParse, JSONPartial;
 		import std.algorithm : canFind;
@@ -447,9 +463,9 @@ class App
 			auto probe = jsonParse!InitProbe(rawLine);
 			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
 			{
-				sessions[sid].claudeSessionId = probe.session_id;
-				persistence.setClaudeSessionId(sid, probe.session_id);
-				startJsonlWatch(sid);
+				tasks[tid].claudeSessionId = probe.session_id;
+				persistence.setClaudeSessionId(tid, probe.session_id);
+				startJsonlWatch(tid);
 			}
 		}
 		catch (Exception)
@@ -458,49 +474,49 @@ class App
 		}
 	}
 
-	private void broadcastTitleUpdate(int sid, string title)
+	private void broadcastTitleUpdate(int tid, string title)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(TitleUpdateMessage("title_update", sid, title)));
+		broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
 	}
 
 	/// Start watching the JSONL file (or directory if file doesn't exist yet).
-	private void startJsonlWatch(int sid)
+	private void startJsonlWatch(int tid)
 	{
 		import std.file : exists;
 		import std.path : baseName, dirName;
 
-		if (sid !in sessions)
+		if (tid !in tasks)
 			return;
-		if (sid in jsonlFileWatches || sid in jsonlDirWatches)
+		if (tid in jsonlFileWatches || tid in jsonlDirWatches)
 			return; // already watching
-		auto sd = &sessions[sid];
-		if (sd.claudeSessionId.length == 0)
+		auto td = &tasks[tid];
+		if (td.claudeSessionId.length == 0)
 			return;
 
-		auto jsonlPath = claudeJsonlPath(sd.claudeSessionId, sd.projectPath);
+		auto jsonlPath = claudeJsonlPath(td.claudeSessionId, td.projectPath);
 
 		if (exists(jsonlPath))
 		{
-			watchJsonlFile(sid, jsonlPath);
+			watchJsonlFile(tid, jsonlPath);
 		}
 		else
 		{
 			// File doesn't exist yet — watch directory for its creation
 			auto dirPath = dirName(jsonlPath);
 			auto fileName = baseName(jsonlPath);
-			jsonlDirWatches[sid] = iNotify.add(dirPath, INotify.Mask.create,
+			jsonlDirWatches[tid] = iNotify.add(dirPath, INotify.Mask.create,
 				(in char[] name, INotify.Mask mask, uint cookie)
 				{
 					if (name == fileName)
 					{
 						// File appeared — switch to file watch
-						if (auto p = sid in jsonlDirWatches)
+						if (auto p = tid in jsonlDirWatches)
 						{
 							iNotify.remove(*p);
-							jsonlDirWatches.remove(sid);
+							jsonlDirWatches.remove(tid);
 						}
-						watchJsonlFile(sid, jsonlPath);
+						watchJsonlFile(tid, jsonlPath);
 					}
 				}
 			);
@@ -508,26 +524,26 @@ class App
 	}
 
 	/// Start watching a JSONL file for modifications.
-	private void watchJsonlFile(int sid, string jsonlPath)
+	private void watchJsonlFile(int tid, string jsonlPath)
 	{
 		// Read any existing content
-		processNewJsonlContent(sid, jsonlPath);
+		processNewJsonlContent(tid, jsonlPath);
 
-		jsonlFileWatches[sid] = iNotify.add(jsonlPath, INotify.Mask.modify,
+		jsonlFileWatches[tid] = iNotify.add(jsonlPath, INotify.Mask.modify,
 			(in char[] name, INotify.Mask mask, uint cookie)
 			{
-				processNewJsonlContent(sid, jsonlPath);
+				processNewJsonlContent(tid, jsonlPath);
 			}
 		);
 	}
 
 	/// Read new content from the JSONL file and broadcast forkable UUIDs.
-	private void processNewJsonlContent(int sid, string jsonlPath)
+	private void processNewJsonlContent(int tid, string jsonlPath)
 	{
 		import std.file : getSize;
 
 		auto fileSize = getSize(jsonlPath);
-		auto lastPos = jsonlReadPos.get(sid, 0);
+		auto lastPos = jsonlReadPos.get(tid, 0);
 		if (fileSize <= lastPos)
 			return;
 
@@ -537,16 +553,16 @@ class App
 		char[] buf;
 		buf.length = cast(size_t)(fileSize - lastPos);
 		auto got = f.rawRead(buf);
-		jsonlReadPos[sid] = cast(size_t) fileSize;
+		jsonlReadPos[tid] = cast(size_t) fileSize;
 
 		auto newContent = cast(string) got;
 		auto uuids = extractForkableUuids(newContent);
 		if (uuids.length > 0)
-			broadcastForkableUuids(sid, uuids);
+			broadcastForkableUuids(tid, uuids);
 	}
 
 	/// Send forkable UUIDs from the full JSONL file (used during history load).
-	private void sendForkableUuidsFromFile(WebSocketAdapter ws, int sid,
+	private void sendForkableUuidsFromFile(WebSocketAdapter ws, int tid,
 		string claudeSessionId, string projectPath)
 	{
 		import std.file : exists, readText;
@@ -560,50 +576,51 @@ class App
 		if (uuids.length > 0)
 		{
 			import ae.utils.json : toJson;
-			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", sid, uuids)).representation));
+			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
 		}
 	}
 
 	/// Broadcast forkable UUIDs to all clients.
-	private void broadcastForkableUuids(int sid, string[] uuids)
+	private void broadcastForkableUuids(int tid, string[] uuids)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", sid, uuids)));
+		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
 	}
 
-	/// Stop watching the JSONL file for a session.
-	private void stopJsonlWatch(int sid)
+	/// Stop watching the JSONL file for a task.
+	private void stopJsonlWatch(int tid)
 	{
-		if (auto p = sid in jsonlFileWatches)
+		if (auto p = tid in jsonlFileWatches)
 		{
 			iNotify.remove(*p);
-			jsonlFileWatches.remove(sid);
+			jsonlFileWatches.remove(tid);
 		}
-		if (auto p = sid in jsonlDirWatches)
+		if (auto p = tid in jsonlDirWatches)
 		{
 			iNotify.remove(*p);
-			jsonlDirWatches.remove(sid);
+			jsonlDirWatches.remove(tid);
 		}
-		jsonlReadPos.remove(sid);
+		jsonlReadPos.remove(tid);
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title
 	/// from the user's initial message.
-	private void generateTitle(int sid, string userMessage)
+	private void generateTitle(int tid, string userMessage)
 	{
-		auto sd = &sessions[sid];
+		auto td = &tasks[tid];
 
-		if (sd.titleGenDone || sd.titleGenProcess !is null)
+		if (td.titleGenDone || td.titleGenProcess !is null)
 			return;
 
 		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
 
-		sd.titleGenProcess = new AgentProcess([
+		td.titleGenProcess = new AgentProcess([
 			"claude",
 			"-p",
-			"Generate a concise title (max 8 words) for a coding session. " ~
-			"Reply with ONLY the title, nothing else. No quotes, no period at the end. " ~
-			"User's request: " ~ msg,
+			"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
+			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
+			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
+			"Initial request / task description:\n\n" ~ msg,
 			"--output-format", "stream-json",
 			"--model", "haiku",
 			"--max-turns", "1",
@@ -613,15 +630,15 @@ class App
 
 		string titleText;
 
-		sd.titleGenProcess.onStdoutLine = (string line) {
+		td.titleGenProcess.onStdoutLine = (string line) {
 			titleText ~= extractAssistantText(line);
 		};
 
-		sd.titleGenProcess.onExit = (int status) {
-			if (sid !in sessions)
+		td.titleGenProcess.onExit = (int status) {
+			if (tid !in tasks)
 				return;
-			sessions[sid].titleGenProcess = null;
-			sessions[sid].titleGenDone = true;
+			tasks[tid].titleGenProcess = null;
+			tasks[tid].titleGenDone = true;
 
 			if (status != 0)
 				return;
@@ -631,9 +648,9 @@ class App
 
 			if (title.length > 0 && title.length < 200)
 			{
-				sessions[sid].title = title;
-				persistence.setTitle(sid, title);
-				broadcastTitleUpdate(sid, title);
+				tasks[tid].title = title;
+				persistence.setTitle(tid, title);
+				broadcastTitleUpdate(tid, title);
 			}
 		};
 	}
@@ -645,15 +662,15 @@ class App
 			ws.send(data);
 	}
 
-	private string buildSessionsList()
+	private string buildTasksList()
 	{
 		import ae.utils.json : toJson;
 
-		SessionListEntry[] entries;
-		foreach (ref sd; sessions)
-			entries ~= SessionListEntry(sd.sid, sd.alive, sd.claudeSessionId.length > 0 && !sd.alive,
-				sd.lastActivity, sd.title, sd.workspace, sd.projectPath, sd.parentSid, sd.relationType);
-		return toJson(SessionsListMessage("sessions_list", entries));
+		TaskListEntry[] entries;
+		foreach (ref td; tasks)
+			entries ~= TaskListEntry(td.tid, td.alive, td.claudeSessionId.length > 0 && !td.alive,
+				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
+		return toJson(TasksListMessage("tasks_list", entries));
 	}
 
 	private string buildWorkspacesList()
@@ -671,36 +688,41 @@ class App
 
 private:
 
-struct SessionData
+struct TaskData
 {
-	int sid;
+	int tid;
+	string claudeSessionId;
+	string description;
+	string taskType = "conversation";
+	int parentTid;
+	string relationType;
+	string workspace;
+	string projectPath;
+	string title;
+	string status = "pending";  // pending, active, completed, failed
+
+	// Runtime state (not persisted)
 	AgentSession session;
 	ResolvedSandbox sandbox;
 	DataVec history;          // unified: JSONL file events + live stdout events
 	bool historyLoaded;       // whether JSONL has been loaded into history
-	string claudeSessionId;
 	bool alive = false;
 	string lastActivity;
-	string title;
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
-	string workspace;
-	string projectPath;
-	int parentSid;
-	string relationType;
 }
 
-struct SessionHistoryEndMessage
+struct TaskHistoryEndMessage
 {
-	string type = "session_history_end";
-	int sid;
+	string type = "task_history_end";
+	int tid;
 }
 
 struct WsMessage
 {
 	string type;
 	string content;
-	int sid = -1;
+	int tid = -1;
 	string workspace;
 	string project_path;
 	string after_uuid;
@@ -718,33 +740,34 @@ struct StderrMessage
 	string text;
 }
 
-struct SessionCreatedMessage
+struct TaskCreatedMessage
 {
 	string type;
-	int sid;
+	int tid;
 	string workspace;
 	string project_path;
-	int parent_sid;
+	int parent_tid;
 	string relation_type;
 }
 
-struct SessionsListMessage
+struct TasksListMessage
 {
 	string type;
-	SessionListEntry[] sessions;
+	TaskListEntry[] tasks;
 }
 
-struct SessionListEntry
+struct TaskListEntry
 {
-	int sid;
+	int tid;
 	bool alive;
 	bool resumable;
 	string lastActivity;
 	string title;
 	string workspace;
 	string project_path;
-	int parent_sid;
+	int parent_tid;
 	string relation_type;
+	string status;
 }
 
 struct ProjectInfo
@@ -765,23 +788,23 @@ struct WorkspacesListMessage
 	WorkspaceInfo[] workspaces;
 }
 
-struct SessionReloadMessage
+struct TaskReloadMessage
 {
-	string type = "session_reload";
-	int sid;
+	string type = "task_reload";
+	int tid;
 }
 
 struct TitleUpdateMessage
 {
 	string type = "title_update";
-	int sid;
+	int tid;
 	string title;
 }
 
 struct ForkableUuidsMessage
 {
 	string type = "forkable_uuids";
-	int sid;
+	int tid;
 	string[] uuids;
 }
 
@@ -789,7 +812,7 @@ struct ErrorMessage
 {
 	string type = "error";
 	string message;
-	int sid = -1;
+	int tid = -1;
 }
 
 struct McpContentItem

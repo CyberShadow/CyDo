@@ -1,40 +1,41 @@
 import { h } from "preact";
 import { useMemo } from "preact/hooks";
 
-export interface SidebarSession {
-  sid: number;
+export interface SidebarTask {
+  tid: number;
   alive: boolean;
   resumable: boolean;
   isProcessing: boolean;
   title?: string;
-  parentSid?: number;
+  parentTid?: number;
   relationType?: string;
+  status?: string;
 }
 
 interface TreeNode {
-  session: SidebarSession;
+  task: SidebarTask;
   children: TreeNode[];
 }
 
-function buildTree(sessions: SidebarSession[]): TreeNode[] {
-  const sidSet = new Set(sessions.map((s) => s.sid));
-  const childMap = new Map<number, SidebarSession[]>();
-  const roots: SidebarSession[] = [];
+function buildTree(tasks: SidebarTask[]): TreeNode[] {
+  const tidSet = new Set(tasks.map((t) => t.tid));
+  const childMap = new Map<number, SidebarTask[]>();
+  const roots: SidebarTask[] = [];
 
-  for (const s of sessions) {
-    if (s.parentSid && sidSet.has(s.parentSid)) {
-      const children = childMap.get(s.parentSid) || [];
-      children.push(s);
-      childMap.set(s.parentSid, children);
+  for (const t of tasks) {
+    if (t.parentTid && tidSet.has(t.parentTid)) {
+      const children = childMap.get(t.parentTid) || [];
+      children.push(t);
+      childMap.set(t.parentTid, children);
     } else {
-      roots.push(s);
+      roots.push(t);
     }
   }
 
-  function toNodes(list: SidebarSession[]): TreeNode[] {
-    return list.map((s) => ({
-      session: s,
-      children: toNodes(childMap.get(s.sid) || []),
+  function toNodes(list: SidebarTask[]): TreeNode[] {
+    return list.map((t) => ({
+      task: t,
+      children: toNodes(childMap.get(t.tid) || []),
     }));
   }
 
@@ -44,47 +45,47 @@ function buildTree(sessions: SidebarSession[]): TreeNode[] {
 function renderNode(
   node: TreeNode,
   depth: number,
-  activeSessionId: number | null,
+  activeTaskId: number | null,
   attention: Set<number>,
-  onSelectSession: (sid: number) => void,
+  onSelectTask: (tid: number) => void,
 ): h.JSX.Element[] {
-  const s = node.session;
+  const t = node.task;
   const elements: h.JSX.Element[] = [];
+
+  // Status dot class based on task status
+  let dotClass = "sidebar-dot";
+  if (t.status === "active" || t.alive) dotClass += " alive";
+  else if (t.status === "completed") dotClass += " completed";
+  else if (t.status === "failed") dotClass += " failed";
+  else if (t.resumable) dotClass += " resumable";
+  // pending = no extra class (gray)
 
   elements.push(
     <div
-      key={s.sid}
-      class={`sidebar-item${s.sid === activeSessionId ? " active" : ""}${attention.has(s.sid) ? " attention" : ""}`}
+      key={t.tid}
+      class={`sidebar-item${t.tid === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
       style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
-      onClick={() => onSelectSession(s.sid)}
+      onClick={() => onSelectTask(t.tid)}
     >
       {depth > 0 && (
-        <span class="sidebar-relation-icon" title={s.relationType || "child"}>
+        <span class="sidebar-relation-icon" title={t.relationType || "child"}>
           ↳
         </span>
       )}
-      {attention.has(s.sid) ? (
+      {attention.has(t.tid) ? (
         <span class="sidebar-dot check">&#x2713;</span>
       ) : (
-        <span
-          class={`sidebar-dot${s.alive ? " alive" : s.resumable ? " resumable" : ""}`}
-        />
+        <span class={dotClass} />
       )}
-      <span class="sidebar-label" title={s.title || `Session ${s.sid}`}>
-        {s.title || `Session ${s.sid}`}
+      <span class="sidebar-label" title={t.title || `Task ${t.tid}`}>
+        {t.title || `Task ${t.tid}`}
       </span>
     </div>,
   );
 
   for (const child of node.children) {
     elements.push(
-      ...renderNode(
-        child,
-        depth + 1,
-        activeSessionId,
-        attention,
-        onSelectSession,
-      ),
+      ...renderNode(child, depth + 1, activeTaskId, attention, onSelectTask),
     );
   }
 
@@ -92,27 +93,27 @@ function renderNode(
 }
 
 interface Props {
-  sessions: SidebarSession[];
-  activeSessionId: number | null;
+  tasks: SidebarTask[];
+  activeTaskId: number | null;
   attention: Set<number>;
-  onSelectSession: (sid: number) => void;
-  onNewSession: () => void;
+  onSelectTask: (tid: number) => void;
+  onNewTask: () => void;
   showBackButton?: boolean;
   onBack?: () => void;
   projectName?: string;
 }
 
 export function Sidebar({
-  sessions,
-  activeSessionId,
+  tasks,
+  activeTaskId,
   attention,
-  onSelectSession,
-  onNewSession,
+  onSelectTask,
+  onNewTask,
   showBackButton,
   onBack,
   projectName,
 }: Props) {
-  const tree = useMemo(() => buildTree(sessions), [sessions]);
+  const tree = useMemo(() => buildTree(tasks), [tasks]);
 
   return (
     <div class="sidebar">
@@ -126,18 +127,14 @@ export function Sidebar({
             ←
           </button>
         )}
-        <span class="sidebar-title">{projectName || "Sessions"}</span>
-        <button
-          class="sidebar-new-btn"
-          onClick={onNewSession}
-          title="New session"
-        >
+        <span class="sidebar-title">{projectName || "Tasks"}</span>
+        <button class="sidebar-new-btn" onClick={onNewTask} title="New task">
           +
         </button>
       </div>
       <div class="sidebar-list">
         {tree.flatMap((node) =>
-          renderNode(node, 0, activeSessionId, attention, onSelectSession),
+          renderNode(node, 0, activeTaskId, attention, onSelectTask),
         )}
       </div>
     </div>

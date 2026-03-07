@@ -589,44 +589,45 @@ export type ClaudeFileMessage =
   | QueueOperationMessage
   | FileHistorySnapshotMessage;
 
-export type SessionMessage = { sid: number; event: ClaudeMessage };
-export type FileMessage = { sid: number; fileEvent: ClaudeFileMessage };
+export type TaskMessage = { tid: number; event: ClaudeMessage };
+export type FileMessage = { tid: number; fileEvent: ClaudeFileMessage };
 
 // Control messages from our backend (not Claude Code) — plain interfaces, no Zod needed
-export interface SessionCreatedMessage {
-  type: "session_created";
-  sid: number;
+export interface TaskCreatedMessage {
+  type: "task_created";
+  tid: number;
   workspace?: string;
   project_path?: string;
-  parent_sid?: number;
+  parent_tid?: number;
   relation_type?: string;
 }
-export interface SessionsListMessage {
-  type: "sessions_list";
-  sessions: {
-    sid: number;
+export interface TasksListMessage {
+  type: "tasks_list";
+  tasks: {
+    tid: number;
     alive: boolean;
     resumable: boolean;
     lastActivity: string;
     title?: string;
     workspace?: string;
     project_path?: string;
-    parent_sid?: number;
+    parent_tid?: number;
     relation_type?: string;
+    status?: string;
   }[];
 }
-export interface SessionReloadMessage {
-  type: "session_reload";
-  sid: number;
+export interface TaskReloadMessage {
+  type: "task_reload";
+  tid: number;
 }
 export interface TitleUpdateMessage {
   type: "title_update";
-  sid: number;
+  tid: number;
   title: string;
 }
-export interface SessionHistoryEndMessage {
-  type: "session_history_end";
-  sid: number;
+export interface TaskHistoryEndMessage {
+  type: "task_history_end";
+  tid: number;
 }
 export interface WorkspacesListMessage {
   type: "workspaces_list";
@@ -637,20 +638,20 @@ export interface WorkspacesListMessage {
 }
 export interface ForkableUuidsMessage {
   type: "forkable_uuids";
-  sid: number;
+  tid: number;
   uuids: string[];
 }
 export interface ErrorMessage {
   type: "error";
   message: string;
-  sid?: number;
+  tid?: number;
 }
 export type ControlMessage =
-  | SessionCreatedMessage
-  | SessionsListMessage
-  | SessionReloadMessage
+  | TaskCreatedMessage
+  | TasksListMessage
+  | TaskReloadMessage
   | TitleUpdateMessage
-  | SessionHistoryEndMessage
+  | TaskHistoryEndMessage
   | WorkspacesListMessage
   | ForkableUuidsMessage
   | ErrorMessage;

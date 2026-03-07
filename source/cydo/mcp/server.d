@@ -26,17 +26,17 @@ import cydo.mcp.tools : CydoTools;
 /// Entry point for MCP server mode.
 void runMcpServer()
 {
-	auto sid = environment.get("CYDO_SID", "0");
+	auto tid = environment.get("CYDO_TID", "0");
 	auto port = environment.get("CYDO_PORT", "3456");
 	auto backendUrl = "http://127.0.0.1:" ~ port ~ "/mcp/call";
 
-	stderr.writefln("CyDo MCP proxy starting (sid=%s, backend=:%s)", sid, port);
+	stderr.writefln("CyDo MCP proxy starting (tid=%s, backend=:%s)", tid, port);
 
 	auto conn = stdioLDJsonRpcConnection();
 	auto codec = new JsonRpcCodec(conn);
 
 	codec.handleRequest = (JsonRpcRequest request) {
-		return handleRequest(request, backendUrl, sid);
+		return handleRequest(request, backendUrl, tid);
 	};
 
 	socketManager.loop();
@@ -51,7 +51,7 @@ enum MCP_PROTOCOL_VERSION = "2024-11-05";
 /// tools/list result JSON (generated at compile time from the CydoTools interface)
 enum TOOLS_LIST_JSON = mcpToolListJson!CydoTools;
 
-Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string sid)
+Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string tid)
 {
 	switch (request.method)
 	{
@@ -67,7 +67,7 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl,
 			return resolve(JsonRpcResponse.success(request.id, JSONFragment(TOOLS_LIST_JSON)));
 
 		case "tools/call":
-			return handleToolsCall(request, backendUrl, sid);
+			return handleToolsCall(request, backendUrl, tid);
 
 		default:
 			return resolve(JsonRpcResponse.failure(request.id,
@@ -76,7 +76,7 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl,
 }
 
 /// Forward tools/call to the backend via HTTP POST.
-Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUrl, string sid)
+Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUrl, string tid)
 {
 	auto promise = new Promise!JsonRpcResponse;
 
@@ -92,7 +92,7 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUr
 	}
 
 	// Build backend request
-	auto backendRequest = BackendToolCall(sid, params.name, params.arguments);
+	auto backendRequest = BackendToolCall(tid, params.name, params.arguments);
 	auto bodyJson = toJson(backendRequest);
 
 	stderr.writefln("MCP proxy: tools/call %s → backend", params.name);
@@ -130,7 +130,7 @@ struct ToolsCallParams
 
 struct BackendToolCall
 {
-	string sid;
+	string tid;
 	string tool;
 	JSONFragment args;
 }

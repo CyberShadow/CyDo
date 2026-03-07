@@ -9,8 +9,8 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
-  onSessionMessage: ((sid: number, msg: ClaudeMessage) => void) | null = null;
-  onFileMessage: ((sid: number, msg: ClaudeFileMessage) => void) | null = null;
+  onTaskMessage: ((tid: number, msg: ClaudeMessage) => void) | null = null;
+  onFileMessage: ((tid: number, msg: ClaudeFileMessage) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -35,26 +35,23 @@ export class Connection {
       try {
         const raw = JSON.parse(ev.data);
         if (
-          raw.type === "session_created" ||
-          raw.type === "sessions_list" ||
-          raw.type === "session_reload" ||
+          raw.type === "task_created" ||
+          raw.type === "tasks_list" ||
+          raw.type === "task_reload" ||
           raw.type === "title_update" ||
-          raw.type === "session_history_end" ||
+          raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "error"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
-        } else if ("sid" in raw && typeof raw.sid === "number") {
+        } else if ("tid" in raw && typeof raw.tid === "number") {
           if ("event" in raw) {
-            this.onSessionMessage?.(raw.sid, raw.event as ClaudeMessage);
+            this.onTaskMessage?.(raw.tid, raw.event as ClaudeMessage);
           } else if ("fileEvent" in raw) {
-            this.onFileMessage?.(raw.sid, raw.fileEvent as ClaudeFileMessage);
+            this.onFileMessage?.(raw.tid, raw.fileEvent as ClaudeFileMessage);
           } else {
-            console.warn(
-              "Unknown session envelope (no event or fileEvent):",
-              raw,
-            );
+            console.warn("Unknown task envelope (no event or fileEvent):", raw);
           }
         } else {
           console.warn("Unknown WebSocket message:", raw);
@@ -65,35 +62,35 @@ export class Connection {
     };
   }
 
-  sendMessage(sid: number, content: string) {
-    this.ws?.send(JSON.stringify({ type: "message", sid, content }));
+  sendMessage(tid: number, content: string) {
+    this.ws?.send(JSON.stringify({ type: "message", tid, content }));
   }
 
-  sendInterrupt(sid: number) {
-    this.ws?.send(JSON.stringify({ type: "interrupt", sid }));
+  sendInterrupt(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "interrupt", tid }));
   }
 
-  resumeSession(sid: number) {
-    this.ws?.send(JSON.stringify({ type: "resume", sid }));
+  resumeTask(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "resume", tid }));
   }
 
-  createSession(workspace?: string, projectPath?: string) {
+  createTask(workspace?: string, projectPath?: string) {
     this.ws?.send(
       JSON.stringify({
-        type: "create_session",
+        type: "create_task",
         workspace: workspace ?? "",
         project_path: projectPath ?? "",
       }),
     );
   }
 
-  requestHistory(sid: number) {
-    this.ws?.send(JSON.stringify({ type: "request_history", sid }));
+  requestHistory(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "request_history", tid }));
   }
 
-  forkSession(sid: number, afterUuid: string) {
+  forkTask(tid: number, afterUuid: string) {
     this.ws?.send(
-      JSON.stringify({ type: "fork_session", sid, after_uuid: afterUuid }),
+      JSON.stringify({ type: "fork_task", tid, after_uuid: afterUuid }),
     );
   }
 

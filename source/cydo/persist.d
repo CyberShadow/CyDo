@@ -21,62 +21,97 @@ struct Persistence
 
 		mkdirRecurse(dirName(dbPath));
 		db = Database(dbPath, [
+			// Migration 0: original sessions table
 			"CREATE TABLE sessions (" ~
 			"    sid INTEGER PRIMARY KEY AUTOINCREMENT," ~
 			"    claude_session_id TEXT" ~
 			");",
+			// Migration 1
 			"ALTER TABLE sessions ADD COLUMN title TEXT;",
+			// Migration 2
 			"ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT '';" ~
 			"ALTER TABLE sessions ADD COLUMN project_path TEXT NOT NULL DEFAULT '';",
+			// Migration 3
 			"ALTER TABLE sessions ADD COLUMN parent_sid INTEGER;" ~
 			"ALTER TABLE sessions ADD COLUMN relation_type TEXT NOT NULL DEFAULT '';",
+			// Migration 4: transition to task-centric model
+			"CREATE TABLE tasks (" ~
+			"    tid INTEGER PRIMARY KEY AUTOINCREMENT," ~
+			"    claude_session_id TEXT," ~
+			"    description TEXT NOT NULL DEFAULT ''," ~
+			"    task_type TEXT NOT NULL DEFAULT 'conversation'," ~
+			"    parent_tid INTEGER," ~
+			"    relation_type TEXT NOT NULL DEFAULT ''," ~
+			"    workspace TEXT NOT NULL DEFAULT ''," ~
+			"    project_path TEXT NOT NULL DEFAULT ''," ~
+			"    title TEXT NOT NULL DEFAULT ''," ~
+			"    status TEXT NOT NULL DEFAULT 'pending'" ~
+			");" ~
+			"INSERT INTO tasks (tid, claude_session_id, title, workspace, project_path, parent_tid, relation_type, status)" ~
+			"    SELECT sid, claude_session_id, COALESCE(title,''), COALESCE(workspace,''), COALESCE(project_path,'')," ~
+			"           parent_sid, COALESCE(relation_type,''), 'completed' FROM sessions;" ~
+			"DROP TABLE sessions;",
 		]);
 	}
 
-	int createSession(string workspace = "", string projectPath = "")
+	int createTask(string workspace = "", string projectPath = "")
 	{
-		db.stmt!"INSERT INTO sessions (workspace, project_path) VALUES (?, ?)".exec(workspace, projectPath);
+		db.stmt!"INSERT INTO tasks (workspace, project_path) VALUES (?, ?)".exec(workspace, projectPath);
 		return cast(int) db.db.lastInsertRowID;
 	}
 
-	void setClaudeSessionId(int sid, string claudeSessionId)
+	void setClaudeSessionId(int tid, string claudeSessionId)
 	{
-		db.stmt!"UPDATE sessions SET claude_session_id = ? WHERE sid = ?".exec(claudeSessionId, sid);
+		db.stmt!"UPDATE tasks SET claude_session_id = ? WHERE tid = ?".exec(claudeSessionId, tid);
 	}
 
-	void setTitle(int sid, string title)
+	void setTitle(int tid, string title)
 	{
-		db.stmt!"UPDATE sessions SET title = ? WHERE sid = ?".exec(title, sid);
+		db.stmt!"UPDATE tasks SET title = ? WHERE tid = ?".exec(title, tid);
 	}
 
-	struct SessionRow
+	void setDescription(int tid, string description)
 	{
-		int sid;
+		db.stmt!"UPDATE tasks SET description = ? WHERE tid = ?".exec(description, tid);
+	}
+
+	void setStatus(int tid, string status)
+	{
+		db.stmt!"UPDATE tasks SET status = ? WHERE tid = ?".exec(status, tid);
+	}
+
+	struct TaskRow
+	{
+		int tid;
 		string claudeSessionId;
-		string title;
+		string description;
+		string taskType;
+		int parentTid;
+		string relationType;
 		string workspace;
 		string projectPath;
-		int parentSid;
-		string relationType;
+		string title;
+		string status;
 	}
 
-	SessionRow[] loadSessions()
+	TaskRow[] loadTasks()
 	{
-		SessionRow[] result;
-		foreach (int sid, string claudeSessionId, string title, string workspace, string projectPath,
-			int parentSid, string relationType;
-			db.stmt!"SELECT sid, claude_session_id, title, workspace, project_path, COALESCE(parent_sid, 0), COALESCE(relation_type, '') FROM sessions".iterate())
+		TaskRow[] result;
+		foreach (int tid, string claudeSessionId, string description, string taskType,
+			int parentTid, string relationType, string workspace, string projectPath,
+			string title, string status;
+			db.stmt!"SELECT tid, COALESCE(claude_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(title,''), COALESCE(status,'completed') FROM tasks".iterate())
 		{
-			result ~= SessionRow(sid, claudeSessionId, title, workspace, projectPath, parentSid, relationType);
+			result ~= TaskRow(tid, claudeSessionId, description, taskType, parentTid, relationType, workspace, projectPath, title, status);
 		}
 		return result;
 	}
 }
 
-/// Load session history from Claude Code's JSONL file.
+/// Load task history from Claude Code's JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
-/// projectPath is the project's absolute path; falls back to getcwd() when empty (legacy sessions).
-DataVec loadSessionHistory(int sid, string claudeSessionId, string projectPath = "")
+/// projectPath is the project's absolute path; falls back to getcwd() when empty (legacy tasks).
+DataVec loadTaskHistory(int tid, string claudeSessionId, string projectPath = "")
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
@@ -92,7 +127,7 @@ DataVec loadSessionHistory(int sid, string claudeSessionId, string projectPath =
 			continue;
 
 		// Wrap with file-event envelope (frontend dispatches on "fileEvent" vs "event")
-		string injected = format!`{"sid":%d,"fileEvent":`(sid) ~ line ~ `}`;
+		string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ line ~ `}`;
 		history ~= Data(injected.representation);
 	}
 	return move(history);
@@ -120,13 +155,13 @@ string claudeJsonlPath(string sessionId, string projectPath = "")
 
 struct ForkResult
 {
-	int sid = -1;
+	int tid = -1;
 	string claudeSessionId;
 }
 
-/// Fork a session by truncating its JSONL after the given message UUID.
+/// Fork a task by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
-ForkResult forkSession(ref Persistence persistence, int sourceSid, string sourceClaudeId, string afterUuid,
+ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceClaudeId, string afterUuid,
 	string projectPath, string workspace, string title)
 {
 	import std.algorithm : canFind;
@@ -167,8 +202,8 @@ ForkResult forkSession(ref Persistence persistence, int sourceSid, string source
 
 	// Create DB entry with the new claude session ID
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "";
-	persistence.db.stmt!"INSERT INTO sessions (claude_session_id, title, workspace, project_path, parent_sid, relation_type) VALUES (?, ?, ?, ?, ?, ?)"
-		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceSid, "fork");
+	persistence.db.stmt!"INSERT INTO tasks (claude_session_id, title, workspace, project_path, parent_tid, relation_type, status) VALUES (?, ?, ?, ?, ?, ?, ?)"
+		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed");
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
 }
 

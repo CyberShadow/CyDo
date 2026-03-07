@@ -20,6 +20,6 @@ interface Agent
 
 	/// Create a new session (or resume an existing one).
 	/// bwrapPrefix is the full bwrap command including --bind/--chdir
-	/// for the work directory. sid identifies the session for MCP tool routing.
-	AgentSession createSession(int sid, string resumeSessionId, string[] bwrapPrefix);
+	/// for the work directory. tid identifies the task for MCP tool routing.
+	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix);
 }

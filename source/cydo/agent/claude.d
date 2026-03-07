@@ -43,9 +43,9 @@ class ClaudeCodeAgent : Agent
 	/// Exposed for cleanup tracking by the caller.
 	string lastMcpConfigPath;
 
-	AgentSession createSession(int sid, string resumeSessionId, string[] bwrapPrefix)
+	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix)
 	{
-		lastMcpConfigPath = generateMcpConfig(sid);
+		lastMcpConfigPath = generateMcpConfig(tid);
 		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath);
 	}
 }
@@ -162,7 +162,7 @@ struct ClaudeInputMessage
 }
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
-string generateMcpConfig(int sid)
+string generateMcpConfig(int tid)
 {
 	import std.file : exists, mkdirRecurse, write;
 	import std.path : buildPath;
@@ -172,12 +172,12 @@ string generateMcpConfig(int sid)
 		mkdirRecurse(configDir);
 
 	auto cydoBin = cydoBinaryPath();
-	auto configPath = buildPath(configDir, "cydo-" ~ to!string(sid) ~ ".json");
+	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
 	// MCP config pointing to our binary in MCP server mode
 	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
-		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_SID":"`
-		~ to!string(sid) ~ `","CYDO_PORT":"3456"}}}}`;
+		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
+		~ to!string(tid) ~ `","CYDO_PORT":"3456"}}}}`;
 
 	write(configPath, config);
 	return configPath;

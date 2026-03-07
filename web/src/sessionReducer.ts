@@ -1,11 +1,15 @@
-// Pure session state reducers — no React dependency.
+// Pure task state reducers — no React dependency.
 //
-// Each function takes a SessionState and returns a new SessionState.
+// Each function takes a TaskState and returns a new TaskState.
 // Convention: functions pre-increment s.msgIdCounter in place before spreading
 // into the return value. This is safe because the caller always replaces the
 // old state with the returned state (the old reference is never reused).
 
-import type { SessionState, DisplayMessage, ToolResultContent } from "./types";
+import type {
+  TaskState as SessionState,
+  DisplayMessage,
+  ToolResultContent,
+} from "./types";
 import type {
   ClaudeMessage,
   ClaudeFileMessage,
@@ -78,6 +82,8 @@ export function reduceSystemInit(
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
     },
+    alive: true,
+    status: "active",
     isProcessing: true,
     messages: initMsg ? [...s.messages, initMsg] : s.messages,
   };
