@@ -39,17 +39,17 @@ interface CydoTools
 		~ "- Sub-tasks are persisted and survive backend restarts\n\n"
 		~ "Available task types:\n{{creatable_task_types}}"
 	)
-	@McpName("CreateTask")
+	@McpName("Task")
 	McpResult createTask(
 		@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
 		string task_type,
-		@Description("Description of what the sub-task should accomplish")
-		string description
+		@Description("The task for the agent to perform")
+		string prompt
 	);
 }
 
 /// Tool implementation — executed by the backend.
-/// Note: CreateTask is intercepted in handleMcpCall and never reaches this class.
+/// Note: Task is intercepted in handleMcpCall and never reaches this class.
 class CydoToolsImpl : CydoTools
 {
 	McpResult read(string file_path)
@@ -71,8 +71,8 @@ class CydoToolsImpl : CydoTools
 			return McpResult("Error reading file: " ~ e.msg, true);
 	}
 
-	McpResult createTask(string task_type, string description)
+	McpResult createTask(string task_type, string prompt)
 	{
-		return McpResult("CreateTask is handled by the server", true);
+		return McpResult("Task is handled by the server", true);
 	}
 }

@@ -238,7 +238,7 @@ class App
 	/// tool completes — immediately for sync tools, later for async tools.
 	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args)
 	{
-		if (tool == "CreateTask")
+		if (tool == "Task")
 			return handleCreateTask(tid, args);
 
 		// Sync dispatch for other tools
@@ -250,7 +250,7 @@ class App
 		return resolve(dispatcher.dispatch(tool, args));
 	}
 
-	/// Handle CreateTask — returns a promise that resolves when the child task completes.
+	/// Handle Task — returns a promise that resolves when the child task completes.
 	private Promise!McpResult handleCreateTask(string callerTid, JSONFragment rawArgs)
 	{
 		import ae.utils.json : jsonParse, toJson, JSONPartial;
@@ -259,17 +259,17 @@ class App
 		import std.conv : to;
 
 		@JSONPartial
-		static struct CreateTaskArgs
+		static struct TaskArgs
 		{
 			string task_type;
-			string description;
+			string prompt;
 		}
 
-		CreateTaskArgs args;
+		TaskArgs args;
 		try
-			args = jsonParse!CreateTaskArgs(rawArgs.json);
+			args = jsonParse!TaskArgs(rawArgs.json);
 		catch (Exception e)
-			return resolve(McpResult("Invalid CreateTask arguments: " ~ e.msg, true));
+			return resolve(McpResult("Invalid Task arguments: " ~ e.msg, true));
 
 		// Look up calling task
 		int parentTid;
@@ -303,14 +303,14 @@ class App
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath);
 		auto childTd = &tasks[childTid];
 		childTd.taskType = args.task_type;
-		childTd.description = args.description;
+		childTd.description = args.prompt;
 		childTd.parentTid = parentTid;
 		childTd.relationType = "subtask";
-		childTd.title = truncateTitle(args.description, 80);
+		childTd.title = truncateTitle(args.prompt, 80);
 
 		// Persist metadata
 		persistence.setTaskType(childTid, args.task_type);
-		persistence.setDescription(childTid, args.description);
+		persistence.setDescription(childTid, args.prompt);
 		persistence.setParentTid(childTid, parentTid);
 		persistence.setRelationType(childTid, "subtask");
 		persistence.setTitle(childTid, childTd.title);
@@ -333,13 +333,13 @@ class App
 		// Send rendered prompt template as first user message
 		if (childTd.session !is null)
 		{
-			auto prompt = renderPrompt(*childTypeDef, args.description, taskTypesDir);
+			auto prompt = renderPrompt(*childTypeDef, args.prompt, taskTypesDir);
 			childTd.session.sendMessage(prompt);
 			broadcastUnconfirmedUserMessage(childTid, prompt);
 		}
 
-		generateTitle(childTid, args.description);
-		writefln("CreateTask: tid=%d type=%s parent=%d", childTid, args.task_type, parentTid);
+		generateTitle(childTid, args.prompt);
+		writefln("Task: tid=%d type=%s parent=%d", childTid, args.task_type, parentTid);
 
 		return promise;
 	}
