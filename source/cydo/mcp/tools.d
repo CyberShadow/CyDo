@@ -19,15 +19,6 @@ interface CydoTools
 		~ "Use this tool to delegate work to a specialized agent. Each task runs as an "
 		~ "independent agent session, visible in the CyDo web UI task tree, and persisted "
 		~ "across restarts.\n\n"
-		~ "## When to use this tool\n"
-		~ "- When you need to explore or research the codebase and a simple Glob/Grep is "
-		~ "not sufficient — e.g. when an open-ended search may require multiple rounds of "
-		~ "globbing and grepping, or when you need to answer a question about the codebase\n"
-		~ "- When a task requires planning before implementation — reading the codebase, "
-		~ "designing an approach, and producing a plan document\n"
-		~ "- When you need to delegate a well-scoped coding task with a clear plan\n"
-		~ "- When investigating and fixing a bug\n"
-		~ "- Prefer this tool over the built-in Task tool for all sub-task delegation\n\n"
 		~ "## When NOT to use this tool\n"
 		~ "- If you want to read a specific file path, use the Read tool directly\n"
 		~ "- If you are searching for a specific class, function, or filename pattern, "
@@ -41,6 +32,8 @@ interface CydoTools
 	)
 	@McpName("Task")
 	McpResult createTask(
+		@Description("A short (3-5 word) description of the task")
+		string description,
 		@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
 		string task_type,
 		@Description("The task for the agent to perform")
@@ -71,7 +64,7 @@ class CydoToolsImpl : CydoTools
 			return McpResult("Error reading file: " ~ e.msg, true);
 	}
 
-	McpResult createTask(string task_type, string prompt)
+	McpResult createTask(string description, string task_type, string prompt)
 	{
 		return McpResult("Task is handled by the server", true);
 	}

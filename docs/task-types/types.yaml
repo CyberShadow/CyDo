@@ -31,6 +31,9 @@ task_types:
       larger fixes. Can create 'research' sub-tasks to gather context. Provide
       the bug description, reproduction steps, or error messages in the task
       description.
+    tool_guidance: >
+      Provide the bug description, reproduction steps, or error messages in the
+      prompt.
     prompt_template: prompts/bug.md
     model_class: large
     tool_preset: full
@@ -53,6 +56,9 @@ task_types:
       returns a step-by-step plan. Does not write code — use 'implement' for that.
       Especially useful when a task has multiple valid approaches, touches many files,
       or requires understanding existing patterns before making changes.
+    tool_guidance: >
+      Use when a task has multiple valid approaches or requires understanding
+      existing patterns before making changes.
     prompt_template: prompts/plan.md
     model_class: large
     tool_preset: read-only
@@ -77,6 +83,9 @@ task_types:
       documentation, understanding architecture, and investigating unfamiliar code.
       No code changes are made. Returns a structured report with findings and
       recommendations.
+    tool_guidance: >
+      Use for broader codebase exploration and deep research, or when doing an
+      open-ended search that may require multiple rounds of globbing and grepping.
     prompt_template: prompts/research.md
     model_class: medium
     tool_preset: read-only
@@ -108,6 +117,8 @@ task_types:
       own isolated worktree and produces a commit. Best when the task description
       includes a specific plan or clear requirements — for open-ended work, use
       'plan' first. Can create 'test' sub-tasks to validate changes.
+    tool_guidance: >
+      Best when the prompt includes a specific plan or clear requirements.
     prompt_template: prompts/implement.md
     model_class: medium
     tool_preset: full

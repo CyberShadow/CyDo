@@ -28,6 +28,7 @@ struct TaskTypeDef
 	// Identity
 	string description;
 	@Optional string agent_description;
+	@Optional string tool_guidance;
 	@Optional string prompt_template;
 
 	// Capabilities
@@ -466,6 +467,8 @@ string formatCreatableTaskTypes(TaskTypeDef[string] allTypes, string parentTypeN
 			? def.agent_description.strip
 			: def.description;
 		result ~= format("- %s: %s\n", name, desc);
+		if (def.tool_guidance.length > 0)
+			result ~= format("  %s\n", def.tool_guidance.strip);
 	}
 	return result.length > 0 ? result : "(none available)";
 }

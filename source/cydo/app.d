@@ -261,6 +261,7 @@ class App
 		@JSONPartial
 		static struct TaskArgs
 		{
+			string description;
 			string task_type;
 			string prompt;
 		}
@@ -306,7 +307,9 @@ class App
 		childTd.description = args.prompt;
 		childTd.parentTid = parentTid;
 		childTd.relationType = "subtask";
-		childTd.title = truncateTitle(args.prompt, 80);
+		childTd.title = args.description.length > 0
+			? args.description
+			: truncateTitle(args.prompt, 80);
 
 		// Persist metadata
 		persistence.setTaskType(childTid, args.task_type);
@@ -338,7 +341,8 @@ class App
 			broadcastUnconfirmedUserMessage(childTid, prompt);
 		}
 
-		generateTitle(childTid, args.prompt);
+		if (args.description.length == 0)
+			generateTitle(childTid, args.prompt);
 		writefln("Task: tid=%d type=%s parent=%d", childTid, args.task_type, parentTid);
 
 		return promise;
