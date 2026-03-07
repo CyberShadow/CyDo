@@ -26,8 +26,16 @@ import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableU
 	forkSession, loadSessionHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 
-void main()
+void main(string[] args)
 {
+	import std.algorithm : canFind;
+	if (args.canFind("--mcp-server"))
+	{
+		import cydo.mcp.server : runMcpServer;
+		runMcpServer();
+		return;
+	}
+
 	auto app = new App();
 	app.start();
 	socketManager.loop();
@@ -97,6 +105,12 @@ class App
 			return;
 		}
 
+		if (request.resource == "/mcp/call" && request.method == "POST")
+		{
+			handleMcpCall(request, conn);
+			return;
+		}
+
 		// Serve static files from web/dist/, with SPA fallback
 		auto response = new HttpResponseEx();
 		auto path = request.resource[1 .. $]; // strip leading /
@@ -144,6 +158,53 @@ class App
 		ws.handleDisconnect = (string reason, DisconnectType type) {
 			removeClient(ws);
 		};
+	}
+
+	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
+	{
+		import ae.net.http.responseex : HttpResponseEx;
+		import ae.sys.dataset : joinData;
+		import ae.utils.json : jsonParse, toJson, JSONFragment, JSONPartial;
+		import ae.utils.text : asText;
+
+		import cydo.mcp : McpResult;
+		import cydo.mcp.binding : mcpToolDispatcher;
+		import cydo.mcp.tools : CydoTools, CydoToolsImpl;
+
+		auto response = new HttpResponseEx();
+		response.headers["Content-Type"] = "application/json";
+
+		@JSONPartial
+		static struct McpCallRequest
+		{
+			string sid;
+			string tool;
+			JSONFragment args;
+		}
+
+		McpCallRequest call;
+		try
+		{
+			auto bodyText = cast(string) request.data[].joinData().toGC();
+			call = jsonParse!McpCallRequest(bodyText);
+		}
+		catch (Exception e)
+		{
+			conn.sendResponse(response.serveData(
+				`{"content":[{"type":"text","text":"Invalid request"}],"isError":true}`));
+			return;
+		}
+
+		auto impl = new CydoToolsImpl();
+		auto dispatcher = mcpToolDispatcher!CydoTools(impl);
+		auto result = dispatcher.dispatch(call.tool, call.args);
+
+		// Format as MCP content result
+		auto resultJson = toJson(McpContentResult(
+			[McpContentItem("text", result.text)],
+			result.isError,
+		));
+		conn.sendResponse(response.serveData(resultJson));
 	}
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
@@ -289,7 +350,12 @@ class App
 		sd.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
 		auto bwrapPrefix = buildBwrapArgs(sd.sandbox, workDir);
 
-		sd.session = agent.createSession(sd.claudeSessionId, bwrapPrefix);
+		sd.session = agent.createSession(sid, sd.claudeSessionId, bwrapPrefix);
+
+		// Track MCP config temp file for cleanup
+		if (auto cAgent = cast(ClaudeCodeAgent) agent)
+			if (cAgent.lastMcpConfigPath.length > 0)
+				sd.sandbox.tempFiles ~= cAgent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
 		// For resumed sessions claudeSessionId is already set; for new sessions
@@ -724,6 +790,18 @@ struct ErrorMessage
 	string type = "error";
 	string message;
 	int sid = -1;
+}
+
+struct McpContentItem
+{
+	string type;
+	string text;
+}
+
+struct McpContentResult
+{
+	McpContentItem[] content;
+	bool isError;
 }
 
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
