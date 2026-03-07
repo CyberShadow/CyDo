@@ -424,6 +424,18 @@ export const SystemTurnDurationSchema = z
 
 // -- JSONL file schemas (strict for the on-disk format) --
 
+// Envelope fields present on all JSONL entries
+const FileEnvelopeFields = {
+  parentUuid: z.string().nullable().optional(),
+  userType: z.string().optional(),
+  cwd: z.string().optional(),
+  sessionId: z.string().optional(),
+  version: z.string().optional(),
+  gitBranch: z.string().optional(),
+  timestamp: z.string().optional(),
+  permissionMode: z.string().optional(),
+} as const;
+
 export const AssistantFileSchema = z
   .object({
     type: z.literal("assistant"),
@@ -431,6 +443,9 @@ export const AssistantFileSchema = z
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
     message: AssistantInnerMessage,
+    slug: z.string().optional(),
+    requestId: z.string().optional(),
+    ...FileEnvelopeFields,
   })
   .passthrough();
 
@@ -450,6 +465,7 @@ export const UserFileSchema = z
     toolUseResult: z.unknown().optional(),
     isSynthetic: z.literal(true).optional(),
     uuid: z.string().optional(),
+    ...FileEnvelopeFields,
   })
   .passthrough();
 
