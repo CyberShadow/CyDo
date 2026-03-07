@@ -24,9 +24,10 @@ export const UsageSchema = z
       })
       .passthrough()
       .optional(),
-    service_tier: z.literal("standard").optional(),
+    service_tier: z.literal("standard").nullable().optional(),
     inference_geo: z
       .union([z.literal("not_available"), z.literal("")])
+      .nullable()
       .optional(),
     server_tool_use: z
       .object({
@@ -35,8 +36,8 @@ export const UsageSchema = z
       })
       .passthrough()
       .optional(),
-    iterations: z.array(z.unknown()).optional(),
-    speed: z.literal("standard").optional(),
+    iterations: z.array(z.unknown()).nullable().optional(),
+    speed: z.literal("standard").nullable().optional(),
   })
   .passthrough();
 
@@ -275,7 +276,7 @@ const AssistantInnerMessage = z
     content: z.array(AssistantContentBlockSchema),
     model: z.string(),
     stop_reason: z.string().nullable(),
-    stop_sequence: z.null().optional(),
+    stop_sequence: z.union([z.null(), z.string()]).optional(),
     usage: UsageSchema,
     context_management: z.null().optional(),
   })
