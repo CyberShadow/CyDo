@@ -14,28 +14,37 @@ import cydo.config : PathMode;
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent
 {
-	private PathMode[string] paths;
-
-	this()
+	void configureSandboxPaths(ref PathMode[string] paths)
 	{
-		paths = [
-			expandTilde("~/.claude"):              PathMode.rw,
-			expandTilde("~/.claude.json"):          PathMode.rw,
-			expandTilde("~/.cache/claude-status"):  PathMode.rw,
-		];
+		import std.algorithm : startsWith;
+
+		void addIfNotRw(string path, PathMode mode)
+		{
+			if (path.length == 0)
+				return;
+			// Don't add ro if this exact path or a parent is already rw
+			if (mode == PathMode.ro)
+			{
+				if (auto existing = path in paths)
+					if (*existing == PathMode.rw)
+						return;
+				foreach (existing, existingMode; paths)
+					if (existingMode == PathMode.rw && path.startsWith(existing ~ "/"))
+						return;
+			}
+			paths[path] = mode;
+		}
+
+		paths[expandTilde("~/.claude")]             = PathMode.rw;
+		paths[expandTilde("~/.claude.json")]         = PathMode.rw;
+		paths[expandTilde("~/.cache/claude-status")] = PathMode.rw;
 
 		// Resolve the claude binary and add its directory as ro
-		auto claudePath = resolveClaudeBinary();
-		if (claudePath.length > 0)
-			paths[claudePath] = PathMode.ro;
+		addIfNotRw(resolveClaudeBinary(), PathMode.ro);
 
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
-		auto cydoDir = cydoBinaryDir();
-		if (cydoDir.length > 0)
-			paths[cydoDir] = PathMode.ro;
+		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 	}
-
-	@property PathMode[string] sandboxPaths() { return paths; }
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
 

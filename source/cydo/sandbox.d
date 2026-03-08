@@ -24,19 +24,18 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 {
 	ResolvedSandbox result;
 
-	// Layer 1: agent-declared paths
-	foreach (path, mode; agent.sandboxPaths)
-		result.paths[path] = mode;
-
-	// Layer 2: global config paths
+	// Layer 1: global config paths
 	mergePaths(result.paths, global.paths);
 
-	// Layer 3: per-workspace config paths
+	// Layer 2: per-workspace config paths
 	mergePaths(result.paths, workspace.paths);
 
 	// Always add project directory as rw
 	if (projectDir.length > 0)
 		result.paths[expandTilde(projectDir)] = PathMode.rw;
+
+	// Layer 3: agent-declared paths (last, so it can see config + project dir)
+	agent.configureSandboxPaths(result.paths);
 
 	// Expand ~ in all path keys and filter non-existent
 	PathMode[string] expanded;

@@ -17,9 +17,10 @@ struct SessionConfig
 /// the runtime AgentSession interface.
 interface Agent
 {
-	/// Sandbox path requirements for this agent software.
-	/// Map of absolute path → PathMode (ro or rw).
-	@property PathMode[string] sandboxPaths();
+	/// Add sandbox path requirements for this agent software.
+	/// Called with already-merged paths from config layers;
+	/// implementations should avoid downgrading existing rw entries to ro.
+	void configureSandboxPaths(ref PathMode[string] paths);
 
 	/// Git identity for commits made by this agent.
 	@property string gitName();
