@@ -205,44 +205,13 @@ export function useTaskManager(): TaskManager {
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
-  const handleTaskMessage = useCallback(
-    (tid: number, msg: ClaudeMessage, isUnconfirmed?: boolean) => {
-      // If history has been requested but not yet loaded, buffer live
-      // messages so they are processed after history.
+  const handleUnconfirmedUserMessage = useCallback(
+    (tid: number, msg: ClaudeMessage) => {
       const t = liveStates.get(tid);
-      if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
-        let buf = pendingLiveRef.current.get(tid);
-        if (!buf) {
-          buf = [];
-          pendingLiveRef.current.set(tid, buf);
-        }
-        buf.push(msg);
-        return;
-      }
-
       const prev = t ?? makeTaskState(tid, true);
-      const updated = isUnconfirmed
-        ? reducePendingUserMessage(prev, extractTextContent(msg))
-        : reduceStdoutMessage(prev, msg);
+      const updated = reducePendingUserMessage(prev, extractTextContent(msg));
       liveStates.set(tid, updated);
       notifyTransition(tid, prev, updated);
-
-      // When an agent sub-task finishes and it's currently focused, switch to parent.
-      // User-created children (forks) stay focused — user navigates manually.
-      if (
-        prev.alive &&
-        !updated.alive &&
-        updated.parentTid &&
-        updated.relationType !== "fork"
-      ) {
-        if (activeTaskIdRef.current === tid) {
-          const parent = liveStates.get(updated.parentTid);
-          if (parent) {
-            setActiveTaskId(updated.parentTid);
-          }
-        }
-      }
-
       setTasks((map) => {
         const next = new Map(map);
         next.set(tid, updated);
@@ -251,6 +220,48 @@ export function useTaskManager(): TaskManager {
     },
     [],
   );
+
+  const handleTaskMessage = useCallback((tid: number, msg: ClaudeMessage) => {
+    // If history has been requested but not yet loaded, buffer live
+    // messages so they are processed after history.
+    const t = liveStates.get(tid);
+    if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
+      let buf = pendingLiveRef.current.get(tid);
+      if (!buf) {
+        buf = [];
+        pendingLiveRef.current.set(tid, buf);
+      }
+      buf.push(msg);
+      return;
+    }
+
+    const prev = t ?? makeTaskState(tid, true);
+    const updated = reduceStdoutMessage(prev, msg);
+    liveStates.set(tid, updated);
+    notifyTransition(tid, prev, updated);
+
+    // When an agent sub-task finishes and it's currently focused, switch to parent.
+    // User-created children (forks) stay focused — user navigates manually.
+    if (
+      prev.alive &&
+      !updated.alive &&
+      updated.parentTid &&
+      updated.relationType !== "fork"
+    ) {
+      if (activeTaskIdRef.current === tid) {
+        const parent = liveStates.get(updated.parentTid);
+        if (parent) {
+          setActiveTaskId(updated.parentTid);
+        }
+      }
+    }
+
+    setTasks((map) => {
+      const next = new Map(map);
+      next.set(tid, updated);
+      return next;
+    });
+  }, []);
 
   // -- JSONL file message handler --
   const handleFileMessage = useCallback(
@@ -526,12 +537,8 @@ export function useTaskManager(): TaskManager {
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | {
-          kind: "task";
-          tid: number;
-          msg: ClaudeMessage;
-          isUnconfirmed?: boolean;
-        }
+      | { kind: "task"; tid: number; msg: ClaudeMessage }
+      | { kind: "unconfirmed"; tid: number; msg: ClaudeMessage }
       | { kind: "file"; tid: number; msg: ClaudeFileMessage }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
@@ -544,7 +551,9 @@ export function useTaskManager(): TaskManager {
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "file") handleFileMessage(item.tid, item.msg);
-        else handleTaskMessage(item.tid, item.msg, item.isUnconfirmed);
+        else if (item.kind === "unconfirmed")
+          handleUnconfirmedUserMessage(item.tid, item.msg);
+        else handleTaskMessage(item.tid, item.msg);
       }
     };
 
@@ -605,10 +614,14 @@ export function useTaskManager(): TaskManager {
       }, 1000);
     };
 
-    conn.onTaskMessage = (tid, msg, isUnconfirmed) => {
-      buffer.push({ kind: "task", tid, msg, isUnconfirmed });
+    conn.onTaskMessage = (tid, msg) => {
+      buffer.push({ kind: "task", tid, msg });
       scheduleFlush();
       debounceReplay();
+    };
+    conn.onUnconfirmedUserMessage = (tid, msg) => {
+      buffer.push({ kind: "unconfirmed", tid, msg });
+      scheduleFlush();
     };
     conn.onFileMessage = (tid, msg) => {
       buffer.push({ kind: "file", tid, msg });

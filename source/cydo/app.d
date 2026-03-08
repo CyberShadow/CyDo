@@ -594,7 +594,7 @@ class App
 			SyntheticUserEventMessage("user", content)));
 		string injected = `{"tid":` ~ format!"%d"(tid)
 			~ `,"timestamp":"` ~ now
-			~ `","isUnconfirmed":true,"event":` ~ userEvent ~ `}`;
+			~ `","unconfirmedUserEvent":` ~ userEvent ~ `}`;
 
 		auto data = Data(injected.representation);
 

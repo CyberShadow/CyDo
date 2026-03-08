@@ -9,9 +9,9 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
-  onTaskMessage:
-    | ((tid: number, msg: ClaudeMessage, isUnconfirmed?: boolean) => void)
-    | null = null;
+  onTaskMessage: ((tid: number, msg: ClaudeMessage) => void) | null = null;
+  onUnconfirmedUserMessage: ((tid: number, msg: ClaudeMessage) => void) | null =
+    null;
   onFileMessage: ((tid: number, msg: ClaudeFileMessage) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
@@ -49,12 +49,13 @@ export class Connection {
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
-          if ("event" in raw) {
-            this.onTaskMessage?.(
+          if ("unconfirmedUserEvent" in raw) {
+            this.onUnconfirmedUserMessage?.(
               raw.tid,
-              raw.event as ClaudeMessage,
-              raw.isUnconfirmed === true,
+              raw.unconfirmedUserEvent as ClaudeMessage,
             );
+          } else if ("event" in raw) {
+            this.onTaskMessage?.(raw.tid, raw.event as ClaudeMessage);
           } else if ("fileEvent" in raw) {
             this.onFileMessage?.(raw.tid, raw.fileEvent as ClaudeFileMessage);
           } else {
