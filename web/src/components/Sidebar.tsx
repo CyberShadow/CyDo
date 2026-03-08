@@ -68,9 +68,9 @@ function renderNode(
   let dotClass = "sidebar-dot";
   if (t.isProcessing) dotClass += " processing";
   else if (t.alive) dotClass += " alive";
+  else if (t.status === "failed") dotClass += " failed";
   else if (t.resumable) dotClass += " resumable";
   else if (t.status === "completed") dotClass += " completed";
-  else if (t.status === "failed") dotClass += " failed";
   // pending = no extra class (gray)
 
   elements.push(
