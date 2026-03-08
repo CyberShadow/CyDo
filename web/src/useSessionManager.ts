@@ -278,7 +278,7 @@ export function useTaskManager(): TaskManager {
           false,
           false,
           undefined,
-          true,
+          relationType !== "fork", // Forks have JSONL history that must be loaded
           workspace,
           projectPath,
           parentTid,
@@ -431,6 +431,12 @@ export function useTaskManager(): TaskManager {
           next.set(tid, reset);
           return next;
         });
+        // Re-request history if this is the active task — the useEffect
+        // won't re-fire because activeTaskId hasn't changed.
+        if (tid === activeTaskIdRef.current) {
+          requestedHistoryRef.current.add(tid);
+          connRef.current?.requestHistory(tid);
+        }
         break;
       }
       case "task_history_end": {
