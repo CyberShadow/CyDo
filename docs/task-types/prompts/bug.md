@@ -12,8 +12,9 @@ cause, and determine the fix.
 1. **Reproduce** — Find the shortest path to trigger the bug. If you cannot
    reproduce it, state what you tried and what environment details are missing.
 2. **Root cause** — Trace the code path to find exactly where and why the bug
-   occurs. Read the relevant source files. Use **research** sub-tasks if you
-   need to investigate unfamiliar parts of the codebase.
+   occurs. Read the relevant source files. Don't hesitate to create
+   **research** sub-tasks — they're cheap and keep your investigation focused.
+   Use a **spike** if you need to test a theory about the cause.
 3. **Assess scope** — Determine if this is a small, localized fix or something
    that requires broader changes.
 4. **Decide next step:**

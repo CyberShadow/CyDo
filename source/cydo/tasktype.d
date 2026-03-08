@@ -44,6 +44,7 @@ struct TaskTypeDef
 	// Execution
 	bool parallelizable;
 	@Optional bool serial;
+	@Optional bool worktree;
 	bool user_visible = true;
 	@Optional uint max_turns;
 
@@ -286,7 +287,7 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			desc.length > 60 ? desc[0 .. 60] ~ "…" : desc);
 		writefln("    model: %s | tools: %s | output: %s%s",
 			def.model_class, def.tool_preset, def.output_type,
-			def.output_type == "commit" ? " (worktree)" : "");
+			def.worktree ? " (worktree)" : "");
 
 		if (def.creatable_tasks.length > 0)
 			writefln("    Can create sub-tasks: %s", def.creatable_tasks.join(", "));
@@ -618,7 +619,8 @@ void generateDot(TaskTypeDef[string] types)
 		}
 
 		style = "filled,rounded";
-		auto label = format("%s\\n%s / %s", name, def.model_class, def.tool_preset);
+		auto label = format("%s\\n%s / %s%s", name, def.model_class, def.tool_preset,
+			def.worktree ? " ⎘" : "");
 		writefln("    %s [label=\"%s\" shape=%s style=\"%s\" fillcolor=\"%s\"];",
 			name, label, shape, style, fillcolor);
 	}
@@ -677,7 +679,7 @@ void generateDot(TaskTypeDef[string] types)
 	writeln("        label=\"Legend\" style=dashed fontname=\"Helvetica\" fontsize=10;");
 	writeln("        node [shape=plaintext fontsize=9];");
 	writeln("        leg1 [label=\"Green = user-visible\\lGray = agent-initiated\\lYellow = steward\\l\"];");
-	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l\"];");
+	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = own worktree\\l\"];");
 	writeln("    }");
 
 	writeln("}");

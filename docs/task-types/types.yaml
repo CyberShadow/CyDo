@@ -19,26 +19,28 @@ task_types:
     model_class: large
     tool_preset: full
     output_type: report
-    creatable_tasks: [plan, research, implement, bug]
+    creatable_tasks: [plan, research, implement, bug, spike]
     parallelizable: true
     user_visible: true
 
   bug:
     description: "Investigate a bug report — reproduce, find root cause, fix"
     agent_description: >
-      Use for investigating and fixing bugs. The agent will reproduce the issue,
-      identify the root cause, and either fix it directly or create a plan for
-      larger fixes. Can create 'research' sub-tasks to gather context. Provide
-      the bug description, reproduction steps, or error messages in the task
-      description.
+      Use for investigating and fixing bugs. The agent reproduces the issue,
+      identifies the root cause, and either fixes it directly or creates a plan
+      for larger fixes. Use when: a user reports unexpected behavior, a test is
+      failing and you don't know why, you need to reproduce and diagnose an
+      issue, or something works differently than the code suggests it should.
+      Can create 'research' sub-tasks to gather context.
     tool_guidance: >
       Provide the bug description, reproduction steps, or error messages in the
-      prompt.
+      prompt. Prefer this over investigating bugs inline — the agent has
+      dedicated context for systematic debugging.
     prompt_template: prompts/bug.md
     model_class: large
     tool_preset: full
     output_type: patch
-    creatable_tasks: [research]
+    creatable_tasks: [research, spike]
     continuations:
       small_fix:
         task_type: implement
@@ -50,20 +52,22 @@ task_types:
   plan:
     description: "Create a detailed implementation plan"
     agent_description: >
-      Software architect agent for designing implementation plans. Use this when
-      you need to plan the implementation strategy for a task. The agent reads the
-      codebase, identifies critical files, considers architectural trade-offs, and
-      returns a step-by-step plan. Does not write code — use 'implement' for that.
-      Especially useful when a task has multiple valid approaches, touches many files,
-      or requires understanding existing patterns before making changes.
+      Software architect agent for designing implementation plans. Reads the
+      codebase, identifies critical files, considers trade-offs, and returns a
+      step-by-step plan with file-by-file changes. Does not write code — use
+      'implement' for that. Use when: a task touches more than 2-3 files, there
+      are multiple valid approaches and you need to evaluate trade-offs, you're
+      unsure where to start, or the change requires understanding existing
+      patterns before diving in. Plans are cheap; rework is expensive.
     tool_guidance: >
-      Use when a task has multiple valid approaches or requires understanding
+      Recommended before any non-trivial implementation. Use when a task has
+      multiple valid approaches, touches many files, or requires understanding
       existing patterns before making changes.
     prompt_template: prompts/plan.md
     model_class: large
     tool_preset: read-only
     output_type: report
-    creatable_tasks: [research]
+    creatable_tasks: [research, spike]
     continuations:
       done:
         task_type: triage
@@ -74,16 +78,17 @@ task_types:
   research:
     description: "Investigate a topic, gather information, produce findings"
     agent_description: >
-      Fast agent specialized for exploring codebases and gathering information.
-      Use this when you need to quickly find files by patterns (e.g. "src/**/*.ts"),
-      search code for keywords (e.g. "API endpoints"), or answer questions about the
-      codebase (e.g. "how does authentication work?"). Also useful for reading
-      documentation, understanding architecture, and investigating unfamiliar code.
-      No code changes are made. Returns a structured report with findings and
-      recommendations.
+      Fast read-only agent for exploring codebases and gathering information.
+      Use when: you need to understand how a subsystem works before modifying it,
+      you need to find all callers of a function across the codebase, you need to
+      read and synthesize information from multiple files, you're exploring
+      unfamiliar code, or answering questions like "how does authentication work?".
+      Returns a structured report with findings, file paths, and recommendations.
+      No code changes are made.
     tool_guidance: >
-      Use for broader codebase exploration and deep research, or when doing an
-      open-ended search that may require multiple rounds of globbing and grepping.
+      Prefer this over doing your own exploration — it keeps your context clean.
+      Use for broader codebase exploration, deep research, or any open-ended
+      search that may require multiple rounds of globbing and grepping.
     prompt_template: prompts/research.md
     model_class: medium
     tool_preset: read-only
@@ -122,7 +127,7 @@ task_types:
     model_class: large
     tool_preset: read-only
     output_type: report
-    creatable_tasks: [implement, plan]
+    creatable_tasks: [implement, plan, spike]
     parallelizable: true
     user_visible: false
 
@@ -130,15 +135,19 @@ task_types:
     description: "Execute a specific, pre-planned coding task"
     agent_description: >
       Use for well-scoped coding tasks with a clear plan. The agent works in its
-      own isolated worktree and produces a commit. Best when the task description
-      includes a specific plan or clear requirements — for open-ended work, use
-      'plan' first. Can create 'test' sub-tasks to validate changes.
+      own isolated worktree and produces a commit. Use when: you have a clear
+      description of what to build, which files to change, and what the result
+      should look like. Can create 'test' sub-tasks to validate changes. For
+      open-ended work where you're not sure what to change, use 'plan' first.
     tool_guidance: >
-      Best when the prompt includes a specific plan or clear requirements.
+      Pair with 'plan' for complex work. For simple well-understood changes, use
+      directly. Best when the prompt includes a specific plan or clear
+      requirements.
     prompt_template: prompts/implement.md
     model_class: medium
     tool_preset: full
     output_type: commit
+    worktree: true
     creatable_tasks: [test]
     continuations:
       done:
@@ -168,6 +177,28 @@ task_types:
     model_class: large
     tool_preset: read-only
     output_type: report
+    parallelizable: true
+    user_visible: false
+
+  spike:
+    description: "Test a theory or prototype an approach in an isolated worktree"
+    agent_description: >
+      Use when you need to test a theory, prototype an approach, or verify
+      feasibility before committing to a plan. Runs in its own worktree so
+      experiments don't pollute the main tree. The agent can write code, run
+      tests, and try things freely. Results are reported back as a report
+      that includes the worktree path, so the parent can adopt changes from
+      it if the experiment was successful. Good for: "will this library work
+      for our use case?", "can I reproduce this with a minimal example?",
+      "what happens if I restructure this module?".
+    tool_guidance: >
+      Use when you want to try something before committing to it. The worktree
+      is disposable — experiment freely.
+    prompt_template: prompts/spike.md
+    model_class: medium
+    tool_preset: full
+    output_type: report
+    worktree: true
     parallelizable: true
     user_visible: false
 

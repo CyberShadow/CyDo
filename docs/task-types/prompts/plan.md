@@ -11,6 +11,9 @@ existing patterns, and produce a detailed implementation plan.
 
 1. **Understand context** — Read relevant source files, documentation, and any
    referenced issues or prior plans. Understand the existing architecture.
+   Use **research** sub-tasks to investigate unfamiliar parts of the codebase
+   rather than exploring everything inline — they keep your context focused
+   and run in parallel.
 2. **Design the approach** — Consider multiple options. Evaluate trade-offs.
    Pick the approach that is simplest, most consistent with existing patterns,
    and easiest to review.
