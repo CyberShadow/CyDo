@@ -77,6 +77,10 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "interrupt", tid }));
   }
 
+  sendStop(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "stop", tid }));
+  }
+
   resumeTask(tid: number) {
     this.ws?.send(JSON.stringify({ type: "resume", tid }));
   }

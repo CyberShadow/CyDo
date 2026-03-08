@@ -11,6 +11,7 @@ interface Props {
   connected: boolean;
   onSend: (text: string) => void;
   onInterrupt: () => void;
+  onStop: () => void;
   onResume: () => void;
   onFork: (tid: number, afterUuid: string) => void;
   theme: Theme;
@@ -22,6 +23,7 @@ export function SessionView({
   connected,
   onSend,
   onInterrupt,
+  onStop,
   onResume,
   onFork,
   theme,
@@ -61,8 +63,10 @@ export function SessionView({
         connected={connected}
         totalCost={task.totalCost}
         isProcessing={task.isProcessing}
+        alive={task.alive}
         theme={theme}
         onToggleTheme={onToggleTheme}
+        onStop={onStop}
       />
       {task.messages.length === 0 && !task.isProcessing ? (
         <div class="message-list welcome-prompt">

@@ -426,6 +426,15 @@ class App
 			if (td.session)
 				td.session.interrupt();
 		}
+		else if (json.type == "stop")
+		{
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
+				return;
+			auto td = &tasks[tid];
+			if (td.session)
+				td.session.stop();
+		}
 		else if (json.type == "dismiss_attention")
 		{
 			broadcast(text);

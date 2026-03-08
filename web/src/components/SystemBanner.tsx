@@ -8,8 +8,10 @@ interface Props {
   connected: boolean;
   totalCost: number;
   isProcessing: boolean;
+  alive: boolean;
   theme: Theme;
   onToggleTheme: () => void;
+  onStop: () => void;
 }
 
 export function SystemBanner({
@@ -17,8 +19,10 @@ export function SystemBanner({
   connected,
   totalCost,
   isProcessing,
+  alive,
   theme,
   onToggleTheme,
+  onStop,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -41,6 +45,15 @@ export function SystemBanner({
       </div>
       <div class="banner-right">
         {isProcessing && <span class="banner-processing">Processing...</span>}
+        {alive && (
+          <button
+            class="btn-banner-stop"
+            onClick={onStop}
+            title="Stop agent (SIGTERM)"
+          >
+            Stop
+          </button>
+        )}
         {totalCost > 0 && (
           <span class="banner-cost">${totalCost.toFixed(4)}</span>
         )}

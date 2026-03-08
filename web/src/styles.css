@@ -312,6 +312,20 @@ body,
   animation: pulse 1.5s infinite;
 }
 
+.btn-banner-stop {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.btn-banner-stop:hover {
+  border-color: var(--error);
+  color: var(--error);
+}
+
 .banner-cost {
   color: var(--text-dim);
 }

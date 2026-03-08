@@ -16,6 +16,7 @@ export function App() {
     connected,
     send,
     interrupt,
+    stop,
     newTask,
     resume,
     fork,
@@ -87,6 +88,7 @@ export function App() {
             connected={connected}
             onSend={send}
             onInterrupt={interrupt}
+            onStop={stop}
             onResume={resume}
             onFork={fork}
             theme={theme}

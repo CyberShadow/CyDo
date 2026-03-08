@@ -46,6 +46,7 @@ export interface TaskManager {
   connected: boolean;
   send: (text: string) => void;
   interrupt: () => void;
+  stop: () => void;
   newTask: (workspace?: string, projectPath?: string) => void;
   resume: () => void;
   fork: (tid: number, afterUuid: string) => void;
@@ -669,6 +670,12 @@ export function useTaskManager(): TaskManager {
     }
   }, [activeTaskId]);
 
+  const stop = useCallback(() => {
+    if (activeTaskId !== null) {
+      connRef.current?.sendStop(activeTaskId);
+    }
+  }, [activeTaskId]);
+
   const newTask = useCallback((workspace?: string, projectPath?: string) => {
     pendingFocus.current = true;
     connRef.current?.createTask(workspace, projectPath);
@@ -738,6 +745,7 @@ export function useTaskManager(): TaskManager {
     connected,
     send,
     interrupt,
+    stop,
     newTask,
     resume,
     fork,
