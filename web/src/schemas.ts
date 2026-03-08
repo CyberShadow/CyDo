@@ -244,7 +244,7 @@ export const SystemStatusSchema = z
   .object({
     type: z.literal("system"),
     subtype: z.literal("status"),
-    status: z.string().optional(),
+    status: z.string().nullable().optional(),
     // ignored: routing fields not displayed
     uuid: z.string().optional(),
     session_id: z.string().optional(),
