@@ -32,7 +32,7 @@ export function App() {
   } = useTaskManager();
 
   const { theme, toggleTheme } = useTheme();
-  const attention = useNotifications(activeTaskId, dismissAttention);
+  const attention = useNotifications(activeTaskId, tasks, dismissAttention);
   const [showSearch, setShowSearch] = useState(false);
 
   const active =

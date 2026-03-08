@@ -102,6 +102,7 @@ export interface TaskState {
   messages: DisplayMessage[];
   sessionInfo: SessionInfo | null;
   isProcessing: boolean;
+  needsAttention: boolean;
   totalCost: number;
   alive: boolean;
   resumable: boolean;
@@ -133,6 +134,7 @@ export function makeTaskState(
   relationType?: string,
   status: string = "pending",
   isProcessing: boolean = false,
+  needsAttention: boolean = false,
 ): TaskState {
   return {
     tid,
@@ -140,6 +142,7 @@ export function makeTaskState(
     messages: [],
     sessionInfo: null,
     isProcessing,
+    needsAttention,
     totalCost: 0,
     alive,
     resumable,

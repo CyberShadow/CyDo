@@ -615,6 +615,8 @@ export interface TasksListMessage {
     alive: boolean;
     resumable: boolean;
     isProcessing: boolean;
+    needsAttention?: boolean;
+    notificationBody?: string;
     lastActivity: string;
     title?: string;
     workspace?: string;
@@ -654,10 +656,6 @@ export interface ErrorMessage {
   message: string;
   tid?: number;
 }
-export interface DismissAttentionMessage {
-  type: "dismiss_attention";
-  tid: number;
-}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -666,5 +664,4 @@ export type ControlMessage =
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | ForkableUuidsMessage
-  | ErrorMessage
-  | DismissAttentionMessage;
+  | ErrorMessage;

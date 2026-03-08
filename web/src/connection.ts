@@ -48,8 +48,7 @@ export class Connection {
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "forkable_uuids" ||
-          raw.type === "error" ||
-          raw.type === "dismiss_attention"
+          raw.type === "error"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {

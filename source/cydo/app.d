@@ -383,6 +383,8 @@ class App
 				ensureTaskAgent(tid);
 			}
 			td.session.sendMessage(json.content);
+			td.needsAttention = false;
+			td.notificationBody = "";
 			td.isProcessing = true;
 			broadcast(buildTasksList());
 			broadcastUnconfirmedUserMessage(tid, json.content);
@@ -415,6 +417,8 @@ class App
 			if (td.session !is null && td.session.alive)
 				return;
 			ensureTaskAgent(tid);
+			td.needsAttention = false;
+			td.notificationBody = "";
 			td.status = "active";
 			persistence.setStatus(tid, "active");
 			broadcast(buildTasksList());
@@ -457,7 +461,13 @@ class App
 		}
 		else if (json.type == "dismiss_attention")
 		{
-			broadcast(text);
+			auto tid = json.tid;
+			if (tid >= 0 && tid in tasks)
+			{
+				tasks[tid].needsAttention = false;
+				tasks[tid].notificationBody = "";
+				broadcast(buildTasksList());
+			}
 		}
 		else if (json.type == "fork_task")
 		{
@@ -547,6 +557,8 @@ class App
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
+				td.needsAttention = true;
+				td.notificationBody = extractLastAssistantText(tid);
 				broadcast(buildTasksList());
 
 				// For sub-tasks: close stdin so the process exits cleanly.
@@ -589,6 +601,8 @@ class App
 				tasks[tid].historyLoaded = true;
 				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 			}
+			tasks[tid].needsAttention = true;
+			tasks[tid].notificationBody = extractLastAssistantText(tid);
 			broadcast(buildTasksList());
 		};
 
@@ -968,7 +982,8 @@ class App
 		TaskListEntry[] entries;
 		foreach (ref td; tasks)
 			entries ~= TaskListEntry(td.tid, td.alive, td.claudeSessionId.length > 0 && !td.alive,
-				td.isProcessing, td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
+				td.isProcessing, td.needsAttention, td.notificationBody,
+				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
 		return toJson(TasksListMessage("tasks_list", entries));
 	}
 
@@ -1000,6 +1015,26 @@ class App
 		}
 		return output;
 	}
+
+	/// Extract the last assistant text from a task's history, truncated.
+	/// Used for notification body when a task needs attention.
+	private string extractLastAssistantText(int tid)
+	{
+		if (tid !in tasks)
+			return "";
+		foreach_reverse (ref d; tasks[tid].history)
+		{
+			auto envelope = cast(string) d.toGC();
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length > 0)
+			{
+				auto text = extractAssistantText(event);
+				if (text.length > 0)
+					return truncateTitle(text, 200);
+			}
+		}
+		return "";
+	}
 }
 
 private:
@@ -1024,6 +1059,8 @@ struct TaskData
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	bool alive = false;
 	bool isProcessing = false;
+	bool needsAttention = false;
+	string notificationBody;
 	string lastActivity;
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
@@ -1079,6 +1116,8 @@ struct TaskListEntry
 	bool alive;
 	bool resumable;
 	bool isProcessing;
+	bool needsAttention;
+	string notificationBody;
 	string lastActivity;
 	string title;
 	string workspace;

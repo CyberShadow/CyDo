@@ -25,13 +25,6 @@ import {
   reduceFileMessage,
   reducePendingUserMessage,
 } from "./sessionReducer";
-import {
-  notifyTransition,
-  initSnapshot,
-  resetReplay,
-  markReplayDone,
-  removeAttention,
-} from "./useNotifications";
 
 export interface ProjectInfo {
   name: string;
@@ -216,7 +209,6 @@ export function useTaskManager(): TaskManager {
       const prev = t ?? makeTaskState(tid, true);
       const updated = reducePendingUserMessage(prev, extractTextContent(msg));
       liveStates.set(tid, updated);
-      notifyTransition(tid, prev, updated);
       setTasks((map) => {
         const next = new Map(map);
         next.set(tid, updated);
@@ -243,7 +235,6 @@ export function useTaskManager(): TaskManager {
     const prev = t ?? makeTaskState(tid, true);
     const updated = reduceStdoutMessage(prev, msg);
     liveStates.set(tid, updated);
-    notifyTransition(tid, prev, updated);
 
     // When an agent sub-task finishes and it's currently focused, switch to parent.
     // User-created children (forks) stay focused — user navigates manually.
@@ -274,8 +265,6 @@ export function useTaskManager(): TaskManager {
       const prev = liveStates.get(tid) ?? makeTaskState(tid);
       const updated = reduceFileMessage(prev, msg);
       liveStates.set(tid, updated);
-      // File replay: seed snapshot without notifying (historical data)
-      initSnapshot(tid, updated);
 
       setTasks((map) => {
         const next = new Map(map);
@@ -311,7 +300,6 @@ export function useTaskManager(): TaskManager {
           "pending",
         );
         liveStates.set(tid, t);
-        initSnapshot(tid, t);
         setTasks((prev) => {
           const next = new Map(prev);
           next.set(tid, t);
@@ -371,9 +359,9 @@ export function useTaskManager(): TaskManager {
                 entry.relation_type || undefined,
                 entry.status || "pending",
                 entry.isProcessing || false,
+                entry.needsAttention || false,
               );
               liveStates.set(entry.tid, t);
-              initSnapshot(entry.tid, t);
               next.set(entry.tid, t);
             } else {
               const t = next.get(entry.tid)!;
@@ -387,6 +375,7 @@ export function useTaskManager(): TaskManager {
                 alive: entry.alive,
                 resumable: entry.resumable,
                 isProcessing: entry.isProcessing || false,
+                needsAttention: entry.needsAttention || false,
                 historyLoaded: needsHistory ? false : t.historyLoaded,
                 title: entry.title || t.title,
                 workspace: workspace || t.workspace,
@@ -396,7 +385,6 @@ export function useTaskManager(): TaskManager {
                 status: entry.status || t.status,
               };
               liveStates.set(entry.tid, updated);
-              initSnapshot(entry.tid, updated);
               next.set(entry.tid, updated);
             }
           }
@@ -451,7 +439,6 @@ export function useTaskManager(): TaskManager {
           preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
         };
         liveStates.set(tid, reset);
-        initSnapshot(tid, reset);
         setTasks((prev) => {
           if (!prev.has(tid)) return prev;
           const next = new Map(prev);
@@ -483,7 +470,6 @@ export function useTaskManager(): TaskManager {
             const prev = liveStates.get(tid)!;
             const next = reduceStdoutMessage(prev, liveMsg);
             liveStates.set(tid, next);
-            notifyTransition(tid, prev, next);
           }
           t = liveStates.get(tid)!;
         }
@@ -528,10 +514,6 @@ export function useTaskManager(): TaskManager {
       }
       case "error": {
         console.error("Server error:", msg.message, "tid:", msg.tid);
-        break;
-      }
-      case "dismiss_attention": {
-        removeAttention(msg.tid, false);
         break;
       }
     }
@@ -594,37 +576,18 @@ export function useTaskManager(): TaskManager {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    let replayTimerId: ReturnType<typeof setTimeout> | null = null;
-
     conn.onStatusChange = (connected) => {
       setConnected(connected);
-      if (connected) {
-        // Suppress notifications during initial replay; mark done after
-        // messages settle (debounced in onTaskMessage/onFileMessage).
-        resetReplay();
-      } else {
-        resetReplay();
-        if (replayTimerId) {
-          clearTimeout(replayTimerId);
-          replayTimerId = null;
-        }
+      if (!connected) {
         liveStates.clear();
         requestedHistoryRef.current.clear();
         setTasks(new Map());
       }
     };
-    const debounceReplay = () => {
-      if (replayTimerId) clearTimeout(replayTimerId);
-      replayTimerId = setTimeout(() => {
-        markReplayDone();
-        replayTimerId = null;
-      }, 1000);
-    };
 
     conn.onTaskMessage = (tid, msg) => {
       buffer.push({ kind: "task", tid, msg });
       scheduleFlush();
-      debounceReplay();
     };
     conn.onUnconfirmedUserMessage = (tid, msg) => {
       buffer.push({ kind: "unconfirmed", tid, msg });
@@ -633,17 +596,14 @@ export function useTaskManager(): TaskManager {
     conn.onFileMessage = (tid, msg) => {
       buffer.push({ kind: "file", tid, msg });
       scheduleFlush();
-      debounceReplay();
     };
     conn.onControlMessage = (msg) => {
       buffer.push({ kind: "control", msg });
       scheduleFlush();
-      debounceReplay();
     };
     conn.connect();
     return () => {
       cancelPendingFlush();
-      if (replayTimerId) clearTimeout(replayTimerId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };
