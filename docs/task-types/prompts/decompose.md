@@ -9,18 +9,22 @@ that can be implemented independently.
 
 ## Process
 
-1. **Analyze the plan** — Identify the distinct units of work. Look for natural
+1. **Handle prerequisites first** — If the plan lists prerequisites (missing
+   infrastructure like test frameworks, build tooling, etc.), create
+   **implement** tasks for those first. Prerequisites must complete before
+   the main work begins — they are foundational.
+2. **Analyze the plan** — Identify the distinct units of work. Look for natural
    boundaries: separate files, separate features, separate layers.
-2. **Find parallelism** — Determine which units can be implemented concurrently
+3. **Find parallelism** — Determine which units can be implemented concurrently
    without merge conflicts. Units that touch the same files should be in the
    same sub-task.
-3. **Create sub-tasks** — For each unit, create an **implement** task with a
+4. **Create sub-tasks** — For each unit, create an **implement** task with a
    clear, self-contained description that includes:
    - What files to create or modify
    - What the implementation should do
    - How it connects to the other sub-tasks
    - Any ordering constraints
-4. **Wait for results** — All sub-tasks must complete. If any fail, assess
+5. **Wait for results** — All sub-tasks must complete. If any fail, assess
    whether to retry or report failure.
 
 ## Guidelines
