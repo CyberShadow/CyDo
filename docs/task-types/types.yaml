@@ -13,6 +13,14 @@ task_types:
   # User-visible types
   # -------------------------------------------------------------------------
 
+  blank:
+    description: "Raw Claude Code session with no prompt wrapping or tool restrictions"
+    model_class: large
+    tool_preset: full
+    output_type: report
+    parallelizable: true
+    user_visible: true
+
   conversation:
     description: "Open-ended interactive session with the user"
     prompt_template: prompts/conversation.md
