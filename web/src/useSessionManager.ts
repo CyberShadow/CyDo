@@ -36,16 +36,27 @@ export interface WorkspaceInfo {
   projects: ProjectInfo[];
 }
 
+export interface TaskTypeInfo {
+  name: string;
+  description: string;
+  model_class: string;
+  tool_preset: string;
+}
+
 export interface TaskManager {
   tasks: Map<number, TaskState>;
   activeTaskId: number | null;
   setActiveTaskId: (tid: number) => void;
   connected: boolean;
-  send: (text: string) => void;
+  send: (text: string, taskType?: string) => void;
   interrupt: () => void;
   stop: () => void;
   closeStdin: () => void;
-  newTask: (workspace?: string, projectPath?: string) => void;
+  newTask: (
+    workspace?: string,
+    projectPath?: string,
+    taskType?: string,
+  ) => void;
   resume: () => void;
   fork: (tid: number, afterUuid: string) => void;
   dismissAttention: (tid: number) => void;
@@ -60,6 +71,7 @@ export interface TaskManager {
     status?: string;
   }>;
   workspaces: WorkspaceInfo[];
+  taskTypes: TaskTypeInfo[];
   activeWorkspace: string | null;
   activeProject: string | null;
   navigateHome: () => void;
@@ -144,6 +156,7 @@ export function useTaskManager(): TaskManager {
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [taskTypes, setTaskTypes] = useState<TaskTypeInfo[]>([]);
   const { path, route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -191,6 +204,8 @@ export function useTaskManager(): TaskManager {
   const connRef = useRef<Connection | null>(null);
   // When we create a task and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
+  // Task type for the pending task creation
+  const pendingTaskType = useRef<string | null>(null);
   // True when this client initiated a task creation and should focus it
   const pendingFocus = useRef(false);
   // Track which tasks have had history requested (avoid duplicate requests)
@@ -279,6 +294,10 @@ export function useTaskManager(): TaskManager {
     switch (msg.type) {
       case "workspaces_list": {
         setWorkspaces(msg.workspaces);
+        break;
+      }
+      case "task_types_list": {
+        setTaskTypes(msg.task_types);
         break;
       }
       case "task_created": {
@@ -620,10 +639,11 @@ export function useTaskManager(): TaskManager {
   }, [connected, activeTaskId]);
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, taskType?: string) => {
       if (activeTaskId === null) {
         // No active task — create one in the current project context and queue the message
         pendingFirstMessage.current = text;
+        pendingTaskType.current = taskType ?? null;
         pendingFocus.current = true;
         const parsed = parseFromPath(location.pathname);
         if (parsed.workspace && parsed.project) {
@@ -633,9 +653,13 @@ export function useTaskManager(): TaskManager {
             parsed.workspace,
             parsed.project,
           );
-          connRef.current?.createTask(parsed.workspace, projPath || "");
+          connRef.current?.createTask(
+            parsed.workspace,
+            projPath || "",
+            taskType,
+          );
         } else {
-          connRef.current?.createTask();
+          connRef.current?.createTask(undefined, undefined, taskType);
         }
         return;
       }
@@ -662,10 +686,13 @@ export function useTaskManager(): TaskManager {
     }
   }, [activeTaskId]);
 
-  const newTask = useCallback((workspace?: string, projectPath?: string) => {
-    pendingFocus.current = true;
-    connRef.current?.createTask(workspace, projectPath);
-  }, []);
+  const newTask = useCallback(
+    (workspace?: string, projectPath?: string, taskType?: string) => {
+      pendingFocus.current = true;
+      connRef.current?.createTask(workspace, projectPath, taskType);
+    },
+    [],
+  );
 
   const fork = useCallback((tid: number, afterUuid: string) => {
     connRef.current?.forkTask(tid, afterUuid);
@@ -739,6 +766,7 @@ export function useTaskManager(): TaskManager {
     dismissAttention,
     sidebarTasks,
     workspaces,
+    taskTypes,
     activeWorkspace,
     activeProject,
     navigateHome,

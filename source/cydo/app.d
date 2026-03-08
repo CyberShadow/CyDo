@@ -184,8 +184,9 @@ class App
 		ws.sendBinary = false; // text frames for JSON
 		clients ~= ws;
 
-		// Send workspaces list and tasks list to new client
+		// Send workspaces list, task types, and tasks list to new client
 		ws.send(Data(buildWorkspacesList().representation));
+		ws.send(Data(buildTaskTypesList().representation));
 		ws.send(Data(buildTasksList().representation));
 
 		ws.handleReadData = (Data data) {
@@ -348,6 +349,11 @@ class App
 		if (json.type == "create_task")
 		{
 			auto tid = createTask(json.workspace, json.project_path);
+			if (json.task_type.length > 0 && json.task_type in taskTypes)
+			{
+				tasks[tid].taskType = json.task_type;
+				persistence.setTaskType(tid, json.task_type);
+			}
 			broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
 		}
 		else if (json.type == "request_history")
@@ -387,7 +393,18 @@ class App
 			{
 				if (td.claudeSessionId.length > 0)
 					return; // resumable but not resumed — ignore
-				ensureTaskAgent(tid);
+				// Build session config from task type if available
+				auto typeDef = td.taskType in taskTypes;
+				if (typeDef !is null)
+				{
+					auto sc = SessionConfig(
+						modelClassToAlias(typeDef.model_class),
+					);
+					sc.disallowedTools = toolPresetToDisallowedTools(typeDef.tool_preset);
+					ensureTaskAgent(tid, sc);
+				}
+				else
+					ensureTaskAgent(tid);
 			}
 			td.session.sendMessage(json.content);
 			td.needsAttention = false;
@@ -1002,6 +1019,17 @@ class App
 		return toJson(WorkspacesListMessage("workspaces_list", workspacesInfo));
 	}
 
+	private string buildTaskTypesList()
+	{
+		import ae.utils.json : toJson;
+
+		TaskTypeListEntry[] entries;
+		foreach (name, ref def; taskTypes)
+			if (def.user_visible)
+				entries ~= TaskTypeListEntry(name, def.description, def.model_class, def.tool_preset);
+		return toJson(TaskTypesListMessage("task_types_list", entries));
+	}
+
 	private void removeClient(WebSocketAdapter ws)
 	{
 		import std.algorithm : remove;
@@ -1073,6 +1101,7 @@ struct WsMessage
 	string workspace;
 	string project_path;
 	string after_uuid;
+	string task_type;
 }
 
 struct ExitMessage
@@ -1136,6 +1165,20 @@ struct WorkspacesListMessage
 {
 	string type = "workspaces_list";
 	WorkspaceInfo[] workspaces;
+}
+
+struct TaskTypeListEntry
+{
+	string name;
+	string description;
+	string model_class;
+	string tool_preset;
+}
+
+struct TaskTypesListMessage
+{
+	string type = "task_types_list";
+	TaskTypeListEntry[] task_types;
 }
 
 struct TaskReloadMessage

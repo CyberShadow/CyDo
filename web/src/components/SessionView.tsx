@@ -1,16 +1,18 @@
 import { h } from "preact";
-import { useRef, useEffect } from "preact/hooks";
+import { useRef, useEffect, useState } from "preact/hooks";
 import type { TaskState } from "../types";
+import type { TaskTypeInfo } from "../useSessionManager";
 import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
+import { SessionConfig } from "./SessionConfig";
 
 interface Props {
   task: TaskState;
   connected: boolean;
   isActive: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, taskType?: string) => void;
   onInterrupt: () => void;
   onStop: () => void;
   onCloseStdin: () => void;
@@ -18,6 +20,7 @@ interface Props {
   onFork: (tid: number, afterUuid: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
+  taskTypes: TaskTypeInfo[];
 }
 
 export function SessionView({
@@ -32,8 +35,10 @@ export function SessionView({
   onFork,
   theme,
   onToggleTheme,
+  taskTypes,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [selectedTaskType, setSelectedTaskType] = useState("");
 
   useEffect(() => {
     if (!isActive) return;
@@ -75,6 +80,10 @@ export function SessionView({
           <div class="welcome-box">
             <h1 class="welcome-title">CyDo</h1>
             <p class="welcome-subtitle">Multi-agent orchestration system</p>
+            <SessionConfig
+              taskTypes={taskTypes}
+              onTaskTypeChange={setSelectedTaskType}
+            />
           </div>
         </div>
       ) : (
@@ -94,7 +103,18 @@ export function SessionView({
         </div>
       ) : (
         <InputBox
-          onSend={onSend}
+          onSend={(text: string) => {
+            // Pass task type on first message (when welcome screen is showing)
+            if (
+              task.messages.length === 0 &&
+              !task.isProcessing &&
+              selectedTaskType
+            ) {
+              onSend(text, selectedTaskType);
+            } else {
+              onSend(text);
+            }
+          }}
           onInterrupt={onInterrupt}
           isProcessing={task.isProcessing}
           disabled={!connected}

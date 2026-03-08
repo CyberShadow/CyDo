@@ -117,6 +117,81 @@ body,
   justify-content: center;
 }
 
+/* Session config (pre-start task type selector) */
+.session-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+  align-items: center;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+}
+
+.config-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.config-select {
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+
+.config-select:focus {
+  border-color: var(--accent);
+}
+
+.config-select:hover {
+  border-color: var(--accent-dim);
+}
+
+.config-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  max-width: 400px;
+}
+
+.config-detail-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.config-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.config-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
 /* Welcome screen */
 .app.welcome {
   justify-content: center;

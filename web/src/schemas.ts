@@ -646,6 +646,15 @@ export interface WorkspacesListMessage {
     projects: { name: string; path: string }[];
   }[];
 }
+export interface TaskTypesListMessage {
+  type: "task_types_list";
+  task_types: {
+    name: string;
+    description: string;
+    model_class: string;
+    tool_preset: string;
+  }[];
+}
 export interface ForkableUuidsMessage {
   type: "forkable_uuids";
   tid: number;
@@ -663,5 +672,6 @@ export type ControlMessage =
   | TitleUpdateMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage
+  | TaskTypesListMessage
   | ForkableUuidsMessage
   | ErrorMessage;

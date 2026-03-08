@@ -47,6 +47,7 @@ export class Connection {
           raw.type === "title_update" ||
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
+          raw.type === "task_types_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "error"
         ) {
@@ -93,12 +94,13 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "resume", tid }));
   }
 
-  createTask(workspace?: string, projectPath?: string) {
+  createTask(workspace?: string, projectPath?: string, taskType?: string) {
     this.ws?.send(
       JSON.stringify({
         type: "create_task",
         workspace: workspace ?? "",
         project_path: projectPath ?? "",
+        task_type: taskType ?? "",
       }),
     );
   }

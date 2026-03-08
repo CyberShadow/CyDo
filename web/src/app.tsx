@@ -25,6 +25,7 @@ export function App() {
     dismissAttention,
     sidebarTasks,
     workspaces,
+    taskTypes,
     activeWorkspace,
     activeProject,
     navigateHome,
@@ -175,6 +176,7 @@ export function App() {
                   onFork={fork}
                   theme={theme}
                   onToggleTheme={toggleTheme}
+                  taskTypes={taskTypes}
                 />
               </div>
             );
