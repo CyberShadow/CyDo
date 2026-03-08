@@ -13,7 +13,10 @@ run: all
 setup:
 	git config core.hooksPath .githooks
 
+dot: backend
+	./build/cydo --dot docs/task-types/types.yaml | dot -Tsvg -o docs/task-types/types.svg
+
 clean:
 	rm -rf build web/dist web/node_modules
 
-.PHONY: all backend frontend run setup clean
+.PHONY: all backend frontend run setup clean dot

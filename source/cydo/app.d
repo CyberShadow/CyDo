@@ -47,6 +47,12 @@ void main(string[] args)
 		runSimulator(args);
 		return;
 	}
+	if (args.canFind("--dot"))
+	{
+		import cydo.tasktype : runDot;
+		runDot(args);
+		return;
+	}
 
 	auto app = new App();
 	app.start();

@@ -21,6 +21,7 @@ struct ContinuationDef
 {
 	string task_type;
 	bool requires_approval;
+	bool keep_context;
 }
 
 struct TaskTypeDef
@@ -297,8 +298,12 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			foreach (cn; contNames)
 			{
 				auto cont = def.continuations[cn];
-				labels ~= format("%s → %s%s", cn, cont.task_type,
-					cont.requires_approval ? " (approval)" : "");
+				string flags;
+				if (cont.requires_approval)
+					flags ~= " (approval)";
+				if (cont.keep_context)
+					flags ~= " (keep-context)";
+				labels ~= format("%s → %s%s", cn, cont.task_type, flags);
 			}
 			writefln("    Continuations: %s", labels.join(", "));
 		}
@@ -569,23 +574,133 @@ string modelClassToAlias(string modelClass)
 }
 
 // ---------------------------------------------------------------------------
+// Dot (Graphviz) Generator
+// ---------------------------------------------------------------------------
+
+void generateDot(TaskTypeDef[string] types)
+{
+	auto names = types.keys.array.sort.release;
+	auto stewards = names.filter!(n => types[n].steward).array;
+
+	writeln("digraph task_types {");
+	writeln("    rankdir=LR;");
+	writeln("    node [fontname=\"Helvetica\" fontsize=10];");
+	writeln("    edge [fontname=\"Helvetica\" fontsize=9];");
+	writeln();
+
+	// User node
+	auto visible = names.filter!(n => types[n].user_visible).array;
+	writeln("    user [label=\"user\" shape=house style=\"filled\" fillcolor=\"#cce5ff\"];");
+	foreach (v; visible)
+		writefln("    user -> %s [style=dashed arrowhead=open label=\"creates\"];", v);
+	writeln();
+
+	// Node definitions with shape/color by category
+	foreach (name; names)
+	{
+		auto def = types[name];
+		string shape, style, fillcolor;
+
+		if (def.steward)
+		{
+			shape = "octagon";
+			fillcolor = "#fff3cd";
+		}
+		else if (def.user_visible)
+		{
+			shape = "box";
+			fillcolor = "#d4edda";
+		}
+		else
+		{
+			shape = "box";
+			fillcolor = "#e2e3e5";
+		}
+
+		style = "filled,rounded";
+		auto label = format("%s\\n%s / %s", name, def.model_class, def.tool_preset);
+		writefln("    %s [label=\"%s\" shape=%s style=\"%s\" fillcolor=\"%s\"];",
+			name, label, shape, style, fillcolor);
+	}
+	writeln();
+
+	// Continuation edges (solid arrows)
+	foreach (name; names)
+	{
+		auto def = types[name];
+		foreach (cname, ref cont; def.continuations)
+		{
+			string label = cname;
+			if (cont.keep_context)
+				label ~= " ⟳";
+			auto attrs = format("label=\"%s\"", label);
+			if (cont.requires_approval)
+				attrs ~= " style=bold color=\"#856404\"";
+			writefln("    %s -> %s [%s];", name, cont.task_type, attrs);
+		}
+	}
+
+	// Creatable task edges (dashed arrows)
+	foreach (name; names)
+	{
+		auto def = types[name];
+		foreach (ct; def.creatable_tasks)
+			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates\"];",
+				name, ct);
+	}
+
+	// Steward review edges (dotted, from approval-gated continuations to stewards)
+	if (stewards.length > 0)
+	{
+		// Invisible node for legend
+		writeln();
+		writeln("    // Steward review relationships");
+		foreach (name; names)
+		{
+			auto def = types[name];
+			foreach (_, ref cont; def.continuations)
+			{
+				if (cont.requires_approval)
+				{
+					foreach (s; stewards)
+						writefln("    %s -> %s [style=dotted arrowhead=diamond color=\"#856404\" constraint=false];",
+							name, s);
+					break; // one set of steward edges per source node
+				}
+			}
+		}
+	}
+
+	// Legend
+	writeln();
+	writeln("    subgraph cluster_legend {");
+	writeln("        label=\"Legend\" style=dashed fontname=\"Helvetica\" fontsize=10;");
+	writeln("        node [shape=plaintext fontsize=9];");
+	writeln("        leg1 [label=\"Green = user-visible\\lGray = agent-initiated\\lYellow = steward\\l\"];");
+	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l\"];");
+	writeln("    }");
+
+	writeln("}");
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-void runSimulator(string[] args)
+/// Load and validate task types from a YAML file, returning null on error.
+private TaskTypeDef[string] loadAndValidate(string flag, string[] args)
 {
 	import std.algorithm : find;
 
-	// Find the YAML path argument (first non-flag arg after --simulate)
 	string path;
-	auto rest = args.find("--simulate");
+	auto rest = args.find(flag);
 	if (rest.length > 1)
 		path = rest[1];
 
 	if (path.length == 0)
 	{
-		stderr.writeln("Usage: cydo --simulate <types.yaml>");
-		return;
+		stderr.writefln("Usage: cydo %s <types.yaml>", flag);
+		return null;
 	}
 
 	TaskTypeDef[string] types;
@@ -594,10 +709,9 @@ void runSimulator(string[] args)
 	catch (Exception e)
 	{
 		stderr.writefln("Error loading %s: %s", path, e.msg);
-		return;
+		return null;
 	}
 
-	// Validate
 	auto errors = validateTaskTypes(types);
 	if (errors.length > 0)
 	{
@@ -607,10 +721,25 @@ void runSimulator(string[] args)
 		writeln();
 	}
 
-	// Print summary
+	return types;
+}
+
+void runSimulator(string[] args)
+{
+	auto types = loadAndValidate("--simulate", args);
+	if (types is null)
+		return;
+
 	printTypes(types);
 	writeln();
-
-	// Run interactive simulation
 	simulateWorkflow(types);
+}
+
+void runDot(string[] args)
+{
+	auto types = loadAndValidate("--dot", args);
+	if (types is null)
+		return;
+
+	generateDot(types);
 }

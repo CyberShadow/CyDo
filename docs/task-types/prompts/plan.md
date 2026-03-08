@@ -31,9 +31,6 @@ Your plan must include:
 - **Approach** — the design and rationale for key decisions
 - **Changes** — file-by-file list of modifications
 - **Verification** — how to confirm the implementation is correct
-- **Continuation choice:**
-  - `implement` — the plan is small enough for a single implement task
-  - `decompose` — the plan should be split into multiple parallel tasks
 
 ## Constraints
 

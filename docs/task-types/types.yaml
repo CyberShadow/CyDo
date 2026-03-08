@@ -65,12 +65,9 @@ task_types:
     output_type: report
     creatable_tasks: [research]
     continuations:
-      implement:
-        task_type: implement
-        requires_approval: true
-      decompose:
-        task_type: decompose
-        requires_approval: true
+      done:
+        task_type: triage
+        keep_context: true
     parallelizable: true
     user_visible: true
 
@@ -97,6 +94,24 @@ task_types:
   # -------------------------------------------------------------------------
   # Agent-initiated types (not directly user-visible)
   # -------------------------------------------------------------------------
+
+  triage:
+    description: "Decide whether a plan should be implemented directly or decomposed"
+    prompt_template: prompts/triage.md
+    model_class: large
+    tool_preset: read-only
+    output_type: report
+    continuations:
+      implement:
+        task_type: implement
+        requires_approval: true
+        keep_context: true
+      decompose:
+        task_type: decompose
+        requires_approval: true
+        keep_context: true
+    parallelizable: true
+    user_visible: false
 
   decompose:
     description: "Split a plan into parallel sub-tasks"
