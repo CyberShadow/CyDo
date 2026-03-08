@@ -406,7 +406,15 @@ class App
 				else
 					ensureTaskAgent(tid);
 			}
-			td.session.sendMessage(json.content);
+			// Wrap first message in prompt template (e.g. conversation.md)
+			auto messageToSend = json.content;
+			if (td.description.length == 0)
+			{
+				auto typeDef = td.taskType in taskTypes;
+				if (typeDef !is null)
+					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir);
+			}
+			td.session.sendMessage(messageToSend);
 			td.needsAttention = false;
 			td.notificationBody = "";
 			td.isProcessing = true;
