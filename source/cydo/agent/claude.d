@@ -134,7 +134,18 @@ class ClaudeCodeSession : AgentSession
 		process.writeLine(toJson(input));
 	}
 
+	/// Send a protocol-level interrupt via stdin (control_request with subtype "interrupt").
+	/// This tells Claude Code to cancel the current turn gracefully without killing the process.
 	void interrupt()
+	{
+		import std.uuid : randomUUID;
+		auto requestId = randomUUID().toString();
+		auto msg = `{"type":"control_request","request_id":"` ~ requestId
+			~ `","request":{"subtype":"interrupt"}}`;
+		process.writeLine(msg);
+	}
+
+	void sigint()
 	{
 		process.interrupt();
 	}

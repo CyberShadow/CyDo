@@ -18,6 +18,7 @@ export function App() {
     send,
     interrupt,
     stop,
+    closeStdin,
     newTask,
     resume,
     fork,
@@ -160,6 +161,7 @@ export function App() {
             onSend={send}
             onInterrupt={interrupt}
             onStop={stop}
+            onCloseStdin={closeStdin}
             onResume={resume}
             onFork={fork}
             theme={theme}

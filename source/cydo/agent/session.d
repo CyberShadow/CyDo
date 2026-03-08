@@ -7,8 +7,11 @@ interface AgentSession
 	/// Send a user message to the agent.
 	void sendMessage(string content);
 
-	/// Send interrupt signal (SIGINT) to the agent.
+	/// Send a protocol-level interrupt (cancel current turn gracefully).
 	void interrupt();
+
+	/// Send SIGINT signal to the agent process.
+	void sigint();
 
 	/// Stop the agent (SIGTERM).
 	void stop();

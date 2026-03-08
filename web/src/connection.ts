@@ -86,6 +86,10 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "stop", tid }));
   }
 
+  sendCloseStdin(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "close_stdin", tid }));
+  }
+
   resumeTask(tid: number) {
     this.ws?.send(JSON.stringify({ type: "resume", tid }));
   }

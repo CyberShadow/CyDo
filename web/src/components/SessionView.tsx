@@ -12,6 +12,7 @@ interface Props {
   onSend: (text: string) => void;
   onInterrupt: () => void;
   onStop: () => void;
+  onCloseStdin: () => void;
   onResume: () => void;
   onFork: (tid: number, afterUuid: string) => void;
   theme: Theme;
@@ -24,6 +25,7 @@ export function SessionView({
   onSend,
   onInterrupt,
   onStop,
+  onCloseStdin,
   onResume,
   onFork,
   theme,
@@ -59,6 +61,7 @@ export function SessionView({
         theme={theme}
         onToggleTheme={onToggleTheme}
         onStop={onStop}
+        onCloseStdin={onCloseStdin}
       />
       {!task.historyLoaded ? (
         <div class="session-loading">

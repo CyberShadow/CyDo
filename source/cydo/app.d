@@ -426,6 +426,24 @@ class App
 			if (td.session)
 				td.session.interrupt();
 		}
+		else if (json.type == "sigint")
+		{
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
+				return;
+			auto td = &tasks[tid];
+			if (td.session)
+				td.session.sigint();
+		}
+		else if (json.type == "close_stdin")
+		{
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
+				return;
+			auto td = &tasks[tid];
+			if (td.session)
+				td.session.closeStdin();
+		}
 		else if (json.type == "stop")
 		{
 			auto tid = json.tid;
