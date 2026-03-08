@@ -248,6 +248,16 @@ function handleMessage(raw) {
     if (event.type === "system" && event.subtype === "init") {
       snap.alive = true;
       snap.isProcessing = true;
+    } else if (event.type === "assistant" && event.message && event.message.content) {
+      // Extract last text block from assistant messages so we have a body
+      // for notifications without relying on the (possibly frozen) main thread.
+      var blocks = event.message.content;
+      for (var bi = blocks.length - 1; bi >= 0; bi--) {
+        if (blocks[bi].type === "text" && blocks[bi].text) {
+          var t = blocks[bi].text.trim();
+          if (t) { snap.lastText = t.length > 200 ? t.slice(0, 200) + "\u2026" : t; break; }
+        }
+      }
     } else if (event.type === "result") {
       snap.isProcessing = false;
     } else if (event.type === "exit") {
@@ -271,22 +281,20 @@ function checkTransition(sid, prev, next) {
   var awaiting = prev.isProcessing && !next.isProcessing && next.alive;
   if (!finished && !awaiting) return;
 
+  // Clear stale body from a previous transition so we don't reuse it.
+  next.body = undefined;
+
   for (var j = 0; j < ports.length; j++) {
     ports[j].postMessage({ type: "attention", tid: sid });
   }
 
   if (!anyTabFocused() && typeof Notification !== "undefined") {
-    // Delay briefly so the main thread's notify-body port message can arrive
-    // with the actual message text.  When tabs are frozen the message won't
-    // come, and the fallback text is used after the delay.
     var snap = next;
     var f = finished;
-    setTimeout(function() {
-      var title = snap.title || ("Task " + sid);
-      var body = snap.body || (f ? "Task finished" : "Awaiting input");
-      var n = new Notification(title, { body: body, tag: "cydo-" + sid });
-      activeNotifications.set(sid, n);
-    }, 50);
+    var title = snap.title || ("Task " + sid);
+    var body = snap.body || snap.lastText || (f ? "Task finished" : "Awaiting input");
+    var n = new Notification(title, { body: body, tag: "cydo-" + sid });
+    activeNotifications.set(sid, n);
   }
 }
 
