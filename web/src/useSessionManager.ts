@@ -190,6 +190,8 @@ export function useTaskManager(): TaskManager {
   const connRef = useRef<Connection | null>(null);
   // When we create a task and want to send a message once it's confirmed
   const pendingFirstMessage = useRef<string | null>(null);
+  // True when this client initiated a task creation and should focus it
+  const pendingFocus = useRef(false);
   // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
@@ -292,9 +294,12 @@ export function useTaskManager(): TaskManager {
         });
 
         // Navigate to the new task only if:
-        // - it has no parent (user-created), or
-        // - its parent is currently focused
-        const shouldFocus = !parentTid || activeTaskIdRef.current === parentTid;
+        // - this client created it (top-level), or
+        // - its parent is currently focused (sub-task visible in context)
+        const shouldFocus = parentTid
+          ? activeTaskIdRef.current === parentTid
+          : pendingFocus.current;
+        pendingFocus.current = false;
         if (shouldFocus) {
           if (workspace && projectPath) {
             const projName = findProjectName(
@@ -620,6 +625,7 @@ export function useTaskManager(): TaskManager {
       if (activeTaskId === null) {
         // No active task — create one in the current project context and queue the message
         pendingFirstMessage.current = text;
+        pendingFocus.current = true;
         const parsed = parseFromPath(location.pathname);
         if (parsed.workspace && parsed.project) {
           // Find the absolute project path from workspaces
@@ -646,6 +652,7 @@ export function useTaskManager(): TaskManager {
   }, [activeTaskId]);
 
   const newTask = useCallback((workspace?: string, projectPath?: string) => {
+    pendingFocus.current = true;
     connRef.current?.createTask(workspace, projectPath);
   }, []);
 
