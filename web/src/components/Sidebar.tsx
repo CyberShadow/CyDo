@@ -17,6 +17,18 @@ interface TreeNode {
   children: TreeNode[];
 }
 
+export function flatTaskOrder(tasks: SidebarTask[]): number[] {
+  const tids: number[] = [];
+  function walk(nodes: TreeNode[]) {
+    for (const n of nodes) {
+      tids.push(n.task.tid);
+      walk(n.children);
+    }
+  }
+  walk(buildTree(tasks));
+  return tids;
+}
+
 function buildTree(tasks: SidebarTask[]): TreeNode[] {
   const tidSet = new Set(tasks.map((t) => t.tid));
   const childMap = new Map<number, SidebarTask[]>();
@@ -65,6 +77,7 @@ function renderNode(
     <div
       key={t.tid}
       class={`sidebar-item${t.tid === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
+      data-tid={t.tid}
       style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
       onClick={() => onSelectTask(t.tid)}
     >

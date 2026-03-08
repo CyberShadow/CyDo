@@ -4,7 +4,7 @@ import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
 
@@ -38,6 +38,48 @@ export function App() {
   useEffect(() => {
     document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
   }, [active?.title]);
+
+  // Alt+Up / Alt+Down: navigate between sidebar sessions
+  // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      const order = flatTaskOrder(sidebarTasks);
+      if (order.length === 0) return;
+      const idx = activeTaskId !== null ? order.indexOf(activeTaskId) : -1;
+      let next: number | undefined;
+      if (e.shiftKey) {
+        // Jump to next/prev task with attention, wrapping around
+        const len = order.length;
+        const dir = e.key === "ArrowUp" ? -1 : 1;
+        for (let i = 1; i <= len; i++) {
+          const candidate =
+            order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
+          if (attention.has(candidate)) {
+            next = candidate;
+            break;
+          }
+        }
+        if (next === undefined) return;
+      } else {
+        next =
+          e.key === "ArrowUp"
+            ? idx <= 0
+              ? order[order.length - 1]
+              : order[idx - 1]
+            : idx === -1 || idx >= order.length - 1
+              ? order[0]
+              : order[idx + 1];
+      }
+      setActiveTaskId(next);
+      document
+        .querySelector(`.sidebar-item[data-tid="${next}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [sidebarTasks, activeTaskId, setActiveTaskId, attention]);
 
   // Welcome page: no workspace selected (on /)
   if (activeWorkspace === null && activeTaskId === null) {
