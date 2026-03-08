@@ -8,6 +8,7 @@
   --accent-dim: #888;
   --info: #88a0b0;
   --warn: #b09870;
+  --init: #cdb147;
   --special: #a090b0;
   --filepath: #8ab080;
   --pattern: #b0a068;
@@ -985,6 +986,10 @@ body,
 .result-divider-icon {
   font-size: 20px;
   line-height: 1;
+}
+
+.result-divider.init-message .result-divider-icon {
+  color: var(--init);
 }
 
 .result-divider.result-success .result-divider-icon {

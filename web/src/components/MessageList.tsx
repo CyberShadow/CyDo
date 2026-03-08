@@ -146,7 +146,10 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
 
   if (!expanded) {
     return (
-      <div class="result-divider" onClick={() => setExpanded(true)}>
+      <div
+        class="result-divider init-message"
+        onClick={() => setExpanded(true)}
+      >
         <hr />
         <span class="result-divider-icon">{"☀"}</span>
         <hr />
