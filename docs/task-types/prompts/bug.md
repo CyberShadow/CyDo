@@ -24,6 +24,9 @@ cause, and determine the fix.
 
 ## Output
 
+Your final message is returned verbatim to the parent task as the result.
+Include the complete report in your final message — do not write it to a file.
+
 Your report must include:
 - **Reproduction steps** — exact commands or actions
 - **Root cause** — the specific code location and explanation

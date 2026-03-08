@@ -561,6 +561,9 @@ class App
 				td.notificationBody = extractLastAssistantText(tid);
 				broadcast(buildTasksList());
 
+				// Capture the canonical result text for sub-task output.
+				td.resultText = extractResultText(line);
+
 				// For sub-tasks: close stdin so the process exits cleanly.
 				if (tid in pendingSubTasks)
 					td.session.closeStdin();
@@ -587,7 +590,7 @@ class App
 			// Fulfill pending sub-task promise (if this is a child task)
 			if (auto pending = tid in pendingSubTasks)
 			{
-				auto output = collectTaskOutput(tid);
+				auto output = tasks[tid].resultText;
 				auto success = tasks[tid].status == "completed";
 				pending.fulfill(McpResult(output.length > 0 ? output : "(no output)", !success));
 				pendingSubTasks.remove(tid);
@@ -999,23 +1002,6 @@ class App
 		clients = clients.remove!(c => c is ws);
 	}
 
-	/// Collect all assistant text output from a task's history.
-	private string collectTaskOutput(int tid)
-	{
-		if (tid !in tasks)
-			return "";
-
-		string output;
-		foreach (ref d; tasks[tid].history)
-		{
-			auto envelope = cast(string) d.toGC();
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length > 0)
-				output ~= extractAssistantText(event);
-		}
-		return output;
-	}
-
 	/// Extract the last assistant text from a task's history, truncated.
 	/// Used for notification body when a task needs attention.
 	private string extractLastAssistantText(int tid)
@@ -1062,6 +1048,7 @@ struct TaskData
 	bool needsAttention = false;
 	string notificationBody;
 	string lastActivity;
+	string resultText;    // result from the "result" event (canonical sub-task output)
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
 }
@@ -1249,6 +1236,32 @@ string extractAssistantText(string line)
 			if (block.type == "text")
 				result ~= block.text;
 		return result;
+	}
+	catch (Exception)
+	{
+		return "";
+	}
+}
+
+/// Extract the "result" field from a stream-json result event.
+/// The result event has: {"type":"result","subtype":"success","result":"..."}
+string extractResultText(string line)
+{
+	import ae.utils.json : jsonParse, JSONPartial;
+
+	@JSONPartial
+	static struct ResultProbe
+	{
+		string type;
+		string result;
+	}
+
+	try
+	{
+		auto probe = jsonParse!ResultProbe(line);
+		if (probe.type == "result")
+			return probe.result;
+		return "";
 	}
 	catch (Exception)
 	{

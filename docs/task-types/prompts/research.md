@@ -16,6 +16,9 @@ that will inform a decision.
 
 ## Output
 
+Your final message is returned verbatim to the parent task as the result.
+Include the complete report in your final message — do not write it to a file.
+
 Your report must include:
 - **Summary** — key findings in 2-3 sentences
 - **Details** — evidence and analysis, with file paths and line numbers

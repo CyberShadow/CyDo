@@ -23,6 +23,9 @@ existing patterns, and produce a detailed implementation plan.
 
 ## Output
 
+Your final message is returned verbatim to the parent task as the result.
+Include the complete plan in your final message — do not write it to a file.
+
 Your plan must include:
 - **Goal** — one-sentence summary of what this achieves
 - **Approach** — the design and rationale for key decisions
