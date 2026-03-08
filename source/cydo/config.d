@@ -36,11 +36,14 @@ struct CydoConfig
 	@Optional SandboxConfig sandbox;
 }
 
-CydoConfig loadConfig()
+string configPath()
 {
 	import std.path : buildPath, expandTilde;
+	return buildPath(expandTilde("~/.config/cydo"), "config.yaml");
+}
 
-	auto configPath = buildPath(expandTilde("~/.config/cydo"), "config.yaml");
+CydoConfig loadConfig()
+{
 	auto result = parseConfigFileSimple!CydoConfig(configPath);
 
 	if (result.isNull())
@@ -52,4 +55,10 @@ CydoConfig loadConfig()
 	}
 
 	return result.get();
+}
+
+/// Re-parse config file. Returns null on parse error (caller keeps old config).
+Nullable!CydoConfig reloadConfig()
+{
+	return parseConfigFileSimple!CydoConfig(configPath);
 }

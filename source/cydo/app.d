@@ -24,7 +24,7 @@ import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.claude : ClaudeCodeAgent;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
-import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig;
+import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
 	forkTask, loadTaskHistory;
@@ -73,6 +73,11 @@ class App
 	private INotify.WatchDescriptor[int] jsonlFileWatches;
 	private INotify.WatchDescriptor[int] jsonlDirWatches;
 	private size_t[int] jsonlReadPos;
+	// inotify watches for config file hot-reload
+	private INotify.WatchDescriptor configFileWatch;
+	private INotify.WatchDescriptor configDirWatch;
+	private bool configFileWatchActive;
+	private bool configDirWatchActive;
 
 	void start()
 	{
@@ -96,18 +101,10 @@ class App
 			writefln("Warning: could not load task types: %s", e.msg);
 
 		// Discover projects in all workspaces
-		foreach (ref ws; config.workspaces)
-		{
-			auto projects = discoverProjects(ws);
-			ProjectInfo[] projInfos;
-			foreach (ref p; projects)
-				projInfos ~= ProjectInfo(p.name, p.path);
-			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
+		discoverAllWorkspaces();
 
-			writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
-			foreach (ref p; projects)
-				writefln("  - %s (%s)", p.name, p.path);
-		}
+		// Watch config file for hot-reload
+		startConfigWatch();
 
 		// Load persisted tasks (metadata only — history loaded on demand)
 		foreach (row; persistence.loadTasks())
@@ -662,6 +659,93 @@ class App
 	{
 		import ae.utils.json : toJson;
 		broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
+	}
+
+	/// Discover projects in all configured workspaces and populate workspacesInfo.
+	private void discoverAllWorkspaces()
+	{
+		workspacesInfo = null;
+		foreach (ref ws; config.workspaces)
+		{
+			auto projects = discoverProjects(ws);
+			ProjectInfo[] projInfos;
+			foreach (ref p; projects)
+				projInfos ~= ProjectInfo(p.name, p.path);
+			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
+
+			writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
+			foreach (ref p; projects)
+				writefln("  - %s (%s)", p.name, p.path);
+		}
+	}
+
+	/// Watch the config file for changes and reload on modification.
+	/// Handles both direct saves (closeWrite) and editor write-and-rename (vim, etc.)
+	/// by also watching the config directory for create events.
+	private void startConfigWatch()
+	{
+		import std.file : exists;
+		import std.path : baseName, dirName;
+		import cydo.config : configPath;
+
+		auto cfgPath = configPath;
+		auto cfgDir = dirName(cfgPath);
+		auto cfgFileName = baseName(cfgPath);
+
+		if (!exists(cfgDir))
+		{
+			writefln("Config directory %s does not exist, skipping config watch", cfgDir);
+			return;
+		}
+
+		// Watch the file itself for direct writes
+		if (exists(cfgPath))
+			watchConfigFile(cfgPath);
+
+		// Watch the directory for create events (editor write-and-rename)
+		configDirWatch = iNotify.add(cfgDir, INotify.Mask.create | INotify.Mask.movedTo,
+			(in char[] name, INotify.Mask mask, uint cookie)
+			{
+				if (name == cfgFileName)
+				{
+					// File was replaced — re-watch the new file
+					if (configFileWatchActive)
+					{
+						iNotify.remove(configFileWatch);
+						configFileWatchActive = false;
+					}
+					watchConfigFile(cfgPath);
+					onConfigChanged();
+				}
+			}
+		);
+		configDirWatchActive = true;
+	}
+
+	private void watchConfigFile(string cfgPath)
+	{
+		configFileWatch = iNotify.add(cfgPath, INotify.Mask.closeWrite,
+			(in char[] name, INotify.Mask mask, uint cookie)
+			{
+				onConfigChanged();
+			}
+		);
+		configFileWatchActive = true;
+	}
+
+	private void onConfigChanged()
+	{
+		writefln("Config file changed, reloading...");
+		auto result = reloadConfig();
+		if (result.isNull())
+		{
+			writefln("  Config reload failed (parse error), keeping current config");
+			return;
+		}
+		config = result.get();
+		discoverAllWorkspaces();
+		broadcast(buildWorkspacesList());
+		writefln("  Config reloaded successfully");
 	}
 
 	/// Start watching the JSONL file (or directory if file doesn't exist yet).
