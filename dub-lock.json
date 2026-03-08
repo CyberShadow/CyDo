@@ -1,0 +1,20 @@
+{
+  "dependencies": {
+    "ae": {
+      "version": "0.0.3780",
+      "sha256": "18z24684ay1fb8hmg3qvyy4153iic6hryif9sr8xvhpsgxi6cmym"
+    },
+    "configy": {
+      "version": "2.2.0",
+      "sha256": "0l461nflqc2kpv02y6abfnibcbw9jzbnp1pfkqlj6bifr8xbf1fi"
+    },
+    "dyaml": {
+      "version": "0.10.0",
+      "sha256": "1sjz76iwpxqljgi2j6gk1x78i44gm8s4i7kaqhs0x92kdp2za92j"
+    },
+    "tinyendian": {
+      "version": "0.2.0",
+      "sha256": "0ipf6msrx80lsx81qqlwl0xladk79avv1rnzdlfzjc49wrsr9fia"
+    }
+  }
+}

@@ -6,7 +6,7 @@ targetPath "build"
 
 sourcePaths "source"
 
-dependency "ae" path="../ae-container/ae"
-dependency "ae:sqlite" path="../ae-container/ae"
+dependency "ae" version="~>0.0.3780"
+dependency "ae:sqlite" version="~>0.0.3780"
 dependency "configy" version="~>2.2.0"
 subConfiguration "ae" "library"
