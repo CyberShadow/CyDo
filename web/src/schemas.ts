@@ -279,6 +279,7 @@ const AssistantInnerMessage = z
     stop_sequence: z.union([z.null(), z.string()]).optional(),
     usage: UsageSchema,
     context_management: z.null().optional(),
+    container: z.null().optional(),
   })
   .passthrough();
 
@@ -289,6 +290,7 @@ export const AssistantMessageSchema = z
     session_id: z.string(),
     parent_tool_use_id: z.string().nullable(),
     isSidechain: z.boolean().optional(),
+    isApiErrorMessage: z.boolean().optional(),
     message: AssistantInnerMessage,
   })
   .passthrough();
@@ -296,14 +298,14 @@ export const AssistantMessageSchema = z
 export const UserEchoSchema = z
   .object({
     type: z.literal("user"),
-    session_id: z.string(),
+    session_id: z.string().optional(),
     message: z
       .object({
         role: z.literal("user"),
         content: z.union([z.string(), z.array(UserContentBlockSchema)]), // string when isReplay
       })
       .passthrough(),
-    parent_tool_use_id: z.string().nullable(),
+    parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
     // ignored: legacy duplicate of tool results in content blocks
     tool_use_result: z.unknown().optional(),
@@ -311,6 +313,8 @@ export const UserEchoSchema = z
     // consumed: checked in handleSessionMessage to skip echo for replayed messages
     isReplay: z.boolean().optional(),
     isSynthetic: z.boolean().optional(),
+    isMeta: z.boolean().optional(),
+    slug: z.string().optional(),
     uuid: z.string().optional(),
   })
   .passthrough();
@@ -442,6 +446,7 @@ export const AssistantFileSchema = z
     uuid: z.string(),
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
+    isApiErrorMessage: z.boolean().optional(),
     message: AssistantInnerMessage,
     slug: z.string().optional(),
     requestId: z.string().optional(),
@@ -464,6 +469,8 @@ export const UserFileSchema = z
     tool_use_result: z.unknown().optional(),
     toolUseResult: z.unknown().optional(),
     isSynthetic: z.literal(true).optional(),
+    isMeta: z.boolean().optional(),
+    slug: z.string().optional(),
     uuid: z.string().optional(),
     ...FileEnvelopeFields,
   })
