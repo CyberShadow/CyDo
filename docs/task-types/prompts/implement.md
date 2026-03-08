@@ -11,11 +11,15 @@ task and produce a clean, reviewable commit.
 
 1. **Read the plan** — Understand exactly what needs to change. If anything is
    ambiguous, read the relevant source files to resolve it yourself.
-2. **Implement** — Write the code. Follow existing project conventions.
-3. **Test** — Create a **test** sub-task if the changes need new or updated
+2. **Adopt reproducer** — If the task description includes a reproducer worktree
+   path (from a bug investigation spike), cherry-pick or copy the failing test
+   into your worktree first. This test should fail before your fix and pass
+   after.
+3. **Implement** — Write the code. Follow existing project conventions.
+4. **Test** — Create a **test** sub-task if the changes need new or updated
    tests.
-4. **Verify** — Ensure the code compiles and basic functionality works.
-5. **Commit** — Produce a single, clean commit with a descriptive message.
+5. **Verify** — Ensure the code compiles and basic functionality works.
+6. **Commit** — Produce a single, clean commit with a descriptive message.
 
 ## Guidelines
 
