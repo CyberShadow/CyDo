@@ -225,27 +225,49 @@ void simulateWorkflow(TaskTypeDef[string] types)
 		writefln("Active stewards: %s", stewards.join(", "));
 	writeln();
 
+	SimTask[] tasks;
+	int nextId = 1;
+	bool eof = false;
+
+	/// Read a line from stdin, handling EOF gracefully.
+	string prompt()
+	{
+		stdout.flush();
+		if (stdin.eof)
+		{
+			eof = true;
+			return null;
+		}
+		auto line = readln();
+		if (line is null)
+		{
+			eof = true;
+			return null;
+		}
+		return line.chomp.strip;
+	}
+
 	// Pick starting type
 	write("> Start type: ");
-	stdout.flush();
-	auto startType = readln().chomp.strip;
-	if (startType !in types)
+	auto startType = prompt();
+	if (eof || startType !in types)
 	{
-		writefln("Unknown type '%s'", startType);
+		if (!eof)
+			writefln("Unknown type '%s'", startType);
 		return;
 	}
 
 	write("> Description: ");
-	stdout.flush();
-	auto description = readln().chomp.strip;
+	auto description = prompt();
+	if (eof)
+		return;
 
 	writeln();
 
-	SimTask[] tasks;
-	int nextId = 1;
-
 	void createTask(string typeName, string desc, int parentId)
 	{
+		if (eof)
+			return;
 		if (typeName !in types)
 		{
 			writefln("  ERROR: unknown type '%s' — cannot create task", typeName);
@@ -289,8 +311,9 @@ void simulateWorkflow(TaskTypeDef[string] types)
 		{
 			// Steward: ask for approve/reject
 			write("    > Approve? (y/n): ");
-			stdout.flush();
-			auto response = readln().chomp.strip;
+			auto response = prompt();
+			if (eof)
+				return;
 			if (response == "y" || response == "Y")
 			{
 				writefln("    → APPROVED");
@@ -299,8 +322,9 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			else
 			{
 				write("    > Reason: ");
-				stdout.flush();
-				auto reason = readln().chomp.strip;
+				auto reason = prompt();
+				if (eof)
+					return;
 				writefln("    → REJECTED: %s", reason);
 				tasks[taskIdx].status = "rejected";
 			}
@@ -312,13 +336,12 @@ void simulateWorkflow(TaskTypeDef[string] types)
 		if (def.creatable_tasks.length > 0)
 		{
 			bool createdAny = false;
-			while (true)
+			while (!eof)
 			{
 				writef("    > Create sub-task? (%s, or 'no'): ",
 					def.creatable_tasks.join(", "));
-				stdout.flush();
-				auto choice = readln().chomp.strip;
-				if (choice == "no" || choice == "n" || choice.length == 0)
+				auto choice = prompt();
+				if (eof || choice == "no" || choice == "n" || choice.length == 0)
 					break;
 				if (!def.creatable_tasks.canFind(choice))
 				{
@@ -326,8 +349,9 @@ void simulateWorkflow(TaskTypeDef[string] types)
 					continue;
 				}
 				write("    > Sub-task description: ");
-				stdout.flush();
-				auto subDesc = readln().chomp.strip;
+				auto subDesc = prompt();
+				if (eof)
+					break;
 				if (subDesc.length == 0)
 					subDesc = desc;
 				writeln();
@@ -347,70 +371,76 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			return;
 		}
 
-		// Pick a continuation
+		// Pick a continuation (modeled as a tool call that can be retried on rejection)
 		auto contNames = def.continuations.keys.array.sort.release;
-		if (contNames.length == 1)
+		while (!eof)
 		{
-			writefln("    > Continuation: %s (only option)", contNames[0]);
-		}
-		else
-		{
-			writef("    > Choose continuation (%s): ", contNames.join(", "));
-			stdout.flush();
-			auto choice = readln().chomp.strip;
-			if (!contNames.canFind(choice))
+			string chosen;
+			if (contNames.length == 1)
 			{
-				writefln("    Invalid choice '%s', using '%s'", choice, contNames[0]);
-				choice = contNames[0];
+				writefln("    > Continuation: %s (only option)", contNames[0]);
+				chosen = contNames[0];
 			}
-			contNames = [choice]; // narrow to chosen
-		}
-
-		auto chosen = contNames[0];
-		auto cont = def.continuations[chosen];
-		tasks[taskIdx].status = "completed";
-		tasks[taskIdx].chosenContinuation = chosen;
-		writeln();
-
-		// Handle approval gate
-		if (cont.requires_approval && stewards.length > 0)
-		{
-			writefln("    Approval required — invoking %d steward(s)...\n",
-				stewards.length);
-
-			bool allApproved = true;
-			int rejectedBy = -1;
-
-			foreach (s; stewards)
-				createTask(s, format("Review: %s", desc), id);
-
-			// Check results
-			foreach (ref t; tasks)
+			else
 			{
-				if (t.parentId == id && types[t.typeName].steward)
+				writef("    > Choose continuation (%s): ", contNames.join(", "));
+				auto choice = prompt();
+				if (eof)
+					return;
+				if (!contNames.canFind(choice))
+				{
+					writefln("    Invalid choice '%s', using '%s'", choice, contNames[0]);
+					choice = contNames[0];
+				}
+				chosen = choice;
+			}
+
+			auto cont = def.continuations[chosen];
+
+			// Handle approval gate (tool call blocks while stewards review)
+			if (cont.requires_approval && stewards.length > 0)
+			{
+				writefln("    Approval required — invoking %d steward(s)...\n",
+					stewards.length);
+
+				// Record where this round's steward tasks start
+				auto roundStart = tasks.length;
+
+				foreach (s; stewards)
+					createTask(s, format("Review: %s", desc), id);
+
+				// Check only this round's steward results
+				bool allApproved = true;
+				string rejectionFeedback;
+				foreach (ref t; tasks[roundStart .. $])
 				{
 					if (t.status == "rejected")
 					{
 						allApproved = false;
-						rejectedBy = t.id;
+						rejectionFeedback = format("steward #%d (%s) rejected",
+							t.id, t.typeName);
 						break;
 					}
 				}
+
+				if (!allApproved)
+				{
+					writefln("    REJECTED — %s. Agent can rework and retry.\n",
+						rejectionFeedback);
+					continue; // agent retries continuation tool call
+				}
+
+				writeln("    All stewards approved.\n");
 			}
 
-			if (!allApproved)
-			{
-				writefln("    APPROVAL BLOCKED — task #%d was rejected by steward #%d.",
-					id, rejectedBy);
-				writeln("    (In production: caller would be resumed with feedback)\n");
-				return;
-			}
+			// Approved (or no approval needed) — commit the continuation
+			tasks[taskIdx].status = "completed";
+			tasks[taskIdx].chosenContinuation = chosen;
 
-			writeln("    All stewards approved. Creating successor...\n");
+			// Create successor
+			createTask(cont.task_type, desc, id);
+			break;
 		}
-
-		// Create successor
-		createTask(cont.task_type, desc, id);
 	}
 
 	createTask(startType, description, 0);

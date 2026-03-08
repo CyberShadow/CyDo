@@ -63,6 +63,7 @@ task_types:
     model_class: large
     tool_preset: read-only
     output_type: report
+    creatable_tasks: [research]
     continuations:
       implement:
         task_type: implement
