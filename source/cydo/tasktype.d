@@ -4,7 +4,7 @@
 /// See docs/task-types/README.md for the design document.
 module cydo.tasktype;
 
-import configy.attributes : Optional;
+import configy.attributes : Key, Optional;
 
 import std.algorithm : canFind, filter, map, sort;
 import std.array : array, join;
@@ -26,6 +26,9 @@ struct ContinuationDef
 
 struct TaskTypeDef
 {
+	// Name (populated from YAML mapping key via @Key)
+	string name;
+
 	// Identity
 	string description;
 	@Optional string agent_description;
@@ -57,14 +60,23 @@ struct TaskTypeDef
 // Top-level wrapper struct for YAML parsing (configy requires a struct).
 struct TaskTypesFile
 {
-	TaskTypeDef[string] task_types;
+	@Key("name") TaskTypeDef[] task_types;
+}
+
+/// Look up a task type by name. Returns a pointer into the array, or null.
+inout(TaskTypeDef)* byName(inout TaskTypeDef[] types, string name)
+{
+	foreach (ref t; types)
+		if (t.name == name)
+			return &t;
+	return null;
 }
 
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
-TaskTypeDef[string] loadTaskTypes(string path)
+TaskTypeDef[] loadTaskTypes(string path)
 {
 	import configy.read : parseConfigFileSimple;
 
@@ -78,12 +90,12 @@ TaskTypeDef[string] loadTaskTypes(string path)
 // Validator
 // ---------------------------------------------------------------------------
 
-string[] validateTaskTypes(TaskTypeDef[string] types)
+string[] validateTaskTypes(TaskTypeDef[] types)
 {
 	string[] errors;
 
 	bool hasSteward = false;
-	foreach (name, ref def; types)
+	foreach (ref def; types)
 	{
 		if (def.steward)
 			hasSteward = true;
@@ -91,16 +103,16 @@ string[] validateTaskTypes(TaskTypeDef[string] types)
 		// Check creatable_tasks references
 		foreach (ct; def.creatable_tasks)
 		{
-			if (ct !in types)
-				errors ~= format("%s: creatable_tasks references unknown type '%s'", name, ct);
+			if (types.byName(ct) is null)
+				errors ~= format("%s: creatable_tasks references unknown type '%s'", def.name, ct);
 		}
 
 		// Check continuation references
 		foreach (cname, ref cont; def.continuations)
 		{
-			if (cont.task_type !in types)
+			if (types.byName(cont.task_type) is null)
 				errors ~= format("%s: continuation '%s' references unknown type '%s'",
-					name, cname, cont.task_type);
+					def.name, cname, cont.task_type);
 		}
 
 		// Steward validation
@@ -108,39 +120,39 @@ string[] validateTaskTypes(TaskTypeDef[string] types)
 		{
 			if (def.output_type != "report")
 				errors ~= format("%s: steward should have output_type 'report', got '%s'",
-					name, def.output_type);
+					def.name, def.output_type);
 			if (!def.serial)
-				errors ~= format("%s: steward should have serial: true", name);
+				errors ~= format("%s: steward should have serial: true", def.name);
 		}
 
 		// Validate enum-like fields
 		if (!["small", "medium", "large"].canFind(def.model_class))
-			errors ~= format("%s: invalid model_class '%s'", name, def.model_class);
+			errors ~= format("%s: invalid model_class '%s'", def.name, def.model_class);
 		if (!["full", "read-only", "code", "execute"].canFind(def.tool_preset))
-			errors ~= format("%s: invalid tool_preset '%s'", name, def.tool_preset);
+			errors ~= format("%s: invalid tool_preset '%s'", def.name, def.tool_preset);
 		if (!["commit", "patch", "report"].canFind(def.output_type))
-			errors ~= format("%s: invalid output_type '%s'", name, def.output_type);
+			errors ~= format("%s: invalid output_type '%s'", def.name, def.output_type);
 	}
 
 	// Check that requires_approval has stewards available
-	foreach (name, ref def; types)
+	foreach (ref def; types)
 	{
 		foreach (cname, ref cont; def.continuations)
 		{
 			if (cont.requires_approval && !hasSteward)
 				errors ~= format("%s: continuation '%s' requires approval but no steward types defined",
-					name, cname);
+					def.name, cname);
 		}
 	}
 
 	// Check for pure-continuation cycles (A→B→A with no modal break)
-	foreach (name, ref def; types)
+	foreach (ref def; types)
 	{
 		foreach (cname, ref cont; def.continuations)
 		{
-			if (auto cycle = detectCycle(types, cont.task_type, [name]))
+			if (auto cycle = detectCycle(types, cont.task_type, [def.name]))
 				errors ~= format("%s: continuation '%s' creates cycle: %s",
-					name, cname, cycle);
+					def.name, cname, cycle);
 		}
 	}
 
@@ -148,13 +160,13 @@ string[] validateTaskTypes(TaskTypeDef[string] types)
 }
 
 /// Detect cycles in continuation chains. Returns the cycle path or null.
-private string detectCycle(TaskTypeDef[string] types, string current, string[] visited)
+private string detectCycle(TaskTypeDef[] types, string current, string[] visited)
 {
 	if (visited.canFind(current))
 		return visited.join(" → ") ~ " → " ~ current;
 
-	auto def = current in types;
-	if (!def)
+	auto def = types.byName(current);
+	if (def is null)
 		return null;
 
 	foreach (_, ref cont; def.continuations)
@@ -169,16 +181,13 @@ private string detectCycle(TaskTypeDef[string] types, string current, string[] v
 // Printer
 // ---------------------------------------------------------------------------
 
-void printTypes(TaskTypeDef[string] types)
+void printTypes(TaskTypeDef[] types)
 {
-	auto names = types.keys.array.sort.release;
-
 	writeln("=== Task Type Definitions ===\n");
-	foreach (name; names)
+	foreach (ref def; types)
 	{
-		auto def = types[name];
 		writefln("  %-20s  model: %-6s  tools: %-9s  output: %-6s%s%s%s",
-			name,
+			def.name,
 			def.model_class,
 			def.tool_preset,
 			def.output_type,
@@ -189,10 +198,10 @@ void printTypes(TaskTypeDef[string] types)
 	}
 
 	// Summary
-	auto stewards = names.filter!(n => types[n].steward).array;
-	auto visible = names.filter!(n => types[n].user_visible).array;
+	auto stewards = types.filter!(d => d.steward).array;
+	auto visible = types.filter!(d => d.user_visible).array;
 	writefln("\n  %d types total, %d user-visible, %d stewards",
-		names.length, visible.length, stewards.length);
+		types.length, visible.length, stewards.length);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,22 +218,22 @@ private struct SimTask
 	string chosenContinuation;
 }
 
-void simulateWorkflow(TaskTypeDef[string] types)
+void simulateWorkflow(TaskTypeDef[] types)
 {
 	writeln("=== Workflow Simulator ===\n");
 
-	auto stewards = types.keys.filter!(n => types[n].steward).array.sort.release;
-	auto visible = types.keys.filter!(n => types[n].user_visible).array.sort.release;
+	auto stewardNames = types.filter!(d => d.steward).map!(d => d.name).array;
+	auto visibleNames = types.filter!(d => d.user_visible).map!(d => d.name).array;
 
-	if (visible.length == 0)
+	if (visibleNames.length == 0)
 	{
 		writeln("No user-visible task types defined.");
 		return;
 	}
 
-	writefln("User-visible types: %s", visible.join(", "));
-	if (stewards.length > 0)
-		writefln("Active stewards: %s", stewards.join(", "));
+	writefln("User-visible types: %s", visibleNames.join(", "));
+	if (stewardNames.length > 0)
+		writefln("Active stewards: %s", stewardNames.join(", "));
 	writeln();
 
 	SimTask[] tasks;
@@ -252,7 +261,7 @@ void simulateWorkflow(TaskTypeDef[string] types)
 	// Pick starting type
 	write("> Start type: ");
 	auto startType = prompt();
-	if (eof || startType !in types)
+	if (eof || types.byName(startType) is null)
 	{
 		if (!eof)
 			writefln("Unknown type '%s'", startType);
@@ -270,12 +279,13 @@ void simulateWorkflow(TaskTypeDef[string] types)
 	{
 		if (eof)
 			return;
-		if (typeName !in types)
+		auto defp = types.byName(typeName);
+		if (defp is null)
 		{
 			writefln("  ERROR: unknown type '%s' — cannot create task", typeName);
 			return;
 		}
-		auto def = types[typeName];
+		auto def = *defp;
 		auto id = nextId++;
 		auto taskIdx = tasks.length;
 		tasks ~= SimTask(id, typeName, desc, parentId, "active");
@@ -404,15 +414,15 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			auto cont = def.continuations[chosen];
 
 			// Handle approval gate (tool call blocks while stewards review)
-			if (cont.requires_approval && stewards.length > 0)
+			if (cont.requires_approval && stewardNames.length > 0)
 			{
 				writefln("    Approval required — invoking %d steward(s)...\n",
-					stewards.length);
+					stewardNames.length);
 
 				// Record where this round's steward tasks start
 				auto roundStart = tasks.length;
 
-				foreach (s; stewards)
+				foreach (s; stewardNames)
 					createTask(s, format("Review: %s", desc), id);
 
 				// Check only this round's steward results
@@ -480,9 +490,10 @@ void simulateWorkflow(TaskTypeDef[string] types)
 
 		auto contInfo = t.chosenContinuation.length > 0
 			? format(" → %s", t.chosenContinuation) : "";
+		auto typeDef = types.byName(t.typeName);
 		writefln("%s#%d %s [%s%s]%s",
 			indent, t.id, t.typeName, t.status, contInfo,
-			types[t.typeName].steward ? "" :
+			(typeDef !is null && typeDef.steward) ? "" :
 				(t.description.length > 40
 					? format(" \"%s…\"", t.description[0 .. 40])
 					: format(" \"%s\"", t.description)));
@@ -518,16 +529,16 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir)
 
 /// Format a description of available task types for a given parent type.
 /// Used to fill the {{creatable_task_types}} placeholder in MCP tool descriptions.
-string formatCreatableTaskTypes(TaskTypeDef[string] allTypes, string parentTypeName)
+string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 {
-	auto parentDef = parentTypeName in allTypes;
+	auto parentDef = allTypes.byName(parentTypeName);
 	if (parentDef is null || parentDef.creatable_tasks.length == 0)
 		return "(none available)";
 
 	string result;
 	foreach (name; parentDef.creatable_tasks)
 	{
-		auto def = name in allTypes;
+		auto def = allTypes.byName(name);
 		if (def is null)
 			continue;
 		auto desc = def.agent_description.length > 0
@@ -578,10 +589,9 @@ string modelClassToAlias(string modelClass)
 // Dot (Graphviz) Generator
 // ---------------------------------------------------------------------------
 
-void generateDot(TaskTypeDef[string] types)
+void generateDot(TaskTypeDef[] types)
 {
-	auto names = types.keys.array.sort.release;
-	auto stewards = names.filter!(n => types[n].steward).array;
+	auto stewardNames = types.filter!(d => d.steward).map!(d => d.name).array;
 
 	writeln("digraph task_types {");
 	writeln("    rankdir=LR;");
@@ -590,16 +600,15 @@ void generateDot(TaskTypeDef[string] types)
 	writeln();
 
 	// User node
-	auto visible = names.filter!(n => types[n].user_visible).array;
 	writeln("    user [label=\"user\" shape=house style=\"filled\" fillcolor=\"#cce5ff\"];");
-	foreach (v; visible)
-		writefln("    user -> %s [style=dashed arrowhead=open label=\"creates\"];", v);
+	foreach (ref def; types)
+		if (def.user_visible)
+			writefln("    user -> %s [style=dashed arrowhead=open label=\"creates\"];", def.name);
 	writeln();
 
 	// Node definitions with shape/color by category
-	foreach (name; names)
+	foreach (ref def; types)
 	{
-		auto def = types[name];
 		string shape, style, fillcolor;
 
 		if (def.steward)
@@ -619,17 +628,16 @@ void generateDot(TaskTypeDef[string] types)
 		}
 
 		style = "filled,rounded";
-		auto label = format("%s\\n%s / %s%s", name, def.model_class, def.tool_preset,
+		auto label = format("%s\\n%s / %s%s", def.name, def.model_class, def.tool_preset,
 			def.worktree ? " ⎘" : "");
 		writefln("    %s [label=\"%s\" shape=%s style=\"%s\" fillcolor=\"%s\"];",
-			name, label, shape, style, fillcolor);
+			def.name, label, shape, style, fillcolor);
 	}
 	writeln();
 
 	// Continuation edges (solid arrows)
-	foreach (name; names)
+	foreach (ref def; types)
 	{
-		auto def = types[name];
 		foreach (cname, ref cont; def.continuations)
 		{
 			string label = cname;
@@ -638,35 +646,32 @@ void generateDot(TaskTypeDef[string] types)
 			auto attrs = format("label=\"%s\"", label);
 			if (cont.requires_approval)
 				attrs ~= " style=bold color=\"#856404\"";
-			writefln("    %s -> %s [%s];", name, cont.task_type, attrs);
+			writefln("    %s -> %s [%s];", def.name, cont.task_type, attrs);
 		}
 	}
 
 	// Creatable task edges (dashed arrows)
-	foreach (name; names)
+	foreach (ref def; types)
 	{
-		auto def = types[name];
 		foreach (ct; def.creatable_tasks)
 			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates\"];",
-				name, ct);
+				def.name, ct);
 	}
 
 	// Steward review edges (dotted, from approval-gated continuations to stewards)
-	if (stewards.length > 0)
+	if (stewardNames.length > 0)
 	{
-		// Invisible node for legend
 		writeln();
 		writeln("    // Steward review relationships");
-		foreach (name; names)
+		foreach (ref def; types)
 		{
-			auto def = types[name];
 			foreach (_, ref cont; def.continuations)
 			{
 				if (cont.requires_approval)
 				{
-					foreach (s; stewards)
+					foreach (s; stewardNames)
 						writefln("    %s -> %s [style=dotted arrowhead=diamond color=\"#856404\" constraint=false];",
-							name, s);
+							def.name, s);
 					break; // one set of steward edges per source node
 				}
 			}
@@ -690,7 +695,7 @@ void generateDot(TaskTypeDef[string] types)
 // ---------------------------------------------------------------------------
 
 /// Load and validate task types from a YAML file, returning null on error.
-private TaskTypeDef[string] loadAndValidate(string flag, string[] args)
+private TaskTypeDef[] loadAndValidate(string flag, string[] args)
 {
 	import std.algorithm : find;
 
@@ -705,7 +710,7 @@ private TaskTypeDef[string] loadAndValidate(string flag, string[] args)
 		return null;
 	}
 
-	TaskTypeDef[string] types;
+	TaskTypeDef[] types;
 	try
 		types = loadTaskTypes(path);
 	catch (Exception e)

@@ -29,8 +29,8 @@ import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
 	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
-import cydo.tasktype : TaskTypeDef, loadTaskTypes, validateTaskTypes, modelClassToAlias, renderPrompt,
-	formatCreatableTaskTypes, toolPresetToDisallowedTools;
+import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
+	renderPrompt, formatCreatableTaskTypes, toolPresetToDisallowedTools;
 
 void main(string[] args)
 {
@@ -71,7 +71,7 @@ class App
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent;
 	// Task type definitions loaded from YAML
-	private TaskTypeDef[string] taskTypes;
+	private TaskTypeDef[] taskTypes;
 	private string taskTypesDir;
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
@@ -275,7 +275,7 @@ class App
 			return resolve(McpResult("Calling task not found", true));
 
 		// Validate task_type against parent's creatable_tasks
-		auto parentTypeDef = parentTd.taskType in taskTypes;
+		auto parentTypeDef = taskTypes.byName(parentTd.taskType);
 		if (parentTypeDef !is null &&
 			parentTypeDef.creatable_tasks.length > 0 &&
 			!parentTypeDef.creatable_tasks.canFind(taskType))
@@ -287,7 +287,7 @@ class App
 		}
 
 		// Validate child task type exists
-		auto childTypeDef = taskType in taskTypes;
+		auto childTypeDef = taskTypes.byName(taskType);
 		if (childTypeDef is null)
 			return resolve(McpResult("Unknown task type: " ~ taskType, true));
 
@@ -349,7 +349,7 @@ class App
 		if (json.type == "create_task")
 		{
 			auto tid = createTask(json.workspace, json.project_path);
-			if (json.task_type.length > 0 && json.task_type in taskTypes)
+			if (json.task_type.length > 0 && taskTypes.byName(json.task_type) !is null)
 			{
 				tasks[tid].taskType = json.task_type;
 				persistence.setTaskType(tid, json.task_type);
@@ -394,7 +394,7 @@ class App
 				if (td.claudeSessionId.length > 0)
 					return; // resumable but not resumed — ignore
 				// Build session config from task type if available
-				auto typeDef = td.taskType in taskTypes;
+				auto typeDef = taskTypes.byName(td.taskType);
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
@@ -410,7 +410,7 @@ class App
 			auto messageToSend = json.content;
 			if (td.description.length == 0)
 			{
-				auto typeDef = td.taskType in taskTypes;
+				auto typeDef = taskTypes.byName(td.taskType);
 				if (typeDef !is null)
 					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir);
 			}
@@ -1032,9 +1032,9 @@ class App
 		import ae.utils.json : toJson;
 
 		TaskTypeListEntry[] entries;
-		foreach (name, ref def; taskTypes)
+		foreach (ref def; taskTypes)
 			if (def.user_visible)
-				entries ~= TaskTypeListEntry(name, def.description, def.model_class, def.tool_preset);
+				entries ~= TaskTypeListEntry(def.name, def.description, def.model_class, def.tool_preset);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
 	}
 
