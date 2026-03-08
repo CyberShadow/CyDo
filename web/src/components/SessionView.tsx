@@ -48,14 +48,6 @@ export function SessionView({
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
-  if (!task.historyLoaded) {
-    return (
-      <div class="session-loading">
-        <span>Loading session…</span>
-      </div>
-    );
-  }
-
   return (
     <>
       <SystemBanner
@@ -68,7 +60,11 @@ export function SessionView({
         onToggleTheme={onToggleTheme}
         onStop={onStop}
       />
-      {task.messages.length === 0 && !task.isProcessing ? (
+      {!task.historyLoaded ? (
+        <div class="session-loading">
+          <span>Loading session…</span>
+        </div>
+      ) : task.messages.length === 0 && !task.isProcessing ? (
         <div class="message-list welcome-prompt">
           <div class="welcome-box">
             <h1 class="welcome-title">CyDo</h1>
