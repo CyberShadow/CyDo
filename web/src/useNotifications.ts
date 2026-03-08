@@ -20,6 +20,7 @@ interface Snapshot {
 }
 
 const snapshots = new Map<number, Snapshot>();
+const activeNotifications = new Map<number, Notification>();
 
 // Suppresses notifications/attention during initial WebSocket replay.
 let replayDone = false;
@@ -71,6 +72,8 @@ export function removeAttention(tid: number) {
   attentionSet = new Set(attentionSet);
   attentionSet.delete(tid);
   for (const fn of attentionListeners) fn(attentionSet);
+  activeNotifications.get(tid)?.close();
+  activeNotifications.delete(tid);
 }
 
 /**
@@ -99,7 +102,9 @@ export function notifyTransition(
   ) {
     const title = next.title || `Task ${tid}`;
     const body = lastMessageText(next);
-    new Notification(title, { body, tag: `cydo-${tid}` });
+    const n = new Notification(title, { body, tag: `cydo-${tid}` });
+    activeNotifications.set(tid, n);
+    n.onclose = () => activeNotifications.delete(tid);
   }
 }
 
