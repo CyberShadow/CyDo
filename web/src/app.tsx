@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
@@ -7,6 +7,7 @@ import { InputBox } from "./components/InputBox";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
+import { SearchPopup } from "./components/SearchPopup";
 
 export function App() {
   const {
@@ -31,6 +32,7 @@ export function App() {
 
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, dismissAttention);
+  const [showSearch, setShowSearch] = useState(false);
 
   const active =
     activeTaskId !== null ? (tasks.get(activeTaskId) ?? null) : null;
@@ -81,6 +83,32 @@ export function App() {
     return () => document.removeEventListener("keydown", handler);
   }, [sidebarTasks, activeTaskId, setActiveTaskId, attention]);
 
+  // Ctrl+K: open search popup
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setShowSearch((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
+  const searchPopup = showSearch && (
+    <SearchPopup
+      tasks={tasks}
+      onSelect={setActiveTaskId}
+      onClose={() => {
+        setShowSearch(false);
+        // Re-focus the input box after dismissing search
+        requestAnimationFrame(() => {
+          (document.querySelector(".input-textarea") as HTMLElement)?.focus();
+        });
+      }}
+    />
+  );
+
   // Welcome page: no workspace selected (on /)
   if (activeWorkspace === null && activeTaskId === null) {
     return (
@@ -94,6 +122,7 @@ export function App() {
             onSelectTask={setActiveTaskId}
             onNavigateToProject={navigateToProject}
           />
+          {searchPopup}
         </div>
       </ThemeContext.Provider>
     );
@@ -150,6 +179,7 @@ export function App() {
             </div>
           </div>
         )}
+        {searchPopup}
       </div>
     </ThemeContext.Provider>
   );
