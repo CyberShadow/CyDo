@@ -429,6 +429,10 @@ class App
 			if (td.session)
 				td.session.interrupt();
 		}
+		else if (json.type == "dismiss_attention")
+		{
+			broadcast(text);
+		}
 		else if (json.type == "fork_task")
 		{
 			auto tid = json.tid;

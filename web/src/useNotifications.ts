@@ -1,11 +1,16 @@
 // Browser notification support and sidebar attention tracking.
 //
-// Two notification paths:
-// 1. Inline: notifyTransition() is called from session state updaters when
-//    WebSocket messages arrive. Works when the browser dispatches WS events.
-// 2. SharedWorker: A SharedWorker (via Blob URL) maintains its own WebSocket
-//    connection to the backend. SharedWorkers are NOT frozen when the tab is,
-//    so notifications fire even when the browser is on another workspace.
+// The SharedWorker (via Blob URL) maintains its own WebSocket connection and is
+// the sole owner of browser Notification objects.  Because SharedWorkers are NOT
+// frozen when the tab is backgrounded, notifications fire reliably even when the
+// browser is on another workspace.  Dismissal also happens inside the worker
+// (same execution context), so Notification.close() works reliably.
+//
+// The main thread manages the attention set (sidebar badges) and falls back to
+// creating Notifications only when SharedWorker is unavailable.
+//
+// notifyTransition() is called from session state updaters when WebSocket
+// messages arrive, handling the attention set synchronously.
 
 import { useEffect, useState } from "preact/hooks";
 import type { TaskState as SessionState } from "./types";
@@ -58,22 +63,33 @@ let attentionSet = new Set<number>();
 // Currently viewed task — suppresses attention when tab is visible.
 let activeVisibleTid: number | null = null;
 
-function addAttention(tid: number) {
+// Callback to send dismiss_attention to the backend (set by the hook).
+let sendDismiss: ((tid: number) => void) | null = null;
+
+function addAttention(tid: number, source = "inline") {
   if (!replayDone) return;
-  if (tid === activeVisibleTid && !document.hidden) return;
+  if (tid === activeVisibleTid && document.hasFocus()) {
+    if (source !== "worker") sendDismiss?.(tid);
+    return;
+  }
   if (attentionSet.has(tid)) return;
   attentionSet = new Set(attentionSet);
   attentionSet.add(tid);
   for (const fn of attentionListeners) fn(attentionSet);
 }
 
-export function removeAttention(tid: number) {
-  if (!attentionSet.has(tid)) return;
-  attentionSet = new Set(attentionSet);
-  attentionSet.delete(tid);
-  for (const fn of attentionListeners) fn(attentionSet);
+export function removeAttention(tid: number, broadcast = true) {
+  const inSet = attentionSet.has(tid);
+  const hasNotification = activeNotifications.has(tid);
+  if (!inSet && !hasNotification) return;
+  if (inSet) {
+    attentionSet = new Set(attentionSet);
+    attentionSet.delete(tid);
+    for (const fn of attentionListeners) fn(attentionSet);
+  }
   activeNotifications.get(tid)?.close();
   activeNotifications.delete(tid);
+  if (broadcast) sendDismiss?.(tid);
 }
 
 /**
@@ -95,7 +111,20 @@ export function notifyTransition(
 
   addAttention(tid);
 
+  // Send the notification body to the worker so it can show message content
+  // instead of generic text.  When tabs are frozen this won't arrive, and
+  // the worker falls back to "Task finished" / "Awaiting input".
+  if (worker) {
+    const body = lastMessageText(next);
+    if (body) {
+      worker.port.postMessage({ type: "notify-body", tid, body });
+    }
+  }
+
+  // Create browser notification only as fallback when SharedWorker is
+  // unavailable.  Normally the worker owns all Notification objects.
   if (
+    !worker &&
     !document.hasFocus() &&
     "Notification" in window &&
     Notification.permission === "granted"
@@ -104,7 +133,6 @@ export function notifyTransition(
     const body = lastMessageText(next);
     const n = new Notification(title, { body, tag: `cydo-${tid}` });
     activeNotifications.set(tid, n);
-    n.onclose = () => activeNotifications.delete(tid);
   }
 }
 
@@ -121,6 +149,7 @@ function makeWorkerCode(wsUrl: string) {
   return `
 var WS_URL = "${wsUrl}";
 var snapshots = new Map();
+var activeNotifications = new Map();
 var ports = [];
 var replayDone = false;
 var replayTimer = null;
@@ -135,6 +164,9 @@ self.onconnect = function(e) {
   port.onmessage = function(msg) {
     if (msg.data && msg.data.type === "tab-state") {
       portFocus[idx] = msg.data.hasFocus;
+    } else if (msg.data && msg.data.type === "notify-body") {
+      var s = snapshots.get(msg.data.tid);
+      if (s) s.body = msg.data.body;
     }
   };
   port.start();
@@ -185,6 +217,18 @@ function handleMessage(raw) {
     return;
   }
 
+  if (raw.type === "dismiss_attention") {
+    var n = activeNotifications.get(raw.tid);
+    if (n) {
+      try { n.close(); } catch(e) {}
+      activeNotifications.delete(raw.tid);
+    }
+    for (var k = 0; k < ports.length; k++) {
+      ports[k].postMessage({ type: "dismiss_attention", tid: raw.tid });
+    }
+    return;
+  }
+
   if (raw.type === "title_update") {
     var snap = snapshots.get(raw.tid);
     if (snap) snap.title = raw.title;
@@ -228,14 +272,22 @@ function checkTransition(sid, prev, next) {
   if (!finished && !awaiting) return;
 
   for (var j = 0; j < ports.length; j++) {
-    ports[j].postMessage({ type: "attention", tid: tid });
+    ports[j].postMessage({ type: "attention", tid: sid });
   }
 
-  if (anyTabFocused()) return;
-
-  var title = next.title || ("Task " + tid);
-  var body = finished ? "Task finished" : "Awaiting input";
-  try { new Notification(title, { body: body, tag: "cydo-" + tid }); } catch (e) {}
+  if (!anyTabFocused() && typeof Notification !== "undefined") {
+    // Delay briefly so the main thread's notify-body port message can arrive
+    // with the actual message text.  When tabs are frozen the message won't
+    // come, and the fallback text is used after the delay.
+    var snap = next;
+    var f = finished;
+    setTimeout(function() {
+      var title = snap.title || ("Task " + sid);
+      var body = snap.body || (f ? "Task finished" : "Awaiting input");
+      var n = new Notification(title, { body: body, tag: "cydo-" + sid });
+      activeNotifications.set(sid, n);
+    }, 50);
+  }
 }
 
 connect();
@@ -259,7 +311,9 @@ function startWorker() {
     };
     worker.port.onmessage = (e) => {
       if (e.data?.type === "attention") {
-        addAttention(e.data.tid);
+        addAttention(e.data.tid, "worker");
+      } else if (e.data?.type === "dismiss_attention") {
+        removeAttention(e.data.tid, false);
       }
     };
     worker.port.start();
@@ -273,8 +327,19 @@ function startWorker() {
 // React hook — permission request, attention set, worker lifecycle
 // ---------------------------------------------------------------------------
 
-export function useNotifications(activeTaskId: number | null) {
+export function useNotifications(
+  activeTaskId: number | null,
+  onDismiss?: (tid: number) => void,
+) {
   const [attention, setAttention] = useState<Set<number>>(attentionSet);
+
+  // Wire up the dismiss callback so removeAttention can notify the backend
+  useEffect(() => {
+    sendDismiss = onDismiss ?? null;
+    return () => {
+      sendDismiss = null;
+    };
+  }, [onDismiss]);
 
   // Subscribe to imperative attention changes
   useEffect(() => {
@@ -312,19 +377,19 @@ export function useNotifications(activeTaskId: number | null) {
     };
   }, []);
 
-  // Track active session and clear attention when it's visible
+  // Track active session and clear attention when it's focused
   useEffect(() => {
     activeVisibleTid = activeTaskId;
     if (activeTaskId === null) return;
 
     const clear = () => {
-      if (!document.hidden) removeAttention(activeTaskId);
+      if (document.hasFocus()) removeAttention(activeTaskId);
     };
 
     clear();
-    document.addEventListener("visibilitychange", clear);
+    window.addEventListener("focus", clear);
     return () => {
-      document.removeEventListener("visibilitychange", clear);
+      window.removeEventListener("focus", clear);
       activeVisibleTid = null;
     };
   }, [activeTaskId]);

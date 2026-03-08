@@ -19,6 +19,7 @@ export function App() {
     newTask,
     resume,
     fork,
+    dismissAttention,
     sidebarTasks,
     workspaces,
     activeWorkspace,
@@ -28,7 +29,7 @@ export function App() {
   } = useTaskManager();
 
   const { theme, toggleTheme } = useTheme();
-  const attention = useNotifications(activeTaskId);
+  const attention = useNotifications(activeTaskId, dismissAttention);
 
   const active =
     activeTaskId !== null ? (tasks.get(activeTaskId) ?? null) : null;

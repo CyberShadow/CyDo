@@ -44,7 +44,8 @@ export class Connection {
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "forkable_uuids" ||
-          raw.type === "error"
+          raw.type === "error" ||
+          raw.type === "dismiss_attention"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
@@ -98,6 +99,10 @@ export class Connection {
     this.ws?.send(
       JSON.stringify({ type: "fork_task", tid, after_uuid: afterUuid }),
     );
+  }
+
+  dismissAttention(tid: number) {
+    this.ws?.send(JSON.stringify({ type: "dismiss_attention", tid }));
   }
 
   private scheduleReconnect() {

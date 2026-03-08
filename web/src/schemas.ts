@@ -646,6 +646,10 @@ export interface ErrorMessage {
   message: string;
   tid?: number;
 }
+export interface DismissAttentionMessage {
+  type: "dismiss_attention";
+  tid: number;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -654,4 +658,5 @@ export type ControlMessage =
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | ForkableUuidsMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | DismissAttentionMessage;

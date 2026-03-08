@@ -26,6 +26,7 @@ import {
   initSnapshot,
   resetReplay,
   markReplayDone,
+  removeAttention,
 } from "./useNotifications";
 
 export interface ProjectInfo {
@@ -48,6 +49,7 @@ export interface TaskManager {
   newTask: (workspace?: string, projectPath?: string) => void;
   resume: () => void;
   fork: (tid: number, afterUuid: string) => void;
+  dismissAttention: (tid: number) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -503,6 +505,10 @@ export function useTaskManager(): TaskManager {
         console.error("Server error:", msg.message, "tid:", msg.tid);
         break;
       }
+      case "dismiss_attention": {
+        removeAttention(msg.tid, false);
+        break;
+      }
     }
   }, []);
 
@@ -666,6 +672,10 @@ export function useTaskManager(): TaskManager {
     connRef.current?.forkTask(tid, afterUuid);
   }, []);
 
+  const dismissAttention = useCallback((tid: number) => {
+    connRef.current?.dismissAttention(tid);
+  }, []);
+
   const resume = useCallback(() => {
     if (activeTaskId !== null) {
       connRef.current?.resumeTask(activeTaskId);
@@ -725,6 +735,7 @@ export function useTaskManager(): TaskManager {
     newTask,
     resume,
     fork,
+    dismissAttention,
     sidebarTasks,
     workspaces,
     activeWorkspace,
