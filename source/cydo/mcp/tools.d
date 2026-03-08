@@ -8,12 +8,14 @@ import cydo.mcp : Description, McpName, McpResult;
 /// Compile-time introspection generates metadata and dispatch.
 interface CydoTools
 {
+	/+
 	@Description("Read the contents of a file from the filesystem. Returns the file content as text.")
 	@McpName("Read")
 	McpResult read(
 		@Description("The absolute path to the file to read")
 		string file_path
 	);
+	+/
 
 	@Description(
 		"Create a sub-task that runs autonomously and returns its output.\n\n"
@@ -69,6 +71,7 @@ class CydoToolsImpl : CydoTools
 		this.callerTid = callerTid;
 	}
 
+	/+
 	McpResult read(string file_path)
 	{
 		import std.file : exists, isFile, readText;
@@ -87,6 +90,7 @@ class CydoToolsImpl : CydoTools
 		catch (Exception e)
 			return McpResult("Error reading file: " ~ e.msg, true);
 	}
+	+/
 
 	McpResult createTask(string description, string task_type, string prompt)
 	{
