@@ -253,6 +253,7 @@ void simulateWorkflow(TaskTypeDef[string] types)
 		}
 		auto def = types[typeName];
 		auto id = nextId++;
+		auto taskIdx = tasks.length;
 		tasks ~= SimTask(id, typeName, desc, parentId, "active");
 
 		// Print task info
@@ -293,7 +294,7 @@ void simulateWorkflow(TaskTypeDef[string] types)
 			if (response == "y" || response == "Y")
 			{
 				writefln("    → APPROVED");
-				tasks[$ - 1].status = "completed";
+				tasks[taskIdx].status = "completed";
 			}
 			else
 			{
@@ -301,17 +302,47 @@ void simulateWorkflow(TaskTypeDef[string] types)
 				stdout.flush();
 				auto reason = readln().chomp.strip;
 				writefln("    → REJECTED: %s", reason);
-				tasks[$ - 1].status = "rejected";
+				tasks[taskIdx].status = "rejected";
 			}
 			writeln();
 			return;
+		}
+
+		// Simulate creatable sub-tasks (modal: agent stays alive, gets results)
+		if (def.creatable_tasks.length > 0)
+		{
+			bool createdAny = false;
+			while (true)
+			{
+				writef("    > Create sub-task? (%s, or 'no'): ",
+					def.creatable_tasks.join(", "));
+				stdout.flush();
+				auto choice = readln().chomp.strip;
+				if (choice == "no" || choice == "n" || choice.length == 0)
+					break;
+				if (!def.creatable_tasks.canFind(choice))
+				{
+					writefln("    Invalid choice '%s'", choice);
+					continue;
+				}
+				write("    > Sub-task description: ");
+				stdout.flush();
+				auto subDesc = readln().chomp.strip;
+				if (subDesc.length == 0)
+					subDesc = desc;
+				writeln();
+				createTask(choice, subDesc, id);
+				createdAny = true;
+			}
+			if (createdAny)
+				writeln();
 		}
 
 		if (def.continuations.length == 0)
 		{
 			// No continuations — task completes
 			writefln("    (no continuations — task completes)");
-			tasks[$ - 1].status = "completed";
+			tasks[taskIdx].status = "completed";
 			writeln();
 			return;
 		}
@@ -337,8 +368,8 @@ void simulateWorkflow(TaskTypeDef[string] types)
 
 		auto chosen = contNames[0];
 		auto cont = def.continuations[chosen];
-		tasks[$ - 1].status = "completed";
-		tasks[$ - 1].chosenContinuation = chosen;
+		tasks[taskIdx].status = "completed";
+		tasks[taskIdx].chosenContinuation = chosen;
 		writeln();
 
 		// Handle approval gate
