@@ -571,7 +571,6 @@ class App
 
 		td.alive = true;
 		td.status = "active";
-		persistence.setStatus(tid, "active");
 	}
 
 	private SandboxConfig findWorkspaceSandbox(string workspaceName)

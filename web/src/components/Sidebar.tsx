@@ -54,10 +54,11 @@ function renderNode(
 
   // Status dot class based on task status
   let dotClass = "sidebar-dot";
-  if (t.status === "active" || t.alive) dotClass += " alive";
+  if (t.isProcessing) dotClass += " processing";
+  else if (t.alive) dotClass += " alive";
+  else if (t.resumable) dotClass += " resumable";
   else if (t.status === "completed") dotClass += " completed";
   else if (t.status === "failed") dotClass += " failed";
-  else if (t.resumable) dotClass += " resumable";
   // pending = no extra class (gray)
 
   elements.push(

@@ -224,6 +224,10 @@ body,
   flex-shrink: 0;
 }
 
+.sidebar-dot.processing {
+  background: #f0d050;
+}
+
 .sidebar-dot.alive {
   background: var(--success);
 }
