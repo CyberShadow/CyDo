@@ -627,6 +627,19 @@ function getHeaderSubtitle(
   if (name === "WebSearch" && typeof input.query === "string") {
     return <span class="tool-subtitle">{input.query}</span>;
   }
+  if (name === "WebFetch" && typeof input.url === "string") {
+    return (
+      <a
+        class="tool-subtitle"
+        href={input.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {input.url}
+      </a>
+    );
+  }
   if (name === "Bash" && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
@@ -674,6 +687,13 @@ function formatInput(
     const { query, ...remaining } = input;
     return formatGenericInput(remaining);
   }
+  if (name === "WebFetch" && typeof input.url === "string") {
+    const { url, prompt, ...remaining } = input;
+    return formatGenericInput(
+      remaining,
+      typeof prompt === "string" ? <Markdown text={prompt} /> : undefined,
+    );
+  }
   if (name === "Bash" && typeof input.command === "string") {
     return <BashInput input={input} />;
   }
@@ -718,8 +738,14 @@ const defaultExpandedTools = new Set([
   "ExitPlanMode",
   "TodoWrite",
   "AskUserQuestion",
+  "WebFetch",
 ]);
-const defaultExpandedResults = new Set(["Bash", "Task", "WebSearch"]);
+const defaultExpandedResults = new Set([
+  "Bash",
+  "Task",
+  "WebSearch",
+  "WebFetch",
+]);
 
 export function ToolCall({ name, input, result, children }: Props) {
   const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
@@ -737,6 +763,11 @@ export function ToolCall({ name, input, result, children }: Props) {
     typeof result.content === "string";
   const useWebSearchResult =
     name === "WebSearch" &&
+    result &&
+    !result.isError &&
+    typeof result.content === "string";
+  const useWebFetchResult =
+    name === "WebFetch" &&
     result &&
     !result.isError &&
     typeof result.content === "string";
@@ -769,6 +800,13 @@ export function ToolCall({ name, input, result, children }: Props) {
               />
             ) : useWebSearchResult ? (
               <WebSearchResult content={result.content as string} />
+            ) : useWebFetchResult ? (
+              <div class="tool-result-blocks">
+                <Markdown
+                  text={result.content as string}
+                  class="text-content"
+                />
+              </div>
             ) : (
               renderResultContent(result.content, result.isError)
             ))}
