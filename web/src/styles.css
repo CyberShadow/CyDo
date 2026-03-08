@@ -972,6 +972,23 @@ body,
   border: 1px solid rgba(136, 160, 176, 0.3);
 }
 
+.meta-badge.meta {
+  background: rgba(160, 140, 176, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(160, 140, 176, 0.3);
+}
+
+.meta-badge.synthetic {
+  background: rgba(160, 140, 176, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(160, 140, 176, 0.3);
+}
+
+.user-message.meta-message,
+.assistant-message.synthetic-message {
+  opacity: 0.7;
+}
+
 /* Nested sub-agent messages inside a tool call */
 .sub-agent-messages {
   margin: 8px 0;

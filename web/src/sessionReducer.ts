@@ -111,6 +111,44 @@ export function reduceSystemStatus(
   };
 }
 
+export function reduceStopHookSummary(
+  s: SessionState,
+  msg: {
+    hookCount: number;
+    hookInfos: Array<{ command: string; durationMs: number }>;
+    hookErrors: Array<unknown>;
+    preventedContinuation: boolean;
+    hasOutput: boolean;
+    [key: string]: unknown;
+  },
+  extras: ExtraField[] | undefined,
+): SessionState {
+  const parts: string[] = [];
+  for (const hook of msg.hookInfos) {
+    parts.push(`${hook.command} (${hook.durationMs}ms)`);
+  }
+  const summary = parts.join(", ");
+  const prefix = msg.preventedContinuation
+    ? "Stop hook prevented continuation"
+    : `Stop hook${msg.hookCount > 1 ? "s" : ""}`;
+  const text = `${prefix}: ${summary}`;
+
+  const id = `stop-hook-${++s.msgIdCounter}`;
+  return {
+    ...s,
+    messages: [
+      ...s.messages,
+      {
+        id,
+        type: "system" as const,
+        content: [{ type: "text" as const, text }],
+        extraFields: extras,
+        rawSource: msg,
+      },
+    ],
+  };
+}
+
 export function reduceCompactBoundary(
   s: SessionState,
   msg: any,
@@ -297,6 +335,7 @@ export function reduceUserEcho(
   extras: ExtraField[] | undefined,
   rawMsg: unknown,
   isSynthetic?: boolean,
+  isMeta?: boolean,
 ): SessionState {
   // Collect text blocks and tool_result blocks separately
   const textBlocks: string[] = [];
@@ -369,6 +408,7 @@ export function reduceUserEcho(
       })),
       isSidechain,
       isSynthetic: isSynthetic || undefined,
+      isMeta: isMeta || undefined,
       parentToolUseId,
       extraFields: extras,
       rawSource: rawMsg,
@@ -682,6 +722,7 @@ export function reduceStdoutMessage(
           extras,
           msg,
           (msg as any).isSynthetic,
+          (msg as any).isMeta,
         );
       }
     }
@@ -744,6 +785,8 @@ export function reduceFileMessage(
         (msg.subtype === "task_started" || msg.subtype === "task_notification")
       ) {
         return reduceTaskLifecycle(s, msg as any, extras);
+      } else if ((msg as any).subtype === "stop_hook_summary") {
+        return reduceStopHookSummary(s, msg as any, extras);
       } else if (
         "subtype" in msg &&
         (msg.subtype === "api_error" || msg.subtype === "turn_duration")
@@ -780,6 +823,7 @@ export function reduceFileMessage(
         extras,
         msg,
         (msg as any).isSynthetic,
+        (msg as any).isMeta,
       );
       // Remove matched user text from preReloadDrafts
       if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {

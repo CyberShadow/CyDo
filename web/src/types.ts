@@ -26,6 +26,7 @@ export interface DisplayMessage {
   // Additional metadata for richer display
   isSidechain?: boolean;
   isSynthetic?: boolean;
+  isMeta?: boolean;
   parentToolUseId?: string | null;
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields

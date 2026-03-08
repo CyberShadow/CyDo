@@ -56,13 +56,17 @@ interface Props {
 
 export function AssistantMessage({ message, childrenByParent }: Props) {
   const hasStreamingBlocks = (message.streamingBlocks?.length ?? 0) > 0;
+  const isSynthetic = message.model === "<synthetic>";
   return (
     <div
-      class={`message assistant-message${hasStreamingBlocks ? " streaming" : ""}`}
+      class={`message assistant-message${hasStreamingBlocks ? " streaming" : ""}${isSynthetic ? " synthetic-message" : ""}`}
     >
-      {message.isSidechain && (
+      {(message.isSidechain || isSynthetic) && (
         <div class="message-meta">
-          <span class="meta-badge sidechain">sub-agent</span>
+          {message.isSidechain && (
+            <span class="meta-badge sidechain">sub-agent</span>
+          )}
+          {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
         </div>
       )}
       {message.content.map((block, i) => {

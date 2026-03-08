@@ -14,7 +14,14 @@ export function UserMessage({ message }: Props) {
     .join("\n");
 
   return (
-    <div class={`message user-message${message.pending ? " pending" : ""}`}>
+    <div
+      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}`}
+    >
+      {message.isMeta && (
+        <div class="message-meta">
+          <span class="meta-badge meta">meta</span>
+        </div>
+      )}
       {message.isSynthetic || message.parentToolUseId ? (
         <Markdown text={text} />
       ) : (
