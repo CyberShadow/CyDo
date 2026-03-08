@@ -614,6 +614,7 @@ export interface TasksListMessage {
     tid: number;
     alive: boolean;
     resumable: boolean;
+    isProcessing: boolean;
     lastActivity: string;
     title?: string;
     workspace?: string;

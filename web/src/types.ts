@@ -132,13 +132,14 @@ export function makeTaskState(
   parentTid?: number,
   relationType?: string,
   status: string = "pending",
+  isProcessing: boolean = false,
 ): TaskState {
   return {
     tid,
     status,
     messages: [],
     sessionInfo: null,
-    isProcessing: false,
+    isProcessing,
     totalCost: 0,
     alive,
     resumable,

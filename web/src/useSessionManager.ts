@@ -370,6 +370,7 @@ export function useTaskManager(): TaskManager {
                 entry.parent_tid || undefined,
                 entry.relation_type || undefined,
                 entry.status || "pending",
+                entry.isProcessing || false,
               );
               liveStates.set(entry.tid, t);
               initSnapshot(entry.tid, t);
@@ -385,6 +386,7 @@ export function useTaskManager(): TaskManager {
                 ...t,
                 alive: entry.alive,
                 resumable: entry.resumable,
+                isProcessing: entry.isProcessing || false,
                 historyLoaded: needsHistory ? false : t.historyLoaded,
                 title: entry.title || t.title,
                 workspace: workspace || t.workspace,

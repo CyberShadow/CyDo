@@ -383,6 +383,8 @@ class App
 				ensureTaskAgent(tid);
 			}
 			td.session.sendMessage(json.content);
+			td.isProcessing = true;
+			broadcast(buildTasksList());
 			broadcastUnconfirmedUserMessage(tid, json.content);
 
 			// Store first message as task description
@@ -540,13 +542,15 @@ class App
 		td.session.onOutput = (string line) {
 			broadcastTask(tid, line);
 
-			// For sub-tasks: detect turn completion and close stdin.
-			// In stream-json mode with -p, the process stays alive waiting
-			// for more input. Closing stdin signals EOF so it exits cleanly.
-			if (tid in pendingSubTasks)
+			import std.algorithm : canFind;
+			if (line.canFind(`"type":"result"`))
 			{
-				import std.algorithm : canFind;
-				if (line.canFind(`"type":"result"`))
+				// Turn completed — no longer processing, but still alive.
+				td.isProcessing = false;
+				broadcast(buildTasksList());
+
+				// For sub-tasks: close stdin so the process exits cleanly.
+				if (tid in pendingSubTasks)
 					td.session.closeStdin();
 			}
 		};
@@ -562,6 +566,7 @@ class App
 			if (tid !in tasks)
 				return;
 			tasks[tid].alive = false;
+			tasks[tid].isProcessing = false;
 			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
 			persistence.setStatus(tid, tasks[tid].status);
 			cleanup(tasks[tid].sandbox);
@@ -963,7 +968,7 @@ class App
 		TaskListEntry[] entries;
 		foreach (ref td; tasks)
 			entries ~= TaskListEntry(td.tid, td.alive, td.claudeSessionId.length > 0 && !td.alive,
-				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
+				td.isProcessing, td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
 		return toJson(TasksListMessage("tasks_list", entries));
 	}
 
@@ -1018,6 +1023,7 @@ struct TaskData
 	DataVec history;          // unified: JSONL file events + live stdout events
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	bool alive = false;
+	bool isProcessing = false;
 	string lastActivity;
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
@@ -1072,6 +1078,7 @@ struct TaskListEntry
 	int tid;
 	bool alive;
 	bool resumable;
+	bool isProcessing;
 	string lastActivity;
 	string title;
 	string workspace;

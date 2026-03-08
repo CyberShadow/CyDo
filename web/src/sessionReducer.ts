@@ -84,7 +84,6 @@ export function reduceSystemInit(
     },
     alive: true,
     status: "active",
-    isProcessing: true,
     messages: initMsg ? [...s.messages, initMsg] : s.messages,
   };
 }
@@ -463,7 +462,6 @@ export function reduceResultMessage(
   return {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
-    isProcessing: false,
     messages: [
       ...s.messages,
       {
@@ -634,7 +632,6 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
 export function reduceExit(s: SessionState): SessionState {
   return {
     ...s,
-    isProcessing: false,
     alive: false,
     resumable: s.sessionInfo !== null,
   };
