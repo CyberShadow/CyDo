@@ -235,42 +235,29 @@ class App
 	}
 
 	/// Dispatch an MCP tool call. Returns a promise that resolves when the
-	/// tool completes — immediately for sync tools, later for async tools.
+	/// tool completes — immediately for sync tools, later for async tools
+	/// (e.g. Task, which awaits the child task's completion in a fiber).
 	private Promise!McpResult dispatchTool(string tool, string tid, JSONFragment args)
 	{
-		if (tool == "Task")
-			return handleCreateTask(tid, args);
-
-		// Sync dispatch for other tools
+		import ae.utils.promise.await : async;
 		import cydo.mcp.binding : mcpToolDispatcher;
 		import cydo.mcp.tools : CydoTools, CydoToolsImpl;
 
-		auto impl = new CydoToolsImpl();
-		auto dispatcher = mcpToolDispatcher!CydoTools(impl);
-		return resolve(dispatcher.dispatch(tool, args));
+		return async({
+			auto impl = new CydoToolsImpl(this, tid);
+			auto dispatcher = mcpToolDispatcher!CydoTools(impl);
+			return dispatcher.dispatch(tool, args);
+		});
 	}
 
 	/// Handle Task — returns a promise that resolves when the child task completes.
-	private Promise!McpResult handleCreateTask(string callerTid, JSONFragment rawArgs)
+	package Promise!McpResult handleCreateTask(string callerTid,
+		string description, string taskType, string prompt)
 	{
-		import ae.utils.json : jsonParse, toJson, JSONPartial;
+		import ae.utils.json : toJson;
 		import std.algorithm : canFind;
 		import std.array : join;
 		import std.conv : to;
-
-		@JSONPartial
-		static struct TaskArgs
-		{
-			string description;
-			string task_type;
-			string prompt;
-		}
-
-		TaskArgs args;
-		try
-			args = jsonParse!TaskArgs(rawArgs.json);
-		catch (Exception e)
-			return resolve(McpResult("Invalid Task arguments: " ~ e.msg, true));
 
 		// Look up calling task
 		int parentTid;
@@ -287,33 +274,33 @@ class App
 		auto parentTypeDef = parentTd.taskType in taskTypes;
 		if (parentTypeDef !is null &&
 			parentTypeDef.creatable_tasks.length > 0 &&
-			!parentTypeDef.creatable_tasks.canFind(args.task_type))
+			!parentTypeDef.creatable_tasks.canFind(taskType))
 		{
 			return resolve(McpResult(
-				"Task type '" ~ args.task_type ~ "' is not in creatable_tasks for '" ~
+				"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
 				parentTd.taskType ~ "'. Allowed: " ~
 				parentTypeDef.creatable_tasks.join(", "), true));
 		}
 
 		// Validate child task type exists
-		auto childTypeDef = args.task_type in taskTypes;
+		auto childTypeDef = taskType in taskTypes;
 		if (childTypeDef is null)
-			return resolve(McpResult("Unknown task type: " ~ args.task_type, true));
+			return resolve(McpResult("Unknown task type: " ~ taskType, true));
 
 		// Create child task
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath);
 		auto childTd = &tasks[childTid];
-		childTd.taskType = args.task_type;
-		childTd.description = args.prompt;
+		childTd.taskType = taskType;
+		childTd.description = prompt;
 		childTd.parentTid = parentTid;
 		childTd.relationType = "subtask";
-		childTd.title = args.description.length > 0
-			? args.description
-			: truncateTitle(args.prompt, 80);
+		childTd.title = description.length > 0
+			? description
+			: truncateTitle(prompt, 80);
 
 		// Persist metadata
-		persistence.setTaskType(childTid, args.task_type);
-		persistence.setDescription(childTid, args.prompt);
+		persistence.setTaskType(childTid, taskType);
+		persistence.setDescription(childTid, prompt);
 		persistence.setParentTid(childTid, parentTid);
 		persistence.setRelationType(childTid, "subtask");
 		persistence.setTitle(childTid, childTd.title);
@@ -336,14 +323,14 @@ class App
 		// Send rendered prompt template as first user message
 		if (childTd.session !is null)
 		{
-			auto prompt = renderPrompt(*childTypeDef, args.prompt, taskTypesDir);
-			childTd.session.sendMessage(prompt);
-			broadcastUnconfirmedUserMessage(childTid, prompt);
+			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir);
+			childTd.session.sendMessage(renderedPrompt);
+			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 		}
 
-		if (args.description.length == 0)
-			generateTitle(childTid, args.prompt);
-		writefln("Task: tid=%d type=%s parent=%d", childTid, args.task_type, parentTid);
+		if (description.length == 0)
+			generateTitle(childTid, prompt);
+		writefln("Task: tid=%d type=%s parent=%d", childTid, taskType, parentTid);
 
 		return promise;
 	}
