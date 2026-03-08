@@ -226,8 +226,14 @@ export function useTaskManager(): TaskManager {
       liveStates.set(tid, updated);
       notifyTransition(tid, prev, updated);
 
-      // When a sub-task finishes and it's currently focused, switch to parent
-      if (prev.alive && !updated.alive && updated.parentTid) {
+      // When an agent sub-task finishes and it's currently focused, switch to parent.
+      // User-created children (forks) stay focused — user navigates manually.
+      if (
+        prev.alive &&
+        !updated.alive &&
+        updated.parentTid &&
+        updated.relationType !== "fork"
+      ) {
         if (activeTaskIdRef.current === tid) {
           const parent = liveStates.get(updated.parentTid);
           if (parent) {
