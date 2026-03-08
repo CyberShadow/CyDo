@@ -2,7 +2,7 @@
 
 // Stateful hook with one-time effects and closure-captured callbacks.
 // HMR can't safely update a running instance — force full reload.
-if (import.meta.hot) import.meta.hot.decline();
+if (import.meta.hot) import.meta.hot.invalidate();
 
 import {
   useState,
