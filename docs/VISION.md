@@ -77,49 +77,128 @@ Goal: mostly-autonomous software development while maintaining rigorous quality 
 
 ## Phases
 
-### 1. Wrap Claude Code in a custom web UI
+### 1. Web UI
 
-Foundation:
+Wrap Claude Code CLI in a web UI with real-time streaming.
 
-- Abstract agent software wrapping interface
-  - In principle compatible with Codex, Claude Code..
-  - For now targeting only Claude Code CLI
-- Claude Code implementation of the interface above (`claude --input-format stream-json --output-format stream-json`)
-  - Implementation hint: see ./docs/research/claude-code-harness (researched spec + test script) and ~/libexec/format-claude-session (an existing parser of the output format).
-- Web UI which renders the session and allows interacting with it
+Deliverable: web UI with same capabilities as the first-party CLI.
 
-Deliverable: Web UI which allows interacting Claude Code with same capabilities as the first-party CLI
+- Claude Code CLI wrapped in stream-json protocol
+- Web UI renders sessions with real-time streaming via WebSocket
 
-### 2. Multi-session support
+### 2. Multi-session
 
-- Web UI gains a sidebar that allows selecting and interacting with all running sessions
+Multiple concurrent agent sessions managed from a single interface.
+
+Deliverable: sidebar for selecting and interacting with all running sessions,
+with live steering (inject user messages into running sessions).
+
+- Sidebar for selecting and interacting with multiple sessions
+- Live steering: inject user messages into running sessions
 
 ### 3. Persistence
 
-- Define the data model for sessions and messages
-- Persist all state so that no data is lost on backend restart
-  - Running agent processes will be stopped, but their session history is preserved
-  - On restart, the UI can display all previous sessions and their full message logs
+All state persisted so no data is lost on backend restart.
 
-### 4. Custom tools
+Deliverable: backend restart preserves all sessions and their full message
+logs; UI can display previous sessions immediately on reconnect.
 
-- CyDo gains an MCP server (or other tool delivery mechanism) which replaces and allows extending the basic set of tools
-- The "task" tool is replaced with a child session that is visible in the UI directly
+- SQLite data model for tasks (tid, session ID, description, type, parent, status)
+- Session history loaded from Claude's JSONL files
 
-### 5. Agentic Tasks
+### 4. Workspaces and sandboxing
 
-- Agents are taught how to
-  - Split their work into sub-tasks
-  - Create detached tasks for future work (which will be executed stand-alone)
+Project discovery and bwrap-based sandbox isolation for agent sessions.
 
-### 6. Merge train
+Deliverable: agents run inside sandboxed containers with configurable
+filesystem access; projects are auto-discovered from workspace roots.
 
-- TBD
+- Workspace configuration with per-workspace sandbox overrides
+- bwrap isolation with read-only / read-write path control
+- Config hot-reload on file change
 
-### 7. Stewards
+### 5. Custom tools
 
-- TBD
+MCP server delivering custom tools to Claude Code sessions.
 
-### 8. Interrogation
+Deliverable: agents use CyDo's Task tool via MCP to create child sessions
+visible in the UI task tree, with promise-based result return.
 
-- TBD
+- Task tool (sub-task creation with result await)
+- Agents use Claude Code's built-in tools for everything else
+
+### 6. Task type system
+
+YAML-driven task type definitions controlling agent behavior, capabilities,
+and flow control.
+
+Deliverable: task types configure model, tools, prompt, and sub-task
+permissions declaratively; a simulator and dot generator validate the design.
+
+- YAML-defined types with model_class, tool_preset, output_type, prompt_template
+- creatable_tasks enforcement (parent controls which sub-task types child can create)
+- Prompt template rendering with {{task_description}} substitution
+- Simulator and Graphviz dot generator for design validation
+
+### 7. Worktrees
+
+Tasks with `worktree: true` (implement, spike) run in their own git worktree.
+
+Deliverable: an implement sub-task produces a commit in an isolated worktree;
+the parent can adopt the result without conflicts in the main tree.
+
+- Create git worktrees on task spawn, pass working directory to agent session
+- Include worktree path in sub-task result for parent to adopt changes
+
+### 8. Continuations
+
+When a task completes, the system automatically spawns a successor task based
+on the type's continuation definitions.
+
+Deliverable: the full plan → triage → implement/decompose → review chain runs
+end-to-end without manual intervention. A full-auto toggle skips operator
+approval on continuation gates (stewards still review).
+
+- On task exit, look up chosen continuation and spawn successor
+- keep_context: fork the session (reuse existing JSONL fork logic) so
+  successor inherits conversation history
+
+### 9. Inter-task communication
+
+Session forking for user-initiated interrogation already works (JSONL
+truncation). Richer communication between tasks in the tree is needed.
+
+Deliverable: agents can ask questions up the task tree (child → parent → user)
+and parents can re-engage completed children for follow-up.
+
+- Parent wakes a completed child to ask follow-up questions
+- Child asks parent for clarification of its prompt
+- Clarification requests bubble up the task tree, ultimately reaching the
+  user if no ancestor can answer
+
+### 10. Stewards
+
+Stateful review agents that gate continuation spawning via approval.
+
+Deliverable: every plan and patch is reviewed by stewards before landing.
+Rejections feed back to the originating agent, which can rework and retry.
+
+- Approval gates on continuations invoke all stewards in parallel (reviews
+  are read-only)
+- Rejection modeled as a retryable tool call — agent reworks and resubmits
+- Knowledge bases loaded from `knowledge_base` path into steward sessions
+- Steward upkeep: notified of landed changes, maintain internal docs.
+  Upkeep tasks are serial (one at a time per steward); may require a task
+  queue.
+
+### 11. Merge train
+
+Worktree commits land via a merge queue that runs CI and handles conflicts.
+
+Deliverable: agents produce commits; the system lands them via a serialized
+queue with CI validation, without agents running CI directly.
+
+- Investigate whether implementable within the task system (as task types
+  and continuations) or requires a dedicated facility
+- Rebase and retry on conflict or CI failure
+- May require a task queue as prerequisite
