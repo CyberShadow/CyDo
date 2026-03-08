@@ -154,20 +154,32 @@ export function App() {
           onBack={navigateHome}
           projectName={activeProject || undefined}
         />
-        {active ? (
-          <SessionView
-            task={active}
-            connected={connected}
-            onSend={send}
-            onInterrupt={interrupt}
-            onStop={stop}
-            onCloseStdin={closeStdin}
-            onResume={resume}
-            onFork={fork}
-            theme={theme}
-            onToggleTheme={toggleTheme}
-          />
-        ) : (
+        {Array.from(tasks.values())
+          .filter((t) => t.historyLoaded || t.tid === activeTaskId)
+          .map((task) => {
+            const isActive = task.tid === activeTaskId;
+            return (
+              <div
+                key={task.tid}
+                style={{ display: isActive ? "contents" : "none" }}
+              >
+                <SessionView
+                  task={task}
+                  connected={connected}
+                  isActive={isActive}
+                  onSend={send}
+                  onInterrupt={interrupt}
+                  onStop={stop}
+                  onCloseStdin={closeStdin}
+                  onResume={resume}
+                  onFork={fork}
+                  theme={theme}
+                  onToggleTheme={toggleTheme}
+                />
+              </div>
+            );
+          })}
+        {!active && (
           <div class="session-empty">
             <div class="session-empty-inner">
               <p>Select a task or create a new one</p>

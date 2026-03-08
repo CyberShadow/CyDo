@@ -9,6 +9,7 @@ import { InputBox } from "./InputBox";
 interface Props {
   task: TaskState;
   connected: boolean;
+  isActive: boolean;
   onSend: (text: string) => void;
   onInterrupt: () => void;
   onStop: () => void;
@@ -22,6 +23,7 @@ interface Props {
 export function SessionView({
   task,
   connected,
+  isActive,
   onSend,
   onInterrupt,
   onStop,
@@ -34,6 +36,7 @@ export function SessionView({
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    if (!isActive) return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target;
       if (
@@ -48,7 +51,7 @@ export function SessionView({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, []);
+  }, [isActive]);
 
   return (
     <>
