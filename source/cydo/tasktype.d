@@ -473,6 +473,28 @@ string formatCreatableTaskTypes(TaskTypeDef[string] allTypes, string parentTypeN
 	return result.length > 0 ? result : "(none available)";
 }
 
+/// Map tool_preset to a comma-separated list of Claude Code tools to disallow.
+/// The built-in "Task" tool is always disallowed (replaced by our MCP tool).
+string toolPresetToDisallowedTools(string toolPreset)
+{
+	// Write/execute tools to disallow for read-only presets
+	enum writeTools = "Write,Edit,MultiEdit,NotebookEdit,Bash";
+
+	switch (toolPreset)
+	{
+		case "read-only":
+			return "Task," ~ writeTools;
+		case "full":
+			return "Task";
+		case "code":
+			return "Task,Bash";
+		case "execute":
+			return "Task";
+		default:
+			throw new Exception("Unknown tool_preset: " ~ toolPreset);
+	}
+}
+
 /// Map model_class to Claude CLI model alias.
 string modelClassToAlias(string modelClass)
 {

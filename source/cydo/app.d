@@ -30,7 +30,7 @@ import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableU
 	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, loadTaskTypes, validateTaskTypes, modelClassToAlias, renderPrompt,
-	formatCreatableTaskTypes;
+	formatCreatableTaskTypes, toolPresetToDisallowedTools;
 
 void main(string[] args)
 {
@@ -315,6 +315,7 @@ class App
 		auto sessionConfig = SessionConfig(
 			modelClassToAlias(childTypeDef.model_class),
 		);
+		sessionConfig.disallowedTools = toolPresetToDisallowedTools(childTypeDef.tool_preset);
 		ensureTaskAgent(childTid, sessionConfig);
 
 		// Send rendered prompt template as first user message
