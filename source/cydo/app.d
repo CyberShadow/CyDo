@@ -420,7 +420,6 @@ class App
 			td.needsAttention = false;
 			td.notificationBody = "";
 			td.status = "active";
-			persistence.setStatus(tid, "active");
 			broadcast(buildTasksList());
 		}
 		else if (json.type == "interrupt")

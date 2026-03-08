@@ -82,8 +82,6 @@ export function reduceSystemInit(
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
     },
-    alive: true,
-    status: "active",
     messages: initMsg ? [...s.messages, initMsg] : s.messages,
   };
 }
@@ -630,11 +628,8 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
 }
 
 export function reduceExit(s: SessionState): SessionState {
-  return {
-    ...s,
-    alive: false,
-    resumable: s.sessionInfo !== null,
-  };
+  // Backend owns alive/resumable via tasks_list; nothing to update here.
+  return s;
 }
 
 export function reducePendingUserMessage(
