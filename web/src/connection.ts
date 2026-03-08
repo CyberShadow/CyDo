@@ -4,6 +4,10 @@ import type {
   ControlMessage,
 } from "./schemas";
 
+// This module holds stateful class instances that can't be hot-replaced.
+// Force a full page reload when it changes.
+if (import.meta.hot) import.meta.hot.decline();
+
 export class Connection {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;

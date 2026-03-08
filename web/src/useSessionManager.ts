@@ -1,5 +1,9 @@
 // Custom hook: WebSocket connection, rAF message buffering, task state, and user actions.
 
+// Stateful hook with one-time effects and closure-captured callbacks.
+// HMR can't safely update a running instance — force full reload.
+if (import.meta.hot) import.meta.hot.decline();
+
 import {
   useState,
   useEffect,
