@@ -38,7 +38,7 @@ export function SessionView({
   taskTypes,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [selectedTaskType, setSelectedTaskType] = useState("");
+  const [selectedTaskType, setSelectedTaskType] = useState("conversation");
 
   useEffect(() => {
     if (!isActive) return;
@@ -82,6 +82,7 @@ export function SessionView({
             <p class="welcome-subtitle">Multi-agent orchestration system</p>
             <SessionConfig
               taskTypes={taskTypes}
+              selected={selectedTaskType || taskTypes[0]?.name || ""}
               onTaskTypeChange={setSelectedTaskType}
             />
           </div>
@@ -105,12 +106,8 @@ export function SessionView({
         <InputBox
           onSend={(text: string) => {
             // Pass task type on first message (when welcome screen is showing)
-            if (
-              task.messages.length === 0 &&
-              !task.isProcessing &&
-              selectedTaskType
-            ) {
-              onSend(text, selectedTaskType);
+            if (task.messages.length === 0 && !task.isProcessing) {
+              onSend(text, selectedTaskType || taskTypes[0]?.name);
             } else {
               onSend(text);
             }

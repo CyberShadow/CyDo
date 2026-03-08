@@ -1,59 +1,37 @@
 import { h } from "preact";
-import { useState, useMemo } from "preact/hooks";
 import type { TaskTypeInfo } from "../useSessionManager";
 
 interface Props {
   taskTypes: TaskTypeInfo[];
+  selected: string;
   onTaskTypeChange: (taskType: string) => void;
 }
 
-export function SessionConfig({ taskTypes, onTaskTypeChange }: Props) {
-  const [selected, setSelected] = useState("");
-
-  // Sort: conversation first, then alphabetical
-  const sorted = useMemo(() => {
-    return [...taskTypes].sort((a, b) => {
-      if (a.name === "conversation") return -1;
-      if (b.name === "conversation") return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [taskTypes]);
-
-  const handleChange = (e: Event) => {
-    const val = (e.target as HTMLSelectElement).value;
-    setSelected(val);
-    onTaskTypeChange(val);
-  };
-
-  if (sorted.length === 0) return null;
-
-  const current = sorted.find((t) => t.name === selected) ?? sorted[0];
+export function SessionConfig({
+  taskTypes,
+  selected,
+  onTaskTypeChange,
+}: Props) {
+  if (taskTypes.length === 0) return null;
 
   return (
-    <div class="session-config">
-      <div class="config-field">
-        <label class="config-label">Task Type</label>
-        <select
-          class="config-select"
-          value={selected || sorted[0]?.name}
-          onChange={handleChange}
+    <div class="task-type-picker">
+      {taskTypes.map((t) => (
+        <button
+          key={t.name}
+          class={`task-type-row ${t.name === selected ? "selected" : ""}`}
+          onClick={() => onTaskTypeChange(t.name)}
         >
-          {sorted.map((t) => (
-            <option key={t.name} value={t.name}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      {current && (
-        <div class="config-detail">
-          <span class="config-detail-text">{current.description}</span>
-          <span class="config-badges">
-            <span class="config-badge">{current.model_class}</span>
-            <span class="config-badge">{current.tool_preset}</span>
-          </span>
-        </div>
-      )}
+          <div class="task-type-header">
+            <span class="task-type-name">{t.name}</span>
+            <span class="task-type-badges">
+              <span class="config-badge">{t.model_class}</span>
+              <span class="config-badge">{t.tool_preset}</span>
+            </span>
+          </div>
+          <span class="task-type-desc">{t.description}</span>
+        </button>
+      ))}
     </div>
   );
 }
