@@ -62,6 +62,7 @@ void main(string[] args)
 class App
 {
 	import ae.sys.inotify : INotify, iNotify;
+	import cydo.inotify : RefCountedINotify;
 
 	private HttpServer server;
 	private WebSocketAdapter[] clients;
@@ -75,9 +76,9 @@ class App
 	private string taskTypesDir;
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
-	// inotify watches for JSONL file tracking (tid → watch descriptor)
-	private INotify.WatchDescriptor[int] jsonlFileWatches;
-	private INotify.WatchDescriptor[int] jsonlDirWatches;
+	// inotify watches for JSONL file tracking (tid → handle)
+	private RefCountedINotify rcINotify;
+	private RefCountedINotify.Handle[int] jsonlWatches;
 	private size_t[int] jsonlReadPos;
 	// inotify watches for config file hot-reload
 	private INotify.WatchDescriptor configFileWatch;
@@ -937,7 +938,7 @@ class App
 
 		if (tid !in tasks)
 			return;
-		if (tid in jsonlFileWatches || tid in jsonlDirWatches)
+		if (tid in jsonlWatches)
 			return; // already watching
 		auto td = &tasks[tid];
 		if (td.claudeSessionId.length == 0)
@@ -954,16 +955,16 @@ class App
 			// File doesn't exist yet — watch directory for its creation
 			auto dirPath = dirName(jsonlPath);
 			auto fileName = baseName(jsonlPath);
-			jsonlDirWatches[tid] = iNotify.add(dirPath, INotify.Mask.create,
+			jsonlWatches[tid] = rcINotify.add(dirPath, INotify.Mask.create,
 				(in char[] name, INotify.Mask mask, uint cookie)
 				{
 					if (name == fileName)
 					{
 						// File appeared — switch to file watch
-						if (auto p = tid in jsonlDirWatches)
+						if (auto h = tid in jsonlWatches)
 						{
-							iNotify.remove(*p);
-							jsonlDirWatches.remove(tid);
+							rcINotify.remove(*h);
+							jsonlWatches.remove(tid);
 						}
 						watchJsonlFile(tid, jsonlPath);
 					}
@@ -978,7 +979,7 @@ class App
 		// Read any existing content
 		processNewJsonlContent(tid, jsonlPath);
 
-		jsonlFileWatches[tid] = iNotify.add(jsonlPath, INotify.Mask.modify,
+		jsonlWatches[tid] = rcINotify.add(jsonlPath, INotify.Mask.modify,
 			(in char[] name, INotify.Mask mask, uint cookie)
 			{
 				processNewJsonlContent(tid, jsonlPath);
@@ -1039,15 +1040,10 @@ class App
 	/// Stop watching the JSONL file for a task.
 	private void stopJsonlWatch(int tid)
 	{
-		if (auto p = tid in jsonlFileWatches)
+		if (auto h = tid in jsonlWatches)
 		{
-			iNotify.remove(*p);
-			jsonlFileWatches.remove(tid);
-		}
-		if (auto p = tid in jsonlDirWatches)
-		{
-			iNotify.remove(*p);
-			jsonlDirWatches.remove(tid);
+			rcINotify.remove(*h);
+			jsonlWatches.remove(tid);
 		}
 		jsonlReadPos.remove(tid);
 	}
