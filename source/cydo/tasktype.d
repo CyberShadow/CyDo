@@ -506,7 +506,7 @@ void simulateWorkflow(TaskTypeDef[] types)
 
 /// Render a prompt template by reading the template file and substituting
 /// placeholders. Returns the raw description if no template is defined.
-string renderPrompt(ref TaskTypeDef def, string description, string typesDir)
+string renderPrompt(ref TaskTypeDef def, string description, string typesDir, string outputFile = "")
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
@@ -523,6 +523,8 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir)
 	tmpl = tmpl.replace("{{task_description}}", description);
 	if (def.knowledge_base.length > 0)
 		tmpl = tmpl.replace("{{knowledge_base}}", def.knowledge_base);
+	if (outputFile.length > 0)
+		tmpl = tmpl.replace("{{output_file}}", outputFile);
 	return tmpl;
 }
 

@@ -16,7 +16,10 @@ or prototype an approach.
 
 ## Output
 
-Your final message is returned verbatim to the parent task as the result.
+Write your report to `{{output_file}}`. The file content is returned to the
+parent task as the result.
+
+Your final message should be a one-sentence summary of what you found.
 
 Your report must include:
 - **Hypothesis** — what you set out to test

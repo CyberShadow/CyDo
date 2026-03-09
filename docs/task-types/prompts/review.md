@@ -22,8 +22,9 @@ its plan and is ready to land.
 
 ## Guidelines
 
-- You have read-only access to the project directory. You can use `/tmp` for
-  scratch work (e.g. running the linter, compiling to check for errors).
+- You have read-only access to the codebase. The only writable location is
+  your output file. You can use `/tmp` for scratch work (e.g. running the
+  linter, compiling to check for errors).
 - This review happens after steward approval. The stewards have already checked
   for quality and security concerns. Your focus is on plan-implementation
   alignment and correctness.
@@ -32,7 +33,12 @@ its plan and is ready to land.
 
 ## Output
 
-A review report with:
+Write your review report to `{{output_file}}`. The file content is returned
+to the parent task as the result.
+
+Your final message should be a one-sentence verdict.
+
+The report must include:
 - **Verdict** — approve or reject
 - **Issues** — specific problems found, if any
 - **Summary** — brief assessment of the implementation quality

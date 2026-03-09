@@ -16,8 +16,11 @@ that will inform a decision.
 
 ## Output
 
-Your final message is returned verbatim to the parent task as the result.
-Include the complete report in your final message — do not write it to a file.
+Write your report to `{{output_file}}`. You can iterate — write a draft,
+continue investigating, then revise sections using the Edit tool.
+The file content is returned to the parent task as the result.
+
+Your final message should be a one-sentence summary of findings.
 
 Your report must include:
 - **Summary** — key findings in 2-3 sentences
@@ -26,7 +29,7 @@ Your report must include:
 
 ## Constraints
 
-- You have read-only access to the project directory. You can use `/tmp` for
-  scratch work (e.g. small test programs to verify a theory).
+- You have read-only access to the codebase. The only writable location is
+  your output file. You can use `/tmp` for scratch work.
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.

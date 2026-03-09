@@ -329,7 +329,7 @@ class App
 		// Send rendered prompt template as first user message
 		if (childTd.session !is null)
 		{
-			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir);
+			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath);
 			childTd.session.sendMessage(renderedPrompt);
 			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 		}
@@ -375,7 +375,7 @@ class App
 
 				auto messageToSend = json.content;
 				if (typeDef !is null)
-					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir);
+					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
 				td.session.sendMessage(messageToSend);
 				td.isProcessing = true;
 				broadcastUnconfirmedUserMessage(tid, json.content);
@@ -447,7 +447,7 @@ class App
 			{
 				auto typeDef = taskTypes.byName(td.taskType);
 				if (typeDef !is null)
-					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir);
+					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
 			}
 			td.session.sendMessage(messageToSend);
 			td.needsAttention = false;
@@ -691,12 +691,25 @@ class App
 			cleanup(tasks[tid].sandbox);
 			stopJsonlWatch(tid);
 
+			// Prefer output file content over stream result text
+			if (tasks[tid].outputPath.length > 0)
+			{
+				import std.file : exists, readText;
+				if (exists(tasks[tid].outputPath))
+					tasks[tid].resultText = readText(tasks[tid].outputPath);
+			}
+
 			// Fulfill pending sub-task promise (if this is a child task)
 			if (auto pending = tid in pendingSubTasks)
 			{
-				auto output = tasks[tid].resultText;
 				auto success = tasks[tid].status == "completed";
-				pending.fulfill(McpResult(output.length > 0 ? output : "(no output)", !success));
+				auto taskResult = TaskResult(
+					tasks[tid].resultText.length > 0 ? tasks[tid].resultText : "(no output)",
+					tasks[tid].outputPath.length > 0 ? tasks[tid].outputPath : null,
+					tasks[tid].hasWorktree ? tasks[tid].worktreePath : null,
+				);
+				auto resultJson = toJson(taskResult);
+				pending.fulfill(McpResult(resultJson, !success));
 				pendingSubTasks.remove(tid);
 			}
 
@@ -1172,6 +1185,15 @@ struct TaskData
 		return buildPath(taskDir, "worktree");
 	}
 
+	/// Output file path: .cydo/tasks/<tid>/output.md
+	@property string outputPath() const
+	{
+		if (taskDir.length == 0)
+			return "";
+		import std.path : buildPath;
+		return buildPath(taskDir, "output.md");
+	}
+
 	/// Effective working directory: worktree path if set, otherwise project path.
 	@property string effectiveCwd() const
 	{
@@ -1324,6 +1346,14 @@ struct SyntheticUserEvent
 {
 	string type;
 	SyntheticUserEventMessage message;
+}
+
+/// Structured result returned to the parent agent as JSON via MCP.
+struct TaskResult
+{
+	string result;          // main output text (plan, report, etc.)
+	string output_file;     // path to output artifact, if any
+	string worktree;        // path to worktree, if any
 }
 
 struct McpContentItem

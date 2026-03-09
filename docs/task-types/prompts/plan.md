@@ -31,8 +31,11 @@ existing patterns, and produce a detailed implementation plan.
 
 ## Output
 
-Your final message is returned verbatim to the parent task as the result.
-Include the complete plan in your final message — do not write it to a file.
+Write your plan to `{{output_file}}`. You can iterate — write a draft,
+continue researching, then revise specific sections using the Edit tool.
+The file content is returned to the parent task as the result.
+
+Your final message should be a one-sentence summary of the plan.
 
 Your plan must include:
 - **Goal** — one-sentence summary of what this achieves
@@ -47,9 +50,9 @@ Your plan must include:
 
 ## Constraints
 
-- You have read-only access to the project directory. You can use `/tmp` for
-  scratch work (e.g. small test programs to verify a theory). Do not write
-  production code.
+- You have read-only access to the codebase. The only writable location is
+  your output file. You can use `/tmp` for scratch work (e.g. small test
+  programs to verify a theory). Do not write production code.
 - Do not over-engineer. Propose the minimum viable change.
 - Follow existing project conventions — don't introduce new patterns unless
   there is a clear reason.
