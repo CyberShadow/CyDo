@@ -20,7 +20,6 @@ import ae.utils.json : JSONFragment, jsonParse, toJson, JSONPartial;
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.mcp.binding : mcpToolListJson;
 import cydo.mcp.tools : CydoTools;
 
 /// Entry point for MCP server mode.
@@ -48,18 +47,21 @@ private:
 /// MCP protocol version
 enum MCP_PROTOCOL_VERSION = "2024-11-05";
 
-/// tools/list result JSON template (generated at compile time from the CydoTools interface).
-/// Contains {{creatable_task_types}} placeholder, substituted at runtime.
-enum TOOLS_LIST_TEMPLATE = mcpToolListJson!CydoTools;
-
 /// Build the final tools/list JSON by substituting placeholders.
 string buildToolsListJson()
 {
 	import std.array : replace;
-	import cydo.mcp.binding : jsonEscapeRuntime;
+	import cydo.mcp.binding : jsonEscapeRuntime, mcpToolListJson;
+
+	// Cache the template — generated once via toJson on ToolsList structs.
+	// Contains {{creatable_task_types}} placeholder, substituted below.
+	static string toolsTemplate;
+	if (toolsTemplate is null)
+		toolsTemplate = mcpToolListJson!CydoTools();
+
 	auto creatableTypes = environment.get("CYDO_CREATABLE_TYPES", "(none available)");
 	// Value is substituted inside a JSON string, so it must be JSON-escaped
-	return TOOLS_LIST_TEMPLATE.replace("{{creatable_task_types}}", jsonEscapeRuntime(creatableTypes));
+	return toolsTemplate.replace("{{creatable_task_types}}", jsonEscapeRuntime(creatableTypes));
 }
 
 Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string tid)

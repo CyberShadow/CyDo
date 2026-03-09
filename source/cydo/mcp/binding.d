@@ -6,10 +6,39 @@ module cydo.mcp.binding;
 
 import std.traits : FunctionTypeOf, isCallable, Parameters, ParameterIdentifierTuple, ReturnType;
 
-import ae.utils.json : JSONFragment, jsonParse;
+import ae.utils.json : JSONFragment, JSONOptional, jsonParse, toJson;
 import ae.utils.meta : hasAttribute, getAttribute;
 
 import cydo.mcp : Description, McpName, McpResult;
+
+// ---- JSON Schema structs ----
+
+/// JSON Schema object, serialized via ae.utils.json.toJson.
+/// Optional fields are omitted when at their default (null) value.
+struct SchemaObj
+{
+	string type;
+	@JSONOptional string description;
+	@JSONOptional JSONFragment items;            /// Element schema for arrays (pre-serialized).
+	@JSONOptional SchemaObj[string] properties;  /// Named property schemas for objects.
+	@JSONOptional string[] required;             /// Required property names for objects.
+}
+
+/// A single MCP tool definition.
+struct ToolDef
+{
+	string name;
+	@JSONOptional string description;
+	SchemaObj inputSchema;
+}
+
+/// Top-level tools/list response body.
+struct ToolsList
+{
+	ToolDef[] tools;
+}
+
+// ---- Tool name resolution ----
 
 /// Get the MCP tool name for a method.
 /// Uses @McpName if present, otherwise the D method name.
@@ -21,60 +50,60 @@ template getMcpToolName(alias method, string defaultName)
 		enum getMcpToolName = defaultName;
 }
 
-/// Generate a complete JSON Schema object string for a D type.
+// ---- Schema generation ----
+
+/// Generate a SchemaObj for a D type.
 /// Handles primitives, arrays, and structs (with @Description on fields).
-template jsonSchemaFor(T)
+SchemaObj jsonSchemaFor(T)()
 {
+	SchemaObj s;
+
 	static if (is(T == string))
-		enum jsonSchemaFor = `{"type":"string"}`;
+		s.type = "string";
 	else static if (is(T == bool))
-		enum jsonSchemaFor = `{"type":"boolean"}`;
+		s.type = "boolean";
 	else static if (is(T == int) || is(T == long) || is(T == uint) || is(T == ulong))
-		enum jsonSchemaFor = `{"type":"integer"}`;
+		s.type = "integer";
 	else static if (is(T == float) || is(T == double))
-		enum jsonSchemaFor = `{"type":"number"}`;
+		s.type = "number";
 	else static if (is(T : E[], E) && !is(T == string))
-		enum jsonSchemaFor = `{"type":"array","items":` ~ jsonSchemaFor!E ~ `}`;
+	{
+		s.type = "array";
+		s.items = JSONFragment(toJson(jsonSchemaFor!E()));
+	}
 	else static if (is(T == struct))
-		enum jsonSchemaFor = generateStructSchema!T();
+		return generateStructSchema!T();
 	else
 		static assert(false, "Unsupported MCP parameter type: " ~ T.stringof);
+
+	return s;
 }
 
-/// Generate JSON Schema for a struct type, including @Description on fields.
-private string generateStructSchema(T)()
+/// Generate a SchemaObj for a struct type, including @Description on fields.
+private SchemaObj generateStructSchema(T)()
 {
-	string props;
-	string required;
-	bool first = true;
+	SchemaObj s;
+	s.type = "object";
 
 	static foreach (i, field; T.tupleof)
 	{{
-		if (!first) { props ~= ","; required ~= ","; }
-		first = false;
-
 		enum fieldName = __traits(identifier, field);
-		string schema = jsonSchemaFor!(typeof(field));
+		auto propSchema = jsonSchemaFor!(typeof(field))();
 
-		// Inject @Description from field UDAs
 		static foreach (uda; __traits(getAttributes, field))
 		{
 			static if (is(typeof(uda) == Description))
-				schema = injectIntoSchema(schema, `"description":"` ~ jsonEscape(uda.text) ~ `"`);
+				propSchema.description = uda.text;
 		}
 
-		props ~= `"` ~ fieldName ~ `":` ~ schema;
-		required ~= `"` ~ fieldName ~ `"`;
+		s.properties[fieldName] = propSchema;
+		s.required ~= fieldName;
 	}}
 
-	return `{"type":"object","properties":{` ~ props ~ `},"required":[` ~ required ~ `]}`;
+	return s;
 }
 
-/// Inject an extra JSON field into a schema object (inserts before the closing brace).
-private string injectIntoSchema(string schema, string extraField)
-{
-	return schema[0 .. $ - 1] ~ `,` ~ extraField ~ `}`;
-}
+// ---- Tool metadata generation ----
 
 /// Check if a member is a valid tool method (returns McpResult).
 template isToolMethod(I, string memberName)
@@ -91,76 +120,69 @@ template isToolMethod(I, string memberName)
 		enum isToolMethod = false;
 }
 
-/// Generate the tools/list result JSON for an interface.
+/// Generate the tools/list result JSON string for an interface.
+/// Uses compile-time introspection to discover tools, runtime toJson to serialize.
 string mcpToolListJson(I)()
 {
-	string tools;
-	bool first = true;
+	ToolDef[] tools;
 
 	static foreach (memberName; __traits(allMembers, I))
 	{
 		static if (isToolMethod!(I, memberName))
 		{{
 			alias method = __traits(getMember, I, memberName);
-			enum toolName = getMcpToolName!(method, memberName);
 
-			if (!first) tools ~= ",";
-			first = false;
-
-			tools ~= `{"name":"` ~ jsonEscape(toolName) ~ `"`;
+			ToolDef tool;
+			tool.name = getMcpToolName!(method, memberName);
 
 			static if (hasAttribute!(Description, method))
-				tools ~= `,"description":"` ~ jsonEscape(getAttribute!(Description, method).text) ~ `"`;
+				tool.description = getAttribute!(Description, method).text;
 
-			tools ~= `,"inputSchema":` ~ generateInputSchema!(I, memberName);
-			tools ~= `}`;
+			tool.inputSchema = generateInputSchema!(I, memberName)();
+			tools ~= tool;
 		}}
 	}
 
-	return `{"tools":[` ~ tools ~ `]}`;
+	return toJson(ToolsList(tools));
 }
 
-/// Generate inputSchema JSON for a method's parameters.
-string generateInputSchema(I, string memberName)()
+/// Generate the inputSchema for a method's parameters.
+SchemaObj generateInputSchema(I, string memberName)()
 {
 	alias method = __traits(getMember, I, memberName);
 	alias Params = Parameters!method;
 	alias ParamNames = ParameterIdentifierTuple!method;
 
-	static if (Params.length == 0)
-		return `{"type":"object","properties":{}}`;
+	SchemaObj s;
+	s.type = "object";
 
-	string props;
-	string required;
+	static if (Params.length == 0)
+		return s;
 
 	// Use __parameters to access parameter UDAs
 	static if (is(FunctionTypeOf!method PT == __parameters))
 	{
 		static foreach (i, P; Params)
 		{{
-			static if (i > 0)
-			{
-				props ~= ",";
-				required ~= ",";
-			}
-
 			enum paramName = ParamNames[i];
-			string schema = jsonSchemaFor!P;
+			auto propSchema = jsonSchemaFor!P();
 
 			// Inject @Description from parameter UDAs
 			static foreach (uda; __traits(getAttributes, PT[i .. i + 1]))
 			{
 				static if (is(typeof(uda) == Description))
-					schema = injectIntoSchema(schema, `"description":"` ~ jsonEscape(uda.text) ~ `"`);
+					propSchema.description = uda.text;
 			}
 
-			props ~= `"` ~ paramName ~ `":` ~ schema;
-			required ~= `"` ~ paramName ~ `"`;
+			s.properties[paramName] = propSchema;
+			s.required ~= paramName;
 		}}
 	}
 
-	return `{"type":"object","properties":{` ~ props ~ `},"required":[` ~ required ~ `]}`;
+	return s;
 }
+
+// ---- Tool dispatch ----
 
 /// MCP tool dispatcher. Dispatches tools/call requests to interface methods.
 struct McpToolDispatcher(I) if (is(I == interface))
@@ -241,12 +263,10 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 	return McpToolDispatcher!I(impl);
 }
 
-/// Runtime-callable JSON string escaping (same logic as jsonEscape).
-string jsonEscapeRuntime(string s) { return jsonEscape(s); }
+// ---- Utilities ----
 
-/// Escape a string for embedding in a JSON string literal.
-/// Usable at compile time (CTFE-compatible).
-private string jsonEscape(string s)
+/// Runtime JSON string escaping for template substitution in pre-serialized JSON.
+string jsonEscapeRuntime(string s)
 {
 	string result;
 	foreach (c; s)
