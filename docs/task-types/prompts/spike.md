@@ -35,3 +35,5 @@ Your report must include:
 - This is exploratory. Do not aim for production quality.
 - Focus on answering the question, not on polish.
 - If the approach clearly won't work, stop early and report why.
+- Even in a spike, do not introduce security vulnerabilities (injection, XSS,
+  etc.) — spike code may be adopted by the parent into the main tree.

@@ -11,7 +11,7 @@ import std.array : array, join;
 import std.conv : to;
 import std.format : format;
 import std.stdio : readln, stderr, stdin, stdout, write, writef, writefln, writeln;
-import std.string : chomp, strip;
+import std.string : chomp, lineSplitter, strip;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -157,11 +157,24 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 	return errors;
 }
 
-/// Detect cycles in continuation chains. Returns the cycle path or null.
+/// Detect unconditional cycles in continuation chains.
+/// A cycle is only problematic if every type in the loop has exactly one
+/// continuation (no agent decision). Types with multiple continuations
+/// represent decision points where the agent chooses — these break cycles.
 private string detectCycle(TaskTypeDef[] types, string current, string[] visited)
 {
 	if (visited.canFind(current))
+	{
+		// Check if any type in the cycle has multiple continuations
+		// (a decision point that makes the cycle conditional)
+		foreach (name; visited)
+		{
+			auto d = types.byName(name);
+			if (d !is null && d.continuations.length > 1)
+				return null; // conditional cycle, OK
+		}
 		return visited.join(" → ") ~ " → " ~ current;
+	}
 
 	auto def = types.byName(current);
 	if (def is null)
@@ -528,6 +541,15 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir, st
 	return tmpl;
 }
 
+/// Indent every line of a multi-line string with the given prefix.
+string indentLines(string text, string prefix)
+{
+	string result;
+	foreach (line; text.lineSplitter)
+		result ~= prefix ~ line ~ "\n";
+	return result;
+}
+
 /// Format a description of keep_context continuations for a given task type.
 /// Used to fill the {{switchmodes}} placeholder in the SwitchMode tool description.
 string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
@@ -545,9 +567,10 @@ string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
 		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
 		result ~= format("- %s: switches to '%s' — %s\n", cname, cont.task_type, desc);
 		if (targetDef !is null && targetDef.agent_description.length > 0)
-			result ~= format("  %s\n", targetDef.agent_description.strip);
+			result ~= indentLines(targetDef.agent_description.strip, "  ");
 		if (targetDef !is null && targetDef.tool_guidance.length > 0)
-			result ~= format("  %s\n", targetDef.tool_guidance.strip);
+			result ~= indentLines(targetDef.tool_guidance.strip, "  ");
+		result ~= "\n";
 	}
 	return result.length > 0 ? result : "(none available)";
 }
@@ -568,6 +591,7 @@ string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
 		auto targetDef = allTypes.byName(cont.task_type);
 		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
 		result ~= format("- %s: hands off to '%s' — %s\n", cname, cont.task_type, desc);
+		result ~= "\n";
 	}
 	return result.length > 0 ? result : "(none available)";
 }
@@ -586,22 +610,23 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 		auto def = allTypes.byName(name);
 		if (def is null)
 			continue;
-		auto desc = def.agent_description.length > 0
-			? def.agent_description.strip
-			: def.description;
-		result ~= format("- %s: %s\n", name, desc);
+		result ~= format("- %s: %s\n", name, def.description);
+		if (def.agent_description.length > 0)
+			result ~= indentLines(def.agent_description.strip, "  ");
 		if (def.tool_guidance.length > 0)
-			result ~= format("  %s\n", def.tool_guidance.strip);
+			result ~= indentLines(def.tool_guidance.strip, "  ");
+		result ~= "\n";
 	}
 	return result.length > 0 ? result : "(none available)";
 }
 
 /// Return the comma-separated list of Claude Code tools to disallow.
 /// The built-in "Task" tool is always disallowed (replaced by our MCP tool).
+/// Plan mode tools are disallowed (replaced by our SwitchMode continuations).
 /// Read-only enforcement is handled by the sandbox (ro mount), not by tool removal.
 string disallowedTools()
 {
-	return "Task";
+	return "Task,EnterPlanMode,ExitPlanMode";
 }
 
 /// Map model_class to Claude CLI model alias.

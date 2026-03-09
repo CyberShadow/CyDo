@@ -22,12 +22,14 @@ its plan and is ready to land.
 
 ## Guidelines
 
-- You have read-only access to the codebase. The only writable location is
-  your output file. You can use `/tmp` for scratch work (e.g. running the
-  linter, compiling to check for errors).
-- This review happens after steward approval. The stewards have already checked
-  for quality and security concerns. Your focus is on plan-implementation
-  alignment and correctness.
+- You have read-only access to the codebase — editing tools are not available
+  to you (enforced by the sandbox). The only writable location is your output
+  file. You can use `/tmp` for scratch work (e.g. running the linter, compiling
+  to check for errors).
+- This review happens after verification and steward approval. The verifier
+  has already confirmed the code builds, tests pass, and basic functionality
+  works. The stewards have checked for quality and security concerns. Your
+  focus is on plan-implementation alignment and correctness.
 - Be specific. Reference file paths and line numbers.
 - Do not nitpick style unless it deviates from established project conventions.
 
@@ -42,3 +44,15 @@ The report must include:
 - **Verdict** — approve or reject
 - **Issues** — specific problems found, if any
 - **Summary** — brief assessment of the implementation quality
+
+## Continuation
+
+If the implementation is correct, your task is complete — no continuation
+needed. The commit is ready to land.
+
+If the implementation has issues that need rework, call the `Handoff` tool
+with `reject` and a prompt describing the specific issues to fix. The
+implementation agent will receive your feedback and rework the code.
+
+**Remember: Focus on plan-implementation alignment. The verifier and stewards
+have already checked functionality, quality, and security.**

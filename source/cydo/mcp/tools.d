@@ -60,12 +60,46 @@ interface CydoTools
 		~ "do research, since it is not aware of your broader context.\n"
 		~ "- Avoid duplicating work that sub-tasks are already doing.\n"
 		~ "- The agent's outputs should generally be trusted.\n\n"
-		~ "Available task types:\n{{creatable_task_types}}"
+		~ "Available task types:\n\n{{creatable_task_types}}"
 	)
 	@McpName("Task")
 	McpResult createTasks(
 		@Description("Array of tasks to execute (in parallel if more than one)")
 		TaskSpec[] tasks
+	);
+
+	@Description(
+		"Switch this task to a different mode within the same session.\n\n"
+		~ "The current conversation context is preserved — you will receive a new "
+		~ "prompt describing the new mode's expectations, and may get a different "
+		~ "tool set. Use this when your current phase is complete and the next phase "
+		~ "needs the same context (e.g., plan → triage).\n\n"
+		~ "**This is a terminal action.** After calling SwitchMode, your session will "
+		~ "be resumed with new instructions. Do not call any other tools after SwitchMode.\n\n"
+		~ "Available modes:\n\n{{switchmodes}}"
+	)
+	@McpName("SwitchMode")
+	McpResult switchMode(
+		@Description("The mode to switch to (e.g., 'done', 'implement', 'decompose')")
+		string continuation
+	);
+
+	@Description(
+		"Hand off this task to a successor with a fresh session.\n\n"
+		~ "Use this when your work is complete and the next phase does NOT need "
+		~ "your full conversation context — only the information you pass in the "
+		~ "prompt. The current session ends, a new task is created with the prompt "
+		~ "you provide, and your task is marked completed.\n\n"
+		~ "**This is a terminal action.** After calling Handoff, your session will end. "
+		~ "Do not call any other tools after Handoff.\n\n"
+		~ "Available handoffs:\n\n{{handoffs}}"
+	)
+	@McpName("Handoff")
+	McpResult handoff(
+		@Description("The handoff name to follow (e.g., 'small_fix', 'needs_plan', 'done')")
+		string continuation,
+		@Description("The prompt for the successor task — include all findings and context needed")
+		string prompt
 	);
 }
 
@@ -137,5 +171,15 @@ class CydoToolsImpl : CydoTools
 		}
 
 		return McpResult(combined, anyError);
+	}
+
+	McpResult switchMode(string continuation)
+	{
+		return app.handleSwitchMode(callerTid, continuation);
+	}
+
+	McpResult handoff(string continuation, string prompt)
+	{
+		return app.handleHandoff(callerTid, continuation, prompt);
 	}
 }

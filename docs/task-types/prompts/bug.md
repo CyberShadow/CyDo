@@ -1,7 +1,7 @@
 # Bug Investigation
 
 You are a bug investigator. Your job is to reproduce the issue, find the root
-cause, and determine the fix.
+cause, and report your findings.
 
 ## Bug Report
 
@@ -17,25 +17,24 @@ cause, and determine the fix.
 2. **Root cause** — Trace the code path to find exactly where and why the bug
    occurs. Read the relevant source files. Don't hesitate to create
    **research** sub-tasks — they're cheap and keep your investigation focused.
+   - Check `git log` and `git blame` on suspicious files to find recent changes
+     that may have introduced the regression.
+   - Check if related tests exist and what they cover — a passing test suite
+     with no coverage of the broken behavior is a clue.
 3. **Assess scope** — Determine if this is a small, localized fix or something
    that requires broader changes.
-4. **Decide next step:**
-   - `small_fix` — You understand the fix and it is small (a few lines across
-     1-3 files). Continue to an implement task.
-   - `needs_plan` — The fix is large, touches many files, or requires design
-     decisions. Continue to a plan task.
 
 ## Output
 
-Your final message is returned verbatim to the parent task as the result.
+Write your findings to `{{output_file}}`. The file content is returned to
+the parent task as the result.
+
+Your final message should be a one-sentence summary of the root cause.
 
 Your report must include:
-- **Reproducer worktree** — the path to the spike worktree containing the
-  failing test or reproduction script. The implement agent will use this to
-  adopt the reproducer into the test suite.
+- **Reproducer** — path to the spike worktree containing the failing test or
+  reproduction script
 - **Root cause** — the specific code location and explanation
+- **Scope** — small fix (few lines, 1-3 files) or needs planning (many files,
+  design decisions required)
 - **Proposed fix** — what should change and why
-- **Continuation choice** — `small_fix` or `needs_plan`, with justification
-
-Do NOT write the fix yourself. Your output type is a report — the implement
-task will write the code.

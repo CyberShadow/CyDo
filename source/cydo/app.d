@@ -30,7 +30,7 @@ import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableU
 	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
-	renderPrompt, formatCreatableTaskTypes, disallowedTools;
+	renderPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
 
 void main(string[] args)
 {
@@ -349,6 +349,85 @@ class App
 		return promise;
 	}
 
+	/// Handle SwitchMode tool — validate and store continuation choice (keep_context).
+	/// The actual transition happens in onExit after the session ends.
+	package McpResult handleSwitchMode(string callerTid, string continuation)
+	{
+		import std.conv : to;
+
+		int tid;
+		try
+			tid = to!int(callerTid);
+		catch (Exception)
+			return McpResult("Invalid calling task ID", true);
+
+		auto td = tid in tasks;
+		if (td is null)
+			return McpResult("Calling task not found", true);
+
+		auto typeDef = taskTypes.byName(td.taskType);
+		if (typeDef is null)
+			return McpResult("Unknown task type: " ~ td.taskType, true);
+
+		auto contDef = continuation in typeDef.continuations;
+		if (contDef is null || !contDef.keep_context)
+		{
+			return McpResult(
+				"Unknown SwitchMode continuation '" ~ continuation ~ "' for task type '" ~
+				td.taskType ~ "'. Check the available modes in the tool description.", true);
+		}
+
+		td.pendingContinuation = continuation;
+		writefln("SwitchMode: tid=%d continuation=%s (type %s → %s)",
+			tid, continuation, td.taskType, contDef.task_type);
+
+		return McpResult(
+			"Mode switch to '" ~ contDef.task_type ~ "' accepted. "
+			~ "Your session will be resumed with new instructions.");
+	}
+
+	/// Handle Handoff tool — validate continuation, store choice + prompt.
+	/// Creates a new child task on exit with the provided prompt.
+	package McpResult handleHandoff(string callerTid, string continuation, string prompt)
+	{
+		import std.conv : to;
+
+		int tid;
+		try
+			tid = to!int(callerTid);
+		catch (Exception)
+			return McpResult("Invalid calling task ID", true);
+
+		auto td = tid in tasks;
+		if (td is null)
+			return McpResult("Calling task not found", true);
+
+		auto typeDef = taskTypes.byName(td.taskType);
+		if (typeDef is null)
+			return McpResult("Unknown task type: " ~ td.taskType, true);
+
+		auto contDef = continuation in typeDef.continuations;
+		if (contDef is null || contDef.keep_context)
+		{
+			return McpResult(
+				"Unknown Handoff continuation '" ~ continuation ~ "' for task type '" ~
+				td.taskType ~ "'. Check the available handoffs in the tool description.", true);
+		}
+
+		if (prompt.length == 0)
+			return McpResult("Handoff requires a non-empty prompt for the successor task.", true);
+
+		td.pendingContinuation = continuation;
+		td.handoffPrompt = prompt;
+		writefln("Handoff: tid=%d continuation=%s (type %s → %s)",
+			tid, continuation, td.taskType, contDef.task_type);
+
+		return McpResult(
+			"Handoff to '" ~ contDef.task_type ~ "' accepted. "
+			~ "A new task will be created with your prompt. "
+			~ "Your session is ending now.");
+	}
+
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
 		import ae.utils.json : jsonParse, toJson;
@@ -615,6 +694,12 @@ class App
 		if (sessionConfig.creatableTaskTypes.length == 0)
 			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
 
+		// Populate SwitchMode and Handoff descriptions if not already set
+		if (sessionConfig.switchModes.length == 0)
+			sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
+		if (sessionConfig.handoffs.length == 0)
+			sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
+
 		// Disable built-in Task tool — our MCP Task tool replaces it
 		if (sessionConfig.disallowedTools.length == 0)
 			sessionConfig.disallowedTools = "Task";
@@ -689,9 +774,9 @@ class App
 				// Capture the canonical result text for sub-task output.
 				td.resultText = extractResultText(line);
 
-				// For sub-tasks: close stdin so the process exits cleanly.
+				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
-				if (tid in pendingSubTasks)
+				if (tid in pendingSubTasks || td.pendingContinuation.length > 0)
 					td.session.closeStdin();
 				else
 				{
@@ -714,10 +799,18 @@ class App
 				return;
 			tasks[tid].alive = false;
 			tasks[tid].isProcessing = false;
-			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
-			persistence.setStatus(tid, tasks[tid].status);
 			cleanup(tasks[tid].sandbox);
 			stopJsonlWatch(tid);
+
+			// Continuation: transition to successor instead of completing
+			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
+			{
+				spawnContinuation(tid);
+				return;
+			}
+
+			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
+			persistence.setStatus(tid, tasks[tid].status);
 
 			// Read output file content (if any) — prefer it over stream result text.
 			// The stream result text (agent's final message) is kept as the summary.
@@ -767,6 +860,148 @@ class App
 
 		td.alive = true;
 		td.status = "active";
+	}
+
+	/// Transition a task to its successor via continuation.
+	/// Called from onExit when pendingContinuation is set.
+	///
+	/// Two modes:
+	///   keep_context: mutate task type in-place, resume the same session
+	///   !keep_context: complete the current task normally, create a new child task
+	private void spawnContinuation(int tid)
+	{
+		import ae.utils.json : toJson;
+
+		auto td = &tasks[tid];
+		auto typeDef = taskTypes.byName(td.taskType);
+		auto contKey = td.pendingContinuation;
+		auto hPrompt = td.handoffPrompt;
+		td.pendingContinuation = null;
+		td.handoffPrompt = null;
+
+		if (typeDef is null)
+		{
+			writefln("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
+			td.status = "failed";
+			persistence.setStatus(tid, "failed");
+			broadcast(buildTasksList());
+			return;
+		}
+
+		auto contDefP = contKey in typeDef.continuations;
+		if (contDefP is null)
+		{
+			writefln("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
+				contKey, td.taskType, tid);
+			td.status = "failed";
+			persistence.setStatus(tid, "failed");
+			broadcast(buildTasksList());
+			return;
+		}
+		auto contDef = *contDefP;
+
+		auto newTypeDef = taskTypes.byName(contDef.task_type);
+		if (newTypeDef is null)
+		{
+			writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
+			td.status = "failed";
+			persistence.setStatus(tid, "failed");
+			broadcast(buildTasksList());
+			return;
+		}
+
+		writefln("Continuation: tid=%d %s → %s (keep_context=%s)",
+			tid, td.taskType, contDef.task_type, contDef.keep_context);
+
+		if (contDef.keep_context)
+		{
+			// Mutate task type in-place, resume the same session
+			td.taskType = contDef.task_type;
+			persistence.setTaskType(tid, contDef.task_type);
+
+			// Reload history from JSONL before continuing (canonical source)
+			if (td.claudeSessionId.length > 0)
+			{
+				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
+				td.historyLoaded = true;
+				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			}
+
+			td.status = "active";
+			persistence.setStatus(tid, "active");
+
+			// Spawn successor session — will --resume the existing claudeSessionId
+			auto sessionConfig = SessionConfig(modelClassToAlias(newTypeDef.model_class));
+			sessionConfig.disallowedTools = disallowedTools();
+			ensureTaskAgent(tid, sessionConfig);
+
+			// Send rendered prompt as first message to successor
+			if (td.session !is null)
+			{
+				auto renderedPrompt = renderPrompt(*newTypeDef, td.description, taskTypesDir, td.outputPath);
+				broadcastUnconfirmedUserMessage(tid, renderedPrompt);
+				sendTaskMessage(tid, renderedPrompt);
+			}
+
+			broadcast(buildTasksList());
+		}
+		else
+		{
+			// Complete the current task normally (preserving its history),
+			// then create a new child task for the successor.
+			td.status = "completed";
+			persistence.setStatus(tid, "completed");
+
+			// Reload history from JSONL (canonical source)
+			if (td.claudeSessionId.length > 0)
+			{
+				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
+				td.historyLoaded = true;
+				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			}
+
+			// Create child task for the successor with the handoff prompt
+			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;
+			auto childTid = createTask(td.workspace, td.projectPath);
+			auto childTd = &tasks[childTid];
+			childTd.taskType = contDef.task_type;
+			childTd.description = successorPrompt;
+			childTd.parentTid = tid;
+			childTd.relationType = "continuation";
+			childTd.title = td.title;
+
+			persistence.setTaskType(childTid, contDef.task_type);
+			persistence.setDescription(childTid, successorPrompt);
+			persistence.setParentTid(childTid, tid);
+			persistence.setRelationType(childTid, "continuation");
+			persistence.setTitle(childTid, childTd.title);
+
+			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
+				td.workspace, td.projectPath, tid, "continuation")));
+
+			// If this task was itself a pending sub-task, move the promise
+			// to the new child so the parent awaits the full chain
+			if (auto pending = tid in pendingSubTasks)
+			{
+				pendingSubTasks[childTid] = *pending;
+				pendingSubTasks.remove(tid);
+			}
+
+			// Spawn the successor agent
+			auto sessionConfig = SessionConfig(modelClassToAlias(newTypeDef.model_class));
+			sessionConfig.disallowedTools = disallowedTools();
+			ensureTaskAgent(childTid, sessionConfig);
+
+			if (childTd.session !is null)
+			{
+				auto renderedPrompt = renderPrompt(*newTypeDef, successorPrompt,
+					taskTypesDir, childTd.outputPath);
+				broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
+				sendTaskMessage(childTid, renderedPrompt);
+			}
+
+			broadcast(buildTasksList());
+		}
 	}
 
 	private SandboxConfig findWorkspaceSandbox(string workspaceName)
@@ -1137,7 +1372,8 @@ class App
 		foreach (ref td; tasks)
 			entries ~= TaskListEntry(td.tid, td.alive, td.claudeSessionId.length > 0 && !td.alive,
 				td.isProcessing, td.needsAttention, td.notificationBody,
-				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status);
+				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
+				td.taskType);
 		return toJson(TasksListMessage("tasks_list", entries));
 	}
 
@@ -1245,6 +1481,8 @@ struct TaskData
 	string notificationBody;
 	string lastActivity;
 	string resultText;    // result from the "result" event (canonical sub-task output)
+	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
+	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
 	AgentProcess titleGenProcess; // prevent GC while running
 }
@@ -1309,6 +1547,7 @@ struct TaskListEntry
 	int parent_tid;
 	string relation_type;
 	string status;
+	string task_type;
 }
 
 struct ProjectInfo

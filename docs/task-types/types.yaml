@@ -8,15 +8,25 @@
 #   - requires_approval: all stewards must approve before successor spawns
 
 task_types:
-
-  # -------------------------------------------------------------------------
-  # User-visible types
-  # -------------------------------------------------------------------------
+  # =========================================================================
+  # Interactive types — user-facing, context-preserving
+  #
+  # These are the entry points for user interaction. Continuations always
+  # use keep_context (SwitchMode) to preserve the session. The top-level
+  # session can switch between modes and always return to conversation.
+  # =========================================================================
 
   blank:
     description: "Raw Claude Code session with no prompt wrapping or tool restrictions"
     model_class: large
     output_type: report
+    continuations:
+      plan:
+        task_type: plan_mode
+        keep_context: true
+      bug:
+        task_type: bug_mode
+        keep_context: true
     parallelizable: true
     user_visible: true
 
@@ -25,34 +35,108 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     output_type: report
-    creatable_tasks: [plan, research, implement, bug, spike]
+    creatable_tasks: [plan, research, spike, verify]
+    continuations:
+      plan:
+        task_type: plan_mode
+        keep_context: true
+      bug:
+        task_type: bug_mode
+        keep_context: true
     parallelizable: true
     user_visible: true
 
-  bug:
-    description: "Investigate a bug report — reproduce, find root cause, fix"
+  plan_mode:
+    description: "Interactive planning mode — explore, plan, get approval, then implement"
     agent_description: >
-      Use for investigating and fixing bugs. The agent reproduces the issue,
-      identifies the root cause, and either fixes it directly or creates a plan
-      for larger fixes. Use when: a user reports unexpected behavior, a test is
-      failing and you don't know why, you need to reproduce and diagnose an
-      issue, or something works differently than the code suggests it should.
-      Can create 'research' sub-tasks to gather context.
+      Switch to planning mode for non-trivial implementation tasks. Prefer
+      switching to plan mode — it's better to get alignment upfront than to
+      redo work. The session becomes read-only — you explore the codebase,
+      produce a detailed implementation plan, then call SwitchMode to trigger
+      the plan → approval → triage → implement pipeline. The operator must
+      approve the plan before implementation begins.
+
+      Switch when ANY of these apply:
+      - New feature: adding meaningful new functionality (e.g. "add a logout
+        button" — where should it go? what happens on click?)
+      - Multiple valid approaches: the task can be solved several ways (e.g.
+        "add caching" — Redis vs in-memory vs file-based)
+      - Architectural decisions: choosing between patterns or technologies
+        (e.g. "add real-time updates" — WebSockets vs SSE vs polling)
+      - Multi-file changes: the task will touch more than 2-3 files (e.g.
+        "refactor the authentication system")
+      - Unclear scope: you need to explore before understanding the full
+        extent (e.g. "make the app faster" — need to profile first)
+      - Changes to existing behavior: modifying how something currently works
+        (e.g. "update the login flow" — what exactly should change?)
+      - User preferences matter: the implementation could reasonably go
+        multiple ways — plan mode lets you explore first, then present
+        options with context
+
+      Do NOT switch for:
+      - Single-line or few-line fixes (typos, obvious bugs, small tweaks)
+      - Tasks where the user gave very specific, detailed instructions
+      - Pure research or exploration (use research sub-tasks instead)
     tool_guidance: >
-      Provide the bug description, reproduction steps, or error messages in the
-      prompt. Prefer this over investigating bugs inline — the agent has
-      dedicated context for systematic debugging.
-    prompt_template: prompts/bug.md
+      Prefer switching to plan mode — it's better to get alignment upfront
+      than to redo work. If unsure, err on the side of planning. Confirm the
+      task scope with the user before switching. The switch preserves your
+      conversation context but the session becomes read-only. Use research
+      sub-tasks to gather additional context. Switch back to return to the
+      previous mode without committing to the plan.
+    prompt_template: prompts/plan_mode.md
     model_class: large
-    output_type: patch
+    read_only: true
+    output_type: report
+    creatable_tasks: [research, spike]
+    continuations:
+      done:
+        task_type: triage
+        keep_context: true
+        requires_approval: true
+      back:
+        task_type: conversation
+        keep_context: true
+    parallelizable: true
+    user_visible: false
+
+  bug_mode:
+    description: "Interactive bug investigation — reproduce, diagnose, then fix"
+    agent_description: >
+      Switch to bug investigation mode when the user reports unexpected
+      behavior, a test is failing, or something works differently than
+      expected. You systematically reproduce the issue, identify the root
+      cause, and determine the fix approach. Can create spike and research
+      sub-tasks. When done, either hand off to implement (small fix) or
+      switch to plan_mode (large fix), or switch back if the issue turns
+      out to be a non-bug.
+    tool_guidance: >
+      Switch when the user describes a bug or unexpected behavior. Gather
+      reproduction steps and error messages before switching. Switch back
+      if investigation reveals it's not a bug.
+    prompt_template: prompts/bug_mode.md
+    model_class: large
+    output_type: report
     creatable_tasks: [research, spike]
     continuations:
       small_fix:
         task_type: implement
+        keep_context: true
       needs_plan:
-        task_type: plan
+        task_type: plan_mode
+        keep_context: true
+      back:
+        task_type: conversation
+        keep_context: true
     parallelizable: true
-    user_visible: true
+    user_visible: false
+
+  # =========================================================================
+  # Helper types — sub-task only, no continuations
+  #
+  # These are created by other agents via creatable_tasks. They run to
+  # completion and return their output to the parent. No state machine.
+  # =========================================================================
 
   plan:
     description: "Create a detailed implementation plan"
@@ -73,10 +157,6 @@ task_types:
     read_only: true
     output_type: report
     creatable_tasks: [research, spike]
-    continuations:
-      done:
-        task_type: triage
-        keep_context: true
     parallelizable: true
     user_visible: true
 
@@ -89,11 +169,16 @@ task_types:
       read and synthesize information from multiple files, you're exploring
       unfamiliar code, or answering questions like "how does authentication work?".
       Returns a structured report with findings, file paths, and recommendations.
-      No code changes are made.
+      No code changes are made. When calling this agent, specify the desired
+      thoroughness level: "quick" for basic searches, "medium" for moderate
+      exploration, or "thorough" for comprehensive analysis across multiple
+      locations and naming conventions.
     tool_guidance: >
-      Prefer this over doing your own exploration — it keeps your context clean.
-      Use for broader codebase exploration, deep research, or any open-ended
-      search that may require multiple rounds of globbing and grepping.
+      Prefer this over doing your own exploration — it keeps your context clean
+      and runs fast. Use for broader codebase exploration, deep research, or any
+      open-ended search that may require multiple rounds of globbing and grepping.
+      Specify thoroughness in the prompt: "quick" for targeted lookups, "thorough"
+      for exhaustive exploration.
     prompt_template: prompts/research.md
     model_class: medium
     read_only: true
@@ -101,9 +186,65 @@ task_types:
     parallelizable: true
     user_visible: true
 
-  # -------------------------------------------------------------------------
-  # Agent-initiated types (not directly user-visible)
-  # -------------------------------------------------------------------------
+  bug:
+    description: "Investigate a bug report — reproduce, find root cause, report findings"
+    agent_description: >
+      Use for investigating bugs as a sub-task. The agent reproduces the issue,
+      identifies the root cause, and reports findings back to the parent.
+      Creates spike sub-tasks for reproduction and research sub-tasks for
+      context. Use when: a user reports unexpected behavior, a test is
+      failing and you don't know why, you need to reproduce and diagnose an
+      issue, or something works differently than the code suggests it should.
+    tool_guidance: >
+      Provide the bug description, reproduction steps, or error messages in the
+      prompt. Prefer this over investigating bugs inline — the agent has
+      dedicated context for systematic debugging.
+    prompt_template: prompts/bug.md
+    model_class: large
+    output_type: report
+    creatable_tasks: [research, spike]
+    parallelizable: true
+    user_visible: true
+
+  spike:
+    description: "Test a theory or prototype an approach in an isolated worktree"
+    agent_description: >
+      Use when you need to test a theory, prototype an approach, or verify
+      feasibility before committing to a plan. Runs in its own worktree so
+      experiments don't pollute the main tree. The agent can write code, run
+      tests, and try things freely. Results are reported back as a report
+      that includes the worktree path, so the parent can adopt changes from
+      it if the experiment was successful. Good for: "will this library work
+      for our use case?", "can I reproduce this with a minimal example?",
+      "what happens if I restructure this module?".
+    tool_guidance: >
+      Use when you want to try something before committing to it. The worktree
+      is disposable — experiment freely.
+    prompt_template: prompts/spike.md
+    model_class: medium
+    output_type: report
+    worktree: true
+    parallelizable: true
+    user_visible: false
+
+  test:
+    description: "Write or fix tests for implemented changes"
+    agent_description: >
+      Use to add test coverage for new or changed code. Works on the same
+      tree as the parent implementation task.
+    prompt_template: prompts/test.md
+    model_class: medium
+    output_type: patch
+    parallelizable: true
+    user_visible: false
+
+  # =========================================================================
+  # Autonomous pipeline — state machine with recursive decomposition
+  #
+  # These types form the plan → triage → implement → verify → review chain.
+  # Agents proceed through continuations without user interaction (unless
+  # gated by requires_approval). Stewards review at approval gates.
+  # =========================================================================
 
   triage:
     description: "Decide whether a plan should be implemented directly or decomposed"
@@ -155,58 +296,49 @@ task_types:
     creatable_tasks: [test]
     continuations:
       done:
-        task_type: review
-        requires_approval: true
+        task_type: verify
     parallelizable: true
     user_visible: false
 
-  test:
-    description: "Write or fix tests for implemented changes"
+  verify:
+    description: "Run the code and verify the implementation actually works"
     agent_description: >
-      Use to add test coverage for new or changed code. Works on the same
-      tree as the parent implementation task.
-    prompt_template: prompts/test.md
+      Adversarial verification agent. Runs builds, test suites, linters, and
+      probes to confirm the implementation works correctly. Tries to break the
+      code rather than confirm it works. Issues a PASS/FAIL/PARTIAL verdict.
+      Adapts strategy to the change type (frontend, backend, CLI, bug fix,
+      etc.). Writes ephemeral test scripts to /tmp when needed.
+    prompt_template: prompts/verify.md
     model_class: medium
-    output_type: patch
+    output_type: report
+    continuations:
+      pass: # PASS or PARTIAL — both flow to review
+        task_type: review
+        keep_context: true
+        requires_approval: true
+      fail:
+        task_type: implement
     parallelizable: true
     user_visible: false
 
   review:
     description: "Review code changes for correctness and quality"
     agent_description: >
-      Final code review after steward approval. Verifies the implementation
-      matches the plan and is ready to land.
+      Final code review after verification and steward approval. Verifies the
+      implementation matches the plan and is ready to land.
     prompt_template: prompts/review.md
     model_class: large
     read_only: true
     output_type: report
+    continuations:
+      reject:
+        task_type: implement
     parallelizable: true
     user_visible: false
 
-  spike:
-    description: "Test a theory or prototype an approach in an isolated worktree"
-    agent_description: >
-      Use when you need to test a theory, prototype an approach, or verify
-      feasibility before committing to a plan. Runs in its own worktree so
-      experiments don't pollute the main tree. The agent can write code, run
-      tests, and try things freely. Results are reported back as a report
-      that includes the worktree path, so the parent can adopt changes from
-      it if the experiment was successful. Good for: "will this library work
-      for our use case?", "can I reproduce this with a minimal example?",
-      "what happens if I restructure this module?".
-    tool_guidance: >
-      Use when you want to try something before committing to it. The worktree
-      is disposable — experiment freely.
-    prompt_template: prompts/spike.md
-    model_class: medium
-    output_type: report
-    worktree: true
-    parallelizable: true
-    user_visible: false
-
-  # -------------------------------------------------------------------------
-  # Stewards
-  # -------------------------------------------------------------------------
+  # =========================================================================
+  # Stewards — stateful review agents that gate approval
+  # =========================================================================
 
   steward_quality:
     description: "Review artifacts for code quality and project conventions"

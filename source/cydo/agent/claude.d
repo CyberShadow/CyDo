@@ -55,7 +55,8 @@ class ClaudeCodeAgent : Agent
 	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
-		lastMcpConfigPath = generateMcpConfig(tid, config.creatableTaskTypes);
+		lastMcpConfigPath = generateMcpConfig(tid, config.creatableTaskTypes,
+			config.switchModes, config.handoffs);
 		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath, config);
 	}
 }
@@ -199,7 +200,10 @@ struct ClaudeInputMessage
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
 /// creatableTaskTypes is pre-formatted text describing available task types.
-string generateMcpConfig(int tid, string creatableTaskTypes = "")
+/// switchModes is pre-formatted text describing available SwitchMode continuations.
+/// handoffs is pre-formatted text describing available Handoff continuations.
+string generateMcpConfig(int tid, string creatableTaskTypes = "",
+	string switchModes = "", string handoffs = "")
 {
 	import std.file : exists, mkdirRecurse, write;
 	import std.path : buildPath;
@@ -215,7 +219,9 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "")
 	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
 		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
 		~ to!string(tid) ~ `","CYDO_PORT":"3456","CYDO_CREATABLE_TYPES":"`
-		~ escapeJsonString(creatableTaskTypes) ~ `"}}}}`;
+		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
+		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
+		~ escapeJsonString(handoffs) ~ `"}}}}`;
 
 	write(configPath, config);
 	return configPath;

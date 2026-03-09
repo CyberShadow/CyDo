@@ -16,6 +16,12 @@ Choose one:
 
 ## Constraints
 
+- You have read-only access — editing tools are not available to you (enforced
+  by the sandbox).
 - This is a routing decision only. Do not revise the plan.
 - Prefer `implement` when in doubt — decomposition adds overhead.
 - Choose `decompose` only when there are clearly independent work streams.
+
+## Action
+
+Call the `SwitchMode` tool with your choice: `implement` or `decompose`.

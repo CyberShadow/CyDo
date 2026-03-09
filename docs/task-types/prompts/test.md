@@ -24,6 +24,10 @@ implemented changes.
 - You work on the same tree as the parent implementation task (patch output).
 - Match the testing style already used in the project.
 - Write focused tests — each test should verify one behavior.
+- Test behavior, not implementation details. Tests should not break when
+  internals are refactored without changing observable behavior.
+- Do not over-test. Focus coverage on the changes described in the task, not
+  on exhaustive coverage of pre-existing code.
 - Do not modify implementation code. If you find a bug, report it; do not fix
   it.
 
