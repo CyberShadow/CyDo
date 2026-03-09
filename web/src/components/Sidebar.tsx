@@ -142,11 +142,15 @@ export function Sidebar({
           </button>
         )}
         <span class="sidebar-title">{projectName || "Tasks"}</span>
-        <button class="sidebar-new-btn" onClick={onNewTask} title="New task">
-          +
-        </button>
       </div>
       <div class="sidebar-list">
+        <div
+          class={`sidebar-item sidebar-new-task${activeTaskId === null ? " active" : ""}`}
+          onClick={onNewTask}
+        >
+          <span class="sidebar-dot new">+</span>
+          <span class="sidebar-label">New Task</span>
+        </div>
         {tree.flatMap((node) =>
           renderNode(node, 0, activeTaskId, attention, onSelectTask),
         )}

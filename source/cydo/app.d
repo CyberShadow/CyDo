@@ -356,6 +356,40 @@ class App
 				persistence.setTaskType(tid, json.task_type);
 			}
 			broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
+
+			// If content is provided, send it as the first message atomically
+			if (json.content.length > 0)
+			{
+				auto td = &tasks[tid];
+				auto typeDef = taskTypes.byName(td.taskType);
+				if (typeDef !is null)
+				{
+					auto sc = SessionConfig(
+						modelClassToAlias(typeDef.model_class),
+					);
+					sc.disallowedTools = toolPresetToDisallowedTools(typeDef.tool_preset);
+					ensureTaskAgent(tid, sc);
+				}
+				else
+					ensureTaskAgent(tid);
+
+				auto messageToSend = json.content;
+				if (typeDef !is null)
+					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir);
+				td.session.sendMessage(messageToSend);
+				td.isProcessing = true;
+				broadcastUnconfirmedUserMessage(tid, json.content);
+
+				td.description = json.content;
+				persistence.setDescription(tid, json.content);
+
+				td.title = truncateTitle(json.content, 80);
+				persistence.setTitle(tid, td.title);
+				broadcastTitleUpdate(tid, td.title);
+				generateTitle(tid, json.content);
+
+				broadcast(buildTasksList());
+			}
 		}
 		else if (json.type == "request_history")
 		{

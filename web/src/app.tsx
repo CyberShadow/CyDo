@@ -1,9 +1,10 @@
 import { h } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
+import { SessionConfig } from "./components/SessionConfig";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
@@ -130,17 +131,39 @@ export function App() {
     );
   }
 
-  // Project view with sidebar
+  // Navigate to the "new task" view (project page with no tid)
   const handleNewTask = () => {
     if (activeWorkspace && activeProject) {
-      // Find the absolute project path
-      const ws = workspaces.find((w) => w.name === activeWorkspace);
-      const proj = ws?.projects.find((p) => p.name === activeProject);
-      newTask(activeWorkspace, proj?.path || "");
+      navigateToProject(activeWorkspace, activeProject);
     } else {
-      newTask();
+      navigateHome();
     }
   };
+
+  const [selectedTaskType, setSelectedTaskType] = useState("conversation");
+  const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
+
+  const focusNewTaskInput = useCallback(() => {
+    newTaskInputRef.current?.focus();
+  }, []);
+
+  // Type anywhere to focus the new-task input (mirrors SessionView behavior)
+  useEffect(() => {
+    if (active || !connected) return;
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      )
+        return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length !== 1) return;
+      newTaskInputRef.current?.focus();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [active, connected]);
 
   return (
     <ThemeContext.Provider value={theme}>
@@ -176,25 +199,43 @@ export function App() {
                   onFork={fork}
                   theme={theme}
                   onToggleTheme={toggleTheme}
-                  taskTypes={taskTypes}
                 />
               </div>
             );
           })}
-        {!active && (
-          <div class="session-empty">
-            <div class="session-empty-inner">
-              <p>Select a task or create a new one</p>
-              <InputBox
-                onSend={send}
-                onInterrupt={interrupt}
-                isProcessing={false}
-                disabled={!connected}
-                sessionId={0}
-              />
+        {!active &&
+          (!connected ? (
+            <div class="session-empty no-sidebar">
+              <div class="session-empty-inner">
+                <span>Connecting…</span>
+              </div>
             </div>
-          </div>
-        )}
+          ) : (
+            <div class="session-empty">
+              <div class="session-empty-inner">
+                <h1 class="welcome-title">CyDo</h1>
+                <p class="welcome-subtitle">Multi-agent orchestration system</p>
+                <SessionConfig
+                  taskTypes={taskTypes}
+                  selected={selectedTaskType}
+                  onTaskTypeChange={(t: string) => {
+                    setSelectedTaskType(t);
+                    focusNewTaskInput();
+                  }}
+                />
+                <InputBox
+                  inputRef={newTaskInputRef}
+                  onSend={(text: string) =>
+                    send(text, selectedTaskType || taskTypes[0]?.name)
+                  }
+                  onInterrupt={interrupt}
+                  isProcessing={false}
+                  disabled={false}
+                  sessionId={0}
+                />
+              </div>
+            </div>
+          ))}
         {searchPopup}
       </div>
     </ThemeContext.Provider>

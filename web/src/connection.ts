@@ -94,13 +94,19 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "resume", tid }));
   }
 
-  createTask(workspace?: string, projectPath?: string, taskType?: string) {
+  createTask(
+    workspace?: string,
+    projectPath?: string,
+    taskType?: string,
+    content?: string,
+  ) {
     this.ws?.send(
       JSON.stringify({
         type: "create_task",
         workspace: workspace ?? "",
         project_path: projectPath ?? "",
         task_type: taskType ?? "",
+        content: content ?? "",
       }),
     );
   }

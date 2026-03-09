@@ -110,6 +110,17 @@ body,
   grid-row: 3;
 }
 
+/* Hide sidebar during loading/connecting state */
+.app.has-sidebar:has(.session-empty.no-sidebar) .sidebar {
+  display: none;
+}
+.app.has-sidebar:has(.session-empty.no-sidebar) {
+  grid-template-columns: 1fr;
+}
+.session-empty.no-sidebar {
+  grid-column: 1;
+}
+
 /* Welcome prompt (empty session with sidebar) */
 .welcome-prompt {
   display: flex;
@@ -324,6 +335,14 @@ body,
 
 .sidebar-dot.failed {
   background: var(--error);
+}
+
+.sidebar-dot.new {
+  background: none;
+  font-size: 16px;
+  line-height: 8px;
+  text-align: center;
+  color: var(--text-dim);
 }
 
 .sidebar-relation-icon {

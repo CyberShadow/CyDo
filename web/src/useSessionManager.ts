@@ -202,10 +202,6 @@ export function useTaskManager(): TaskManager {
   );
 
   const connRef = useRef<Connection | null>(null);
-  // When we create a task and want to send a message once it's confirmed
-  const pendingFirstMessage = useRef<string | null>(null);
-  // Task type for the pending task creation
-  const pendingTaskType = useRef<string | null>(null);
   // True when this client initiated a task creation and should focus it
   const pendingFocus = useRef(false);
   // Track which tasks have had history requested (avoid duplicate requests)
@@ -350,13 +346,6 @@ export function useTaskManager(): TaskManager {
           }
         }
 
-        // If we have a pending first message, send it now.
-        // The backend will broadcast an unconfirmed echo to all clients.
-        const text = pendingFirstMessage.current;
-        if (text !== null) {
-          pendingFirstMessage.current = null;
-          connRef.current?.sendMessage(tid, text);
-        }
         break;
       }
       case "tasks_list": {
@@ -641,13 +630,10 @@ export function useTaskManager(): TaskManager {
   const send = useCallback(
     (text: string, taskType?: string) => {
       if (activeTaskId === null) {
-        // No active task — create one in the current project context and queue the message
-        pendingFirstMessage.current = text;
-        pendingTaskType.current = taskType ?? null;
+        // No active task — create one with the message atomically
         pendingFocus.current = true;
         const parsed = parseFromPath(location.pathname);
         if (parsed.workspace && parsed.project) {
-          // Find the absolute project path from workspaces
           const projPath = findProjectPath(
             workspacesRef.current,
             parsed.workspace,
@@ -657,9 +643,10 @@ export function useTaskManager(): TaskManager {
             parsed.workspace,
             projPath || "",
             taskType,
+            text,
           );
         } else {
-          connRef.current?.createTask(undefined, undefined, taskType);
+          connRef.current?.createTask(undefined, undefined, taskType, text);
         }
         return;
       }
