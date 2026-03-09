@@ -606,7 +606,7 @@ class App
 
 			if (typeDef !is null && typeDef.worktree)
 			{
-				auto wtPath = buildPath(workDir, ".cydo", "worktrees", format!"task-%d"(td.tid));
+				auto wtPath = buildPath(workDir, ".cydo", "tasks", format!"%d"(td.tid), "worktree");
 				import std.file : mkdirRecurse;
 				mkdirRecurse(dirName(wtPath));
 				auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
