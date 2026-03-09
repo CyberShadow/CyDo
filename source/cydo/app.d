@@ -662,16 +662,20 @@ class App
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
-				td.needsAttention = true;
-				td.notificationBody = extractLastAssistantText(tid);
-				broadcast(buildTasksList());
 
 				// Capture the canonical result text for sub-task output.
 				td.resultText = extractResultText(line);
 
 				// For sub-tasks: close stdin so the process exits cleanly.
+				// Interactive tasks stay open for user input — flag for attention.
 				if (tid in pendingSubTasks)
 					td.session.closeStdin();
+				else
+				{
+					td.needsAttention = true;
+					td.notificationBody = extractLastAssistantText(tid);
+				}
+				broadcast(buildTasksList());
 			}
 		};
 
@@ -732,8 +736,9 @@ class App
 				tasks[tid].historyLoaded = true;
 				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 			}
-			tasks[tid].needsAttention = true;
-			tasks[tid].notificationBody = extractLastAssistantText(tid);
+			// No attention on exit — the session is over and there's
+			// nothing for the user to act on.  Turn-complete attention
+			// (in onOutput) is sufficient for interactive tasks.
 			broadcast(buildTasksList());
 		};
 
