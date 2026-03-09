@@ -140,6 +140,7 @@ body,
   margin-top: 24px;
   width: 100%;
   max-width: 640px;
+  outline: none;
 }
 
 .task-type-row {
@@ -166,6 +167,10 @@ body,
 
 .task-type-row.selected {
   background: var(--bg-secondary);
+  border-color: var(--border);
+}
+
+.task-type-picker:focus .task-type-row.selected {
   border-color: var(--accent);
 }
 

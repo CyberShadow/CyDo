@@ -11,6 +11,7 @@ interface Props {
   sessionId: number;
   preReloadDrafts?: string[];
   inputRef?: RefObject<HTMLTextAreaElement>;
+  onEscape?: () => void;
 }
 
 export function InputBox({
@@ -21,6 +22,7 @@ export function InputBox({
   sessionId,
   preReloadDrafts,
   inputRef,
+  onEscape,
 }: Props) {
   const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
   const internalRef = useRef<HTMLTextAreaElement>(null);
@@ -47,6 +49,9 @@ export function InputBox({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
+    } else if (e.key === "Escape" && onEscape) {
+      e.preventDefault();
+      onEscape();
     }
   };
 

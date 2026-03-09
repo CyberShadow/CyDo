@@ -100,6 +100,7 @@ export function App() {
     } else {
       navigateHome();
     }
+    requestAnimationFrame(() => taskTypePickerRef.current?.focus());
   }, [activeWorkspace, activeProject, navigateToProject, navigateHome]);
 
   // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
@@ -161,9 +162,14 @@ export function App() {
 
   const [selectedTaskType, setSelectedTaskType] = useState("conversation");
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
+  const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
   const focusNewTaskInput = useCallback(() => {
     newTaskInputRef.current?.focus();
+  }, []);
+
+  const focusTaskTypePicker = useCallback(() => {
+    taskTypePickerRef.current?.focus();
   }, []);
 
   // Type anywhere to focus the new-task input (mirrors SessionView behavior)
@@ -237,10 +243,10 @@ export function App() {
                 <SessionConfig
                   taskTypes={taskTypes}
                   selected={selectedTaskType}
-                  onTaskTypeChange={(t: string) => {
-                    setSelectedTaskType(t);
-                    focusNewTaskInput();
-                  }}
+                  onTaskTypeChange={setSelectedTaskType}
+                  pickerRef={taskTypePickerRef}
+                  onConfirm={focusNewTaskInput}
+                  onType={focusNewTaskInput}
                 />
                 <InputBox
                   inputRef={newTaskInputRef}
@@ -248,6 +254,7 @@ export function App() {
                     send(text, selectedTaskType || taskTypes[0]?.name)
                   }
                   onInterrupt={interrupt}
+                  onEscape={focusTaskTypePicker}
                   isProcessing={false}
                   disabled={false}
                   sessionId={0}

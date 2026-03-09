@@ -1,25 +1,60 @@
-import { h } from "preact";
+import { h, RefObject } from "preact";
 import type { TaskTypeInfo } from "../useSessionManager";
 
 interface Props {
   taskTypes: TaskTypeInfo[];
   selected: string;
   onTaskTypeChange: (taskType: string) => void;
+  pickerRef?: RefObject<HTMLDivElement>;
+  onConfirm?: () => void;
+  onType?: () => void;
 }
 
 export function SessionConfig({
   taskTypes,
   selected,
   onTaskTypeChange,
+  pickerRef,
+  onConfirm,
+  onType,
 }: Props) {
   if (taskTypes.length === 0) return null;
 
+  const selectedIdx = taskTypes.findIndex((t) => t.name === selected);
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (
+      (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey
+    ) {
+      e.preventDefault();
+      const dir = e.key === "ArrowDown" ? 1 : -1;
+      const next = (selectedIdx + dir + taskTypes.length) % taskTypes.length;
+      onTaskTypeChange(taskTypes[next].name);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      onConfirm?.();
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Redirect typing to the input box
+      onType?.();
+    }
+  };
+
   return (
-    <div class="task-type-picker">
+    <div
+      class="task-type-picker"
+      ref={pickerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+    >
       {taskTypes.map((t) => (
         <button
           key={t.name}
           class={`task-type-row ${t.name === selected ? "selected" : ""}`}
+          tabIndex={-1}
           onClick={() => onTaskTypeChange(t.name)}
         >
           <div class="task-type-header">
