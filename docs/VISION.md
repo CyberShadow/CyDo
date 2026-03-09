@@ -135,7 +135,7 @@ and flow control.
 Deliverable: task types configure model, tools, prompt, and sub-task
 permissions declaratively; a simulator and dot generator validate the design.
 
-- YAML-defined types with model_class, tool_preset, output_type, prompt_template
+- YAML-defined types with model_class, read_only, output_type, prompt_template
 - creatable_tasks enforcement (parent controls which sub-task types child can create)
 - Prompt template rendering with {{task_description}} substitution
 - Simulator and Graphviz dot generator for design validation

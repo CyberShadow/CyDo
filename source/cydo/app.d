@@ -30,7 +30,7 @@ import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableU
 	forkTask, loadTaskHistory;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
-	renderPrompt, formatCreatableTaskTypes, toolPresetToDisallowedTools;
+	renderPrompt, formatCreatableTaskTypes, disallowedTools;
 
 void main(string[] args)
 {
@@ -323,7 +323,7 @@ class App
 		auto sessionConfig = SessionConfig(
 			modelClassToAlias(childTypeDef.model_class),
 		);
-		sessionConfig.disallowedTools = toolPresetToDisallowedTools(childTypeDef.tool_preset);
+		sessionConfig.disallowedTools = disallowedTools();
 		ensureTaskAgent(childTid, sessionConfig);
 
 		// Send rendered prompt template as first user message
@@ -367,7 +367,7 @@ class App
 					auto sc = SessionConfig(
 						modelClassToAlias(typeDef.model_class),
 					);
-					sc.disallowedTools = toolPresetToDisallowedTools(typeDef.tool_preset);
+					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
 				}
 				else
@@ -435,7 +435,7 @@ class App
 					auto sc = SessionConfig(
 						modelClassToAlias(typeDef.model_class),
 					);
-					sc.disallowedTools = toolPresetToDisallowedTools(typeDef.tool_preset);
+					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
 				}
 				else
@@ -1096,7 +1096,7 @@ class App
 		TaskTypeListEntry[] entries;
 		foreach (ref def; taskTypes)
 			if (def.user_visible)
-				entries ~= TaskTypeListEntry(def.name, def.description, def.model_class, def.tool_preset);
+				entries ~= TaskTypeListEntry(def.name, def.description, def.model_class, def.read_only);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
 	}
 
@@ -1249,7 +1249,7 @@ struct TaskTypeListEntry
 	string name;
 	string description;
 	string model_class;
-	string tool_preset;
+	bool read_only;
 }
 
 struct TaskTypesListMessage

@@ -37,7 +37,7 @@ struct TaskTypeDef
 
 	// Capabilities
 	string model_class = "large";
-	string tool_preset = "full";
+	@Optional bool read_only;
 	string output_type = "report";
 
 	// Flow control
@@ -128,8 +128,6 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 		// Validate enum-like fields
 		if (!["small", "medium", "large"].canFind(def.model_class))
 			errors ~= format("%s: invalid model_class '%s'", def.name, def.model_class);
-		if (!["full", "read-only", "code", "execute"].canFind(def.tool_preset))
-			errors ~= format("%s: invalid tool_preset '%s'", def.name, def.tool_preset);
 		if (!["commit", "patch", "report"].canFind(def.output_type))
 			errors ~= format("%s: invalid output_type '%s'", def.name, def.output_type);
 	}
@@ -186,11 +184,11 @@ void printTypes(TaskTypeDef[] types)
 	writeln("=== Task Type Definitions ===\n");
 	foreach (ref def; types)
 	{
-		writefln("  %-20s  model: %-6s  tools: %-9s  output: %-6s%s%s%s",
+		writefln("  %-20s  model: %-6s  output: %-6s%s%s%s%s",
 			def.name,
 			def.model_class,
-			def.tool_preset,
 			def.output_type,
+			def.read_only ? "  [ro]" : "",
 			def.steward ? "  [steward]" : "",
 			def.serial ? "  [serial]" : "",
 			def.user_visible ? "" : "  [hidden]",
@@ -295,8 +293,9 @@ void simulateWorkflow(TaskTypeDef[] types)
 			id, typeName,
 			parentId > 0 ? format(" (from #%d)  ", parentId) : "  ",
 			desc.length > 60 ? desc[0 .. 60] ~ "…" : desc);
-		writefln("    model: %s | tools: %s | output: %s%s",
-			def.model_class, def.tool_preset, def.output_type,
+		writefln("    model: %s | output: %s%s%s",
+			def.model_class, def.output_type,
+			def.read_only ? " (read-only)" : "",
 			def.worktree ? " (worktree)" : "");
 
 		if (def.creatable_tasks.length > 0)
@@ -551,26 +550,12 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 	return result.length > 0 ? result : "(none available)";
 }
 
-/// Map tool_preset to a comma-separated list of Claude Code tools to disallow.
+/// Return the comma-separated list of Claude Code tools to disallow.
 /// The built-in "Task" tool is always disallowed (replaced by our MCP tool).
-string toolPresetToDisallowedTools(string toolPreset)
+/// Read-only enforcement is handled by the sandbox (ro mount), not by tool removal.
+string disallowedTools()
 {
-	// Write/execute tools to disallow for read-only presets
-	enum writeTools = "Write,Edit,MultiEdit,NotebookEdit,Bash";
-
-	switch (toolPreset)
-	{
-		case "read-only":
-			return "Task," ~ writeTools;
-		case "full":
-			return "Task";
-		case "code":
-			return "Task,Bash";
-		case "execute":
-			return "Task";
-		default:
-			throw new Exception("Unknown tool_preset: " ~ toolPreset);
-	}
+	return "Task";
 }
 
 /// Map model_class to Claude CLI model alias.
@@ -628,7 +613,8 @@ void generateDot(TaskTypeDef[] types)
 		}
 
 		style = "filled,rounded";
-		auto label = format("%s\\n%s / %s%s", def.name, def.model_class, def.tool_preset,
+		auto label = format("%s\\n%s%s%s", def.name, def.model_class,
+			def.read_only ? " ro" : "",
 			def.worktree ? " ⎘" : "");
 		writefln("    %s [label=\"%s\" shape=%s style=\"%s\" fillcolor=\"%s\"];",
 			def.name, label, shape, style, fillcolor);

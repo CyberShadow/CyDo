@@ -47,7 +47,9 @@ Your plan must include:
 
 ## Constraints
 
-- You have read-only access. Do not write code.
+- You have read-only access to the project directory. You can use `/tmp` for
+  scratch work (e.g. small test programs to verify a theory). Do not write
+  production code.
 - Do not over-engineer. Propose the minimum viable change.
 - Follow existing project conventions — don't introduce new patterns unless
   there is a clear reason.

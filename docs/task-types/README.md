@@ -14,7 +14,7 @@ description: string                   # human-readable comment
 agent_description: string             # LLM-visible; explains when to use this type
 prompt_template: string | path        # system prompt wrapping the task description
 model_class: small | medium | large   # maps to haiku / sonnet / opus
-tool_preset: full | read-only | code | execute
+read_only: bool                   # sandbox mounts project dir as ro (default false)
 output_type: commit | patch | report  # what the task produces
 
 # Flow control
@@ -46,12 +46,16 @@ knowledge_base: path?                 # persistent state directory
   larger effort, not independently reviewable.
 - **report** — Text output, no code changes. Plans, analyses, verdicts.
 
-## Tool Presets
+## Read-Only Mode
 
-- **full** — Read, write, execute. Full autonomy.
-- **read-only** — Read files, search, web access. No modifications.
-- **code** — Read and write files. Limited/no shell execution.
-- **execute** — Run commands, no file writes. For CI tasks.
+When `read_only: true`, the sandbox mounts the project directory as read-only
+(`ro` instead of `rw`). The agent keeps all tools — Bash, Write, Edit, etc. —
+but filesystem writes to the project tree are denied by the kernel. A writable
+`/tmp` is available for scratch work (test programs, temporary files).
+
+This enforces role discipline (plan agents don't accidentally implement, review
+agents don't make fixes) while still allowing agents to run commands, compile
+code, or write throwaway test programs to verify theories.
 
 ## Flow Control
 

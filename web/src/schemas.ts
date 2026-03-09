@@ -652,7 +652,7 @@ export interface TaskTypesListMessage {
     name: string;
     description: string;
     model_class: string;
-    tool_preset: string;
+    read_only: boolean;
   }[];
 }
 export interface ForkableUuidsMessage {

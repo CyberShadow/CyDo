@@ -16,7 +16,6 @@ task_types:
   blank:
     description: "Raw Claude Code session with no prompt wrapping or tool restrictions"
     model_class: large
-    tool_preset: full
     output_type: report
     parallelizable: true
     user_visible: true
@@ -25,7 +24,6 @@ task_types:
     description: "Open-ended interactive session with the user"
     prompt_template: prompts/conversation.md
     model_class: large
-    tool_preset: full
     output_type: report
     creatable_tasks: [plan, research, implement, bug, spike]
     parallelizable: true
@@ -46,7 +44,6 @@ task_types:
       dedicated context for systematic debugging.
     prompt_template: prompts/bug.md
     model_class: large
-    tool_preset: full
     output_type: patch
     creatable_tasks: [research, spike]
     continuations:
@@ -73,7 +70,7 @@ task_types:
       existing patterns before making changes.
     prompt_template: prompts/plan.md
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     creatable_tasks: [research, spike]
     continuations:
@@ -99,7 +96,7 @@ task_types:
       search that may require multiple rounds of globbing and grepping.
     prompt_template: prompts/research.md
     model_class: medium
-    tool_preset: read-only
+    read_only: true
     output_type: report
     parallelizable: true
     user_visible: true
@@ -112,7 +109,7 @@ task_types:
     description: "Decide whether a plan should be implemented directly or decomposed"
     prompt_template: prompts/triage.md
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     continuations:
       implement:
@@ -133,7 +130,7 @@ task_types:
       multiple parallel implement tasks and waits for all to complete.
     prompt_template: prompts/decompose.md
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     creatable_tasks: [implement, plan, spike]
     parallelizable: true
@@ -153,7 +150,6 @@ task_types:
       requirements.
     prompt_template: prompts/implement.md
     model_class: medium
-    tool_preset: full
     output_type: commit
     worktree: true
     creatable_tasks: [test]
@@ -171,7 +167,6 @@ task_types:
       tree as the parent implementation task.
     prompt_template: prompts/test.md
     model_class: medium
-    tool_preset: full
     output_type: patch
     parallelizable: true
     user_visible: false
@@ -183,7 +178,7 @@ task_types:
       matches the plan and is ready to land.
     prompt_template: prompts/review.md
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     parallelizable: true
     user_visible: false
@@ -204,7 +199,6 @@ task_types:
       is disposable — experiment freely.
     prompt_template: prompts/spike.md
     model_class: medium
-    tool_preset: full
     output_type: report
     worktree: true
     parallelizable: true
@@ -223,7 +217,7 @@ task_types:
       Ensures code follows established patterns and doesn't introduce
       technical debt.
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     serial: true
     knowledge_base: .cydo/stewards/quality/
@@ -237,7 +231,7 @@ task_types:
       Security vulnerabilities, unsafe patterns, injection risks,
       authentication/authorization issues, data exposure.
     model_class: large
-    tool_preset: read-only
+    read_only: true
     output_type: report
     serial: true
     knowledge_base: .cydo/stewards/security/

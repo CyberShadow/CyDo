@@ -26,6 +26,7 @@ Your report must include:
 
 ## Constraints
 
-- You have read-only access. Do not write code.
+- You have read-only access to the project directory. You can use `/tmp` for
+  scratch work (e.g. small test programs to verify a theory).
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.

@@ -26,7 +26,7 @@ export function SessionConfig({
             <span class="task-type-name">{t.name}</span>
             <span class="task-type-badges">
               <span class="config-badge">{t.model_class}</span>
-              <span class="config-badge">{t.tool_preset}</span>
+              {t.read_only && <span class="config-badge">ro</span>}
             </span>
           </div>
           <span class="task-type-desc">{t.description}</span>
