@@ -21,19 +21,59 @@ template getMcpToolName(alias method, string defaultName)
 		enum getMcpToolName = defaultName;
 }
 
-/// Map a D type to a JSON Schema type string.
-template jsonSchemaType(T)
+/// Generate a complete JSON Schema object string for a D type.
+/// Handles primitives, arrays, and structs (with @Description on fields).
+template jsonSchemaFor(T)
 {
 	static if (is(T == string))
-		enum jsonSchemaType = `"string"`;
+		enum jsonSchemaFor = `{"type":"string"}`;
 	else static if (is(T == bool))
-		enum jsonSchemaType = `"boolean"`;
+		enum jsonSchemaFor = `{"type":"boolean"}`;
 	else static if (is(T == int) || is(T == long) || is(T == uint) || is(T == ulong))
-		enum jsonSchemaType = `"integer"`;
+		enum jsonSchemaFor = `{"type":"integer"}`;
 	else static if (is(T == float) || is(T == double))
-		enum jsonSchemaType = `"number"`;
+		enum jsonSchemaFor = `{"type":"number"}`;
+	else static if (is(T : E[], E) && !is(T == string))
+		enum jsonSchemaFor = `{"type":"array","items":` ~ jsonSchemaFor!E ~ `}`;
+	else static if (is(T == struct))
+		enum jsonSchemaFor = generateStructSchema!T();
 	else
 		static assert(false, "Unsupported MCP parameter type: " ~ T.stringof);
+}
+
+/// Generate JSON Schema for a struct type, including @Description on fields.
+private string generateStructSchema(T)()
+{
+	string props;
+	string required;
+	bool first = true;
+
+	static foreach (i, field; T.tupleof)
+	{{
+		if (!first) { props ~= ","; required ~= ","; }
+		first = false;
+
+		enum fieldName = __traits(identifier, field);
+		string schema = jsonSchemaFor!(typeof(field));
+
+		// Inject @Description from field UDAs
+		static foreach (uda; __traits(getAttributes, field))
+		{
+			static if (is(typeof(uda) == Description))
+				schema = injectIntoSchema(schema, `"description":"` ~ jsonEscape(uda.text) ~ `"`);
+		}
+
+		props ~= `"` ~ fieldName ~ `":` ~ schema;
+		required ~= `"` ~ fieldName ~ `"`;
+	}}
+
+	return `{"type":"object","properties":{` ~ props ~ `},"required":[` ~ required ~ `]}`;
+}
+
+/// Inject an extra JSON field into a schema object (inserts before the closing brace).
+private string injectIntoSchema(string schema, string extraField)
+{
+	return schema[0 .. $ - 1] ~ `,` ~ extraField ~ `}`;
 }
 
 /// Check if a member is a valid tool method (returns McpResult).
@@ -105,16 +145,16 @@ string generateInputSchema(I, string memberName)()
 			}
 
 			enum paramName = ParamNames[i];
-			props ~= `"` ~ paramName ~ `":{"type":` ~ jsonSchemaType!P;
+			string schema = jsonSchemaFor!P;
 
-			// Extract @Description from parameter UDAs
+			// Inject @Description from parameter UDAs
 			static foreach (uda; __traits(getAttributes, PT[i .. i + 1]))
 			{
 				static if (is(typeof(uda) == Description))
-					props ~= `,"description":"` ~ jsonEscape(uda.text) ~ `"`;
+					schema = injectIntoSchema(schema, `"description":"` ~ jsonEscape(uda.text) ~ `"`);
 			}
 
-			props ~= `}`;
+			props ~= `"` ~ paramName ~ `":` ~ schema;
 			required ~= `"` ~ paramName ~ `"`;
 		}}
 	}

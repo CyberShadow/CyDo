@@ -4,6 +4,17 @@ module cydo.mcp.tools;
 import cydo.app : App;
 import cydo.mcp : Description, McpName, McpResult;
 
+/// Specification for a single sub-task.
+struct TaskSpec
+{
+	@Description("A short (3-5 word) description of the task")
+	string description;
+	@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
+	string task_type;
+	@Description("The task for the agent to perform")
+	string prompt;
+}
+
 /// Tool interface — each method is an MCP tool.
 /// Compile-time introspection generates metadata and dispatch.
 interface CydoTools
@@ -18,7 +29,7 @@ interface CydoTools
 	+/
 
 	@Description(
-		"Create a sub-task that runs autonomously and returns its output.\n\n"
+		"Create sub-tasks that run autonomously and return their output.\n\n"
 		~ "**Prefer creating sub-tasks for any work that can stand alone.** Sub-tasks "
 		~ "run as independent agent sessions, protect your context window, and make work "
 		~ "visible in the CyDo task tree. When in doubt, delegate — sub-tasks are cheap "
@@ -38,6 +49,10 @@ interface CydoTools
 		~ "- The sub-task runs to completion and returns a structured summary\n"
 		~ "- Results are also visible in the CyDo web UI task tree\n"
 		~ "- Sub-tasks are persisted and survive backend restarts\n\n"
+		~ "## Parallel execution\n"
+		~ "- Pass multiple tasks in the array to run them in parallel\n"
+		~ "- All tasks execute concurrently; the tool returns when all complete\n"
+		~ "- Results are returned in order, one section per task\n\n"
 		~ "## Usage notes\n"
 		~ "- Provide clear, detailed prompts so the agent can work autonomously "
 		~ "and return exactly the information you need.\n"
@@ -48,13 +63,9 @@ interface CydoTools
 		~ "Available task types:\n{{creatable_task_types}}"
 	)
 	@McpName("Task")
-	McpResult createTask(
-		@Description("A short (3-5 word) description of the task")
-		string description,
-		@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
-		string task_type,
-		@Description("The task for the agent to perform")
-		string prompt
+	McpResult createTasks(
+		@Description("Array of tasks to execute (in parallel if more than one)")
+		TaskSpec[] tasks
 	);
 }
 
@@ -92,10 +103,39 @@ class CydoToolsImpl : CydoTools
 	}
 	+/
 
-	McpResult createTask(string description, string task_type, string prompt)
+	McpResult createTasks(TaskSpec[] tasks)
 	{
+		import ae.utils.promise : Promise, all;
 		import ae.utils.promise.await : await;
-		return app.handleCreateTask(callerTid, description, task_type, prompt).await();
+		import std.conv : to;
+
+		if (tasks.length == 0)
+			return McpResult("No tasks provided", true);
+
+		// Launch all tasks — each returns a promise
+		auto promises = new Promise!McpResult[tasks.length];
+		foreach (i, ref spec; tasks)
+			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
+
+		// Single task: return its result directly
+		if (tasks.length == 1)
+			return promises[0].await();
+
+		// Multiple tasks: wait for all, combine results
+		McpResult[] results = all(promises).await();
+
+		bool anyError;
+		string combined;
+		foreach (i, ref result; results)
+		{
+			if (i > 0)
+				combined ~= "\n\n---\n\n";
+			combined ~= "## Task " ~ to!string(i + 1) ~ ": " ~ tasks[i].description ~ "\n\n";
+			combined ~= result.text;
+			if (result.isError)
+				anyError = true;
+		}
+
+		return McpResult(combined, anyError);
 	}
 }
-
