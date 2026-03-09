@@ -332,8 +332,8 @@ class App
 		if (childTd.session !is null)
 		{
 			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath);
-			childTd.session.sendMessage(renderedPrompt);
 			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
+			sendTaskMessage(childTid, renderedPrompt);
 		}
 
 		if (description.length == 0)
@@ -378,9 +378,8 @@ class App
 				auto messageToSend = json.content;
 				if (typeDef !is null)
 					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
-				td.session.sendMessage(messageToSend);
-				td.isProcessing = true;
 				broadcastUnconfirmedUserMessage(tid, json.content);
+				sendTaskMessage(tid, messageToSend);
 
 				td.description = json.content;
 				persistence.setDescription(tid, json.content);
@@ -389,8 +388,6 @@ class App
 				persistence.setTitle(tid, td.title);
 				broadcastTitleUpdate(tid, td.title);
 				generateTitle(tid, json.content);
-
-				broadcast(buildTasksList());
 			}
 		}
 		else if (json.type == "request_history")
@@ -451,12 +448,8 @@ class App
 				if (typeDef !is null)
 					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
 			}
-			td.session.sendMessage(messageToSend);
-			td.needsAttention = false;
-			td.notificationBody = "";
-			td.isProcessing = true;
-			broadcast(buildTasksList());
 			broadcastUnconfirmedUserMessage(tid, json.content);
+			sendTaskMessage(tid, messageToSend);
 
 			// Store first message as task description
 			if (td.description.length == 0)
@@ -571,6 +564,27 @@ class App
 			broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 			broadcast(buildTasksList());
 		}
+	}
+
+	/// Send a user message to a task's agent session.
+	///
+	/// This is the sole entry point for delivering messages to an agent. It
+	/// writes the message to the agent's stdin and flips the task into the
+	/// "processing" state (yellow dot in the UI), which is later cleared when
+	/// the agent emits a `result` event or the process exits.
+	///
+	/// All code paths that deliver a message — WebSocket `create_task`,
+	/// WebSocket `message`, and MCP sub-task creation — must use this method
+	/// instead of calling `session.sendMessage` directly, so that processing
+	/// state stays consistent.
+	private void sendTaskMessage(int tid, string text)
+	{
+		auto td = &tasks[tid];
+		td.session.sendMessage(text);
+		td.isProcessing = true;
+		td.needsAttention = false;
+		td.notificationBody = "";
+		broadcast(buildTasksList());
 	}
 
 	private int createTask(string workspace = "", string projectPath = "")
