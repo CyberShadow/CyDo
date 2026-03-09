@@ -104,8 +104,14 @@ export function App() {
 
   // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
   // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
+  // Ctrl+Shift+O: new task
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "O") {
+        e.preventDefault();
+        handleNewTask();
+        return;
+      }
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
       const order = flatTaskOrder(sidebarTasks);
       if (e.shiftKey) {
