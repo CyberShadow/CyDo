@@ -34,6 +34,17 @@ export function SessionView({
   onToggleTheme,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const resumeRef = useRef<HTMLButtonElement>(null);
+
+  // Auto-focus input box or resume button when session becomes active
+  useEffect(() => {
+    if (!isActive) return;
+    if (task.resumable) {
+      resumeRef.current?.focus();
+    } else {
+      inputRef.current?.focus();
+    }
+  }, [isActive, task.resumable]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -88,7 +99,7 @@ export function SessionView({
       )}
       {task.resumable ? (
         <div class="resume-bar">
-          <button class="btn btn-resume" onClick={onResume}>
+          <button ref={resumeRef} class="btn btn-resume" onClick={onResume}>
             Resume Session
           </button>
         </div>

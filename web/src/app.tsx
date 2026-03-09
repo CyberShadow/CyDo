@@ -104,9 +104,13 @@ export function App() {
       onSelect={setActiveTaskId}
       onClose={() => {
         setShowSearch(false);
-        // Re-focus the input box after dismissing search
+        // Re-focus the input box or resume button after dismissing search
         requestAnimationFrame(() => {
-          (document.querySelector(".input-textarea") as HTMLElement)?.focus();
+          const input = document.querySelector(
+            ".input-textarea",
+          ) as HTMLElement;
+          const resume = document.querySelector(".btn-resume") as HTMLElement;
+          (input ?? resume)?.focus();
         });
       }}
     />
