@@ -44,48 +44,6 @@ export function App() {
     document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
   }, [active?.title]);
 
-  // Alt+Up / Alt+Down: navigate between sidebar sessions
-  // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      const order = flatTaskOrder(sidebarTasks);
-      if (order.length === 0) return;
-      const idx = activeTaskId !== null ? order.indexOf(activeTaskId) : -1;
-      let next: number | undefined;
-      if (e.shiftKey) {
-        // Jump to next/prev task with attention, wrapping around
-        const len = order.length;
-        const dir = e.key === "ArrowUp" ? -1 : 1;
-        for (let i = 1; i <= len; i++) {
-          const candidate =
-            order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
-          if (attention.has(candidate)) {
-            next = candidate;
-            break;
-          }
-        }
-        if (next === undefined) return;
-      } else {
-        next =
-          e.key === "ArrowUp"
-            ? idx <= 0
-              ? order[order.length - 1]
-              : order[idx - 1]
-            : idx === -1 || idx >= order.length - 1
-              ? order[0]
-              : order[idx + 1];
-      }
-      setActiveTaskId(next);
-      document
-        .querySelector(`.sidebar-item[data-tid="${next}"]`)
-        ?.scrollIntoView({ block: "nearest" });
-      e.preventDefault();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [sidebarTasks, activeTaskId, setActiveTaskId, attention]);
-
   // Ctrl+K: open search popup
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -136,13 +94,64 @@ export function App() {
   }
 
   // Navigate to the "new task" view (project page with no tid)
-  const handleNewTask = () => {
+  const handleNewTask = useCallback(() => {
     if (activeWorkspace && activeProject) {
       navigateToProject(activeWorkspace, activeProject);
     } else {
       navigateHome();
     }
-  };
+  }, [activeWorkspace, activeProject, navigateToProject, navigateHome]);
+
+  // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
+  // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      const order = flatTaskOrder(sidebarTasks);
+      if (e.shiftKey) {
+        // Jump to next/prev task with attention, wrapping around
+        if (order.length === 0) return;
+        const idx = activeTaskId !== null ? order.indexOf(activeTaskId) : -1;
+        const len = order.length;
+        const dir = e.key === "ArrowUp" ? -1 : 1;
+        let next: number | undefined;
+        for (let i = 1; i <= len; i++) {
+          const candidate =
+            order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
+          if (attention.has(candidate)) {
+            next = candidate;
+            break;
+          }
+        }
+        if (next === undefined) return;
+        setActiveTaskId(next);
+        document
+          .querySelector(`.sidebar-item[data-tid="${next}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      } else {
+        // Visual order: tasks in flatTaskOrder, then New Task at bottom
+        const visual: (number | null)[] = [...order, null];
+        const idx = visual.indexOf(activeTaskId);
+        const dir = e.key === "ArrowUp" ? -1 : 1;
+        const nextIdx = (idx + dir + visual.length) % visual.length;
+        const next = visual[nextIdx];
+        if (next !== null) {
+          setActiveTaskId(next);
+          document
+            .querySelector(`.sidebar-item[data-tid="${next}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        } else {
+          handleNewTask();
+          document
+            .querySelector(".sidebar-new-task")
+            ?.scrollIntoView({ block: "nearest" });
+        }
+      }
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
 
   const [selectedTaskType, setSelectedTaskType] = useState("conversation");
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
