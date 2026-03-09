@@ -19,8 +19,11 @@ struct ResolvedSandbox
 }
 
 /// Merge three layers of sandbox config: agent defaults → global config → per-workspace config.
-/// projectDir is always added as rw.
-ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Agent agent, string projectDir)
+/// When readOnly is true, all config/workspace/project paths are downgraded
+/// to ro before the agent layer runs — so agent-declared paths (e.g. ~/.claude)
+/// stay rw while the project tree becomes read-only.
+ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Agent agent,
+	string projectDir, bool readOnly = false)
 {
 	ResolvedSandbox result;
 
@@ -30,11 +33,16 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 	// Layer 2: per-workspace config paths
 	mergePaths(result.paths, workspace.paths);
 
-	// Always add project directory as rw
+	// Add project directory
 	if (projectDir.length > 0)
 		result.paths[expandTilde(projectDir)] = PathMode.rw;
 
-	// Layer 3: agent-declared paths (last, so it can see config + project dir)
+	// Read-only mode: downgrade all rw paths to ro before agent layer
+	if (readOnly)
+		foreach (ref mode; result.paths)
+			mode = PathMode.ro;
+
+	// Layer 3: agent-declared paths (last — always rw for agent state)
 	agent.configureSandboxPaths(result.paths);
 
 	// Expand ~ in all path keys and filter non-existent

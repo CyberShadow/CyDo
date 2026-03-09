@@ -596,6 +596,7 @@ class App
 			sessionConfig.disallowedTools = "Task";
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
+		auto typeDef = taskTypes.byName(td.taskType);
 
 		// Create git worktree for task types that require isolation
 		if (td.worktreePath.length == 0 && workDir !is null)
@@ -603,7 +604,6 @@ class App
 			import std.path : buildPath, dirName;
 			import std.process : execute;
 
-			auto typeDef = taskTypes.byName(td.taskType);
 			if (typeDef !is null && typeDef.worktree)
 			{
 				auto wtPath = buildPath(workDir, ".cydo", "worktrees", format!"task-%d"(td.tid));
@@ -626,7 +626,8 @@ class App
 
 		// Resolve sandbox config: agent defaults + global + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
-		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
+		bool readOnly = typeDef !is null && typeDef.read_only;
+		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir, readOnly);
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
 		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix, sessionConfig);
