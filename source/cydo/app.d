@@ -234,6 +234,7 @@ class App
 			auto resultJson = toJson(McpContentResult(
 				[McpContentItem("text", result.text)],
 				result.isError,
+				result.structuredContent,
 			));
 			conn.sendResponse(response.serveData(resultJson));
 		});
@@ -709,7 +710,7 @@ class App
 					tasks[tid].hasWorktree ? tasks[tid].worktreePath : null,
 				);
 				auto resultJson = toJson(taskResult);
-				pending.fulfill(McpResult(resultJson, !success));
+				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));
 				pendingSubTasks.remove(tid);
 			}
 
@@ -1364,8 +1365,11 @@ struct McpContentItem
 
 struct McpContentResult
 {
+	import ae.utils.json : JSONOptional;
+
 	McpContentItem[] content;
 	bool isError;
+	@JSONOptional JSONFragment structuredContent;
 }
 
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.

@@ -21,4 +21,7 @@ struct McpResult
 {
 	string text;
 	bool isError;
+	JSONFragment structuredContent; /// Optional structured JSON result (MCP structuredContent)
 }
+
+import ae.utils.json : JSONFragment;
