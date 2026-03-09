@@ -151,9 +151,11 @@ export function Sidebar({
           <span class="sidebar-dot new">+</span>
           <span class="sidebar-label">New Task</span>
         </div>
-        {tree.flatMap((node) =>
-          renderNode(node, 0, activeTaskId, attention, onSelectTask),
-        )}
+        {tree
+          .flatMap((node) =>
+            renderNode(node, 0, activeTaskId, attention, onSelectTask),
+          )
+          .reverse()}
       </div>
     </div>
   );

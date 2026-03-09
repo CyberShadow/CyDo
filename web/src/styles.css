@@ -24,6 +24,7 @@
   --overlay-dark: rgba(0, 0, 0, 0.2);
   --overlay-faint: rgba(0, 0, 0, 0.15);
   --overlay-light: rgba(255, 255, 255, 0.05);
+  --overlay-light-less: rgba(255, 255, 255, 0.02);
   --overlay-light-more: rgba(255, 255, 255, 0.1);
   --scrollbar-hover: #555;
   --font-sans:
@@ -57,6 +58,7 @@
   --overlay-dark: rgba(0, 0, 0, 0.06);
   --overlay-faint: rgba(0, 0, 0, 0.04);
   --overlay-light: rgba(0, 0, 0, 0.04);
+  --overlay-light-less: rgba(0, 0, 0, 0.02);
   --overlay-light-more: rgba(0, 0, 0, 0.07);
   --scrollbar-hover: #999;
 }
@@ -276,6 +278,8 @@ body,
 .sidebar-list {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
 }
 
 .sidebar-item {
@@ -289,11 +293,11 @@ body,
 }
 
 .sidebar-item:hover {
-  background: var(--overlay-light);
+  background: var(--overlay-light-less);
 }
 
 .sidebar-item.active {
-  background: rgba(192, 136, 152, 0.1);
+  background: rgba(152, 152, 152, 0.1);
   border-left-color: var(--accent);
 }
 
@@ -335,6 +339,10 @@ body,
 
 .sidebar-dot.failed {
   background: var(--error);
+}
+
+.sidebar-new-task {
+  border-top: 1px solid var(--border);
 }
 
 .sidebar-dot.new {

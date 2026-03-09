@@ -725,7 +725,7 @@ export function useTaskManager(): TaskManager {
       });
     }
     return filtered
-      .sort((a, b) => b.tid - a.tid)
+      .sort((a, b) => a.tid - b.tid)
       .map((t) => ({
         tid: t.tid,
         alive: t.alive,
