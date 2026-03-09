@@ -158,10 +158,10 @@ string claudeJsonlPath(string sessionId, string projectPath = "")
 	auto home = environment.get("HOME", "/tmp");
 	auto cwd = projectPath.length > 0 ? projectPath : getcwd();
 
-	// Mangle cwd: replace / with -
+	// Mangle cwd: replace / and . with -
 	auto buf = cwd.dup;
 	foreach (ref c; buf)
-		if (c == '/')
+		if (c == '/' || c == '.')
 			c = '-';
 	string mangledCwd = buf.idup;
 
