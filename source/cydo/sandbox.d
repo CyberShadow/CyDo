@@ -116,13 +116,18 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 	if (exists("/sys/fs/cgroup"))
 		args ~= ["--bind", "/sys/fs/cgroup", "/sys/fs/cgroup"];
 
-	// Configured path binds
-	foreach (path, mode; sandbox.paths)
+	// Configured path binds — sorted by length so parent dirs are bound before
+	// children.  This ensures a child rw bind overrides a parent ro bind.
+	import std.algorithm : sort;
+	import std.array : array;
+	auto sortedPaths = sandbox.paths.byKeyValue.array;
+	sortedPaths.sort!((a, b) => a.key.length < b.key.length);
+	foreach (entry; sortedPaths)
 	{
-		final switch (mode)
+		final switch (entry.value)
 		{
-			case PathMode.ro: args ~= ["--ro-bind", path, path]; break;
-			case PathMode.rw: args ~= ["--bind", path, path]; break;
+			case PathMode.ro: args ~= ["--ro-bind", entry.key, entry.key]; break;
+			case PathMode.rw: args ~= ["--bind", entry.key, entry.key]; break;
 		}
 	}
 
