@@ -247,22 +247,6 @@ export function useTaskManager(): TaskManager {
     const updated = reduceStdoutMessage(prev, msg);
     liveStates.set(tid, updated);
 
-    // When an agent sub-task finishes and it's currently focused, switch to parent.
-    // User-created children (forks) stay focused — user navigates manually.
-    if (
-      prev.alive &&
-      !updated.alive &&
-      updated.parentTid &&
-      updated.relationType !== "fork"
-    ) {
-      if (activeTaskIdRef.current === tid) {
-        const parent = liveStates.get(updated.parentTid);
-        if (parent) {
-          setActiveTaskId(updated.parentTid);
-        }
-      }
-    }
-
     setTasks((map) => {
       const next = new Map(map);
       next.set(tid, updated);
@@ -349,6 +333,27 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "tasks_list": {
+        // When an agent sub-task finishes and it's currently focused, switch
+        // to parent.  Forks stay focused — user navigates manually.
+        // Check before liveStates is updated so we can detect the transition.
+        const focused = activeTaskIdRef.current;
+        if (focused !== null) {
+          for (const entry of msg.tasks) {
+            if (entry.tid !== focused || entry.alive) continue;
+            const prev = liveStates.get(entry.tid);
+            if (!prev?.alive) continue;
+            const parentTid = entry.parent_tid || prev.parentTid;
+            const relationType = entry.relation_type || prev.relationType;
+            if (parentTid && relationType !== "fork") {
+              const parent = liveStates.get(parentTid);
+              if (parent) {
+                setActiveTaskId(parentTid);
+              }
+            }
+            break;
+          }
+        }
+
         setTasks((prev) => {
           const next = new Map(prev);
           for (const entry of msg.tasks) {
