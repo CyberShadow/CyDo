@@ -24,7 +24,7 @@ import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.claude : ClaudeCodeAgent;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
-import cydo.config : CydoConfig, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
+import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
 	forkTask, loadTaskHistory;
@@ -123,7 +123,7 @@ class App
 			td.relationType = row.relationType;
 			td.workspace = row.workspace;
 			td.projectPath = row.projectPath;
-			td.worktreePath = row.worktreePath;
+			td.hasWorktree = row.hasWorktree;
 			td.title = row.title;
 			td.status = row.status;
 			td.titleGenDone = row.title.length > 0;
@@ -598,22 +598,27 @@ class App
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 		auto typeDef = taskTypes.byName(td.taskType);
 
-		// Create git worktree for task types that require isolation
-		if (td.worktreePath.length == 0 && workDir !is null)
+		// Ensure per-task directory exists
+		import std.path : buildPath;
+		if (td.taskDir.length > 0)
 		{
-			import std.path : buildPath, dirName;
+			import std.file : mkdirRecurse;
+			mkdirRecurse(td.taskDir);
+		}
+
+		// Create git worktree for task types that require isolation
+		if (!td.hasWorktree && td.taskDir.length > 0)
+		{
 			import std.process : execute;
 
 			if (typeDef !is null && typeDef.worktree)
 			{
-				auto wtPath = buildPath(workDir, ".cydo", "tasks", format!"%d"(td.tid), "worktree");
-				import std.file : mkdirRecurse;
-				mkdirRecurse(dirName(wtPath));
+				auto wtPath = buildPath(td.taskDir, "worktree");
 				auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
 				if (gitResult.status == 0)
 				{
-					td.worktreePath = wtPath;
-					persistence.setWorktreePath(td.tid, wtPath);
+					td.hasWorktree = true;
+					persistence.setHasWorktree(td.tid, true);
 					writefln("Created worktree for task %d: %s", td.tid, wtPath);
 				}
 				else
@@ -622,12 +627,17 @@ class App
 		}
 
 		// Use worktree path as chdir if available; sandbox covers project dir (rw)
-		auto chdir = td.worktreePath.length > 0 ? td.worktreePath : workDir;
+		auto chdir = td.hasWorktree ? td.worktreePath : workDir;
 
 		// Resolve sandbox config: agent defaults + global + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
 		bool readOnly = typeDef !is null && typeDef.read_only;
 		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir, readOnly);
+
+		// Task directory is always writable (even for read-only tasks)
+		if (td.taskDir.length > 0)
+			td.sandbox.paths[td.taskDir] = PathMode.rw;
+
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
 		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix, sessionConfig);
@@ -1140,14 +1150,32 @@ struct TaskData
 	string relationType;
 	string workspace;
 	string projectPath;
-	string worktreePath;
+	bool hasWorktree;
 	string title;
 	string status = "pending";  // pending, active, completed, failed
+
+	/// Per-task directory: .cydo/tasks/<tid>/
+	@property string taskDir() const
+	{
+		if (projectPath.length == 0)
+			return "";
+		import std.path : buildPath;
+		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(tid));
+	}
+
+	/// Worktree path (if this task has one).
+	@property string worktreePath() const
+	{
+		if (!hasWorktree)
+			return "";
+		import std.path : buildPath;
+		return buildPath(taskDir, "worktree");
+	}
 
 	/// Effective working directory: worktree path if set, otherwise project path.
 	@property string effectiveCwd() const
 	{
-		return worktreePath.length > 0 ? worktreePath : projectPath;
+		return hasWorktree ? worktreePath : projectPath;
 	}
 
 	// Runtime state (not persisted)
