@@ -692,20 +692,26 @@ class App
 			cleanup(tasks[tid].sandbox);
 			stopJsonlWatch(tid);
 
-			// Prefer output file content over stream result text
+			// Read output file content (if any) — prefer it over stream result text.
+			// The stream result text (agent's final message) is kept as the summary.
+			string outputContent;
 			if (tasks[tid].outputPath.length > 0)
 			{
 				import std.file : exists, readText;
 				if (exists(tasks[tid].outputPath))
-					tasks[tid].resultText = readText(tasks[tid].outputPath);
+					outputContent = readText(tasks[tid].outputPath);
 			}
 
 			// Fulfill pending sub-task promise (if this is a child task)
 			if (auto pending = tid in pendingSubTasks)
 			{
 				auto success = tasks[tid].status == "completed";
+				auto mainResult = outputContent.length > 0
+					? outputContent
+					: (tasks[tid].resultText.length > 0 ? tasks[tid].resultText : "(no output)");
 				auto taskResult = TaskResult(
-					tasks[tid].resultText.length > 0 ? tasks[tid].resultText : "(no output)",
+					mainResult,
+					tasks[tid].resultText,  // agent's final message (summary)
 					tasks[tid].outputPath.length > 0 ? tasks[tid].outputPath : null,
 					tasks[tid].hasWorktree ? tasks[tid].worktreePath : null,
 				);
@@ -713,6 +719,10 @@ class App
 				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));
 				pendingSubTasks.remove(tid);
 			}
+
+			// Store the best result text for UI display
+			if (outputContent.length > 0)
+				tasks[tid].resultText = outputContent;
 
 			// Discard all history and reload from JSONL (canonical source).
 			// Frontends are notified to discard their state and re-request.
@@ -1352,7 +1362,8 @@ struct SyntheticUserEvent
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {
-	string result;          // main output text (plan, report, etc.)
+	string result;          // main output text (output file content, or final message if no file)
+	string summary;         // agent's final message (one-sentence summary)
 	string output_file;     // path to output artifact, if any
 	string worktree;        // path to worktree, if any
 }
