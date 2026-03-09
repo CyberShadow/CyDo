@@ -1209,9 +1209,13 @@ class App
 		}
 		else
 		{
-			// File doesn't exist yet — watch directory for its creation
+			// File doesn't exist yet — watch directory for its creation.
+			// The directory may not exist either (e.g. worktree paths that
+			// Claude Code hasn't seen yet), so ensure it exists first.
 			auto dirPath = dirName(jsonlPath);
 			auto fileName = baseName(jsonlPath);
+			import std.file : mkdirRecurse;
+			mkdirRecurse(dirPath);
 			jsonlWatches[tid] = rcINotify.add(dirPath, INotify.Mask.create,
 				(in char[] name, INotify.Mask mask, uint cookie)
 				{
