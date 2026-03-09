@@ -188,7 +188,7 @@ struct ForkResult
 /// Fork a task by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
 ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceClaudeId, string afterUuid,
-	string projectPath, string workspace, string title)
+	string projectPath, string workspace, string title, string description = "", string taskType = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
@@ -228,8 +228,8 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceCla
 
 	// Create DB entry with the new claude session ID
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "";
-	persistence.db.stmt!"INSERT INTO tasks (claude_session_id, title, workspace, project_path, parent_tid, relation_type, status) VALUES (?, ?, ?, ?, ?, ?, ?)"
-		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed");
+	persistence.db.stmt!"INSERT INTO tasks (claude_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation");
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
 }
 

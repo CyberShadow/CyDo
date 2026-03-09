@@ -543,7 +543,7 @@ class App
 			}
 
 			auto result = forkTask(persistence, tid, td.claudeSessionId, json.after_uuid,
-				td.effectiveCwd, td.workspace, td.title);
+				td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
 			if (result.tid < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error",
@@ -559,6 +559,8 @@ class App
 			newTd.parentTid = tid;
 			newTd.relationType = "fork";
 			newTd.status = "completed";
+			newTd.description = td.description;
+			newTd.taskType = td.taskType;
 			tasks[result.tid] = move(newTd);
 
 			broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
