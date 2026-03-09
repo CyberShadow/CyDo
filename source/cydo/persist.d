@@ -51,6 +51,8 @@ struct Persistence
 			"    SELECT sid, claude_session_id, COALESCE(title,''), COALESCE(workspace,''), COALESCE(project_path,'')," ~
 			"           parent_sid, COALESCE(relation_type,''), 'completed' FROM sessions;" ~
 			"DROP TABLE sessions;",
+			// Migration 5: worktree path for tasks with worktree isolation
+			"ALTER TABLE tasks ADD COLUMN worktree_path TEXT NOT NULL DEFAULT '';",
 		]);
 	}
 
@@ -95,6 +97,11 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET relation_type = ? WHERE tid = ?".exec(relationType, tid);
 	}
 
+	void setWorktreePath(int tid, string worktreePath)
+	{
+		db.stmt!"UPDATE tasks SET worktree_path = ? WHERE tid = ?".exec(worktreePath, tid);
+	}
+
 	struct TaskRow
 	{
 		int tid;
@@ -105,6 +112,7 @@ struct Persistence
 		string relationType;
 		string workspace;
 		string projectPath;
+		string worktreePath;
 		string title;
 		string status;
 	}
@@ -114,10 +122,10 @@ struct Persistence
 		TaskRow[] result;
 		foreach (int tid, string claudeSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
-			string title, string status;
-			db.stmt!"SELECT tid, COALESCE(claude_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(title,''), COALESCE(status,'completed') FROM tasks".iterate())
+			string worktreePath, string title, string status;
+			db.stmt!"SELECT tid, COALESCE(claude_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_path,''), COALESCE(title,''), COALESCE(status,'completed') FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, claudeSessionId, description, taskType, parentTid, relationType, workspace, projectPath, title, status);
+			result ~= TaskRow(tid, claudeSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreePath, title, status);
 		}
 		return result;
 	}

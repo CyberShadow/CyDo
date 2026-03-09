@@ -123,6 +123,7 @@ class App
 			td.relationType = row.relationType;
 			td.workspace = row.workspace;
 			td.projectPath = row.projectPath;
+			td.worktreePath = row.worktreePath;
 			td.title = row.title;
 			td.status = row.status;
 			td.titleGenDone = row.title.length > 0;
@@ -366,7 +367,7 @@ class App
 			// Load JSONL from disk if not already loaded
 			if (!td.historyLoaded && td.claudeSessionId.length > 0)
 			{
-				td.history = loadTaskHistory(tid, td.claudeSessionId, td.projectPath);
+				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
 				td.historyLoaded = true;
 			}
 
@@ -376,7 +377,7 @@ class App
 
 			// Send forkable UUIDs extracted from JSONL
 			if (td.claudeSessionId.length > 0)
-				sendForkableUuidsFromFile(ws, tid, td.claudeSessionId, td.projectPath);
+				sendForkableUuidsFromFile(ws, tid, td.claudeSessionId, td.effectiveCwd);
 
 			// Send end marker
 			ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
@@ -513,7 +514,7 @@ class App
 			}
 
 			auto result = forkTask(persistence, tid, td.claudeSessionId, json.after_uuid,
-				td.projectPath, td.workspace, td.title);
+				td.effectiveCwd, td.workspace, td.title);
 			if (result.tid < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error",
@@ -562,10 +563,37 @@ class App
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 
+		// Create git worktree for task types that require isolation
+		if (td.worktreePath.length == 0 && workDir !is null)
+		{
+			import std.path : buildPath, dirName;
+			import std.process : execute;
+
+			auto typeDef = taskTypes.byName(td.taskType);
+			if (typeDef !is null && typeDef.worktree)
+			{
+				auto wtPath = buildPath(workDir, ".cydo", "worktrees", format!"task-%d"(td.tid));
+				import std.file : mkdirRecurse;
+				mkdirRecurse(dirName(wtPath));
+				auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
+				if (gitResult.status == 0)
+				{
+					td.worktreePath = wtPath;
+					persistence.setWorktreePath(td.tid, wtPath);
+					writefln("Created worktree for task %d: %s", td.tid, wtPath);
+				}
+				else
+					writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
+			}
+		}
+
+		// Use worktree path as chdir if available; sandbox covers project dir (rw)
+		auto chdir = td.worktreePath.length > 0 ? td.worktreePath : workDir;
+
 		// Resolve sandbox config: agent defaults + global + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
 		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir);
-		auto bwrapPrefix = buildBwrapArgs(td.sandbox, workDir);
+		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
 		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix, sessionConfig);
 
@@ -631,7 +659,7 @@ class App
 			// Frontends are notified to discard their state and re-request.
 			if (tasks[tid].claudeSessionId.length > 0)
 			{
-				tasks[tid].history = loadTaskHistory(tid, tasks[tid].claudeSessionId, tasks[tid].projectPath);
+				tasks[tid].history = loadTaskHistory(tid, tasks[tid].claudeSessionId, tasks[tid].effectiveCwd);
 				tasks[tid].historyLoaded = true;
 				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 			}
@@ -841,7 +869,7 @@ class App
 		if (td.claudeSessionId.length == 0)
 			return;
 
-		auto jsonlPath = claudeJsonlPath(td.claudeSessionId, td.projectPath);
+		auto jsonlPath = claudeJsonlPath(td.claudeSessionId, td.effectiveCwd);
 
 		if (exists(jsonlPath))
 		{
@@ -1077,8 +1105,15 @@ struct TaskData
 	string relationType;
 	string workspace;
 	string projectPath;
+	string worktreePath;
 	string title;
 	string status = "pending";  // pending, active, completed, failed
+
+	/// Effective working directory: worktree path if set, otherwise project path.
+	@property string effectiveCwd() const
+	{
+		return worktreePath.length > 0 ? worktreePath : projectPath;
+	}
 
 	// Runtime state (not persisted)
 	AgentSession session;
