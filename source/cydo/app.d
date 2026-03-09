@@ -53,6 +53,12 @@ void main(string[] args)
 		runDot(args);
 		return;
 	}
+	if (args.canFind("--dump-context"))
+	{
+		import cydo.tasktype : runDumpContext;
+		runDumpContext(args);
+		return;
+	}
 
 	auto app = new App();
 	app.start();

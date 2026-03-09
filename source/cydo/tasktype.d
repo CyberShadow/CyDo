@@ -528,6 +528,50 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir, st
 	return tmpl;
 }
 
+/// Format a description of keep_context continuations for a given task type.
+/// Used to fill the {{switchmodes}} placeholder in the SwitchMode tool description.
+string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
+{
+	auto def = allTypes.byName(typeName);
+	if (def is null || def.continuations.length == 0)
+		return "(none available)";
+
+	string result;
+	foreach (cname, ref cont; def.continuations)
+	{
+		if (!cont.keep_context)
+			continue;
+		auto targetDef = allTypes.byName(cont.task_type);
+		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
+		result ~= format("- %s: switches to '%s' — %s\n", cname, cont.task_type, desc);
+		if (targetDef !is null && targetDef.agent_description.length > 0)
+			result ~= format("  %s\n", targetDef.agent_description.strip);
+		if (targetDef !is null && targetDef.tool_guidance.length > 0)
+			result ~= format("  %s\n", targetDef.tool_guidance.strip);
+	}
+	return result.length > 0 ? result : "(none available)";
+}
+
+/// Format a description of !keep_context continuations for a given task type.
+/// Used to fill the {{handoffs}} placeholder in the Handoff tool description.
+string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
+{
+	auto def = allTypes.byName(typeName);
+	if (def is null || def.continuations.length == 0)
+		return "(none available)";
+
+	string result;
+	foreach (cname, ref cont; def.continuations)
+	{
+		if (cont.keep_context)
+			continue;
+		auto targetDef = allTypes.byName(cont.task_type);
+		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
+		result ~= format("- %s: hands off to '%s' — %s\n", cname, cont.task_type, desc);
+	}
+	return result.length > 0 ? result : "(none available)";
+}
+
 /// Format a description of available task types for a given parent type.
 /// Used to fill the {{creatable_task_types}} placeholder in MCP tool descriptions.
 string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
@@ -737,4 +781,103 @@ void runDot(string[] args)
 		return;
 
 	generateDot(types);
+}
+
+// ---------------------------------------------------------------------------
+// Context Dump — show what an agent would see for a given task type
+// ---------------------------------------------------------------------------
+
+void runDumpContext(string[] args)
+{
+	import std.algorithm : find;
+	import std.path : dirName;
+
+	// Parse: --dump-context <types.yaml> <type-name>
+	auto rest = args.find("--dump-context");
+	if (rest.length < 3)
+	{
+		stderr.writefln("Usage: cydo --dump-context <types.yaml> <type-name>");
+		return;
+	}
+
+	auto path = rest[1];
+	auto typeName = rest[2];
+	auto typesDir = dirName(path);
+
+	TaskTypeDef[] types;
+	try
+		types = loadTaskTypes(path);
+	catch (Exception e)
+	{
+		stderr.writefln("Error loading %s: %s", path, e.msg);
+		return;
+	}
+
+	auto errors = validateTaskTypes(types);
+	if (errors.length > 0)
+	{
+		foreach (e; errors)
+			stderr.writefln("  WARN: %s", e);
+		stderr.writeln();
+	}
+
+	auto defp = types.byName(typeName);
+	if (defp is null)
+	{
+		stderr.writefln("Unknown task type '%s'", typeName);
+		stderr.writefln("Available types: %s",
+			types.map!(d => d.name).join(", "));
+		return;
+	}
+	auto def = *defp;
+
+	// Header
+	writefln("=== Agent Context for '%s' ===\n", typeName);
+
+	// Task type metadata
+	writefln("Description:    %s", def.description);
+	writefln("Model:          %s (%s)", def.model_class, modelClassToAlias(def.model_class));
+	writefln("Output:         %s", def.output_type);
+	writefln("Read-only:      %s", def.read_only);
+	writefln("Worktree:       %s", def.worktree);
+	writefln("Parallelizable: %s", def.parallelizable);
+	writefln("User-visible:   %s", def.user_visible);
+	if (def.steward)
+	{
+		writefln("Steward:        true");
+		writefln("Steward domain: %s", def.steward_domain.strip);
+	}
+	if (def.max_turns > 0)
+		writefln("Max turns:      %d", def.max_turns);
+	writefln("Disallowed:     %s", disallowedTools());
+	writeln();
+
+	// Rendered prompt
+	writeln("─── Rendered Prompt (with placeholder \"<task description>\") ───");
+	writeln();
+	auto rendered = renderPrompt(def, "<task description>", typesDir);
+	writeln(rendered);
+	writeln();
+
+	// MCP tools — generated from the same binding the real MCP server uses
+	writeln("─── MCP Tools ───");
+	writeln();
+
+	import cydo.mcp.binding : buildToolsListJson, ToolsList;
+	import cydo.mcp.tools : CydoTools;
+	import ae.utils.json : jsonParse;
+
+	auto toolsJson = buildToolsListJson!CydoTools([
+		"creatable_task_types": formatCreatableTaskTypes(types, typeName),
+		"switchmodes": formatSwitchModes(types, typeName),
+		"handoffs": formatHandoffs(types, typeName),
+	]);
+
+	auto toolsList = jsonParse!ToolsList(toolsJson);
+	foreach (ref tool; toolsList.tools)
+	{
+		writefln("### %s\n", tool.name);
+		if (tool.description.length > 0)
+			writefln("%s\n", tool.description);
+	}
 }

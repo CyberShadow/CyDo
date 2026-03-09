@@ -50,18 +50,13 @@ enum MCP_PROTOCOL_VERSION = "2024-11-05";
 /// Build the final tools/list JSON by substituting placeholders.
 string buildToolsListJson()
 {
-	import std.array : replace;
-	import cydo.mcp.binding : jsonEscapeRuntime, mcpToolListJson;
+	import cydo.mcp.binding : buildToolsListJson;
 
-	// Cache the template — generated once via toJson on ToolsList structs.
-	// Contains {{creatable_task_types}} placeholder, substituted below.
-	static string toolsTemplate;
-	if (toolsTemplate is null)
-		toolsTemplate = mcpToolListJson!CydoTools();
-
-	auto creatableTypes = environment.get("CYDO_CREATABLE_TYPES", "(none available)");
-	// Value is substituted inside a JSON string, so it must be JSON-escaped
-	return toolsTemplate.replace("{{creatable_task_types}}", jsonEscapeRuntime(creatableTypes));
+	return buildToolsListJson!CydoTools([
+		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", "(none available)"),
+		"switchmodes": environment.get("CYDO_SWITCHMODES", "(none available)"),
+		"handoffs": environment.get("CYDO_HANDOFFS", "(none available)"),
+	]);
 }
 
 Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string tid)

@@ -265,6 +265,22 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 
 // ---- Utilities ----
 
+/// Build the final tools/list JSON by substituting {{placeholders}} in the
+/// compile-time generated template. Shared by the MCP server and --dump-context.
+string buildToolsListJson(I)(string[string] vars)
+{
+	import std.array : replace;
+
+	static string toolsTemplate;
+	if (toolsTemplate is null)
+		toolsTemplate = mcpToolListJson!I();
+
+	auto result = toolsTemplate;
+	foreach (key, value; vars)
+		result = result.replace("{{" ~ key ~ "}}", jsonEscapeRuntime(value));
+	return result;
+}
+
 /// Runtime JSON string escaping for template substitution in pre-serialized JSON.
 string jsonEscapeRuntime(string s)
 {
