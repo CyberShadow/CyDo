@@ -195,7 +195,9 @@ class ClaudeCodeAgent : Agent
 
 	string translateHistoryLine(string line)
 	{
-		return line;
+		import cydo.agent.protocol : translateClaudeEvent;
+		auto result = translateClaudeEvent(line);
+		return result !is null ? result : line;
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)

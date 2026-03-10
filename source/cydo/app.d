@@ -1171,9 +1171,20 @@ class App
 
 	private void broadcastTask(int tid, string rawLine)
 	{
+		import cydo.agent.protocol : translateClaudeEvent;
+
+		// Extract agent session ID before translation (uses raw Claude format)
+		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
+			tryExtractAgentSessionId(tid, rawLine);
+
+		// Translate to agent-agnostic protocol
+		auto translated = translateClaudeEvent(rawLine);
+		if (translated is null)
+			return; // consumed event, don't forward
+
 		// Wrap the event with a task envelope including timestamp
 		auto now = Clock.currTime.toISOExtString();
-		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ rawLine ~ `}`;
+		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ translated ~ `}`;
 
 		auto data = Data(injected.representation);
 
@@ -1181,10 +1192,6 @@ class App
 		{
 			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
-
-			// Extract agent session ID from system.init messages
-			if (tasks[tid].agentSessionId.length == 0)
-				tryExtractAgentSessionId(tid, rawLine);
 		}
 
 		foreach (ws; clients)
