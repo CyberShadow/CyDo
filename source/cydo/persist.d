@@ -56,6 +56,8 @@ struct Persistence
 			// Migration 6: replace worktree_path with has_worktree flag
 			"ALTER TABLE tasks ADD COLUMN has_worktree INTEGER NOT NULL DEFAULT 0;" ~
 			"UPDATE tasks SET has_worktree = 1 WHERE worktree_path != '';",
+			// Migration 7: rename claude_session_id → agent_session_id
+			"ALTER TABLE tasks RENAME COLUMN claude_session_id TO agent_session_id;",
 		]);
 	}
 
@@ -65,9 +67,9 @@ struct Persistence
 		return cast(int) db.db.lastInsertRowID;
 	}
 
-	void setClaudeSessionId(int tid, string claudeSessionId)
+	void setAgentSessionId(int tid, string agentSessionId)
 	{
-		db.stmt!"UPDATE tasks SET claude_session_id = ? WHERE tid = ?".exec(claudeSessionId, tid);
+		db.stmt!"UPDATE tasks SET agent_session_id = ? WHERE tid = ?".exec(agentSessionId, tid);
 	}
 
 	void setTitle(int tid, string title)
@@ -108,7 +110,7 @@ struct Persistence
 	struct TaskRow
 	{
 		int tid;
-		string claudeSessionId;
+		string agentSessionId;
 		string description;
 		string taskType;
 		int parentTid;
@@ -123,26 +125,26 @@ struct Persistence
 	TaskRow[] loadTasks()
 	{
 		TaskRow[] result;
-		foreach (int tid, string claudeSessionId, string description, string taskType,
+		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int hasWorktree, string title, string status;
-			db.stmt!"SELECT tid, COALESCE(claude_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed') FROM tasks".iterate())
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed') FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, claudeSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status);
 		}
 		return result;
 	}
 }
 
-/// Load task history from Claude Code's JSONL file.
+/// Load task history from the agent's JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
 /// projectPath is the project's absolute path; falls back to getcwd() when empty (legacy tasks).
-DataVec loadTaskHistory(int tid, string claudeSessionId, string projectPath = "")
+DataVec loadTaskHistory(int tid, string agentSessionId, string projectPath = "")
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return DataVec();
 
@@ -159,9 +161,9 @@ DataVec loadTaskHistory(int tid, string claudeSessionId, string projectPath = ""
 	return move(history);
 }
 
-/// Compute the path to Claude Code's JSONL file for a given session UUID.
+/// Compute the path to the agent's JSONL file for a given session UUID.
 /// Uses projectPath as the directory to mangle; falls back to getcwd() when empty.
-string claudeJsonlPath(string sessionId, string projectPath = "")
+string agentJsonlPath(string sessionId, string projectPath = "")
 {
 	import std.file : getcwd;
 	import std.process : environment;
@@ -183,24 +185,24 @@ string claudeJsonlPath(string sessionId, string projectPath = "")
 struct ForkResult
 {
 	int tid = -1;
-	string claudeSessionId;
+	string agentSessionId;
 }
 
 /// Fork a task by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
-ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceClaudeId, string afterUuid,
+ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSessionId, string afterUuid,
 	string projectPath, string workspace, string title, string description = "", string taskType = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter, replace;
 
-	auto sourcePath = claudeJsonlPath(sourceClaudeId, projectPath);
+	auto sourcePath = agentJsonlPath(sourceSessionId, projectPath);
 	if (!exists(sourcePath))
 		return ForkResult.init;
 
-	auto newClaudeId = generateUUID();
-	auto destPath = claudeJsonlPath(newClaudeId, projectPath);
+	auto newSessionId = generateUUID();
+	auto destPath = agentJsonlPath(newSessionId, projectPath);
 
 	// Read source, rewrite sessionId, truncate after target UUID
 	string output;
@@ -211,8 +213,8 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceCla
 			continue;
 
 		auto rewritten = line
-			.replace(`"sessionId":"` ~ sourceClaudeId ~ `"`, `"sessionId":"` ~ newClaudeId ~ `"`)
-			.replace(`"session_id":"` ~ sourceClaudeId ~ `"`, `"session_id":"` ~ newClaudeId ~ `"`);
+			.replace(`"sessionId":"` ~ sourceSessionId ~ `"`, `"sessionId":"` ~ newSessionId ~ `"`)
+			.replace(`"session_id":"` ~ sourceSessionId ~ `"`, `"session_id":"` ~ newSessionId ~ `"`);
 		output ~= rewritten ~ "\n";
 
 		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
@@ -227,22 +229,22 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceCla
 
 	write(destPath, output);
 
-	// Create DB entry with the new claude session ID
+	// Create DB entry with the new agent session ID
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
-	persistence.db.stmt!"INSERT INTO tasks (claude_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation");
-	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
+	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		.exec(newSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation");
+	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newSessionId);
 }
 
 /// Truncate a task's JSONL file in-place after the given message UUID.
 /// Returns the number of lines removed, or -1 if UUID not found.
-int truncateJsonl(string claudeSessionId, string afterUuid, string projectPath = "")
+int truncateJsonl(string agentSessionId, string afterUuid, string projectPath = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return -1;
 
@@ -279,13 +281,13 @@ int truncateJsonl(string claudeSessionId, string afterUuid, string projectPath =
 
 /// Count user/assistant messages after a given UUID in a JSONL file.
 /// Returns -1 if UUID not found.
-int countMessagesAfterUuid(string claudeSessionId, string afterUuid, string projectPath = "")
+int countMessagesAfterUuid(string agentSessionId, string afterUuid, string projectPath = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return -1;
 
@@ -312,13 +314,13 @@ int countMessagesAfterUuid(string claudeSessionId, string afterUuid, string proj
 
 /// Return the UUID of the last user/assistant message in a JSONL file.
 /// Returns null if no messages found.
-string lastUuidInJsonl(string claudeSessionId, string projectPath = "")
+string lastUuidInJsonl(string agentSessionId, string projectPath = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return null;
 

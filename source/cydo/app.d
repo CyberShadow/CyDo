@@ -29,7 +29,7 @@ import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : ForkResult, Persistence, claudeJsonlPath, countMessagesAfterUuid,
+import cydo.persist : ForkResult, Persistence, agentJsonlPath, countMessagesAfterUuid,
 	extractForkableUuids, forkTask, lastUuidInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
@@ -129,7 +129,7 @@ class App
 		foreach (row; persistence.loadTasks())
 		{
 			auto td = TaskData(row.tid);
-			td.claudeSessionId = row.claudeSessionId;
+			td.agentSessionId = row.agentSessionId;
 			td.description = row.description;
 			td.taskType = row.taskType;
 			td.parentTid = row.parentTid;
@@ -523,9 +523,9 @@ class App
 			auto td = &tasks[tid];
 
 			// Load JSONL from disk if not already loaded
-			if (!td.historyLoaded && td.claudeSessionId.length > 0)
+			if (!td.historyLoaded && td.agentSessionId.length > 0)
 			{
-				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
+				td.history = loadTaskHistory(tid, td.agentSessionId, td.effectiveCwd);
 				td.historyLoaded = true;
 			}
 
@@ -534,8 +534,8 @@ class App
 				ws.send(msg);
 
 			// Send forkable UUIDs extracted from JSONL
-			if (td.claudeSessionId.length > 0)
-				sendForkableUuidsFromFile(ws, tid, td.claudeSessionId, td.effectiveCwd);
+			if (td.agentSessionId.length > 0)
+				sendForkableUuidsFromFile(ws, tid, td.agentSessionId, td.effectiveCwd);
 
 			// Send end marker
 			ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
@@ -547,10 +547,10 @@ class App
 				return;
 			auto td = &tasks[tid];
 			// Auto-spawn agent session if task has no session yet.
-			// Resumable tasks (completed with claudeSessionId) require explicit "resume".
+			// Resumable tasks (completed with agentSessionId) require explicit "resume".
 			if (td.session is null || !td.session.alive)
 			{
-				if (td.claudeSessionId.length > 0)
+				if (td.agentSessionId.length > 0)
 					return; // resumable but not resumed — ignore
 				// Build session config from task type if available
 				auto typeDef = taskTypes.byName(td.taskType);
@@ -598,8 +598,8 @@ class App
 			if (tid < 0 || tid !in tasks)
 				return;
 			auto td = &tasks[tid];
-			// Only resume if we have a Claude session ID and no running process
-			if (td.claudeSessionId.length == 0)
+			// Only resume if we have an agent session ID and no running process
+			if (td.agentSessionId.length == 0)
 				return;
 			if (td.session !is null && td.session.alive)
 				return;
@@ -669,13 +669,13 @@ class App
 			if (tid < 0 || tid !in tasks)
 				return;
 			auto td = &tasks[tid];
-			if (td.claudeSessionId.length == 0)
+			if (td.agentSessionId.length == 0)
 			{
-				ws.send(Data(toJson(ErrorMessage("error", "Task has no Claude session ID", tid)).representation));
+				ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
 				return;
 			}
 
-			auto result = forkTask(persistence, tid, td.claudeSessionId, json.after_uuid,
+			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
 				td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
 			if (result.tid < 0)
 			{
@@ -688,7 +688,7 @@ class App
 			newTd.workspace = td.workspace;
 			newTd.projectPath = td.projectPath;
 			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
-			newTd.claudeSessionId = result.claudeSessionId;
+			newTd.agentSessionId = result.agentSessionId;
 			newTd.parentTid = tid;
 			newTd.relationType = "fork";
 			newTd.status = "completed";
@@ -705,16 +705,16 @@ class App
 			if (tid < 0 || tid !in tasks)
 				return;
 			auto td = &tasks[tid];
-			if (td.claudeSessionId.length == 0)
+			if (td.agentSessionId.length == 0)
 			{
-				ws.send(Data(toJson(ErrorMessage("error", "Task has no Claude session ID", tid)).representation));
+				ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
 				return;
 			}
 
 			if (json.dry_run)
 			{
 				auto count = countMessagesAfterUuid(
-					td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+					td.agentSessionId, json.after_uuid, td.effectiveCwd);
 				if (count < 0)
 				{
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -735,7 +735,7 @@ class App
 				// (done first so that on failure we haven't modified anything yet)
 				if (json.revert_files)
 				{
-					auto err = spawnRewindFiles(td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+					auto err = spawnRewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 					if (err !is null)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
@@ -746,10 +746,10 @@ class App
 				// 2. Back up pre-undo state as a child task
 				if (json.revert_conversation)
 				{
-					auto lastUuid = lastUuidInJsonl(td.claudeSessionId, td.effectiveCwd);
+					auto lastUuid = lastUuidInJsonl(td.agentSessionId, td.effectiveCwd);
 					if (lastUuid.length > 0)
 					{
-						auto backup = forkTask(persistence, tid, td.claudeSessionId, lastUuid,
+						auto backup = forkTask(persistence, tid, td.agentSessionId, lastUuid,
 							td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
 						if (backup.tid >= 0)
 						{
@@ -757,7 +757,7 @@ class App
 							bTd.workspace = td.workspace;
 							bTd.projectPath = td.projectPath;
 							bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
-							bTd.claudeSessionId = backup.claudeSessionId;
+							bTd.agentSessionId = backup.agentSessionId;
 							bTd.parentTid = tid;
 							bTd.relationType = "undo-backup";
 							bTd.status = "completed";
@@ -774,7 +774,7 @@ class App
 				// 3. Truncate conversation history
 				if (json.revert_conversation)
 				{
-					auto removed = truncateJsonl(td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+					auto removed = truncateJsonl(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 					if (removed < 0)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
@@ -886,7 +886,7 @@ class App
 
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
-		td.session = agent.createSession(tid, td.claudeSessionId, bwrapPrefix, sessionConfig);
+		td.session = agent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
 		if (auto cAgent = cast(ClaudeCodeAgent) agent)
@@ -894,9 +894,9 @@ class App
 				td.sandbox.tempFiles ~= cAgent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
-		// For resumed tasks claudeSessionId is already set; for new tasks
-		// it will be set later in tryExtractClaudeSessionId which also calls this.
-		if (td.claudeSessionId.length > 0)
+		// For resumed tasks agentSessionId is already set; for new tasks
+		// it will be set later in tryExtractAgentSessionId which also calls this.
+		if (td.agentSessionId.length > 0)
 			startJsonlWatch(tid);
 
 		td.session.onOutput = (string line) {
@@ -1057,7 +1057,7 @@ class App
 			td.status = "active";
 			persistence.setStatus(tid, "active");
 
-			// Spawn successor session — will --resume the existing claudeSessionId
+			// Spawn successor session — will --resume the existing agentSessionId
 			auto sessionConfig = SessionConfig(modelClassToAlias(newTypeDef.model_class));
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
@@ -1176,17 +1176,17 @@ class App
 			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
 
-			// Extract Claude session ID from system.init messages
-			if (tasks[tid].claudeSessionId.length == 0)
-				tryExtractClaudeSessionId(tid, rawLine);
+			// Extract agent session ID from system.init messages
+			if (tasks[tid].agentSessionId.length == 0)
+				tryExtractAgentSessionId(tid, rawLine);
 		}
 
 		foreach (ws; clients)
 			ws.send(data);
 	}
 
-	/// Parse system.init messages to extract the Claude session UUID.
-	private void tryExtractClaudeSessionId(int tid, string rawLine)
+	/// Parse system.init messages to extract the agent session UUID.
+	private void tryExtractAgentSessionId(int tid, string rawLine)
 	{
 		import ae.utils.json : jsonParse, JSONPartial;
 		import std.algorithm : canFind;
@@ -1208,8 +1208,8 @@ class App
 			auto probe = jsonParse!InitProbe(rawLine);
 			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
 			{
-				tasks[tid].claudeSessionId = probe.session_id;
-				persistence.setClaudeSessionId(tid, probe.session_id);
+				tasks[tid].agentSessionId = probe.session_id;
+				persistence.setAgentSessionId(tid, probe.session_id);
 				startJsonlWatch(tid);
 			}
 		}
@@ -1323,10 +1323,10 @@ class App
 		if (tid in jsonlWatches)
 			return; // already watching
 		auto td = &tasks[tid];
-		if (td.claudeSessionId.length == 0)
+		if (td.agentSessionId.length == 0)
 			return;
 
-		auto jsonlPath = claudeJsonlPath(td.claudeSessionId, td.effectiveCwd);
+		auto jsonlPath = agentJsonlPath(td.agentSessionId, td.effectiveCwd);
 
 		if (exists(jsonlPath))
 		{
@@ -1399,11 +1399,11 @@ class App
 
 	/// Send forkable UUIDs from the full JSONL file (used during history load).
 	private void sendForkableUuidsFromFile(WebSocketAdapter ws, int tid,
-		string claudeSessionId, string projectPath)
+		string agentSessionId, string projectPath)
 	{
 		import std.file : exists, readText;
 
-		auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+		auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 		if (!exists(jsonlPath))
 			return;
 
@@ -1499,7 +1499,7 @@ class App
 
 		TaskListEntry[] entries;
 		foreach (ref td; tasks)
-			entries ~= TaskListEntry(td.tid, td.alive, td.claudeSessionId.length > 0 && !td.alive,
+			entries ~= TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 				td.isProcessing, td.needsAttention, td.notificationBody,
 				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 				td.taskType);
@@ -1554,7 +1554,7 @@ private:
 
 /// Spawn `claude --resume <sid> --rewind-files <uuid>`, wait for exit.
 /// Returns null on success, or an error string on failure.
-string spawnRewindFiles(string claudeSessionId, string afterUuid, string projectPath)
+string spawnRewindFiles(string agentSessionId, string afterUuid, string projectPath)
 {
 	import std.process : Config, execute;
 
@@ -1572,7 +1572,7 @@ string spawnRewindFiles(string claudeSessionId, string afterUuid, string project
 		"bash", "-c",
 		`exec 2>&1; exec claude --resume "$1" --rewind-files "$2" `
 			~ `--settings '{"fileCheckpointingEnabled": true}'`,
-		"--", claudeSessionId, afterUuid],
+		"--", agentSessionId, afterUuid],
 		env, Config.none, size_t.max,
 		projectPath.length > 0 ? projectPath : null);
 
@@ -1591,7 +1591,7 @@ string spawnRewindFiles(string claudeSessionId, string afterUuid, string project
 struct TaskData
 {
 	int tid;
-	string claudeSessionId;
+	string agentSessionId;
 	string description;
 	string taskType = "conversation";
 	int parentTid;
