@@ -76,6 +76,7 @@ export function SessionView({
         onToggleTheme={onToggleTheme}
         onStop={onStop}
         onCloseStdin={onCloseStdin}
+        taskType={task.taskType}
       />
       {!task.historyLoaded ? (
         <div class="session-loading">

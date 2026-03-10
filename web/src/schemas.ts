@@ -624,6 +624,7 @@ export interface TasksListMessage {
     parent_tid?: number;
     relation_type?: string;
     status?: string;
+    task_type?: string;
   }[];
 }
 export interface TaskReloadMessage {

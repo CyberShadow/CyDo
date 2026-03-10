@@ -1556,7 +1556,8 @@ body,
   word-break: break-word;
 }
 
-.banner-perms {
+.banner-perms,
+.banner-task-type {
   font-size: 10px;
   padding: 1px 6px;
   background: var(--overlay-light);

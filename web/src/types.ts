@@ -120,6 +120,8 @@ export interface TaskState {
   relationType?: string;
   /** UUIDs confirmed in the on-disk JSONL file — only these are forkable. */
   forkableUuids: Set<string>;
+  /** Current task type (e.g. "conversation", "plan", "implement"). */
+  taskType?: string;
 }
 
 export function makeTaskState(
@@ -135,6 +137,7 @@ export function makeTaskState(
   status: string = "pending",
   isProcessing: boolean = false,
   needsAttention: boolean = false,
+  taskType?: string,
 ): TaskState {
   return {
     tid,
@@ -154,5 +157,6 @@ export function makeTaskState(
     parentTid,
     relationType,
     forkableUuids: new Set(),
+    taskType,
   };
 }

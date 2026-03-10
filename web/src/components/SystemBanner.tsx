@@ -13,6 +13,7 @@ interface Props {
   onToggleTheme: () => void;
   onStop: () => void;
   onCloseStdin: () => void;
+  taskType?: string;
 }
 
 export function SystemBanner({
@@ -25,6 +26,7 @@ export function SystemBanner({
   onToggleTheme,
   onStop,
   onCloseStdin,
+  taskType,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -44,6 +46,7 @@ export function SystemBanner({
         {sessionInfo?.permissionMode && (
           <span class="banner-perms">{sessionInfo.permissionMode}</span>
         )}
+        {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
         {isProcessing && <span class="banner-processing">Processing...</span>}

@@ -366,6 +366,7 @@ export function useTaskManager(): TaskManager {
                 entry.status || "pending",
                 entry.isProcessing || false,
                 entry.needsAttention || false,
+                entry.task_type || undefined,
               );
               liveStates.set(entry.tid, t);
               next.set(entry.tid, t);
@@ -389,6 +390,7 @@ export function useTaskManager(): TaskManager {
                 parentTid: entry.parent_tid || t.parentTid,
                 relationType: entry.relation_type || t.relationType,
                 status: entry.status || t.status,
+                taskType: entry.task_type || t.taskType,
               };
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
