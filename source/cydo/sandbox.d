@@ -95,6 +95,7 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 	args ~= [
 		"--unshare-ipc",
 		"--unshare-pid",
+		"--as-pid-1",
 		"--unshare-uts",
 		"--unshare-cgroup",
 		"--share-net",
