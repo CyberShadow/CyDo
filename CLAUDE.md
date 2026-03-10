@@ -18,7 +18,11 @@ make clean        # Remove build/, web/dist/, web/node_modules/
 - Backend: `dub run` (recompiles and runs)
 - Frontend: `cd web && npm run dev` (Vite dev server on :5173, proxies `/ws` to :3456)
 
-No test suite exists yet.
+**Testing:**
+```bash
+nix flake check   # Run all tests — the single "all tests pass" command
+```
+Run `nix flake check` after every unit of work and before committing.
 
 ## Architecture
 

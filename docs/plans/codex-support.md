@@ -11,6 +11,16 @@ The plan is organized into two phases:
 - **Phase A**: Refactoring (atomic commits, no Codex code)
 - **Phase B**: Codex implementation
 
+**Prerequisite:** The test suite (see `docs/plans/test-suite.md`) is
+implemented before this work begins. `nix flake check` passes against
+the Claude backend.
+
+**Test gate:** Every commit (Phase A and Phase B) must pass
+`nix flake check` before landing. This is the single command that builds
+the backend, builds the frontend, and runs the full Playwright E2E suite.
+The refactoring in Phase A is purely structural and must not change
+observable behavior — existing tests validate this.
+
 ---
 
 ## Phase A: Refactoring
@@ -172,6 +182,19 @@ Replace `new ClaudeCodeAgent()` with config-driven factory.
 **Risk:** Low — structural move.
 
 ### Stage 5: Agent-agnostic protocol
+
+**Testing note:** A12–A15 change the wire protocol between backend and
+frontend, but the UI behavior is unchanged — the backend translates Claude
+events to agnostic format, and the frontend renders the agnostic format
+identically. `nix flake check` must pass, validating that all Playwright
+E2E tests still work since they test visible behavior (text appearing,
+tool calls rendering), not protocol internals.
+
+If any tests use `ws-client.ts` to assert on raw WebSocket event shapes,
+those assertions must be updated to match the agnostic protocol types
+(e.g., `"assistant"` → `"message/assistant"`, `"stream_event"` →
+`"stream/block_*"`). A12 (backend) and A13–A15 (frontend) should be
+landed together or in quick succession to avoid a mismatch window.
 
 #### A12. Implement backend translation layer for Claude events
 
@@ -520,6 +543,190 @@ Use the `agent` field from `session/init` events.
 
 **Files:** `web/src/components/SessionView.tsx` or `SystemBanner.tsx`
 
+### B7. Extend mock API server + package Codex CLI
+
+Same testing strategy as Claude: use the real Codex CLI (`codex
+app-server`) but mock the upstream LLM API. The existing mock API
+server (from test-suite.md) is extended to also handle OpenAI's
+Responses API alongside the existing Anthropic Messages API.
+
+**Mock API additions** (`tests/mock-api/server.mjs`):
+
+Add `POST /v1/responses` handler. Codex internally calls this endpoint
+(the Responses API — `chat/completions` support was removed). Same
+pattern-matching on input text as the Anthropic handler, but using
+OpenAI SSE format.
+
+| Pattern | Response |
+|---------|----------|
+| `reply with "<text>"` | Text message item: `<text>` |
+| `run command <cmd>` | `local_shell_call` item with `action: { type: "exec", command: ["sh", "-c", "<cmd>"] }` |
+| `create file <path> with content <text>` | Function call item: `write_file` with `{path, content}` |
+| After receiving tool output in input | Text message: `"Done."` |
+| Anything else | Text message: echo input back |
+
+**SSE streaming format** (Responses API):
+
+Text-only response:
+```
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_mock_001"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"OK"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","id":"msg1","content":[{"type":"output_text","text":"OK"}]}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_mock_001","output":[]}}
+```
+
+Shell command (`local_shell_call`):
+```
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_mock_002"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"local_shell_call","call_id":"call_mock_001","status":"completed","action":{"type":"exec","command":["sh","-c","echo hello"]}}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_mock_002","output":[]}}
+```
+
+After Codex executes the command, it sends the output back in the next
+request's `input` array as a `local_shell_call_output` item. The mock
+recognizes this and responds with text `"Done."`.
+
+**Codex CLI environment configuration:**
+
+```bash
+OPENAI_BASE_URL=http://localhost:9000/v1  # → mock server (same port as Anthropic mock)
+OPENAI_API_KEY=test-key-mock              # any non-empty value
+CODEX_HOME=/tmp/codex-test-home           # isolated from user's ~/.codex
+```
+
+Pre-created config at `$CODEX_HOME/config.toml`:
+```toml
+model = "codex-mini-latest"
+approval_mode = "full-auto"
+```
+
+**Codex CLI packaging** (Nix FOD):
+
+Package the Codex CLI binary as a fixed-output derivation, similar to
+Claude Code CLI packaging in the test-suite plan. Codex is a Rust
+binary distributed via npm (`@anthropic-ai/codex`... correction: it's
+`@openai/codex`).
+
+```nix
+codex-cli = pkgs.stdenv.mkDerivation {
+  pname = "codex-cli";
+  version = "0.1.xxx";  # pin version
+  src = pkgs.fetchurl {
+    url = "https://registry.npmjs.org/@openai/codex/-/codex-0.1.xxx.tgz";
+    hash = "sha256-XXXX";
+  };
+  nativeBuildInputs = [ pkgs.nodejs_22 ];
+  installPhase = ''
+    mkdir -p $out/bin
+    npm install --global --prefix=$out @openai/codex@${version}
+  '';
+};
+```
+
+**Nix integration additions** (to existing `nix flake check` derivation):
+
+```nix
+nativeBuildInputs = [
+  # ... existing deps ...
+  codex-cli  # Codex CLI binary (FOD)
+];
+
+# Codex env (alongside existing Claude env vars)
+OPENAI_BASE_URL = "http://localhost:9000/v1";
+OPENAI_API_KEY = "test-key-mock";
+CODEX_HOME = "/tmp/codex-test-home";
+```
+
+In `buildPhase`, before starting CyDo:
+```bash
+# Pre-create Codex config
+mkdir -p $CODEX_HOME
+cat > $CODEX_HOME/config.toml <<'CONFIG'
+model = "codex-mini-latest"
+approval_mode = "full-auto"
+CONFIG
+```
+
+Once B7 and B8 land, `nix flake check` runs both Claude and Codex E2E
+tests in a single derivation — same CyDo backend instance, same mock
+API server handling both Anthropic and OpenAI endpoints, real CLI
+binaries for both agents.
+
+### B8. Codex E2E test cases
+
+Add Playwright tests that create Codex tasks and exercise the full stack
+through the real Codex CLI backed by the mock OpenAI API. These mirror
+the existing Claude test cases but use `agent_type: "codex"` when
+creating tasks.
+
+**File structure:**
+```
+tests/e2e/
+├── codex-basic.spec.ts          # Core Codex flow tests
+├── codex-session.spec.ts        # Codex session lifecycle
+└── agent-capabilities.spec.ts   # Agent-specific UI behavior
+```
+
+**Test cases:**
+
+#### Codex core flow (mirror of Claude Tier 1)
+
+20. **Codex basic message → response** — Create a Codex task. Send
+    "reply with OK". Verify "OK" appears in the assistant message bubble.
+    Validates the full Codex stack: task creation → app-server spawn →
+    thread/start → turn/start → item notifications → agnostic translation
+    → frontend rendering.
+
+21. **Codex tool call flow** — Send "run command echo hello" to a Codex
+    task. Verify: tool call block renders with command, tool result shows
+    output, final "Done." response appears. Validates: commandExecution
+    items → tool_use content blocks, approval auto-response, tool output
+    delta rendering.
+
+22. **Codex session creation** — Create a Codex task via the UI (requires
+    agent type selector or API). Verify sidebar shows the task with Codex
+    indicator (B6). Verify the session is active and ready for input.
+
+#### Codex session lifecycle (mirror of Claude Tier 2)
+
+23. **Codex history survives reconnect** — Send messages to a Codex task,
+    disconnect WebSocket, reconnect. Verify all messages are present.
+    Validates: Codex JSONL history loading via `translateHistoryLine`.
+
+24. **Codex session resume** — Stop a Codex session, then interact with
+    it again. Verify the session resumes with history preserved. Validates:
+    lazy app-server startup, `thread/resume`, history replay.
+
+#### Agent-specific UI behavior
+
+25. **Fork points: Claude vs Codex** — In a Claude task, verify fork/undo
+    buttons appear on individual messages (per-message granularity). In a
+    Codex task, verify fork/undo buttons appear only at turn boundaries.
+    Validates: `forkPoint` boolean in envelope, frontend fork affordance
+    rendering.
+
+26. **File revert checkbox hidden for Codex** — In a Claude task, open the
+    undo dialog and verify "revert file changes" checkbox is present and
+    enabled. In a Codex task, open the undo dialog and verify the checkbox
+    is hidden or disabled. Validates: `supportsFileRevert` capability in
+    `session/init`, frontend conditional rendering.
+
+27. **Agent type indicator** — Create one Claude task and one Codex task.
+    Verify each shows the correct agent indicator in the session view.
+    Validates: `agent` field from `session/init`, B6 frontend indicator.
+
 ---
 
 ## Protocol Reference
@@ -821,6 +1028,8 @@ B3.  Codex session persistence
 B4.  Codex MCP tool delivery
 B5.  Codex disallowedTools equivalent
 B6.  Frontend agent type indicator (optional)
+B7.  Extend mock API server + package Codex CLI
+B8.  Codex E2E test cases
 ```
 
 ## Resolved Questions
