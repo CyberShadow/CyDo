@@ -1500,16 +1500,12 @@ body,
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 .write-content-markdown {
   margin-top: 6px;
   padding: 8px;
   background: var(--overlay-faint);
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 /* Line numbers in Read results */
