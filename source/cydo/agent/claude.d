@@ -166,17 +166,6 @@ class ClaudeCodeSession : AgentSession
 		process.closeStdin();
 	}
 
-	void rewindFiles(string userMessageId, bool dryRun)
-	{
-		import std.uuid : randomUUID;
-		auto requestId = randomUUID().toString();
-		auto msg = `{"type":"control_request","request_id":"` ~ requestId
-			~ `","request":{"subtype":"rewind_files","user_message_id":"`
-			~ escapeJsonString(userMessageId)
-			~ `","dry_run":` ~ (dryRun ? "true" : "false") ~ `}}`;
-		process.writeLine(msg);
-	}
-
 	@property void onOutput(void delegate(string line) dg)
 	{
 		outputHandler = dg;
