@@ -20,7 +20,9 @@ Write your report to `{{output_file}}`. The output directory is pre-created —
 do not `mkdir` it. You can place additional files alongside the output file.
 The file content is returned to the parent task as the result.
 
-Your final message should be a one-sentence summary of what you found.
+Your final message should be a meta-commentary on the experiment — what
+approaches you tried, what worked and didn't, what you didn't have time to
+explore. Do not repeat or summarize the report content.
 
 Your report must include:
 - **Hypothesis** — what you set out to test

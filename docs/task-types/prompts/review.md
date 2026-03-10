@@ -39,7 +39,9 @@ Write your review report to `{{output_file}}`. The output directory is
 pre-created — do not `mkdir` it. The file content is returned to the parent
 task as the result.
 
-Your final message should be a one-sentence verdict.
+Your final message should be a meta-commentary on the review — what areas
+you focused on, what you cross-referenced, what you weren't able to check.
+Do not repeat or summarize the report content.
 
 The report must include:
 - **Verdict** — approve or reject

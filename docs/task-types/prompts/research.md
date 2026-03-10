@@ -47,7 +47,9 @@ The output directory is pre-created — do not `mkdir` it. You can place
 additional files alongside the output file (e.g., data, logs, scripts)
 to attach them to the task result.
 
-Your final message should be a one-sentence summary of findings.
+Your final message should be a meta-commentary on the investigation itself —
+what you searched for, what sources you consulted, what you couldn't find or
+didn't have time to check. Do not repeat or summarize the report content.
 
 Your report must include:
 - **Summary** — key findings in 2-3 sentences

@@ -31,7 +31,9 @@ Write your findings to `{{output_file}}`. The output directory is pre-created
 (e.g., reproduction logs). The file content is returned to the parent task as
 the result.
 
-Your final message should be a one-sentence summary of the root cause.
+Your final message should be a meta-commentary on the investigation — what
+you looked at, what reproduction approaches you tried, what you couldn't
+verify. Do not repeat or summarize the report content.
 
 Your report must include:
 - **Reproducer** — path to the spike worktree containing the failing test or

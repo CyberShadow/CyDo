@@ -42,7 +42,9 @@ The output directory is pre-created — do not `mkdir` it. You can place
 additional files alongside the output file (e.g., diagrams, examples)
 to attach them to the task result.
 
-Your final message should be a one-sentence summary of the plan.
+Your final message should be a meta-commentary on the planning process — what
+areas you explored, what trade-offs you considered, what you weren't able to
+investigate. Do not repeat or summarize the plan content.
 
 Your plan must include:
 - **Goal** — one-sentence summary of what this achieves
