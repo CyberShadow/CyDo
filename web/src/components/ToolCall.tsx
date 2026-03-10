@@ -1,6 +1,8 @@
 import { h, Fragment, ComponentChildren } from "preact";
-import { useState } from "preact/hooks";
+import { useState, useMemo } from "preact/hooks";
 import { diffLines, diffWordsWithSpace, type Change } from "diff";
+import HtmlDiff from "htmldiff-js";
+import { marked } from "marked";
 import type { ToolResult, ToolResultContent } from "../types";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
@@ -289,11 +291,48 @@ function DiffView({
   );
 }
 
+function MarkdownDiffView({
+  oldStr,
+  newStr,
+}: {
+  oldStr: string;
+  newStr: string;
+}) {
+  const [showSource, setShowSource] = useState(true);
+  const diffHtml = useMemo(() => {
+    const oldHtml = marked.parse(oldStr, { async: false }) as string;
+    const newHtml = marked.parse(newStr, { async: false }) as string;
+    return HtmlDiff.execute(oldHtml, newHtml);
+  }, [oldStr, newStr]);
+
+  return (
+    <div class="markdown-diff-wrap">
+      <button
+        class="markdown-toggle-btn"
+        onClick={() => setShowSource(!showSource)}
+        title={showSource ? "Show rendered" : "Show source"}
+      >
+        {showSource ? "\u25C9" : "\u25CE"}
+      </button>
+      {showSource ? (
+        <DiffView oldStr={oldStr} newStr={newStr} filePath="diff.md" />
+      ) : (
+        <div
+          class="markdown markdown-diff"
+          dangerouslySetInnerHTML={{ __html: diffHtml }}
+        />
+      )}
+    </div>
+  );
+}
+
 function EditInput({ input }: { input: Record<string, unknown> }) {
   const oldString = input.old_string as string;
   const newString = input.new_string as string;
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
+  const lang = filePath ? langFromPath(filePath) : null;
+  const isMarkdown = lang === "markdown" || lang === "mdx";
   const remaining = Object.entries(input).filter(
     ([k]) =>
       !["file_path", "old_string", "new_string", "replace_all"].includes(k),
@@ -307,7 +346,11 @@ function EditInput({ input }: { input: Record<string, unknown> }) {
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
+      {isMarkdown ? (
+        <MarkdownDiffView oldStr={oldString} newStr={newString} />
+      ) : (
+        <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
+      )}
     </div>
   );
 }

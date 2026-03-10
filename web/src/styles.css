@@ -952,13 +952,14 @@ body,
   border-radius: 3px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: none;
   z-index: 1;
   line-height: 1;
 }
 
 .markdown-wrap:hover > .markdown-toggle-btn,
-.markdown-raw > .markdown-toggle-btn {
+.markdown-raw > .markdown-toggle-btn,
+.markdown-diff-wrap:hover > .markdown-toggle-btn {
   opacity: 1;
 }
 
@@ -1506,6 +1507,28 @@ body,
   margin-top: 6px;
   padding: 8px;
   background: var(--overlay-faint);
+}
+
+/* Rendered Markdown diff */
+.markdown-diff-wrap {
+  position: relative;
+  margin-top: 6px;
+}
+
+.markdown-diff {
+  padding: 8px;
+  background: var(--overlay-faint);
+}
+
+.markdown-diff ins {
+  text-decoration: none;
+  background: rgba(76, 175, 80, 0.25);
+}
+
+.markdown-diff del {
+  text-decoration: line-through;
+  background: rgba(244, 67, 54, 0.25);
+  color: var(--text-dim);
 }
 
 /* Line numbers in Read results */
