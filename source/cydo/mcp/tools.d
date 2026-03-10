@@ -139,9 +139,9 @@ class CydoToolsImpl : CydoTools
 
 	McpResult createTasks(TaskSpec[] tasks)
 	{
+		import ae.utils.json : JSONFragment, toJson;
 		import ae.utils.promise : Promise, all;
 		import ae.utils.promise.await : await;
-		import std.conv : to;
 
 		if (tasks.length == 0)
 			return McpResult("No tasks provided", true);
@@ -151,26 +151,23 @@ class CydoToolsImpl : CydoTools
 		foreach (i, ref spec; tasks)
 			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
 
-		// Single task: return its result directly
-		if (tasks.length == 1)
-			return promises[0].await();
-
-		// Multiple tasks: wait for all, combine results
 		McpResult[] results = all(promises).await();
 
+		// Collect into a JSON array
 		bool anyError;
-		string combined;
-		foreach (i, ref result; results)
+		JSONFragment[] items;
+		foreach (ref result; results)
 		{
-			if (i > 0)
-				combined ~= "\n\n---\n\n";
-			combined ~= "## Task " ~ to!string(i + 1) ~ ": " ~ tasks[i].description ~ "\n\n";
-			combined ~= result.text;
+			if (result.structuredContent)
+				items ~= result.structuredContent;
+			else
+				items ~= JSONFragment(toJson(result.text));
 			if (result.isError)
 				anyError = true;
 		}
+		auto arrayJson = toJson(items);
 
-		return McpResult(combined, anyError);
+		return McpResult(arrayJson, anyError, JSONFragment(arrayJson));
 	}
 
 	McpResult switchMode(string continuation)
