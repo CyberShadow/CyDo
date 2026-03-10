@@ -166,8 +166,9 @@ class CydoToolsImpl : CydoTools
 				anyError = true;
 		}
 		auto arrayJson = toJson(items);
+		auto wrappedJson = `{"tasks":` ~ arrayJson ~ `}`;
 
-		return McpResult(arrayJson, anyError, JSONFragment(arrayJson));
+		return McpResult(arrayJson, anyError, JSONFragment(wrappedJson));
 	}
 
 	McpResult switchMode(string continuation)
