@@ -14,8 +14,8 @@ import {
 import { useLocation } from "preact-iso";
 import { Connection } from "./connection";
 import type {
-  ClaudeMessage,
-  ClaudeFileMessage,
+  AgnosticEvent,
+  AgnosticFileEvent,
   ControlMessage,
 } from "./schemas";
 import type { TaskState } from "./types";
@@ -134,7 +134,7 @@ function parseFromPath(path: string): ParsedPath {
 }
 
 /// Extract text content from a user message event (for unconfirmed display).
-function extractTextContent(msg: ClaudeMessage): string {
+function extractTextContent(msg: AgnosticEvent): string {
   const raw = msg as any;
   if (raw?.message?.content) {
     if (typeof raw.message.content === "string") return raw.message.content;
@@ -211,13 +211,13 @@ export function useTaskManager(): TaskManager {
 
   // Buffer for live messages that arrive before history is loaded.
   // Keyed by tid; drained on task_history_end.
-  const pendingLiveRef = useRef(new Map<number, ClaudeMessage[]>());
+  const pendingLiveRef = useRef(new Map<number, AgnosticEvent[]>());
 
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
   const handleUnconfirmedUserMessage = useCallback(
-    (tid: number, msg: ClaudeMessage) => {
+    (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
       const updated = reducePendingUserMessage(prev, extractTextContent(msg));
@@ -231,7 +231,7 @@ export function useTaskManager(): TaskManager {
     [],
   );
 
-  const handleTaskMessage = useCallback((tid: number, msg: ClaudeMessage) => {
+  const handleTaskMessage = useCallback((tid: number, msg: AgnosticEvent) => {
     // If history has been requested but not yet loaded, buffer live
     // messages so they are processed after history.
     const t = liveStates.get(tid);
@@ -252,7 +252,7 @@ export function useTaskManager(): TaskManager {
     // When an agent sub-task exits and it's currently focused, switch to parent.
     // User-created children (forks) stay focused — user navigates manually.
     if (
-      msg.type === "exit" &&
+      msg.type === "process/exit" &&
       prev.parentTid &&
       prev.relationType !== "fork" &&
       activeTaskIdRef.current === tid
@@ -272,7 +272,7 @@ export function useTaskManager(): TaskManager {
 
   // -- JSONL file message handler --
   const handleFileMessage = useCallback(
-    (tid: number, msg: ClaudeFileMessage) => {
+    (tid: number, msg: AgnosticFileEvent) => {
       const prev = liveStates.get(tid) ?? makeTaskState(tid);
       const updated = reduceFileMessage(prev, msg);
       liveStates.set(tid, updated);
@@ -578,9 +578,9 @@ export function useTaskManager(): TaskManager {
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | { kind: "task"; tid: number; msg: ClaudeMessage }
-      | { kind: "unconfirmed"; tid: number; msg: ClaudeMessage }
-      | { kind: "file"; tid: number; msg: ClaudeFileMessage }
+      | { kind: "task"; tid: number; msg: AgnosticEvent }
+      | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
+      | { kind: "file"; tid: number; msg: AgnosticFileEvent }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;

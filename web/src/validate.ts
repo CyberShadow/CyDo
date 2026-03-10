@@ -18,7 +18,10 @@ import {
   SummarySchema,
   RateLimitEventSchema,
   ControlResponseSchema,
-  StreamEventMessageSchema,
+  StreamBlockStartSchema,
+  StreamBlockDeltaSchema,
+  StreamBlockStopSchema,
+  StreamTurnStopSchema,
   ProgressSchema,
   QueueOperationSchema,
   FileHistorySnapshotSchema,
@@ -28,79 +31,84 @@ import {
 
 type SchemaLookup = (raw: Record<string, unknown>) => ZodTypeAny | null;
 
-// Schema lookup for live stdout (stream-json) messages.
+// Schema lookup for live stream messages (agent-agnostic protocol).
 export const schemaForStdout: SchemaLookup = (raw) => {
   switch (raw.type) {
-    case "system":
-      switch (raw.subtype) {
-        case "init":
-          return SystemInitSchema;
-        case "status":
-          return SystemStatusSchema;
-        case "compact_boundary":
-          return SystemCompactBoundarySchema;
-        case "task_started":
-          return SystemTaskStartedSchema;
-        case "task_notification":
-          return SystemTaskNotificationSchema;
-        default:
-          return null;
-      }
-    case "assistant":
+    case "session/init":
+      return SystemInitSchema;
+    case "session/status":
+      return SystemStatusSchema;
+    case "session/compacted":
+      return SystemCompactBoundarySchema;
+    case "task/started":
+      return SystemTaskStartedSchema;
+    case "task/notification":
+      return SystemTaskNotificationSchema;
+    case "message/assistant":
       return AssistantMessageSchema;
-    case "user":
+    case "message/user":
       return UserEchoSchema;
-    case "result":
+    case "turn/result":
       return ResultSchema;
-    case "summary":
+    case "session/summary":
       return SummarySchema;
-    case "rate_limit_event":
+    case "session/rate_limit":
       return RateLimitEventSchema;
-    case "stream_event":
-      return StreamEventMessageSchema;
-    case "control_response":
+    case "stream/block_start":
+      return StreamBlockStartSchema;
+    case "stream/block_delta":
+      return StreamBlockDeltaSchema;
+    case "stream/block_stop":
+      return StreamBlockStopSchema;
+    case "stream/turn_stop":
+      return StreamTurnStopSchema;
+    case "control/response":
       return ControlResponseSchema;
-    case "exit":
+    case "process/exit":
       return ExitMessageSchema;
-    case "stderr":
+    case "process/stderr":
       return StderrMessageSchema;
     default:
       return null;
   }
 };
 
-// Schema lookup for on-disk JSONL file messages.
+// Schema lookup for translated JSONL file messages.
+// Most types are agnostic (translated by backend), but some pass through unchanged.
 export const schemaForFile: SchemaLookup = (raw) => {
   switch (raw.type) {
+    // Agnostic types (translated by backend)
+    case "session/init":
+      return SystemInitSchema;
+    case "session/status":
+      return SystemStatusSchema;
+    case "session/compacted":
+      return SystemCompactBoundarySchema;
+    case "task/started":
+      return SystemTaskStartedSchema;
+    case "task/notification":
+      return SystemTaskNotificationSchema;
+    case "message/assistant":
+      return AssistantFileSchema;
+    case "message/user":
+      return UserFileSchema;
+    case "turn/result":
+      return ResultSchema;
+    case "session/summary":
+      return SummarySchema;
+    case "session/rate_limit":
+      return RateLimitEventSchema;
+    // Pass-through system subtypes (not translated by backend)
     case "system":
       switch (raw.subtype) {
-        case "init":
-          return SystemInitSchema;
-        case "status":
-          return SystemStatusSchema;
-        case "compact_boundary":
-          return SystemCompactBoundarySchema;
         case "api_error":
           return SystemApiErrorSchema;
         case "turn_duration":
           return SystemTurnDurationSchema;
-        case "task_started":
-          return SystemTaskStartedSchema;
-        case "task_notification":
-          return SystemTaskNotificationSchema;
         default:
           return null;
       }
-    case "assistant":
-      return AssistantFileSchema;
-    case "user":
-      return UserFileSchema;
-    case "result":
-      return ResultSchema;
-    case "summary":
-      return SummarySchema;
-    case "rate_limit_event":
-      return RateLimitEventSchema;
+    // JSONL-only types (pass through unchanged)
     case "progress":
       return ProgressSchema;
     case "queue-operation":

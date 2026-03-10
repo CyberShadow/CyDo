@@ -162,57 +162,35 @@ export const ContentDeltaSchema = z.discriminatedUnion("type", [
 
 // -- Stream events --
 
-const MessageStartEvent = z
+// Stream events (promoted to top-level by backend translation)
+export const StreamBlockStartSchema = z
   .object({
-    type: z.literal("message_start"),
-    message: z.object({ model: z.string(), id: z.string() }).passthrough(),
-  })
-  .passthrough();
-
-const ContentBlockStartEvent = z
-  .object({
-    type: z.literal("content_block_start"),
+    type: z.literal("stream/block_start"),
     index: z.number(),
     content_block: z.object({ type: z.string() }).passthrough(),
   })
   .passthrough();
 
-const ContentBlockDeltaEvent = z
+export const StreamBlockDeltaSchema = z
   .object({
-    type: z.literal("content_block_delta"),
+    type: z.literal("stream/block_delta"),
     index: z.number(),
     delta: ContentDeltaSchema,
   })
   .passthrough();
 
-const ContentBlockStopEvent = z
+export const StreamBlockStopSchema = z
   .object({
-    type: z.literal("content_block_stop"),
+    type: z.literal("stream/block_stop"),
     index: z.number(),
   })
   .passthrough();
 
-const MessageDeltaEvent = z
+export const StreamTurnStopSchema = z
   .object({
-    type: z.literal("message_delta"),
-    delta: z.object({ stop_reason: z.string() }).passthrough(),
+    type: z.literal("stream/turn_stop"),
   })
   .passthrough();
-
-const MessageStopEvent = z
-  .object({
-    type: z.literal("message_stop"),
-  })
-  .passthrough();
-
-export const StreamEventSchema = z.discriminatedUnion("type", [
-  MessageStartEvent,
-  ContentBlockStartEvent,
-  ContentBlockDeltaEvent,
-  ContentBlockStopEvent,
-  MessageDeltaEvent,
-  MessageStopEvent,
-]);
 
 // ---------------------------------------------------------------------------
 // Top-level message schemas
@@ -220,8 +198,7 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
 
 export const SystemInitSchema = z
   .object({
-    type: z.literal("system"),
-    subtype: z.literal("init"),
+    type: z.literal("session/init"),
     session_id: z.string(),
     uuid: z.string(),
     model: z.string(),
@@ -242,8 +219,7 @@ export const SystemInitSchema = z
 
 export const SystemStatusSchema = z
   .object({
-    type: z.literal("system"),
-    subtype: z.literal("status"),
+    type: z.literal("session/status"),
     status: z.string().nullable().optional(),
     // ignored: routing fields not displayed
     uuid: z.string().optional(),
@@ -253,8 +229,7 @@ export const SystemStatusSchema = z
 
 export const SystemCompactBoundarySchema = z
   .object({
-    type: z.literal("system"),
-    subtype: z.literal("compact_boundary"),
+    type: z.literal("session/compacted"),
     compact_metadata: z
       .object({
         trigger: z.string().optional(),
@@ -285,7 +260,7 @@ const AssistantInnerMessage = z
 
 export const AssistantMessageSchema = z
   .object({
-    type: z.literal("assistant"),
+    type: z.literal("message/assistant"),
     uuid: z.string(),
     session_id: z.string(),
     parent_tool_use_id: z.string().nullable(),
@@ -297,7 +272,7 @@ export const AssistantMessageSchema = z
 
 export const UserEchoSchema = z
   .object({
-    type: z.literal("user"),
+    type: z.literal("message/user"),
     session_id: z.string().optional(),
     message: z
       .object({
@@ -321,7 +296,7 @@ export const UserEchoSchema = z
 
 export const ResultSchema = z
   .object({
-    type: z.literal("result"),
+    type: z.literal("turn/result"),
     subtype: z.string(),
     uuid: z.string(),
     session_id: z.string(),
@@ -354,7 +329,7 @@ export const ResultSchema = z
 
 export const SummarySchema = z
   .object({
-    type: z.literal("summary"),
+    type: z.literal("session/summary"),
     summary: z.string(),
     // TODO: review — in old KNOWN list but not consumed by the UI
     // leafUuid
@@ -363,7 +338,7 @@ export const SummarySchema = z
 
 export const RateLimitEventSchema = z
   .object({
-    type: z.literal("rate_limit_event"),
+    type: z.literal("session/rate_limit"),
     rate_limit_info: z
       .object({
         status: z.string().optional(),
@@ -383,8 +358,7 @@ export const RateLimitEventSchema = z
 
 export const SystemTaskStartedSchema = z
   .object({
-    type: z.literal("system"),
-    subtype: z.literal("task_started"),
+    type: z.literal("task/started"),
     task_id: z.string(),
     tool_use_id: z.string().optional(),
     description: z.string().optional(),
@@ -396,8 +370,7 @@ export const SystemTaskStartedSchema = z
 
 export const SystemTaskNotificationSchema = z
   .object({
-    type: z.literal("system"),
-    subtype: z.literal("task_notification"),
+    type: z.literal("task/notification"),
     task_id: z.string(),
     status: z.string(),
     output_file: z.string().optional(),
@@ -445,7 +418,7 @@ const FileEnvelopeFields = {
 
 export const AssistantFileSchema = z
   .object({
-    type: z.literal("assistant"),
+    type: z.literal("message/assistant"),
     uuid: z.string(),
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
@@ -459,7 +432,7 @@ export const AssistantFileSchema = z
 
 export const UserFileSchema = z
   .object({
-    type: z.literal("user"),
+    type: z.literal("message/user"),
     message: z
       .object({
         role: z.literal("user"),
@@ -505,7 +478,7 @@ export const FileHistorySnapshotSchema = z
 
 export const ControlResponseSchema = z
   .object({
-    type: z.literal("control_response"),
+    type: z.literal("control/response"),
     response: z
       .object({
         subtype: z.string(),
@@ -515,26 +488,16 @@ export const ControlResponseSchema = z
   })
   .passthrough();
 
-export const StreamEventMessageSchema = z
-  .object({
-    type: z.literal("stream_event"),
-    uuid: z.string(),
-    session_id: z.string(),
-    parent_tool_use_id: z.string().nullable(),
-    event: StreamEventSchema,
-  })
-  .passthrough();
-
 export const ExitMessageSchema = z
   .object({
-    type: z.literal("exit"),
+    type: z.literal("process/exit"),
     code: z.number(),
   })
   .passthrough();
 
 export const StderrMessageSchema = z
   .object({
-    type: z.literal("stderr"),
+    type: z.literal("process/stderr"),
     text: z.string(),
   })
   .passthrough();
@@ -555,8 +518,10 @@ export type UserContentBlock = z.infer<typeof UserContentBlockSchema>;
 export type ResultMessage = z.infer<typeof ResultSchema>;
 export type SummaryMessage = z.infer<typeof SummarySchema>;
 export type RateLimitEventMessage = z.infer<typeof RateLimitEventSchema>;
-export type StreamEventMessage = z.infer<typeof StreamEventMessageSchema>;
-export type StreamEvent = z.infer<typeof StreamEventSchema>;
+export type StreamBlockStart = z.infer<typeof StreamBlockStartSchema>;
+export type StreamBlockDelta = z.infer<typeof StreamBlockDeltaSchema>;
+export type StreamBlockStop = z.infer<typeof StreamBlockStopSchema>;
+export type StreamTurnStop = z.infer<typeof StreamTurnStopSchema>;
 export type ContentDelta = z.infer<typeof ContentDeltaSchema>;
 export type Usage = z.infer<typeof UsageSchema>;
 export type ControlResponseMessage = z.infer<typeof ControlResponseSchema>;
@@ -578,8 +543,8 @@ export type FileHistorySnapshotMessage = z.infer<
   typeof FileHistorySnapshotSchema
 >;
 
-// Stdout (live stream-json) message union
-export type ClaudeMessage =
+// Agent-agnostic event union (live stream)
+export type AgnosticEvent =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
@@ -590,13 +555,19 @@ export type ClaudeMessage =
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
-  | StreamEventMessage
+  | StreamBlockStart
+  | StreamBlockDelta
+  | StreamBlockStop
+  | StreamTurnStop
   | ControlResponseMessage
   | ExitMessage
   | StderrMessage;
 
-// JSONL file message union (excludes exit/stderr — those are synthetic from our backend)
-export type ClaudeFileMessage =
+// Backwards compat alias
+export type ClaudeMessage = AgnosticEvent;
+
+// File message union (translated + pass-through JSONL-only types)
+export type AgnosticFileEvent =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
@@ -613,8 +584,11 @@ export type ClaudeFileMessage =
   | QueueOperationMessage
   | FileHistorySnapshotMessage;
 
-export type TaskMessage = { tid: number; event: ClaudeMessage };
-export type FileMessage = { tid: number; fileEvent: ClaudeFileMessage };
+// Backwards compat alias
+export type ClaudeFileMessage = AgnosticFileEvent;
+
+export type TaskMessage = { tid: number; event: AgnosticEvent };
+export type FileMessage = { tid: number; fileEvent: AgnosticFileEvent };
 
 // Control messages from our backend (not Claude Code) — plain interfaces, no Zod needed
 export interface TaskCreatedMessage {

@@ -1,6 +1,6 @@
 import type {
-  ClaudeMessage,
-  ClaudeFileMessage,
+  AgnosticEvent,
+  AgnosticFileEvent,
   ControlMessage,
 } from "./schemas";
 
@@ -13,10 +13,10 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
-  onTaskMessage: ((tid: number, msg: ClaudeMessage) => void) | null = null;
-  onUnconfirmedUserMessage: ((tid: number, msg: ClaudeMessage) => void) | null =
+  onTaskMessage: ((tid: number, msg: AgnosticEvent) => void) | null = null;
+  onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
     null;
-  onFileMessage: ((tid: number, msg: ClaudeFileMessage) => void) | null = null;
+  onFileMessage: ((tid: number, msg: AgnosticFileEvent) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -57,12 +57,12 @@ export class Connection {
           if ("unconfirmedUserEvent" in raw) {
             this.onUnconfirmedUserMessage?.(
               raw.tid,
-              raw.unconfirmedUserEvent as ClaudeMessage,
+              raw.unconfirmedUserEvent as AgnosticEvent,
             );
           } else if ("event" in raw) {
-            this.onTaskMessage?.(raw.tid, raw.event as ClaudeMessage);
+            this.onTaskMessage?.(raw.tid, raw.event as AgnosticEvent);
           } else if ("fileEvent" in raw) {
-            this.onFileMessage?.(raw.tid, raw.fileEvent as ClaudeFileMessage);
+            this.onFileMessage?.(raw.tid, raw.fileEvent as AgnosticFileEvent);
           } else {
             console.warn("Unknown task envelope (no event or fileEvent):", raw);
           }

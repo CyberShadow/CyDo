@@ -11,11 +11,10 @@ import type {
   ToolResultContent,
 } from "./types";
 import type {
-  ClaudeMessage,
-  ClaudeFileMessage,
+  AgnosticEvent,
+  AgnosticFileEvent,
   AssistantMessage,
   AssistantFileMessage,
-  StreamEvent,
   ResultMessage,
 } from "./schemas";
 import type { ExtraField } from "./extractExtras";
@@ -176,7 +175,7 @@ export function reduceTaskLifecycle(
 ): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
-  if (msg.subtype === "task_started") {
+  if (msg.type === "task/started") {
     const desc = msg.description || msg.task_id;
     const typeLabel = msg.task_type ? ` [${msg.task_type}]` : "";
     text = `Task started: ${desc}${typeLabel}`;
@@ -573,76 +572,73 @@ function getStreamingMessage(s: SessionState): {
   return { messages, msgIdx: messages.length - 1 };
 }
 
-export function reduceStreamEvent(
+export function reduceStreamBlockStart(
   s: SessionState,
-  event: StreamEvent,
+  event: any,
 ): SessionState {
-  switch (event.type) {
-    case "content_block_start": {
-      const { messages, msgIdx } = getStreamingMessage(s);
-      const msg = messages[msgIdx];
-      msg.streamingBlocks = [
-        ...(msg.streamingBlocks || []),
-        {
-          index: event.index,
-          type: event.content_block.type,
-          text: "",
-          name: (event.content_block as Record<string, unknown>).name as
-            | string
-            | undefined,
-        },
-      ];
-      return { ...s, messages };
-    }
-    case "content_block_delta": {
-      const targetIdx = findStreamingMsg(s.messages);
-      if (targetIdx < 0) return s;
+  const { messages, msgIdx } = getStreamingMessage(s);
+  const msg = messages[msgIdx];
+  msg.streamingBlocks = [
+    ...(msg.streamingBlocks || []),
+    {
+      index: event.index,
+      type: event.content_block.type,
+      text: "",
+      name: (event.content_block as Record<string, unknown>).name as
+        | string
+        | undefined,
+    },
+  ];
+  return { ...s, messages };
+}
+
+export function reduceStreamBlockDelta(
+  s: SessionState,
+  event: any,
+): SessionState {
+  const targetIdx = findStreamingMsg(s.messages);
+  if (targetIdx < 0) return s;
+  const messages = s.messages.slice();
+  const msg = { ...messages[targetIdx] };
+  messages[targetIdx] = msg;
+  msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
+    if (b.index !== event.index) return b;
+    const delta = event.delta;
+    let append = "";
+    if (delta.type === "text_delta") append = delta.text;
+    else if (delta.type === "thinking_delta") append = delta.thinking;
+    else if (delta.type === "input_json_delta") append = delta.partial_json;
+    return { ...b, text: b.text + append };
+  });
+  return { ...s, messages };
+}
+
+export function reduceStreamBlockStop(
+  s: SessionState,
+  event: any,
+): SessionState {
+  const targetIdx = findStreamingMsg(s.messages);
+  if (targetIdx < 0) return s;
+  const messages = s.messages.slice();
+  const msg = { ...messages[targetIdx] };
+  messages[targetIdx] = msg;
+  msg.streamingBlocks = msg.streamingBlocks!.filter(
+    (b) => b.index !== event.index,
+  );
+  return { ...s, messages };
+}
+
+export function reduceStreamTurnStop(s: SessionState): SessionState {
+  // Mark the assistant message as no longer streaming so the next
+  // response creates a fresh message instead of reusing this one.
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    if (s.messages[i].type === "assistant" && s.messages[i].streamingBlocks) {
       const messages = s.messages.slice();
-      const msg = { ...messages[targetIdx] };
-      messages[targetIdx] = msg;
-      msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
-        if (b.index !== event.index) return b;
-        const delta = event.delta;
-        let append = "";
-        if (delta.type === "text_delta") append = delta.text;
-        else if (delta.type === "thinking_delta") append = delta.thinking;
-        else if (delta.type === "input_json_delta") append = delta.partial_json;
-        return { ...b, text: b.text + append };
-      });
+      messages[i] = { ...messages[i], streamingBlocks: undefined };
       return { ...s, messages };
     }
-    case "content_block_stop": {
-      const targetIdx = findStreamingMsg(s.messages);
-      if (targetIdx < 0) return s;
-      const messages = s.messages.slice();
-      const msg = { ...messages[targetIdx] };
-      messages[targetIdx] = msg;
-      msg.streamingBlocks = msg.streamingBlocks!.filter(
-        (b) => b.index !== event.index,
-      );
-      return { ...s, messages };
-    }
-    case "message_stop": {
-      // Mark the assistant message as no longer streaming so the next
-      // response creates a fresh message instead of reusing this one.
-      // Must match getStreamingMessage's check (truthy streamingBlocks),
-      // not findStreamingMsg (which requires length > 0), because
-      // reduceAssistantMessage may have already set streamingBlocks = [].
-      for (let i = s.messages.length - 1; i >= 0; i--) {
-        if (
-          s.messages[i].type === "assistant" &&
-          s.messages[i].streamingBlocks
-        ) {
-          const messages = s.messages.slice();
-          messages[i] = { ...messages[i], streamingBlocks: undefined };
-          return { ...s, messages };
-        }
-      }
-      return s;
-    }
-    default:
-      return s;
   }
+  return s;
 }
 
 export function reduceStderr(s: SessionState, text: string): SessionState {
@@ -691,7 +687,7 @@ export function reducePendingUserMessage(
 
 export function reduceStdoutMessage(
   s: SessionState,
-  msg: ClaudeMessage,
+  msg: AgnosticEvent,
 ): SessionState {
   const { extras, schemaError } = validateWith(schemaForStdout, msg);
   if (schemaError) {
@@ -705,33 +701,24 @@ export function reduceStdoutMessage(
   }
 
   switch (msg.type) {
-    case "system":
-      if ("subtype" in msg && msg.subtype === "init") {
-        return reduceSystemInit(s, msg, extras);
-      } else if ("subtype" in msg && msg.subtype === "status") {
-        return reduceSystemStatus(s, msg, extras);
-      } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
-        return reduceCompactBoundary(s, msg, extras);
-      } else if (
-        "subtype" in msg &&
-        (msg.subtype === "task_started" || msg.subtype === "task_notification")
-      ) {
-        return reduceTaskLifecycle(s, msg as any, extras);
-      } else {
-        return reduceParseError(
-          s,
-          "stdout",
-          "Unknown system subtype",
-          String((msg as any).subtype),
-          msg,
-        );
-      }
+    case "session/init":
+      return reduceSystemInit(s, msg, extras);
 
-    case "assistant":
+    case "session/status":
+      return reduceSystemStatus(s, msg, extras);
+
+    case "session/compacted":
+      return reduceCompactBoundary(s, msg, extras);
+
+    case "task/started":
+    case "task/notification":
+      return reduceTaskLifecycle(s, msg as any, extras);
+
+    case "message/assistant":
       return reduceAssistantMessage(s, msg as AssistantMessage, extras);
 
-    case "user": {
-      const rawContent = msg.message.content;
+    case "message/user": {
+      const rawContent = (msg as any).message.content;
       const contentBlocks: any[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
@@ -743,8 +730,8 @@ export function reduceStdoutMessage(
         return reduceUserEcho(
           s,
           contentBlocks,
-          msg.isSidechain,
-          msg.parent_tool_use_id,
+          (msg as any).isSidechain,
+          (msg as any).parent_tool_use_id,
           extras,
           msg,
           (msg as any).isSynthetic,
@@ -753,20 +740,28 @@ export function reduceStdoutMessage(
       }
     }
 
-    case "stream_event":
-      return reduceStreamEvent(s, (msg as any).event);
+    case "stream/block_start":
+      return reduceStreamBlockStart(s, msg);
 
-    case "result":
+    case "stream/block_delta":
+      return reduceStreamBlockDelta(s, msg);
+
+    case "stream/block_stop":
+      return reduceStreamBlockStop(s, msg);
+
+    case "stream/turn_stop":
+      return reduceStreamTurnStop(s);
+
+    case "turn/result":
       return reduceResultMessage(s, msg as ResultMessage, extras);
 
-    case "summary":
+    case "session/summary":
       return reduceSummary(s, msg, extras);
 
-    case "rate_limit_event":
-      // Global event, not session-scoped; will be handled by the backend in the future.
+    case "session/rate_limit":
       return s;
 
-    case "control_response": {
+    case "control/response": {
       const resp = (msg as any).response;
       const id = `control-response-${++s.msgIdCounter}`;
       return {
@@ -789,11 +784,11 @@ export function reduceStdoutMessage(
       };
     }
 
-    case "exit":
+    case "process/exit":
       return reduceExit(s);
 
-    case "stderr":
-      return reduceStderr(s, msg.text);
+    case "process/stderr":
+      return reduceStderr(s, (msg as any).text);
 
     default:
       return reduceParseError(
@@ -808,7 +803,7 @@ export function reduceStdoutMessage(
 
 export function reduceFileMessage(
   s: SessionState,
-  msg: ClaudeFileMessage,
+  msg: AgnosticFileEvent,
 ): SessionState {
   const { extras, schemaError } = validateWith(schemaForFile, msg);
   if (schemaError) {
@@ -822,43 +817,24 @@ export function reduceFileMessage(
   }
 
   switch (msg.type) {
-    case "system":
-      if ("subtype" in msg && msg.subtype === "init") {
-        return reduceSystemInit(s, msg, extras);
-      } else if ("subtype" in msg && msg.subtype === "status") {
-        return reduceSystemStatus(s, msg, extras);
-      } else if ("subtype" in msg && msg.subtype === "compact_boundary") {
-        return reduceCompactBoundary(s, msg, extras);
-      } else if (
-        "subtype" in msg &&
-        (msg.subtype === "task_started" || msg.subtype === "task_notification")
-      ) {
-        return reduceTaskLifecycle(s, msg as any, extras);
-      } else if ((msg as any).subtype === "stop_hook_summary") {
-        return reduceStopHookSummary(s, msg as any, extras);
-      } else if (
-        "subtype" in msg &&
-        (msg.subtype === "api_error" || msg.subtype === "turn_duration")
-      ) {
-        // JSONL-only bookkeeping subtypes — intentionally not rendered.
-        // api_error: transient retry attempts already resolved by the time we see them.
-        // turn_duration: internal timing metadata with no user-facing value.
-        return s;
-      } else {
-        return reduceParseError(
-          s,
-          "file",
-          "Unknown system subtype",
-          String((msg as any).subtype),
-          msg,
-        );
-      }
+    // Agnostic types (translated by backend)
+    case "session/init":
+      return reduceSystemInit(s, msg, extras);
 
-    case "assistant":
+    case "session/status":
+      return reduceSystemStatus(s, msg, extras);
+
+    case "session/compacted":
+      return reduceCompactBoundary(s, msg, extras);
+
+    case "task/started":
+    case "task/notification":
+      return reduceTaskLifecycle(s, msg as any, extras);
+
+    case "message/assistant":
       return reduceAssistantMessage(s, msg as AssistantFileMessage, extras);
 
-    case "user": {
-      // JSONL user messages store content as a plain string; normalize to block array
+    case "message/user": {
       const rawContent = (msg as any).message?.content;
       const content: any[] =
         typeof rawContent === "string"
@@ -867,14 +843,13 @@ export function reduceFileMessage(
       s = reduceUserEcho(
         s,
         content,
-        msg.isSidechain,
-        msg.parent_tool_use_id,
+        (msg as any).isSidechain,
+        (msg as any).parent_tool_use_id,
         extras,
         msg,
         (msg as any).isSynthetic,
         (msg as any).isMeta,
       );
-      // Remove matched user text from preReloadDrafts
       if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
         const text = content
           .filter((b: any) => b.type === "text")
@@ -895,20 +870,35 @@ export function reduceFileMessage(
       return s;
     }
 
-    case "result":
+    case "turn/result":
       return reduceResultMessage(s, msg as ResultMessage, extras);
 
-    case "summary":
+    case "session/summary":
       return reduceSummary(s, msg, extras);
 
-    case "rate_limit_event":
-      // Global event, not session-scoped; will be handled by the backend in the future.
+    case "session/rate_limit":
       return s;
 
-    // JSONL-only types — intentionally not rendered:
-    // progress: transient hook/bash/agent execution trace, already resolved.
-    // queue-operation: internal enqueue/dequeue bookkeeping.
-    // file-history-snapshot: file state snapshots for undo, no user-facing value.
+    // Pass-through system subtypes (not translated by backend)
+    case "system":
+      if ((msg as any).subtype === "stop_hook_summary") {
+        return reduceStopHookSummary(s, msg as any, extras);
+      } else if (
+        (msg as any).subtype === "api_error" ||
+        (msg as any).subtype === "turn_duration"
+      ) {
+        return s;
+      } else {
+        return reduceParseError(
+          s,
+          "file",
+          "Unknown system subtype",
+          String((msg as any).subtype),
+          msg,
+        );
+      }
+
+    // JSONL-only types — intentionally not rendered
     case "progress":
     case "queue-operation":
     case "file-history-snapshot":
