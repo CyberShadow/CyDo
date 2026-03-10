@@ -179,13 +179,15 @@ struct ForkResult
 /// Fork a task by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
 /// historyPathFn computes the JSONL file path for a given session ID.
+/// rewriteSessionIdFn rewrites session ID references in each JSONL line.
 ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSessionId, string afterUuid,
 	string projectPath, string workspace, string title, string delegate(string sessionId) historyPathFn,
+	string delegate(string line, string oldId, string newId) rewriteSessionIdFn,
 	string description = "", string taskType = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
-	import std.string : lineSplitter, replace;
+	import std.string : lineSplitter;
 
 	auto sourcePath = historyPathFn(sourceSessionId);
 	if (!exists(sourcePath))
@@ -202,9 +204,7 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 		if (line.length == 0)
 			continue;
 
-		auto rewritten = line
-			.replace(`"sessionId":"` ~ sourceSessionId ~ `"`, `"sessionId":"` ~ newSessionId ~ `"`)
-			.replace(`"session_id":"` ~ sourceSessionId ~ `"`, `"session_id":"` ~ newSessionId ~ `"`);
+		auto rewritten = rewriteSessionIdFn(line, sourceSessionId, newSessionId);
 		output ~= rewritten ~ "\n";
 
 		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))

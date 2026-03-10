@@ -197,6 +197,43 @@ class ClaudeCodeAgent : Agent
 	{
 		return line;
 	}
+
+	string rewriteSessionId(string line, string oldId, string newId)
+	{
+		import std.array : replace;
+		return line
+			.replace(`"sessionId":"` ~ oldId ~ `"`, `"sessionId":"` ~ newId ~ `"`)
+			.replace(`"session_id":"` ~ oldId ~ `"`, `"session_id":"` ~ newId ~ `"`);
+	}
+
+	@property bool supportsFileRevert() { return true; }
+
+	string rewindFiles(string sessionId, string afterUuid, string cwd)
+	{
+		import std.process : Config, environment, execute;
+
+		string[string] env = [
+			"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
+			"PATH": environment.get("PATH", ""),
+			"HOME": environment.get("HOME", ""),
+		];
+		auto result = execute([
+			"bash", "-c",
+			`exec 2>&1; exec claude --resume "$1" --rewind-files "$2" `
+				~ `--settings '{"fileCheckpointingEnabled": true}'`,
+			"--", sessionId, afterUuid],
+			env, Config.none, size_t.max,
+			cwd.length > 0 ? cwd : null);
+
+		if (result.status != 0)
+			return result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
+
+		import std.algorithm : canFind;
+		if (result.output.canFind("Error:"))
+			return result.output;
+
+		return null;
+	}
 }
 
 /// Claude Code session using stream-json protocol.

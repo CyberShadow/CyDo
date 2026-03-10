@@ -680,6 +680,7 @@ class App
 			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
 				td.effectiveCwd, td.workspace, td.title,
 				(string sid) => agent.historyPath(sid, td.effectiveCwd),
+				&agent.rewriteSessionId,
 				td.description, td.taskType);
 			if (result.tid < 0)
 			{
@@ -739,7 +740,7 @@ class App
 				// (done first so that on failure we haven't modified anything yet)
 				if (json.revert_files)
 				{
-					auto err = spawnRewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
+					auto err = agent.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 					if (err !is null)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
@@ -756,6 +757,7 @@ class App
 						auto backup = forkTask(persistence, tid, td.agentSessionId, lastUuid,
 							td.effectiveCwd, td.workspace, td.title,
 							(string sid) => agent.historyPath(sid, td.effectiveCwd),
+							&agent.rewriteSessionId,
 							td.description, td.taskType);
 						if (backup.tid >= 0)
 						{
@@ -1535,42 +1537,6 @@ class App
 }
 
 private:
-
-/// Spawn `claude --resume <sid> --rewind-files <uuid>`, wait for exit.
-/// Returns null on success, or an error string on failure.
-string spawnRewindFiles(string agentSessionId, string afterUuid, string projectPath)
-{
-	import std.process : Config, execute;
-
-	// --settings enables AM() (rewind execution permission).
-	// Env var enables KX9() (SDK file checkpointing guard).
-	// Wrap in bash to merge stderr into stdout — Claude writes errors to
-	// stderr but exits 0, so we need to capture both streams.
-	import std.process : environment;
-	string[string] env = [
-		"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
-		"PATH": environment.get("PATH", ""),
-		"HOME": environment.get("HOME", ""),
-	];
-	auto result = execute([
-		"bash", "-c",
-		`exec 2>&1; exec claude --resume "$1" --rewind-files "$2" `
-			~ `--settings '{"fileCheckpointingEnabled": true}'`,
-		"--", agentSessionId, afterUuid],
-		env, Config.none, size_t.max,
-		projectPath.length > 0 ? projectPath : null);
-
-	if (result.status != 0)
-		return result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
-
-	// Claude may exit 0 but still report an error on stderr (now merged into stdout).
-	// Check for known error patterns.
-	import std.algorithm : canFind;
-	if (result.output.canFind("Error:"))
-		return result.output;
-
-	return null;
-}
 
 struct TaskData
 {

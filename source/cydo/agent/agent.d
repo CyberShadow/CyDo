@@ -66,4 +66,17 @@ interface Agent
 	/// Used for cleanup tracking (the file should be deleted when the
 	/// session exits).
 	@property string lastMcpConfigPath();
+
+	/// Rewrite session ID references in a JSONL line during fork.
+	/// Each agent knows its own session ID field names.
+	string rewriteSessionId(string line, string oldId, string newId);
+
+	/// Whether this agent supports reverting file changes.
+	/// When false, the UI should hide/disable the file revert option.
+	@property bool supportsFileRevert();
+
+	/// Revert files to the state after a given message UUID.
+	/// Only called when supportsFileRevert is true.
+	/// Returns null on success, or an error string on failure.
+	string rewindFiles(string sessionId, string afterUuid, string cwd);
 }
