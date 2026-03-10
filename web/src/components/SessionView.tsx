@@ -1,5 +1,6 @@
 import { h } from "preact";
 import { useRef, useEffect } from "preact/hooks";
+import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
@@ -34,6 +35,7 @@ export function SessionView({
   onToggleTheme,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const insertTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
 
   // Auto-focus input box or resume button when session becomes active
@@ -56,8 +58,29 @@ export function SessionView({
       )
         return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key.length !== 1) return;
 
+      // Quote-reply: press r with text selected inside the message list
+      if (e.key === "r") {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) {
+          const anchor =
+            sel.anchorNode instanceof Element
+              ? sel.anchorNode
+              : sel.anchorNode?.parentElement;
+          if (anchor?.closest(".message-list")) {
+            e.preventDefault();
+            const quote = new MarkdownQuote();
+            const text = quote.quotedText;
+            if (text) {
+              insertTextRef.current?.(text);
+              sel.removeAllRanges();
+            }
+            return;
+          }
+        }
+      }
+
+      if (e.key.length !== 1) return;
       inputRef.current?.focus();
     };
     document.addEventListener("keydown", handler);
@@ -113,6 +136,7 @@ export function SessionView({
           sessionId={task.tid}
           preReloadDrafts={task.preReloadDrafts}
           inputRef={inputRef}
+          insertTextRef={insertTextRef}
         />
       )}
     </>

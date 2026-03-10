@@ -11,6 +11,7 @@ interface Props {
   sessionId: number;
   preReloadDrafts?: string[];
   inputRef?: RefObject<HTMLTextAreaElement>;
+  insertTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
 }
 
@@ -22,6 +23,7 @@ export function InputBox({
   sessionId,
   preReloadDrafts,
   inputRef,
+  insertTextRef,
   onEscape,
 }: Props) {
   const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
@@ -36,6 +38,17 @@ export function InputBox({
       drafts.set(sessionId, textRef.current);
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!insertTextRef) return;
+    insertTextRef.current = (quoted: string) => {
+      setText((prev) => (prev ? `${prev}\n\n${quoted}` : quoted));
+      textareaRef.current?.focus();
+    };
+    return () => {
+      insertTextRef.current = null;
+    };
+  }, [insertTextRef]);
 
   // Pre-fill with unsaved user messages recovered after session reload
   useEffect(() => {
