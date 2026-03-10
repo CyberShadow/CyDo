@@ -1099,6 +1099,83 @@ body,
   background: var(--accent-dim);
 }
 
+/* Undo confirmation dialog */
+.undo-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.undo-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.undo-dialog-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.undo-dialog-count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.undo-dialog-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.undo-dialog-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.undo-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.btn-undo {
+  background: var(--warn);
+  color: var(--bg);
+  border: none;
+  padding: 6px 16px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-undo:hover {
+  opacity: 0.9;
+}
+
+.btn-undo:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.undo-btn {
+  color: var(--warn);
+}
+
 /* Animations */
 @keyframes spin {
   to {

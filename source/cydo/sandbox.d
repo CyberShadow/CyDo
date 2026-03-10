@@ -42,8 +42,8 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 		foreach (ref mode; result.paths)
 			mode = PathMode.ro;
 
-	// Layer 3: agent-declared paths (last — always rw for agent state)
-	agent.configureSandboxPaths(result.paths);
+	// Layer 3: agent-declared paths/env (last — always rw for agent state)
+	agent.configureSandbox(result.paths, result.env);
 
 	// Expand ~ in all path keys and filter non-existent
 	PathMode[string] expanded;

@@ -683,6 +683,11 @@ export interface ErrorMessage {
   message: string;
   tid?: number;
 }
+export interface UndoPreviewMessage {
+  type: "undo_preview";
+  tid: number;
+  messages_removed: number;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -692,4 +697,5 @@ export type ControlMessage =
   | WorkspacesListMessage
   | TaskTypesListMessage
   | ForkableUuidsMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | UndoPreviewMessage;

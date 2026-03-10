@@ -19,6 +19,9 @@ interface AgentSession
 	/// Close stdin to signal EOF — agent exits gracefully.
 	void closeStdin();
 
+	/// Send a rewind_files control_request. Response arrives via onOutput.
+	void rewindFiles(string userMessageId, bool dryRun);
+
 	/// Callback: called for each line of output from the agent.
 	@property void onOutput(void delegate(string line) dg);
 

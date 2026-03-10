@@ -19,6 +19,7 @@ interface Props {
   messages: DisplayMessage[];
   isProcessing: boolean;
   onFork?: (sid: number, afterUuid: string) => void;
+  onUndo?: (tid: number, afterUuid: string) => void;
   forkableUuids?: Set<string>;
 }
 
@@ -300,12 +301,14 @@ const MessageView = memo(
   function MessageView({
     msg,
     onFork,
+    onUndo,
     forkable,
     children,
   }: {
     msg: DisplayMessage;
     hasNested?: boolean;
     onFork?: (afterUuid: string) => void;
+    onUndo?: (afterUuid: string) => void;
     forkable?: boolean;
     children: ComponentChildren;
   }) {
@@ -328,15 +331,26 @@ const MessageView = memo(
           )}
         </div>
         {showSource ? <SourceView msg={msg} /> : children}
-        {uuid && forkable && onFork && (
+        {uuid && forkable && (onFork || onUndo) && (
           <div class="message-actions message-actions-bottom">
-            <button
-              class="msg-action-btn fork-btn"
-              onClick={() => onFork(uuid)}
-              title="Fork session after this point"
-            >
-              {"\u2442"}
-            </button>
+            {onFork && (
+              <button
+                class="msg-action-btn fork-btn"
+                onClick={() => onFork(uuid)}
+                title="Fork session after this point"
+              >
+                {"\u2442"}
+              </button>
+            )}
+            {onUndo && (
+              <button
+                class="msg-action-btn undo-btn"
+                onClick={() => onUndo(uuid)}
+                title="Undo: rewind to this point"
+              >
+                {"\u21B6"}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -347,6 +361,7 @@ const MessageView = memo(
     return (
       prev.msg === next.msg &&
       prev.onFork === next.onFork &&
+      prev.onUndo === next.onUndo &&
       prev.forkable === next.forkable
     );
   },
@@ -357,6 +372,7 @@ export function MessageList({
   messages,
   isProcessing,
   onFork,
+  onUndo,
   forkableUuids,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -364,6 +380,11 @@ export function MessageList({
     () =>
       onFork ? (afterUuid: string) => onFork(sessionId, afterUuid) : undefined,
     [onFork, sessionId],
+  );
+  const handleUndo = useMemo(
+    () =>
+      onUndo ? (afterUuid: string) => onUndo(sessionId, afterUuid) : undefined,
+    [onUndo, sessionId],
   );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
@@ -499,6 +520,7 @@ export function MessageList({
                 )
               }
               onFork={handleFork}
+              onUndo={msg.type === "user" ? handleUndo : undefined}
               forkable={isForkable}
             >
               {inner}

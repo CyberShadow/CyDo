@@ -123,6 +123,11 @@ export interface TaskState {
   forkableUuids: Set<string>;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
+  /** Pending undo confirmation (set by dry_run preview, cleared on confirm/dismiss). */
+  undoPending?: {
+    afterUuid: string;
+    messagesRemoved: number;
+  } | null;
 }
 
 export function makeTaskState(

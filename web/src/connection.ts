@@ -49,7 +49,8 @@ export class Connection {
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||
           raw.type === "forkable_uuids" ||
-          raw.type === "error"
+          raw.type === "error" ||
+          raw.type === "undo_preview"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
@@ -118,6 +119,25 @@ export class Connection {
   forkTask(tid: number, afterUuid: string) {
     this.ws?.send(
       JSON.stringify({ type: "fork_task", tid, after_uuid: afterUuid }),
+    );
+  }
+
+  undoTask(
+    tid: number,
+    afterUuid: string,
+    dryRun: boolean,
+    revertConversation?: boolean,
+    revertFiles?: boolean,
+  ) {
+    this.ws?.send(
+      JSON.stringify({
+        type: "undo_task",
+        tid,
+        after_uuid: afterUuid,
+        dry_run: dryRun,
+        revert_conversation: revertConversation ?? true,
+        revert_files: revertFiles ?? true,
+      }),
     );
   }
 

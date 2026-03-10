@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useRef, useEffect } from "preact/hooks";
+import { useRef, useEffect, useState } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
@@ -17,6 +17,13 @@ interface Props {
   onCloseStdin: () => void;
   onResume: () => void;
   onFork: (tid: number, afterUuid: string) => void;
+  onUndo: (tid: number, afterUuid: string) => void;
+  onUndoConfirm: (
+    tid: number,
+    revertConversation: boolean,
+    revertFiles: boolean,
+  ) => void;
+  onUndoDismiss: (tid: number) => void;
   theme: Theme;
   onToggleTheme: () => void;
 }
@@ -31,6 +38,9 @@ export function SessionView({
   onCloseStdin,
   onResume,
   onFork,
+  onUndo,
+  onUndoConfirm,
+  onUndoDismiss,
   theme,
   onToggleTheme,
 }: Props) {
@@ -118,7 +128,15 @@ export function SessionView({
           messages={task.messages}
           isProcessing={task.isProcessing}
           onFork={onFork}
+          onUndo={onUndo}
           forkableUuids={task.forkableUuids}
+        />
+      )}
+      {task.undoPending && task.undoPending.messagesRemoved >= 0 && (
+        <UndoConfirmDialog
+          messagesRemoved={task.undoPending.messagesRemoved}
+          onConfirm={(rc, rf) => onUndoConfirm(task.tid, rc, rf)}
+          onDismiss={() => onUndoDismiss(task.tid)}
         />
       )}
       {task.resumable ? (
@@ -140,5 +158,63 @@ export function SessionView({
         />
       )}
     </>
+  );
+}
+
+function UndoConfirmDialog({
+  messagesRemoved,
+  onConfirm,
+  onDismiss,
+}: {
+  messagesRemoved: number;
+  onConfirm: (revertConversation: boolean, revertFiles: boolean) => void;
+  onDismiss: () => void;
+}) {
+  const [revertConversation, setRevertConversation] = useState(true);
+  const [revertFiles, setRevertFiles] = useState(true);
+  const neitherSelected = !revertConversation && !revertFiles;
+
+  return (
+    <div class="undo-overlay" onClick={onDismiss}>
+      <div class="undo-dialog" onClick={(e) => e.stopPropagation()}>
+        <div class="undo-dialog-header">Undo to this point?</div>
+        {messagesRemoved > 0 && (
+          <div class="undo-dialog-count">
+            {messagesRemoved} message{messagesRemoved !== 1 ? "s" : ""} will be
+            removed.
+          </div>
+        )}
+        <div class="undo-dialog-options">
+          <label>
+            <input
+              type="checkbox"
+              checked={revertConversation}
+              onChange={() => setRevertConversation(!revertConversation)}
+            />{" "}
+            Revert conversation history
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={revertFiles}
+              onChange={() => setRevertFiles(!revertFiles)}
+            />{" "}
+            Revert file changes
+          </label>
+        </div>
+        <div class="undo-dialog-actions">
+          <button class="btn" onClick={onDismiss}>
+            Cancel
+          </button>
+          <button
+            class="btn btn-undo"
+            disabled={neitherSelected}
+            onClick={() => onConfirm(revertConversation, revertFiles)}
+          >
+            Undo
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -14,7 +14,7 @@ import cydo.config : PathMode;
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent
 {
-	void configureSandboxPaths(ref PathMode[string] paths)
+	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
 		import std.algorithm : startsWith;
 
@@ -44,6 +44,10 @@ class ClaudeCodeAgent : Agent
 
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
+
+		// Enable file-history-snapshot creation in SDK/headless mode.
+		// Claude Code's KX9() guard requires this env var for checkpointing.
+		env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1";
 	}
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
@@ -81,6 +85,7 @@ class ClaudeCodeSession : AgentSession
 			"--include-partial-messages",
 			"--replay-user-messages",
 			"--dangerously-skip-permissions",
+			"--settings", `{"fileCheckpointingEnabled": true}`,
 		];
 
 		if (mcpConfigPath !is null)
@@ -159,6 +164,17 @@ class ClaudeCodeSession : AgentSession
 	void closeStdin()
 	{
 		process.closeStdin();
+	}
+
+	void rewindFiles(string userMessageId, bool dryRun)
+	{
+		import std.uuid : randomUUID;
+		auto requestId = randomUUID().toString();
+		auto msg = `{"type":"control_request","request_id":"` ~ requestId
+			~ `","request":{"subtype":"rewind_files","user_message_id":"`
+			~ escapeJsonString(userMessageId)
+			~ `","dry_run":` ~ (dryRun ? "true" : "false") ~ `}}`;
+		process.writeLine(msg);
 	}
 
 	@property void onOutput(void delegate(string line) dg)

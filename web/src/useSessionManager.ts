@@ -54,6 +54,13 @@ export interface TaskManager {
   closeStdin: () => void;
   resume: () => void;
   fork: (tid: number, afterUuid: string) => void;
+  undoPreview: (tid: number, afterUuid: string) => void;
+  undoConfirm: (
+    tid: number,
+    revertConversation: boolean,
+    revertFiles: boolean,
+  ) => void;
+  undoDismiss: (tid: number) => void;
   dismissAttention: (tid: number) => void;
   sidebarTasks: Array<{
     tid: number;
@@ -300,7 +307,7 @@ export function useTaskManager(): TaskManager {
           false,
           false,
           undefined,
-          relationType !== "fork", // Forks have JSONL history that must be loaded
+          relationType !== "fork" && relationType !== "undo-backup", // Forks/backups have JSONL history that must be loaded
           workspace,
           projectPath,
           parentTid,
@@ -317,9 +324,13 @@ export function useTaskManager(): TaskManager {
         // Navigate to the new task only if:
         // - this client created it (top-level), or
         // - its parent is currently focused (sub-task visible in context)
-        const shouldFocus = parentTid
-          ? activeTaskIdRef.current === parentTid
-          : pendingFocus.current;
+        // Never auto-focus undo-backup tasks (they're invisible backups).
+        const shouldFocus =
+          relationType === "undo-backup"
+            ? false
+            : parentTid
+              ? activeTaskIdRef.current === parentTid
+              : pendingFocus.current;
         pendingFocus.current = false;
         if (shouldFocus) {
           if (workspace && projectPath) {
@@ -515,8 +526,46 @@ export function useTaskManager(): TaskManager {
         });
         break;
       }
+      case "undo_preview": {
+        const { tid, messages_removed } = msg as any;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        // Find the afterUuid from pending state — it was set optimistically
+        // when undoPreview was called.
+        const updated = {
+          ...t,
+          undoPending: {
+            afterUuid: t.undoPending?.afterUuid ?? "",
+            messagesRemoved: messages_removed,
+          },
+        };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+        break;
+      }
       case "error": {
-        console.error("Server error:", msg.message, "tid:", msg.tid);
+        const errMsg = (msg as any).message ?? "Unknown error";
+        const errTid = (msg as any).tid as number | undefined;
+        console.error("Server error:", errMsg, "tid:", errTid);
+        // Clear undoPending if this error is for a task with an active undo dialog
+        if (errTid !== undefined) {
+          const t = liveStates.get(errTid);
+          if (t?.undoPending) {
+            const updated = { ...t, undoPending: null };
+            liveStates.set(errTid, updated);
+            setTasks((prev) => {
+              const next = new Map(prev);
+              next.set(errTid, updated);
+              return next;
+            });
+          }
+        }
+        alert(errMsg);
         break;
       }
     }
@@ -672,6 +721,59 @@ export function useTaskManager(): TaskManager {
     connRef.current?.forkTask(tid, afterUuid);
   }, []);
 
+  const undoPreview = useCallback((tid: number, afterUuid: string) => {
+    // Optimistically set afterUuid so confirmation bar can reference it
+    const t = liveStates.get(tid);
+    if (t) {
+      const updated = {
+        ...t,
+        undoPending: { afterUuid, messagesRemoved: -1 },
+      };
+      liveStates.set(tid, updated);
+      setTasks((prev) => {
+        const next = new Map(prev);
+        next.set(tid, updated);
+        return next;
+      });
+    }
+    connRef.current?.undoTask(tid, afterUuid, true);
+  }, []);
+
+  const undoConfirm = useCallback(
+    (tid: number, revertConversation: boolean, revertFiles: boolean) => {
+      const t = liveStates.get(tid);
+      if (!t?.undoPending) return;
+      connRef.current?.undoTask(
+        tid,
+        t.undoPending.afterUuid,
+        false,
+        revertConversation,
+        revertFiles,
+      );
+      // Clear undoPending
+      const updated = { ...t, undoPending: null };
+      liveStates.set(tid, updated);
+      setTasks((prev) => {
+        const next = new Map(prev);
+        next.set(tid, updated);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const undoDismiss = useCallback((tid: number) => {
+    const t = liveStates.get(tid);
+    if (!t) return;
+    const updated = { ...t, undoPending: null };
+    liveStates.set(tid, updated);
+    setTasks((prev) => {
+      const next = new Map(prev);
+      next.set(tid, updated);
+      return next;
+    });
+  }, []);
+
   const dismissAttention = useCallback((tid: number) => {
     connRef.current?.dismissAttention(tid);
   }, []);
@@ -736,6 +838,9 @@ export function useTaskManager(): TaskManager {
     closeStdin,
     resume,
     fork,
+    undoPreview,
+    undoConfirm,
+    undoDismiss,
     dismissAttention,
     sidebarTasks,
     workspaces,

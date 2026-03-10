@@ -22,6 +22,9 @@ export function App() {
     closeStdin,
     resume,
     fork,
+    undoPreview,
+    undoConfirm,
+    undoDismiss,
     dismissAttention,
     sidebarTasks,
     workspaces,
@@ -220,6 +223,9 @@ export function App() {
                   onCloseStdin={closeStdin}
                   onResume={resume}
                   onFork={fork}
+                  onUndo={undoPreview}
+                  onUndoConfirm={undoConfirm}
+                  onUndoDismiss={undoDismiss}
                   theme={theme}
                   onToggleTheme={toggleTheme}
                 />

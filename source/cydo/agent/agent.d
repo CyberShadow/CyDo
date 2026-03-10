@@ -19,10 +19,10 @@ struct SessionConfig
 /// the runtime AgentSession interface.
 interface Agent
 {
-	/// Add sandbox path requirements for this agent software.
-	/// Called with already-merged paths from config layers;
+	/// Add sandbox path and env requirements for this agent software.
+	/// Called with already-merged paths/env from config layers;
 	/// implementations should avoid downgrading existing rw entries to ro.
-	void configureSandboxPaths(ref PathMode[string] paths);
+	void configureSandbox(ref PathMode[string] paths, ref string[string] env);
 
 	/// Git identity for commits made by this agent.
 	@property string gitName();

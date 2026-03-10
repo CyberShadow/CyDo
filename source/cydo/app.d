@@ -26,8 +26,8 @@ import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : ForkResult, Persistence, claudeJsonlPath, extractForkableUuids,
-	forkTask, loadTaskHistory;
+import cydo.persist : ForkResult, Persistence, claudeJsonlPath, countMessagesAfterUuid,
+	extractForkableUuids, forkTask, lastUuidInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
 	renderPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
@@ -648,7 +648,7 @@ class App
 			auto newTd = TaskData(result.tid);
 			newTd.workspace = td.workspace;
 			newTd.projectPath = td.projectPath;
-			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "";
+			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
 			newTd.claudeSessionId = result.claudeSessionId;
 			newTd.parentTid = tid;
 			newTd.relationType = "fork";
@@ -659,6 +659,95 @@ class App
 
 			broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 			broadcast(buildTasksList());
+		}
+		else if (json.type == "undo_task")
+		{
+			auto tid = json.tid;
+			if (tid < 0 || tid !in tasks)
+				return;
+			auto td = &tasks[tid];
+			if (td.claudeSessionId.length == 0)
+			{
+				ws.send(Data(toJson(ErrorMessage("error", "Task has no Claude session ID", tid)).representation));
+				return;
+			}
+
+			if (json.dry_run)
+			{
+				auto count = countMessagesAfterUuid(
+					td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+				if (count < 0)
+				{
+					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+					return;
+				}
+				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count)).representation));
+			}
+			else
+			{
+				// Require session to be stopped
+				if (td.session && td.session.alive)
+				{
+					ws.send(Data(toJson(ErrorMessage("error", "Stop the session before undoing", tid)).representation));
+					return;
+				}
+
+				// 1. Revert file changes via one-shot --rewind-files invocation
+				// (done first so that on failure we haven't modified anything yet)
+				if (json.revert_files)
+				{
+					auto err = spawnRewindFiles(td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+					if (err !is null)
+					{
+						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
+						return;
+					}
+				}
+
+				// 2. Back up pre-undo state as a child task
+				if (json.revert_conversation)
+				{
+					auto lastUuid = lastUuidInJsonl(td.claudeSessionId, td.effectiveCwd);
+					if (lastUuid.length > 0)
+					{
+						auto backup = forkTask(persistence, tid, td.claudeSessionId, lastUuid,
+							td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
+						if (backup.tid >= 0)
+						{
+							auto bTd = TaskData(backup.tid);
+							bTd.workspace = td.workspace;
+							bTd.projectPath = td.projectPath;
+							bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
+							bTd.claudeSessionId = backup.claudeSessionId;
+							bTd.parentTid = tid;
+							bTd.relationType = "undo-backup";
+							bTd.status = "completed";
+							bTd.description = td.description;
+							bTd.taskType = td.taskType;
+							persistence.setRelationType(backup.tid, "undo-backup");
+							persistence.setTitle(backup.tid, bTd.title);
+							tasks[backup.tid] = move(bTd);
+							broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+						}
+					}
+				}
+
+				// 3. Truncate conversation history
+				if (json.revert_conversation)
+				{
+					auto removed = truncateJsonl(td.claudeSessionId, json.after_uuid, td.effectiveCwd);
+					if (removed < 0)
+					{
+						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
+						return;
+					}
+					td.history = DataVec();
+					td.historyLoaded = false;
+				}
+
+				broadcast(buildTasksList());
+				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			}
 		}
 	}
 
@@ -1424,6 +1513,42 @@ class App
 
 private:
 
+/// Spawn `claude --resume <sid> --rewind-files <uuid>`, wait for exit.
+/// Returns null on success, or an error string on failure.
+string spawnRewindFiles(string claudeSessionId, string afterUuid, string projectPath)
+{
+	import std.process : Config, execute;
+
+	// --settings enables AM() (rewind execution permission).
+	// Env var enables KX9() (SDK file checkpointing guard).
+	// Wrap in bash to merge stderr into stdout — Claude writes errors to
+	// stderr but exits 0, so we need to capture both streams.
+	import std.process : environment;
+	string[string] env = [
+		"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
+		"PATH": environment.get("PATH", ""),
+		"HOME": environment.get("HOME", ""),
+	];
+	auto result = execute([
+		"bash", "-c",
+		`exec 2>&1; exec claude --resume "$1" --rewind-files "$2" `
+			~ `--settings '{"fileCheckpointingEnabled": true}'`,
+		"--", claudeSessionId, afterUuid],
+		env, Config.none, size_t.max,
+		projectPath.length > 0 ? projectPath : null);
+
+	if (result.status != 0)
+		return result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
+
+	// Claude may exit 0 but still report an error on stderr (now merged into stdout).
+	// Check for known error patterns.
+	import std.algorithm : canFind;
+	if (result.output.canFind("Error:"))
+		return result.output;
+
+	return null;
+}
+
 struct TaskData
 {
 	int tid;
@@ -1503,6 +1628,9 @@ struct WsMessage
 	string project_path;
 	string after_uuid;
 	string task_type;
+	bool dry_run;
+	bool revert_conversation;
+	bool revert_files;
 }
 
 struct ExitMessage
@@ -1608,6 +1736,13 @@ struct ErrorMessage
 	string type = "error";
 	string message;
 	int tid = -1;
+}
+
+struct UndoPreviewMessage
+{
+	string type = "undo_preview";
+	int tid;
+	int messages_removed;
 }
 
 struct SyntheticUserEventMessage

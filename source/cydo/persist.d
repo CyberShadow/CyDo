@@ -227,10 +227,112 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceCla
 	write(destPath, output);
 
 	// Create DB entry with the new claude session ID
-	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "";
+	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
 	persistence.db.stmt!"INSERT INTO tasks (claude_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		.exec(newClaudeId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation");
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newClaudeId);
+}
+
+/// Truncate a task's JSONL file in-place after the given message UUID.
+/// Returns the number of lines removed, or -1 if UUID not found.
+int truncateJsonl(string claudeSessionId, string afterUuid, string projectPath = "")
+{
+	import std.algorithm : canFind;
+	import std.file : exists, readText, write;
+	import std.string : lineSplitter;
+
+	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	if (!exists(jsonlPath))
+		return -1;
+
+	string output;
+	bool found = false;
+	int removedCount = 0;
+	bool pastTarget = false;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+
+		if (pastTarget)
+		{
+			removedCount++;
+			continue;
+		}
+
+		output ~= line ~ "\n";
+
+		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		{
+			found = true;
+			pastTarget = true;
+		}
+	}
+
+	if (!found)
+		return -1;
+
+	write(jsonlPath, output);
+	return removedCount;
+}
+
+/// Count user/assistant messages after a given UUID in a JSONL file.
+/// Returns -1 if UUID not found.
+int countMessagesAfterUuid(string claudeSessionId, string afterUuid, string projectPath = "")
+{
+	import std.algorithm : canFind;
+	import std.file : exists, readText;
+	import std.string : lineSplitter;
+
+	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	if (!exists(jsonlPath))
+		return -1;
+
+	bool pastTarget = false;
+	int count = 0;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+
+		if (pastTarget)
+		{
+			if (line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`))
+				count++;
+		}
+		else if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		{
+			pastTarget = true;
+		}
+	}
+
+	return pastTarget ? count : -1;
+}
+
+/// Return the UUID of the last user/assistant message in a JSONL file.
+/// Returns null if no messages found.
+string lastUuidInJsonl(string claudeSessionId, string projectPath = "")
+{
+	import std.algorithm : canFind;
+	import std.file : exists, readText;
+	import std.string : lineSplitter;
+
+	auto jsonlPath = claudeJsonlPath(claudeSessionId, projectPath);
+	if (!exists(jsonlPath))
+		return null;
+
+	string lastUuid;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+		if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
+			continue;
+		auto uuid = extractJsonField(line, `"uuid":"`);
+		if (uuid.length > 0)
+			lastUuid = uuid;
+	}
+	return lastUuid;
 }
 
 /// Extract forkable UUIDs from JSONL content (user and assistant messages).

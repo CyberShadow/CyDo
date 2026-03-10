@@ -77,18 +77,47 @@ JSONL (no `uuid` field — not part of the linked list):
 
 ### Availability caveat
 
-`file-history-snapshot` records are **not guaranteed** in all sessions. Observed
-in ~50% of CyDo sessions with Edit/Write tools. Presence correlates with:
-- File checkpointing being enabled (default: `true` in settings)
-- Not disabled via `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` env var
+`file-history-snapshot` records are **not guaranteed** in all sessions. In
+headless/SDK mode (`--input-format stream-json`), file checkpointing is
+**disabled by default** and requires either:
 
-The feature guard in Claude Code:
+- Setting `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1` env var, or
+- Passing `--settings '{"fileCheckpointingEnabled": true}'`
+
+In interactive mode, the `fileCheckpointingEnabled` user setting controls this
+(default: `true`). It can be disabled via `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING`
+in either mode.
+
+Two separate feature guards in Claude Code:
 ```javascript
+// Interactive mode
 function AM() {
   return W$().fileCheckpointingEnabled !== false
     && !CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING;
 }
+
+// SDK/headless mode — opt-in only
+function KX9() {
+  return CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING
+    && !CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING;
+}
 ```
+
+**CyDo fix:** Two separate mechanisms are needed:
+
+1. **Snapshot creation (KX9):** Set `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1`
+   env var on agent sessions (in `app.d` sandbox env). This makes Claude Code
+   write `file-history-snapshot` records during headless sessions.
+2. **Rewind execution (AM):** Pass `--settings '{"fileCheckpointingEnabled": true}'`
+   to both agent sessions and one-shot `--rewind-files` invocations. This allows
+   the `rewind_files` control_request and `--rewind-files` CLI to actually execute.
+
+`--settings` does NOT enable `KX9()` — it only controls `AM()`. The env var is
+required for snapshot creation in SDK/headless mode.
+
+**Additional bug:** `--rewind-files` writes errors to stderr and exits 0 (not
+a non-zero exit code). The `spawnRewindFiles` helper merges stderr into stdout
+and checks for "Error:" in the output.
 
 ### Not forwarded to WebSocket
 
