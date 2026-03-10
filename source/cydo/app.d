@@ -132,6 +132,7 @@ class App
 			td.agentSessionId = row.agentSessionId;
 			td.description = row.description;
 			td.taskType = row.taskType;
+			td.agentType = row.agentType;
 			td.parentTid = row.parentTid;
 			td.relationType = row.relationType;
 			td.workspace = row.workspace;
@@ -811,12 +812,13 @@ class App
 		broadcast(buildTasksList());
 	}
 
-	private int createTask(string workspace = "", string projectPath = "")
+	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude")
 	{
-		auto tid = persistence.createTask(workspace, projectPath);
+		auto tid = persistence.createTask(workspace, projectPath, agentType);
 		auto td = TaskData(tid);
 		td.workspace = workspace;
 		td.projectPath = projectPath;
+		td.agentType = agentType;
 		tasks[tid] = move(td);
 		return tid;
 	}
@@ -1502,7 +1504,7 @@ class App
 			entries ~= TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 				td.isProcessing, td.needsAttention, td.notificationBody,
 				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-				td.taskType);
+				td.taskType, td.agentType);
 		return toJson(TasksListMessage("tasks_list", entries));
 	}
 
@@ -1594,6 +1596,7 @@ struct TaskData
 	string agentSessionId;
 	string description;
 	string taskType = "conversation";
+	string agentType = "claude";
 	int parentTid;
 	string relationType;
 	string workspace;
@@ -1716,6 +1719,7 @@ struct TaskListEntry
 	string relation_type;
 	string status;
 	string task_type;
+	string agent_type;
 }
 
 struct ProjectInfo
