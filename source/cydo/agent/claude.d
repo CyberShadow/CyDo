@@ -212,7 +212,7 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	if (!exists(configDir))
 		mkdirRecurse(configDir);
 
-	auto cydoBin = cydoBinaryPath();
+	auto cydoBin = cydoBinaryPath;
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
 	// MCP config pointing to our binary in MCP server mode
@@ -227,17 +227,20 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	return configPath;
 }
 
-/// Get the absolute path to the currently running cydo binary.
-string cydoBinaryPath()
+/// Absolute path to the currently running cydo binary, resolved at
+/// module init to avoid /proc/self/exe returning a "(deleted)" suffix
+/// after the binary is replaced by a rebuild.
+immutable string cydoBinaryPath;
+shared static this()
 {
 	import std.file : thisExePath;
-	return thisExePath();
+	cydoBinaryPath = thisExePath();
 }
 
 /// Get the directory containing the cydo binary.
 string cydoBinaryDir()
 {
-	auto path = cydoBinaryPath();
+	auto path = cydoBinaryPath;
 	return path.length > 0 ? dirName(path) : "";
 }
 
