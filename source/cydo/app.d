@@ -29,7 +29,7 @@ import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : ForkResult, Persistence, agentJsonlPath, countMessagesAfterUuid,
+import cydo.persist : ForkResult, Persistence, countMessagesAfterUuid,
 	extractForkableUuids, forkTask, lastUuidInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
@@ -526,7 +526,8 @@ class App
 			// Load JSONL from disk if not already loaded
 			if (!td.historyLoaded && td.agentSessionId.length > 0)
 			{
-				td.history = loadTaskHistory(tid, td.agentSessionId, td.effectiveCwd);
+				auto jsonlPath = agent.historyPath(td.agentSessionId, td.effectiveCwd);
+				td.history = loadTaskHistory(tid, jsonlPath, &agent.translateHistoryLine);
 				td.historyLoaded = true;
 			}
 
@@ -677,7 +678,9 @@ class App
 			}
 
 			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
-				td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
+				td.effectiveCwd, td.workspace, td.title,
+				(string sid) => agent.historyPath(sid, td.effectiveCwd),
+				td.description, td.taskType);
 			if (result.tid < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error",
@@ -715,7 +718,7 @@ class App
 			if (json.dry_run)
 			{
 				auto count = countMessagesAfterUuid(
-					td.agentSessionId, json.after_uuid, td.effectiveCwd);
+					agent.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
 				if (count < 0)
 				{
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -747,11 +750,13 @@ class App
 				// 2. Back up pre-undo state as a child task
 				if (json.revert_conversation)
 				{
-					auto lastUuid = lastUuidInJsonl(td.agentSessionId, td.effectiveCwd);
+					auto lastUuid = lastUuidInJsonl(agent.historyPath(td.agentSessionId, td.effectiveCwd));
 					if (lastUuid.length > 0)
 					{
 						auto backup = forkTask(persistence, tid, td.agentSessionId, lastUuid,
-							td.effectiveCwd, td.workspace, td.title, td.description, td.taskType);
+							td.effectiveCwd, td.workspace, td.title,
+							(string sid) => agent.historyPath(sid, td.effectiveCwd),
+							td.description, td.taskType);
 						if (backup.tid >= 0)
 						{
 							auto bTd = TaskData(backup.tid);
@@ -775,7 +780,7 @@ class App
 				// 3. Truncate conversation history
 				if (json.revert_conversation)
 				{
-					auto removed = truncateJsonl(td.agentSessionId, json.after_uuid, td.effectiveCwd);
+					auto removed = truncateJsonl(agent.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
 					if (removed < 0)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
@@ -1306,7 +1311,7 @@ class App
 		if (td.agentSessionId.length == 0)
 			return;
 
-		auto jsonlPath = agentJsonlPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlPath = agent.historyPath(td.agentSessionId, td.effectiveCwd);
 
 		if (exists(jsonlPath))
 		{
@@ -1383,7 +1388,7 @@ class App
 	{
 		import std.file : exists, readText;
 
-		auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
+		auto jsonlPath = agent.historyPath(agentSessionId, projectPath);
 		if (!exists(jsonlPath))
 			return;
 

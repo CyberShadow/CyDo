@@ -172,6 +172,31 @@ class ClaudeCodeAgent : Agent
 			default:       return "sonnet";
 		}
 	}
+
+	string historyPath(string sessionId, string projectPath)
+	{
+		import std.file : getcwd;
+		import std.path : buildPath;
+		import std.process : environment;
+
+		auto home = environment.get("HOME", "/tmp");
+		auto claudeDir = environment.get("CLAUDE_CONFIG_DIR", buildPath(home, ".claude"));
+		auto cwd = projectPath.length > 0 ? projectPath : getcwd();
+
+		// Mangle cwd: replace / and . with -
+		auto buf = cwd.dup;
+		foreach (ref c; buf)
+			if (c == '/' || c == '.')
+				c = '-';
+		string mangledCwd = buf.idup;
+
+		return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
+	}
+
+	string translateHistoryLine(string line)
+	{
+		return line;
+	}
 }
 
 /// Claude Code session using stream-json protocol.

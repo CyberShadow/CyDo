@@ -3,7 +3,6 @@ module cydo.persist;
 import core.lifetime : move;
 
 import std.format : format;
-import std.path : buildPath;
 import std.string : representation;
 
 import ae.sys.data;
@@ -144,15 +143,15 @@ struct Persistence
 	}
 }
 
-/// Load task history from the agent's JSONL file.
+/// Load task history from a JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
-/// projectPath is the project's absolute path; falls back to getcwd() when empty (legacy tasks).
-DataVec loadTaskHistory(int tid, string agentSessionId, string projectPath = "")
+/// translateLine is called for each line to allow agent-specific translation.
+DataVec loadTaskHistory(int tid, string jsonlPath,
+	string delegate(string) translateLine = null)
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return DataVec();
 
@@ -162,32 +161,13 @@ DataVec loadTaskHistory(int tid, string agentSessionId, string projectPath = "")
 		if (line.length == 0)
 			continue;
 
+		auto translated = translateLine !is null ? translateLine(line) : line;
+
 		// Wrap with file-event envelope (frontend dispatches on "fileEvent" vs "event")
-		string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ line ~ `}`;
+		string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ translated ~ `}`;
 		history ~= Data(injected.representation);
 	}
 	return move(history);
-}
-
-/// Compute the path to the agent's JSONL file for a given session UUID.
-/// Uses projectPath as the directory to mangle; falls back to getcwd() when empty.
-string agentJsonlPath(string sessionId, string projectPath = "")
-{
-	import std.file : getcwd;
-	import std.process : environment;
-
-	auto home = environment.get("HOME", "/tmp");
-	auto claudeDir = environment.get("CLAUDE_CONFIG_DIR", buildPath(home, ".claude"));
-	auto cwd = projectPath.length > 0 ? projectPath : getcwd();
-
-	// Mangle cwd: replace / and . with -
-	auto buf = cwd.dup;
-	foreach (ref c; buf)
-		if (c == '/' || c == '.')
-			c = '-';
-	string mangledCwd = buf.idup;
-
-	return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
 }
 
 struct ForkResult
@@ -198,19 +178,21 @@ struct ForkResult
 
 /// Fork a task by truncating its JSONL after the given message UUID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
+/// historyPathFn computes the JSONL file path for a given session ID.
 ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSessionId, string afterUuid,
-	string projectPath, string workspace, string title, string description = "", string taskType = "")
+	string projectPath, string workspace, string title, string delegate(string sessionId) historyPathFn,
+	string description = "", string taskType = "")
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter, replace;
 
-	auto sourcePath = agentJsonlPath(sourceSessionId, projectPath);
+	auto sourcePath = historyPathFn(sourceSessionId);
 	if (!exists(sourcePath))
 		return ForkResult.init;
 
 	auto newSessionId = generateUUID();
-	auto destPath = agentJsonlPath(newSessionId, projectPath);
+	auto destPath = historyPathFn(newSessionId);
 
 	// Read source, rewrite sessionId, truncate after target UUID
 	string output;
@@ -246,13 +228,12 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 
 /// Truncate a task's JSONL file in-place after the given message UUID.
 /// Returns the number of lines removed, or -1 if UUID not found.
-int truncateJsonl(string agentSessionId, string afterUuid, string projectPath = "")
+int truncateJsonl(string jsonlPath, string afterUuid)
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return -1;
 
@@ -289,13 +270,12 @@ int truncateJsonl(string agentSessionId, string afterUuid, string projectPath = 
 
 /// Count user/assistant messages after a given UUID in a JSONL file.
 /// Returns -1 if UUID not found.
-int countMessagesAfterUuid(string agentSessionId, string afterUuid, string projectPath = "")
+int countMessagesAfterUuid(string jsonlPath, string afterUuid)
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return -1;
 
@@ -322,13 +302,12 @@ int countMessagesAfterUuid(string agentSessionId, string afterUuid, string proje
 
 /// Return the UUID of the last user/assistant message in a JSONL file.
 /// Returns null if no messages found.
-string lastUuidInJsonl(string agentSessionId, string projectPath = "")
+string lastUuidInJsonl(string jsonlPath)
 {
 	import std.algorithm : canFind;
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	auto jsonlPath = agentJsonlPath(agentSessionId, projectPath);
 	if (!exists(jsonlPath))
 		return null;
 

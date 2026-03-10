@@ -52,4 +52,13 @@ interface Agent
 	/// Map abstract model class ("small", "medium", "large") to
 	/// agent-specific model name/alias.
 	string resolveModelAlias(string modelClass);
+
+	/// Compute the path to the agent's history file for a given session ID.
+	/// projectPath is the project's absolute path; empty means use cwd.
+	string historyPath(string sessionId, string projectPath);
+
+	/// Translate a history line from the agent's native JSONL format.
+	/// Claude returns lines unchanged (raw protocol); Codex translates
+	/// from {timestamp, type, payload} to agnostic events.
+	string translateHistoryLine(string line);
 }
