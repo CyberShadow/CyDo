@@ -32,7 +32,7 @@ import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, agentJsonlPath, countMessagesAfterUuid,
 	extractForkableUuids, forkTask, lastUuidInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
-import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes, modelClassToAlias,
+import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
 	renderPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
 
 void main(string[] args)
@@ -369,7 +369,7 @@ class App
 
 		// Configure and spawn child agent
 		auto sessionConfig = SessionConfig(
-			modelClassToAlias(childTypeDef.model_class),
+			agent.resolveModelAlias(childTypeDef.model_class),
 		);
 		sessionConfig.disallowedTools = disallowedTools();
 		ensureTaskAgent(childTid, sessionConfig);
@@ -493,7 +493,7 @@ class App
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
-						modelClassToAlias(typeDef.model_class),
+						agent.resolveModelAlias(typeDef.model_class),
 					);
 					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
@@ -558,7 +558,7 @@ class App
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
-						modelClassToAlias(typeDef.model_class),
+						agent.resolveModelAlias(typeDef.model_class),
 					);
 					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
@@ -607,7 +607,7 @@ class App
 			auto typeDef = taskTypes.byName(td.taskType);
 			if (typeDef !is null)
 			{
-				auto sc = SessionConfig(modelClassToAlias(typeDef.model_class));
+				auto sc = SessionConfig(agent.resolveModelAlias(typeDef.model_class));
 				sc.disallowedTools = disallowedTools();
 				ensureTaskAgent(tid, sc);
 			}
@@ -1060,7 +1060,7 @@ class App
 			persistence.setStatus(tid, "active");
 
 			// Spawn successor session — will --resume the existing agentSessionId
-			auto sessionConfig = SessionConfig(modelClassToAlias(newTypeDef.model_class));
+			auto sessionConfig = SessionConfig(agent.resolveModelAlias(newTypeDef.model_class));
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
 
@@ -1115,7 +1115,7 @@ class App
 			}
 
 			// Spawn the successor agent
-			auto sessionConfig = SessionConfig(modelClassToAlias(newTypeDef.model_class));
+			auto sessionConfig = SessionConfig(agent.resolveModelAlias(newTypeDef.model_class));
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(childTid, sessionConfig);
 

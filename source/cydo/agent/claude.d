@@ -161,6 +161,17 @@ class ClaudeCodeAgent : Agent
 			return "";
 		}
 	}
+
+	string resolveModelAlias(string modelClass)
+	{
+		switch (modelClass)
+		{
+			case "small":  return "haiku";
+			case "medium": return "sonnet";
+			case "large":  return "opus";
+			default:       return "sonnet";
+		}
+	}
 }
 
 /// Claude Code session using stream-json protocol.

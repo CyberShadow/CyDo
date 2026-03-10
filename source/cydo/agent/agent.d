@@ -48,4 +48,8 @@ interface Agent
 	/// Extract assistant message text from an agent output line.
 	/// Returns empty string if the line is not an assistant message.
 	string extractAssistantText(string line);
+
+	/// Map abstract model class ("small", "medium", "large") to
+	/// agent-specific model name/alias.
+	string resolveModelAlias(string modelClass);
 }
