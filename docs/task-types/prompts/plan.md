@@ -38,6 +38,10 @@ Write your plan to `{{output_file}}`. You can iterate — write a draft,
 continue researching, then revise specific sections using the Edit tool.
 The file content is returned to the parent task as the result.
 
+The output directory is pre-created — do not `mkdir` it. You can place
+additional files alongside the output file (e.g., diagrams, examples)
+to attach them to the task result.
+
 Your final message should be a one-sentence summary of the plan.
 
 Your plan must include:
@@ -57,9 +61,10 @@ Your plan must include:
 ## Constraints
 
 - You have read-only access to the codebase — editing tools are not available
-  to you (enforced by the sandbox). The only writable location is your output
-  file. You can use `/tmp` for scratch work (e.g. small test programs to verify
-  a theory). Do not write production code.
+  to you (enforced by the sandbox). The only writable locations are your
+  output directory (for attachments that should persist) and `/tmp` (a private
+  per-sandbox tmpfs — nothing there survives after the task ends). Do not write
+  production code.
 - Do not over-engineer. Propose the minimum viable change.
 - Follow existing project conventions — don't introduce new patterns unless
   there is a clear reason.

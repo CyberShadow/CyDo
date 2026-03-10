@@ -43,6 +43,10 @@ Write your report to `{{output_file}}`. You can iterate — write a draft,
 continue investigating, then revise sections using the Edit tool.
 The file content is returned to the parent task as the result.
 
+The output directory is pre-created — do not `mkdir` it. You can place
+additional files alongside the output file (e.g., data, logs, scripts)
+to attach them to the task result.
+
 Your final message should be a one-sentence summary of findings.
 
 Your report must include:
@@ -53,7 +57,8 @@ Your report must include:
 ## Constraints
 
 - You have read-only access to the codebase — editing tools are not available
-  to you (enforced by the sandbox). The only writable location is your output
-  file. You can use `/tmp` for scratch work.
+  to you (enforced by the sandbox). The only writable locations are your
+  output directory and `/tmp` (a private per-sandbox tmpfs — nothing there
+  survives after the task ends).
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.

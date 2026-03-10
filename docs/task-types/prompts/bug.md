@@ -26,8 +26,10 @@ cause, and report your findings.
 
 ## Output
 
-Write your findings to `{{output_file}}`. The file content is returned to
-the parent task as the result.
+Write your findings to `{{output_file}}`. The output directory is pre-created
+— do not `mkdir` it. You can place additional files alongside the output file
+(e.g., reproduction logs). The file content is returned to the parent task as
+the result.
 
 Your final message should be a one-sentence summary of the root cause.
 

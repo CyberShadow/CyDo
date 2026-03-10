@@ -16,9 +16,10 @@ You are STRICTLY PROHIBITED from:
 - Installing dependencies or packages
 - Running git write operations (add, commit, push)
 
-You MAY write ephemeral test scripts to `/tmp` when inline commands aren't
+You MAY write ephemeral test scripts to `/tmp` (a private per-sandbox tmpfs —
+nothing there survives after the task ends) when inline commands aren't
 sufficient — e.g., a multi-step race harness, a load test, or a script that
-exercises an API sequence. Clean up after yourself.
+exercises an API sequence.
 
 ## Process
 
@@ -97,7 +98,10 @@ verified correctness. Go back and try to break something.
 
 ## Output
 
-Write your verification report to `{{output_file}}`.
+Write your verification report to `{{output_file}}`. The output directory is
+pre-created — do not `mkdir` it. You can place additional files alongside the
+output file (e.g., test logs, captured output) to attach them to the task
+result.
 
 Your report must include:
 - **Build** — pass/fail with output

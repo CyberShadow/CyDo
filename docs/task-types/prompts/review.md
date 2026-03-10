@@ -23,9 +23,9 @@ its plan and is ready to land.
 ## Guidelines
 
 - You have read-only access to the codebase — editing tools are not available
-  to you (enforced by the sandbox). The only writable location is your output
-  file. You can use `/tmp` for scratch work (e.g. running the linter, compiling
-  to check for errors).
+  to you (enforced by the sandbox). The only writable locations are your
+  output directory and `/tmp` (a private per-sandbox tmpfs — nothing there
+  survives after the task ends).
 - This review happens after verification and steward approval. The verifier
   has already confirmed the code builds, tests pass, and basic functionality
   works. The stewards have checked for quality and security concerns. Your
@@ -35,8 +35,9 @@ its plan and is ready to land.
 
 ## Output
 
-Write your review report to `{{output_file}}`. The file content is returned
-to the parent task as the result.
+Write your review report to `{{output_file}}`. The output directory is
+pre-created — do not `mkdir` it. The file content is returned to the parent
+task as the result.
 
 Your final message should be a one-sentence verdict.
 
