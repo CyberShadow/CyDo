@@ -40,4 +40,12 @@ interface Agent
 	/// Returns the session ID string if found, null otherwise.
 	/// Called for each line of agent output until the session ID is discovered.
 	string parseSessionId(string line);
+
+	/// Extract the canonical result text from an agent output line.
+	/// Returns empty string if the line is not a result event.
+	string extractResultText(string line);
+
+	/// Extract assistant message text from an agent output line.
+	/// Returns empty string if the line is not an assistant message.
+	string extractAssistantText(string line);
 }

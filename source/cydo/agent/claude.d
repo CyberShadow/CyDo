@@ -91,6 +91,76 @@ class ClaudeCodeAgent : Agent
 		}
 		return null;
 	}
+
+	string extractResultText(string line)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+
+		@JSONPartial
+		static struct ResultProbe
+		{
+			string type;
+			string result;
+		}
+
+		try
+		{
+			auto probe = jsonParse!ResultProbe(line);
+			if (probe.type == "result")
+				return probe.result;
+			return "";
+		}
+		catch (Exception)
+		{
+			return "";
+		}
+	}
+
+	string extractAssistantText(string line)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+		import std.algorithm : canFind;
+
+		if (!line.canFind(`"type":"assistant"`))
+			return "";
+
+		@JSONPartial
+		static struct ContentBlock
+		{
+			string type;
+			string text;
+		}
+
+		@JSONPartial
+		static struct Message
+		{
+			ContentBlock[] content;
+		}
+
+		@JSONPartial
+		static struct AssistantProbe
+		{
+			string type;
+			Message message;
+		}
+
+		try
+		{
+			auto probe = jsonParse!AssistantProbe(line);
+			if (probe.type != "assistant")
+				return "";
+
+			string result;
+			foreach (ref block; probe.message.content)
+				if (block.type == "text")
+					result ~= block.text;
+			return result;
+		}
+		catch (Exception)
+		{
+			return "";
+		}
+	}
 }
 
 /// Claude Code session using stream-json protocol.

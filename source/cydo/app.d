@@ -911,7 +911,7 @@ class App
 				td.isProcessing = false;
 
 				// Capture the canonical result text for sub-task output.
-				td.resultText = extractResultText(line);
+				td.resultText = agent.extractResultText(line);
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
@@ -1442,7 +1442,7 @@ class App
 		string titleText;
 
 		td.titleGenProcess.onStdoutLine = (string line) {
-			titleText ~= extractAssistantText(line);
+			titleText ~= agent.extractAssistantText(line);
 		};
 
 		td.titleGenProcess.onExit = (int status) {
@@ -1521,7 +1521,7 @@ class App
 			auto event = extractEventFromEnvelope(envelope);
 			if (event.length > 0)
 			{
-				auto text = extractAssistantText(event);
+				auto text = agent.extractAssistantText(event);
 				if (text.length > 0)
 					return truncateTitle(text, 200);
 			}
@@ -1815,79 +1815,6 @@ string truncateTitle(string text, size_t maxLen)
 
 /// Extract text content from a stream-json assistant message line.
 /// Returns the concatenated text blocks, or empty string if not an assistant message.
-string extractAssistantText(string line)
-{
-	import ae.utils.json : jsonParse, JSONPartial;
-	import std.algorithm : canFind;
-
-	if (!line.canFind(`"type":"assistant"`))
-		return "";
-
-	// Parse just enough to get the text content
-	@JSONPartial
-	static struct ContentBlock
-	{
-		string type;
-		string text;
-	}
-
-	@JSONPartial
-	static struct Message
-	{
-		ContentBlock[] content;
-	}
-
-	@JSONPartial
-	static struct AssistantProbe
-	{
-		string type;
-		Message message;
-	}
-
-	try
-	{
-		auto probe = jsonParse!AssistantProbe(line);
-		if (probe.type != "assistant")
-			return "";
-
-		string result;
-		foreach (ref block; probe.message.content)
-			if (block.type == "text")
-				result ~= block.text;
-		return result;
-	}
-	catch (Exception)
-	{
-		return "";
-	}
-}
-
-/// Extract the "result" field from a stream-json result event.
-/// The result event has: {"type":"result","subtype":"success","result":"..."}
-string extractResultText(string line)
-{
-	import ae.utils.json : jsonParse, JSONPartial;
-
-	@JSONPartial
-	static struct ResultProbe
-	{
-		string type;
-		string result;
-	}
-
-	try
-	{
-		auto probe = jsonParse!ResultProbe(line);
-		if (probe.type == "result")
-			return probe.result;
-		return "";
-	}
-	catch (Exception)
-	{
-		return "";
-	}
-}
-
 /// Extract the "event" field from a task envelope JSON string.
 /// Envelopes have the form: {"tid":N,"timestamp":"...","event":{...}}
 string extractEventFromEnvelope(string envelope)
