@@ -852,14 +852,9 @@ class App
 			if (outputContent.length > 0)
 				tasks[tid].resultText = outputContent;
 
-			// Discard all history and reload from JSONL (canonical source).
-			// Frontends are notified to discard their state and re-request.
-			if (tasks[tid].claudeSessionId.length > 0)
-			{
-				tasks[tid].history = loadTaskHistory(tid, tasks[tid].claudeSessionId, tasks[tid].effectiveCwd);
-				tasks[tid].historyLoaded = true;
-				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
-			}
+			// Notify frontends to re-request history (in-memory history
+			// already contains both JSONL and stdout-only messages like result).
+			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 			// No attention on exit — the session is over and there's
 			// nothing for the user to act on.  Turn-complete attention
 			// (in onOutput) is sufficient for interactive tasks.
@@ -927,13 +922,8 @@ class App
 			td.taskType = contDef.task_type;
 			persistence.setTaskType(tid, contDef.task_type);
 
-			// Reload history from JSONL before continuing (canonical source)
-			if (td.claudeSessionId.length > 0)
-			{
-				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
-				td.historyLoaded = true;
-				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
-			}
+			// Notify frontends to re-request history
+			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 
 			td.status = "active";
 			persistence.setStatus(tid, "active");
@@ -963,13 +953,8 @@ class App
 			td.status = "completed";
 			persistence.setStatus(tid, "completed");
 
-			// Reload history from JSONL (canonical source)
-			if (td.claudeSessionId.length > 0)
-			{
-				td.history = loadTaskHistory(tid, td.claudeSessionId, td.effectiveCwd);
-				td.historyLoaded = true;
-				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
-			}
+			// Notify frontends to re-request history
+			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;

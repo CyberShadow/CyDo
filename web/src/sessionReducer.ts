@@ -57,15 +57,13 @@ export function reduceSystemInit(
   msg: any,
   extras: ExtraField[] | undefined,
 ): SessionState {
-  const initMsg: DisplayMessage | undefined = extras
-    ? {
-        id: `init-${++s.msgIdCounter}`,
-        type: "system" as const,
-        content: [],
-        extraFields: extras,
-        rawSource: msg,
-      }
-    : undefined;
+  const initMsg: DisplayMessage = {
+    id: `init-${++s.msgIdCounter}`,
+    type: "system" as const,
+    content: [],
+    extraFields: extras,
+    rawSource: msg,
+  };
   return {
     ...s,
     sessionInfo: {
@@ -82,7 +80,7 @@ export function reduceSystemInit(
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
     },
-    messages: initMsg ? [...s.messages, initMsg] : s.messages,
+    messages: [...s.messages, initMsg],
   };
 }
 
@@ -179,7 +177,9 @@ export function reduceTaskLifecycle(
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
   if (msg.subtype === "task_started") {
-    text = `Task started: ${msg.description || msg.task_id}`;
+    const desc = msg.description || msg.task_id;
+    const typeLabel = msg.task_type ? ` [${msg.task_type}]` : "";
+    text = `Task started: ${desc}${typeLabel}`;
   } else {
     text = `Task ${msg.status}: ${msg.summary || msg.task_id}`;
   }
@@ -480,6 +480,7 @@ export function reduceResultMessage(
           modelUsage: msg.modelUsage,
           permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
+          errors: msg.errors,
         },
       },
     ],
@@ -731,6 +732,29 @@ export function reduceStdoutMessage(
     case "rate_limit_event":
       // Global event, not session-scoped; will be handled by the backend in the future.
       return s;
+
+    case "control_response": {
+      const resp = (msg as any).response;
+      const id = `control-response-${++s.msgIdCounter}`;
+      return {
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id,
+            type: "system" as const,
+            content: [
+              {
+                type: "text" as const,
+                text: `Control response: ${resp?.subtype ?? "unknown"}`,
+              },
+            ],
+            extraFields: extras,
+            rawSource: msg,
+          },
+        ],
+      };
+    }
 
     case "exit":
       return reduceExit(s);

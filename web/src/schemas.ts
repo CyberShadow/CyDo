@@ -235,8 +235,8 @@ export const SystemInitSchema = z
     skills: z.array(z.string()).optional(),
     plugins: z.array(z.unknown()).optional(),
     fast_mode_state: z.string().optional(),
-    // TODO: review — these were in the old KNOWN list but are not consumed by the UI
-    // version, gitBranch, slash_commands, output_style
+    slash_commands: z.array(z.string()).optional(),
+    output_style: z.string().optional(),
   })
   .passthrough();
 
@@ -326,7 +326,7 @@ export const ResultSchema = z
     uuid: z.string(),
     session_id: z.string(),
     is_error: z.boolean(),
-    result: z.string(),
+    result: z.string().optional(),
     num_turns: z.number(),
     duration_ms: z.number(),
     duration_api_ms: z.number().optional(),
@@ -348,6 +348,7 @@ export const ResultSchema = z
       )
       .optional(),
     stop_reason: z.string().nullable().optional(),
+    errors: z.array(z.string()).optional(),
   })
   .passthrough();
 
@@ -386,6 +387,8 @@ export const SystemTaskStartedSchema = z
     subtype: z.literal("task_started"),
     task_id: z.string(),
     tool_use_id: z.string().optional(),
+    description: z.string().optional(),
+    task_type: z.string().optional(),
     uuid: z.string(),
     session_id: z.string(),
   })
@@ -500,6 +503,18 @@ export const FileHistorySnapshotSchema = z
   })
   .passthrough();
 
+export const ControlResponseSchema = z
+  .object({
+    type: z.literal("control_response"),
+    response: z
+      .object({
+        subtype: z.string(),
+        request_id: z.string(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
 export const StreamEventMessageSchema = z
   .object({
     type: z.literal("stream_event"),
@@ -544,6 +559,7 @@ export type StreamEventMessage = z.infer<typeof StreamEventMessageSchema>;
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
 export type ContentDelta = z.infer<typeof ContentDeltaSchema>;
 export type Usage = z.infer<typeof UsageSchema>;
+export type ControlResponseMessage = z.infer<typeof ControlResponseSchema>;
 export type ExitMessage = z.infer<typeof ExitMessageSchema>;
 export type StderrMessage = z.infer<typeof StderrMessageSchema>;
 export type AssistantFileMessage = z.infer<typeof AssistantFileSchema>;
@@ -575,6 +591,7 @@ export type ClaudeMessage =
   | SummaryMessage
   | RateLimitEventMessage
   | StreamEventMessage
+  | ControlResponseMessage
   | ExitMessage
   | StderrMessage;
 

@@ -17,6 +17,7 @@ import {
   ResultSchema,
   SummarySchema,
   RateLimitEventSchema,
+  ControlResponseSchema,
   StreamEventMessageSchema,
   ProgressSchema,
   QueueOperationSchema,
@@ -57,6 +58,8 @@ export const schemaForStdout: SchemaLookup = (raw) => {
       return RateLimitEventSchema;
     case "stream_event":
       return StreamEventMessageSchema;
+    case "control_response":
+      return ControlResponseSchema;
     case "exit":
       return ExitMessageSchema;
     case "stderr":

@@ -75,6 +75,12 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
           <pre>{JSON.stringify(d.permissionDenials, null, 2)}</pre>
         </details>
       )}
+      {d.errors && d.errors.length > 0 && (
+        <details class="result-details" onClick={(e) => e.stopPropagation()}>
+          <summary>Errors ({d.errors.length})</summary>
+          <pre>{d.errors.join("\n\n")}</pre>
+        </details>
+      )}
       {d.result && <div class="result-text">{d.result}</div>}
       <ExtraFields fields={message.extraFields} />
     </div>
@@ -141,8 +147,30 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
   );
 }
 
+function InitDetailList({ label, items }: { label: string; items: unknown[] }) {
+  return (
+    <details class="init-details">
+      <summary>
+        {label} ({items.length})
+      </summary>
+      <ul class="init-detail-list">
+        {items.map((item, i) => (
+          <li key={i}>
+            {typeof item === "string"
+              ? item
+              : typeof item === "object" && item !== null && "name" in item
+                ? `${(item as any).name}${(item as any).status ? ` [${(item as any).status}]` : ""}`
+                : JSON.stringify(item)}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function SystemInitView({ message }: { message: DisplayMessage }) {
   const [expanded, setExpanded] = useState(false);
+  const raw = message.rawSource as any;
 
   if (!expanded) {
     return (
@@ -158,11 +186,76 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
   }
 
   return (
+    <div class="message system-message init-message">
+      <div class="init-header" onClick={() => setExpanded(false)}>
+        Session Init
+      </div>
+      <div class="init-meta">
+        {raw?.model && <span>Model: {raw.model}</span>}
+        {raw?.claude_code_version && <span>v{raw.claude_code_version}</span>}
+        {raw?.permissionMode && <span>{raw.permissionMode}</span>}
+        {raw?.output_style && raw.output_style !== "default" && (
+          <span>Style: {raw.output_style}</span>
+        )}
+      </div>
+      {raw?.tools?.length > 0 && (
+        <InitDetailList label="Tools" items={raw.tools} />
+      )}
+      {raw?.mcp_servers?.length > 0 && (
+        <InitDetailList label="MCP servers" items={raw.mcp_servers} />
+      )}
+      {raw?.agents?.length > 0 && (
+        <InitDetailList label="Agents" items={raw.agents} />
+      )}
+      {raw?.skills?.length > 0 && (
+        <InitDetailList label="Skills" items={raw.skills} />
+      )}
+      {raw?.slash_commands?.length > 0 && (
+        <InitDetailList label="Slash commands" items={raw.slash_commands} />
+      )}
+      {raw?.plugins?.length > 0 && (
+        <InitDetailList label="Plugins" items={raw.plugins} />
+      )}
+      <ExtraFields fields={message.extraFields} />
+    </div>
+  );
+}
+
+function TaskLifecycleView({ message }: { message: DisplayMessage }) {
+  const raw = message.rawSource as any;
+  const isStarted = raw?.subtype === "task_started";
+  const taskType = raw?.task_type;
+  const taskId = raw?.task_id;
+
+  let label: string;
+  let description: string;
+  if (isStarted) {
+    label = "Task started";
+    description = raw?.description || taskId || "";
+  } else {
+    label = `Task ${raw?.status || "updated"}`;
+    description = raw?.summary || taskId || "";
+  }
+
+  return (
     <div
-      class="message system-message init-message"
-      onClick={() => setExpanded(false)}
+      class={`message task-lifecycle-message${isStarted ? " task-started" : " task-notification"}`}
     >
-      <div class="init-header">Session Init</div>
+      <span class="task-lifecycle-label">{label}</span>
+      {taskType && <span class="task-lifecycle-type">{taskType}</span>}
+      {description && <span class="task-lifecycle-desc">{description}</span>}
+      <ExtraFields fields={message.extraFields} />
+    </div>
+  );
+}
+
+function ControlResponseView({ message }: { message: DisplayMessage }) {
+  const raw = message.rawSource as any;
+  const subtype = raw?.response?.subtype ?? "unknown";
+  return (
+    <div class="message control-response-message">
+      <span class="control-response-label">Control response</span>
+      <span class="control-response-subtype">{subtype}</span>
       <ExtraFields fields={message.extraFields} />
     </div>
   );
@@ -348,10 +441,19 @@ export function MessageList({
               inner = <CompactBoundaryMessageView message={msg} />;
               break;
             case "system": {
-              if ((msg.rawSource as any)?.subtype === "init") {
+              const rawSubtype = (msg.rawSource as any)?.subtype;
+              const rawType = (msg.rawSource as any)?.type;
+              if (rawSubtype === "init") {
                 inner = <SystemInitView message={msg} />;
               } else if (msg.statusText !== undefined) {
                 inner = <SystemStatusMessageView message={msg} />;
+              } else if (
+                rawSubtype === "task_started" ||
+                rawSubtype === "task_notification"
+              ) {
+                inner = <TaskLifecycleView message={msg} />;
+              } else if (rawType === "control_response") {
+                inner = <ControlResponseView message={msg} />;
               } else {
                 const text = msg.content
                   .filter(

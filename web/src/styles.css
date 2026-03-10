@@ -604,6 +604,58 @@ body,
   word-break: break-word;
 }
 
+/* Task lifecycle messages */
+.task-lifecycle-message {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  background: rgba(136, 160, 176, 0.08);
+  border-left: 3px solid var(--info);
+  color: var(--text-dim);
+}
+
+.task-lifecycle-label {
+  font-weight: 600;
+  color: var(--info);
+}
+
+.task-lifecycle-type {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(136, 160, 176, 0.15);
+  color: var(--info);
+}
+
+.task-lifecycle-desc {
+  color: var(--text);
+}
+
+/* Control response messages */
+.control-response-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  background: rgba(160, 144, 176, 0.06);
+  border-left: 3px solid var(--special);
+  color: var(--text-dim);
+}
+
+.control-response-label {
+  color: var(--special);
+}
+
+.control-response-subtype {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(160, 144, 176, 0.12);
+  color: var(--special);
+}
+
 /* Content blocks */
 .text-content {
   word-break: break-word;
@@ -1269,15 +1321,51 @@ body,
 }
 
 /* System init message (expanded state) */
-.init-message {
-  cursor: pointer;
+.system-message.init-message {
+  background: rgba(205, 177, 71, 0.06);
+  border-left-color: var(--init);
+  color: var(--text);
+  cursor: default;
 }
 
 .init-header {
   font-weight: bold;
   font-size: 13px;
-  color: var(--text-dim);
+  color: var(--init);
   margin-bottom: 4px;
+  cursor: pointer;
+}
+
+.init-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.init-details {
+  margin: 3px 0;
+  font-size: 12px;
+}
+
+.init-details summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.init-detail-list {
+  margin: 4px 0 4px 16px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.init-detail-list li {
+  padding: 1px 0;
 }
 
 /* Compact boundary message */

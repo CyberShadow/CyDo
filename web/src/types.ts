@@ -33,7 +33,7 @@ export interface DisplayMessage {
   resultData?: {
     subtype: string;
     isError: boolean;
-    result: string;
+    result?: string;
     numTurns: number;
     durationMs: number;
     durationApiMs?: number;
@@ -42,6 +42,7 @@ export interface DisplayMessage {
     modelUsage?: Record<string, Record<string, unknown>>;
     permissionDenials?: unknown[];
     stopReason?: string | null;
+    errors?: string[];
   };
   // Rate limit fields
   rateLimitInfo?: {
