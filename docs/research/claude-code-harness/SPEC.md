@@ -49,6 +49,16 @@ init messages as turn boundaries rather than new sessions.
 | `--max-budget-usd N` | Maximum spend before stopping |
 | `--no-session-persistence` | Don't persist session to disk (cannot resume later) |
 
+### Hidden Flags
+
+These flags exist but have `.hideHelp()` — they do not appear in `claude --help`.
+Found via binary string analysis of Claude Code v2.1.56.
+
+| Flag | Description |
+|:-----|:------------|
+| `--rewind-files ID` | Restore files to state at the specified user message UUID and exit. **Requires `--resume`.** |
+| `--resume-session-at ID` | When resuming in print mode, only include messages up to the specified assistant message ID (API-level truncation without modifying JSONL). |
+
 ### System Prompt Flags
 
 | Flag | Description |
@@ -241,13 +251,33 @@ Merges the provided settings into the flag settings layer at runtime.
 
 #### Rewind Files (`subtype: "rewind_files"`)
 
-Rewinds file changes made since a specific user message. Supports dry run.
+Rewinds file changes made since a specific user message. Uses the
+`file-history-snapshot` backup system (`~/.claude/file-history/<session-uuid>/`).
 
 ```typescript
 { subtype: "rewind_files"; user_message_id: string; dry_run?: boolean }
 ```
 
-Response: `{ canRewind: boolean, error?: string, filesChanged?: string[], insertions?: number, deletions?: number }`
+- `user_message_id`: UUID of the user message to rewind to. Files are restored
+  to their state at the start of that user turn.
+- `dry_run`: When `true`, reports what would change without modifying files.
+
+**Success response:**
+```json
+{ "canRewind": true, "filesChanged": ["path/to/file.ts"], "insertions": 42, "deletions": 10 }
+```
+
+**Cannot-rewind response** (e.g., no snapshot for that message):
+```json
+{ "canRewind": false, "error": "No file history snapshot found for this message" }
+```
+
+**Requirements:** File checkpointing must be enabled (default `true`). Can be
+disabled via `fileCheckpointingEnabled: false` in settings or
+`CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` env var. The `/undo` slash command
+in interactive mode uses this mechanism internally.
+
+See also: [Undo feature research](../undo-feature.md) for full analysis.
 
 #### MCP Status (`subtype: "mcp_status"`)
 

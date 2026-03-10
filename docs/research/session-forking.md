@@ -1,5 +1,8 @@
 # Session Forking via JSONL Truncation
 
+See also: [Undo feature research](undo-feature.md) for how forking combines
+with `rewind_files` to implement full undo (files + conversation).
+
 ## Findings
 
 Claude Code stores sessions as JSONL files at:
