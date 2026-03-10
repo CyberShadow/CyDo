@@ -893,6 +893,10 @@ class App
 
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
+		// Pass workspace and working directory for agents that need them (Codex).
+		sessionConfig.workspace = td.workspace;
+		sessionConfig.workDir = chdir !is null ? chdir : "";
+
 		td.session = agent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
@@ -909,7 +913,7 @@ class App
 			broadcastTask(tid, line);
 
 			import std.algorithm : canFind;
-			if (line.canFind(`"type":"result"`))
+			if (line.canFind(`"type":"result"`) || line.canFind(`"type":"turn/result"`))
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;

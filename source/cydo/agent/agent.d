@@ -1,6 +1,7 @@
 module cydo.agent.agent;
 
 import cydo.agent.claude : ClaudeCodeAgent;
+import cydo.agent.codex : CodexAgent;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -97,6 +98,8 @@ Agent createAgent(string agentType)
 	{
 		case "claude":
 			return new ClaudeCodeAgent();
+		case "codex":
+			return new CodexAgent();
 		default:
 			throw new Exception("Unknown agent type: " ~ agentType);
 	}
