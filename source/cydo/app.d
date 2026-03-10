@@ -11,12 +11,15 @@ import std.string : representation;
 import ae.net.asockets : socketManager, DisconnectType;
 import ae.net.http.common : HttpRequest, HttpStatusCode;
 import ae.net.http.responseex : HttpResponseEx;
-import ae.net.http.server : HttpServer, HttpServerConnection;
+import ae.net.http.server : HttpServer, HttpServerConnection, HttpsServer;
 import ae.net.http.websocket : WebSocketAdapter, accept;
+import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment;
 import ae.utils.promise : Promise, resolve;
+
+mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
 
@@ -91,6 +94,9 @@ class App
 	private INotify.WatchDescriptor configDirWatch;
 	private bool configFileWatchActive;
 	private bool configDirWatchActive;
+	// HTTP basic auth credentials (from environment)
+	private string authUser;
+	private string authPass;
 
 	void start()
 	{
@@ -137,14 +143,47 @@ class App
 			tasks[row.tid] = move(td);
 		}
 
-		server = new HttpServer();
+		import std.process : environment;
+
+		auto sslCert = environment.get("CYDO_TLS_CERT", null);
+		auto sslKey = environment.get("CYDO_TLS_KEY", null);
+		if (sslCert || sslKey)
+		{
+			auto https = new HttpsServer();
+			https.ctx.setCertificate(sslCert);
+			https.ctx.setPrivateKey(sslKey);
+			server = https;
+		}
+		else
+			server = new HttpServer();
+
+		authUser = environment.get("CYDO_AUTH_USER", null);
+		authPass = environment.get("CYDO_AUTH_PASS", null);
+
 		server.handleRequest = &handleRequest;
 		auto port = server.listen(3456);
-		writefln("CyDo server listening on http://localhost:%d", port);
+		auto proto = sslCert ? "https" : "http";
+		writefln("CyDo server listening on %s://localhost:%d", proto, port);
+	}
+
+	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
+	{
+		if (!authUser && !authPass)
+			return true;
+		auto response = new HttpResponseEx();
+		if (!response.authorize(request, (reqUser, reqPass) => reqUser == authUser && reqPass == authPass))
+		{
+			conn.sendResponse(response);
+			return false;
+		}
+		return true;
 	}
 
 	private void handleRequest(HttpRequest request, HttpServerConnection conn)
 	{
+		if (!checkAuth(request, conn))
+			return;
+
 		if (request.resource == "/ws")
 		{
 			handleWebSocket(request, conn);
