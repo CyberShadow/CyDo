@@ -38,7 +38,7 @@
             dubLock = ./dub-lock.json;
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
-            buildInputs = [ pkgs.sqlite ];
+            buildInputs = [ pkgs.sqlite pkgs.openssl ];
 
             installPhase = ''
               runHook preInstall
@@ -81,6 +81,7 @@
               dub
               nodejs_22
               sqlite
+              openssl
               pkg-config
             ];
           };
