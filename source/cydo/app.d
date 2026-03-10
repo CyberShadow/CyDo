@@ -23,8 +23,7 @@ mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
 
-import cydo.agent.agent : Agent, SessionConfig;
-import cydo.agent.claude : ClaudeCodeAgent;
+import cydo.agent.agent : Agent, SessionConfig, createAgent;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
@@ -102,7 +101,7 @@ class App
 	{
 		persistence = Persistence("data/cydo.db");
 		config = loadConfig();
-		agent = new ClaudeCodeAgent();
+		agent = createAgent(config.default_agent_type);
 
 		// Load task type definitions
 		try

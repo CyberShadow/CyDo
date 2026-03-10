@@ -34,6 +34,7 @@ struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
+	@Optional string default_agent_type = "claude";
 }
 
 string configPath()

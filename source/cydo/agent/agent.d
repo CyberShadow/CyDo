@@ -1,5 +1,6 @@
 module cydo.agent.agent;
 
+import cydo.agent.claude : ClaudeCodeAgent;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -79,4 +80,16 @@ interface Agent
 	/// Only called when supportsFileRevert is true.
 	/// Returns null on success, or an error string on failure.
 	string rewindFiles(string sessionId, string afterUuid, string cwd);
+}
+
+/// Create an Agent instance by type name.
+Agent createAgent(string agentType)
+{
+	switch (agentType)
+	{
+		case "claude":
+			return new ClaudeCodeAgent();
+		default:
+			throw new Exception("Unknown agent type: " ~ agentType);
+	}
 }
