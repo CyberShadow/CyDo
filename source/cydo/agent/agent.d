@@ -13,6 +13,8 @@ struct SessionConfig
 	string switchModes;        /// Pre-formatted description of available SwitchMode continuations
 	string handoffs;           /// Pre-formatted description of available Handoff continuations
 	string disallowedTools;    /// Comma-separated list of tools to remove from context
+	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
+	string workDir;            /// Working directory for the session
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,
