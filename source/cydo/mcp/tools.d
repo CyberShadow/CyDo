@@ -74,8 +74,10 @@ interface CydoTools
 		~ "prompt describing the new mode's expectations, and may get a different "
 		~ "tool set. Use this when your current phase is complete and the next phase "
 		~ "needs the same context (e.g., plan → triage).\n\n"
-		~ "**This is a terminal action.** After calling SwitchMode, your session will "
-		~ "be resumed with new instructions. Do not call any other tools after SwitchMode.\n\n"
+		~ "**This is a terminal action.** After calling SwitchMode, yield your turn "
+		~ "immediately — do not call any other tools or generate further output. "
+		~ "The mode has not switched yet; you will receive new instructions when "
+		~ "your session resumes.\n\n"
 		~ "Available modes:\n\n{{switchmodes}}"
 	)
 	@McpName("SwitchMode")

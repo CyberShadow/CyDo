@@ -383,7 +383,8 @@ class App
 
 		return McpResult(
 			"Mode switch to '" ~ contDef.task_type ~ "' accepted. "
-			~ "Your session will be resumed with new instructions.");
+			~ "Yield your turn now — do not call any more tools or generate output. "
+			~ "You will receive new instructions when your session resumes.");
 	}
 
 	/// Handle Handoff tool — validate continuation, store choice + prompt.
@@ -424,8 +425,8 @@ class App
 
 		return McpResult(
 			"Handoff to '" ~ contDef.task_type ~ "' accepted. "
-			~ "A new task will be created with your prompt. "
-			~ "Your session is ending now.");
+			~ "Yield your turn now — do not call any more tools or generate output. "
+			~ "A new task will be created with your prompt. Your session is ending.");
 	}
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
