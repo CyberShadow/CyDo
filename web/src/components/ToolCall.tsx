@@ -317,7 +317,8 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
   const lang = filePath ? langFromPath(filePath) : null;
-  const tokens = useHighlight(content, lang);
+  const isMarkdown = lang === "markdown" || lang === "mdx";
+  const tokens = useHighlight(content, isMarkdown ? null : lang);
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "content"].includes(k),
   );
@@ -330,9 +331,13 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      <pre class="write-content">
-        {tokens ? renderTokenLines(tokens) : content}
-      </pre>
+      {isMarkdown ? (
+        <Markdown text={content} class="write-content-markdown" />
+      ) : (
+        <pre class="write-content">
+          {tokens ? renderTokenLines(tokens) : content}
+        </pre>
+      )}
     </div>
   );
 }

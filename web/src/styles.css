@@ -1416,6 +1416,14 @@ body,
   overflow-y: auto;
 }
 
+.write-content-markdown {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--overlay-faint);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 /* Line numbers in Read results */
 .line-number {
   color: var(--text-dim);
