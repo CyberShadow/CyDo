@@ -167,6 +167,7 @@ string claudeJsonlPath(string sessionId, string projectPath = "")
 	import std.process : environment;
 
 	auto home = environment.get("HOME", "/tmp");
+	auto claudeDir = environment.get("CLAUDE_CONFIG_DIR", buildPath(home, ".claude"));
 	auto cwd = projectPath.length > 0 ? projectPath : getcwd();
 
 	// Mangle cwd: replace / and . with -
@@ -176,7 +177,7 @@ string claudeJsonlPath(string sessionId, string projectPath = "")
 			c = '-';
 	string mangledCwd = buf.idup;
 
-	return buildPath(home, ".claude", "projects", mangledCwd, sessionId ~ ".jsonl");
+	return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
 }
 
 struct ForkResult
