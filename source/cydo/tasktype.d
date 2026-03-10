@@ -113,6 +113,14 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 			if (types.byName(cont.task_type) is null)
 				errors ~= format("%s: continuation '%s' references unknown type '%s'",
 					def.name, cname, cont.task_type);
+
+			// keep_context + worktree are incompatible: --resume needs the
+			// same cwd to find the JSONL, but worktree changes the cwd.
+			auto target = types.byName(cont.task_type);
+			if (cont.keep_context && target !is null && target.worktree)
+				errors ~= format("%s: continuation '%s' has keep_context but target '%s' "
+					~ "has worktree: true — these are incompatible",
+					def.name, cname, cont.task_type);
 		}
 
 		// Steward validation
@@ -140,6 +148,45 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 			if (cont.requires_approval && !hasSteward)
 				errors ~= format("%s: continuation '%s' requires approval but no steward types defined",
 					def.name, cname);
+		}
+	}
+
+	// Interactive session integrity: types reachable from user_visible
+	// types via keep_context must not have !keep_context continuations,
+	// because a Handoff would complete the interactive task and orphan
+	// the user's session.
+	{
+		// Collect all types reachable via keep_context from user_visible roots
+		bool[string] interactive;
+		void walkKeepContext(string name)
+		{
+			if (name in interactive)
+				return;
+			interactive[name] = true;
+			auto d = types.byName(name);
+			if (d is null)
+				return;
+			foreach (_, ref c; d.continuations)
+				if (c.keep_context)
+					walkKeepContext(c.task_type);
+		}
+		foreach (ref def; types)
+			if (def.user_visible)
+				walkKeepContext(def.name);
+
+		// Check that interactive types only have keep_context continuations
+		foreach (ref def; types)
+		{
+			if (def.name !in interactive)
+				continue;
+			foreach (cname, ref cont; def.continuations)
+			{
+				if (!cont.keep_context)
+					errors ~= format("%s: continuation '%s' is !keep_context but '%s' is "
+						~ "reachable from a user_visible type via keep_context — "
+						~ "Handoff would orphan the interactive session",
+						def.name, cname, def.name);
+			}
 		}
 	}
 

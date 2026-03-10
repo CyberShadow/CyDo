@@ -25,19 +25,15 @@ Be concise. Lead with findings, not reasoning.
 3. **Assess scope** — Determine if this is a small, localized fix or something
    that requires broader changes.
 4. **Decide next step:**
-   - `small_fix` — The fix is small (a few lines across 1-3 files). Switches
-     to implement mode with your findings as context.
    - `needs_plan` — The fix is large, touches many files, or requires design
-     decisions. Switches to planning mode.
-   - `back` — Investigation reveals this is not a bug, or you need to discuss
-     findings with the user. Returns to conversation.
+     decisions. Switch to planning mode.
+   - `back` — Return to conversation with your findings. Use this for small
+     fixes (the conversation agent can spawn an implement task), non-bugs,
+     or when you need to discuss findings with the user.
 
 ## Continuation
 
-Call the `SwitchMode` tool with your choice. Your conversation context will
-be preserved — the successor receives your full investigation history.
-
-For `small_fix` and `needs_plan`, your most recent messages should contain:
-- **Reproducer worktree** — path to the spike worktree with the failing test
-- **Root cause** — the specific code location and explanation
-- **Proposed fix** — what should change and why
+- **needs_plan**: Call the `SwitchMode` tool. Your context is preserved and
+  planning begins immediately.
+- **back**: Call the `SwitchMode` tool. Your context is preserved — the
+  conversation agent sees your full investigation and can act on it.

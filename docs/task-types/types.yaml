@@ -11,9 +11,10 @@ task_types:
   # =========================================================================
   # Interactive types — user-facing, context-preserving
   #
-  # These are the entry points for user interaction. Continuations always
-  # use keep_context (SwitchMode) to preserve the session. The top-level
-  # session can switch between modes and always return to conversation.
+  # These are the entry points for user interaction. All continuations use
+  # keep_context (SwitchMode) to preserve the session — the interactive
+  # cluster is self-contained. Autonomous work (triage, implement, etc.)
+  # is spawned via creatable_tasks, not continuations.
   # =========================================================================
 
   blank:
@@ -35,7 +36,7 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     output_type: report
-    creatable_tasks: [plan, research, spike, verify]
+    creatable_tasks: [plan, research, spike, verify, triage, implement]
     continuations:
       plan:
         task_type: plan_mode
@@ -52,9 +53,8 @@ task_types:
       Switch to planning mode for non-trivial implementation tasks. Prefer
       switching to plan mode — it's better to get alignment upfront than to
       redo work. The session becomes read-only — you explore the codebase,
-      produce a detailed implementation plan, then call SwitchMode to trigger
-      the plan → approval → triage → implement pipeline. The operator must
-      approve the plan before implementation begins.
+      produce a detailed implementation plan, then switch back to conversation.
+      The user reviews the plan and decides when to execute it.
 
       Switch when ANY of these apply:
       - New feature: adding meaningful new functionality (e.g. "add a logout
@@ -82,18 +82,14 @@ task_types:
       than to redo work. If unsure, err on the side of planning. Confirm the
       task scope with the user before switching. The switch preserves your
       conversation context but the session becomes read-only. Use research
-      sub-tasks to gather additional context. Switch back to return to the
-      previous mode without committing to the plan.
+      sub-tasks to gather additional context. Switch back to return to
+      conversation when the plan is ready for user review.
     prompt_template: prompts/plan_mode.md
     model_class: large
     read_only: true
     output_type: report
     creatable_tasks: [research, spike]
     continuations:
-      done:
-        task_type: triage
-        keep_context: true
-        requires_approval: true
       back:
         task_type: conversation
         keep_context: true
@@ -107,21 +103,18 @@ task_types:
       behavior, a test is failing, or something works differently than
       expected. You systematically reproduce the issue, identify the root
       cause, and determine the fix approach. Can create spike and research
-      sub-tasks. When done, either hand off to implement (small fix) or
-      switch to plan_mode (large fix), or switch back if the issue turns
-      out to be a non-bug.
+      sub-tasks. When done, switch to plan_mode (large fix) or switch back
+      to conversation with findings (small fix or non-bug).
     tool_guidance: >
       Switch when the user describes a bug or unexpected behavior. Gather
       reproduction steps and error messages before switching. Switch back
-      if investigation reveals it's not a bug.
+      if investigation reveals it's not a bug or the fix is small enough
+      for conversation to handle directly.
     prompt_template: prompts/bug_mode.md
     model_class: large
     output_type: report
     creatable_tasks: [research, spike]
     continuations:
-      small_fix:
-        task_type: implement
-        keep_context: true
       needs_plan:
         task_type: plan_mode
         keep_context: true
@@ -256,7 +249,6 @@ task_types:
       implement:
         task_type: implement
         requires_approval: true
-        keep_context: true
       decompose:
         task_type: decompose
         requires_approval: true

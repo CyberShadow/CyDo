@@ -91,13 +91,11 @@ Ensure the plan is concise enough to scan quickly, but detailed enough to
 execute effectively. Include paths to critical files. Reference existing
 functions and utilities you found that should be reused, with their file paths.
 
-### Phase 5: Continuation
+### Phase 5: Return to Conversation
 
-Call `SwitchMode` with `done` to transition to triage. Your conversation
-context will be preserved.
-
-If you determine that planning is premature or the task doesn't need a formal
-plan, call `SwitchMode` with `back` to return to conversation.
+Call `SwitchMode` with `back` to return to conversation mode. The user will
+review your plan and decide when to execute it. Your conversation context is
+preserved — the user sees everything you explored and wrote.
 
 ## Constraints
 

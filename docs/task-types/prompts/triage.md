@@ -24,4 +24,6 @@ Choose one:
 
 ## Action
 
-Call the `SwitchMode` tool with your choice: `implement` or `decompose`.
+- **implement**: Call the `Handoff` tool with `continuation: "implement"` and a
+  `prompt` containing the full plan context the implementer needs.
+- **decompose**: Call the `SwitchMode` tool with `continuation: "decompose"`.
