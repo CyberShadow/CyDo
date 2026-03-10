@@ -234,6 +234,43 @@ class ClaudeCodeAgent : Agent
 
 		return null;
 	}
+
+	Object generateTitle(string userMessage, void delegate(string title) onTitle)
+	{
+		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
+
+		auto proc = new AgentProcess([
+			"claude",
+			"-p",
+			"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
+			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
+			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
+			"Initial request / task description:\n\n" ~ msg,
+			"--output-format", "stream-json",
+			"--model", "haiku",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		], null, null, true); // noStdin
+
+		string titleText;
+
+		proc.onStdoutLine = (string line) {
+			titleText ~= this.extractAssistantText(line);
+		};
+
+		proc.onExit = (int status) {
+			if (status != 0)
+				return;
+
+			import std.string : strip;
+			auto title = titleText.strip();
+			if (title.length > 0 && title.length < 200)
+				onTitle(title);
+		};
+
+		return proc;
+	}
 }
 
 /// Claude Code session using stream-json protocol.

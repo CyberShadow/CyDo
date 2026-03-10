@@ -24,7 +24,6 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 
 import cydo.agent.agent : Agent, SessionConfig, createAgent;
-import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
@@ -1425,50 +1424,18 @@ class App
 	{
 		auto td = &tasks[tid];
 
-		if (td.titleGenDone || td.titleGenProcess !is null)
+		if (td.titleGenDone || td.titleGenHandle !is null)
 			return;
 
-		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
-
-		td.titleGenProcess = new AgentProcess([
-			"claude",
-			"-p",
-			"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
-			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
-			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
-			"Initial request / task description:\n\n" ~ msg,
-			"--output-format", "stream-json",
-			"--model", "haiku",
-			"--max-turns", "1",
-			"--tools", "",
-			"--no-session-persistence",
-		], null, null, true); // noStdin
-
-		string titleText;
-
-		td.titleGenProcess.onStdoutLine = (string line) {
-			titleText ~= agent.extractAssistantText(line);
-		};
-
-		td.titleGenProcess.onExit = (int status) {
+		td.titleGenHandle = agent.generateTitle(userMessage, (string title) {
 			if (tid !in tasks)
 				return;
-			tasks[tid].titleGenProcess = null;
+			tasks[tid].titleGenHandle = null;
 			tasks[tid].titleGenDone = true;
-
-			if (status != 0)
-				return;
-
-			import std.string : strip;
-			auto title = titleText.strip();
-
-			if (title.length > 0 && title.length < 200)
-			{
-				tasks[tid].title = title;
-				persistence.setTitle(tid, title);
-				broadcastTitleUpdate(tid, title);
-			}
-		};
+			tasks[tid].title = title;
+			persistence.setTitle(tid, title);
+			broadcastTitleUpdate(tid, title);
+		});
 	}
 
 	private void broadcast(string message)
@@ -1599,7 +1566,7 @@ struct TaskData
 	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
-	AgentProcess titleGenProcess; // prevent GC while running
+	Object titleGenHandle; // prevent GC while running
 }
 
 struct TaskHistoryEndMessage

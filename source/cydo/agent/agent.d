@@ -80,6 +80,12 @@ interface Agent
 	/// Only called when supportsFileRevert is true.
 	/// Returns null on success, or an error string on failure.
 	string rewindFiles(string sessionId, string afterUuid, string cwd);
+
+	/// Generate a short title for a user message. Spawns a lightweight
+	/// agent subprocess. onTitle is called with the generated title on
+	/// success (may not be called on failure). Returns an opaque handle
+	/// that the caller must keep alive (prevents GC of the process).
+	Object generateTitle(string userMessage, void delegate(string title) onTitle);
 }
 
 /// Create an Agent instance by type name.
