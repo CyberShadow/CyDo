@@ -61,4 +61,9 @@ interface Agent
 	/// Claude returns lines unchanged (raw protocol); Codex translates
 	/// from {timestamp, type, payload} to agnostic events.
 	string translateHistoryLine(string line);
+
+	/// Path to the last-created MCP config temp file, or null if none.
+	/// Used for cleanup tracking (the file should be deleted when the
+	/// session exits).
+	@property string lastMcpConfigPath();
 }

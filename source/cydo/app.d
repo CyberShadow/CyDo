@@ -896,9 +896,8 @@ class App
 		td.session = agent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
-		if (auto cAgent = cast(ClaudeCodeAgent) agent)
-			if (cAgent.lastMcpConfigPath.length > 0)
-				td.sandbox.tempFiles ~= cAgent.lastMcpConfigPath;
+		if (agent.lastMcpConfigPath.length > 0)
+			td.sandbox.tempFiles ~= agent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
 		// For resumed tasks agentSessionId is already set; for new tasks

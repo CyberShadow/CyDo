@@ -52,16 +52,16 @@ class ClaudeCodeAgent : Agent
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
 
-	/// The MCP config temp file path from the most recent createSession call.
-	/// Exposed for cleanup tracking by the caller.
-	string lastMcpConfigPath;
+	private string lastMcpConfigPath_;
+
+	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
 	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
-		lastMcpConfigPath = generateMcpConfig(tid, config.creatableTaskTypes,
+		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
 			config.switchModes, config.handoffs);
-		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath, config);
+		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath_, config);
 	}
 
 	string parseSessionId(string line)
