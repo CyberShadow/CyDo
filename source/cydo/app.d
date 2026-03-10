@@ -935,10 +935,13 @@ class App
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
 
-			// Send rendered prompt as first message to successor
+			// Send rendered prompt as first message to successor.
+			// Use a placeholder instead of the original description — the agent
+			// already has the full conversation context from --resume.
 			if (td.session !is null)
 			{
-				auto renderedPrompt = renderPrompt(*newTypeDef, td.description, taskTypesDir, td.outputPath);
+				auto renderedPrompt = renderPrompt(*newTypeDef,
+					"Continue from where you left off.", taskTypesDir, td.outputPath);
 				broadcastUnconfirmedUserMessage(tid, renderedPrompt);
 				sendTaskMessage(tid, renderedPrompt);
 			}
