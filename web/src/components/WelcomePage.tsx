@@ -6,7 +6,6 @@ interface Props {
   workspaces: WorkspaceInfo[];
   tasks: Map<number, TaskState>;
   attention: Set<number>;
-  onNewTask: (workspace: string, projectPath: string) => void;
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
 }
@@ -15,7 +14,6 @@ export function WelcomePage({
   workspaces,
   tasks,
   attention,
-  onNewTask,
   onSelectTask,
   onNavigateToProject,
 }: Props) {
@@ -58,7 +56,7 @@ export function WelcomePage({
                     </span>
                     <button
                       class="sidebar-new-btn"
-                      onClick={() => onNewTask(ws.name, proj.path)}
+                      onClick={() => onNavigateToProject(ws.name, proj.name)}
                       title="New task"
                     >
                       +

@@ -20,7 +20,6 @@ export function App() {
     interrupt,
     stop,
     closeStdin,
-    newTask,
     resume,
     fork,
     dismissAttention,
@@ -83,7 +82,6 @@ export function App() {
             workspaces={workspaces}
             tasks={tasks}
             attention={attention}
-            onNewTask={newTask}
             onSelectTask={setActiveTaskId}
             onNavigateToProject={navigateToProject}
           />
