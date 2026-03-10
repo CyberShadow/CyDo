@@ -603,7 +603,7 @@ string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
 {
 	auto def = allTypes.byName(typeName);
 	if (def is null || def.continuations.length == 0)
-		return "(none available)";
+		return null;
 
 	string result;
 	foreach (cname, ref cont; def.continuations)
@@ -619,7 +619,7 @@ string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
 			result ~= indentLines(targetDef.tool_guidance.strip, "  ");
 		result ~= "\n";
 	}
-	return result.length > 0 ? result : "(none available)";
+	return result.length > 0 ? result : null;
 }
 
 /// Format a description of !keep_context continuations for a given task type.
@@ -628,7 +628,7 @@ string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
 {
 	auto def = allTypes.byName(typeName);
 	if (def is null || def.continuations.length == 0)
-		return "(none available)";
+		return null;
 
 	string result;
 	foreach (cname, ref cont; def.continuations)
@@ -640,7 +640,7 @@ string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
 		result ~= format("- %s: hands off to '%s' — %s\n", cname, cont.task_type, desc);
 		result ~= "\n";
 	}
-	return result.length > 0 ? result : "(none available)";
+	return result.length > 0 ? result : null;
 }
 
 /// Format a description of available task types for a given parent type.
@@ -649,7 +649,7 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 {
 	auto parentDef = allTypes.byName(parentTypeName);
 	if (parentDef is null || parentDef.creatable_tasks.length == 0)
-		return "(none available)";
+		return null;
 
 	string result;
 	foreach (name; parentDef.creatable_tasks)
@@ -664,7 +664,7 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 			result ~= indentLines(def.tool_guidance.strip, "  ");
 		result ~= "\n";
 	}
-	return result.length > 0 ? result : "(none available)";
+	return result.length > 0 ? result : null;
 }
 
 /// Return the comma-separated list of Claude Code tools to disallow.

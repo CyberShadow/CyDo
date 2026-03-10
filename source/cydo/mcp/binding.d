@@ -120,9 +120,8 @@ template isToolMethod(I, string memberName)
 		enum isToolMethod = false;
 }
 
-/// Generate the tools/list result JSON string for an interface.
-/// Uses compile-time introspection to discover tools, runtime toJson to serialize.
-string mcpToolListJson(I)()
+/// Generate ToolDef[] from an interface using compile-time introspection.
+private ToolDef[] mcpToolDefs(I)()
 {
 	ToolDef[] tools;
 
@@ -143,7 +142,7 @@ string mcpToolListJson(I)()
 		}}
 	}
 
-	return toJson(ToolsList(tools));
+	return tools;
 }
 
 /// Generate the inputSchema for a method's parameters.
@@ -265,37 +264,34 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 
 // ---- Utilities ----
 
-/// Build the final tools/list JSON by substituting {{placeholders}} in the
-/// compile-time generated template. Shared by the MCP server and --dump-context.
+/// Build the final tools/list JSON by substituting {{placeholders}} in tool
+/// descriptions. Tools whose placeholder values are empty are excluded entirely.
+/// Shared by the MCP server and --dump-context.
 string buildToolsListJson(I)(string[string] vars)
 {
+	import std.algorithm : canFind;
 	import std.array : replace;
 
-	static string toolsTemplate;
-	if (toolsTemplate is null)
-		toolsTemplate = mcpToolListJson!I();
+	// Cache the template tool definitions (generated from interface on first call)
+	static ToolDef[] templateTools;
+	if (templateTools is null)
+		templateTools = mcpToolDefs!I();
 
-	auto result = toolsTemplate;
-	foreach (key, value; vars)
-		result = result.replace("{{" ~ key ~ "}}", jsonEscapeRuntime(value));
-	return result;
-}
-
-/// Runtime JSON string escaping for template substitution in pre-serialized JSON.
-string jsonEscapeRuntime(string s)
-{
-	string result;
-	foreach (c; s)
+	// Filter out tools with empty placeholder values, substitute the rest
+	ToolDef[] result;
+	outer: foreach (ref tool; templateTools)
 	{
-		switch (c)
+		foreach (key, value; vars)
 		{
-			case '"':  result ~= `\"`; break;
-			case '\\': result ~= `\\`; break;
-			case '\n': result ~= `\n`; break;
-			case '\r': result ~= `\r`; break;
-			case '\t': result ~= `\t`; break;
-			default:   result ~= c; break;
+			if (value.length == 0 && tool.description.canFind("{{" ~ key ~ "}}"))
+				continue outer;
 		}
+		// Shallow copy — only description is modified; schema references are safe to share
+		ToolDef copy = tool;
+		foreach (key, value; vars)
+			copy.description = copy.description.replace("{{" ~ key ~ "}}", value);
+		result ~= copy;
 	}
-	return result;
+
+	return toJson(ToolsList(result));
 }

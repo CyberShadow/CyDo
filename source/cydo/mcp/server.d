@@ -53,9 +53,9 @@ string buildToolsListJson()
 	import cydo.mcp.binding : buildToolsListJson;
 
 	return buildToolsListJson!CydoTools([
-		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", "(none available)"),
-		"switchmodes": environment.get("CYDO_SWITCHMODES", "(none available)"),
-		"handoffs": environment.get("CYDO_HANDOFFS", "(none available)"),
+		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", ""),
+		"switchmodes": environment.get("CYDO_SWITCHMODES", ""),
+		"handoffs": environment.get("CYDO_HANDOFFS", ""),
 	]);
 }
 
