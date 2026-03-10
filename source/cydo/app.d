@@ -563,7 +563,15 @@ class App
 				return;
 			if (td.session !is null && td.session.alive)
 				return;
-			ensureTaskAgent(tid);
+			auto typeDef = taskTypes.byName(td.taskType);
+			if (typeDef !is null)
+			{
+				auto sc = SessionConfig(modelClassToAlias(typeDef.model_class));
+				sc.disallowedTools = disallowedTools();
+				ensureTaskAgent(tid, sc);
+			}
+			else
+				ensureTaskAgent(tid);
 			td.needsAttention = false;
 			td.notificationBody = "";
 			td.status = "active";
@@ -700,9 +708,9 @@ class App
 		if (sessionConfig.handoffs.length == 0)
 			sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
 
-		// Disable built-in Task tool — our MCP Task tool replaces it
+		// Disable built-in tools that are replaced by our MCP equivalents
 		if (sessionConfig.disallowedTools.length == 0)
-			sessionConfig.disallowedTools = "Task";
+			sessionConfig.disallowedTools = disallowedTools();
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 		auto typeDef = taskTypes.byName(td.taskType);
