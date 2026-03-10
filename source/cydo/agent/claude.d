@@ -63,6 +63,34 @@ class ClaudeCodeAgent : Agent
 			config.switchModes, config.handoffs);
 		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath, config);
 	}
+
+	string parseSessionId(string line)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+		import std.algorithm : canFind;
+
+		if (!line.canFind(`"subtype":"init"`))
+			return null;
+
+		@JSONPartial
+		static struct InitProbe
+		{
+			string type;
+			string subtype;
+			string session_id;
+		}
+
+		try
+		{
+			auto probe = jsonParse!InitProbe(line);
+			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
+				return probe.session_id;
+		}
+		catch (Exception)
+		{
+		}
+		return null;
+	}
 }
 
 /// Claude Code session using stream-json protocol.

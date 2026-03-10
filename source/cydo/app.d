@@ -1187,37 +1187,15 @@ class App
 			ws.send(data);
 	}
 
-	/// Parse system.init messages to extract the agent session UUID.
+	/// Try to extract agent session ID from an output line using the Agent interface.
 	private void tryExtractAgentSessionId(int tid, string rawLine)
 	{
-		import ae.utils.json : jsonParse, JSONPartial;
-		import std.algorithm : canFind;
-
-		// Quick string check before parsing
-		if (!rawLine.canFind(`"subtype":"init"`))
-			return;
-
-		@JSONPartial
-		static struct InitProbe
+		auto sessionId = agent.parseSessionId(rawLine);
+		if (sessionId.length > 0)
 		{
-			string type;
-			string subtype;
-			string session_id;
-		}
-
-		try
-		{
-			auto probe = jsonParse!InitProbe(rawLine);
-			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
-			{
-				tasks[tid].agentSessionId = probe.session_id;
-				persistence.setAgentSessionId(tid, probe.session_id);
-				startJsonlWatch(tid);
-			}
-		}
-		catch (Exception)
-		{
-			// Not a valid init message, ignore
+			tasks[tid].agentSessionId = sessionId;
+			persistence.setAgentSessionId(tid, sessionId);
+			startJsonlWatch(tid);
 		}
 	}
 

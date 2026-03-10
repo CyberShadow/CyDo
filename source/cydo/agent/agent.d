@@ -35,4 +35,9 @@ interface Agent
 	/// for the work directory. tid identifies the task for MCP tool routing.
 	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
 		SessionConfig config = SessionConfig.init);
+
+	/// Try to extract the agent session ID from an output line.
+	/// Returns the session ID string if found, null otherwise.
+	/// Called for each line of agent output until the session ID is discovered.
+	string parseSessionId(string line);
 }
