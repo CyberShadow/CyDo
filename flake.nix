@@ -22,6 +22,37 @@
           pkgs = pkgsFor system;
           nodejs = pkgs.nodejs_22;
 
+          # Codex CLI — pre-built static binary from npm
+          codexVersion = "0.113.0";
+          codexSrc = {
+            x86_64-linux = {
+              url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-x64.tgz";
+              hash = "sha256-SNe/LMuQDJJONocCnVeOjhG1UnABR9yUQRmc1kZb5SA=";
+              triple = "x86_64-unknown-linux-musl";
+            };
+            aarch64-linux = {
+              url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-arm64.tgz";
+              hash = "sha256-wyN9xBKGB6MGfY8YQViq2unvAeAFJiYwmb2SOfoyslc=";
+              triple = "aarch64-unknown-linux-musl";
+            };
+          }.${system} or (throw "Codex CLI: unsupported system ${system}");
+
+          codex-cli = pkgs.stdenv.mkDerivation {
+            pname = "codex-cli";
+            version = codexVersion;
+            src = pkgs.fetchurl {
+              inherit (codexSrc) url hash;
+            };
+            unpackPhase = ''
+              tar xzf $src
+            '';
+            installPhase = ''
+              mkdir -p $out/bin
+              install -m755 package/vendor/${codexSrc.triple}/codex/codex $out/bin/codex
+            '';
+            meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
+          };
+
           frontend = pkgs.buildNpmPackage {
             pname = "cydo-frontend";
             version = "0.1.0";
@@ -66,7 +97,7 @@
           };
         in
         {
-          inherit frontend backend;
+          inherit frontend backend codex-cli;
           default = backend;
         });
 
@@ -74,6 +105,7 @@
         let
           pkgs = pkgsFor system;
           cydo = self.packages.${system}.default;
+          codex = self.packages.${system}.codex-cli;
 
           # Fake bwrap that strips sandbox flags and exec's the inner command.
           # Real bwrap can't run inside Nix's build sandbox.
@@ -104,6 +136,7 @@
               nodejs_22
               curl
               claude-code
+              codex
               git
             ];
 
@@ -120,6 +153,11 @@
             DISABLE_AUTOUPDATER = "1";
             CLAUDE_CONFIG_DIR = "/tmp/claude-test-home";
 
+            # Codex CLI configuration — use same mock API server
+            OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
+            OPENAI_API_KEY = "test-key-mock";
+            CODEX_HOME = "/tmp/codex-test-home";
+
             buildPhase = ''
               mkdir -p /tmp/playwright-home
 
@@ -128,6 +166,13 @@
               cat > $CLAUDE_CONFIG_DIR/settings.json <<'SETTINGS'
               {"hasCompletedOnboarding":true,"theme":"dark","skipDangerousModePermissionPrompt":true,"autoUpdates":false}
               SETTINGS
+
+              # Pre-create Codex config directory
+              mkdir -p $CODEX_HOME
+              cat > $CODEX_HOME/config.toml <<'CODEXCFG'
+              model = "codex-mini-latest"
+              approval_mode = "full-auto"
+              CODEXCFG
 
               # Create a workspace directory with a git project for CyDo
               mkdir -p /tmp/cydo-test-workspace
