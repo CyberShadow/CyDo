@@ -564,6 +564,7 @@ body,
   margin-bottom: 16px;
   padding: 12px 16px;
   max-width: 100%;
+  contain: layout paint style;
   content-visibility: auto;
   contain-intrinsic-size: auto 100px;
 }
