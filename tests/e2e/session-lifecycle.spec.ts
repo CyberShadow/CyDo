@@ -1,4 +1,4 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Page } from "./fixtures";
 
 /** Navigate to the first project and wait for WebSocket connection. */
 async function enterProject(page: Page) {

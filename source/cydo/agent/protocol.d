@@ -131,6 +131,7 @@ string translateStreamEvent(string rawLine)
 		case "message_stop":
 			newType = "stream/turn_stop";
 			break;
+		case "message_start":
 		case "message_delta":
 			return null; // consumed — usage/stop_reason arrives in turn/result
 		default:

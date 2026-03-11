@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("page loads and shows CyDo branding", async ({ page }) => {
   await page.goto("/");

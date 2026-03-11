@@ -277,7 +277,7 @@ export const UserEchoSchema = z
     session_id: z.string().optional(),
     message: z
       .object({
-        role: z.literal("user"),
+        role: z.enum(["user", "developer"]),
         content: z.union([z.string(), z.array(UserContentBlockSchema)]), // string when isReplay
       })
       .passthrough(),
@@ -436,7 +436,7 @@ export const UserFileSchema = z
     type: z.literal("message/user"),
     message: z
       .object({
-        role: z.literal("user"),
+        role: z.enum(["user", "developer"]),
         content: z.union([z.string(), z.array(UserFileContentBlockSchema)]),
       })
       .passthrough(),

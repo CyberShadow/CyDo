@@ -1,4 +1,4 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Page } from "./fixtures";
 
 const CYDO_WS_URL = "ws://localhost:3456/ws";
 
