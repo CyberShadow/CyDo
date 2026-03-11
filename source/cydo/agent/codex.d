@@ -748,7 +748,9 @@ class CodexSession : AgentSession
 					string type;
 					string id;
 					string name; // mcpToolCall
-					JSONFragment action; // commandExecution
+					string text; // agentMessage: may contain pre-populated text
+					string command; // commandExecution: display command string
+					JSONFragment action; // commandExecution: structured action
 				}
 				Item item;
 			}
@@ -762,6 +764,11 @@ class CodexSession : AgentSession
 			return;
 
 		auto item = n.params.item;
+
+		// Skip user messages (echoed back by server) — no streaming events needed.
+		if (item.type == "userMessage")
+			return;
+
 		auto idx = blockIndex++;
 
 		string blockType;
@@ -785,7 +792,11 @@ class CodexSession : AgentSession
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
 				activeItem.name = "Bash";
-				activeItem.input = extractCommandInput(item.action);
+				// Prefer the structured action; fall back to the display command string.
+				auto cmdInput = extractCommandInput(item.action);
+				if (cmdInput == `{}` && item.command.length > 0)
+					cmdInput = `{"command":"` ~ escapeJsonString(item.command) ~ `","description":""}`;
+				activeItem.input = cmdInput;
 				break;
 			case "fileChange":
 				blockType = "tool_use";
@@ -813,6 +824,16 @@ class CodexSession : AgentSession
 			outputHandler_(
 				`{"type":"stream/block_start","index":` ~ to!string(idx)
 				~ `,"content_block":{"type":"` ~ blockType ~ `"` ~ extra ~ `}}`);
+
+		// If item/started already contains text (agentMessage with pre-populated
+		// content), emit a synthetic delta so the frontend has content to display.
+		if (item.text.length > 0 && outputHandler_)
+		{
+			activeItem.text = item.text;
+			outputHandler_(
+				`{"type":"stream/block_delta","index":` ~ to!string(idx)
+				~ `,"delta":{"type":"text_delta","text":"` ~ escapeJsonString(item.text) ~ `"}}`);
+		}
 	}
 
 	/// Handle any delta notification (text, thinking, or tool output).
@@ -847,14 +868,17 @@ class CodexSession : AgentSession
 
 	private void handleItemCompleted(string rawLine)
 	{
+		// Skip if no active item (e.g., userMessage items are not tracked).
+		if (activeItem.type.length == 0)
+			return;
+
 		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 
 		if (outputHandler_)
 			outputHandler_(
 				`{"type":"stream/block_stop","index":` ~ to!string(idx) ~ `}`);
 
-		if (activeItem.type.length > 0)
-			completedItems ~= activeItem;
+		completedItems ~= activeItem;
 		activeItem = CompletedItem.init;
 	}
 
