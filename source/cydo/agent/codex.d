@@ -320,12 +320,30 @@ class CodexAgent : Agent
 			}
 			else
 			{
+				// Build developerInstructions: system prompt + disallowedTools restriction
+				string devInstructions = config.appendSystemPrompt;
+				if (config.disallowedTools.length > 0)
+				{
+					if (devInstructions.length > 0)
+						devInstructions ~= "\n\n";
+					devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
+						~ config.disallowedTools
+						~ ". If you attempt to use them, they will fail.";
+				}
+
+				// Build MCP config override for CyDo tools
+				auto mcpConfig = buildMcpConfigOverride(tid,
+					config.creatableTaskTypes, config.switchModes, config.handoffs);
+
 				auto params = `{"cwd":"` ~ escapeJsonString(workDir)
 					~ `","model":"` ~ escapeJsonString(model)
 					~ `","approvalPolicy":"never"`
 					~ `,"sandbox":"danger-full-access"`
-					~ (config.appendSystemPrompt.length > 0
-						? `,"developerInstructions":"` ~ escapeJsonString(config.appendSystemPrompt) ~ `"`
+					~ (devInstructions.length > 0
+						? `,"developerInstructions":"` ~ escapeJsonString(devInstructions) ~ `"`
+						: ``)
+					~ (mcpConfig.length > 0
+						? `,"config":` ~ mcpConfig
 						: ``)
 					~ `}`;
 				server.sendRequest("thread/start", params,
@@ -916,6 +934,25 @@ class CodexSession : AgentSession
 // ---------------------------------------------------------------------------
 
 private:
+
+/// Build a JSON config override object with MCP server config for CyDo tools.
+/// Returns empty string if CyDo binary is not available.
+/// The JSON value is passed as the "config" field in thread/start params.
+string buildMcpConfigOverride(int tid, string creatableTaskTypes,
+	string switchModes, string handoffs)
+{
+	auto cydoBin = cydoBinaryPath;
+	if (cydoBin.length == 0)
+		return "";
+
+	return `{"mcp_servers.cydo":{"command":"`
+		~ escapeJsonString(cydoBin)
+		~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
+		~ to!string(tid) ~ `","CYDO_PORT":"3456","CYDO_CREATABLE_TYPES":"`
+		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
+		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
+		~ escapeJsonString(handoffs) ~ `"}}}`;
+}
 
 // ---------------------------------------------------------------------------
 // Rollout JSONL translation: Codex rollout format → agnostic events.
