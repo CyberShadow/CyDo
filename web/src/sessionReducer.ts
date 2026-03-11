@@ -410,15 +410,17 @@ export function reduceUserEcho(
       extraFields: extras,
       rawSource: rawMsg,
     };
-    // Remove the pending placeholder, then insert the echo before any
-    // in-progress streaming message so user text always precedes the
-    // assistant's response.
+    // Remove the pending placeholder (the user already sees their message
+    // via the placeholder in the correct chronological position).  Append
+    // the confirmed echo at the end — this preserves order for interrupt
+    // markers like "[Request interrupted by user]" which should appear
+    // after the assistant's partial response, not before it.
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
     );
     state = {
       ...state,
-      messages: insertBeforeStreaming(filtered, echoMsg),
+      messages: [...filtered, echoMsg],
     };
   }
 
@@ -456,12 +458,43 @@ export function reduceResultMessage(
   msg: ResultMessage,
   extras: ExtraField[] | undefined,
 ): SessionState {
+  // A result (especially error_during_execution from an interrupt) means the
+  // current turn is over.  Clear any lingering streaming state so the next
+  // response creates a fresh assistant message instead of appending to the
+  // interrupted one.
+  let messages = s.messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === "assistant" && m.streamingBlocks) {
+      messages = messages.slice();
+      // Promote any in-progress streaming blocks into content so the
+      // partial text remains visible after the stream is interrupted.
+      const promoted = m.streamingBlocks
+        .filter((b) => b.text)
+        .map((b) => {
+          if (b.type === "thinking")
+            return {
+              type: "thinking" as const,
+              thinking: b.text,
+              signature: "",
+            };
+          return { type: "text" as const, text: b.text };
+        });
+      messages[i] = {
+        ...m,
+        content: promoted.length > 0 ? [...m.content, ...promoted] : m.content,
+        streamingBlocks: undefined,
+      };
+      break;
+    }
+  }
+
   const id = `result-${++s.msgIdCounter}`;
   return {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
     messages: [
-      ...s.messages,
+      ...messages,
       {
         id,
         type: "result" as const,
