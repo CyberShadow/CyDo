@@ -4,7 +4,7 @@ backend:
 	dub build
 
 frontend:
-	cd web && npm install
+	cd web && npm ci
 	cd web && npm run build
 
 run: all
