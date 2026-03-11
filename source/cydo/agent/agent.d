@@ -1,7 +1,5 @@
 module cydo.agent.agent;
 
-import cydo.agent.claude : ClaudeCodeAgent;
-import cydo.agent.codex : CodexAgent;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -89,18 +87,4 @@ interface Agent
 	/// success (may not be called on failure). Returns an opaque handle
 	/// that the caller must keep alive (prevents GC of the process).
 	Object generateTitle(string userMessage, void delegate(string title) onTitle);
-}
-
-/// Create an Agent instance by type name.
-Agent createAgent(string agentType)
-{
-	switch (agentType)
-	{
-		case "claude":
-			return new ClaudeCodeAgent();
-		case "codex":
-			return new CodexAgent();
-		default:
-			throw new Exception("Unknown agent type: " ~ agentType);
-	}
 }

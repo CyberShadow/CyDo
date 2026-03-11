@@ -23,7 +23,7 @@ mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
 
-import cydo.agent.agent : Agent, SessionConfig, createAgent;
+import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
@@ -844,6 +844,22 @@ class App
 		auto a = createAgent(td.agentType);
 		agentsByType[td.agentType] = a;
 		return a;
+	}
+
+	/// Create an Agent instance by type name.
+	private static Agent createAgent(string agentType)
+	{
+		switch (agentType)
+		{
+			case "claude":
+				import cydo.agent.claude : ClaudeCodeAgent;
+				return new ClaudeCodeAgent();
+			case "codex":
+				import cydo.agent.codex : CodexAgent;
+				return new CodexAgent();
+			default:
+				throw new Exception("Unknown agent type: " ~ agentType);
+		}
 	}
 
 	private void ensureTaskAgent(int tid, SessionConfig sessionConfig = SessionConfig.init)
