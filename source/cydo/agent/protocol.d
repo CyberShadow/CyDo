@@ -140,22 +140,70 @@ string translateStreamEvent(string rawLine)
 	return renameType(innerEvent, newType);
 }
 
-/// Rename the "type" field in a JSON line. Preserves all other fields.
+/// Rename the top-level "type" field in a JSON line. Preserves all other fields.
+/// Uses brace-depth tracking so nested "type" fields (e.g. inside "message")
+/// are not accidentally matched.
 string renameType(string rawLine, string newType)
 {
-	import std.string : indexOf;
-
-	// Find "type":"..." and replace the value
-	auto typeIdx = rawLine.indexOf(`"type":"`);
+	auto typeIdx = findTopLevelType(rawLine);
 	if (typeIdx < 0)
 		return rawLine;
 
 	auto valueStart = typeIdx + `"type":"`.length;
-	auto valueEnd = rawLine.indexOf('"', valueStart);
-	if (valueEnd < 0)
-		return rawLine;
+	// Find closing quote of value
+	foreach (i; valueStart .. rawLine.length)
+	{
+		if (rawLine[i] == '"')
+			return rawLine[0 .. typeIdx] ~ `"type":"` ~ newType ~ `"` ~ rawLine[i + 1 .. $];
+	}
+	return rawLine;
+}
 
-	return rawLine[0 .. typeIdx] ~ `"type":"` ~ newType ~ `"` ~ rawLine[valueEnd + 1 .. $];
+/// Find the byte offset of the top-level `"type":"` in a JSON object string.
+/// Returns -1 if not found.  Only matches at brace depth 1 (top-level keys).
+private int findTopLevelType(string s)
+{
+	int depth = 0;
+	bool inString = false;
+	bool escaped = false;
+	enum needle = `"type":"`;
+
+	foreach (i; 0 .. s.length)
+	{
+		auto c = s[i];
+		if (escaped)
+		{
+			escaped = false;
+			continue;
+		}
+		if (c == '\\' && inString)
+		{
+			escaped = true;
+			continue;
+		}
+		if (c == '"' && !inString)
+		{
+			// Starting a key or value at the current depth.
+			// Check for needle match at top-level (depth 1).
+			if (depth == 1 && i + needle.length <= s.length
+				&& s[i .. i + needle.length] == needle)
+				return cast(int) i;
+			inString = true;
+			continue;
+		}
+		if (c == '"')
+		{
+			inString = false;
+			continue;
+		}
+		if (inString)
+			continue;
+		if (c == '{')
+			depth++;
+		else if (c == '}')
+			depth--;
+	}
+	return -1;
 }
 
 /// Replace "type":"system" with the new type and remove "subtype":"..." field.
