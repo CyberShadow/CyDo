@@ -22,6 +22,7 @@ import ae.utils.promise : Promise, resolve;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
+import cydo.mcp.tools : ToolsBackend;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
@@ -66,7 +67,7 @@ void main(string[] args)
 	socketManager.loop();
 }
 
-class App
+class App : ToolsBackend
 {
 	import ae.sys.inotify : INotify, iNotify;
 	import cydo.inotify : RefCountedINotify;

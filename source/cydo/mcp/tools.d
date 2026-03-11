@@ -1,7 +1,6 @@
 /// CyDo MCP tool definitions and implementations.
 module cydo.mcp.tools;
 
-import cydo.app : App;
 import cydo.mcp : Description, McpName, McpResult;
 
 /// Specification for a single sub-task.
@@ -105,14 +104,26 @@ interface CydoTools
 	);
 }
 
+import ae.utils.promise : Promise;
+
+/// Backend interface — methods that CydoToolsImpl needs from the application.
+/// App implements this; the indirection breaks the compile-time dependency on cydo.app.
+interface ToolsBackend
+{
+	Promise!McpResult handleCreateTask(string callerTid,
+		string description, string taskType, string prompt);
+	McpResult handleSwitchMode(string callerTid, string continuation);
+	McpResult handleHandoff(string callerTid, string continuation, string prompt);
+}
+
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
 /// Async tools (e.g. Task) use fiber-based await to block until completion.
 class CydoToolsImpl : CydoTools
 {
-	private App app;
+	private ToolsBackend app;
 	private string callerTid;
 
-	this(App app, string callerTid)
+	this(ToolsBackend app, string callerTid)
 	{
 		this.app = app;
 		this.callerTid = callerTid;
