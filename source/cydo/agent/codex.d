@@ -716,17 +716,16 @@ class CodexSession : AgentSession
 	void stop()
 	{
 		alive_ = false;
-		if (threadId.length > 0)
-			server.unregisterSession(threadId);
+		// Terminate first, then unregister — the exit callback iterates
+		// server.sessions, so the session must still be registered when
+		// the process exits.
+		server.terminate();
 	}
 
 	void closeStdin()
 	{
 		alive_ = false;
-		if (threadId.length > 0)
-			server.unregisterSession(threadId);
-		if (exitHandler_)
-			exitHandler_(0);
+		server.terminate();
 	}
 
 	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
