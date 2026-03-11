@@ -163,6 +163,10 @@ DataVec loadTaskHistory(int tid, string jsonlPath,
 
 		auto translated = translateLine !is null ? translateLine(line) : line;
 
+		// translateLine may return null for lines that should be skipped.
+		if (translated is null)
+			continue;
+
 		// Wrap with file-event envelope (frontend dispatches on "fileEvent" vs "event")
 		string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ translated ~ `}`;
 		history ~= Data(injected.representation);

@@ -477,8 +477,18 @@ class CodexAgent : Agent
 
 	string translateHistoryLine(string line)
 	{
-		// TODO (B3): Translate Codex {timestamp, type, payload} JSONL format.
-		return line;
+		import std.algorithm : canFind;
+
+		// Codex JSONL lines: { timestamp, type, payload }
+		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
+		if (line.canFind(`"type":"session_meta"`))
+			return translateRolloutSessionMeta(line);
+		else if (line.canFind(`"type":"response_item"`))
+			return translateRolloutResponseItem(line);
+		else if (line.canFind(`"type":"event_msg"`))
+			return translateRolloutEventMsg(line);
+		// Skip turn_context, compacted, unknown
+		return null;
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -906,6 +916,276 @@ class CodexSession : AgentSession
 // ---------------------------------------------------------------------------
 
 private:
+
+// ---------------------------------------------------------------------------
+// Rollout JSONL translation: Codex rollout format → agnostic events.
+// Codex rollout line: { timestamp, type: "session_meta"|"response_item"|
+//   "event_msg"|"turn_context"|"compacted", payload: {...} }
+// ---------------------------------------------------------------------------
+
+/// Translate a session_meta rollout line → session/init agnostic event.
+string translateRolloutSessionMeta(string line)
+{
+	@JSONPartial
+	static struct Probe
+	{
+		@JSONPartial
+		static struct Payload
+		{
+			string id;
+			string cwd;
+			string cli_version;
+		}
+		Payload payload;
+	}
+
+	Probe probe;
+	try
+		probe = jsonParse!Probe(line);
+	catch (Exception)
+		return null;
+
+	if (probe.payload.id.length == 0)
+		return null;
+
+	import std.uuid : randomUUID;
+	auto uuid = randomUUID().toString();
+
+	return `{"type":"session/init"`
+		~ `,"session_id":"` ~ escapeJsonString(probe.payload.id)
+		~ `","uuid":"` ~ uuid
+		~ `","model":"","cwd":"` ~ escapeJsonString(probe.payload.cwd)
+		~ `","tools":[],"claude_code_version":"` ~ escapeJsonString(probe.payload.cli_version)
+		~ `","permissionMode":"dangerously-skip-permissions","agent":"codex"}`;
+}
+
+/// Translate a response_item rollout line → message/assistant or message/user.
+string translateRolloutResponseItem(string line)
+{
+	@JSONPartial
+	static struct Probe
+	{
+		@JSONPartial
+		static struct Payload
+		{
+			string type;   // "message", "local_shell_call", "function_call",
+			               // "function_call_output", "reasoning"
+			string role;   // for message type
+			JSONFragment content;  // message content array or reasoning content
+
+			// local_shell_call fields
+			string call_id;
+			JSONFragment action; // { type: "exec", command: [...] }
+
+			// function_call fields
+			string name;
+			string arguments;
+
+			// function_call_output fields
+			JSONFragment output;
+
+			// reasoning fields
+			JSONFragment summary;
+		}
+		Payload payload;
+	}
+
+	Probe probe;
+	try
+		probe = jsonParse!Probe(line);
+	catch (Exception)
+		return null;
+
+	auto ptype = probe.payload.type;
+
+	if (ptype == "message")
+		return translateRolloutMessage(probe.payload.role,
+			probe.payload.content.json !is null ? probe.payload.content.json : "[]");
+	else if (ptype == "local_shell_call")
+		return translateRolloutToolUse(probe.payload.call_id, "Bash",
+			extractCommandInput(probe.payload.action));
+	else if (ptype == "function_call")
+		return translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
+			`{"arguments":"` ~ escapeJsonString(probe.payload.arguments) ~ `"}`);
+	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
+		|| ptype == "mcp_tool_call_output")
+		return translateRolloutToolResult(probe.payload.call_id,
+			probe.payload.output.json !is null ? probe.payload.output.json : `""`);
+	else if (ptype == "reasoning")
+		return translateRolloutReasoning(
+			probe.payload.summary.json !is null ? probe.payload.summary.json : "[]",
+			probe.payload.content.json);
+
+	return null; // Unknown response_item type
+}
+
+/// Translate a message response_item payload.
+string translateRolloutMessage(string role, string contentJson)
+{
+	import std.array : replace;
+	import std.uuid : randomUUID;
+
+	// Remap Codex content types (input_text/output_text) → agnostic "text"
+	auto content = contentJson
+		.replace(`"type":"input_text"`, `"type":"text"`)
+		.replace(`"type":"output_text"`, `"type":"text"`);
+
+	if (role == "assistant")
+	{
+		auto uuid = randomUUID().toString();
+		auto msgId = "msg_" ~ randomUUID().toString();
+		return `{"type":"message/assistant"`
+			~ `,"uuid":"` ~ uuid
+			~ `","session_id":"","parent_tool_use_id":null`
+			~ `,"message":{"id":"` ~ msgId
+			~ `","role":"assistant","content":` ~ content
+			~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
+			~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+	}
+	else // user, developer, system
+	{
+		return `{"type":"message/user","message":{"role":"` ~ escapeJsonString(role)
+			~ `","content":` ~ content ~ `}}`;
+	}
+}
+
+/// Construct a message/assistant with a single tool_use content block.
+string translateRolloutToolUse(string callId, string toolName, string inputJson)
+{
+	import std.uuid : randomUUID;
+
+	if (callId.length == 0)
+		callId = randomUUID().toString();
+
+	auto uuid = randomUUID().toString();
+	auto msgId = "msg_" ~ randomUUID().toString();
+	return `{"type":"message/assistant"`
+		~ `,"uuid":"` ~ uuid
+		~ `","session_id":"","parent_tool_use_id":null`
+		~ `,"message":{"id":"` ~ msgId
+		~ `","role":"assistant","content":[{"type":"tool_use","id":"`
+		~ escapeJsonString(callId)
+		~ `","name":"` ~ escapeJsonString(toolName)
+		~ `","input":` ~ inputJson ~ `}]`
+		~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
+		~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+}
+
+/// Construct a message/user with a tool_result content block.
+string translateRolloutToolResult(string callId, string outputJson)
+{
+	// outputJson might be a plain string or an object — extract text
+	string text;
+	if (outputJson.length > 0 && outputJson[0] == '"')
+	{
+		// Plain string value — use as-is (already JSON-encoded)
+		text = outputJson;
+	}
+	else
+	{
+		// Object or other — just stringify
+		text = `"(output)"`;
+	}
+
+	return `{"type":"message/user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"`
+		~ escapeJsonString(callId)
+		~ `","content":` ~ text ~ `}]}}`;
+}
+
+/// Construct a message/assistant with a thinking content block from reasoning.
+string translateRolloutReasoning(string summaryJson, string contentJson)
+{
+	import std.uuid : randomUUID;
+
+	// Extract text from summary array: [{ text: "..." }, ...]
+	string thinkingText;
+	if (contentJson !is null && contentJson.length > 2)
+	{
+		// Try to extract reasoning text from content array
+		@JSONPartial
+		static struct ReasoningContent
+		{
+			string text;
+		}
+
+		try
+		{
+			auto items = jsonParse!(ReasoningContent[])(contentJson);
+			foreach (ref item; items)
+				if (item.text.length > 0)
+					thinkingText ~= item.text;
+		}
+		catch (Exception) {}
+	}
+
+	if (thinkingText.length == 0 && summaryJson.length > 2)
+	{
+		// Fallback to summary
+		@JSONPartial
+		static struct SummaryItem
+		{
+			string text;
+		}
+
+		try
+		{
+			auto items = jsonParse!(SummaryItem[])(summaryJson);
+			foreach (ref item; items)
+				if (item.text.length > 0)
+					thinkingText ~= item.text;
+		}
+		catch (Exception) {}
+	}
+
+	if (thinkingText.length == 0)
+		return null;
+
+	auto uuid = randomUUID().toString();
+	auto msgId = "msg_" ~ randomUUID().toString();
+	return `{"type":"message/assistant"`
+		~ `,"uuid":"` ~ uuid
+		~ `","session_id":"","parent_tool_use_id":null`
+		~ `,"message":{"id":"` ~ msgId
+		~ `","role":"assistant","content":[{"type":"thinking","thinking":"`
+		~ escapeJsonString(thinkingText)
+		~ `","signature":""}]`
+		~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
+		~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+}
+
+/// Translate an event_msg rollout line → turn/result (for task_complete).
+string translateRolloutEventMsg(string line)
+{
+	@JSONPartial
+	static struct Probe
+	{
+		@JSONPartial
+		static struct Payload
+		{
+			string type;
+		}
+		Payload payload;
+	}
+
+	Probe probe;
+	try
+		probe = jsonParse!Probe(line);
+	catch (Exception)
+		return null;
+
+	if (probe.payload.type == "task_complete")
+	{
+		import std.uuid : randomUUID;
+		auto uuid = randomUUID().toString();
+		return `{"type":"turn/result","subtype":"success"`
+			~ `,"uuid":"` ~ uuid
+			~ `","session_id":"","is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
+			~ `,"usage":{"input_tokens":0,"output_tokens":0}}`;
+	}
+
+	// Skip user_message, task_started, error, etc.
+	return null;
+}
 
 /// Extract command string from a Codex commandExecution action fragment.
 string extractCommandInput(JSONFragment action)
