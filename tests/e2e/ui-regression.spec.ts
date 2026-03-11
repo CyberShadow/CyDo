@@ -111,3 +111,36 @@ test("tool result with Bash output renders correctly", async ({ page }) => {
     page.locator(".tool-subtitle", { hasText: "Running command" }),
   ).toBeVisible({ timeout: 5_000 });
 });
+
+test("fork stays focused on forked session", async ({ page }) => {
+  await enterProject(page);
+  await sendMessage(page, 'Please reply with "fork-source"');
+
+  // Wait for response
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "fork-source" }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Wait for the fork button to become available on the user message.
+  // The backend needs to read the JSONL and send forkable_uuids first.
+  const userMsg = page.locator(".message-wrapper").filter({
+    has: page.locator(".message.user-message", { hasText: "fork-source" }),
+  });
+  await userMsg.hover();
+  const forkBtn = userMsg.locator(".fork-btn");
+  await expect(forkBtn).toBeVisible({ timeout: 15_000 });
+
+  // Click fork
+  await forkBtn.click();
+
+  // A forked session should appear in the sidebar with "(fork)" suffix
+  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: "(fork)" });
+  await expect(forkEntry).toBeVisible({ timeout: 10_000 });
+
+  // The forked session should be active (auto-focused)
+  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
+  await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
+
+  // The forked session should show a "Resume Session" button (fork has status "completed")
+  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 5_000 });
+});
