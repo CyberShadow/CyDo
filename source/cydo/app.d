@@ -998,6 +998,11 @@ class App
 			cleanup(tasks[tid].sandbox);
 			stopJsonlWatch(tid);
 
+			// Force JSONL reload on next request_history so that
+			// fork IDs from the file replace live-stream UUIDs.
+			tasks[tid].history = DataVec();
+			tasks[tid].historyLoaded = false;
+
 			// Continuation: transition to successor instead of completing
 			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
 			{
@@ -1422,8 +1427,10 @@ class App
 	/// Read new content from the JSONL file and broadcast forkable UUIDs.
 	private void processNewJsonlContent(int tid, string jsonlPath)
 	{
-		import std.file : getSize;
+		import std.file : exists, getSize;
 
+		if (jsonlPath.length == 0 || !exists(jsonlPath))
+			return;
 		auto fileSize = getSize(jsonlPath);
 		auto lastPos = jsonlReadPos.get(tid, 0);
 		if (fileSize <= lastPos)

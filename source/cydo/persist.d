@@ -199,11 +199,23 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	import std.string : lineSplitter;
 
 	auto sourcePath = historyPathFn(sourceSessionId);
-	if (!exists(sourcePath))
+	if (sourcePath.length == 0 || !exists(sourcePath))
 		return ForkResult.init;
 
 	auto newSessionId = generateUUID();
 	auto destPath = historyPathFn(newSessionId);
+
+	// For agents where historyPath uses glob (e.g. Codex), the new file
+	// doesn't exist yet so the glob returns "".  Derive the destination
+	// path from the source path by replacing the session ID in the filename.
+	if (destPath.length == 0)
+	{
+		import std.path : buildPath, dirName, baseName;
+		import std.string : replace;
+		auto sourceFile = baseName(sourcePath);
+		auto destFile = sourceFile.replace(sourceSessionId, newSessionId);
+		destPath = buildPath(dirName(sourcePath), destFile);
+	}
 
 	// Read source, rewrite sessionId, truncate after target line
 	string output;
@@ -246,7 +258,7 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
-	if (!exists(jsonlPath))
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
 	string output;
@@ -293,7 +305,7 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	if (!exists(jsonlPath))
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
 	bool pastTarget = false;
@@ -326,7 +338,7 @@ string lastForkIdInJsonl(string jsonlPath, string[] delegate(string content, int
 {
 	import std.file : exists, readText;
 
-	if (!exists(jsonlPath))
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return null;
 
 	auto ids = extractFn(readText(jsonlPath));

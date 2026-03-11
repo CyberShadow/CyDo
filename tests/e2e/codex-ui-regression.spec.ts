@@ -77,12 +77,7 @@ test("codex sidebar status dot reflects session state", async ({ page }) => {
   await expect(sidebarItem.locator(".sidebar-dot.failed")).toBeVisible({ timeout: 10_000 });
 });
 
-// Codex fork test is skipped for now: the backend fork logic is agent-aware
-// (uses line-number-based fork IDs), but the frontend shows fork buttons only
-// when the message UUID matches forkable_uuids. During live streaming, Codex
-// messages get random UUIDs that don't match JSONL-based "line:N" fork IDs.
-// TODO: implement history reload or UUID mapping to enable live fork buttons.
-test.skip("codex fork stays focused on forked session", async ({ page }) => {
+test("codex fork stays focused on forked session", async ({ page }) => {
   const tid = await createCodexTask();
   await page.goto(`/task/${tid}`);
 
@@ -115,7 +110,7 @@ test.skip("codex fork stays focused on forked session", async ({ page }) => {
   const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".btn-resume:visible").first()).toBeVisible({ timeout: 5_000 });
 });
 
 test("codex tool result with shell output renders correctly", async ({ page }) => {
