@@ -13,8 +13,19 @@ async function enterProject(page: Page) {
 async function sendMessage(page: Page, text: string) {
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled({ timeout: 10_000 });
+  await input.click();
   await input.fill(text);
-  await page.locator(".btn-send:visible").first().click();
+  const sendBtn = page.locator(".btn-send:visible").first();
+  // Wait for the controlled component to update (fill may not trigger onInput reliably)
+  try {
+    await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
+  } catch {
+    // Fallback: clear and type character by character
+    await input.clear();
+    await input.pressSequentially(text);
+    await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
+  }
+  await sendBtn.click();
 }
 
 test("session creation shows sidebar entry", async ({ page }) => {
@@ -45,12 +56,8 @@ test("session switching preserves messages", async ({ page }) => {
   await page.locator(".sidebar-new-task").click();
   await expect(page.locator(".session-empty")).toBeVisible({ timeout: 5_000 });
 
-  // Create second task — target the session-empty InputBox directly
-  // (the hidden session's InputBox is still in the DOM with display:none)
-  const newInput = page.locator(".session-empty .input-textarea");
-  await expect(newInput).toBeEnabled({ timeout: 10_000 });
-  await newInput.fill('Please reply with "second"');
-  await page.locator(".session-empty .btn-send").click();
+  // Create second task — use sendMessage (now only one visible input)
+  await sendMessage(page, 'Please reply with "second"');
 
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "second" }),
