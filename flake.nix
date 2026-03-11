@@ -126,6 +126,27 @@
           '';
         in
         pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          unittests = pkgs.buildDubPackage {
+            pname = "cydo-unittests";
+            version = "0.1.0";
+            src = ./.;
+
+            dubLock = ./dub-lock.json;
+
+            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 ];
+
+            buildPhase = ''
+              runHook preBuild
+              dub test --skip-registry=all
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              touch $out
+              runHook postInstall
+            '';
+          };
           integration = pkgs.stdenv.mkDerivation {
             pname = "cydo-integration-test";
             version = "0.1.0";

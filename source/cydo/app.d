@@ -306,7 +306,7 @@ class App : ToolsBackend
 	}
 
 	/// Handle Task — returns a promise that resolves when the child task completes.
-	package Promise!McpResult handleCreateTask(string callerTid,
+	Promise!McpResult handleCreateTask(string callerTid,
 		string description, string taskType, string prompt)
 	{
 		import ae.utils.json : toJson;
@@ -393,7 +393,7 @@ class App : ToolsBackend
 
 	/// Handle SwitchMode tool — validate and store continuation choice (keep_context).
 	/// The actual transition happens in onExit after the session ends.
-	package McpResult handleSwitchMode(string callerTid, string continuation)
+	McpResult handleSwitchMode(string callerTid, string continuation)
 	{
 		import std.conv : to;
 
@@ -431,7 +431,7 @@ class App : ToolsBackend
 
 	/// Handle Handoff tool — validate continuation, store choice + prompt.
 	/// Creates a new child task on exit with the provided prompt.
-	package McpResult handleHandoff(string callerTid, string continuation, string prompt)
+	McpResult handleHandoff(string callerTid, string continuation, string prompt)
 	{
 		import std.conv : to;
 
