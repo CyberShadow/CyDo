@@ -78,6 +78,7 @@ export function reduceSystemInit(
       skills: msg.skills,
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
+      agent: msg.agent,
     },
     messages: [...s.messages, initMsg],
   };

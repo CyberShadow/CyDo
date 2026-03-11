@@ -40,6 +40,9 @@ export function SystemBanner({
             onClick={() => setDetailsOpen(!detailsOpen)}
             title="Click for session details"
           >
+            {sessionInfo.agent && sessionInfo.agent !== "claude" && (
+              <span class="banner-agent">{sessionInfo.agent}</span>
+            )}
             {sessionInfo.model}
           </span>
         )}
@@ -86,6 +89,11 @@ export function SystemBanner({
       </div>
       {detailsOpen && sessionInfo && (
         <div class="banner-details">
+          {sessionInfo.agent && (
+            <div class="banner-detail-row">
+              <span class="detail-label">Agent:</span> {sessionInfo.agent}
+            </div>
+          )}
           <div class="banner-detail-row">
             <span class="detail-label">Session:</span> {sessionInfo.sessionId}
           </div>

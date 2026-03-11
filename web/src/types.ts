@@ -95,6 +95,7 @@ export interface SessionInfo {
   skills?: string[];
   plugins?: unknown[];
   fast_mode_state?: string;
+  agent?: string; // "claude" | "codex" | undefined
 }
 
 export interface TaskState {

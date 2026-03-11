@@ -214,6 +214,7 @@ export const SystemInitSchema = z
     fast_mode_state: z.string().optional(),
     slash_commands: z.array(z.string()).optional(),
     output_style: z.string().optional(),
+    agent: z.string().optional(),
   })
   .passthrough();
 
@@ -616,6 +617,7 @@ export interface TasksListMessage {
     relation_type?: string;
     status?: string;
     task_type?: string;
+    agent_type?: string;
   }[];
 }
 export interface TaskReloadMessage {

@@ -1749,6 +1749,18 @@ body,
   color: var(--text-dim);
 }
 
+.banner-agent {
+  font-size: 10px;
+  padding: 1px 5px;
+  margin-right: 4px;
+  background: var(--accent-bg, #2a4a7f);
+  color: var(--accent-fg, #b8d4ff);
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .clickable {
   cursor: pointer;
 }
