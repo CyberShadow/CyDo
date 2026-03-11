@@ -77,7 +77,8 @@ class App
 	private Persistence persistence;
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
-	private Agent agent;
+	private Agent agent; // default agent
+	private Agent[string] agentsByType;
 	// Task type definitions loaded from YAML
 	private TaskTypeDef[] taskTypes;
 	private string taskTypesDir;
@@ -101,6 +102,7 @@ class App
 		persistence = Persistence("data/cydo.db");
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
+		agentsByType[config.default_agent_type] = agent;
 
 		// Load task type definitions
 		try
@@ -367,7 +369,7 @@ class App
 
 		// Configure and spawn child agent
 		auto sessionConfig = SessionConfig(
-			agent.resolveModelAlias(childTypeDef.model_class),
+			agentForTask(childTid).resolveModelAlias(childTypeDef.model_class),
 		);
 		sessionConfig.disallowedTools = disallowedTools();
 		ensureTaskAgent(childTid, sessionConfig);
@@ -492,7 +494,7 @@ class App
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
-						agent.resolveModelAlias(typeDef.model_class),
+						agentForTask(tid).resolveModelAlias(typeDef.model_class),
 					);
 					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
@@ -525,8 +527,9 @@ class App
 			// Load JSONL from disk if not already loaded
 			if (!td.historyLoaded && td.agentSessionId.length > 0)
 			{
-				auto jsonlPath = agent.historyPath(td.agentSessionId, td.effectiveCwd);
-				td.history = loadTaskHistory(tid, jsonlPath, &agent.translateHistoryLine);
+				auto ta = agentForTask(tid);
+				auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+				td.history = loadTaskHistory(tid, jsonlPath, &ta.translateHistoryLine);
 				td.historyLoaded = true;
 			}
 
@@ -558,7 +561,7 @@ class App
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
-						agent.resolveModelAlias(typeDef.model_class),
+						agentForTask(tid).resolveModelAlias(typeDef.model_class),
 					);
 					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
@@ -607,7 +610,7 @@ class App
 			auto typeDef = taskTypes.byName(td.taskType);
 			if (typeDef !is null)
 			{
-				auto sc = SessionConfig(agent.resolveModelAlias(typeDef.model_class));
+				auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
 				sc.disallowedTools = disallowedTools();
 				ensureTaskAgent(tid, sc);
 			}
@@ -676,10 +679,11 @@ class App
 				return;
 			}
 
+			auto ta = agentForTask(tid);
 			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
 				td.effectiveCwd, td.workspace, td.title,
-				(string sid) => agent.historyPath(sid, td.effectiveCwd),
-				&agent.rewriteSessionId,
+				(string sid) => ta.historyPath(sid, td.effectiveCwd),
+				&ta.rewriteSessionId,
 				td.description, td.taskType);
 			if (result.tid < 0)
 			{
@@ -715,10 +719,12 @@ class App
 				return;
 			}
 
+			auto ta = agentForTask(tid);
+
 			if (json.dry_run)
 			{
 				auto count = countMessagesAfterUuid(
-					agent.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
+					ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
 				if (count < 0)
 				{
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -739,7 +745,7 @@ class App
 				// (done first so that on failure we haven't modified anything yet)
 				if (json.revert_files)
 				{
-					auto err = agent.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
+					auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 					if (err !is null)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
@@ -750,13 +756,13 @@ class App
 				// 2. Back up pre-undo state as a child task
 				if (json.revert_conversation)
 				{
-					auto lastUuid = lastUuidInJsonl(agent.historyPath(td.agentSessionId, td.effectiveCwd));
+					auto lastUuid = lastUuidInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd));
 					if (lastUuid.length > 0)
 					{
 						auto backup = forkTask(persistence, tid, td.agentSessionId, lastUuid,
 							td.effectiveCwd, td.workspace, td.title,
-							(string sid) => agent.historyPath(sid, td.effectiveCwd),
-							&agent.rewriteSessionId,
+							(string sid) => ta.historyPath(sid, td.effectiveCwd),
+							&ta.rewriteSessionId,
 							td.description, td.taskType);
 						if (backup.tid >= 0)
 						{
@@ -781,7 +787,7 @@ class App
 				// 3. Truncate conversation history
 				if (json.revert_conversation)
 				{
-					auto removed = truncateJsonl(agent.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
+					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
 					if (removed < 0)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
@@ -829,11 +835,25 @@ class App
 		return tid;
 	}
 
+	/// Return the Agent instance for a task's agent type, creating it on demand.
+	private Agent agentForTask(int tid)
+	{
+		auto td = &tasks[tid];
+		if (auto p = td.agentType in agentsByType)
+			return *p;
+		auto a = createAgent(td.agentType);
+		agentsByType[td.agentType] = a;
+		return a;
+	}
+
 	private void ensureTaskAgent(int tid, SessionConfig sessionConfig = SessionConfig.init)
 	{
 		auto td = &tasks[tid];
 		if (td.session && td.session.alive)
 			return;
+
+		// Look up the correct agent for this task's agent type
+		auto taskAgent = agentForTask(tid);
 
 		// Populate creatable task types description if not already set
 		if (sessionConfig.creatableTaskTypes.length == 0)
@@ -886,7 +906,7 @@ class App
 		// Resolve sandbox config: agent defaults + global + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, agent, workDir, readOnly);
+		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, taskAgent, workDir, readOnly);
 
 		// Task directory is always writable (even for read-only tasks)
 		if (td.taskDir.length > 0)
@@ -898,11 +918,11 @@ class App
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
 
-		td.session = agent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
+		td.session = taskAgent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
-		if (agent.lastMcpConfigPath.length > 0)
-			td.sandbox.tempFiles ~= agent.lastMcpConfigPath;
+		if (taskAgent.lastMcpConfigPath.length > 0)
+			td.sandbox.tempFiles ~= taskAgent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
 		// For resumed tasks agentSessionId is already set; for new tasks
@@ -920,7 +940,7 @@ class App
 				td.isProcessing = false;
 
 				// Capture the canonical result text for sub-task output.
-				td.resultText = agent.extractResultText(line);
+				td.resultText = taskAgent.extractResultText(line);
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
@@ -1069,7 +1089,7 @@ class App
 			persistence.setStatus(tid, "active");
 
 			// Spawn successor session — will --resume the existing agentSessionId
-			auto sessionConfig = SessionConfig(agent.resolveModelAlias(newTypeDef.model_class));
+			auto sessionConfig = SessionConfig(agentForTask(tid).resolveModelAlias(newTypeDef.model_class));
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
 
@@ -1124,7 +1144,7 @@ class App
 			}
 
 			// Spawn the successor agent
-			auto sessionConfig = SessionConfig(agent.resolveModelAlias(newTypeDef.model_class));
+			auto sessionConfig = SessionConfig(agentForTask(childTid).resolveModelAlias(newTypeDef.model_class));
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(childTid, sessionConfig);
 
@@ -1206,7 +1226,7 @@ class App
 	/// Try to extract agent session ID from an output line using the Agent interface.
 	private void tryExtractAgentSessionId(int tid, string rawLine)
 	{
-		auto sessionId = agent.parseSessionId(rawLine);
+		auto sessionId = agentForTask(tid).parseSessionId(rawLine);
 		if (sessionId.length > 0)
 		{
 			tasks[tid].agentSessionId = sessionId;
@@ -1322,7 +1342,7 @@ class App
 		if (td.agentSessionId.length == 0)
 			return;
 
-		auto jsonlPath = agent.historyPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlPath = agentForTask(tid).historyPath(td.agentSessionId, td.effectiveCwd);
 
 		if (exists(jsonlPath))
 		{
@@ -1399,7 +1419,7 @@ class App
 	{
 		import std.file : exists, readText;
 
-		auto jsonlPath = agent.historyPath(agentSessionId, projectPath);
+		auto jsonlPath = agentForTask(tid).historyPath(agentSessionId, projectPath);
 		if (!exists(jsonlPath))
 			return;
 
@@ -1439,7 +1459,7 @@ class App
 		if (td.titleGenDone || td.titleGenHandle !is null)
 			return;
 
-		td.titleGenHandle = agent.generateTitle(userMessage, (string title) {
+		td.titleGenHandle = agentForTask(tid).generateTitle(userMessage, (string title) {
 			if (tid !in tasks)
 				return;
 			tasks[tid].titleGenHandle = null;
@@ -1505,7 +1525,7 @@ class App
 			auto event = extractEventFromEnvelope(envelope);
 			if (event.length > 0)
 			{
-				auto text = agent.extractAssistantText(event);
+				auto text = agentForTask(tid).extractAssistantText(event);
 				if (text.length > 0)
 					return truncateTitle(text, 200);
 			}
