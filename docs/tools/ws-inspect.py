@@ -1,5 +1,6 @@
 #!/usr/bin/env nix-shell
 #!nix-shell -i python3 -p python3Packages.websockets
+#!nix-shell -I nixpkgs=https://github.com/NixOS/nixpkgs/archive/917fec990948658ef1ccd07cef2a1ef060786846.tar.gz
 """
 CyDo WebSocket inspector — connect to the backend and inspect live state.
 
