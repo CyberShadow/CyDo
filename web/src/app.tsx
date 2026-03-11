@@ -233,10 +233,10 @@ export function App() {
             );
           })}
         {!active &&
-          (!connected ? (
+          (!connected || activeTaskId !== null ? (
             <div class="session-empty no-sidebar">
               <div class="session-empty-inner">
-                <span>Connecting…</span>
+                <span>{connected ? "Loading task…" : "Connecting…"}</span>
               </div>
             </div>
           ) : (
