@@ -271,6 +271,7 @@ class CodexAgent : Agent
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
 		import std.algorithm : startsWith;
+		import std.process : environment;
 
 		void addIfNotRw(string path, PathMode mode)
 		{
@@ -288,11 +289,27 @@ class CodexAgent : Agent
 			paths[path] = mode;
 		}
 
-		auto codexHome = expandTilde("~/.codex");
+		// Codex home directory (config, sessions)
+		auto home = environment.get("HOME", "/tmp");
+		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
 		paths[codexHome] = PathMode.rw;
 
 		addIfNotRw(resolveCodexBinary(), PathMode.ro);
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
+
+		// Pass through Codex-required env vars so they survive --clearenv
+		void passthrough(string key)
+		{
+			auto val = environment.get(key, "");
+			if (val.length > 0)
+				env[key] = val;
+		}
+
+		passthrough("PATH");
+		passthrough("OPENAI_API_KEY");
+		passthrough("OPENAI_BASE_URL");
+		passthrough("CODEX_API_KEY");
+		passthrough("CODEX_HOME");
 	}
 
 	@property string gitName() { return "Codex CLI"; }
@@ -561,6 +578,9 @@ class CodexSession : AgentSession
 	private CompletedItem activeItem;
 	private CompletedItem[] completedItems;
 
+	// Queued messages waiting for thread to be ready.
+	private string[] pendingMessages;
+
 	// Callbacks
 	package void delegate(string line) outputHandler_;
 	package void delegate(string line) stderrHandler_;
@@ -625,6 +645,12 @@ class CodexSession : AgentSession
 
 		if (outputHandler_)
 			outputHandler_(initEvent);
+
+		// Drain queued messages now that the thread is ready.
+		auto queued = pendingMessages;
+		pendingMessages = null;
+		foreach (msg; queued)
+			sendMessage(msg);
 	}
 
 	/// Called when the app-server process dies.
@@ -639,8 +665,15 @@ class CodexSession : AgentSession
 
 	void sendMessage(string content)
 	{
-		if (!alive_ || threadId.length == 0)
+		if (!alive_)
 			return;
+
+		// Queue message if thread hasn't been created yet.
+		if (threadId.length == 0)
+		{
+			pendingMessages ~= content;
+			return;
+		}
 
 		auto escaped = escapeJsonString(content);
 
