@@ -510,16 +510,23 @@ class CodexAgent : Agent
 		return "";
 	}
 
-	string translateHistoryLine(string line)
+	string translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
+		import std.conv : to;
 
 		// Codex JSONL lines: { timestamp, type, payload }
 		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
 		if (line.canFind(`"type":"session_meta"`))
 			return translateRolloutSessionMeta(line);
 		else if (line.canFind(`"type":"response_item"`))
-			return translateRolloutResponseItem(line);
+		{
+			// Pass line-number fork ID for user/assistant messages
+			string forkId = null;
+			if (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`))
+				forkId = "line:" ~ to!string(lineNum);
+			return translateRolloutResponseItem(line, forkId);
+		}
 		else if (line.canFind(`"type":"event_msg"`))
 			return translateRolloutEventMsg(line);
 		// Skip turn_context, compacted, unknown
@@ -532,6 +539,50 @@ class CodexAgent : Agent
 		return line
 			.replace(`"threadId":"` ~ oldId ~ `"`, `"threadId":"` ~ newId ~ `"`)
 			.replace(`"session_id":"` ~ oldId ~ `"`, `"session_id":"` ~ newId ~ `"`);
+	}
+
+	string[] extractForkableIds(string content, int lineOffset = 0)
+	{
+		import std.algorithm : canFind;
+		import std.conv : to;
+		import std.string : lineSplitter;
+
+		string[] ids;
+		int lineNum = lineOffset;
+		foreach (line; content.lineSplitter)
+		{
+			lineNum++;
+			if (line.length == 0)
+				continue;
+			// Forkable: response_item with role user or assistant
+			if (!line.canFind(`"type":"response_item"`))
+				continue;
+			if (!line.canFind(`"role":"user"`) && !line.canFind(`"role":"assistant"`))
+				continue;
+			ids ~= "line:" ~ to!string(lineNum);
+		}
+		return ids;
+	}
+
+	bool forkIdMatchesLine(string line, int lineNum, string forkId)
+	{
+		import std.conv : to;
+		// Fork IDs are "line:<N>" — match on line number
+		if (forkId.length > 5 && forkId[0 .. 5] == "line:")
+		{
+			try
+				return lineNum == to!int(forkId[5 .. $]);
+			catch (Exception)
+				return false;
+		}
+		return false;
+	}
+
+	bool isForkableLine(string line)
+	{
+		import std.algorithm : canFind;
+		return line.canFind(`"type":"response_item"`)
+			&& (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`));
 	}
 
 	@property bool supportsFileRevert() { return false; }
@@ -1053,7 +1104,7 @@ string translateRolloutSessionMeta(string line)
 }
 
 /// Translate a response_item rollout line → message/assistant or message/user.
-string translateRolloutResponseItem(string line)
+string translateRolloutResponseItem(string line, string forkId = null)
 {
 	@JSONPartial
 	static struct Probe
@@ -1093,7 +1144,8 @@ string translateRolloutResponseItem(string line)
 
 	if (ptype == "message")
 		return translateRolloutMessage(probe.payload.role,
-			probe.payload.content.json !is null ? probe.payload.content.json : "[]");
+			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
+			forkId);
 	else if (ptype == "local_shell_call")
 		return translateRolloutToolUse(probe.payload.call_id, "Bash",
 			extractCommandInput(probe.payload.action));
@@ -1113,7 +1165,7 @@ string translateRolloutResponseItem(string line)
 }
 
 /// Translate a message response_item payload.
-string translateRolloutMessage(string role, string contentJson)
+string translateRolloutMessage(string role, string contentJson, string forkId = null)
 {
 	import std.array : replace;
 	import std.uuid : randomUUID;
@@ -1125,7 +1177,8 @@ string translateRolloutMessage(string role, string contentJson)
 
 	if (role == "assistant")
 	{
-		auto uuid = randomUUID().toString();
+		// Use forkId as UUID when available (history load); random UUID for live stream
+		auto uuid = forkId !is null ? forkId : randomUUID().toString();
 		auto msgId = "msg_" ~ randomUUID().toString();
 		return `{"type":"message/assistant"`
 			~ `,"uuid":"` ~ uuid
@@ -1137,7 +1190,12 @@ string translateRolloutMessage(string role, string contentJson)
 	}
 	else // user, developer, system
 	{
-		return `{"type":"message/user","message":{"role":"` ~ escapeJsonString(role)
+		// Inject uuid for fork support when available
+		auto uuidField = forkId !is null
+			? `,"uuid":"` ~ forkId ~ `"`
+			: ``;
+		return `{"type":"message/user"` ~ uuidField
+			~ `,"message":{"role":"` ~ escapeJsonString(role)
 			~ `","content":` ~ content ~ `}}`;
 	}
 }

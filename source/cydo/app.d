@@ -27,8 +27,8 @@ import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
-import cydo.persist : ForkResult, Persistence, countMessagesAfterUuid,
-	extractForkableUuids, forkTask, lastUuidInJsonl, loadTaskHistory, truncateJsonl;
+import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
+	forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
 	renderPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
@@ -88,6 +88,7 @@ class App
 	private RefCountedINotify rcINotify;
 	private RefCountedINotify.Handle[int] jsonlWatches;
 	private size_t[int] jsonlReadPos;
+	private int[int] jsonlLineCount;  // cumulative line count for partial reads
 	// inotify watches for config file hot-reload
 	private INotify.WatchDescriptor configFileWatch;
 	private INotify.WatchDescriptor configDirWatch;
@@ -683,7 +684,7 @@ class App
 			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
 				td.effectiveCwd, td.workspace, td.title,
 				(string sid) => ta.historyPath(sid, td.effectiveCwd),
-				&ta.rewriteSessionId,
+				&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 				td.description, td.taskType);
 			if (result.tid < 0)
 			{
@@ -723,8 +724,10 @@ class App
 
 			if (json.dry_run)
 			{
-				auto count = countMessagesAfterUuid(
-					ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
+					auto count = countLinesAfterForkId(
+					ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid,
+					&ta.forkIdMatchesLine,
+					&ta.isForkableLine);
 				if (count < 0)
 				{
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -756,13 +759,14 @@ class App
 				// 2. Back up pre-undo state as a child task
 				if (json.revert_conversation)
 				{
-					auto lastUuid = lastUuidInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd));
-					if (lastUuid.length > 0)
+					auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd),
+						&ta.extractForkableIds);
+					if (lastForkId.length > 0)
 					{
-						auto backup = forkTask(persistence, tid, td.agentSessionId, lastUuid,
+						auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
 							td.effectiveCwd, td.workspace, td.title,
 							(string sid) => ta.historyPath(sid, td.effectiveCwd),
-							&ta.rewriteSessionId,
+							&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 							td.description, td.taskType);
 						if (backup.tid >= 0)
 						{
@@ -787,7 +791,7 @@ class App
 				// 3. Truncate conversation history
 				if (json.revert_conversation)
 				{
-					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid);
+					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine);
 					if (removed < 0)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
@@ -954,6 +958,14 @@ class App
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
+
+				// Re-try JSONL watch if not yet established (Codex may
+				// not have the file at session-start time).
+				if (tid !in jsonlWatches && td.agentSessionId.length > 0)
+					startJsonlWatch(tid);
+
+				// Broadcast forkable UUIDs now that JSONL should exist.
+				broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
 				td.resultText = taskAgent.extractResultText(line);
@@ -1359,6 +1371,8 @@ class App
 			return;
 
 		auto jsonlPath = agentForTask(tid).historyPath(td.agentSessionId, td.effectiveCwd);
+		if (jsonlPath.length == 0)
+			return; // path not yet known (e.g. Codex before file is created)
 
 		if (exists(jsonlPath))
 		{
@@ -1424,7 +1438,16 @@ class App
 		jsonlReadPos[tid] = cast(size_t) fileSize;
 
 		auto newContent = cast(string) got;
-		auto uuids = extractForkableUuids(newContent);
+		auto lineOffset = jsonlLineCount.get(tid, 0);
+		auto uuids = agentForTask(tid).extractForkableIds(newContent, lineOffset);
+
+		// Count lines in the new content to update cumulative offset
+		import std.string : lineSplitter;
+		int newLines = 0;
+		foreach (_; newContent.lineSplitter)
+			newLines++;
+		jsonlLineCount[tid] = lineOffset + newLines;
+
 		if (uuids.length > 0)
 			broadcastForkableUuids(tid, uuids);
 	}
@@ -1436,16 +1459,41 @@ class App
 		import std.file : exists, readText;
 
 		auto jsonlPath = agentForTask(tid).historyPath(agentSessionId, projectPath);
-		if (!exists(jsonlPath))
+		if (jsonlPath.length == 0 || !exists(jsonlPath))
 			return;
 
 		auto content = readText(jsonlPath);
-		auto uuids = extractForkableUuids(content);
+		auto uuids = agentForTask(tid).extractForkableIds(content);
 		if (uuids.length > 0)
 		{
 			import ae.utils.json : toJson;
 			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
 		}
+	}
+
+	/// Broadcast forkable UUIDs from the full JSONL file to all clients.
+	/// Broadcast forkable IDs from the JSONL file.
+	/// For agents where the JSONL format differs from the protocol messages
+	/// (e.g. Codex), this also reloads the in-memory history from the JSONL
+	/// so that message UUIDs match the fork IDs.
+	private void broadcastForkableUuidsFromFile(int tid)
+	{
+		import std.file : exists, readText;
+
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.agentSessionId.length == 0)
+			return;
+
+		auto ta = agentForTask(tid);
+		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		if (jsonlPath.length == 0 || !exists(jsonlPath))
+			return;
+
+		auto uuids = ta.extractForkableIds(readText(jsonlPath));
+		if (uuids.length > 0)
+			broadcastForkableUuids(tid, uuids);
 	}
 
 	/// Broadcast forkable UUIDs to all clients.
@@ -1464,6 +1512,7 @@ class App
 			jsonlWatches.remove(tid);
 		}
 		jsonlReadPos.remove(tid);
+		jsonlLineCount.remove(tid);
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title

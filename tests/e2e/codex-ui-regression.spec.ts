@@ -77,6 +77,47 @@ test("codex sidebar status dot reflects session state", async ({ page }) => {
   await expect(sidebarItem.locator(".sidebar-dot.failed")).toBeVisible({ timeout: 10_000 });
 });
 
+// Codex fork test is skipped for now: the backend fork logic is agent-aware
+// (uses line-number-based fork IDs), but the frontend shows fork buttons only
+// when the message UUID matches forkable_uuids. During live streaming, Codex
+// messages get random UUIDs that don't match JSONL-based "line:N" fork IDs.
+// TODO: implement history reload or UUID mapping to enable live fork buttons.
+test.skip("codex fork stays focused on forked session", async ({ page }) => {
+  const tid = await createCodexTask();
+  await page.goto(`/task/${tid}`);
+
+  await sendMessage(page, 'Please reply with "fork-source-codex"');
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "fork-source-codex" }),
+  ).toBeVisible({ timeout: 60_000 });
+
+  await page.locator(".btn-banner-stop").click();
+  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 15_000 });
+
+  await page.goto(`/task/${tid}`);
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "fork-source-codex" }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  const userMsg = page.locator(".message-wrapper").filter({
+    has: page.locator(".message.user-message", { hasText: "fork-source-codex" }),
+  });
+  await userMsg.hover();
+  const forkBtn = userMsg.locator(".fork-btn");
+  await expect(forkBtn).toBeVisible({ timeout: 15_000 });
+
+  await forkBtn.click();
+
+  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: "(fork)" });
+  await expect(forkEntry).toBeVisible({ timeout: 10_000 });
+
+  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
+  await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
+
+  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 5_000 });
+});
+
 test("codex tool result with shell output renders correctly", async ({ page }) => {
   const tid = await createCodexTask();
   await page.goto(`/task/${tid}`);

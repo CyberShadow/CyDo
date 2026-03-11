@@ -62,7 +62,9 @@ interface Agent
 	/// Translate a history line from the agent's native JSONL format.
 	/// Claude returns lines unchanged (raw protocol); Codex translates
 	/// from {timestamp, type, payload} to agnostic events.
-	string translateHistoryLine(string line);
+	/// lineNum is 1-based; agents using line-number fork IDs can inject
+	/// the fork ID into translated output.
+	string translateHistoryLine(string line, int lineNum);
 
 	/// Path to the last-created MCP config temp file, or null if none.
 	/// Used for cleanup tracking (the file should be deleted when the
@@ -72,6 +74,21 @@ interface Agent
 	/// Rewrite session ID references in a JSONL line during fork.
 	/// Each agent knows its own session ID field names.
 	string rewriteSessionId(string line, string oldId, string newId);
+
+	/// Extract forkable identifiers from JSONL content.
+	/// Returns opaque ID strings that the frontend sends back as afterUuid.
+	/// Each ID corresponds to a user or assistant message boundary.
+	/// lineOffset is added to line numbers for agents that use line-based IDs
+	/// (used when extracting from a partial read of the file).
+	string[] extractForkableIds(string content, int lineOffset = 0);
+
+	/// Check whether a raw JSONL line (at 1-based lineNum) matches a fork ID.
+	/// Used by truncation/fork logic to find the cut point.
+	bool forkIdMatchesLine(string line, int lineNum, string forkId);
+
+	/// Whether a JSONL line represents a forkable message (user or assistant).
+	/// Used for counting messages in undo preview.
+	bool isForkableLine(string line);
 
 	/// Whether this agent supports reverting file changes.
 	/// When false, the UI should hide/disable the file revert option.

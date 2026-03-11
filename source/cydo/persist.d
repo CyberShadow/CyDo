@@ -146,22 +146,26 @@ struct Persistence
 /// Load task history from a JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
 /// translateLine is called for each line to allow agent-specific translation.
+/// The delegate receives (line, 1-based lineNum) so agents can inject
+/// line-number-based fork IDs into translated output.
 DataVec loadTaskHistory(int tid, string jsonlPath,
-	string delegate(string) translateLine = null)
+	string delegate(string, int) translateLine = null)
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
-	if (!exists(jsonlPath))
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return DataVec();
 
 	DataVec history;
+	int lineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
+		lineNum++;
 		if (line.length == 0)
 			continue;
 
-		auto translated = translateLine !is null ? translateLine(line) : line;
+		auto translated = translateLine !is null ? translateLine(line, lineNum) : line;
 
 		// translateLine may return null for lines that should be skipped.
 		if (translated is null)
@@ -180,16 +184,17 @@ struct ForkResult
 	string agentSessionId;
 }
 
-/// Fork a task by truncating its JSONL after the given message UUID.
+/// Fork a task by truncating its JSONL after the given fork ID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
 /// historyPathFn computes the JSONL file path for a given session ID.
 /// rewriteSessionIdFn rewrites session ID references in each JSONL line.
-ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSessionId, string afterUuid,
+/// matchFn checks whether a JSONL line (at 1-based lineNum) matches the fork ID.
+ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSessionId, string afterForkId,
 	string projectPath, string workspace, string title, string delegate(string sessionId) historyPathFn,
 	string delegate(string line, string oldId, string newId) rewriteSessionIdFn,
+	bool delegate(string line, int lineNum, string forkId) matchFn,
 	string description = "", string taskType = "")
 {
-	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
@@ -200,18 +205,20 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	auto newSessionId = generateUUID();
 	auto destPath = historyPathFn(newSessionId);
 
-	// Read source, rewrite sessionId, truncate after target UUID
+	// Read source, rewrite sessionId, truncate after target line
 	string output;
 	bool found = false;
+	int lineNum = 0;
 	foreach (line; readText(sourcePath).lineSplitter)
 	{
+		lineNum++;
 		if (line.length == 0)
 			continue;
 
 		auto rewritten = rewriteSessionIdFn(line, sourceSessionId, newSessionId);
 		output ~= rewritten ~ "\n";
 
-		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		if (matchFn(line, lineNum, afterForkId))
 		{
 			found = true;
 			break;
@@ -230,11 +237,12 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newSessionId);
 }
 
-/// Truncate a task's JSONL file in-place after the given message UUID.
-/// Returns the number of lines removed, or -1 if UUID not found.
-int truncateJsonl(string jsonlPath, string afterUuid)
+/// Truncate a task's JSONL file in-place after the given fork ID.
+/// matchFn checks whether a line (at 1-based lineNum) matches the fork ID.
+/// Returns the number of lines removed, or -1 if fork ID not found.
+int truncateJsonl(string jsonlPath, string afterForkId,
+	bool delegate(string line, int lineNum, string forkId) matchFn)
 {
-	import std.algorithm : canFind;
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
@@ -245,8 +253,10 @@ int truncateJsonl(string jsonlPath, string afterUuid)
 	bool found = false;
 	int removedCount = 0;
 	bool pastTarget = false;
+	int lineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
+		lineNum++;
 		if (line.length == 0)
 			continue;
 
@@ -258,7 +268,7 @@ int truncateJsonl(string jsonlPath, string afterUuid)
 
 		output ~= line ~ "\n";
 
-		if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		if (matchFn(line, lineNum, afterForkId))
 		{
 			found = true;
 			pastTarget = true;
@@ -272,11 +282,14 @@ int truncateJsonl(string jsonlPath, string afterUuid)
 	return removedCount;
 }
 
-/// Count user/assistant messages after a given UUID in a JSONL file.
-/// Returns -1 if UUID not found.
-int countMessagesAfterUuid(string jsonlPath, string afterUuid)
+/// Count lines after a given fork ID in a JSONL file.
+/// matchFn checks whether a line matches the fork ID.
+/// countFn determines whether a line should be counted (e.g. user/assistant messages).
+/// Returns -1 if fork ID not found.
+int countLinesAfterForkId(string jsonlPath, string afterForkId,
+	bool delegate(string line, int lineNum, string forkId) matchFn,
+	bool delegate(string line) countFn)
 {
-	import std.algorithm : canFind;
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
@@ -285,17 +298,19 @@ int countMessagesAfterUuid(string jsonlPath, string afterUuid)
 
 	bool pastTarget = false;
 	int count = 0;
+	int lineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
+		lineNum++;
 		if (line.length == 0)
 			continue;
 
 		if (pastTarget)
 		{
-			if (line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`))
+			if (countFn(line))
 				count++;
 		}
-		else if (line.canFind(`"uuid":"` ~ afterUuid ~ `"`))
+		else if (matchFn(line, lineNum, afterForkId))
 		{
 			pastTarget = true;
 		}
@@ -304,51 +319,18 @@ int countMessagesAfterUuid(string jsonlPath, string afterUuid)
 	return pastTarget ? count : -1;
 }
 
-/// Return the UUID of the last user/assistant message in a JSONL file.
-/// Returns null if no messages found.
-string lastUuidInJsonl(string jsonlPath)
+/// Return the last forkable ID in a JSONL file.
+/// extractFn extracts forkable IDs from JSONL content (agent-specific).
+/// Returns null if no forkable messages found.
+string lastForkIdInJsonl(string jsonlPath, string[] delegate(string content, int lineOffset = 0) extractFn)
 {
-	import std.algorithm : canFind;
 	import std.file : exists, readText;
-	import std.string : lineSplitter;
 
 	if (!exists(jsonlPath))
 		return null;
 
-	string lastUuid;
-	foreach (line; readText(jsonlPath).lineSplitter)
-	{
-		if (line.length == 0)
-			continue;
-		if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
-			continue;
-		auto uuid = extractJsonField(line, `"uuid":"`);
-		if (uuid.length > 0)
-			lastUuid = uuid;
-	}
-	return lastUuid;
-}
-
-/// Extract forkable UUIDs from JSONL content (user and assistant messages).
-string[] extractForkableUuids(string content)
-{
-	import std.algorithm : canFind;
-	import std.string : lineSplitter;
-
-	string[] uuids;
-	foreach (line; content.lineSplitter)
-	{
-		if (line.length == 0)
-			continue;
-		// Only user and assistant lines have meaningful UUIDs
-		if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
-			continue;
-		// Extract uuid value with string scanning (avoid full JSON parse)
-		auto uuidVal = extractJsonField(line, `"uuid":"`);
-		if (uuidVal.length > 0)
-			uuids ~= uuidVal;
-	}
-	return uuids;
+	auto ids = extractFn(readText(jsonlPath));
+	return ids.length > 0 ? ids[$ - 1] : null;
 }
 
 /// Extract a string field value from a JSON line by prefix scanning.

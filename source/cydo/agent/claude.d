@@ -193,7 +193,7 @@ class ClaudeCodeAgent : Agent
 		return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
 	}
 
-	string translateHistoryLine(string line)
+	string translateHistoryLine(string line, int lineNum)
 	{
 		import cydo.agent.protocol : translateClaudeEvent;
 		auto result = translateClaudeEvent(line);
@@ -206,6 +206,43 @@ class ClaudeCodeAgent : Agent
 		return line
 			.replace(`"sessionId":"` ~ oldId ~ `"`, `"sessionId":"` ~ newId ~ `"`)
 			.replace(`"session_id":"` ~ oldId ~ `"`, `"session_id":"` ~ newId ~ `"`);
+	}
+
+	string[] extractForkableIds(string content, int lineOffset = 0)
+	{
+		import std.algorithm : canFind;
+		import std.string : indexOf, lineSplitter;
+
+		string[] ids;
+		foreach (line; content.lineSplitter)
+		{
+			if (line.length == 0)
+				continue;
+			if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
+				continue;
+			// Extract "uuid":"<value>" by prefix scanning
+			enum prefix = `"uuid":"`;
+			auto idx = line.indexOf(prefix);
+			if (idx < 0)
+				continue;
+			auto start = idx + prefix.length;
+			auto end = line.indexOf('"', start);
+			if (end > start)
+				ids ~= line[start .. end];
+		}
+		return ids;
+	}
+
+	bool forkIdMatchesLine(string line, int lineNum, string forkId)
+	{
+		import std.algorithm : canFind;
+		return line.canFind(`"uuid":"` ~ forkId ~ `"`);
+	}
+
+	bool isForkableLine(string line)
+	{
+		import std.algorithm : canFind;
+		return line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`);
 	}
 
 	@property bool supportsFileRevert() { return true; }
