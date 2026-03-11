@@ -475,7 +475,8 @@ class App
 
 		if (json.type == "create_task")
 		{
-			auto tid = createTask(json.workspace, json.project_path);
+			auto at = json.agent_type.length > 0 ? json.agent_type : config.default_agent_type;
+			auto tid = createTask(json.workspace, json.project_path, at);
 			if (json.task_type.length > 0 && taskTypes.byName(json.task_type) !is null)
 			{
 				tasks[tid].taskType = json.task_type;
@@ -1595,6 +1596,7 @@ struct WsMessage
 	string project_path;
 	string after_uuid;
 	string task_type;
+	string agent_type;
 	bool dry_run;
 	bool revert_conversation;
 	bool revert_files;

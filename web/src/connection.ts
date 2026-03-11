@@ -100,6 +100,7 @@ export class Connection {
     projectPath?: string,
     taskType?: string,
     content?: string,
+    agentType?: string,
   ) {
     this.ws?.send(
       JSON.stringify({
@@ -108,6 +109,7 @@ export class Connection {
         project_path: projectPath ?? "",
         task_type: taskType ?? "",
         content: content ?? "",
+        agent_type: agentType ?? "",
       }),
     );
   }
