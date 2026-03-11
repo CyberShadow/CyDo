@@ -462,18 +462,17 @@ export function MessageList({
               inner = <CompactBoundaryMessageView message={msg} />;
               break;
             case "system": {
-              const rawSubtype = (msg.rawSource as any)?.subtype;
               const rawType = (msg.rawSource as any)?.type;
-              if (rawSubtype === "init") {
+              if (rawType === "session/init") {
                 inner = <SystemInitView message={msg} />;
               } else if (msg.statusText !== undefined) {
                 inner = <SystemStatusMessageView message={msg} />;
               } else if (
-                rawSubtype === "task_started" ||
-                rawSubtype === "task_notification"
+                rawType === "task/started" ||
+                rawType === "task/notification"
               ) {
                 inner = <TaskLifecycleView message={msg} />;
-              } else if (rawType === "control_response") {
+              } else if (rawType === "control/response") {
                 inner = <ControlResponseView message={msg} />;
               } else {
                 const text = msg.content
