@@ -106,12 +106,35 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 	args ~= ["--dev", "/dev"];
 	args ~= ["--proc", "/proc"];
 	args ~= ["--tmpfs", "/tmp"];
-	args ~= ["--tmpfs", "/run"];
 
-	// NixOS: symlink /run/current-system
 	auto currentSystem = resolveNixCurrentSystem();
+
 	if (currentSystem.length > 0)
+	{
+		// NixOS: tmpfs /run with just the current-system symlink
+		args ~= ["--tmpfs", "/run"];
 		args ~= ["--symlink", currentSystem, "/run/current-system"];
+	}
+	else
+	{
+		// non-NixOS: bind-mount system directories so dynamically linked
+		// binaries can find shared libraries, the ELF interpreter (ld-linux),
+		// DNS resolver (systemd-resolved socket in /run), and CA certificates
+		if (exists("/run"))
+			args ~= ["--ro-bind", "/run", "/run"];
+		if (exists("/etc"))
+			args ~= ["--ro-bind", "/etc", "/etc"];
+		if (exists("/usr"))
+			args ~= ["--ro-bind", "/usr", "/usr"];
+		if (exists("/lib64") && isSymlink("/lib64"))
+			args ~= ["--symlink", readLink("/lib64"), "/lib64"];
+		else if (exists("/lib64"))
+			args ~= ["--ro-bind", "/lib64", "/lib64"];
+		if (exists("/lib") && isSymlink("/lib"))
+			args ~= ["--symlink", readLink("/lib"), "/lib"];
+		else if (exists("/lib") && !exists("/lib64"))
+			args ~= ["--ro-bind", "/lib", "/lib"];
+	}
 
 	// Cgroup filesystem
 	if (exists("/sys/fs/cgroup"))
