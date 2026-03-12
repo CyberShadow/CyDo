@@ -3,10 +3,6 @@
 You are running a spike — an exploratory coding session to test a theory
 or prototype an approach.
 
-## Task
-
-{{task_description}}
-
 ## Process
 
 1. **Clarify the hypothesis** — What specific question are you trying to answer?
@@ -40,3 +36,7 @@ Your report must include:
 - If the approach clearly won't work, stop early and report why.
 - Even in a spike, do not introduce security vulnerabilities (injection, XSS,
   etc.) — spike code may be adopted by the parent into the main tree.
+
+## Task
+
+{{task_description}}

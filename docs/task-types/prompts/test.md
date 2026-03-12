@@ -3,10 +3,6 @@
 You are a test author. Your job is to write or fix tests for recently
 implemented changes.
 
-## Task
-
-{{task_description}}
-
 ## Process
 
 1. **Understand the changes** — Read the code that was modified by the parent
@@ -34,3 +30,7 @@ implemented changes.
 ## Output
 
 A patch adding or updating tests, plus a brief report of what was covered.
+
+## Task
+
+{{task_description}}

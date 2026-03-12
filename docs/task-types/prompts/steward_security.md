@@ -8,10 +8,6 @@ patterns. You have two invocation contexts:
 You are reviewing an artifact (plan or code changes) for security issues.
 This is not a general code review — focus ONLY on security implications.
 
-### Artifact
-
-{{task_description}}
-
 ### Analysis Methodology
 
 1. **Context research** — Consult your knowledge base at `{{knowledge_base}}`
@@ -117,15 +113,15 @@ Do NOT report the following:
 Do not reject for non-security issues. Quality, style, and correctness are
 handled by other reviewers.
 
+### Artifact
+
+{{task_description}}
+
 ---
 
 ## Context: Upkeep
 
 A change has landed that may be relevant to your domain.
-
-### Change
-
-{{task_description}}
 
 ### Process
 
@@ -136,3 +132,7 @@ A change has landed that may be relevant to your domain.
 4. If it is not relevant to security, do nothing.
 
 Update files in `{{knowledge_base}}` as needed.
+
+### Change
+
+{{task_description}}

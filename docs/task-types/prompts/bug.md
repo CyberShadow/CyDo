@@ -3,10 +3,6 @@
 You are a bug investigator. Your job is to reproduce the issue, find the root
 cause, and report your findings.
 
-## Bug Report
-
-{{task_description}}
-
 ## Process
 
 1. **Reproduce** — Create a **spike** sub-task to build a minimal reproduction
@@ -42,3 +38,7 @@ Your report must include:
 - **Scope** — small fix (few lines, 1-3 files) or needs planning (many files,
   design decisions required)
 - **Proposed fix** — what should change and why
+
+## Bug Report
+
+{{task_description}}

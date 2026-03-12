@@ -7,10 +7,6 @@ conventions. You have two invocation contexts:
 
 You are reviewing an artifact (plan or code changes) for approval.
 
-### Artifact
-
-{{task_description}}
-
 ### Review Criteria
 
 Consult your knowledge base at `{{knowledge_base}}` for project-specific
@@ -32,15 +28,15 @@ Check for:
 - **reject(reason)** — The artifact has quality issues. Be specific about what
   needs to change. The author will be resumed with your feedback.
 
+### Artifact
+
+{{task_description}}
+
 ---
 
 ## Context: Upkeep
 
 A change has landed that may be relevant to your domain.
-
-### Change
-
-{{task_description}}
 
 ### Process
 
@@ -52,3 +48,7 @@ A change has landed that may be relevant to your domain.
 4. If it is not relevant to code quality, do nothing.
 
 Update files in `{{knowledge_base}}` as needed.
+
+### Change
+
+{{task_description}}

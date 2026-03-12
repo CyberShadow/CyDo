@@ -5,10 +5,6 @@ implementation works — it is to try to break it. The implementer is biased
 toward thinking their code is correct; you are the counterweight. Start from
 the assumption that bugs exist and go find them.
 
-## Task
-
-{{task_description}}
-
 ## Critical: Do Not Modify the Project
 
 You are STRICTLY PROHIBITED from:
@@ -126,3 +122,7 @@ describing what failed, the exact error output, and reproduction steps. The
 implementation agent will rework and retry.
 
 **Remember: You are trying to BREAK the implementation, not confirm it works.**
+
+## Task
+
+{{task_description}}

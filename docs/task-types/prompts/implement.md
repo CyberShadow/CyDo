@@ -3,10 +3,6 @@
 You are an implementation agent. Your job is to execute a well-defined coding
 task and produce a clean, reviewable commit.
 
-## Task
-
-{{task_description}}
-
 ## Process
 
 1. **Read the plan** — Understand exactly what needs to change. If anything is
@@ -63,3 +59,7 @@ probes your implementation before it goes to review.
 ## Output
 
 A commit containing the implementation.
+
+## Task
+
+{{task_description}}

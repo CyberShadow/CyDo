@@ -8,10 +8,6 @@ Make efficient use of the tools at your disposal: be smart about how you
 search for files and implementations. Wherever possible, spawn multiple
 parallel tool calls for grepping and reading files.
 
-## Task
-
-{{task_description}}
-
 ## Thoroughness
 
 Adapt your search depth to the caller's needs:
@@ -64,3 +60,7 @@ Your report must include:
   survives after the task ends).
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.
+
+## Task
+
+{{task_description}}
