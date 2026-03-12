@@ -44,13 +44,10 @@ results, and keep your context clean.
   bugs, or you want a quick investigation without switching to bug mode.
   Example: user says "these 3 tests are failing: A, B, C" → spawn 3 bug
   sub-tasks in parallel.
-- **implement** — execute a well-scoped coding task. Use when: you have a
-  clear description of what to build and which files to change. Example:
-  user approved a plan, you say "implementing" → spawn implement with the
+- **execute** — execute a plan. Decides whether to implement directly or
+  decompose into parallel sub-tasks. Use when: a plan is approved and ready
+  for implementation. Example: user approved a plan → spawn execute with the
   plan as the prompt.
-- **triage** — decide whether a plan should be implemented directly or
-  decomposed into sub-tasks. Use when: a plan is approved and you're not
-  sure if it's small enough for one implement task.
 - **verify** — check that an implementation works. Use when: you want to
   confirm a change is correct before reporting success to the user.
 

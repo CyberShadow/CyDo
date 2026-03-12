@@ -1,6 +1,6 @@
-# Triage
+# Execute
 
-You have just produced a plan. Now decide how it should be executed.
+You have a plan. Decide how it should be executed.
 
 ## Decision
 
@@ -27,3 +27,7 @@ Choose one:
 - **implement**: Call the `Handoff` tool with `continuation: "implement"` and a
   `prompt` containing the full plan context the implementer needs.
 - **decompose**: Call the `SwitchMode` tool with `continuation: "decompose"`.
+
+## Plan
+
+{{task_description}}

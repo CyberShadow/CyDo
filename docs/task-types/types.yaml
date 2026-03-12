@@ -29,8 +29,12 @@
 #    the interactive session.
 #
 # 7. Recursive decomposition.
-#    Before a plan is handed to an implementer, it is triaged to determine
-#    if it should be split into focused sub-tasks. This applies recursively.
+#    Implementation is always gated behind execute. No agent can spawn
+#    implement directly — it must go through execute, which decides whether
+#    to implement directly or decompose into sub-tasks. This applies
+#    recursively: decompose creates plans, plans go through execute, and
+#    execute can decompose again. Without this gate, agents will prefer to
+#    do everything in a single session rather than splitting work up.
 #
 # 8. Output types follow from the split.
 #    Interactive sessions produce nothing (they are ongoing). Agentic
@@ -56,7 +60,7 @@ task_types:
   #
   # These are the entry points for user interaction. All continuations use
   # keep_context (SwitchMode) to preserve the session — the interactive
-  # cluster is self-contained. Autonomous work (triage, implement, etc.)
+  # cluster is self-contained. Autonomous work (execute, implement, etc.)
   # is spawned via creatable_tasks, not continuations.
   # =========================================================================
 
@@ -82,7 +86,7 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     output_type: report
-    creatable_tasks: [research, spike, bug, verify, triage, implement]
+    creatable_tasks: [research, spike, bug, verify, execute]
     continuations:
       plan:
         task_type: plan_mode
@@ -291,14 +295,21 @@ task_types:
   # =========================================================================
   # Autonomous pipeline — state machine with recursive decomposition
   #
-  # These types form the plan → triage → implement → verify → review chain.
+  # These types form the plan → execute → implement → verify → review chain.
   # Agents proceed through continuations without user interaction (unless
   # gated by requires_approval). Stewards review at approval gates.
   # =========================================================================
 
-  triage:
-    description: "Decide whether a plan should be implemented directly or decomposed"
-    prompt_template: prompts/triage.md
+  execute:
+    description: "Execute a plan — implement directly or decompose into sub-tasks"
+    agent_description: >
+      Execute a plan. Reads the plan and decides: implement directly
+      (small, single-commit change) or decompose into parallel sub-tasks.
+      Decomposed sub-tasks are themselves executed recursively.
+    tool_guidance: >
+      Use to dispatch any approved plan for implementation. Pass the full
+      plan as the task description.
+    prompt_template: prompts/execute.md
     model_class: large
     read_only: true
     output_type: report
@@ -322,7 +333,7 @@ task_types:
     model_class: large
     read_only: true
     output_type: report
-    creatable_tasks: [implement, plan, spike]
+    creatable_tasks: [execute, plan, spike]
     parallelizable: true
     user_visible: false
 
