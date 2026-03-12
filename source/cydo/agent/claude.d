@@ -56,10 +56,15 @@ class ClaudeCodeAgent : Agent
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 
-		// set PATH to the resolved claude binary dir so bwrap can find it after --clearenv
-		auto claudeDir = resolveClaudeBinary();
-		if (claudeDir.length > 0)
-			env["PATH"] = claudeDir;
+		// Prepend the claude binary dir to PATH so it survives --clearenv
+		{
+			import std.process : environment;
+			auto hostPath = environment.get("PATH", "");
+			if (claudeBinDir.length > 0)
+				env["PATH"] = hostPath.length > 0 ? claudeBinDir ~ ":" ~ hostPath : claudeBinDir;
+			else if (hostPath.length > 0)
+				env["PATH"] = hostPath;
+		}
 
 		// Enable file-history-snapshot creation in SDK/headless mode.
 		// Claude Code's KX9() guard requires this env var for checkpointing.
