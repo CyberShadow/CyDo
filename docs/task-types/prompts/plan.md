@@ -26,6 +26,9 @@ existing patterns, and produce a detailed implementation plan.
    a small change can name specific files and functions, a large initiative
    should describe architecture and key decisions. The plan will be
    decomposed into sub-plans if it's too large for a single implementation.
+   Cite research output file paths in the plan (e.g. "see research at
+   `/path/to/output.md`") so downstream tasks can read the full findings
+   without duplicating them.
 
 ## Output
 

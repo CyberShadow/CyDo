@@ -20,7 +20,9 @@ discussion above) into smaller, self-contained sub-tasks.
    file (use `{{output_dir}}/<name>.md`) and create an **execute** task with
    the file path as the task description. Each sub-plan should clearly
    describe what the sub-task should achieve, how it relates to the other
-   sub-tasks, and any ordering constraints or dependencies.
+   sub-tasks, and any ordering constraints or dependencies. Cite any
+   research or spike output file paths so downstream tasks can reference
+   them.
    Each unit will be executed — if it's small enough it gets implemented
    directly, otherwise it gets planned and decomposed further recursively.
 5. **Wait for results** — All sub-tasks must complete. If any fail, assess
