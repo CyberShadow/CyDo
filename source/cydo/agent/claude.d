@@ -39,11 +39,27 @@ class ClaudeCodeAgent : Agent
 		paths[expandTilde("~/.claude.json")]         = PathMode.rw;
 		paths[expandTilde("~/.cache/claude-status")] = PathMode.rw;
 
-		// Resolve the claude binary and add its directory as ro
-		addIfNotRw(resolveClaudeBinary(), PathMode.ro);
+		// resolve the claude binary and add its directory as ro;
+		// claude's self-updater installs versions under ~/.local/share/claude/versions/
+		// and symlinks ~/.local/bin/claude to the active version, so the symlink target
+		// directory must also be mounted for execvp to find the actual binary
+		auto claudeBinDir = resolveClaudeBinary();
+		addIfNotRw(claudeBinDir, PathMode.ro);
+		{
+			import std.file : isSymlink, readLink;
+			import std.path : absolutePath, buildPath, dirName;
+			auto candidate = buildPath(claudeBinDir, "claude");
+			if (claudeBinDir.length > 0 && isSymlink(candidate))
+				addIfNotRw(dirName(absolutePath(readLink(candidate), claudeBinDir)), PathMode.ro);
+		}
 
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
+
+		// set PATH to the resolved claude binary dir so bwrap can find it after --clearenv
+		auto claudeDir = resolveClaudeBinary();
+		if (claudeDir.length > 0)
+			env["PATH"] = claudeDir;
 
 		// Enable file-history-snapshot creation in SDK/headless mode.
 		// Claude Code's KX9() guard requires this env var for checkpointing.
