@@ -62,15 +62,18 @@ task_types:
 
   blank:
     description: "Raw Claude Code session with no prompt wrapping or tool restrictions"
+    prompt_template: prompts/blank.md
     model_class: large
     output_type: report
     continuations:
       plan:
         task_type: plan_mode
         keep_context: true
+        prompt_template: prompts/enter_plan_mode.md
       bug:
         task_type: bug_mode
         keep_context: true
+        prompt_template: prompts/enter_bug_mode.md
     parallelizable: true
     user_visible: true
 
@@ -84,9 +87,11 @@ task_types:
       plan:
         task_type: plan_mode
         keep_context: true
+        prompt_template: prompts/enter_plan_mode.md
       bug:
         task_type: bug_mode
         keep_context: true
+        prompt_template: prompts/enter_bug_mode.md
     parallelizable: true
     user_visible: true
 
@@ -124,7 +129,6 @@ task_types:
       task scope with the user before switching. The switch preserves your
       conversation context. Switch back to conversation when the plan is
       approved and the user is ready to implement.
-    prompt_template: prompts/plan_mode.md
     model_class: large
     read_only: true
     output_type: report
@@ -133,6 +137,7 @@ task_types:
       back:
         task_type: conversation
         keep_context: true
+        prompt_template: prompts/return_from_plan.md
     parallelizable: true
     user_visible: false
 
@@ -161,7 +166,6 @@ task_types:
       error messages before switching — include them in the task description
       so the bug sub-task has full context. Switch back to conversation when
       the investigation is complete and the user is ready to act on findings.
-    prompt_template: prompts/bug_mode.md
     model_class: large
     output_type: report
     creatable_tasks: [bug, research, spike]
@@ -169,9 +173,11 @@ task_types:
       needs_plan:
         task_type: plan_mode
         keep_context: true
+        prompt_template: prompts/enter_plan_mode.md
       back:
         task_type: conversation
         keep_context: true
+        prompt_template: prompts/return_from_bug.md
     parallelizable: true
     user_visible: false
 
@@ -304,6 +310,7 @@ task_types:
         task_type: decompose
         requires_approval: true
         keep_context: true
+        prompt_template: prompts/enter_decompose.md
     parallelizable: true
     user_visible: false
 
@@ -312,7 +319,6 @@ task_types:
     agent_description: >
       Use when a plan is too large for a single implementation task. Creates
       multiple parallel implement tasks and waits for all to complete.
-    prompt_template: prompts/decompose.md
     model_class: large
     read_only: true
     output_type: report
@@ -359,6 +365,7 @@ task_types:
         task_type: review
         keep_context: true
         requires_approval: true
+        prompt_template: prompts/enter_review.md
       fail:
         task_type: implement
     parallelizable: true
@@ -369,7 +376,6 @@ task_types:
     agent_description: >
       Final code review after verification and steward approval. Verifies the
       implementation matches the plan and is ready to land.
-    prompt_template: prompts/review.md
     model_class: large
     read_only: true
     output_type: report

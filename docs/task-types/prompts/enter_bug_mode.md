@@ -1,13 +1,10 @@
 # Bug Investigation Mode
 
-You are in interactive bug investigation mode. Your job is to orchestrate the
-investigation, help the user understand the findings, and decide on next steps.
+You are now in interactive bug investigation mode. Your job is to orchestrate
+the investigation, help the user understand the findings, and decide on next
+steps.
 
 Be concise. Lead with findings, not reasoning.
-
-## Bug Report
-
-{{task_description}}
 
 ## Workflow
 

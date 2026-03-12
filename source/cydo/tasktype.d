@@ -22,6 +22,7 @@ struct ContinuationDef
 	string task_type;
 	bool requires_approval;
 	bool keep_context;
+	@Optional string prompt_template;
 }
 
 struct TaskTypeDef
@@ -121,6 +122,21 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 				errors ~= format("%s: continuation '%s' has keep_context but target '%s' "
 					~ "has worktree: true — these are incompatible",
 					def.name, cname, cont.task_type);
+
+			// keep_context continuations should have a prompt_template
+			// (the prompt injected when the mode switch happens).
+			if (cont.keep_context && cont.prompt_template.length == 0)
+				errors ~= format("%s: continuation '%s' has keep_context but no "
+					~ "prompt_template — mode switches need an entry prompt",
+					def.name, cname);
+
+			// !keep_context continuations should not have a prompt_template
+			// (the target type's own prompt_template is used instead).
+			if (!cont.keep_context && cont.prompt_template.length > 0)
+				errors ~= format("%s: continuation '%s' has prompt_template but "
+					~ "!keep_context — only keep_context continuations use "
+					~ "continuation-level prompts",
+					def.name, cname);
 		}
 
 		// Steward validation
@@ -187,6 +203,43 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 						~ "Handoff would orphan the interactive session",
 						def.name, cname, def.name);
 			}
+		}
+	}
+
+	// Prompt template invariant: types that are only reachable via
+	// keep_context continuations should NOT have their own prompt_template
+	// (they get their entry prompt from the continuation). Types that are
+	// directly invokable (user_visible, creatable_tasks targets, or
+	// !keep_context continuation targets) SHOULD have a prompt_template.
+	{
+		// Collect types that are directly invokable (not via keep_context)
+		bool[string] directlyInvokable;
+		foreach (ref def; types)
+		{
+			if (def.user_visible)
+				directlyInvokable[def.name] = true;
+			// Targets of creatable_tasks
+			foreach (ct; def.creatable_tasks)
+				directlyInvokable[ct] = true;
+			// Targets of !keep_context continuations
+			foreach (_, ref cont; def.continuations)
+				if (!cont.keep_context)
+					directlyInvokable[cont.task_type] = true;
+		}
+
+		foreach (ref def; types)
+		{
+			if (def.steward)
+				continue; // stewards have their own prompt rules
+
+			bool isDirect = (def.name in directlyInvokable) !is null;
+			if (isDirect && def.prompt_template.length == 0)
+				errors ~= format("%s: directly invokable type has no prompt_template",
+					def.name);
+			if (!isDirect && def.prompt_template.length > 0)
+				errors ~= format("%s: type is only reachable via keep_context but has "
+					~ "prompt_template — entry prompt should be on the continuation",
+					def.name);
 		}
 	}
 
@@ -930,6 +983,38 @@ void runDumpContext(string[] args)
 	auto rendered = renderPrompt(def, "<task description>", typesDir);
 	writeln(rendered);
 	writeln();
+
+	// Incoming continuation prompts — what this type sees when entered
+	// via a keep_context continuation from another type.
+	{
+		import std.file : exists, readText;
+		import std.path : buildPath;
+
+		bool headerPrinted = false;
+		foreach (ref srcDef; types)
+		{
+			foreach (cname, ref cont; srcDef.continuations)
+			{
+				if (cont.task_type != typeName || !cont.keep_context)
+					continue;
+				if (cont.prompt_template.length == 0)
+					continue;
+				if (!headerPrinted)
+				{
+					writeln("─── Incoming Continuation Prompts ───");
+					writeln();
+					headerPrinted = true;
+				}
+				writefln("From %s via '%s':", srcDef.name, cname);
+				auto tmplPath = buildPath(typesDir, cont.prompt_template);
+				if (exists(tmplPath))
+					writeln(readText(tmplPath));
+				else
+					writefln("  (template not found: %s)", cont.prompt_template);
+				writeln();
+			}
+		}
+	}
 
 	// MCP tools — generated from the same binding the real MCP server uses
 	writeln("─── MCP Tools ───");

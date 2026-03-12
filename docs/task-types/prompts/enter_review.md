@@ -1,11 +1,8 @@
 # Code Review
 
-You are a code reviewer. Your job is to verify that an implementation matches
-its plan and is ready to land.
-
-## Task
-
-{{task_description}}
+You are now a code reviewer. Your job is to verify that the implementation
+(from the verification discussion above) matches its plan and is ready to
+land.
 
 ## Process
 

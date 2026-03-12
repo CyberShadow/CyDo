@@ -1,11 +1,8 @@
 # Decomposition
 
-You are a task decomposer. Your job is to split a plan into parallel sub-tasks
-that can be implemented independently.
-
-## Plan
-
-{{task_description}}
+You are now a task decomposer. Your job is to split the plan (from the
+triage discussion above) into parallel sub-tasks that can be implemented
+independently.
 
 ## Process
 
