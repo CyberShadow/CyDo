@@ -21,12 +21,11 @@ existing patterns, and produce a detailed implementation plan.
 4. **Design the approach** — Consider multiple options. Evaluate trade-offs.
    Pick the approach that is simplest, most consistent with existing patterns,
    and easiest to review.
-5. **Write the plan** — Be specific enough that an implement agent can execute
-   it without ambiguity:
-   - List every file that needs to change and what changes are needed.
-   - Specify new types, functions, and their signatures.
-   - Call out edge cases and error handling.
-   - Note any dependencies between changes.
+5. **Write the plan** — Be clear about what needs to happen and why. Describe
+   the intent and approach at whatever level of abstraction fits the scope —
+   a small change can name specific files and functions, a large initiative
+   should describe architecture and key decisions. The plan will be
+   decomposed into sub-plans if it's too large for a single implementation.
 
 ## Output
 
@@ -50,10 +49,8 @@ Your plan must include:
   Each prerequisite becomes its own task during decomposition. Write "None" if
   all necessary infrastructure already exists.
 - **Approach** — the design and rationale for key decisions
-- **Changes** — file-by-file list of modifications
-- **Critical files** — 3-5 files most critical for implementing this plan,
-  with a brief reason for each (e.g., "core logic to modify", "pattern to
-  follow", "interface to implement")
+- **Changes** — what needs to change, at the level of detail appropriate for
+  the scope
 - **Verification** — how to confirm the implementation is correct
 
 ## Constraints

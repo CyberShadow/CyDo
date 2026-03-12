@@ -45,8 +45,10 @@ results, and keep your context clean.
   Example: user says "these 3 tests are failing: A, B, C" → spawn 3 bug
   sub-tasks in parallel.
 - **execute** — execute a plan. Decides whether to implement directly or
-  decompose into parallel sub-tasks. Use when: a plan is approved and ready
-  for implementation. Pass the plan file path as the task description.
+  decompose into sub-tasks. Use when: a plan is approved and ready for
+  implementation. Pass the plan file path as the task description. Spawn
+  one execute task at a time — wait for it to complete before starting the
+  next.
 - **verify** — check that an implementation works. Use when: you want to
   confirm a change is correct before reporting success to the user.
 

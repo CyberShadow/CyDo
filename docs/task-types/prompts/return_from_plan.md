@@ -5,7 +5,7 @@ in your context above.
 
 If the user approved the plan, spawn an **execute** sub-task with the plan
 file path as the task description. It will decide whether to implement
-directly or decompose into parallel sub-tasks.
+directly or decompose into sub-tasks.
 
 If the user decided not to proceed, continue the conversation normally.
 

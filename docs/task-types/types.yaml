@@ -304,11 +304,12 @@ task_types:
     description: "Execute a plan — implement directly or decompose into sub-tasks"
     agent_description: >
       Execute a plan. Reads the plan and decides: implement directly
-      (small, single-commit change) or decompose into parallel sub-tasks.
+      (small, single-commit change) or decompose into sub-tasks.
       Decomposed sub-tasks are themselves executed recursively.
     tool_guidance: >
       Use to dispatch any approved plan for implementation. Pass the plan
-      file path as the task description.
+      file path as the task description. Spawn one at a time — wait for
+      completion before starting the next.
     prompt_template: prompts/execute.md
     model_class: large
     read_only: true
@@ -322,14 +323,15 @@ task_types:
         requires_approval: true
         keep_context: true
         prompt_template: prompts/enter_decompose.md
-    parallelizable: true
+    parallelizable: false
     user_visible: false
 
   decompose:
-    description: "Split a plan into parallel sub-tasks"
+    description: "Break a plan into smaller sub-tasks"
     agent_description: >
-      Use when a plan is too large for a single implementation task. Creates
-      multiple parallel implement tasks and waits for all to complete.
+      Use when a plan is too large or ambiguous for a single implementation
+      task. Clarifies unknowns via research/spike, then splits the work into
+      smaller sub-tasks that are each executed recursively.
     model_class: large
     read_only: true
     output_type: report
