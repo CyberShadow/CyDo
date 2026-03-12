@@ -46,8 +46,7 @@ results, and keep your context clean.
   sub-tasks in parallel.
 - **execute** — execute a plan. Decides whether to implement directly or
   decompose into parallel sub-tasks. Use when: a plan is approved and ready
-  for implementation. Example: user approved a plan → spawn execute with the
-  plan as the prompt.
+  for implementation. Pass the plan file path as the task description.
 - **verify** — check that an implementation works. Use when: you want to
   confirm a change is correct before reporting success to the user.
 

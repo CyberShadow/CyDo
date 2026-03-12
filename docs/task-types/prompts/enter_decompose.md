@@ -15,8 +15,9 @@ independently.
 3. **Find parallelism** — Determine which units can be executed concurrently
    without merge conflicts. Units that touch the same files should be in the
    same sub-task.
-4. **Create sub-tasks** — For each unit, create an **execute** task with a
-   clear, self-contained description that includes:
+4. **Create sub-tasks** — For each unit, write a self-contained sub-plan to a
+   file (use `{{output_dir}}/<name>.md`) and create an **execute** task with
+   the file path as the task description. Each sub-plan should include:
    - What files to create or modify
    - What the implementation should do
    - How it connects to the other sub-tasks

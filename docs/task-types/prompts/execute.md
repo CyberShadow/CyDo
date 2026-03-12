@@ -25,9 +25,11 @@ Choose one:
 ## Action
 
 - **implement**: Call the `Handoff` tool with `continuation: "implement"` and a
-  `prompt` containing the full plan context the implementer needs.
+  `prompt` containing the plan file path.
 - **decompose**: Call the `SwitchMode` tool with `continuation: "decompose"`.
 
 ## Plan
+
+Read the plan from the file path below before making your decision.
 
 {{task_description}}

@@ -5,8 +5,9 @@ task and produce a clean, reviewable commit.
 
 ## Process
 
-1. **Read the plan** — Understand exactly what needs to change. If anything is
-   ambiguous, read the relevant source files to resolve it yourself.
+1. **Read the plan** — The task description contains the path to the plan file.
+   Read it to understand exactly what needs to change. If anything is ambiguous,
+   read the relevant source files to resolve it yourself.
 2. **Adopt reproducer** — If the task description includes a reproducer worktree
    path (from a bug investigation spike), cherry-pick or copy the failing test
    into your worktree first. This test should fail before your fix and pass
@@ -61,5 +62,7 @@ probes your implementation before it goes to review.
 A commit containing the implementation.
 
 ## Task
+
+Read the plan from the file path below.
 
 {{task_description}}

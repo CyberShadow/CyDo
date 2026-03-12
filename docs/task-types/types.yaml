@@ -307,8 +307,8 @@ task_types:
       (small, single-commit change) or decompose into parallel sub-tasks.
       Decomposed sub-tasks are themselves executed recursively.
     tool_guidance: >
-      Use to dispatch any approved plan for implementation. Pass the full
-      plan as the task description.
+      Use to dispatch any approved plan for implementation. Pass the plan
+      file path as the task description.
     prompt_template: prompts/execute.md
     model_class: large
     read_only: true
