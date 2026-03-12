@@ -1,6 +1,49 @@
 # CyDo Task Type Definitions
 #
-# Types define agent behavior, capabilities, and flow control.
+# Design Principles
+# =================
+#
+# 1. Two kinds of sessions: interactive and agentic.
+#    Interactive sessions are user-facing and long-lived. Agentic sessions
+#    are system-spawned, self-contained, and run to completion.
+#
+# 2. Interactive sessions are the decision layer.
+#    They decide what to do, delegate the doing, review results, and decide
+#    what's next. They never do heavy lifting themselves.
+#
+# 3. Interactive sessions do not end.
+#    They have no terminal state. The user stays in conversation throughout.
+#
+# 4. Modes are interactive workflows.
+#    A mode switch (keep_context continuation) changes how the interactive
+#    session behaves without ending it. Modes orchestrate sub-tasks and
+#    provide structured workflows for common goals (planning, debugging).
+#
+# 5. Agentic sessions are self-contained.
+#    They take a description, do work, return a result. No user interaction.
+#    All context must be in the prompt — they cannot ask for clarification.
+#
+# 6. Delegate aggressively.
+#    Keep interactive sessions free of clutter. Research, drafting, and
+#    execution happen in sub-sessions. Iteration and approval happen in
+#    the interactive session.
+#
+# 7. Recursive decomposition.
+#    Before a plan is handed to an implementer, it is triaged to determine
+#    if it should be split into focused sub-tasks. This applies recursively.
+#
+# 8. Output types follow from the split.
+#    Interactive sessions produce nothing (they are ongoing). Agentic
+#    sessions produce artifacts: reports or commits.
+#
+# 9. Prompt for the behavior you want.
+#    Models default to doing work inline rather than delegating or switching
+#    modes. Every prompt, tool description, and agent_description must include
+#    explicit guidance: when to use each tool/mode, with concrete examples,
+#    and what the agent must NOT do itself (forcing delegation). Without this,
+#    transitions will not happen. The simulator's --context-dump mode should
+#    be used to verify that at every decision point the agent sees the right
+#    guidance in its context.
 #
 # Flow control:
 #   - creatable_tasks: modal sub-tasks (agent stays alive, gets results back)
@@ -36,7 +79,7 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     output_type: report
-    creatable_tasks: [plan, research, spike, verify, triage, implement]
+    creatable_tasks: [research, spike, bug, verify, triage, implement]
     continuations:
       plan:
         task_type: plan_mode
@@ -50,11 +93,9 @@ task_types:
   plan_mode:
     description: "Interactive planning mode — explore, plan, get approval, then implement"
     agent_description: >
-      Switch to planning mode for non-trivial implementation tasks. Prefer
-      switching to plan mode — it's better to get alignment upfront than to
-      redo work. The session becomes read-only — you explore the codebase,
-      produce a detailed implementation plan, then switch back to conversation.
-      The user reviews the plan and decides when to execute it.
+      Interactive planning mode. Delegates plan drafting to a plan sub-task,
+      then lets the user iterate on the result. When the plan is approved,
+      switches back to conversation for implementation dispatch.
 
       Switch when ANY of these apply:
       - New feature: adding meaningful new functionality (e.g. "add a logout
@@ -81,14 +122,13 @@ task_types:
       Prefer switching to plan mode — it's better to get alignment upfront
       than to redo work. If unsure, err on the side of planning. Confirm the
       task scope with the user before switching. The switch preserves your
-      conversation context but the session becomes read-only. Use research
-      sub-tasks to gather additional context. Switch back to return to
-      conversation when the plan is ready for user review.
+      conversation context. Switch back to conversation when the plan is
+      approved and the user is ready to implement.
     prompt_template: prompts/plan_mode.md
     model_class: large
     read_only: true
     output_type: report
-    creatable_tasks: [research, spike]
+    creatable_tasks: [plan, research, spike]
     continuations:
       back:
         task_type: conversation
@@ -99,21 +139,32 @@ task_types:
   bug_mode:
     description: "Interactive bug investigation — reproduce, diagnose, then fix"
     agent_description: >
-      Switch to bug investigation mode when the user reports unexpected
-      behavior, a test is failing, or something works differently than
-      expected. You systematically reproduce the issue, identify the root
-      cause, and determine the fix approach. Can create spike and research
-      sub-tasks. When done, switch to plan_mode (large fix) or switch back
-      to conversation with findings (small fix or non-bug).
+      Interactive bug investigation mode. Delegates investigation to a bug
+      sub-task, then lets the user iterate on findings. When the diagnosis
+      is clear, switches to plan_mode (large fix) or back to conversation
+      (small fix, non-bug, or user wants to discuss).
+
+      Switch when the user reports a specific bug to investigate
+      interactively:
+      - "X is broken" or "X doesn't work as expected"
+      - "This test is failing and I don't know why"
+      - "I'm seeing unexpected behavior in Y"
+      - The user provides error messages, stack traces, or reproduction steps
+
+      Do NOT switch for:
+      - A batch of bugs (spawn bug sub-tasks directly from conversation)
+      - A quick question about behavior (answer in conversation)
+      - A feature request disguised as a bug (switch to plan mode instead)
     tool_guidance: >
-      Switch when the user describes a bug or unexpected behavior. Gather
-      reproduction steps and error messages before switching. Switch back
-      if investigation reveals it's not a bug or the fix is small enough
-      for conversation to handle directly.
+      Switch when the user describes a specific bug or unexpected behavior
+      they want to investigate interactively. Gather reproduction steps and
+      error messages before switching — include them in the task description
+      so the bug sub-task has full context. Switch back to conversation when
+      the investigation is complete and the user is ready to act on findings.
     prompt_template: prompts/bug_mode.md
     model_class: large
     output_type: report
-    creatable_tasks: [research, spike]
+    creatable_tasks: [bug, research, spike]
     continuations:
       needs_plan:
         task_type: plan_mode
@@ -151,7 +202,7 @@ task_types:
     output_type: report
     creatable_tasks: [research, spike]
     parallelizable: true
-    user_visible: true
+    user_visible: false
 
   research:
     description: "Investigate a topic, gather information, produce findings"
@@ -177,7 +228,7 @@ task_types:
     read_only: true
     output_type: report
     parallelizable: true
-    user_visible: true
+    user_visible: false
 
   bug:
     description: "Investigate a bug report — reproduce, find root cause, report findings"
@@ -197,7 +248,7 @@ task_types:
     output_type: report
     creatable_tasks: [research, spike]
     parallelizable: true
-    user_visible: true
+    user_visible: false
 
   spike:
     description: "Test a theory or prototype an approach in an isolated worktree"
