@@ -253,7 +253,8 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 /// matchFn checks whether a line (at 1-based lineNum) matches the fork ID.
 /// Returns the number of lines removed, or -1 if fork ID not found.
 int truncateJsonl(string jsonlPath, string afterForkId,
-	bool delegate(string line, int lineNum, string forkId) matchFn)
+	bool delegate(string line, int lineNum, string forkId) matchFn,
+	bool excludeMatch = false)
 {
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
@@ -278,13 +279,18 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 			continue;
 		}
 
-		output ~= line ~ "\n";
-
 		if (matchFn(line, lineNum, afterForkId))
 		{
 			found = true;
 			pastTarget = true;
+			if (excludeMatch)
+			{
+				removedCount++;
+				continue;
+			}
 		}
+
+		output ~= line ~ "\n";
 	}
 
 	if (!found)

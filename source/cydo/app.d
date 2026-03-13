@@ -734,7 +734,8 @@ class App : ToolsBackend
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 					return;
 				}
-				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count)).representation));
+				// +1 to include the target user message itself
+				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count + 1)).representation));
 			}
 			else
 			{
@@ -792,7 +793,7 @@ class App : ToolsBackend
 				// 3. Truncate conversation history
 				if (json.revert_conversation)
 				{
-					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine);
+					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
 					if (removed < 0)
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
@@ -802,8 +803,25 @@ class App : ToolsBackend
 					td.historyLoaded = false;
 				}
 
-				broadcast(buildTasksList());
 				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+
+				// 4. Auto-resume so the input box shows immediately
+				// (the user's undone message text is recovered via preReloadDrafts)
+				if (json.revert_conversation && td.agentSessionId.length > 0)
+				{
+					auto typeDef = taskTypes.byName(td.taskType);
+					if (typeDef !is null)
+					{
+						auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
+						sc.disallowedTools = disallowedTools();
+						ensureTaskAgent(tid, sc);
+					}
+					else
+						ensureTaskAgent(tid);
+					td.status = "active";
+				}
+
+				broadcast(buildTasksList());
 			}
 		}
 	}
