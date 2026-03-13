@@ -978,7 +978,7 @@ class App : ToolsBackend
 				else
 				{
 					td.needsAttention = true;
-					td.notificationBody = extractLastAssistantText(tid);
+					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
 				}
 				broadcast(buildTasksList());
 			}
