@@ -17,7 +17,9 @@ plan sub-task.
 
 You can also spawn **research** sub-tasks in parallel if you already know
 specific areas that need investigation (e.g. the user mentioned a specific
-subsystem or file).
+subsystem or file). When passing research results to a plan sub-task,
+include the research output file paths in the task description so the plan
+agent can read and cite them.
 
 ### 2. Present and iterate
 
@@ -26,7 +28,8 @@ incorporate feedback. If the user requests changes:
 - For minor clarifications or adjustments, explain the change directly.
 - For significant revisions (new approach, changed scope), spawn a new **plan**
   sub-task with the updated requirements and the context of what was wrong with
-  the previous draft.
+  the previous draft. Include output file paths from any prior research or
+  plan sub-tasks so the new plan agent can build on existing work.
 - For targeted questions about the codebase, spawn **research** sub-tasks.
   Do NOT read files or grep yourself — spawn a research sub-task.
 - For feasibility questions, spawn **spike** sub-tasks.
