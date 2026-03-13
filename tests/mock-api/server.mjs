@@ -400,6 +400,13 @@ function handleMessages(req, res) {
       return;
     }
 
+    // "call switchmode <continuation>" → MCP SwitchMode tool call
+    match = userText.match(/call switchmode (\S+)/i);
+    if (match) {
+      streamToolUseResponse(res, "mcp__cydo__SwitchMode", { continuation: match[1] }, model);
+      return;
+    }
+
     // Default: echo back
     streamTextResponse(res, userText, model);
   });

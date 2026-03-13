@@ -91,15 +91,29 @@ TaskTypeDef[] loadTaskTypes(string path)
 // Validator
 // ---------------------------------------------------------------------------
 
-string[] validateTaskTypes(TaskTypeDef[] types)
+string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 {
+	import std.file : exists;
+	import std.path : buildPath;
+
 	string[] errors;
+
+	/// Check that a prompt_template file exists on disk.
+	void checkTemplateFile(string context, string tmpl)
+	{
+		if (tmpl.length == 0 || typesDir.length == 0)
+			return;
+		if (!exists(buildPath(typesDir, tmpl)))
+			errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
+	}
 
 	bool hasSteward = false;
 	foreach (ref def; types)
 	{
 		if (def.steward)
 			hasSteward = true;
+
+		checkTemplateFile(def.name, def.prompt_template);
 
 		// Check creatable_tasks references
 		foreach (ct; def.creatable_tasks)
@@ -137,6 +151,8 @@ string[] validateTaskTypes(TaskTypeDef[] types)
 					~ "!keep_context — only keep_context continuations use "
 					~ "continuation-level prompts",
 					def.name, cname);
+
+			checkTemplateFile(format("%s: continuation '%s'", def.name, cname), cont.prompt_template);
 		}
 
 		// Steward validation
@@ -641,6 +657,22 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir, st
 	return tmpl;
 }
 
+/// Render a continuation's prompt template. The continuation must have a
+/// prompt_template set (enforced by validation for keep_context continuations).
+string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string typesDir)
+{
+	import std.file : exists, readText;
+	import std.path : buildPath;
+
+	if (contDef.prompt_template.length == 0)
+		return fallback;
+
+	auto templatePath = buildPath(typesDir, contDef.prompt_template);
+	assert(exists(templatePath), "Continuation prompt template not found: " ~ templatePath);
+
+	return readText(templatePath);
+}
+
 /// Indent every line of a multi-line string with the given prefix.
 string indentLines(string text, string prefix)
 {
@@ -876,7 +908,8 @@ private TaskTypeDef[] loadAndValidate(string flag, string[] args)
 		return null;
 	}
 
-	auto errors = validateTaskTypes(types);
+	import std.path : dirName;
+	auto errors = validateTaskTypes(types, dirName(path));
 	if (errors.length > 0)
 	{
 		writeln("=== Validation Errors ===\n");
@@ -938,7 +971,7 @@ void runDumpContext(string[] args)
 		return;
 	}
 
-	auto errors = validateTaskTypes(types);
+	auto errors = validateTaskTypes(types, typesDir);
 	if (errors.length > 0)
 	{
 		foreach (e; errors)

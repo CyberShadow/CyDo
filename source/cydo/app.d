@@ -32,7 +32,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
-	renderPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
+	renderPrompt, renderContinuationPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
 
 void main(string[] args)
 {
@@ -113,7 +113,7 @@ class App : ToolsBackend
 			enum typesPath = "docs/task-types/types.yaml";
 			taskTypes = loadTaskTypes(typesPath);
 			taskTypesDir = dirName(typesPath);
-			auto errors = validateTaskTypes(taskTypes);
+			auto errors = validateTaskTypes(taskTypes, taskTypesDir);
 			foreach (e; errors)
 				writefln("  WARN: task type: %s", e);
 			writefln("Loaded %d task types", taskTypes.length);
@@ -1127,13 +1127,11 @@ class App : ToolsBackend
 			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
 
-			// Send rendered prompt as first message to successor.
-			// Use a placeholder instead of the original description — the agent
-			// already has the full conversation context from --resume.
+			// Send the continuation's prompt template as first message to successor.
 			if (td.session !is null)
 			{
-				auto renderedPrompt = renderPrompt(*newTypeDef,
-					"Continue from where you left off.", taskTypesDir, td.outputPath);
+				auto renderedPrompt = renderContinuationPrompt(contDef,
+					"Continue from where you left off.", taskTypesDir);
 				broadcastUnconfirmedUserMessage(tid, renderedPrompt);
 				sendTaskMessage(tid, renderedPrompt);
 			}
