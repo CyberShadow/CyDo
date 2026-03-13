@@ -24,6 +24,8 @@ nix flake check   # Run all tests — the single "all tests pass" command
 ```
 Run `nix flake check` after every unit of work and before committing.
 
+Tests are Playwright e2e specs (`tests/e2e/`) that run against a mock LLM API server (`tests/mock-api/server.mjs`).
+
 ## Architecture
 
 CyDo wraps Claude Code CLI (`claude --input-format stream-json --output-format stream-json`) in a web UI with WebSocket-based real-time streaming, multi-session management, and SQLite persistence.

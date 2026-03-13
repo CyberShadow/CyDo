@@ -152,7 +152,9 @@ export function SessionView({
           isProcessing={task.isProcessing}
           disabled={!connected}
           sessionId={task.tid}
-          preReloadDrafts={task.preReloadDrafts}
+          preReloadDrafts={
+            task.historyLoaded ? task.preReloadDrafts : undefined
+          }
           inputRef={inputRef}
           insertTextRef={insertTextRef}
         />
