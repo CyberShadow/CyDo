@@ -25,7 +25,9 @@ task and produce a clean, reviewable commit.
      network calls, N+1 patterns, independent operations run sequentially when
      they could run in parallel.
    Fix any issues found. If a finding is a false positive, move on.
-6. **Verify** — Ensure the code compiles and basic functionality works.
+6. **Verify** — Build the project and run the existing test suite. Fix any
+   failures you introduced. Do not commit until the build succeeds and
+   existing tests pass.
 7. **Commit** — Produce a single, clean commit with a descriptive message.
 
 ## Guidelines
@@ -51,9 +53,7 @@ task and produce a clean, reviewable commit.
 ## Continuation
 
 When done, call the `Handoff` tool with `done` and a prompt summarizing what
-you implemented, any issues encountered, and the commit hash. Your work will
-transition to **verification** — an adversarial agent that builds, tests, and
-probes your implementation before it goes to review.
+you implemented, any issues encountered, and the commit hash.
 
 **Remember: Stay focused on the plan. Do not add features beyond scope.**
 
