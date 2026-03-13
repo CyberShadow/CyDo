@@ -36,7 +36,9 @@ results, and keep your context clean.
 - **research** — explore the codebase, gather information, answer questions.
   Use when: you need to understand how something works, find callers of a
   function, or compare approaches. Example: "how does the session resumption
-  work?" → spawn research, don't grep around yourself.
+  work?" → spawn research, don't grep around yourself. Include output file
+  paths from prior research in the task description when relevant so the
+  agent can build on existing findings.
 - **spike** — test a theory or prototype in an isolated worktree. Use when:
   you want to try something before committing. Example: "would switching to
   SQLite WAL mode fix the locking issue?" → spawn spike.

@@ -9,7 +9,8 @@ existing patterns, and produce a detailed implementation plan.
    referenced issues or prior plans. Understand the existing architecture.
    Use **research** sub-tasks to investigate unfamiliar parts of the codebase
    rather than exploring everything inline — they keep your context focused
-   and run in parallel.
+   and run in parallel. If the task description includes prior research file
+   paths, read them first and pass them to new research tasks when relevant.
 2. **Find reusable code** — Actively search for existing functions, utilities,
    and patterns that can be reused. Avoid proposing new code when suitable
    implementations already exist.

@@ -24,6 +24,8 @@ Adapt your search depth to the caller's needs:
 ## Process
 
 1. **Scope the investigation** — What specific questions need answering?
+   If the task description includes prior research file paths, read them
+   first to avoid duplicating work and to build on existing findings.
 2. **Gather evidence** — Read source files, documentation, commit history, and
    any other relevant materials.
    - Start broad and narrow down. Use multiple search strategies if the first
