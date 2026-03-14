@@ -1,7 +1,7 @@
 /// Task type definitions — schema, YAML loader, validator, and mock simulator.
 ///
 /// Task types define agent behavior, capabilities, and flow control.
-/// See docs/task-types/README.md for the design document.
+/// See defs/task-types/README.md for the design document.
 module cydo.tasktype;
 
 import configy.attributes : Key, Optional;

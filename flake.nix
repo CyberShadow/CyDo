@@ -151,7 +151,7 @@
             pname = "cydo-integration-test";
             version = "0.1.0";
             src = ./tests;
-            taskTypeDocs = ./docs/task-types;
+            taskTypeDocs = ./defs/task-types;
 
             nativeBuildInputs = with pkgs; [
               playwright-test
@@ -206,9 +206,9 @@
               ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
 
               # Copy task-type definitions so the backend can load them
-              mkdir -p /tmp/cydo-test-workspace/docs
-              cp -r $taskTypeDocs /tmp/cydo-test-workspace/docs/task-types
-              chmod -R u+w /tmp/cydo-test-workspace/docs
+              mkdir -p /tmp/cydo-test-workspace/defs
+              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs/task-types
+              chmod -R u+w /tmp/cydo-test-workspace/defs/task-types
 
               # 1. Start mock API server
               ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &

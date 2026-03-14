@@ -27,7 +27,7 @@ test("keep_context continuation injects prompt template", async ({ page }) => {
   // user message.
   await sendMessage(page, "call switchmode plan");
 
-  // The continuation prompt from docs/task-types/prompts/enter_plan_mode.md
+  // The continuation prompt from defs/task-types/prompts/enter_plan_mode.md
   // should appear as a user message. Its first line is "# Planning Mode".
   await expect(
     page.locator(".message.user-message", { hasText: "Planning Mode" }),

@@ -112,7 +112,7 @@ class App : ToolsBackend
 		try
 		{
 			import std.path : dirName;
-			enum typesPath = "docs/task-types/types.yaml";
+			enum typesPath = "defs/task-types/types.yaml";
 			taskTypes = loadTaskTypes(typesPath);
 			taskTypesDir = dirName(typesPath);
 			auto errors = validateTaskTypes(taskTypes, taskTypesDir);
