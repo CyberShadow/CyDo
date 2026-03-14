@@ -83,8 +83,9 @@ class App : ToolsBackend
 	private Agent agent; // default agent
 	private Agent[string] agentsByType;
 	// Task type definitions loaded from YAML
-	private TaskTypeDef[] taskTypes;
-	private string taskTypesDir;
+	private TaskTypeDef[] taskTypesCache;
+	private enum taskTypesDir = "defs/task-types";
+	private enum taskTypesPath = "defs/task-types/types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
 	// inotify watches for JSONL file tracking (tid → handle)
@@ -101,6 +102,24 @@ class App : ToolsBackend
 	private string authUser;
 	private string authPass;
 
+	private TaskTypeDef[] getTaskTypes()
+	{
+		try
+		{
+			auto types = loadTaskTypes(taskTypesPath);
+			auto errors = validateTaskTypes(types, taskTypesDir);
+			foreach (e; errors)
+				writefln("  WARN: task type: %s", e);
+			taskTypesCache = types;
+			return taskTypesCache;
+		}
+		catch (Exception e)
+		{
+			writefln("Warning: task types file changed but failed to parse, keeping previous version: %s", e.msg);
+			return taskTypesCache;
+		}
+	}
+
 	void start()
 	{
 		persistence = Persistence("data/cydo.db");
@@ -109,19 +128,11 @@ class App : ToolsBackend
 		agentsByType[config.default_agent_type] = agent;
 
 		// Load task type definitions
-		try
-		{
-			import std.path : dirName;
-			enum typesPath = "defs/task-types/types.yaml";
-			taskTypes = loadTaskTypes(typesPath);
-			taskTypesDir = dirName(typesPath);
-			auto errors = validateTaskTypes(taskTypes, taskTypesDir);
-			foreach (e; errors)
-				writefln("  WARN: task type: %s", e);
-			writefln("Loaded %d task types", taskTypes.length);
-		}
-		catch (Exception e)
-			writefln("Warning: could not load task types: %s", e.msg);
+		auto types = getTaskTypes();
+		if (types.length == 0)
+			writefln("Warning: no task types loaded");
+		else
+			writefln("Loaded %d task types", types.length);
 
 		// Discover projects in all workspaces
 		discoverAllWorkspaces();
@@ -357,7 +368,7 @@ class App : ToolsBackend
 			return resolve(McpResult("Calling task not found", true));
 
 		// Validate task_type against parent's creatable_tasks
-		auto parentTypeDef = taskTypes.byName(parentTd.taskType);
+		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
 		if (parentTypeDef !is null &&
 			parentTypeDef.creatable_tasks.length > 0 &&
 			!parentTypeDef.creatable_tasks.canFind(taskType))
@@ -369,7 +380,7 @@ class App : ToolsBackend
 		}
 
 		// Validate child task type exists
-		auto childTypeDef = taskTypes.byName(taskType);
+		auto childTypeDef = getTaskTypes().byName(taskType);
 		if (childTypeDef is null)
 			return resolve(McpResult("Unknown task type: " ~ taskType, true));
 
@@ -438,7 +449,7 @@ class App : ToolsBackend
 		if (td is null)
 			return McpResult("Calling task not found", true);
 
-		auto typeDef = taskTypes.byName(td.taskType);
+		auto typeDef = getTaskTypes().byName(td.taskType);
 		if (typeDef is null)
 			return McpResult("Unknown task type: " ~ td.taskType, true);
 
@@ -476,7 +487,7 @@ class App : ToolsBackend
 		if (td is null)
 			return McpResult("Calling task not found", true);
 
-		auto typeDef = taskTypes.byName(td.taskType);
+		auto typeDef = getTaskTypes().byName(td.taskType);
 		if (typeDef is null)
 			return McpResult("Unknown task type: " ~ td.taskType, true);
 
@@ -512,7 +523,7 @@ class App : ToolsBackend
 		{
 			auto at = json.agent_type.length > 0 ? json.agent_type : config.default_agent_type;
 			auto tid = createTask(json.workspace, json.project_path, at);
-			if (json.task_type.length > 0 && taskTypes.byName(json.task_type) !is null)
+			if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
 			{
 				tasks[tid].taskType = json.task_type;
 				persistence.setTaskType(tid, json.task_type);
@@ -523,7 +534,7 @@ class App : ToolsBackend
 			if (json.content.length > 0)
 			{
 				auto td = &tasks[tid];
-				auto typeDef = taskTypes.byName(td.taskType);
+				auto typeDef = getTaskTypes().byName(td.taskType);
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
@@ -621,7 +632,7 @@ class App : ToolsBackend
 				if (td.agentSessionId.length > 0)
 					return; // resumable but not resumed — ignore
 				// Build session config from task type if available
-				auto typeDef = taskTypes.byName(td.taskType);
+				auto typeDef = getTaskTypes().byName(td.taskType);
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(
@@ -637,7 +648,7 @@ class App : ToolsBackend
 			auto messageToSend = json.content;
 			if (td.description.length == 0)
 			{
-				auto typeDef = taskTypes.byName(td.taskType);
+				auto typeDef = getTaskTypes().byName(td.taskType);
 				if (typeDef !is null)
 					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
 			}
@@ -671,7 +682,7 @@ class App : ToolsBackend
 				return;
 			if (td.session !is null && td.session.alive)
 				return;
-			auto typeDef = taskTypes.byName(td.taskType);
+			auto typeDef = getTaskTypes().byName(td.taskType);
 			if (typeDef !is null)
 			{
 				auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
@@ -871,7 +882,7 @@ class App : ToolsBackend
 				// (the user's undone message text is recovered via preReloadDrafts)
 				if (json.revert_conversation && td.agentSessionId.length > 0)
 				{
-					auto typeDef = taskTypes.byName(td.taskType);
+					auto typeDef = getTaskTypes().byName(td.taskType);
 					if (typeDef !is null)
 					{
 						auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
@@ -958,13 +969,13 @@ class App : ToolsBackend
 
 		// Populate creatable task types description if not already set
 		if (sessionConfig.creatableTaskTypes.length == 0)
-			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
+			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
 
 		// Populate SwitchMode and Handoff descriptions if not already set
 		if (sessionConfig.switchModes.length == 0)
-			sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
+			sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
 		if (sessionConfig.handoffs.length == 0)
-			sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
+			sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
 
 		// Disable built-in tools that are replaced by our MCP equivalents
 		if (sessionConfig.disallowedTools.length == 0)
@@ -975,7 +986,7 @@ class App : ToolsBackend
 			sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
-		auto typeDef = taskTypes.byName(td.taskType);
+		auto typeDef = getTaskTypes().byName(td.taskType);
 
 		// Ensure per-task directory exists
 		import std.path : buildPath;
@@ -1158,7 +1169,7 @@ class App : ToolsBackend
 		import ae.utils.json : toJson;
 
 		auto td = &tasks[tid];
-		auto typeDef = taskTypes.byName(td.taskType);
+		auto typeDef = getTaskTypes().byName(td.taskType);
 		auto contKey = td.pendingContinuation;
 		auto hPrompt = td.handoffPrompt;
 		td.pendingContinuation = null;
@@ -1185,7 +1196,7 @@ class App : ToolsBackend
 		}
 		auto contDef = *contDefP;
 
-		auto newTypeDef = taskTypes.byName(contDef.task_type);
+		auto newTypeDef = getTaskTypes().byName(contDef.task_type);
 		if (newTypeDef is null)
 		{
 			writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
@@ -1702,7 +1713,7 @@ class App : ToolsBackend
 		import ae.utils.json : toJson;
 
 		TaskTypeListEntry[] entries;
-		foreach (ref def; taskTypes)
+		foreach (ref def; getTaskTypes())
 			if (def.user_visible)
 				entries ~= TaskTypeListEntry(def.name, def.description, def.model_class, def.read_only);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
