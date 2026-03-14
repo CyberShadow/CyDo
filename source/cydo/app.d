@@ -309,6 +309,8 @@ class App : ToolsBackend
 
 		// Unified async dispatch — all tools return Promise!McpResult
 		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
+			if (!conn.connected)
+				return;
 			auto resultJson = toJson(McpContentResult(
 				[McpContentItem("text", result.text)],
 				result.isError,
