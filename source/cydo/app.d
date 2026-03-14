@@ -540,7 +540,7 @@ class App : ToolsBackend
 						if (op.operation == "enqueue")
 						{
 							steeringStash ~= op.content;
-							return null; // no pending placeholder — replay is synchronous
+							return buildSyntheticUserEvent(op.content, false, true);
 						}
 						else if (op.operation == "dequeue")
 						{
