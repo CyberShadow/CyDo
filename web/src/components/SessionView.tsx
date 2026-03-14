@@ -26,6 +26,7 @@ interface Props {
   onUndoDismiss: (tid: number) => void;
   theme: Theme;
   onToggleTheme: () => void;
+  onToggleSidebar: () => void;
 }
 
 export function SessionView({
@@ -43,6 +44,7 @@ export function SessionView({
   onUndoDismiss,
   theme,
   onToggleTheme,
+  onToggleSidebar,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -110,6 +112,7 @@ export function SessionView({
         onStop={onStop}
         onCloseStdin={onCloseStdin}
         taskType={task.taskType}
+        onToggleSidebar={onToggleSidebar}
       />
       {!task.historyLoaded ? (
         <div class="session-loading">

@@ -14,6 +14,7 @@ interface Props {
   onStop: () => void;
   onCloseStdin: () => void;
   taskType?: string;
+  onToggleSidebar?: () => void;
 }
 
 export function SystemBanner({
@@ -27,12 +28,22 @@ export function SystemBanner({
   onStop,
   onCloseStdin,
   taskType,
+  onToggleSidebar,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   return (
     <div class="system-banner">
       <div class="banner-left">
+        {onToggleSidebar && (
+          <button
+            class="hamburger-btn"
+            onClick={onToggleSidebar}
+            title="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+        )}
         <span class="banner-title">CyDo</span>
         {sessionInfo && (
           <span

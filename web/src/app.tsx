@@ -38,6 +38,11 @@ export function App() {
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
   const [showSearch, setShowSearch] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((v) => !v);
+  }, []);
 
   const active =
     activeTaskId !== null ? (tasks.get(activeTaskId) ?? null) : null;
@@ -193,13 +198,22 @@ export function App() {
 
   return (
     <ThemeContext.Provider value={theme}>
-      <div class="app has-sidebar">
+      <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
+        {sidebarOpen && (
+          <div class="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+        )}
         <Sidebar
           tasks={sidebarTasks}
           activeTaskId={activeTaskId}
           attention={attention}
-          onSelectTask={setActiveTaskId}
-          onNewTask={handleNewTask}
+          onSelectTask={(tid) => {
+            setActiveTaskId(tid);
+            setSidebarOpen(false);
+          }}
+          onNewTask={() => {
+            handleNewTask();
+            setSidebarOpen(false);
+          }}
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}
@@ -228,6 +242,7 @@ export function App() {
                   onUndoDismiss={undoDismiss}
                   theme={theme}
                   onToggleTheme={toggleTheme}
+                  onToggleSidebar={toggleSidebar}
                 />
               </div>
             );
@@ -241,6 +256,13 @@ export function App() {
             </div>
           ) : (
             <div class="session-empty">
+              <button
+                class="hamburger-btn hamburger-floating"
+                onClick={toggleSidebar}
+                title="Toggle sidebar"
+              >
+                &#9776;
+              </button>
               <div class="session-empty-inner">
                 <h1 class="welcome-title">CyDo</h1>
                 <p class="welcome-subtitle">Multi-agent orchestration system</p>
