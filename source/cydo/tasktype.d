@@ -28,7 +28,14 @@ struct ContinuationDef
 struct CreatableTaskDef
 {
 	string name;
+	@Optional string task_type; // actual type to create (defaults to name)
 	@Optional string prompt_template;
+
+	/// Resolve the actual task type (task_type field, or name if unset).
+	string resolvedType() const
+	{
+		return task_type.length > 0 ? task_type : name;
+	}
 }
 
 struct TaskTypeDef
@@ -133,8 +140,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		// Check creatable_tasks references
 		foreach (ref edge; def.creatable_tasks)
 		{
-			if (types.byName(edge.name) is null)
-				errors ~= format("%s: creatable_tasks references unknown type '%s'", def.name, edge.name);
+			if (types.byName(edge.resolvedType) is null)
+				errors ~= format("%s: creatable_tasks '%s' references unknown type '%s'",
+					def.name, edge.name, edge.resolvedType);
 			checkTemplateFile(format("%s: creatable_tasks '%s'", def.name, edge.name), edge.prompt_template);
 		}
 
@@ -253,7 +261,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		{
 			foreach (ref edge; def.creatable_tasks)
 			{
-				auto target = types.byName(edge.name);
+				auto target = types.byName(edge.resolvedType);
 				if (target !is null && !target.user_visible && edge.prompt_template.length == 0)
 					errors ~= format("%s: creatable_tasks '%s' targets non-user_visible type"
 						~ " but has no prompt_template", def.name, edge.name);
@@ -754,7 +762,7 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 	string result;
 	foreach (ref edge; parentDef.creatable_tasks)
 	{
-		auto def = allTypes.byName(edge.name);
+		auto def = allTypes.byName(edge.resolvedType);
 		if (def is null)
 			continue;
 		result ~= format("- %s: %s\n", edge.name, def.description);
@@ -858,8 +866,9 @@ void generateDot(TaskTypeDef[] types)
 	foreach (ref def; types)
 	{
 		foreach (ref ct; def.creatable_tasks)
-			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates\"];",
-				def.name, ct.name);
+			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates%s\"];",
+				def.name, ct.resolvedType,
+				ct.task_type.length > 0 ? format(" (%s)", ct.name) : "");
 	}
 
 	// Steward review edges (dotted, from approval-gated continuations to stewards)

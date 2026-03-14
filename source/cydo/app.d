@@ -367,27 +367,32 @@ class App : ToolsBackend
 		if (parentTd is null)
 			return resolve(McpResult("Calling task not found", true));
 
-		// Validate task_type against parent's creatable_tasks
+		// Validate task_type against parent's creatable_tasks and resolve alias
 		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
+		string resolvedTaskType = taskType;
 		if (parentTypeDef !is null &&
-			parentTypeDef.creatable_tasks.length > 0 &&
-			parentTypeDef.creatable_tasks.byName(taskType) is null)
+			parentTypeDef.creatable_tasks.length > 0)
 		{
-			return resolve(McpResult(
-				"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
-				parentTd.taskType ~ "'. Allowed: " ~
-				parentTypeDef.creatable_tasks.map!(c => c.name).join(", "), true));
+			auto edge = parentTypeDef.creatable_tasks.byName(taskType);
+			if (edge is null)
+			{
+				return resolve(McpResult(
+					"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
+					parentTd.taskType ~ "'. Allowed: " ~
+					parentTypeDef.creatable_tasks.map!(c => c.name).join(", "), true));
+			}
+			resolvedTaskType = edge.resolvedType;
 		}
 
 		// Validate child task type exists
-		auto childTypeDef = getTaskTypes().byName(taskType);
+		auto childTypeDef = getTaskTypes().byName(resolvedTaskType);
 		if (childTypeDef is null)
-			return resolve(McpResult("Unknown task type: " ~ taskType, true));
+			return resolve(McpResult("Unknown task type: " ~ resolvedTaskType, true));
 
 		// Create child task
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath);
 		auto childTd = &tasks[childTid];
-		childTd.taskType = taskType;
+		childTd.taskType = resolvedTaskType;
 		childTd.description = prompt;
 		childTd.parentTid = parentTid;
 		childTd.relationType = "subtask";
@@ -396,7 +401,7 @@ class App : ToolsBackend
 			: truncateTitle(prompt, 80);
 
 		// Persist metadata
-		persistence.setTaskType(childTid, taskType);
+		persistence.setTaskType(childTid, resolvedTaskType);
 		persistence.setDescription(childTid, prompt);
 		persistence.setParentTid(childTid, parentTid);
 		persistence.setRelationType(childTid, "subtask");
@@ -432,7 +437,7 @@ class App : ToolsBackend
 
 		if (description.length == 0)
 			generateTitle(childTid, prompt);
-		writefln("Task: tid=%d type=%s parent=%d", childTid, taskType, parentTid);
+		writefln("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
 		return promise;
 	}
