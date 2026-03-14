@@ -352,7 +352,9 @@ export function reduceUserEcho(
 
   let state = s;
 
-  const msgToolUseResult = (rawMsg as any)?.toolUseResult;
+  // Extract the opaque tool result payload (varies by tool)
+  const raw = rawMsg as any;
+  const toolUseResult = raw?.toolUseResult ?? raw?.tool_use_result ?? undefined;
 
   // Link tool results to their parent assistant messages
   if (toolResults.length > 0) {
@@ -371,7 +373,7 @@ export function reduceUserEcho(
               toolUseId: block.tool_use_id,
               content: block.content,
               isError: block.is_error,
-              toolUseResult: msgToolUseResult,
+              toolUseResult,
             });
             updated[i] = newMsg;
             touchedIndices.add(i);
@@ -382,7 +384,9 @@ export function reduceUserEcho(
     }
     // Append the raw user message (carrying tool results) to each
     // touched assistant message's rawSource so "view source" shows
-    // the complete round-trip.
+    // the complete round-trip.  Also merge any extra fields from the
+    // tool-result user message onto the parent assistant message so
+    // they are visible in the UI.
     for (const i of touchedIndices) {
       const msg = updated[i];
       const prev = msg.rawSource;
@@ -391,6 +395,11 @@ export function reduceUserEcho(
           ? [...prev, rawMsg]
           : [prev, rawMsg]
         : rawMsg;
+      if (extras && extras.length > 0) {
+        msg.extraFields = msg.extraFields
+          ? [...msg.extraFields, ...extras]
+          : extras;
+      }
     }
     state = { ...state, messages: updated };
   }

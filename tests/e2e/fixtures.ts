@@ -8,6 +8,15 @@ import { test as base, expect } from "@playwright/test";
  * "Schema validation failed" or "Unknown message type".  This fixture
  * checks the DOM after every test and fails if any such messages exist.
  *
+ * It also asserts that no ExtraFields components rendered — meaning no
+ * protocol fields went unrecognized by the Zod schemas.
+ *
+ * Policy: when these assertions fail, present the failures to the user so
+ * they can decide how the new fields should be handled.  Do NOT silence
+ * the assertion by adding z.unknown() declarations or removing the check.
+ * Agents may suggest how to handle new fields but must not make
+ * independent decisions about suppressing them.
+ *
  * Usage: import { test, expect } from "./fixtures" instead of "@playwright/test".
  */
 export const test = base.extend({
@@ -18,15 +27,37 @@ export const test = base.extend({
     const errorMessages = page.locator(".message.system-message pre", {
       hasText: /Schema validation failed|Unknown message type|No schema for/,
     });
-    const count = await errorMessages.count();
-    if (count > 0) {
+    const errorCount = await errorMessages.count();
+    if (errorCount > 0) {
       const texts: string[] = [];
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < errorCount; i++) {
         texts.push(await errorMessages.nth(i).innerText());
       }
       expect(
-        count,
-        `Protocol validation errors in DOM:\n${texts.join("\n---\n")}`,
+        errorCount,
+        `Protocol validation errors in DOM:\n${texts.join("\n---\n")}`
+      ).toBe(0);
+    }
+
+    // Assert no ExtraFields rendered — every protocol field should be
+    // covered by the Zod schemas.  See schemas.ts for the completeness
+    // policy.
+    const extraFields = page.locator(".extra-fields");
+    const extraCount = await extraFields.count();
+    if (extraCount > 0) {
+      // Expand collapsed <details> to read the full content
+      const descriptions: string[] = [];
+      for (let i = 0; i < extraCount; i++) {
+        const el = extraFields.nth(i);
+        const summary = await el.locator("summary").innerText();
+        const content = await el.locator(".extra-fields-content").innerHTML();
+        descriptions.push(`${summary}\n${content}`);
+      }
+      expect(
+        extraCount,
+        `Unrecognized protocol fields rendered in DOM:\n${descriptions.join(
+          "\n---\n"
+        )}`
       ).toBe(0);
     }
 

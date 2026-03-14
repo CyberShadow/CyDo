@@ -4,6 +4,24 @@
 // strict for its own format, sharing inner types.  Only fields that are
 // (a) consumed by the UI or (b) explicitly ignored with rationale are included.
 // Everything else surfaces as "extra fields" in the UI.
+//
+// Schema completeness policy:
+//
+//   1. Schemas SHOULD describe the full structure of every field. Opaque types
+//      (z.unknown(), z.record(k, z.unknown())) prevent extractExtras from
+//      recursing into nested objects, silently swallowing new fields that would
+//      otherwise surface as "extra fields" in the UI and fail tests. Unknown
+//      fields causing test failures is expected and desired — each new field
+//      requires a deliberate decision about how to handle it.
+//
+//   2. Any field typed as z.unknown() MUST still be surfaced in the UI in some
+//      way (e.g. rendered via JSON.stringify, or reported as ExtraFields).
+//      A field that is both opaque AND invisible is a compliance violation.
+//
+//   3. Fields may be added to a schema (removing them from ExtraFields) ONLY
+//      if they are also rendered in the UI, or added by explicit unambiguous
+//      instructions from the user. Do not suppress extra-field warnings by
+//      adding z.unknown() declarations that hide structure.
 
 import { z } from "zod";
 
@@ -36,7 +54,8 @@ export const UsageSchema = z
       })
       .passthrough()
       .optional(),
-    iterations: z.array(z.unknown()).nullable().optional(),
+    // only ever observed as empty []; z.never() ensures non-empty arrays fail validation
+    iterations: z.array(z.never()).nullable().optional(),
     speed: z.literal("standard").nullable().optional(),
   })
   .passthrough();
@@ -206,11 +225,15 @@ export const SystemInitSchema = z
     tools: z.array(z.string()),
     claude_code_version: z.string(),
     permissionMode: z.string(),
-    mcp_servers: z.array(z.unknown()).optional(),
-    agents: z.array(z.unknown()).optional(),
+    mcp_servers: z
+      .array(z.object({ name: z.string(), status: z.string() }).passthrough())
+      .optional(),
+    agents: z.array(z.string()).optional(),
     apiKeySource: z.string().optional(),
     skills: z.array(z.string()).optional(),
-    plugins: z.array(z.unknown()).optional(),
+    plugins: z
+      .array(z.object({ name: z.string(), path: z.string() }).passthrough())
+      .optional(),
     fast_mode_state: z.string().optional(),
     slash_commands: z.array(z.string()).optional(),
     output_style: z.string().optional(),
@@ -283,9 +306,16 @@ export const UserEchoSchema = z
       .passthrough(),
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
-    // ignored: legacy duplicate of tool results in content blocks
-    tool_use_result: z.unknown().optional(),
-    toolUseResult: z.unknown().optional(),
+    // opaque — tool result payloads vary by tool, rendered via ToolCall dispatch
+    // may be an object (Bash, Edit) or an array (SwitchMode, ControlResponse)
+    tool_use_result: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .optional(),
+    toolUseResult: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .optional(),
+    // ignored: routing — links tool result back to the assistant that made the call
+    sourceToolAssistantUUID: z.string().optional(),
     // consumed: checked in handleSessionMessage to skip echo for replayed messages
     isReplay: z.boolean().optional(),
     isSynthetic: z.boolean().optional(),
@@ -388,7 +418,6 @@ export const SystemApiErrorSchema = z
     type: z.literal("system"),
     subtype: z.literal("api_error"),
     level: z.string().optional(),
-    error: z.unknown(),
     retryInMs: z.number().optional(),
     retryAttempt: z.number().optional(),
     maxRetries: z.number().optional(),
@@ -421,6 +450,8 @@ export const AssistantFileSchema = z
   .object({
     type: z.literal("message/assistant"),
     uuid: z.string(),
+    // ignored: routing — present in live stream schema too, Codex adapter injects it
+    session_id: z.string().optional(),
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
     isApiErrorMessage: z.boolean().optional(),
@@ -442,9 +473,15 @@ export const UserFileSchema = z
       .passthrough(),
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
-    // ignored: legacy duplicate of tool results in content blocks
-    tool_use_result: z.unknown().optional(),
-    toolUseResult: z.unknown().optional(),
+    // opaque — tool result payloads vary by tool, rendered via ToolCall dispatch
+    tool_use_result: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .optional(),
+    toolUseResult: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .optional(),
+    // ignored: routing — links tool result back to the assistant that made the call
+    sourceToolAssistantUUID: z.string().optional(),
     isSynthetic: z.literal(true).optional(),
     isMeta: z.boolean().optional(),
     slug: z.string().optional(),
@@ -473,6 +510,7 @@ export const FileHistorySnapshotSchema = z
   .object({
     type: z.literal("file-history-snapshot"),
     messageId: z.string().optional(),
+    // POLICY: opaque — entire event is intentionally discarded by reducer
     snapshot: z.unknown(),
   })
   .passthrough();

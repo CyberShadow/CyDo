@@ -73,6 +73,7 @@ export interface ToolResult {
   toolUseId: string;
   content: ToolResultContent;
   isError?: boolean;
+  // opaque tool result payload — varies by tool, rendered via ToolCall dispatch
   toolUseResult?: unknown;
 }
 
