@@ -14,6 +14,7 @@ struct SessionConfig
 	string disallowedTools;    /// Comma-separated list of tools to remove from context
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
+	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,

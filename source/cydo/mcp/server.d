@@ -1,16 +1,17 @@
 /// MCP proxy server.
 ///
 /// Runs as `cydo --mcp-server`. Handles the MCP JSON-RPC protocol
-/// over stdio and proxies tool calls to the CyDo backend via HTTP.
+/// over stdio and proxies tool calls to the CyDo backend via a UNIX socket.
 module cydo.mcp.server;
 
 version (Posix):
 
+import std.conv : to;
 import std.process : environment;
 import std.stdio : stderr;
 
 import ae.net.asockets : socketManager;
-import ae.net.http.client : HttpClient;
+import ae.net.http.client : HttpClient, UnixConnector;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.net.jsonrpc.stdio : stdioLDJsonRpcConnection;
 import ae.sys.data : Data;
@@ -26,16 +27,15 @@ import cydo.mcp.tools : CydoTools;
 void runMcpServer()
 {
 	auto tid = environment.get("CYDO_TID", "0");
-	auto port = environment.get("CYDO_PORT", "3456");
-	auto backendUrl = "http://127.0.0.1:" ~ port ~ "/mcp/call";
+	auto socketPath = environment.get("CYDO_SOCKET", "");
 
-	stderr.writefln("CyDo MCP proxy starting (tid=%s, backend=:%s)", tid, port);
+	stderr.writefln("CyDo MCP proxy starting (tid=%s, socket=%s)", tid, socketPath);
 
 	auto conn = stdioLDJsonRpcConnection();
 	auto codec = new JsonRpcCodec(conn);
 
 	codec.handleRequest = (JsonRpcRequest request) {
-		return handleRequest(request, backendUrl, tid);
+		return handleRequest(request, socketPath, tid);
 	};
 
 	socketManager.loop();
@@ -59,7 +59,7 @@ string buildToolsListJson()
 	]);
 }
 
-Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl, string tid)
+Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string socketPath, string tid)
 {
 	switch (request.method)
 	{
@@ -75,7 +75,7 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl,
 			return resolve(JsonRpcResponse.success(request.id, JSONFragment(buildToolsListJson())));
 
 		case "tools/call":
-			return handleToolsCall(request, backendUrl, tid);
+			return handleToolsCall(request, socketPath, tid);
 
 		default:
 			return resolve(JsonRpcResponse.failure(request.id,
@@ -83,8 +83,8 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string backendUrl,
 	}
 }
 
-/// Forward tools/call to the backend via HTTP POST.
-Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUrl, string tid)
+/// Forward tools/call to the backend via UNIX socket HTTP POST.
+Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string socketPath, string tid)
 {
 	auto promise = new Promise!JsonRpcResponse;
 
@@ -105,17 +105,18 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUr
 
 	stderr.writefln("MCP proxy: tools/call %s → backend", params.name);
 
-	// Use HttpClient with no timeout — sub-tasks can run for minutes/hours
+	// Connect to backend via UNIX socket — no timeout (sub-tasks can run for minutes/hours)
 	import ae.net.http.common : HttpRequest, HttpResponse;
 	import core.time : Duration;
 
 	auto httpReq = new HttpRequest;
-	httpReq.resource = backendUrl;
+	httpReq.resource = "/mcp/call";
 	httpReq.method = "POST";
 	httpReq.headers["Content-Type"] = "application/json";
+	httpReq.headers["Host"] = "localhost";
 	httpReq.data = DataVec(Data(bodyJson.asBytes));
 
-	auto client = new HttpClient(Duration.zero);
+	auto client = new HttpClient(Duration.zero, new UnixConnector(socketPath));
 	client.handleResponse = (HttpResponse response, string disconnectReason) {
 		if (response is null)
 		{
@@ -127,6 +128,13 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string backendUr
 		{
 			import ae.sys.dataset : joinData;
 			auto responseText = cast(string) response.data[].joinData().toGC();
+			if (response.status / 100 != 2)
+			{
+				stderr.writefln("MCP proxy: backend returned HTTP %d", response.status);
+				promise.fulfill(JsonRpcResponse.failure(request.id,
+					JsonRpcErrorCode.internalError, "Backend returned HTTP " ~ to!string(response.status)));
+				return;
+			}
 			promise.fulfill(JsonRpcResponse.success(request.id, JSONFragment(responseText)));
 		}
 		catch (Exception e)

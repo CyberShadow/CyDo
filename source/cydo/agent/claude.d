@@ -81,7 +81,7 @@ class ClaudeCodeAgent : Agent
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
-			config.switchModes, config.handoffs);
+			config.switchModes, config.handoffs, config.mcpSocketPath);
 		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath_, config);
 	}
 
@@ -475,8 +475,9 @@ struct ClaudeInputMessage
 /// creatableTaskTypes is pre-formatted text describing available task types.
 /// switchModes is pre-formatted text describing available SwitchMode continuations.
 /// handoffs is pre-formatted text describing available Handoff continuations.
+/// mcpSocketPath is the absolute path to the backend's UNIX socket for MCP calls.
 string generateMcpConfig(int tid, string creatableTaskTypes = "",
-	string switchModes = "", string handoffs = "")
+	string switchModes = "", string handoffs = "", string mcpSocketPath = "")
 {
 	import std.file : exists, mkdirRecurse, write;
 	import std.path : buildPath;
@@ -488,10 +489,12 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	auto cydoBin = cydoBinaryPath;
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
-	// MCP config pointing to our binary in MCP server mode
+	// MCP config pointing to our binary in MCP server mode.
+	// CYDO_SOCKET tells the proxy to connect via UNIX socket (no auth needed).
 	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
 		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_PORT":"3456","CYDO_CREATABLE_TYPES":"`
+		~ to!string(tid) ~ `","CYDO_SOCKET":"`
+		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
 		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
 		~ escapeJsonString(handoffs) ~ `"}}}}`;

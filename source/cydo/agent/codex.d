@@ -350,7 +350,7 @@ class CodexAgent : Agent
 
 				// Build MCP config override for CyDo tools
 				auto mcpConfig = buildMcpConfigOverride(tid,
-					config.creatableTaskTypes, config.switchModes, config.handoffs);
+					config.creatableTaskTypes, config.switchModes, config.handoffs, config.mcpSocketPath);
 
 				auto params = `{"cwd":"` ~ escapeJsonString(workDir)
 					~ `","model":"` ~ escapeJsonString(model)
@@ -1046,7 +1046,7 @@ private:
 /// Returns empty string if CyDo binary is not available.
 /// The JSON value is passed as the "config" field in thread/start params.
 string buildMcpConfigOverride(int tid, string creatableTaskTypes,
-	string switchModes, string handoffs)
+	string switchModes, string handoffs, string mcpSocketPath)
 {
 	auto cydoBin = cydoBinaryPath;
 	if (cydoBin.length == 0)
@@ -1055,7 +1055,8 @@ string buildMcpConfigOverride(int tid, string creatableTaskTypes,
 	return `{"mcp_servers.cydo":{"command":"`
 		~ escapeJsonString(cydoBin)
 		~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_PORT":"3456","CYDO_CREATABLE_TYPES":"`
+		~ to!string(tid) ~ `","CYDO_SOCKET":"`
+		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
 		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
 		~ escapeJsonString(handoffs) ~ `"}}}`;

@@ -73,6 +73,8 @@ class App : ToolsBackend
 	import cydo.inotify : RefCountedINotify;
 
 	private HttpServer server;
+	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
+	private string mcpSocketPath;
 	private WebSocketAdapter[] clients;
 	private TaskData[int] tasks;
 	private Persistence persistence;
@@ -167,6 +169,9 @@ class App : ToolsBackend
 		auto port = server.listen(3456);
 		auto proto = sslCert ? "https" : "http";
 		writefln("CyDo server listening on %s://localhost:%d", proto, port);
+
+		// Internal UNIX socket for MCP proxy calls (no auth required)
+		startMcpSocket();
 	}
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
@@ -190,12 +195,6 @@ class App : ToolsBackend
 		if (request.resource == "/ws")
 		{
 			handleWebSocket(request, conn);
-			return;
-		}
-
-		if (request.resource == "/mcp/call" && request.method == "POST")
-		{
-			handleMcpCall(request, conn);
 			return;
 		}
 
@@ -247,6 +246,36 @@ class App : ToolsBackend
 		ws.handleDisconnect = (string reason, DisconnectType type) {
 			removeClient(ws);
 		};
+	}
+
+	private void startMcpSocket()
+	{
+		import std.file : mkdirRecurse, remove;
+		import std.path : absolutePath, buildPath;
+		import std.socket : AddressFamily, AddressInfo, ProtocolType, SocketType, UnixAddress;
+
+		mcpSocketPath = absolutePath(buildPath("data", "mcp.sock"));
+
+		// Remove stale socket file from previous run
+		if (exists(mcpSocketPath))
+			remove(mcpSocketPath);
+
+		mkdirRecurse("data");
+
+		mcpServer = new HttpServer();
+		mcpServer.handleRequest = (HttpRequest request, HttpServerConnection conn) {
+			if (request.resource == "/mcp/call" && request.method == "POST")
+				handleMcpCall(request, conn);
+			else
+			{
+				auto response = new HttpResponseEx();
+				response.setStatus(HttpStatusCode.NotFound);
+				conn.sendResponse(response);
+			}
+		};
+		auto addr = new UnixAddress(mcpSocketPath);
+		mcpServer.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM, cast(ProtocolType) 0, addr, mcpSocketPath)]);
+		writefln("MCP socket listening on %s", mcpSocketPath);
 	}
 
 	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
@@ -938,6 +967,10 @@ class App : ToolsBackend
 		// Disable built-in tools that are replaced by our MCP equivalents
 		if (sessionConfig.disallowedTools.length == 0)
 			sessionConfig.disallowedTools = disallowedTools();
+
+		// Pass UNIX socket path for MCP proxy communication
+		if (sessionConfig.mcpSocketPath.length == 0)
+			sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
 		auto typeDef = taskTypes.byName(td.taskType);
