@@ -45,6 +45,7 @@ function anyTabFocused() {
 
 function connect() {
   var ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
   ws.onopen = function() {
     initialized = false;
     state.clear();
@@ -55,7 +56,8 @@ function connect() {
   ws.onerror = function() { ws.close(); };
   ws.onmessage = function(ev) {
     try {
-      var raw = JSON.parse(ev.data);
+      var text = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
+      var raw = JSON.parse(text);
       if (raw.type === "tasks_list") handleTasksList(raw.tasks || []);
     } catch(e) {}
   };
