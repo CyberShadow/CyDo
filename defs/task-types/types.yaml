@@ -97,6 +97,7 @@ task_types:
       verify:
         prompt_template: prompts/verify.md
       execute:
+        task_type: triage
         prompt_template: prompts/execute.md
     continuations:
       plan:
@@ -329,7 +330,7 @@ task_types:
   # gated by requires_approval). Stewards review at approval gates.
   # =========================================================================
 
-  execute:
+  triage:
     description: "Execute a plan — implement directly or decompose into sub-tasks"
     agent_description: >
       Execute a plan. Reads the plan and decides: implement directly
@@ -367,6 +368,7 @@ task_types:
     output_type: report
     creatable_tasks:
       execute:
+        task_type: triage
         prompt_template: prompts/execute.md
       plan:
         prompt_template: prompts/plan.md
