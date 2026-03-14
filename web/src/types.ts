@@ -73,6 +73,7 @@ export interface ToolResult {
   toolUseId: string;
   content: ToolResultContent;
   isError?: boolean;
+  toolUseResult?: unknown;
 }
 
 export interface StreamingBlock {

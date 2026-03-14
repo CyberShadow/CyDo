@@ -352,6 +352,8 @@ export function reduceUserEcho(
 
   let state = s;
 
+  const msgToolUseResult = (rawMsg as any)?.toolUseResult;
+
   // Link tool results to their parent assistant messages
   if (toolResults.length > 0) {
     const updated = [...state.messages];
@@ -369,6 +371,7 @@ export function reduceUserEcho(
               toolUseId: block.tool_use_id,
               content: block.content,
               isError: block.is_error,
+              toolUseResult: msgToolUseResult,
             });
             updated[i] = newMsg;
             touchedIndices.add(i);

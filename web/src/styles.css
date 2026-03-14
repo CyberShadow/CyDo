@@ -1822,6 +1822,9 @@ pre.extra-field-value {
   margin-bottom: 2px;
 }
 
+.unknown-result-fields {
+}
+
 /* Welcome page */
 .welcome-page-container {
   height: 100%;

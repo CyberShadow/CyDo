@@ -616,6 +616,130 @@ function formatGenericInput(
   );
 }
 
+// Map tool name → set of known (ignored + consumed) toolUseResult field names.
+const knownResultFields: Record<string, Set<string>> = {
+  Bash: new Set([
+    "stdout",
+    "stderr",
+    "interrupted",
+    "isImage",
+    "returnCodeInterpretation",
+    "noOutputExpected",
+    "backgroundTaskId",
+    "backgroundedByUser",
+    "persistedOutputPath",
+    "persistedOutputSize",
+  ]),
+  Read: new Set(["type", "file"]),
+  Edit: new Set([
+    "filePath",
+    "oldString",
+    "newString",
+    "replaceAll",
+    "originalFile",
+    "structuredPatch",
+    "userModified",
+  ]),
+  Write: new Set([
+    "type",
+    "filePath",
+    "content",
+    "originalFile",
+    "structuredPatch",
+  ]),
+  Glob: new Set(["filenames", "numFiles", "truncated", "durationMs"]),
+  Grep: new Set([
+    "mode",
+    "filenames",
+    "numFiles",
+    "content",
+    "numLines",
+    "numMatches",
+    "appliedLimit",
+    "appliedOffset",
+  ]),
+  TodoWrite: new Set(["oldTodos", "newTodos"]),
+  WebSearch: new Set(["query", "results", "durationSeconds"]),
+  WebFetch: new Set(["url", "code", "codeText", "result", "bytes", "durationMs"]),
+  AskUserQuestion: new Set(["questions", "answers", "annotations"]),
+  Task: new Set([
+    "status",
+    "prompt",
+    "agentId",
+    "content",
+    "totalDurationMs",
+    "totalTokens",
+    "totalToolUseCount",
+    "usage",
+    "isAsync",
+    "description",
+    "outputFile",
+    "canReadOutputFile",
+    "teammate_id",
+    "agent_id",
+    "agent_type",
+    "model",
+    "name",
+    "color",
+    "team_name",
+    "plan_mode_required",
+    "is_splitpane",
+    "tmux_pane_id",
+    "tmux_session_name",
+    "tmux_window_name",
+  ]),
+  TaskCreate: new Set(["task"]),
+  TaskGet: new Set(["task"]),
+  TaskList: new Set(["tasks"]),
+  TaskOutput: new Set(["retrieval_status", "task"]),
+  TaskStop: new Set(["message", "task_id", "task_type", "command"]),
+  TaskUpdate: new Set([
+    "success",
+    "taskId",
+    "updatedFields",
+    "statusChange",
+    "error",
+  ]),
+  TeamCreate: new Set(["team_name", "team_file_path", "lead_agent_id"]),
+  TeamDelete: new Set(["success", "message", "team_name"]),
+  SendMessage: new Set(["success", "message", "request_id", "target", "routing"]),
+  Skill: new Set(["success", "commandName", "allowedTools"]),
+  EnterPlanMode: new Set(["message"]),
+  ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
+  NotebookEdit: new Set([]),
+};
+
+function formatToolUseResult(
+  name: string,
+  toolUseResult: Record<string, unknown> | unknown[],
+): h.JSX.Element | null {
+  if (Array.isArray(toolUseResult)) {
+    if (toolUseResult.length === 0) return null;
+    return <pre class="tool-result">{JSON.stringify(toolUseResult, null, 2)}</pre>;
+  }
+
+  if (Object.keys(toolUseResult).length === 0) return null;
+
+  const known = knownResultFields[name];
+  const unknown: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(toolUseResult)) {
+    if (!known?.has(k)) unknown[k] = v;
+  }
+
+  const consumed: h.JSX.Element | null = null;
+
+  if (!consumed && Object.keys(unknown).length === 0) return null;
+
+  return (
+    <>
+      {consumed}
+      {Object.keys(unknown).length > 0 && (
+        <div class="unknown-result-fields">{formatGenericInput(unknown)}</div>
+      )}
+    </>
+  );
+}
+
 function getHeaderSubtitle(
   name: string,
   input: Record<string, unknown>,
@@ -840,24 +964,33 @@ export function ToolCall({ name, input, result, children }: Props) {
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result
           </div>
-          {resultOpen &&
-            (useReadHighlight ? (
-              <ReadResult
-                content={result.content as string}
-                filePath={filePath!}
-              />
-            ) : useWebSearchResult ? (
-              <WebSearchResult content={result.content as string} />
-            ) : useWebFetchResult ? (
-              <div class="tool-result-blocks">
-                <Markdown
-                  text={result.content as string}
-                  class="text-content"
+          {resultOpen && (
+            <>
+              {useReadHighlight ? (
+                <ReadResult
+                  content={result.content as string}
+                  filePath={filePath!}
                 />
-              </div>
-            ) : (
-              renderResultContent(result.content, result.isError)
-            ))}
+              ) : useWebSearchResult ? (
+                <WebSearchResult content={result.content as string} />
+              ) : useWebFetchResult ? (
+                <div class="tool-result-blocks">
+                  <Markdown
+                    text={result.content as string}
+                    class="text-content"
+                  />
+                </div>
+              ) : (
+                renderResultContent(result.content, result.isError)
+              )}
+              {result.toolUseResult != null &&
+                typeof result.toolUseResult === "object" &&
+                formatToolUseResult(
+                  name,
+                  result.toolUseResult as Record<string, unknown> | unknown[],
+                )}
+            </>
+          )}
         </div>
       )}
     </div>

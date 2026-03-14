@@ -29,6 +29,21 @@ export const test = base.extend({
         `Protocol validation errors in DOM:\n${texts.join("\n---\n")}`,
       ).toBe(0);
     }
+
+    // Assert no unknown tool result fields rendered — every toolUseResult
+    // field should be explicitly categorized per tool.
+    const unknownResultFields = page.locator(".unknown-result-fields");
+    const unknownResultCount = await unknownResultFields.count();
+    if (unknownResultCount > 0) {
+      const descriptions: string[] = [];
+      for (let i = 0; i < unknownResultCount; i++) {
+        descriptions.push(await unknownResultFields.nth(i).innerText());
+      }
+      expect(
+        unknownResultCount,
+        `Unknown tool result fields rendered in DOM:\n${descriptions.join("\n---\n")}`,
+      ).toBe(0);
+    }
   },
 });
 
