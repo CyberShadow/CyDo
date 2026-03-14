@@ -86,7 +86,17 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     output_type: report
-    creatable_tasks: [research, spike, bug, verify, execute]
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+      spike:
+        prompt_template: prompts/spike.md
+      bug:
+        prompt_template: prompts/bug.md
+      verify:
+        prompt_template: prompts/verify.md
+      execute:
+        prompt_template: prompts/execute.md
     continuations:
       plan:
         task_type: plan_mode
@@ -136,7 +146,13 @@ task_types:
     model_class: large
     read_only: true
     output_type: report
-    creatable_tasks: [plan, research, spike]
+    creatable_tasks:
+      plan:
+        prompt_template: prompts/plan.md
+      research:
+        prompt_template: prompts/research.md
+      spike:
+        prompt_template: prompts/spike.md
     continuations:
       back:
         task_type: conversation
@@ -172,7 +188,13 @@ task_types:
       the investigation is complete and the user is ready to act on findings.
     model_class: large
     output_type: report
-    creatable_tasks: [bug, research, spike]
+    creatable_tasks:
+      bug:
+        prompt_template: prompts/bug.md
+      research:
+        prompt_template: prompts/research.md
+      spike:
+        prompt_template: prompts/spike.md
     continuations:
       needs_plan:
         task_type: plan_mode
@@ -206,11 +228,14 @@ task_types:
       Recommended before any non-trivial implementation. Use when a task has
       multiple valid approaches, touches many files, or requires understanding
       existing patterns before making changes.
-    prompt_template: prompts/plan.md
     model_class: large
     read_only: true
     output_type: report
-    creatable_tasks: [research, spike]
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+      spike:
+        prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
 
@@ -233,7 +258,6 @@ task_types:
       open-ended search that may require multiple rounds of globbing and grepping.
       Specify thoroughness in the prompt: "quick" for targeted lookups, "thorough"
       for exhaustive exploration.
-    prompt_template: prompts/research.md
     model_class: medium
     read_only: true
     output_type: report
@@ -253,10 +277,13 @@ task_types:
       Provide the bug description, reproduction steps, or error messages in the
       prompt. Prefer this over investigating bugs inline — the agent has
       dedicated context for systematic debugging.
-    prompt_template: prompts/bug.md
     model_class: large
     output_type: report
-    creatable_tasks: [research, spike]
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+      spike:
+        prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
 
@@ -274,7 +301,6 @@ task_types:
     tool_guidance: >
       Use when you want to try something before committing to it. The worktree
       is disposable — experiment freely.
-    prompt_template: prompts/spike.md
     model_class: medium
     output_type: report
     worktree: true
@@ -286,7 +312,6 @@ task_types:
     agent_description: >
       Use to add test coverage for new or changed code. Works on the same
       tree as the parent implementation task.
-    prompt_template: prompts/test.md
     model_class: medium
     output_type: patch
     parallelizable: true
@@ -310,7 +335,6 @@ task_types:
       Use to dispatch any approved plan for implementation. Pass the plan
       file path as the task description. Spawn one at a time — wait for
       completion before starting the next.
-    prompt_template: prompts/execute.md
     model_class: large
     read_only: true
     output_type: report
@@ -318,6 +342,7 @@ task_types:
       implement:
         task_type: implement
         requires_approval: true
+        prompt_template: prompts/implement.md
       decompose:
         task_type: decompose
         requires_approval: true
@@ -335,7 +360,13 @@ task_types:
     model_class: large
     read_only: true
     output_type: report
-    creatable_tasks: [execute, plan, spike]
+    creatable_tasks:
+      execute:
+        prompt_template: prompts/execute.md
+      plan:
+        prompt_template: prompts/plan.md
+      spike:
+        prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
 
@@ -351,14 +382,16 @@ task_types:
       Pair with 'plan' for complex work. For simple well-understood changes, use
       directly. Best when the prompt includes a specific plan or clear
       requirements.
-    prompt_template: prompts/implement.md
     model_class: medium
     output_type: commit
     worktree: true
-    creatable_tasks: [test]
+    creatable_tasks:
+      test:
+        prompt_template: prompts/test.md
     continuations:
       done:
         task_type: verify
+        prompt_template: prompts/verify.md
     parallelizable: true
     user_visible: false
 
@@ -370,7 +403,6 @@ task_types:
       code rather than confirm it works. Issues a PASS/FAIL/PARTIAL verdict.
       Adapts strategy to the change type (frontend, backend, CLI, bug fix,
       etc.). Writes ephemeral test scripts to /tmp when needed.
-    prompt_template: prompts/verify.md
     model_class: medium
     output_type: report
     continuations:
@@ -381,6 +413,7 @@ task_types:
         prompt_template: prompts/enter_review.md
       fail:
         task_type: implement
+        prompt_template: prompts/implement.md
     parallelizable: true
     user_visible: false
 
@@ -395,6 +428,7 @@ task_types:
     continuations:
       reject:
         task_type: implement
+        prompt_template: prompts/implement.md
     parallelizable: true
     user_visible: false
 

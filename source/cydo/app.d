@@ -371,12 +371,12 @@ class App : ToolsBackend
 		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
 		if (parentTypeDef !is null &&
 			parentTypeDef.creatable_tasks.length > 0 &&
-			!parentTypeDef.creatable_tasks.canFind(taskType))
+			taskType !in parentTypeDef.creatable_tasks)
 		{
 			return resolve(McpResult(
 				"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
 				parentTd.taskType ~ "'. Allowed: " ~
-				parentTypeDef.creatable_tasks.join(", "), true));
+				parentTypeDef.creatable_tasks.keys.join(", "), true));
 		}
 
 		// Validate child task type exists
@@ -421,7 +421,11 @@ class App : ToolsBackend
 		// Send rendered prompt template as first user message
 		if (childTd.session !is null)
 		{
-			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath);
+			string edgeTemplate;
+			if (parentTypeDef !is null)
+				if (auto edge = taskType in parentTypeDef.creatable_tasks)
+					edgeTemplate = edge.prompt_template;
+			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
 			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 			sendTaskMessage(childTid, renderedPrompt);
 		}
@@ -1282,7 +1286,7 @@ class App : ToolsBackend
 			if (childTd.session !is null)
 			{
 				auto renderedPrompt = renderPrompt(*newTypeDef, successorPrompt,
-					taskTypesDir, childTd.outputPath);
+					taskTypesDir, childTd.outputPath, contDef.prompt_template);
 				broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 				sendTaskMessage(childTid, renderedPrompt);
 			}

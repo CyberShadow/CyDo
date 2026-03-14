@@ -25,6 +25,11 @@ struct ContinuationDef
 	@Optional string prompt_template;
 }
 
+struct CreatableTaskDef
+{
+	@Optional string prompt_template;
+}
+
 struct TaskTypeDef
 {
 	// Name (populated from YAML mapping key via @Key)
@@ -42,7 +47,7 @@ struct TaskTypeDef
 	string output_type = "report";
 
 	// Flow control
-	@Optional string[] creatable_tasks;
+	@Optional CreatableTaskDef[string] creatable_tasks;
 	@Optional ContinuationDef[string] continuations;
 
 	// Execution
@@ -116,10 +121,11 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		checkTemplateFile(def.name, def.prompt_template);
 
 		// Check creatable_tasks references
-		foreach (ct; def.creatable_tasks)
+		foreach (ct, ref edge; def.creatable_tasks)
 		{
 			if (types.byName(ct) is null)
 				errors ~= format("%s: creatable_tasks references unknown type '%s'", def.name, ct);
+			checkTemplateFile(format("%s: creatable_tasks '%s'", def.name, ct), edge.prompt_template);
 		}
 
 		// Check continuation references
@@ -142,14 +148,6 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			if (cont.keep_context && cont.prompt_template.length == 0)
 				errors ~= format("%s: continuation '%s' has keep_context but no "
 					~ "prompt_template — mode switches need an entry prompt",
-					def.name, cname);
-
-			// !keep_context continuations should not have a prompt_template
-			// (the target type's own prompt_template is used instead).
-			if (!cont.keep_context && cont.prompt_template.length > 0)
-				errors ~= format("%s: continuation '%s' has prompt_template but "
-					~ "!keep_context — only keep_context continuations use "
-					~ "continuation-level prompts",
 					def.name, cname);
 
 			checkTemplateFile(format("%s: continuation '%s'", def.name, cname), cont.prompt_template);
@@ -222,40 +220,44 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		}
 	}
 
-	// Prompt template invariant: types that are only reachable via
-	// keep_context continuations should NOT have their own prompt_template
-	// (they get their entry prompt from the continuation). Types that are
-	// directly invokable (user_visible, creatable_tasks targets, or
-	// !keep_context continuation targets) SHOULD have a prompt_template.
+	// Prompt template invariant:
+	// - user_visible types MUST have node-level prompt_template (user creates them directly)
+	// - non-user_visible, non-steward types MUST NOT have node-level prompt_template
+	//   (prompt comes from the edge that spawns them)
+	// - edges to non-user_visible targets MUST carry prompt_template
 	{
-		// Collect types that are directly invokable (not via keep_context)
-		bool[string] directlyInvokable;
-		foreach (ref def; types)
-		{
-			if (def.user_visible)
-				directlyInvokable[def.name] = true;
-			// Targets of creatable_tasks
-			foreach (ct; def.creatable_tasks)
-				directlyInvokable[ct] = true;
-			// Targets of !keep_context continuations
-			foreach (_, ref cont; def.continuations)
-				if (!cont.keep_context)
-					directlyInvokable[cont.task_type] = true;
-		}
-
 		foreach (ref def; types)
 		{
 			if (def.steward)
-				continue; // stewards have their own prompt rules
+				continue;
 
-			bool isDirect = (def.name in directlyInvokable) !is null;
-			if (isDirect && def.prompt_template.length == 0)
-				errors ~= format("%s: directly invokable type has no prompt_template",
-					def.name);
-			if (!isDirect && def.prompt_template.length > 0)
-				errors ~= format("%s: type is only reachable via keep_context but has "
-					~ "prompt_template — entry prompt should be on the continuation",
-					def.name);
+			if (def.user_visible && def.prompt_template.length == 0)
+				errors ~= format("%s: user_visible type has no prompt_template", def.name);
+			if (!def.user_visible && def.prompt_template.length > 0)
+				errors ~= format("%s: non-user_visible type has node-level prompt_template"
+					~ " — prompt should be on the edges that reference it", def.name);
+		}
+
+		// Every edge to a non-user_visible target must carry prompt_template
+		foreach (ref def; types)
+		{
+			foreach (ct, ref edge; def.creatable_tasks)
+			{
+				auto target = types.byName(ct);
+				if (target !is null && !target.user_visible && edge.prompt_template.length == 0)
+					errors ~= format("%s: creatable_tasks '%s' targets non-user_visible type"
+						~ " but has no prompt_template", def.name, ct);
+			}
+
+			foreach (cname, ref cont; def.continuations)
+			{
+				if (cont.keep_context)
+					continue;
+				auto target = types.byName(cont.task_type);
+				if (target !is null && !target.user_visible && cont.prompt_template.length == 0)
+					errors ~= format("%s: continuation '%s' targets non-user_visible type '%s'"
+						~ " but has no prompt_template", def.name, cname, cont.task_type);
+			}
 		}
 	}
 
@@ -428,7 +430,8 @@ void simulateWorkflow(TaskTypeDef[] types)
 			def.worktree ? " (worktree)" : "");
 
 		if (def.creatable_tasks.length > 0)
-			writefln("    Can create sub-tasks: %s", def.creatable_tasks.join(", "));
+			writefln("    Can create sub-tasks: %s",
+				def.creatable_tasks.keys.array.sort.release.join(", "));
 
 		if (def.continuations.length > 0)
 		{
@@ -483,11 +486,11 @@ void simulateWorkflow(TaskTypeDef[] types)
 			while (!eof)
 			{
 				writef("    > Create sub-task? (%s, or 'no'): ",
-					def.creatable_tasks.join(", "));
+					def.creatable_tasks.keys.array.sort.release.join(", "));
 				auto choice = prompt();
 				if (eof || choice == "no" || choice == "n" || choice.length == 0)
 					break;
-				if (!def.creatable_tasks.canFind(choice))
+				if (choice !in def.creatable_tasks)
 				{
 					writefln("    Invalid choice '%s'", choice);
 					continue;
@@ -635,16 +638,18 @@ void simulateWorkflow(TaskTypeDef[] types)
 
 /// Render a prompt template by reading the template file and substituting
 /// placeholders. Returns the raw description if no template is defined.
-string renderPrompt(ref TaskTypeDef def, string description, string typesDir, string outputFile = "")
+string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
+	string outputFile = "", string edgeTemplate = "")
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
 	import std.string : replace;
 
-	if (def.prompt_template.length == 0)
+	auto templateName = edgeTemplate.length > 0 ? edgeTemplate : def.prompt_template;
+	if (templateName.length == 0)
 		return description;
 
-	auto templatePath = buildPath(typesDir, def.prompt_template);
+	auto templatePath = buildPath(typesDir, templateName);
 	if (!exists(templatePath))
 		return description;
 
@@ -737,7 +742,7 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 		return null;
 
 	string result;
-	foreach (name; parentDef.creatable_tasks)
+	foreach (name, ref edge; parentDef.creatable_tasks)
 	{
 		auto def = allTypes.byName(name);
 		if (def is null)
@@ -842,7 +847,7 @@ void generateDot(TaskTypeDef[] types)
 	// Creatable task edges (dashed arrows)
 	foreach (ref def; types)
 	{
-		foreach (ct; def.creatable_tasks)
+		foreach (ct, ref _; def.creatable_tasks)
 			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates\"];",
 				def.name, ct);
 	}
