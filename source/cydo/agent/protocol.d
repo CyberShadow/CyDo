@@ -41,6 +41,8 @@ string translateClaudeEvent(string rawLine)
 			return renameType(rawLine, "process/stderr");
 		case "exit":
 			return renameType(rawLine, "process/exit");
+		case "queue-operation":
+			return null; // consumed — handled by broadcastTask / stateful replay closure
 		default:
 			return rawLine; // unknown → pass through
 	}

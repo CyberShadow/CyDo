@@ -320,6 +320,8 @@ export const UserEchoSchema = z
     isReplay: z.boolean().optional(),
     isSynthetic: z.boolean().optional(),
     isMeta: z.boolean().optional(),
+    isSteering: z.boolean().optional(),
+    pending: z.boolean().optional(),
     slug: z.string().optional(),
     uuid: z.string().optional(),
   })
@@ -484,6 +486,8 @@ export const UserFileSchema = z
     sourceToolAssistantUUID: z.string().optional(),
     isSynthetic: z.literal(true).optional(),
     isMeta: z.boolean().optional(),
+    isSteering: z.boolean().optional(),
+    pending: z.boolean().optional(),
     slug: z.string().optional(),
     uuid: z.string().optional(),
     ...FileEnvelopeFields,

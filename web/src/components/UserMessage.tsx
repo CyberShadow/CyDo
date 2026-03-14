@@ -15,11 +15,16 @@ export function UserMessage({ message }: Props) {
 
   return (
     <div
-      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}`}
+      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}${message.isSteering ? " steering-message" : ""}`}
     >
       {message.isMeta && (
         <div class="message-meta">
           <span class="meta-badge meta">meta</span>
+        </div>
+      )}
+      {message.isSteering && !message.isMeta && (
+        <div class="message-meta">
+          <span class="meta-badge steering">steering</span>
         </div>
       )}
       {message.isSynthetic || message.parentToolUseId ? (

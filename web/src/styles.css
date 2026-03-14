@@ -1235,8 +1235,15 @@ body,
 }
 
 .user-message.meta-message,
+.user-message.steering-message,
 .assistant-message.synthetic-message {
   opacity: 0.7;
+}
+
+.meta-badge.steering {
+  background: rgba(140, 160, 176, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
 /* Nested sub-agent messages inside a tool call */

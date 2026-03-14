@@ -16,7 +16,7 @@ import ae.net.http.websocket : WebSocketAdapter, accept;
 import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
-import ae.utils.json : JSONFragment;
+import ae.utils.json : JSONFragment, JSONPartial;
 import ae.utils.promise : Promise, resolve;
 
 mixin SSLUseLib;
@@ -531,7 +531,38 @@ class App : ToolsBackend
 			{
 				auto ta = agentForTask(tid);
 				auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-				td.history = loadTaskHistory(tid, jsonlPath, &ta.translateHistoryLine);
+				string[] steeringStash;
+				td.history = loadTaskHistory(tid, jsonlPath, (string line, int lineNum) {
+					if (isQueueOperation(line))
+					{
+						import ae.utils.json : jsonParse;
+						auto op = jsonParse!QueueOperationProbe(line);
+						if (op.operation == "enqueue")
+						{
+							steeringStash ~= op.content;
+							return null; // no pending placeholder — replay is synchronous
+						}
+						else if (op.operation == "dequeue")
+						{
+							if (steeringStash.length > 0)
+								steeringStash = steeringStash[1 .. $];
+							return null; // skip — the real message/user follows
+						}
+						else if (op.operation == "remove")
+						{
+							if (steeringStash.length > 0)
+							{
+								auto text = steeringStash[0];
+								steeringStash = steeringStash[1 .. $];
+								// Emit steering confirmation at the remove position
+								return buildSyntheticUserEvent(text, true);
+							}
+							return null;
+						}
+						return null; // unknown queue operation
+					}
+					return ta.translateHistoryLine(line, lineNum);
+				});
 				td.historyLoaded = true;
 			}
 
@@ -1252,6 +1283,48 @@ class App : ToolsBackend
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, rawLine);
 
+		// Intercept queue-operation events for steering message handling
+		if (isQueueOperation(rawLine))
+		{
+			if (auto td = tid in tasks)
+			{
+				import ae.utils.json : jsonParse;
+				auto op = jsonParse!QueueOperationProbe(rawLine);
+				if (op.operation == "enqueue")
+				{
+					td.enqueuedSteeringTexts ~= op.content;
+					return; // already displayed via unconfirmedUserEvent
+				}
+				else if (op.operation == "dequeue")
+				{
+					if (td.enqueuedSteeringTexts.length > 0)
+						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
+					return; // the real message/user follows
+				}
+				else if (op.operation == "remove")
+				{
+					if (td.enqueuedSteeringTexts.length > 0)
+					{
+						auto text = td.enqueuedSteeringTexts[0];
+						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
+						// Broadcast synthetic steering confirmation
+						auto now = Clock.currTime.toISOExtString();
+						auto steeringEvent = buildSyntheticUserEvent(text, true);
+						string injected = `{"tid":` ~ format!"%d"(tid)
+							~ `,"timestamp":"` ~ now
+							~ `","event":` ~ steeringEvent ~ `}`;
+						auto data = Data(injected.representation);
+						td.lastActivity = now;
+						td.history ~= data;
+						foreach (ws; clients)
+							ws.send(data);
+					}
+					return;
+				}
+			}
+			return; // unknown queue operation — consume silently
+		}
+
 		// Translate to agent-agnostic protocol
 		auto translated = translateClaudeEvent(rawLine);
 		if (translated is null)
@@ -1688,12 +1761,42 @@ struct TaskData
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
 	Object titleGenHandle; // prevent GC while running
+	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 }
 
 struct TaskHistoryEndMessage
 {
 	string type = "task_history_end";
 	int tid;
+}
+
+/// Check if a raw line is a queue-operation event (fast string search).
+private bool isQueueOperation(string line)
+{
+	import std.algorithm : canFind;
+	return line.canFind(`"queue-operation"`);
+}
+
+/// Parsed queue-operation fields.
+@JSONPartial
+private struct QueueOperationProbe
+{
+	string type;
+	string operation;
+	string content;
+}
+
+/// Build a synthetic message/user JSON string with optional flags.
+private string buildSyntheticUserEvent(string text,
+	bool isSteering = false, bool pending = false)
+{
+	import ae.utils.json : toJson;
+	auto contentJson = toJson(text);
+	string extra;
+	if (isSteering) extra ~= `,"isSteering":true`;
+	if (pending) extra ~= `,"pending":true`;
+	return `{"type":"message/user","message":{"role":"user","content":`
+		~ contentJson ~ `}` ~ extra ~ `}`;
 }
 
 struct WsMessage

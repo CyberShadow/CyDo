@@ -333,6 +333,7 @@ export function reduceUserEcho(
   rawMsg: unknown,
   isSynthetic?: boolean,
   isMeta?: boolean,
+  isSteering?: boolean,
 ): SessionState {
   // Collect text blocks and tool_result blocks separately
   const textBlocks: string[] = [];
@@ -418,6 +419,7 @@ export function reduceUserEcho(
       isSidechain,
       isSynthetic: isSynthetic || undefined,
       isMeta: isMeta || undefined,
+      isSteering: isSteering || undefined,
       parentToolUseId,
       extraFields: extras,
       rawSource: rawMsg,
@@ -749,6 +751,7 @@ export function reduceStdoutMessage(
           msg,
           (msg as any).isSynthetic,
           (msg as any).isMeta,
+          (msg as any).isSteering,
         );
       }
     }
@@ -853,6 +856,16 @@ export function reduceFileMessage(
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
           : (rawContent ?? []);
+
+      // Pending steering message during JSONL replay: create unconfirmed placeholder
+      if ((msg as any).pending) {
+        const text = content
+          .filter((b: any) => b.type === "text")
+          .map((b: any) => b.text ?? "")
+          .join("");
+        return text ? reducePendingUserMessage(s, text) : s;
+      }
+
       s = reduceUserEcho(
         s,
         content,
@@ -862,6 +875,7 @@ export function reduceFileMessage(
         msg,
         (msg as any).isSynthetic,
         (msg as any).isMeta,
+        (msg as any).isSteering,
       );
       if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
         const text = content

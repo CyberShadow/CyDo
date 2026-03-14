@@ -27,6 +27,7 @@ export interface DisplayMessage {
   isSidechain?: boolean;
   isSynthetic?: boolean;
   isMeta?: boolean;
+  isSteering?: boolean;
   parentToolUseId?: string | null;
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields
