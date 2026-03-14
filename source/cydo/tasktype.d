@@ -27,6 +27,7 @@ struct ContinuationDef
 
 struct CreatableTaskDef
 {
+	string name;
 	@Optional string prompt_template;
 }
 
@@ -47,7 +48,7 @@ struct TaskTypeDef
 	string output_type = "report";
 
 	// Flow control
-	@Optional CreatableTaskDef[string] creatable_tasks;
+	@Optional @Key("name") CreatableTaskDef[] creatable_tasks;
 	@Optional ContinuationDef[string] continuations;
 
 	// Execution
@@ -75,6 +76,15 @@ inout(TaskTypeDef)* byName(inout TaskTypeDef[] types, string name)
 	foreach (ref t; types)
 		if (t.name == name)
 			return &t;
+	return null;
+}
+
+/// Look up a creatable task def by name.
+inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
+{
+	foreach (ref d; defs)
+		if (d.name == name)
+			return &d;
 	return null;
 }
 
@@ -121,11 +131,11 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		checkTemplateFile(def.name, def.prompt_template);
 
 		// Check creatable_tasks references
-		foreach (ct, ref edge; def.creatable_tasks)
+		foreach (ref edge; def.creatable_tasks)
 		{
-			if (types.byName(ct) is null)
-				errors ~= format("%s: creatable_tasks references unknown type '%s'", def.name, ct);
-			checkTemplateFile(format("%s: creatable_tasks '%s'", def.name, ct), edge.prompt_template);
+			if (types.byName(edge.name) is null)
+				errors ~= format("%s: creatable_tasks references unknown type '%s'", def.name, edge.name);
+			checkTemplateFile(format("%s: creatable_tasks '%s'", def.name, edge.name), edge.prompt_template);
 		}
 
 		// Check continuation references
@@ -241,12 +251,12 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		// Every edge to a non-user_visible target must carry prompt_template
 		foreach (ref def; types)
 		{
-			foreach (ct, ref edge; def.creatable_tasks)
+			foreach (ref edge; def.creatable_tasks)
 			{
-				auto target = types.byName(ct);
+				auto target = types.byName(edge.name);
 				if (target !is null && !target.user_visible && edge.prompt_template.length == 0)
 					errors ~= format("%s: creatable_tasks '%s' targets non-user_visible type"
-						~ " but has no prompt_template", def.name, ct);
+						~ " but has no prompt_template", def.name, edge.name);
 			}
 
 			foreach (cname, ref cont; def.continuations)
@@ -431,7 +441,7 @@ void simulateWorkflow(TaskTypeDef[] types)
 
 		if (def.creatable_tasks.length > 0)
 			writefln("    Can create sub-tasks: %s",
-				def.creatable_tasks.keys.array.sort.release.join(", "));
+				def.creatable_tasks.map!(c => c.name).join(", "));
 
 		if (def.continuations.length > 0)
 		{
@@ -486,11 +496,11 @@ void simulateWorkflow(TaskTypeDef[] types)
 			while (!eof)
 			{
 				writef("    > Create sub-task? (%s, or 'no'): ",
-					def.creatable_tasks.keys.array.sort.release.join(", "));
+					def.creatable_tasks.map!(c => c.name).join(", "));
 				auto choice = prompt();
 				if (eof || choice == "no" || choice == "n" || choice.length == 0)
 					break;
-				if (choice !in def.creatable_tasks)
+				if (def.creatable_tasks.byName(choice) is null)
 				{
 					writefln("    Invalid choice '%s'", choice);
 					continue;
@@ -742,12 +752,12 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 		return null;
 
 	string result;
-	foreach (name, ref edge; parentDef.creatable_tasks)
+	foreach (ref edge; parentDef.creatable_tasks)
 	{
-		auto def = allTypes.byName(name);
+		auto def = allTypes.byName(edge.name);
 		if (def is null)
 			continue;
-		result ~= format("- %s: %s\n", name, def.description);
+		result ~= format("- %s: %s\n", edge.name, def.description);
 		if (def.agent_description.length > 0)
 			result ~= indentLines(def.agent_description.strip, "  ");
 		if (def.tool_guidance.length > 0)
@@ -847,9 +857,9 @@ void generateDot(TaskTypeDef[] types)
 	// Creatable task edges (dashed arrows)
 	foreach (ref def; types)
 	{
-		foreach (ct, ref _; def.creatable_tasks)
+		foreach (ref ct; def.creatable_tasks)
 			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates\"];",
-				def.name, ct);
+				def.name, ct.name);
 	}
 
 	// Steward review edges (dotted, from approval-gated continuations to stewards)
