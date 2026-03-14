@@ -34,11 +34,11 @@ and refine the diagnosis if needed. If more investigation is needed:
 
 Based on the findings, choose a continuation:
 - **needs_plan** — The fix is large, touches many files, or requires design
-  decisions. Call `SwitchMode` with `needs_plan` to enter planning mode. Your
+  decisions. Call `mcp__cydo__SwitchMode` with `needs_plan` to enter planning mode. Your
   context is preserved — planning begins immediately with the investigation
   findings.
 - **back** — The fix is small, or this turned out not to be a bug, or the user
-  wants to discuss further. Call `SwitchMode` with `back` to return to
+  wants to discuss further. Call `mcp__cydo__SwitchMode` with `back` to return to
   conversation. The conversation agent sees the full investigation and can
   dispatch an implement task for small fixes.
 

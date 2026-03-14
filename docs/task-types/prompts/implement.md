@@ -52,7 +52,7 @@ task and produce a clean, reviewable commit.
 
 ## Continuation
 
-When done, call the `Handoff` tool with `done` and a prompt summarizing what
+When done, call the `mcp__cydo__Handoff` tool with `done` and a prompt summarizing what
 you implemented, any issues encountered, and the commit hash.
 
 **Remember: Stay focused on the plan. Do not add features beyond scope.**

@@ -36,7 +36,7 @@ incorporate feedback. If the user requests changes:
 
 ### 3. Return to conversation
 
-When the user approves the plan (or decides not to proceed), call `SwitchMode`
+When the user approves the plan (or decides not to proceed), call `mcp__cydo__SwitchMode`
 with `back` to return to conversation mode. Your context is preserved — the
 conversation agent sees the full planning discussion and can dispatch
 implementation.

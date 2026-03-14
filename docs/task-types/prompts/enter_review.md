@@ -50,7 +50,7 @@ The report must include:
 If the implementation is correct, your task is complete — no continuation
 needed. The commit is ready to land.
 
-If the implementation has issues that need rework, call the `Handoff` tool
+If the implementation has issues that need rework, call the `mcp__cydo__Handoff` tool
 with `reject` and a prompt describing the specific issues to fix. The
 implementation agent will receive your feedback and rework the code.
 

@@ -114,10 +114,10 @@ the reviewer and stewards can assess the gaps.
 ## Continuation
 
 If all checks pass (PASS) or only partial verification was possible (PARTIAL),
-call the `SwitchMode` tool with `pass` to transition to review. Your context
+call the `mcp__cydo__SwitchMode` tool with `pass` to transition to review. Your context
 will be preserved so the reviewer can see your findings.
 
-If any check fails, call the `Handoff` tool with `fail` and a prompt
+If any check fails, call the `mcp__cydo__Handoff` tool with `fail` and a prompt
 describing what failed, the exact error output, and reproduction steps. The
 implementation agent will rework and retry.
 

@@ -73,7 +73,7 @@ interface CydoTools
 		~ "prompt describing the new mode's expectations, and may get a different "
 		~ "tool set. Use this when your current phase is complete and the next phase "
 		~ "needs the same context (e.g., plan → triage).\n\n"
-		~ "**This is a terminal action.** After calling SwitchMode, yield your turn "
+		~ "**This is a terminal action.** After calling mcp__cydo__SwitchMode, yield your turn "
 		~ "immediately — do not call any other tools or generate further output. "
 		~ "The mode has not switched yet; you will receive new instructions when "
 		~ "your session resumes.\n\n"
@@ -91,7 +91,7 @@ interface CydoTools
 		~ "your full conversation context — only the information you pass in the "
 		~ "prompt. The current session ends, a new task is created with the prompt "
 		~ "you provide, and your task is marked completed.\n\n"
-		~ "**This is a terminal action.** After calling Handoff, your session will end. "
+		~ "**This is a terminal action.** After calling mcp__cydo__Handoff, your session will end. "
 		~ "Do not call any other tools after Handoff.\n\n"
 		~ "Available handoffs:\n\n{{handoffs}}"
 	)
