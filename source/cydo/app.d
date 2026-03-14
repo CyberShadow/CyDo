@@ -416,6 +416,20 @@ class App : ToolsBackend
 			parentTd.workspace, parentTd.projectPath, parentTid, "subtask")));
 		broadcast(buildTasksList());
 
+		// Set up worktree from edge config: create new or inherit from parent
+		string edgeTemplate;
+		if (parentTypeDef !is null)
+		{
+			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
+			{
+				edgeTemplate = edge.prompt_template;
+				if (edge.worktree)
+					setupWorktree(childTid, true);
+				else if (parentTd.hasWorktree)
+					setupWorktree(childTid, false, parentTd.worktreePath);
+			}
+		}
+
 		// Configure and spawn child agent
 		auto sessionConfig = SessionConfig(
 			agentForTask(childTid).resolveModelAlias(childTypeDef.model_class),
@@ -426,10 +440,6 @@ class App : ToolsBackend
 		// Send rendered prompt template as first user message
 		if (childTd.session !is null)
 		{
-			string edgeTemplate;
-			if (parentTypeDef !is null)
-				if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
-					edgeTemplate = edge.prompt_template;
 			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
 			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 			sendTaskMessage(childTid, renderedPrompt);
@@ -967,6 +977,45 @@ class App : ToolsBackend
 		}
 	}
 
+	/// Set up a worktree for a task: either create a new git worktree or
+	/// inherit an existing one from a predecessor/parent via symlink.
+	private void setupWorktree(int tid, bool createNew, string inheritFrom = "")
+	{
+		auto td = &tasks[tid];
+		if (td.hasWorktree || td.taskDir.length == 0)
+			return;
+
+		import std.file : mkdirRecurse;
+		import std.path : buildPath;
+
+		mkdirRecurse(td.taskDir);
+
+		if (createNew)
+		{
+			import std.process : execute;
+			auto wtPath = buildPath(td.taskDir, "worktree");
+			auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
+			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
+			if (gitResult.status == 0)
+			{
+				td.hasWorktree = true;
+				persistence.setHasWorktree(td.tid, true);
+				writefln("Created worktree for task %d: %s", td.tid, wtPath);
+			}
+			else
+				writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
+		}
+		else if (inheritFrom.length > 0)
+		{
+			import std.file : symlink;
+			auto wtPath = buildPath(td.taskDir, "worktree");
+			symlink(inheritFrom, wtPath);
+			td.hasWorktree = true;
+			persistence.setHasWorktree(td.tid, true);
+			writefln("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
+		}
+	}
+
 	private void ensureTaskAgent(int tid, SessionConfig sessionConfig = SessionConfig.init)
 	{
 		auto td = &tasks[tid];
@@ -1003,26 +1052,6 @@ class App : ToolsBackend
 		{
 			import std.file : mkdirRecurse;
 			mkdirRecurse(td.taskDir);
-		}
-
-		// Create git worktree for task types that require isolation
-		if (!td.hasWorktree && td.taskDir.length > 0)
-		{
-			import std.process : execute;
-
-			if (typeDef !is null && typeDef.worktree)
-			{
-				auto wtPath = buildPath(td.taskDir, "worktree");
-				auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-				if (gitResult.status == 0)
-				{
-					td.hasWorktree = true;
-					persistence.setHasWorktree(td.tid, true);
-					writefln("Created worktree for task %d: %s", td.tid, wtPath);
-				}
-				else
-					writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
-			}
 		}
 
 		// Use worktree path as chdir if available; sandbox covers project dir (rw)
@@ -1282,6 +1311,12 @@ class App : ToolsBackend
 				pendingSubTasks[childTid] = *pending;
 				pendingSubTasks.remove(tid);
 			}
+
+			// Set up worktree from edge config: create new or inherit from predecessor
+			if (contDef.worktree)
+				setupWorktree(childTid, true);
+			else if (td.hasWorktree)
+				setupWorktree(childTid, false, td.worktreePath);
 
 			// Spawn the successor agent
 			auto sessionConfig = SessionConfig(agentForTask(childTid).resolveModelAlias(newTypeDef.model_class));

@@ -22,6 +22,7 @@ struct ContinuationDef
 	string task_type;
 	bool requires_approval;
 	bool keep_context;
+	@Optional bool worktree;
 	@Optional string prompt_template;
 }
 
@@ -29,6 +30,7 @@ struct CreatableTaskDef
 {
 	string name;
 	@Optional string task_type; // actual type to create (defaults to name)
+	@Optional bool worktree;
 	@Optional string prompt_template;
 
 	/// Resolve the actual task type (task_type field, or name if unset).
@@ -61,7 +63,6 @@ struct TaskTypeDef
 	// Execution
 	bool parallelizable;
 	@Optional bool serial;
-	@Optional bool worktree;
 	bool user_visible = true;
 	@Optional uint max_turns;
 
@@ -155,11 +156,10 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 
 			// keep_context + worktree are incompatible: --resume needs the
 			// same cwd to find the JSONL, but worktree changes the cwd.
-			auto target = types.byName(cont.task_type);
-			if (cont.keep_context && target !is null && target.worktree)
-				errors ~= format("%s: continuation '%s' has keep_context but target '%s' "
-					~ "has worktree: true — these are incompatible",
-					def.name, cname, cont.task_type);
+			if (cont.keep_context && cont.worktree)
+				errors ~= format("%s: continuation '%s' has keep_context and worktree: true"
+					~ " — these are incompatible",
+					def.name, cname);
 
 			// keep_context continuations should have a prompt_template
 			// (the prompt injected when the mode switch happens).
@@ -442,10 +442,9 @@ void simulateWorkflow(TaskTypeDef[] types)
 			id, typeName,
 			parentId > 0 ? format(" (from #%d)  ", parentId) : "  ",
 			desc.length > 60 ? desc[0 .. 60] ~ "…" : desc);
-		writefln("    model: %s | output: %s%s%s",
+		writefln("    model: %s | output: %s%s",
 			def.model_class, def.output_type,
-			def.read_only ? " (read-only)" : "",
-			def.worktree ? " (worktree)" : "");
+			def.read_only ? " (read-only)" : "");
 
 		if (def.creatable_tasks.length > 0)
 			writefln("    Can create sub-tasks: %s",
@@ -839,9 +838,8 @@ void generateDot(TaskTypeDef[] types)
 		}
 
 		style = "filled,rounded";
-		auto label = format("%s\\n%s%s%s", def.name, def.model_class,
-			def.read_only ? " ro" : "",
-			def.worktree ? " ⎘" : "");
+		auto label = format("%s\\n%s%s", def.name, def.model_class,
+			def.read_only ? " ro" : "");
 		writefln("    %s [label=\"%s\" shape=%s style=\"%s\" fillcolor=\"%s\"];",
 			def.name, label, shape, style, fillcolor);
 	}
@@ -855,6 +853,8 @@ void generateDot(TaskTypeDef[] types)
 			string label = cname;
 			if (cont.keep_context)
 				label ~= " ⟳";
+			if (cont.worktree)
+				label ~= " ⎘";
 			auto attrs = format("label=\"%s\"", label);
 			if (cont.requires_approval)
 				attrs ~= " style=bold color=\"#856404\"";
@@ -866,9 +866,15 @@ void generateDot(TaskTypeDef[] types)
 	foreach (ref def; types)
 	{
 		foreach (ref ct; def.creatable_tasks)
-			writefln("    %s -> %s [style=dashed arrowhead=open label=\"creates%s\"];",
-				def.name, ct.resolvedType,
-				ct.task_type.length > 0 ? format(" (%s)", ct.name) : "");
+		{
+			string label = "creates";
+			if (ct.task_type.length > 0)
+				label ~= format(" (%s)", ct.name);
+			if (ct.worktree)
+				label ~= " ⎘";
+			writefln("    %s -> %s [style=dashed arrowhead=open label=\"%s\"];",
+				def.name, ct.resolvedType, label);
+		}
 	}
 
 	// Steward review edges (dotted, from approval-gated continuations to stewards)
@@ -897,7 +903,7 @@ void generateDot(TaskTypeDef[] types)
 	writeln("        label=\"Legend\" style=dashed fontname=\"Helvetica\" fontsize=10;");
 	writeln("        node [shape=plaintext fontsize=9];");
 	writeln("        leg1 [label=\"Green = user-visible\\lGray = agent-initiated\\lYellow = steward\\l\"];");
-	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = own worktree\\l\"];");
+	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = new worktree\\l\"];");
 	writeln("    }");
 
 	writeln("}");
@@ -1021,7 +1027,6 @@ void runDumpContext(string[] args)
 	writefln("Model:          %s (%s)", def.model_class, modelClassToAlias(def.model_class));
 	writefln("Output:         %s", def.output_type);
 	writefln("Read-only:      %s", def.read_only);
-	writefln("Worktree:       %s", def.worktree);
 	writefln("Parallelizable: %s", def.parallelizable);
 	writefln("User-visible:   %s", def.user_visible);
 	if (def.steward)

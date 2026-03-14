@@ -90,6 +90,7 @@ task_types:
       research:
         prompt_template: prompts/research.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
       bug:
         prompt_template: prompts/bug.md
@@ -152,6 +153,7 @@ task_types:
       research:
         prompt_template: prompts/research.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
     continuations:
       back:
@@ -194,6 +196,7 @@ task_types:
       research:
         prompt_template: prompts/research.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
     continuations:
       needs_plan:
@@ -235,6 +238,7 @@ task_types:
       research:
         prompt_template: prompts/research.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
@@ -283,6 +287,7 @@ task_types:
       research:
         prompt_template: prompts/research.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
@@ -303,7 +308,6 @@ task_types:
       is disposable — experiment freely.
     model_class: medium
     output_type: report
-    worktree: true
     parallelizable: true
     user_visible: false
 
@@ -341,6 +345,7 @@ task_types:
     continuations:
       implement:
         task_type: implement
+        worktree: true
         requires_approval: true
         prompt_template: prompts/implement.md
       decompose:
@@ -366,6 +371,7 @@ task_types:
       plan:
         prompt_template: prompts/plan.md
       spike:
+        worktree: true
         prompt_template: prompts/spike.md
     parallelizable: true
     user_visible: false
@@ -384,7 +390,6 @@ task_types:
       requirements.
     model_class: medium
     output_type: commit
-    worktree: true
     creatable_tasks:
       test:
         prompt_template: prompts/test.md
