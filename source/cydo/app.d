@@ -231,7 +231,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		ws.sendBinary = false; // text frames for JSON
+		ws.sendBinary = true; // binary frames — no UTF-8 encoding requirement
 		clients ~= ws;
 
 		// Send workspaces list, task types, and tasks list to new client

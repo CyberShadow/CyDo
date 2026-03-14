@@ -18,9 +18,13 @@ async function createCodexTask(): Promise<number> {
         }),
       );
     };
+    ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(String(event.data));
+        const text = typeof event.data === "string"
+          ? event.data
+          : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg = JSON.parse(text);
         if (msg.type === "task_created") {
           ws.close();
           resolve(msg.tid);

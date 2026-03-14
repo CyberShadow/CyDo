@@ -23,6 +23,7 @@ export class Connection {
   connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     this.ws = new WebSocket(`${proto}//${location.host}/ws`);
+    this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
       this.onStatusChange?.(true);
@@ -39,7 +40,10 @@ export class Connection {
 
     this.ws.onmessage = (ev) => {
       try {
-        const raw = JSON.parse(ev.data);
+        const text = typeof ev.data === "string"
+          ? ev.data
+          : new TextDecoder().decode(ev.data);
+        const raw = JSON.parse(text);
         if (
           raw.type === "task_created" ||
           raw.type === "tasks_list" ||
