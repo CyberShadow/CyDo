@@ -1015,6 +1015,10 @@ class App : ToolsBackend
 		if (td.taskDir.length > 0)
 			td.sandbox.paths[td.taskDir] = PathMode.rw;
 
+		// MCP socket must be accessible inside the sandbox
+		if (mcpSocketPath.length > 0)
+			td.sandbox.paths[mcpSocketPath] = PathMode.ro;
+
 		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
 
 		// Pass workspace and working directory for agents that need them (Codex).
