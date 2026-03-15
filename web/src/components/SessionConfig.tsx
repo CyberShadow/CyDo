@@ -59,7 +59,7 @@ export function SessionConfig({
           onClick={() => onTaskTypeChange(t.name)}
         >
           <div class="task-type-header">
-            <span class="task-type-name">{t.name}</span>
+            <span class="task-type-name">{t.display_name || t.name}</span>
             <span class="task-type-badges">
               <span class="config-badge">{t.model_class}</span>
               {t.read_only && <span class="config-badge">ro</span>}

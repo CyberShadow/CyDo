@@ -38,6 +38,7 @@ export interface WorkspaceInfo {
 
 export interface TaskTypeInfo {
   name: string;
+  display_name?: string;
   description: string;
   model_class: string;
   read_only: boolean;

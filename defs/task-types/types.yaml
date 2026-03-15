@@ -82,9 +82,11 @@ task_types:
     user_visible: true
 
   conversation:
-    description: "Open-ended interactive session with the user"
+    display_name: agentic
+    description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
     prompt_template: prompts/conversation.md
     model_class: large
+    read_only: true
     output_type: report
     creatable_tasks:
       research:
@@ -108,6 +110,10 @@ task_types:
         task_type: bug_mode
         keep_context: true
         prompt_template: prompts/enter_bug_mode.md
+      write:
+        task_type: write_mode
+        keep_context: true
+        prompt_template: prompts/enter_write_mode.md
     parallelizable: true
     user_visible: true
 
@@ -210,6 +216,40 @@ task_types:
         prompt_template: prompts/return_from_bug.md
     parallelizable: true
     user_visible: false
+
+  write_mode:
+    display_name: direct
+    description: "Hands-on session — read-write access, edit and iterate directly"
+    agent_description: >
+      Write mode grants read-write access to the main checkout. Use when:
+
+      - A sub-task returned a worktree with changes to cherry-pick into main
+      - The user wants to iterate on cherry-picked changes (tweak, polish, test)
+      - The user wants a quick direct fix (typo, config change, small edit)
+
+      Switch when the user explicitly asks to pull in worktree results, or
+      asks you to make a direct edit. Do NOT switch speculatively — only when
+      the user gives clear consent to modify the main checkout.
+    tool_guidance: >
+      Switch when the user says things like "pull it in", "cherry-pick that",
+      "apply those changes", "fix that typo", or otherwise explicitly consents
+      to modifying the main checkout. Always confirm what you're about to
+      cherry-pick or edit before switching.
+    prompt_template: prompts/write_mode.md
+    model_class: large
+    output_type: report
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+      verify:
+        prompt_template: prompts/verify.md
+    continuations:
+      back:
+        task_type: conversation
+        keep_context: true
+        prompt_template: prompts/return_from_write.md
+    parallelizable: true
+    user_visible: true
 
   # =========================================================================
   # Helper types — sub-task only, no continuations

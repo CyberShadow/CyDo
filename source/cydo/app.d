@@ -1759,7 +1759,7 @@ class App : ToolsBackend
 		TaskTypeListEntry[] entries;
 		foreach (ref def; getTaskTypes())
 			if (def.user_visible)
-				entries ~= TaskTypeListEntry(def.name, def.description, def.model_class, def.read_only);
+				entries ~= TaskTypeListEntry(def.name, def.display_name, def.description, def.model_class, def.read_only);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
 	}
 
@@ -1976,6 +1976,7 @@ struct WorkspacesListMessage
 struct TaskTypeListEntry
 {
 	string name;
+	string display_name;
 	string description;
 	string model_class;
 	bool read_only;
