@@ -238,7 +238,10 @@ export function useTaskManager(): TaskManager {
     // messages so they are processed after history.
     const t = liveStates.get(tid);
     if (t && !t.historyLoaded && !requestedHistoryRef.current.has(tid)) {
-      console.warn(`[CyDo] Received event for task ${tid} before history was loaded — this shouldn't happen`, msg.type);
+      console.warn(
+        `[CyDo] Received event for task ${tid} before history was loaded — this shouldn't happen`,
+        msg.type,
+      );
     }
     if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
       let buf = pendingLiveRef.current.get(tid);
@@ -479,9 +482,22 @@ export function useTaskManager(): TaskManager {
 
         let inputDraft: string | undefined;
         if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
-          const confirmed = new Set(t.confirmedDuringReplay ?? []);
-          const remaining = t.preReloadDrafts.filter((text) => !confirmed.has(text));
-          inputDraft = remaining.length > 0 ? remaining.join("\n\n") : undefined;
+          // Multiset subtraction: remove one confirmed occurrence per match
+          const confirmedCounts = new Map<string, number>();
+          for (const text of t.confirmedDuringReplay ?? []) {
+            confirmedCounts.set(text, (confirmedCounts.get(text) ?? 0) + 1);
+          }
+          const remaining: string[] = [];
+          for (const text of t.preReloadDrafts) {
+            const count = confirmedCounts.get(text) ?? 0;
+            if (count > 0) {
+              confirmedCounts.set(text, count - 1);
+            } else {
+              remaining.push(text);
+            }
+          }
+          inputDraft =
+            remaining.length > 0 ? remaining.join("\n\n") : undefined;
         }
 
         t = {
