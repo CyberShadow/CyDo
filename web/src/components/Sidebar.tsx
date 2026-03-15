@@ -131,10 +131,20 @@ export function Sidebar({
 
   useEffect(() => {
     if (activeTaskId === null) return;
-    document
-      .querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [activeTaskId, tree]);
+    const el = document.querySelector(
+      `.sidebar-item[data-tid="${activeTaskId}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: "nearest" });
+    } else {
+      // Element may not exist yet on initial load; retry once after render.
+      requestAnimationFrame(() =>
+        document
+          .querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
+          ?.scrollIntoView({ block: "nearest" }),
+      );
+    }
+  }, [activeTaskId]);
 
   return (
     <div class="sidebar">
