@@ -3,6 +3,7 @@ import { memo } from "preact/compat";
 import { useMemo, useState } from "preact/hooks";
 import { marked } from "marked";
 import { useHighlight, renderTokens } from "../highlight";
+import { sanitizeHtml } from "../sanitize";
 
 marked.setOptions({
   breaks: true,
@@ -18,7 +19,7 @@ export const Markdown: FunctionComponent<Props> = memo(
   ({ text, class: className }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
     const html = useMemo(
-      () => marked.parse(text, { async: false }) as string,
+      () => sanitizeHtml(marked.parse(text, { async: false }) as string),
       [text],
     );
     const tokens = useHighlight(showRaw ? text : null, "markdown");

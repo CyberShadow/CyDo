@@ -58,7 +58,7 @@
             version = "0.1.0";
             src = ./web;
             inherit nodejs;
-            npmDepsHash = "sha256-VLV2bM1qb9Um4msABMUi5svNGh689CEmbXYvz1+Qhu0=";
+            npmDepsHash = "sha256-4b5H74iCWo+/3m0c5nNIAGefz4CxpQfj9+Fep6vil1o=";
 
             installPhase = ''
               runHook preInstall

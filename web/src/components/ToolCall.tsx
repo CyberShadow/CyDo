@@ -4,6 +4,7 @@ import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import HtmlDiff from "htmldiff-js";
 import { marked } from "marked";
 import type { ToolResult, ToolResultContent } from "../types";
+import { sanitizeHtml } from "../sanitize";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
@@ -302,7 +303,7 @@ function MarkdownDiffView({
   const diffHtml = useMemo(() => {
     const oldHtml = marked.parse(oldStr, { async: false }) as string;
     const newHtml = marked.parse(newStr, { async: false }) as string;
-    return HtmlDiff.execute(oldHtml, newHtml);
+    return sanitizeHtml(HtmlDiff.execute(oldHtml, newHtml));
   }, [oldStr, newStr]);
 
   return (
@@ -660,7 +661,14 @@ const knownResultFields: Record<string, Set<string>> = {
   ]),
   TodoWrite: new Set(["oldTodos", "newTodos"]),
   WebSearch: new Set(["query", "results", "durationSeconds"]),
-  WebFetch: new Set(["url", "code", "codeText", "result", "bytes", "durationMs"]),
+  WebFetch: new Set([
+    "url",
+    "code",
+    "codeText",
+    "result",
+    "bytes",
+    "durationMs",
+  ]),
   AskUserQuestion: new Set(["questions", "answers", "annotations"]),
   Task: new Set([
     "status",
@@ -702,7 +710,13 @@ const knownResultFields: Record<string, Set<string>> = {
   ]),
   TeamCreate: new Set(["team_name", "team_file_path", "lead_agent_id"]),
   TeamDelete: new Set(["success", "message", "team_name"]),
-  SendMessage: new Set(["success", "message", "request_id", "target", "routing"]),
+  SendMessage: new Set([
+    "success",
+    "message",
+    "request_id",
+    "target",
+    "routing",
+  ]),
   Skill: new Set(["success", "commandName", "allowedTools"]),
   EnterPlanMode: new Set(["message"]),
   ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
@@ -715,7 +729,9 @@ function formatToolUseResult(
 ): h.JSX.Element | null {
   if (Array.isArray(toolUseResult)) {
     if (toolUseResult.length === 0) return null;
-    return <pre class="tool-result">{JSON.stringify(toolUseResult, null, 2)}</pre>;
+    return (
+      <pre class="tool-result">{JSON.stringify(toolUseResult, null, 2)}</pre>
+    );
   }
 
   if (Object.keys(toolUseResult).length === 0) return null;
