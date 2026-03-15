@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useMemo } from "preact/hooks";
+import { useEffect, useMemo } from "preact/hooks";
 
 export interface SidebarTask {
   tid: number;
@@ -128,6 +128,13 @@ export function Sidebar({
   projectName,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
+
+  useEffect(() => {
+    if (activeTaskId === null) return;
+    document
+      .querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeTaskId]);
 
   return (
     <div class="sidebar">
