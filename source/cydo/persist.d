@@ -146,10 +146,10 @@ struct Persistence
 /// Load task history from a JSONL file.
 /// Returns lines wrapped in file-event envelope (distinct from live stdout events).
 /// translateLine is called for each line to allow agent-specific translation.
-/// The delegate receives (line, 1-based lineNum) so agents can inject
-/// line-number-based fork IDs into translated output.
+/// The delegate receives (line, 1-based lineNum) and returns zero or more translated
+/// strings to emit (empty array = skip, one element = normal, two = compaction injection).
 DataVec loadTaskHistory(int tid, string jsonlPath,
-	string delegate(string, int) translateLine = null)
+	string[] delegate(string, int) translateLine = null)
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
@@ -165,15 +165,14 @@ DataVec loadTaskHistory(int tid, string jsonlPath,
 		if (line.length == 0)
 			continue;
 
-		auto translated = translateLine !is null ? translateLine(line, lineNum) : line;
+		string[] translated = translateLine !is null ? translateLine(line, lineNum) : [line];
 
-		// translateLine may return null for lines that should be skipped.
-		if (translated is null)
-			continue;
-
-		// Wrap with file-event envelope (frontend dispatches on "fileEvent" vs "event")
-		string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ translated ~ `}`;
-		history ~= Data(injected.representation);
+		// Wrap each translated line with file-event envelope
+		foreach (t; translated)
+		{
+			string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ t ~ `}`;
+			history ~= Data(injected.representation);
+		}
 	}
 	return move(history);
 }

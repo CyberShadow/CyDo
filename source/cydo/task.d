@@ -97,6 +97,20 @@ bool isQueueOperation(string line)
 	return line.canFind(`"queue-operation"`);
 }
 
+/// Check if a raw JSONL line is a type:"user" entry (fast string search).
+bool isUserMessageLine(string line)
+{
+	import std.algorithm : canFind;
+	return line.canFind(`"type":"user"`);
+}
+
+/// Check if a raw JSONL line is a type:"assistant" entry (fast string search).
+bool isAssistantMessageLine(string line)
+{
+	import std.algorithm : canFind;
+	return line.canFind(`"type":"assistant"`);
+}
+
 /// Parsed queue-operation fields.
 @JSONPartial
 struct QueueOperationProbe
