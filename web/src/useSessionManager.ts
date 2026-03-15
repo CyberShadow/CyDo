@@ -236,6 +236,9 @@ export function useTaskManager(): TaskManager {
     // If history has been requested but not yet loaded, buffer live
     // messages so they are processed after history.
     const t = liveStates.get(tid);
+    if (t && !t.historyLoaded && !requestedHistoryRef.current.has(tid)) {
+      console.warn(`[CyDo] Received event for task ${tid} before history was loaded — this shouldn't happen`, msg.type);
+    }
     if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
       let buf = pendingLiveRef.current.get(tid);
       if (!buf) {

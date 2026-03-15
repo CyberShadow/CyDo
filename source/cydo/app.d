@@ -77,6 +77,7 @@ class App : ToolsBackend
 	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
 	private string mcpSocketPath;
 	private WebSocketAdapter[] clients;
+	private bool[int][WebSocketAdapter] clientSubscriptions;
 	private TaskData[int] tasks;
 	private Persistence persistence;
 	private CydoConfig config;
@@ -574,6 +575,10 @@ class App : ToolsBackend
 		// Broadcast updated task list so all other clients see the new task.
 		broadcast(buildTasksList());
 
+		// Subscribe creating client to live events for this task.
+		// Other clients subscribe via request_history.
+		clientSubscriptions.require(ws)[tid] = true;
+
 		// If content is provided, send it as the first message atomically
 		if (json.content.length > 0)
 		{
@@ -707,6 +712,9 @@ class App : ToolsBackend
 
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
+
+		// Subscribe client to live events for this task
+		clientSubscriptions.require(ws)[tid] = true;
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -1421,6 +1429,15 @@ class App : ToolsBackend
 		return SandboxConfig.init;
 	}
 
+	/// Send data to all clients subscribed to the given task.
+	private void sendToSubscribed(int tid, Data data)
+	{
+		foreach (ws; clients)
+			if (auto subs = ws in clientSubscriptions)
+				if (tid in *subs)
+					ws.send(data);
+	}
+
 	/// Broadcast an unconfirmed user message to all clients.
 	/// This is shown as pending until Claude echoes it back with isReplay.
 	private void broadcastUnconfirmedUserMessage(int tid, string content)
@@ -1443,8 +1460,7 @@ class App : ToolsBackend
 			tasks[tid].history ~= data;
 		}
 
-		foreach (ws; clients)
-			ws.send(data);
+		sendToSubscribed(tid, data);
 	}
 
 	private void broadcastTask(int tid, string rawLine)
@@ -1488,8 +1504,7 @@ class App : ToolsBackend
 						auto data = Data(injected.representation);
 						td.lastActivity = now;
 						td.history ~= data;
-						foreach (ws; clients)
-							ws.send(data);
+						sendToSubscribed(tid, data);
 					}
 					return;
 				}
@@ -1514,8 +1529,7 @@ class App : ToolsBackend
 			tasks[tid].history ~= data;
 		}
 
-		foreach (ws; clients)
-			ws.send(data);
+		sendToSubscribed(tid, data);
 	}
 
 	/// Try to extract agent session ID from an output line using the Agent interface.
@@ -1684,6 +1698,7 @@ class App : ToolsBackend
 	{
 		import std.algorithm : remove;
 		clients = clients.remove!(c => c is ws);
+		clientSubscriptions.remove(ws);
 	}
 
 	/// Extract the last assistant text from a task's history, truncated.
