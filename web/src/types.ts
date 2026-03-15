@@ -119,6 +119,10 @@ export interface TaskState {
   historyLoaded: boolean;
   /** User message texts from before a reload, not yet matched by file replay. */
   preReloadDrafts?: string[];
+  /** Confirmed user texts accumulated during history replay (cleared at history_end). */
+  confirmedDuringReplay?: string[];
+  /** Recovered draft text to inject into the input box once after a reload. */
+  inputDraft?: string;
   workspace?: string;
   projectPath?: string;
   /** Parent task ID (0 or undefined = no parent). */

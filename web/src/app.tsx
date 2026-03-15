@@ -26,6 +26,7 @@ export function App() {
     undoConfirm,
     undoDismiss,
     dismissAttention,
+    clearInputDraft,
     sidebarTasks,
     workspaces,
     taskTypes,
@@ -240,6 +241,7 @@ export function App() {
                   onUndo={undoPreview}
                   onUndoConfirm={undoConfirm}
                   onUndoDismiss={undoDismiss}
+                  onClearInputDraft={clearInputDraft}
                   theme={theme}
                   onToggleTheme={toggleTheme}
                   onToggleSidebar={toggleSidebar}

@@ -9,7 +9,8 @@ interface Props {
   isProcessing: boolean;
   disabled: boolean;
   sessionId: number;
-  preReloadDrafts?: string[];
+  inputDraft?: string;
+  onInputDraftConsumed?: () => void;
   inputRef?: RefObject<HTMLTextAreaElement>;
   insertTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
@@ -21,7 +22,8 @@ export function InputBox({
   isProcessing,
   disabled,
   sessionId,
-  preReloadDrafts,
+  inputDraft,
+  onInputDraftConsumed,
   inputRef,
   insertTextRef,
   onEscape,
@@ -52,11 +54,10 @@ export function InputBox({
 
   // Pre-fill with unsaved user messages recovered after session reload
   useEffect(() => {
-    if (preReloadDrafts && preReloadDrafts.length > 0) {
-      const recovered = preReloadDrafts.join("\n\n");
-      setText((prev) => (prev ? recovered + "\n\n" + prev : recovered));
-    }
-  }, [preReloadDrafts]);
+    if (!inputDraft) return;
+    setText((prev) => (prev ? inputDraft + "\n\n" + prev : inputDraft));
+    onInputDraftConsumed?.();
+  }, [inputDraft]);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {

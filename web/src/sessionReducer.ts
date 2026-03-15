@@ -915,16 +915,11 @@ export function reduceFileMessage(
           .filter((b: any) => b.type === "text")
           .map((b: any) => b.text ?? "")
           .join("");
-        if (text) {
-          const idx = s.preReloadDrafts.indexOf(text);
-          if (idx !== -1) {
-            const drafts = [...s.preReloadDrafts];
-            drafts.splice(idx, 1);
-            s = {
-              ...s,
-              preReloadDrafts: drafts.length > 0 ? drafts : undefined,
-            };
-          }
+        if (text && s.preReloadDrafts.includes(text)) {
+          s = {
+            ...s,
+            confirmedDuringReplay: [...(s.confirmedDuringReplay ?? []), text],
+          };
         }
       }
       return s;

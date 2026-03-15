@@ -63,6 +63,7 @@ export interface TaskManager {
   ) => void;
   undoDismiss: (tid: number) => void;
   dismissAttention: (tid: number) => void;
+  clearInputDraft: (tid: number) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -311,7 +312,7 @@ export function useTaskManager(): TaskManager {
           false,
           false,
           undefined,
-          relationType !== "fork" && relationType !== "undo-backup", // Forks/backups have JSONL history that must be loaded
+          false, // always request history; backend responds immediately for new tasks
           workspace,
           projectPath,
           parentTid,
@@ -475,7 +476,21 @@ export function useTaskManager(): TaskManager {
         const { tid } = msg;
         let t = liveStates.get(tid);
         if (!t) break;
-        t = { ...t, historyLoaded: true };
+
+        let inputDraft: string | undefined;
+        if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
+          const confirmed = new Set(t.confirmedDuringReplay ?? []);
+          const remaining = t.preReloadDrafts.filter((text) => !confirmed.has(text));
+          inputDraft = remaining.length > 0 ? remaining.join("\n\n") : undefined;
+        }
+
+        t = {
+          ...t,
+          historyLoaded: true,
+          preReloadDrafts: undefined,
+          confirmedDuringReplay: undefined,
+          inputDraft,
+        };
         liveStates.set(tid, t);
 
         // Drain any live messages that were buffered while history was loading.
@@ -782,6 +797,18 @@ export function useTaskManager(): TaskManager {
     connRef.current?.dismissAttention(tid);
   }, []);
 
+  const clearInputDraft = useCallback((tid: number) => {
+    setTasks((prev) => {
+      const t = prev.get(tid);
+      if (!t?.inputDraft) return prev;
+      const updated = { ...t, inputDraft: undefined };
+      liveStates.set(tid, updated);
+      const next = new Map(prev);
+      next.set(tid, updated);
+      return next;
+    });
+  }, []);
+
   const resume = useCallback(() => {
     if (activeTaskId !== null) {
       connRef.current?.resumeTask(activeTaskId);
@@ -846,6 +873,7 @@ export function useTaskManager(): TaskManager {
     undoConfirm,
     undoDismiss,
     dismissAttention,
+    clearInputDraft,
     sidebarTasks,
     workspaces,
     taskTypes,

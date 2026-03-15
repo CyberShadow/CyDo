@@ -24,6 +24,7 @@ interface Props {
     revertFiles: boolean,
   ) => void;
   onUndoDismiss: (tid: number) => void;
+  onClearInputDraft: (tid: number) => void;
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
@@ -42,6 +43,7 @@ export function SessionView({
   onUndo,
   onUndoConfirm,
   onUndoDismiss,
+  onClearInputDraft,
   theme,
   onToggleTheme,
   onToggleSidebar,
@@ -155,9 +157,8 @@ export function SessionView({
           isProcessing={task.isProcessing}
           disabled={!connected}
           sessionId={task.tid}
-          preReloadDrafts={
-            task.historyLoaded ? task.preReloadDrafts : undefined
-          }
+          inputDraft={task.inputDraft}
+          onInputDraftConsumed={() => onClearInputDraft(task.tid)}
           inputRef={inputRef}
           insertTextRef={insertTextRef}
         />
