@@ -222,22 +222,7 @@ export function useTaskManager(): TaskManager {
     (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const text = extractTextContent(msg);
-      // Deduplicate: when a new task is created atomically with its first
-      // message, the unconfirmedUserEvent arrives both live (before history
-      // is requested) and again during history replay. Skip if a pending
-      // placeholder with the same text already exists for this task.
-      if (
-        prev.messages.some(
-          (m) =>
-            m.pending &&
-            m.type === "user" &&
-            m.content.some((c) => c.type === "text" && c.text === text),
-        )
-      ) {
-        return;
-      }
-      const updated = reducePendingUserMessage(prev, text);
+      const updated = reducePendingUserMessage(prev, extractTextContent(msg));
       liveStates.set(tid, updated);
       setTasks((map) => {
         const next = new Map(map);
@@ -523,12 +508,38 @@ export function useTaskManager(): TaskManager {
             remaining.length > 0 ? remaining.join("\n\n") : undefined;
         }
 
+        // Clean up pending user placeholders: if history replay already added
+        // a confirmed user message (via reduceUserEcho), remove all stale
+        // pending placeholders. If not (e.g. JSONL was empty when history was
+        // requested), deduplicate to at most one so the in-flight placeholder
+        // remains visible until a live echo or task_reload delivers the
+        // confirmed message.
+        const hasConfirmedUser = t.messages.some(
+          (m) => m.type === "user" && !m.pending,
+        );
+        let cleanedMessages = t.messages;
+        if (hasConfirmedUser) {
+          cleanedMessages = t.messages.filter(
+            (m) => !(m.pending && m.type === "user"),
+          );
+        } else {
+          let kept = false;
+          cleanedMessages = t.messages.filter((m) => {
+            if (!(m.pending && m.type === "user")) return true;
+            if (!kept) {
+              kept = true;
+              return true;
+            }
+            return false;
+          });
+        }
         t = {
           ...t,
           historyLoaded: true,
           preReloadDrafts: undefined,
           confirmedDuringReplay: undefined,
           inputDraft,
+          messages: cleanedMessages,
         };
         liveStates.set(tid, t);
 
