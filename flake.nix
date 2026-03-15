@@ -74,6 +74,8 @@
             src = ./.;
 
             dubLock = ./dub-lock.json;
+            dubBuildType = "release-debug";
+            dontStrip = true;
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
             buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 ];
