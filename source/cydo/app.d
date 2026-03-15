@@ -488,7 +488,7 @@ class App : ToolsBackend
 
 		return McpResult(
 			"Mode switch to '" ~ contDef.task_type ~ "' accepted. "
-			~ "Yield your turn now — do not call any more tools or generate output. "
+			~ "Yield your turn IMMEDIATELY — do not call any more tools or generate output. "
 			~ "You will receive new instructions when your session resumes.");
 	}
 
@@ -530,7 +530,7 @@ class App : ToolsBackend
 
 		return McpResult(
 			"Handoff to '" ~ contDef.task_type ~ "' accepted. "
-			~ "Yield your turn now — do not call any more tools or generate output. "
+			~ "Yield your turn IMMEDIATELY — do not call any more tools or generate output. "
 			~ "A new task will be created with your prompt. Your session is ending.");
 	}
 
