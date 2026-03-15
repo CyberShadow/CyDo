@@ -48,6 +48,11 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    esbuildOptions: {
+      minify: false,
+    },
+  },
   build: {
     outDir: "dist",
     sourcemap: true,
