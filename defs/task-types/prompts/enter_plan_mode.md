@@ -32,7 +32,11 @@ incorporate feedback. If the user requests changes:
 - For targeted questions about the codebase, spawn **research** sub-tasks.
   Quick reads of a specific file are fine inline, but broader exploration
   belongs in research.
-- For feasibility questions, spawn **spike** sub-tasks.
+- For feasibility questions, spawn **spike** sub-tasks. Spikes run in their
+  own worktree and can write and execute code — use them when you need to
+  *try* something (test an API, prototype an approach, benchmark alternatives)
+  rather than just *read* about it. The spike returns a report with a
+  worktree path that you can reference in the plan.
 
 ### 3. Return to conversation
 
