@@ -25,9 +25,10 @@ task and produce a clean, reviewable commit.
      network calls, N+1 patterns, independent operations run sequentially when
      they could run in parallel.
    Fix any issues found. If a finding is a false positive, move on.
-6. **Verify** — Build the project and run the existing test suite. Fix any
-   failures you introduced. Do not commit until the build succeeds and
-   existing tests pass.
+6. **Verify locally** — Build the project and run the full test suite
+   (`nix flake check` or whatever the project specifies in CLAUDE.md).
+   If tests fail, fix them and re-run. Do not commit until the build
+   succeeds and existing tests pass.
 7. **Commit** — Produce a single, clean commit with a descriptive message.
 
 ## Guidelines
@@ -58,8 +59,9 @@ both the plan file path and a summary of what you implemented.
 If either returns issues:
 1. Read the feedback carefully
 2. Rework the code to address the issues
-3. Amend your commit
-4. Re-spawn both sub-tasks
+3. Re-run the build and test suite yourself
+4. Amend your commit
+5. Re-spawn both **verify** and **review** sub-tasks
 
 When both pass, your task is complete.
 
