@@ -87,7 +87,7 @@ body,
 
 .app.has-sidebar {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 0.2fr) minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
 }
 
