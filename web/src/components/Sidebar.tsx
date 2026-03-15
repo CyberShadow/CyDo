@@ -134,7 +134,7 @@ export function Sidebar({
     document
       .querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [activeTaskId]);
+  }, [activeTaskId, tree]);
 
   return (
     <div class="sidebar">
