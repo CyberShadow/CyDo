@@ -111,16 +111,10 @@ test suite, missing tool, no way to exercise a code path). PARTIAL flows to
 review like PASS, but your report must flag exactly what wasn't covered so
 the reviewer and stewards can assess the gaps.
 
-## Continuation
+## Completion
 
-If all checks pass (PASS) or only partial verification was possible (PARTIAL),
-call the `mcp__cydo__SwitchMode` tool with `pass` to transition to review. Your context
-will be preserved so the reviewer can see your findings.
-
-If any check fails, call the `mcp__cydo__Handoff` tool with `fail` and a prompt
-that includes: the plan file path, what failed, the exact error output, and
-reproduction steps. The implementation agent needs the plan file path to
-reference the original requirements during rework.
+Your task is complete when you've written the report. Your report is returned
+to the implementation agent, which will rework the code if you found issues.
 
 **Remember: You are trying to BREAK the implementation, not confirm it works.**
 

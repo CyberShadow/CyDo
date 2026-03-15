@@ -50,12 +50,18 @@ task and produce a clean, reviewable commit.
 - If you discover the plan is wrong or incomplete, finish what you can and note
   discrepancies in your completion report.
 
-## Continuation
+## Validation
 
-When done, call the `mcp__cydo__Handoff` tool with `done` and a prompt that includes:
-the plan file path, a summary of what you implemented, any issues encountered,
-and the commit hash. The plan file path is essential — the verification and
-review agents need it to assess your work against the original requirements.
+After committing, spawn **verify** and **review** sub-tasks in parallel. Pass
+both the plan file path and a summary of what you implemented.
+
+If either returns issues:
+1. Read the feedback carefully
+2. Rework the code to address the issues
+3. Amend your commit
+4. Re-spawn both sub-tasks
+
+When both pass, your task is complete.
 
 **Remember: Stay focused on the plan. Do not add features beyond scope.**
 

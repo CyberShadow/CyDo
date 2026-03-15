@@ -435,10 +435,10 @@ task_types:
     creatable_tasks:
       test:
         prompt_template: prompts/test.md
-    continuations:
-      done:
-        task_type: verify
+      verify:
         prompt_template: prompts/verify.md
+      review:
+        prompt_template: prompts/review.md
     parallelizable: true
     user_visible: false
 
@@ -452,30 +452,18 @@ task_types:
       etc.). Writes ephemeral test scripts to /tmp when needed.
     model_class: medium
     output_type: report
-    continuations:
-      pass: # PASS or PARTIAL — both flow to review
-        task_type: review
-        keep_context: true
-        requires_approval: true
-        prompt_template: prompts/enter_review.md
-      fail:
-        task_type: implement
-        prompt_template: prompts/implement.md
     parallelizable: true
     user_visible: false
 
   review:
     description: "Review code changes for correctness and quality"
     agent_description: >
-      Final code review after verification and steward approval. Verifies the
-      implementation matches the plan and is ready to land.
+      Code review agent. Verifies the implementation matches the plan and is
+      ready to land. Checks for correctness, plan alignment, and adherence to
+      project conventions.
     model_class: large
     read_only: true
     output_type: report
-    continuations:
-      reject:
-        task_type: implement
-        prompt_template: prompts/implement.md
     parallelizable: true
     user_visible: false
 
