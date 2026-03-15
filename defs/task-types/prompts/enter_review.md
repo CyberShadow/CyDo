@@ -51,8 +51,9 @@ If the implementation is correct, your task is complete — no continuation
 needed. The commit is ready to land.
 
 If the implementation has issues that need rework, call the `mcp__cydo__Handoff` tool
-with `reject` and a prompt describing the specific issues to fix. The
-implementation agent will receive your feedback and rework the code.
+with `reject` and a prompt that includes: the plan file path, and the specific
+issues to fix. The implementation agent needs the plan file path to reference
+the original requirements during rework.
 
 **Remember: Focus on plan-implementation alignment. The verifier and stewards
 have already checked functionality, quality, and security.**

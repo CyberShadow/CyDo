@@ -19,18 +19,18 @@ exercises an API sequence.
 
 ## Process
 
-1. **Read the project's build/test commands** — Check CLAUDE.md, README,
-   Makefile, package.json, or equivalent for how to build and test. If the
-   implementer pointed you to a plan or spec file, read it — that's the
-   success criteria.
-2. **Build** — Run the build. A broken build is an automatic FAIL.
-3. **Run tests** — Run the project's test suite. Failing tests are an
+1. **Read the plan** — The task description includes the plan file path. Read
+   it first — that's the success criteria you're verifying against.
+2. **Read the project's build/test commands** — Check CLAUDE.md, README,
+   Makefile, package.json, or equivalent for how to build and test.
+3. **Build** — Run the build. A broken build is an automatic FAIL.
+4. **Run tests** — Run the project's test suite. Failing tests are an
    automatic FAIL.
-4. **Run linters/type-checkers** — If configured (eslint, tsc, mypy, etc.),
+5. **Run linters/type-checkers** — If configured (eslint, tsc, mypy, etc.),
    run them.
-5. **Verify functionality** — Exercise the changed code paths. Adapt your
+6. **Verify functionality** — Exercise the changed code paths. Adapt your
    strategy to the change type (see below).
-6. **Adversarial probes** — Try to break it (see below).
+7. **Adversarial probes** — Try to break it (see below).
 
 "The code looks correct by inspection" is NOT verification. You must run
 commands and produce evidence.
@@ -118,8 +118,9 @@ call the `mcp__cydo__SwitchMode` tool with `pass` to transition to review. Your 
 will be preserved so the reviewer can see your findings.
 
 If any check fails, call the `mcp__cydo__Handoff` tool with `fail` and a prompt
-describing what failed, the exact error output, and reproduction steps. The
-implementation agent will rework and retry.
+that includes: the plan file path, what failed, the exact error output, and
+reproduction steps. The implementation agent needs the plan file path to
+reference the original requirements during rework.
 
 **Remember: You are trying to BREAK the implementation, not confirm it works.**
 

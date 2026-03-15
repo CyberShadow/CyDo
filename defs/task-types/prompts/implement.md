@@ -52,8 +52,10 @@ task and produce a clean, reviewable commit.
 
 ## Continuation
 
-When done, call the `mcp__cydo__Handoff` tool with `done` and a prompt summarizing what
-you implemented, any issues encountered, and the commit hash.
+When done, call the `mcp__cydo__Handoff` tool with `done` and a prompt that includes:
+the plan file path, a summary of what you implemented, any issues encountered,
+and the commit hash. The plan file path is essential — the verification and
+review agents need it to assess your work against the original requirements.
 
 **Remember: Stay focused on the plan. Do not add features beyond scope.**
 
