@@ -32,6 +32,7 @@ struct CreatableTaskDef
 	@Optional string task_type; // actual type to create (defaults to name)
 	@Optional bool worktree;
 	@Optional string prompt_template;
+	@Optional string result_note;
 
 	/// Resolve the actual task type (task_type field, or name if unset).
 	string resolvedType() const

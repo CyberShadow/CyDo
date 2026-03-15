@@ -76,6 +76,7 @@ struct TaskData
 	string notificationBody;
 	string lastActivity;
 	string resultText;    // result from the "result" event (canonical sub-task output)
+	string resultNote;        // note from the creatable_tasks edge, returned with result
 	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
@@ -262,10 +263,10 @@ struct SyntheticUserEvent
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {
-	string result;          // main output text (output file content, or final message if no file)
 	string summary;         // agent's final message (one-sentence summary)
 	string output_file;     // path to output artifact, if any
 	string worktree;        // path to worktree, if any
+	string note;            // reminder from the edge definition about what to do with the result
 }
 
 struct McpContentItem

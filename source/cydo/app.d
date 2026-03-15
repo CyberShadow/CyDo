@@ -425,6 +425,7 @@ class App : ToolsBackend
 			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
 			{
 				edgeTemplate = edge.prompt_template;
+				childTd.resultNote = edge.result_note;
 				if (edge.worktree)
 					setupWorktree(childTid, true);
 				else if (parentTd.hasWorktree)
@@ -1199,14 +1200,11 @@ class App : ToolsBackend
 			if (auto pending = tid in pendingSubTasks)
 			{
 				auto success = tasks[tid].status == "completed";
-				auto mainResult = outputContent.length > 0
-					? outputContent
-					: (tasks[tid].resultText.length > 0 ? tasks[tid].resultText : "(no output)");
 				auto taskResult = TaskResult(
-					mainResult,
-					tasks[tid].resultText,  // agent's final message (summary)
+					tasks[tid].resultText,
 					tasks[tid].outputPath.length > 0 ? tasks[tid].outputPath : null,
 					tasks[tid].hasWorktree ? tasks[tid].worktreePath : null,
+					tasks[tid].resultNote,
 				);
 				auto resultJson = toJson(taskResult);
 				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));

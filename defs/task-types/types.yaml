@@ -91,17 +91,22 @@ task_types:
     creatable_tasks:
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       bug:
         prompt_template: prompts/bug.md
+        result_note: "Read the output file for the full investigation report."
       verify:
         prompt_template: prompts/verify.md
+        result_note: "Read the output file for the full verification report."
       execute:
         task_type: triage
         worktree: true
         prompt_template: prompts/execute.md
+        result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
     continuations:
       plan:
         task_type: plan_mode
@@ -154,11 +159,14 @@ task_types:
     creatable_tasks:
       plan:
         prompt_template: prompts/plan.md
+        result_note: "Read the output file for the full plan."
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     continuations:
       back:
         task_type: conversation
@@ -197,11 +205,14 @@ task_types:
     creatable_tasks:
       bug:
         prompt_template: prompts/bug.md
+        result_note: "Read the output file for the full investigation report."
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     continuations:
       needs_plan:
         task_type: plan_mode
@@ -238,8 +249,10 @@ task_types:
     creatable_tasks:
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       verify:
         prompt_template: prompts/verify.md
+        result_note: "Read the output file for the full verification report."
     continuations:
       back:
         task_type: conversation
@@ -275,9 +288,11 @@ task_types:
     creatable_tasks:
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     parallelizable: true
     user_visible: false
 
@@ -324,9 +339,11 @@ task_types:
     creatable_tasks:
       research:
         prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     parallelizable: true
     user_visible: false
 
@@ -406,11 +423,14 @@ task_types:
       execute:
         task_type: triage
         prompt_template: prompts/execute.md
+        result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
       plan:
         prompt_template: prompts/plan.md
+        result_note: "Read the output file for the full plan."
       spike:
         worktree: true
         prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     parallelizable: true
     user_visible: false
 
@@ -431,10 +451,13 @@ task_types:
     creatable_tasks:
       test:
         prompt_template: prompts/test.md
+        result_note: "Read the output file for test results."
       verify:
         prompt_template: prompts/verify.md
+        result_note: "Read the output file for the full verification report."
       review:
         prompt_template: prompts/review.md
+        result_note: "Read the output file for the full review."
     parallelizable: true
     user_visible: false
 
