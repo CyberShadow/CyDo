@@ -342,6 +342,17 @@ class App : ToolsBackend
 		import ae.utils.promise.await : async;
 		import cydo.mcp.binding : mcpToolDispatcher;
 		import cydo.mcp.tools : CydoTools, CydoToolsImpl;
+		import std.conv : to;
+
+		// Reject tool calls after SwitchMode/Handoff — the agent must yield.
+		if (auto tdp = to!int(tid) in tasks)
+		{
+			if (tdp.pendingContinuation.length > 0)
+				return resolve(McpResult(
+					"Tool call rejected: you already called SwitchMode/Handoff. "
+					~ "Yield your turn immediately — do not make any more tool calls.",
+					true));
+		}
 
 		return async({
 			auto impl = new CydoToolsImpl(this, tid);
