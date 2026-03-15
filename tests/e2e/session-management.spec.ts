@@ -1,7 +1,7 @@
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
 test("session creation shows sidebar entry", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "hello-claude"');
 
   await expect(
@@ -15,14 +15,14 @@ test("session creation shows sidebar entry", async ({ page, agentType }) => {
 
 test("session switching preserves messages", async ({ page, agentType }) => {
   // Create first session and send a message
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "first"');
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "first" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   // Create second session and send a message
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "second"');
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "second" }),

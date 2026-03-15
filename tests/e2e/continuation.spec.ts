@@ -2,7 +2,7 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("keep_context continuation injects prompt template", async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "claude-only: continuation");
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");
 
@@ -13,7 +13,7 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
 
 test("unsent message recovered into input box after kill", async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "claude-only: unsent message recovery");
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   await sendMessage(page, "run command sleep 60");
 
@@ -37,14 +37,18 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   test.skip(agentType !== "claude", "claude-only: handoff navigation");
 
   // Create root task G and enter its session.
-  await enterSession(page, agentType);
-  const tidG = parseInt(page.url().match(/\/task\/(\d+)/)?.[1] ?? "0");
-  expect(tidG).toBeGreaterThan(0);
+  await enterSession(page);
 
   // G calls Task to create subtask A (type test_handoff).
   // A's prompt is "call handoff done test-prompt" which triggers Handoff immediately.
   // G's fiber blocks waiting for A's result, keeping G alive throughout.
+  // The task is created atomically with this first message (activeTaskId === null).
   await sendMessage(page, "call task test_handoff call handoff done test-prompt");
+
+  // Wait for the task URL to settle so we can capture G's tid.
+  await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 15_000 });
+  const tidG = parseInt(page.url().match(/\/task\/(\d+)/)?.[1] ?? "0");
+  expect(tidG).toBeGreaterThan(0);
 
   // Wait for subtask A to be created and auto-focused (URL changes away from G).
   await expect(page).not.toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 15_000 });
@@ -59,7 +63,7 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
 
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "claude-only: mode switch input recovery");
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");
 

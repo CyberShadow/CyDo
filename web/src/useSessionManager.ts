@@ -222,7 +222,22 @@ export function useTaskManager(): TaskManager {
     (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const updated = reducePendingUserMessage(prev, extractTextContent(msg));
+      const text = extractTextContent(msg);
+      // Deduplicate: when a new task is created atomically with its first
+      // message, the unconfirmedUserEvent arrives both live (before history
+      // is requested) and again during history replay. Skip if a pending
+      // placeholder with the same text already exists for this task.
+      if (
+        prev.messages.some(
+          (m) =>
+            m.pending &&
+            m.type === "user" &&
+            m.content.some((c) => c.type === "text" && c.text === text),
+        )
+      ) {
+        return;
+      }
+      const updated = reducePendingUserMessage(prev, text);
       liveStates.set(tid, updated);
       setTasks((map) => {
         const next = new Map(map);

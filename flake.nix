@@ -151,7 +151,7 @@
           '';
         in
         let
-          mkIntegrationTest = { name, testMatch }: pkgs.stdenv.mkDerivation {
+          mkIntegrationTest = { name, testMatch, agentType }: pkgs.stdenv.mkDerivation {
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
@@ -223,6 +223,14 @@
               ln -sf ${fake-bwrap} /tmp/fake-bin/bwrap
               export PATH="/tmp/fake-bin:$PATH"
 
+              mkdir -p /tmp/playwright-home/.config/cydo
+              cat > /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
+              default_agent_type: ${agentType}
+              workspaces:
+                local:
+                  root: /tmp/cydo-test-workspace
+              CYDO_CFG
+
               ${cydo}/bin/cydo &
               CYDO_PID=$!
               for i in $(seq 1 30); do
@@ -278,10 +286,12 @@
           integration-claude = mkIntegrationTest {
             name = "claude";
             testMatch = "--project=claude";
+            agentType = "claude";
           };
           integration-codex = mkIntegrationTest {
             name = "codex";
             testMatch = "--project=codex";
+            agentType = "codex";
           };
         });
 

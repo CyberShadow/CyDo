@@ -1,7 +1,7 @@
 import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
 
 test("sidebar status dot reflects session state", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "dot-test"');
 
   const sidebarItem = page.locator(".sidebar-item", {
@@ -27,8 +27,8 @@ test("multi-client navigation isolation", async ({ page, agentType, context }) =
   const pageA = page;
   const pageB = await context.newPage();
 
-  await enterSession(pageA, agentType);
-  await enterSession(pageB, agentType);
+  await enterSession(pageA);
+  await enterSession(pageB);
 
   await sendMessage(pageA, 'Please reply with "isolation-a"');
 
@@ -49,7 +49,7 @@ test("multi-client navigation isolation", async ({ page, agentType, context }) =
 
 test("auto-scroll stays at bottom for new messages", async ({ page, agentType }) => {
   test.skip(agentType === "codex", "claude-only test");
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   await sendMessage(page, 'Please reply with "scroll-test"');
   await expect(
@@ -63,7 +63,7 @@ test("auto-scroll stays at bottom for new messages", async ({ page, agentType })
 });
 
 test("tool result with Bash output renders correctly", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, "Please run command echo tool-result-test");
 
   await expect(
@@ -83,7 +83,7 @@ test("tool result with Bash output renders correctly", async ({ page, agentType 
 });
 
 test("fork stays focused on forked session", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "fork-source"');
 
   await expect(

@@ -1,7 +1,7 @@
 import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
 
 test("history survives page reload", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "persistent"');
 
   await expect(
@@ -26,7 +26,7 @@ test("history survives page reload", async ({ page, agentType }) => {
 });
 
 test("no duplicate messages after reload", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "nodups"');
 
   await expect(
@@ -54,7 +54,7 @@ test("no duplicate messages after reload", async ({ page, agentType }) => {
 });
 
 test("session stop shows resume button", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "before-stop"');
 
   await expect(
@@ -66,7 +66,7 @@ test("session stop shows resume button", async ({ page, agentType }) => {
 });
 
 test("session resume continues conversation", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
   await sendMessage(page, 'Please reply with "pre-resume"');
 
   await expect(

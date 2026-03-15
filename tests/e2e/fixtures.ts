@@ -1,48 +1,12 @@
 import { test as base, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-const CYDO_WS_URL = "ws://localhost:3456/ws";
-
 type AgentType = "claude" | "codex";
 
-/** Create a task via direct WebSocket and return its tid. */
-async function createTask(agentType: AgentType): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(CYDO_WS_URL);
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: "create_task",
-          workspace: "",
-          project_path: "",
-          task_type: "",
-          content: "",
-          agent_type: agentType,
-        }),
-      );
-    };
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (event) => {
-      try {
-        const text = typeof event.data === "string"
-          ? event.data
-          : new TextDecoder().decode(event.data as ArrayBuffer);
-        const msg = JSON.parse(text);
-        if (msg.type === "task_created") {
-          ws.close();
-          resolve(msg.tid);
-        }
-      } catch {}
-    };
-    ws.onerror = () => reject(new Error(`WebSocket error creating ${agentType} task`));
-    setTimeout(() => reject(new Error(`Timeout creating ${agentType} task`)), 10_000);
-  });
-}
-
-/** Create a task and navigate to its URL. */
-export async function enterSession(page: Page, agentType: AgentType) {
-  const tid = await createTask(agentType);
-  await page.goto(`/task/${tid}`);
+/** Navigate to the welcome page, click +, and wait for the InputBox to be ready. */
+export async function enterSession(page: Page) {
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
     timeout: 15_000,
   });

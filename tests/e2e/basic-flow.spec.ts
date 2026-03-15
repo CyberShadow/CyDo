@@ -9,7 +9,7 @@ test("page loads and shows CyDo branding", async ({ page, agentType }) => {
 });
 
 test("basic message and response", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   const input = page.locator(".input-textarea");
   await expect(input).toBeEnabled({ timeout: 15_000 });
@@ -26,7 +26,7 @@ test("basic message and response", async ({ page, agentType }) => {
 });
 
 test("tool call flow", async ({ page, agentType }) => {
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   const input = page.locator(".input-textarea");
   await expect(input).toBeEnabled({ timeout: 15_000 });
@@ -48,7 +48,7 @@ test("tool call flow", async ({ page, agentType }) => {
 
 test("codex agent type indicator", async ({ page, agentType }) => {
   test.skip(agentType !== "codex", "codex-only test");
-  await enterSession(page, agentType);
+  await enterSession(page);
 
   const input = page.locator(".input-textarea");
   await expect(input).toBeEnabled({ timeout: 15_000 });
