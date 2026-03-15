@@ -1,4 +1,81 @@
 import { test as base, expect } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+const CYDO_WS_URL = "ws://localhost:3456/ws";
+
+type AgentType = "claude" | "codex";
+
+/** Create a task via direct WebSocket and return its tid. */
+async function createTask(agentType: AgentType): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(CYDO_WS_URL);
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({
+          type: "create_task",
+          workspace: "",
+          project_path: "",
+          task_type: "",
+          content: "",
+          agent_type: agentType,
+        }),
+      );
+    };
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (event) => {
+      try {
+        const text = typeof event.data === "string"
+          ? event.data
+          : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg = JSON.parse(text);
+        if (msg.type === "task_created") {
+          ws.close();
+          resolve(msg.tid);
+        }
+      } catch {}
+    };
+    ws.onerror = () => reject(new Error(`WebSocket error creating ${agentType} task`));
+    setTimeout(() => reject(new Error(`Timeout creating ${agentType} task`)), 10_000);
+  });
+}
+
+/** Create a task and navigate to its URL. */
+export async function enterSession(page: Page, agentType: AgentType) {
+  const tid = await createTask(agentType);
+  await page.goto(`/task/${tid}`);
+  await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
+    timeout: 15_000,
+  });
+}
+
+/** Send a message from whichever input is currently visible. */
+export async function sendMessage(page: Page, text: string) {
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await input.click();
+  await input.fill(text);
+  const sendBtn = page.locator(".btn-send:visible").first();
+  try {
+    await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
+  } catch {
+    await input.clear();
+    await input.pressSequentially(text);
+    await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
+  }
+  await sendBtn.click();
+}
+
+/** Kill the active session and wait for the resume button. */
+export async function killSession(page: Page, agentType: AgentType) {
+  await page.locator(".btn-banner-stop").click();
+  const timeout = agentType === "codex" ? 15_000 : 10_000;
+  await expect(page.locator(".btn-resume")).toBeVisible({ timeout });
+}
+
+/** Return an appropriate response timeout for the given agent. */
+export function responseTimeout(agentType: AgentType): number {
+  return agentType === "codex" ? 60_000 : 30_000;
+}
 
 /**
  * Extended test fixture that automatically asserts no schema validation
@@ -19,7 +96,11 @@ import { test as base, expect } from "@playwright/test";
  *
  * Usage: import { test, expect } from "./fixtures" instead of "@playwright/test".
  */
-export const test = base.extend({
+export const test = base.extend<{ agentType: AgentType }>({
+  agentType: async ({}, use, testInfo) => {
+    const at = (testInfo.project.use as any).agentType ?? "claude";
+    await use(at);
+  },
   page: async ({ page }, use) => {
     await use(page);
 
@@ -80,3 +161,4 @@ export const test = base.extend({
 
 export { expect } from "@playwright/test";
 export type { Page } from "@playwright/test";
+export type { AgentType };

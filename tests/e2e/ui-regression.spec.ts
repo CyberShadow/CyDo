@@ -1,92 +1,45 @@
-import { test, expect, Page } from "./fixtures";
+import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
 
-const CYDO_WS_URL = "ws://localhost:3456/ws";
-
-async function createClaudeTask(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(CYDO_WS_URL);
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "create_task", workspace: "", project_path: "", task_type: "", content: "", agent_type: "claude" }));
-    };
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (event) => {
-      try {
-        const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
-        const msg = JSON.parse(text);
-        if (msg.type === "task_created") { ws.close(); resolve(msg.tid); }
-      } catch {}
-    };
-    ws.onerror = () => reject(new Error("WebSocket error creating Claude task"));
-    setTimeout(() => reject(new Error("Timeout creating Claude task")), 10_000);
-  });
-}
-
-/** Create a task and navigate directly to its URL. */
-async function enterProject(page: Page) {
-  const tid = await createClaudeTask();
-  await page.goto(`/task/${tid}`);
-  await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 10_000,
-  });
-}
-
-/** Send a message from whichever input is currently visible. */
-async function sendMessage(page: Page, text: string) {
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 10_000 });
-  await input.fill(text);
-  await page.locator(".btn-send:visible").first().click();
-}
-
-test("sidebar status dot reflects session state", async ({ page }) => {
-  await enterProject(page);
+test("sidebar status dot reflects session state", async ({ page, agentType }) => {
+  await enterSession(page, agentType);
   await sendMessage(page, 'Please reply with "dot-test"');
 
-  // While processing, the sidebar dot should have the "processing" class
   const sidebarItem = page.locator(".sidebar-item", {
     hasText: 'Please reply with "dot-test"',
   });
-  await expect(sidebarItem).toBeVisible({ timeout: 15_000 });
+  await expect(sidebarItem).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // Wait for response — session becomes alive+idle
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "dot-test" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // The dot should now have the "alive" class (alive and not processing)
-  await expect(sidebarItem.locator(".sidebar-dot.alive")).toBeVisible({ timeout: 5_000 });
+  const dotAliveTimeout = agentType === "codex" ? 10_000 : 5_000;
+  await expect(sidebarItem.locator(".sidebar-dot.alive")).toBeVisible({ timeout: dotAliveTimeout });
 
-  // Kill the session
-  await page.locator(".btn-banner-stop").click();
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 10_000 });
+  await killSession(page, agentType);
 
-  // After SIGTERM kill, the dot should have the "failed" class
-  // (killed sessions have non-zero exit code; sidebar shows "failed" before "resumable")
-  await expect(sidebarItem.locator(".sidebar-dot.failed")).toBeVisible({ timeout: 5_000 });
+  const dotFailedTimeout = agentType === "codex" ? 10_000 : 5_000;
+  await expect(sidebarItem.locator(".sidebar-dot.failed")).toBeVisible({ timeout: dotFailedTimeout });
 });
 
-test("multi-client navigation isolation", async ({ page, context }) => {
-  // Open two tabs each on their own task URL
+test("multi-client navigation isolation", async ({ page, agentType, context }) => {
+  test.skip(agentType === "codex", "claude-only test");
   const pageA = page;
   const pageB = await context.newPage();
 
-  await enterProject(pageA);
-  await enterProject(pageB);
+  await enterSession(pageA, agentType);
+  await enterSession(pageB, agentType);
 
-  // Page A sends a message in its own task
   await sendMessage(pageA, 'Please reply with "isolation-a"');
 
-  // Page A should show the user message
   await expect(
     pageA.locator(".message.user-message", { hasText: "isolation-a" }),
   ).toBeVisible({ timeout: 15_000 });
 
-  // Page B should NOT show page A's message (each tab is on its own task URL)
   await expect(
     pageB.locator(".message.user-message", { hasText: "isolation-a" }),
   ).not.toBeVisible();
 
-  // Page B's sidebar should show page A's session entry (cross-client task list sync)
   await expect(
     pageB.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "isolation-a"' }),
   ).toBeVisible({ timeout: 15_000 });
@@ -94,54 +47,58 @@ test("multi-client navigation isolation", async ({ page, context }) => {
   await pageB.close();
 });
 
-test("auto-scroll stays at bottom for new messages", async ({ page }) => {
-  await enterProject(page);
+test("auto-scroll stays at bottom for new messages", async ({ page, agentType }) => {
+  test.skip(agentType === "codex", "claude-only test");
+  await enterSession(page, agentType);
 
-  // Send a message and wait for response
   await sendMessage(page, 'Please reply with "scroll-test"');
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "scroll-test" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // The message list uses column-reverse, so scrollTop=0 means at bottom.
-  // After new messages, the scroll should remain at bottom (scrollTop >= -1).
   const scrollTop = await page.locator(".message-list").evaluate(
     (el) => el.scrollTop,
   );
   expect(scrollTop).toBeGreaterThanOrEqual(-1);
 });
 
-test("tool result with Bash output renders correctly", async ({ page }) => {
-  await enterProject(page);
+test("tool result with Bash output renders correctly", async ({ page, agentType }) => {
+  await enterSession(page, agentType);
   await sendMessage(page, "Please run command echo tool-result-test");
 
-  // Tool call block should appear
   await expect(
     page.locator(".tool-name", { hasText: "Bash" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // Tool result should contain the command output
   await expect(
     page.locator(".tool-result", { hasText: "tool-result-test" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // Tool header should show the description subtitle
-  await expect(
-    page.locator(".tool-subtitle", { hasText: "Running command" }),
-  ).toBeVisible({ timeout: 5_000 });
+  // Tool subtitle only present for Claude (description field)
+  if (agentType === "claude") {
+    await expect(
+      page.locator(".tool-subtitle", { hasText: "Running command" }),
+    ).toBeVisible({ timeout: 5_000 });
+  }
 });
 
-test("fork stays focused on forked session", async ({ page }) => {
-  await enterProject(page);
+test("fork stays focused on forked session", async ({ page, agentType }) => {
+  await enterSession(page, agentType);
   await sendMessage(page, 'Please reply with "fork-source"');
 
-  // Wait for response
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "fork-source" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // Wait for the fork button to become available on the user message.
-  // The backend needs to read the JSONL and send forkable_uuids first.
+  if (agentType === "codex") {
+    // Codex: kill and reload so JSONL is finalized and fork buttons appear
+    await killSession(page, agentType);
+    await page.reload();
+    await expect(
+      page.locator(".message.assistant-message .text-content", { hasText: "fork-source" }),
+    ).toBeVisible({ timeout: responseTimeout(agentType) });
+  }
+
   const userMsg = page.locator(".message-wrapper").filter({
     has: page.locator(".message.user-message", { hasText: "fork-source" }),
   });
@@ -149,17 +106,14 @@ test("fork stays focused on forked session", async ({ page }) => {
   const forkBtn = userMsg.locator(".fork-btn");
   await expect(forkBtn).toBeVisible({ timeout: 15_000 });
 
-  // Click fork
   await forkBtn.click();
 
-  // A forked session should appear in the sidebar with "(fork)" suffix
   const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: 'fork-source" (fork)' });
   await expect(forkEntry).toBeVisible({ timeout: 10_000 });
 
-  // The forked session should be active (auto-focused)
   const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: 'fork-source" (fork)' });
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
-  // The forked session should show a "Resume Session" button (fork has status "completed")
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 5_000 });
+  // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
+  await expect(page.locator(".btn-resume:visible").first()).toBeVisible({ timeout: 5_000 });
 });

@@ -275,11 +275,11 @@
           };
           integration-claude = mkIntegrationTest {
             name = "claude";
-            testMatch = "--grep-invert codex";
+            testMatch = "--project=claude";
           };
           integration-codex = mkIntegrationTest {
             name = "codex";
-            testMatch = "--grep codex";
+            testMatch = "--project=codex";
           };
         });
 

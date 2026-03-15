@@ -14,4 +14,14 @@ export default defineConfig({
         process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
     },
   },
+  projects: [
+    {
+      name: "claude",
+      use: { agentType: "claude" } as any,
+    },
+    {
+      name: "codex",
+      use: { agentType: "codex" } as any,
+    },
+  ],
 });
