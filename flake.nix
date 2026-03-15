@@ -207,6 +207,8 @@
               mkdir -p /tmp/cydo-test-workspace/defs
               cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs/task-types
               chmod -R u+w /tmp/cydo-test-workspace/defs/task-types
+              cat $src/defs/test-task-types.yaml >> /tmp/cydo-test-workspace/defs/task-types/types.yaml
+              awk '/^  [a-z]/{in_conv=0;in_ct=0} /^  conversation:/{in_conv=1} in_conv&&/^    creatable_tasks:/{in_ct=1} in_ct&&/^    continuations:/{print "      test_handoff:"; print "        prompt_template: prompts/blank.md"; in_ct=0} {print}' /tmp/cydo-test-workspace/defs/task-types/types.yaml > /tmp/types-patched.yaml && mv /tmp/types-patched.yaml /tmp/cydo-test-workspace/defs/task-types/types.yaml
 
               ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
               MOCK_PID=$!
