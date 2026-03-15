@@ -592,9 +592,16 @@ class CodexAgent : Agent
 		return "File revert is not supported for Codex sessions";
 	}
 
+	string extractUserText(string line) { return ""; }
+
 	Object generateTitle(string userMessage, void delegate(string title) onTitle)
 	{
 		// TODO: Implement title generation for Codex sessions.
+		return null;
+	}
+
+	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions)
+	{
 		return null;
 	}
 }

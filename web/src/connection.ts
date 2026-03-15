@@ -40,9 +40,10 @@ export class Connection {
 
     this.ws.onmessage = (ev) => {
       try {
-        const text = typeof ev.data === "string"
-          ? ev.data
-          : new TextDecoder().decode(ev.data);
+        const text =
+          typeof ev.data === "string"
+            ? ev.data
+            : new TextDecoder().decode(ev.data);
         const raw = JSON.parse(text);
         if (
           raw.type === "task_created" ||
@@ -54,7 +55,8 @@ export class Connection {
           raw.type === "task_types_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "error" ||
-          raw.type === "undo_preview"
+          raw.type === "undo_preview" ||
+          raw.type === "suggestions_update"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {

@@ -100,9 +100,18 @@ interface Agent
 	/// Returns null on success, or an error string on failure.
 	string rewindFiles(string sessionId, string afterUuid, string cwd);
 
+	/// Extract user message text from a raw event line.
+	string extractUserText(string line);
+
 	/// Generate a short title for a user message. Spawns a lightweight
 	/// agent subprocess. onTitle is called with the generated title on
 	/// success (may not be called on failure). Returns an opaque handle
 	/// that the caller must keep alive (prevents GC of the process).
 	Object generateTitle(string userMessage, void delegate(string title) onTitle);
+
+	/// Generate reply suggestions for a conversation. Spawns a lightweight
+	/// agent subprocess. onSuggestions is called with the generated suggestions
+	/// on success (may not be called if nothing obvious). Returns an opaque handle
+	/// that the caller must keep alive (prevents GC of the process).
+	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions);
 }

@@ -81,6 +81,8 @@ struct TaskData
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
 	Object titleGenHandle; // prevent GC while running
+	Object suggestGenHandle; // prevent GC while running
+	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 }
 
@@ -241,6 +243,14 @@ struct TitleUpdateMessage
 	string title;
 }
 
+struct SuggestionsUpdateMessage
+{
+	string type = "suggestions_update";
+	int tid;
+	string[] suggestions;
+	uint generation;
+}
+
 struct ForkableUuidsMessage
 {
 	string type = "forkable_uuids";
@@ -327,6 +337,25 @@ string extractEventFromEnvelope(string envelope)
 
 	// The event value is a JSON object/string that extends to the second-to-last char
 	// (the envelope's closing }). This works because "event" is the last field.
+	if (envelope[$ - 1] == '}')
+		return envelope[start .. $ - 1];
+	return envelope[start .. $];
+}
+
+/// Extract the inner event from a fileEvent envelope (JSONL-loaded history).
+string extractFileEventFromEnvelope(string envelope)
+{
+	import std.string : indexOf;
+
+	auto key = `"fileEvent":`;
+	auto idx = envelope.indexOf(key);
+	if (idx < 0)
+		return "";
+
+	auto start = idx + key.length;
+	if (start >= envelope.length)
+		return "";
+
 	if (envelope[$ - 1] == '}')
 		return envelope[start .. $ - 1];
 	return envelope[start .. $];

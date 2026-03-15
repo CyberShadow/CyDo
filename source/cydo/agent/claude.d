@@ -142,7 +142,7 @@ class ClaudeCodeAgent : Agent
 		import ae.utils.json : jsonParse, JSONPartial;
 		import std.algorithm : canFind;
 
-		if (!line.canFind(`"type":"assistant"`))
+		if (!line.canFind(`"type":"assistant"`) && !line.canFind(`"type":"message/assistant"`))
 			return "";
 
 		@JSONPartial
@@ -168,9 +168,56 @@ class ClaudeCodeAgent : Agent
 		try
 		{
 			auto probe = jsonParse!AssistantProbe(line);
-			if (probe.type != "assistant")
+			if (probe.type != "assistant" && probe.type != "message/assistant")
 				return "";
 
+			string result;
+			foreach (ref block; probe.message.content)
+				if (block.type == "text")
+					result ~= block.text;
+			return result;
+		}
+		catch (Exception)
+		{
+			return "";
+		}
+	}
+
+	string extractUserText(string line)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+		import std.algorithm : canFind;
+
+		if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"message/user"`))
+			return "";
+
+		// Try parsing with string content first
+		@JSONPartial
+		static struct StringMessage { string content; }
+		@JSONPartial
+		static struct StringProbe { string type; StringMessage message; }
+
+		try
+		{
+			auto probe = jsonParse!StringProbe(line);
+			if ((probe.type == "user" || probe.type == "message/user") && probe.message.content.length > 0)
+				return probe.message.content;
+		}
+		catch (Exception) {}
+
+		// Try parsing with array content
+		@JSONPartial
+		static struct ContentBlock { string type; string text; }
+		@JSONPartial
+		static struct ArrayMessage { ContentBlock[] content; }
+		@JSONPartial
+		static struct ArrayProbe { string type; ArrayMessage message; }
+
+		try
+		{
+			auto probe = jsonParse!ArrayProbe(line);
+			if (probe.type != "user" && probe.type != "message/user")
+				return "";
 			string result;
 			foreach (ref block; probe.message.content)
 				if (block.type == "text")
@@ -327,6 +374,82 @@ class ClaudeCodeAgent : Agent
 			auto title = titleText.strip();
 			if (title.length > 0 && title.length < 200)
 				onTitle(title);
+		};
+
+		return proc;
+	}
+
+	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions)
+	{
+		auto prompt = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
+
+You will be given an abbreviated conversation between a user and an AI coding assistant.
+Your job is to predict what the user would type next — not what you think they should do.
+
+THE TEST: Would they think "I was just about to type that"?
+
+EXAMPLES:
+User asked "fix the bug and run tests", bug is fixed → "run the tests"
+After code written → "try it out"
+Claude offers options → suggest the one the user would likely pick
+Claude asks to continue → "yes" or "go ahead"
+Task complete, obvious follow-up → "commit this" or "push it"
+After error or misunderstanding → silence (let them assess/correct)
+
+Be specific: "run the tests" beats "continue".
+
+NEVER SUGGEST:
+- Evaluative ("looks good", "thanks")
+- Questions ("what about...?")
+- Claude-voice ("Let me...", "I'll...", "Here's...")
+- New ideas they didn't ask about
+- Multiple sentences
+
+Stay silent if the next step isn't obvious from what the user said.
+
+Format: Each suggestion should be 2-12 words, matching the user's style.
+Reply with one suggestion per line, or nothing at all if no obvious next step.
+Maximum 3 suggestions. No numbering, no bullets, no quotes, no explanation.
+
+Conversation:
+` ~ abbreviatedHistory;
+
+		auto proc = new AgentProcess([
+			"claude",
+			"-p",
+			prompt,
+			"--output-format", "stream-json",
+			"--verbose",
+			"--model", "haiku",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		], null, null, true); // noStdin
+
+		string responseText;
+
+		proc.onStdoutLine = (string line) {
+			responseText ~= this.extractAssistantText(line);
+		};
+
+		proc.onExit = (int status) {
+			if (status != 0)
+				return;
+
+			import std.string : strip, splitLines;
+
+			auto lines = responseText.strip().splitLines();
+			string[] suggestionList;
+			foreach (line; lines)
+			{
+				auto s = line.strip();
+				if (s.length > 0 && s.length < 100)
+					suggestionList ~= s;
+			}
+			if (suggestionList.length > 3)
+				suggestionList = suggestionList[0 .. 3];
+			if (suggestionList.length > 0)
+				onSuggestions(suggestionList);
 		};
 
 		return proc;

@@ -161,6 +161,7 @@ export function SessionView({
           onInputDraftConsumed={() => onClearInputDraft(task.tid)}
           inputRef={inputRef}
           insertTextRef={insertTextRef}
+          suggestions={task.suggestions}
         />
       )}
     </>

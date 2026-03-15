@@ -445,6 +445,18 @@ function handleMessages(req, res) {
       return;
     }
 
+    // Suggestion generation subprocess — prompt starts with "[SUGGESTION MODE:"
+    if (userText && userText.startsWith("[SUGGESTION MODE:")) {
+      streamTextResponse(res, "run the tests\ncommit this", model);
+      return;
+    }
+
+    // Title generation subprocess
+    if (userText && userText.startsWith("Generate a concise title")) {
+      streamTextResponse(res, "Test Task", model);
+      return;
+    }
+
     // Default: echo back
     streamTextResponse(res, userText, model);
   });

@@ -17,6 +17,7 @@ import type {
   AgnosticEvent,
   AgnosticFileEvent,
   ControlMessage,
+  SuggestionsUpdateMessage,
 } from "./schemas";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
@@ -413,6 +414,10 @@ export function useTaskManager(): TaskManager {
                 relationType: entry.relation_type || t.relationType,
                 status: entry.status || t.status,
                 taskType: entry.task_type || t.taskType,
+                suggestions:
+                  entry.isProcessing && !t.isProcessing
+                    ? undefined
+                    : t.suggestions,
               };
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
@@ -544,6 +549,20 @@ export function useTaskManager(): TaskManager {
         const t = liveStates.get(tid);
         if (!t) break;
         const updated = { ...t, title };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+        break;
+      }
+      case "suggestions_update": {
+        const { tid, suggestions } = msg as SuggestionsUpdateMessage;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        const updated = { ...t, suggestions };
         liveStates.set(tid, updated);
         setTasks((prev) => {
           if (!prev.has(tid)) return prev;

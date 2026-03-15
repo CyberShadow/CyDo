@@ -1039,6 +1039,8 @@ class App : ToolsBackend
 		td.isProcessing = true;
 		td.needsAttention = false;
 		td.notificationBody = "";
+		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
+		td.suggestGeneration++;
 		broadcast(buildTasksList());
 	}
 
@@ -1219,6 +1221,7 @@ class App : ToolsBackend
 				{
 					td.needsAttention = true;
 					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
+					try { generateSuggestions(tid); } catch (Exception) {}
 				}
 				broadcast(buildTasksList());
 			}
@@ -1575,6 +1578,12 @@ class App : ToolsBackend
 		broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
 	}
 
+	private void broadcastSuggestionsUpdate(int tid, string[] suggestions, uint generation)
+	{
+		import ae.utils.json : toJson;
+		broadcast(toJson(SuggestionsUpdateMessage("suggestions_update", tid, suggestions, generation)));
+	}
+
 	/// Discover projects in all configured workspaces and populate workspacesInfo.
 	private void discoverAllWorkspaces()
 	{
@@ -1744,6 +1753,133 @@ class App : ToolsBackend
 			}
 		}
 		return "";
+	}
+
+	private void generateSuggestions(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+
+		// Only generate for interactive (non-sub-task) sessions
+		if (td.parentTid != 0)
+			return;
+
+		auto history = buildAbbreviatedHistory(tid);
+		if (history.length == 0)
+			return;
+
+		td.suggestGeneration++;
+		auto capturedGen = td.suggestGeneration;
+
+		td.suggestGenHandle = agentForTask(tid).generateSuggestions(history,
+			(string[] suggestions) {
+				if (tid !in tasks)
+					return;
+				if (tasks[tid].suggestGeneration != capturedGen)
+					return; // stale result from a prior subprocess
+				tasks[tid].suggestGenHandle = null;
+				broadcastSuggestionsUpdate(tid, suggestions, capturedGen);
+			});
+	}
+
+	/// Build an abbreviated conversation history string for suggestion generation.
+	private string buildAbbreviatedHistory(int tid)
+	{
+		if (tid !in tasks)
+			return "";
+
+		auto taskAgent = agentForTask(tid);
+
+		string[] entries;
+		size_t totalLen = 0;
+		enum maxLen = 10_000;
+		enum truncThreshold = 256;
+
+		foreach_reverse (ref d; tasks[tid].history)
+		{
+			auto envelope = cast(string) d.toGC();
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length == 0)
+				event = extractFileEventFromEnvelope(envelope);
+			if (event.length == 0)
+				continue;
+
+			string entry;
+
+			auto userText = taskAgent.extractUserText(event);
+			if (userText.length > 0)
+			{
+				entry = "USER: " ~ abbreviateText(userText, truncThreshold);
+			}
+			else
+			{
+				auto assistantText = taskAgent.extractAssistantText(event);
+				if (assistantText.length > 0)
+				{
+					entry = "A: " ~ abbreviateText(assistantText, truncThreshold);
+				}
+				else
+				{
+					auto resultText = taskAgent.extractResultText(event);
+					if (resultText.length > 0)
+					{
+						entry = "A: " ~ abbreviateText(resultText, truncThreshold);
+					}
+					else
+					{
+						import std.algorithm : canFind;
+						if (event.canFind(`"tool_use"`) || event.canFind(`"tool_result"`))
+						{
+							if (entries.length > 0 && entries[$ - 1].length > 1
+								&& entries[$ - 1][0] == '[')
+							{
+								import std.conv : to;
+								import std.string : indexOf;
+								auto bracket = entries[$ - 1].indexOf(' ');
+								if (bracket > 1)
+								{
+									try
+									{
+										auto count = entries[$ - 1][1 .. bracket].to!int + 1;
+										entries[$ - 1] = "[" ~ count.to!string ~ " tool calls]";
+									}
+									catch (Exception) {}
+								}
+								continue;
+							}
+							entry = "[1 tool calls]";
+						}
+						else
+							continue;
+					}
+				}
+			}
+
+			totalLen += entry.length;
+			if (totalLen > maxLen)
+				break;
+
+			entries ~= entry;
+		}
+
+		import std.algorithm : reverse;
+		entries.reverse();
+
+		foreach (ref e; entries)
+			if (e == "[1 tool calls]")
+				e = "[1 tool call]";
+
+		import std.array : join;
+		return entries.join("\n\n");
+	}
+
+	private static string abbreviateText(string text, size_t threshold)
+	{
+		if (text.length <= threshold)
+			return text;
+		auto keepEach = threshold / 2 - 3;
+		return text[0 .. keepEach] ~ " [...] " ~ text[$ - keepEach .. $];
 	}
 }
 

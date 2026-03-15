@@ -138,6 +138,8 @@ export interface TaskState {
     afterUuid: string;
     messagesRemoved: number;
   } | null;
+  /** Auto-generated reply suggestions, shown when it's the user's turn. */
+  suggestions?: string[];
 }
 
 export function makeTaskState(

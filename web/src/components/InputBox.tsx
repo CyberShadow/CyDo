@@ -14,6 +14,7 @@ interface Props {
   inputRef?: RefObject<HTMLTextAreaElement>;
   insertTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
+  suggestions?: string[];
 }
 
 export function InputBox({
@@ -27,6 +28,7 @@ export function InputBox({
   inputRef,
   insertTextRef,
   onEscape,
+  suggestions,
 }: Props) {
   const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
   const internalRef = useRef<HTMLTextAreaElement>(null);
@@ -79,6 +81,30 @@ export function InputBox({
 
   return (
     <div class="input-box">
+      {!isProcessing &&
+        !text.trim() &&
+        suggestions &&
+        suggestions.length > 0 && (
+          <div class="suggestions">
+            {suggestions.map((s) => (
+              <button
+                key={s}
+                class="btn btn-suggestion"
+                onClick={(e) => {
+                  if (e.shiftKey) {
+                    setText(s);
+                    textareaRef.current?.focus();
+                  } else {
+                    onSend(s);
+                  }
+                }}
+                title="Click to send, Shift+click to edit"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
       <textarea
         ref={textareaRef}
         class="input-textarea"

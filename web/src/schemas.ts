@@ -722,6 +722,11 @@ export interface UndoPreviewMessage {
   tid: number;
   messages_removed: number;
 }
+export interface SuggestionsUpdateMessage {
+  type: "suggestions_update";
+  tid: number;
+  suggestions: string[];
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -732,4 +737,5 @@ export type ControlMessage =
   | TaskTypesListMessage
   | ForkableUuidsMessage
   | ErrorMessage
-  | UndoPreviewMessage;
+  | UndoPreviewMessage
+  | SuggestionsUpdateMessage;
