@@ -307,12 +307,20 @@ export const UserEchoSchema = z
     parent_tool_use_id: z.string().nullable().optional(),
     isSidechain: z.boolean().optional(),
     // opaque — tool result payloads vary by tool, rendered via ToolCall dispatch
-    // may be an object (Bash, Edit) or an array (SwitchMode, ControlResponse)
+    // may be a string (error), object (Bash, Edit), or array (SwitchMode, ControlResponse)
     tool_use_result: z
-      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .union([
+        z.string(),
+        z.record(z.string(), z.unknown()),
+        z.array(z.unknown()),
+      ])
       .optional(),
     toolUseResult: z
-      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .union([
+        z.string(),
+        z.record(z.string(), z.unknown()),
+        z.array(z.unknown()),
+      ])
       .optional(),
     // ignored: routing — links tool result back to the assistant that made the call
     sourceToolAssistantUUID: z.string().optional(),
@@ -477,10 +485,18 @@ export const UserFileSchema = z
     isSidechain: z.boolean().optional(),
     // opaque — tool result payloads vary by tool, rendered via ToolCall dispatch
     tool_use_result: z
-      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .union([
+        z.string(),
+        z.record(z.string(), z.unknown()),
+        z.array(z.unknown()),
+      ])
       .optional(),
     toolUseResult: z
-      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .union([
+        z.string(),
+        z.record(z.string(), z.unknown()),
+        z.array(z.unknown()),
+      ])
       .optional(),
     // ignored: routing — links tool result back to the assistant that made the call
     sourceToolAssistantUUID: z.string().optional(),
