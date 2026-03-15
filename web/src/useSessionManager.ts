@@ -508,38 +508,12 @@ export function useTaskManager(): TaskManager {
             remaining.length > 0 ? remaining.join("\n\n") : undefined;
         }
 
-        // Clean up pending user placeholders: if history replay already added
-        // a confirmed user message (via reduceUserEcho), remove all stale
-        // pending placeholders. If not (e.g. JSONL was empty when history was
-        // requested), deduplicate to at most one so the in-flight placeholder
-        // remains visible until a live echo or task_reload delivers the
-        // confirmed message.
-        const hasConfirmedUser = t.messages.some(
-          (m) => m.type === "user" && !m.pending,
-        );
-        let cleanedMessages = t.messages;
-        if (hasConfirmedUser) {
-          cleanedMessages = t.messages.filter(
-            (m) => !(m.pending && m.type === "user"),
-          );
-        } else {
-          let kept = false;
-          cleanedMessages = t.messages.filter((m) => {
-            if (!(m.pending && m.type === "user")) return true;
-            if (!kept) {
-              kept = true;
-              return true;
-            }
-            return false;
-          });
-        }
         t = {
           ...t,
           historyLoaded: true,
           preReloadDrafts: undefined,
           confirmedDuringReplay: undefined,
           inputDraft,
-          messages: cleanedMessages,
         };
         liveStates.set(tid, t);
 

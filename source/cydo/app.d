@@ -77,6 +77,10 @@ class App : ToolsBackend
 	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
 	private string mcpSocketPath;
 	private WebSocketAdapter[] clients;
+	/// Per-client subscription set: which tasks each client receives live events for.
+	/// INVARIANT: subscription ≡ request_history. A client is subscribed only
+	/// after receiving the full history buffer. Resetting history (agent exit,
+	/// undo) unsubscribes all clients, forcing re-subscription via request_history.
 	private bool[int][WebSocketAdapter] clientSubscriptions;
 	private TaskData[int] tasks;
 	private Persistence persistence;
@@ -587,10 +591,6 @@ class App : ToolsBackend
 		// Broadcast updated task list so all other clients see the new task.
 		broadcast(buildTasksList());
 
-		// Subscribe creating client to live events for this task.
-		// Other clients subscribe via request_history.
-		clientSubscriptions.require(ws)[tid] = true;
-
 		// If content is provided, send it as the first message atomically
 		if (json.content.length > 0)
 		{
@@ -996,6 +996,7 @@ class App : ToolsBackend
 				}
 				td.history = DataVec();
 				td.historyLoaded = false;
+				unsubscribeAll(tid);
 			}
 
 			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
@@ -1048,6 +1049,7 @@ class App : ToolsBackend
 		td.workspace = workspace;
 		td.projectPath = projectPath;
 		td.agentType = agentType;
+		td.historyLoaded = true; // New tasks have no JSONL to load
 		tasks[tid] = move(td);
 		return tid;
 	}
@@ -1241,6 +1243,7 @@ class App : ToolsBackend
 			// fork IDs from the file replace live-stream UUIDs.
 			tasks[tid].history = DataVec();
 			tasks[tid].historyLoaded = false;
+			unsubscribeAll(tid);
 
 			// Continuation: transition to successor instead of completing
 			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
@@ -1448,6 +1451,16 @@ class App : ToolsBackend
 			if (auto subs = ws in clientSubscriptions)
 				if (tid in *subs)
 					ws.send(data);
+	}
+
+	/// Unsubscribe all clients from a task's live events.
+	/// Used when resetting history — forces clients to re-subscribe
+	/// via request_history.
+	private void unsubscribeAll(int tid)
+	{
+		foreach (ws; clients)
+			if (auto subs = ws in clientSubscriptions)
+				(*subs).remove(tid);
 	}
 
 	/// Broadcast an unconfirmed user message to all clients.
