@@ -56,7 +56,7 @@ Your plan must include:
   all necessary infrastructure already exists.
 - **Approach** — the design and rationale for key decisions
 - **Changes** — what needs to change, at the level of detail appropriate for
-  the scope
+  the scope. Include any new or modified tests alongside the production changes.
 - **Verification** — how to confirm the implementation is correct
 
 ## Constraints
