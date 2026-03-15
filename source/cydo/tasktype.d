@@ -655,6 +655,16 @@ void simulateWorkflow(TaskTypeDef[] types)
 // Prompt Rendering
 // ---------------------------------------------------------------------------
 
+/// Replace `{{key}}` placeholders in a string with values from the given map.
+string substituteVars(string text, string[string] vars)
+{
+	import std.string : replace;
+
+	foreach (key, value; vars)
+		text = text.replace("{{" ~ key ~ "}}", value);
+	return text;
+}
+
 /// Render a prompt template by reading the template file and substituting
 /// placeholders. Returns the raw description if no template is defined.
 string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
@@ -662,7 +672,6 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
-	import std.string : replace;
 
 	auto templateName = edgeTemplate.length > 0 ? edgeTemplate : def.prompt_template;
 	if (templateName.length == 0)
@@ -672,13 +681,13 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 	if (!exists(templatePath))
 		return description;
 
-	auto tmpl = readText(templatePath);
-	tmpl = tmpl.replace("{{task_description}}", description);
+	string[string] vars;
+	vars["task_description"] = description;
 	if (def.knowledge_base.length > 0)
-		tmpl = tmpl.replace("{{knowledge_base}}", def.knowledge_base);
+		vars["knowledge_base"] = def.knowledge_base;
 	if (outputFile.length > 0)
-		tmpl = tmpl.replace("{{output_file}}", outputFile);
-	return tmpl;
+		vars["output_file"] = outputFile;
+	return substituteVars(readText(templatePath), vars);
 }
 
 /// Render a continuation's prompt template. The continuation must have a

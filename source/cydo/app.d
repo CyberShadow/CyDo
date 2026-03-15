@@ -32,7 +32,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
-	renderPrompt, renderContinuationPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
+	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
 import cydo.task;
 
 void main(string[] args)
@@ -426,7 +426,8 @@ class App : ToolsBackend
 			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
 			{
 				edgeTemplate = edge.prompt_template;
-				childTd.resultNote = edge.result_note;
+				childTd.resultNote = substituteVars(edge.result_note,
+					["output_dir": parentTd.taskDir]);
 				if (edge.worktree)
 					setupWorktree(childTid, true);
 				else if (parentTd.hasWorktree)
