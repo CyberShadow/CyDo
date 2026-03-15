@@ -781,7 +781,7 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 /// Read-only enforcement is handled by the sandbox (ro mount), not by tool removal.
 string disallowedTools()
 {
-	return "Task,EnterPlanMode,ExitPlanMode";
+	return "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion";
 }
 
 /// Map model_class to Claude CLI model alias.
