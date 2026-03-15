@@ -1,9 +1,30 @@
 import { test, expect, Page } from "./fixtures";
 
-/** Navigate to the first project and wait for WebSocket connection. */
+const CYDO_WS_URL = "ws://localhost:3456/ws";
+
+async function createClaudeTask(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(CYDO_WS_URL);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "create_task", workspace: "", project_path: "", task_type: "", content: "", agent_type: "claude" }));
+    };
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (event) => {
+      try {
+        const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg = JSON.parse(text);
+        if (msg.type === "task_created") { ws.close(); resolve(msg.tid); }
+      } catch {}
+    };
+    ws.onerror = () => reject(new Error("WebSocket error creating Claude task"));
+    setTimeout(() => reject(new Error("Timeout creating Claude task")), 10_000);
+  });
+}
+
+/** Create a task and navigate directly to its URL. */
 async function enterProject(page: Page) {
-  await page.goto("/");
-  await page.locator(".project-card-title").first().click({ timeout: 10_000 });
+  const tid = await createClaudeTask();
+  await page.goto(`/task/${tid}`);
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
     timeout: 10_000,
   });

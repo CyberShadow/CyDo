@@ -1,5 +1,26 @@
 import { test, expect } from "./fixtures";
 
+const CYDO_WS_URL = "ws://localhost:3456/ws";
+
+async function createClaudeTask(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(CYDO_WS_URL);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "create_task", workspace: "", project_path: "", task_type: "", content: "", agent_type: "claude" }));
+    };
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (event) => {
+      try {
+        const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
+        const msg = JSON.parse(text);
+        if (msg.type === "task_created") { ws.close(); resolve(msg.tid); }
+      } catch {}
+    };
+    ws.onerror = () => reject(new Error("WebSocket error creating Claude task"));
+    setTimeout(() => reject(new Error("Timeout creating Claude task")), 10_000);
+  });
+}
+
 test("page loads and shows CyDo branding", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".welcome-page-header h1")).toContainText("CyDo", {
@@ -8,10 +29,8 @@ test("page loads and shows CyDo branding", async ({ page }) => {
 });
 
 test("basic message and response", async ({ page }) => {
-  await page.goto("/");
-
-  // Click on the project to enter the project view
-  await page.locator(".project-card-title").first().click({ timeout: 10_000 });
+  const tid = await createClaudeTask();
+  await page.goto(`/task/${tid}`);
 
   // Wait for the input to be enabled (means WebSocket is connected)
   const input = page.locator(".input-textarea");
@@ -33,10 +52,8 @@ test("basic message and response", async ({ page }) => {
 });
 
 test("tool call flow", async ({ page }) => {
-  await page.goto("/");
-
-  // Click on the project to enter the project view
-  await page.locator(".project-card-title").first().click({ timeout: 10_000 });
+  const tid = await createClaudeTask();
+  await page.goto(`/task/${tid}`);
 
   // Wait for the input to be enabled (means WebSocket is connected)
   const input = page.locator(".input-textarea");
