@@ -315,6 +315,17 @@ function PatchView({
 }) {
   const lang = filePath ? langFromPath(filePath) : null;
 
+  // Compute gutter width from max line number across all hunks
+  let maxLineNum = 0;
+  for (const hunk of hunks) {
+    maxLineNum = Math.max(
+      maxLineNum,
+      hunk.oldStart + hunk.oldLines,
+      hunk.newStart + hunk.newLines,
+    );
+  }
+  const gutterWidth = `${String(maxLineNum).length}ch`;
+
   // Build old/new text for syntax highlighting
   const oldLinesList: string[] = [];
   const newLinesList: string[] = [];
@@ -358,8 +369,12 @@ function PatchView({
         const nNum = newLineNum++;
         elements.push(
           <div key={`c${oNum}`} class="diff-context">
-            <span class="diff-gutter">{oNum}</span>
-            <span class="diff-gutter">{nNum}</span>
+            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+              {oNum}
+            </span>
+            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+              {nNum}
+            </span>
             {"  "}
             {oldTokens?.[oldIdx] ? renderTokens(oldTokens[oldIdx]) : content}
           </div>,
@@ -402,8 +417,13 @@ function PatchView({
             );
             elements.push(
               <div key={`r${oNum}`} class="diff-removed">
-                <span class="diff-gutter">{oNum}</span>
-                <span class="diff-gutter"></span>
+                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+                  {oNum}
+                </span>
+                <span
+                  class="diff-gutter"
+                  style={{ minWidth: gutterWidth }}
+                ></span>
                 {"- "}
                 {renderAnnotatedSpans(spans, "removed")}
               </div>,
@@ -411,8 +431,13 @@ function PatchView({
           } else {
             elements.push(
               <div key={`r${oNum}`} class="diff-removed">
-                <span class="diff-gutter">{oNum}</span>
-                <span class="diff-gutter"></span>
+                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+                  {oNum}
+                </span>
+                <span
+                  class="diff-gutter"
+                  style={{ minWidth: gutterWidth }}
+                ></span>
                 {"- "}
                 {oldTokens?.[oldIdx]
                   ? renderTokens(oldTokens[oldIdx])
@@ -433,8 +458,13 @@ function PatchView({
             );
             elements.push(
               <div key={`a${nNum}`} class="diff-added">
-                <span class="diff-gutter"></span>
-                <span class="diff-gutter">{nNum}</span>
+                <span
+                  class="diff-gutter"
+                  style={{ minWidth: gutterWidth }}
+                ></span>
+                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+                  {nNum}
+                </span>
                 {"+ "}
                 {renderAnnotatedSpans(spans, "added")}
               </div>,
@@ -442,8 +472,13 @@ function PatchView({
           } else {
             elements.push(
               <div key={`a${nNum}`} class="diff-added">
-                <span class="diff-gutter"></span>
-                <span class="diff-gutter">{nNum}</span>
+                <span
+                  class="diff-gutter"
+                  style={{ minWidth: gutterWidth }}
+                ></span>
+                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+                  {nNum}
+                </span>
                 {"+ "}
                 {newTokens?.[newIdx]
                   ? renderTokens(newTokens[newIdx])
@@ -459,8 +494,10 @@ function PatchView({
         const nNum = newLineNum++;
         elements.push(
           <div key={`a${nNum}`} class="diff-added">
-            <span class="diff-gutter"></span>
-            <span class="diff-gutter">{nNum}</span>
+            <span class="diff-gutter" style={{ minWidth: gutterWidth }}></span>
+            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
+              {nNum}
+            </span>
             {"+ "}
             {newTokens?.[newIdx] ? renderTokens(newTokens[newIdx]) : content}
           </div>,

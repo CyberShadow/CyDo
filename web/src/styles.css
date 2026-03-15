@@ -1009,22 +1009,19 @@ body,
 }
 
 .btn-suggestion {
-  background: var(--bg-tertiary, #2a2a2a);
-  color: var(--text-secondary);
+  background: transparent;
+  color: var(--text-dim);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 4px 12px;
-  font-size: 0.85em;
+  padding: 3px 10px;
+  font-size: 0.8em;
+  font-family: var(--font-mono);
   cursor: pointer;
-  transition:
-    background 0.15s,
-    border-color 0.15s;
   white-space: nowrap;
 }
 
 .btn-suggestion:hover {
-  background: var(--bg-hover, #333);
-  border-color: var(--text-secondary);
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .btn-suggestion:focus {
@@ -1615,7 +1612,7 @@ body,
 
 .diff-gutter {
   display: inline-block;
-  min-width: 3ch;
+  min-width: 3ch; /* overridden inline by PatchView when line numbers are wider */
   text-align: right;
   color: var(--text-dim);
   user-select: none;
