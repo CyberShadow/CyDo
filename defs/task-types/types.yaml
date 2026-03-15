@@ -125,15 +125,11 @@ task_types:
       then lets the user iterate on the result. When the plan is approved,
       switches back to conversation for implementation dispatch.
 
-      Switch when ANY of these apply:
-      - New feature: adding meaningful new functionality (e.g. "add a logout
-        button" — where should it go? what happens on click?)
+      Switch when the task needs exploration and interactive design iteration:
       - Multiple valid approaches: the task can be solved several ways (e.g.
         "add caching" — Redis vs in-memory vs file-based)
       - Architectural decisions: choosing between patterns or technologies
         (e.g. "add real-time updates" — WebSockets vs SSE vs polling)
-      - Multi-file changes: the task will touch more than 2-3 files (e.g.
-        "refactor the authentication system")
       - Unclear scope: you need to explore before understanding the full
         extent (e.g. "make the app faster" — need to profile first)
       - Changes to existing behavior: modifying how something currently works
@@ -143,15 +139,15 @@ task_types:
         options with context
 
       Do NOT switch for:
-      - Single-line or few-line fixes (typos, obvious bugs, small tweaks)
-      - Tasks where the user gave very specific, detailed instructions
+      - Tasks where the direction is already clear — use direct dispatch
+      - Tasks where the user gave specific, detailed instructions
       - Pure research or exploration (use research sub-tasks instead)
     tool_guidance: >
-      Prefer switching to plan mode — it's better to get alignment upfront
-      than to redo work. If unsure, err on the side of planning. Confirm the
-      task scope with the user before switching. The switch preserves your
-      conversation context. Switch back to conversation when the plan is
-      approved and the user is ready to implement.
+      Switch when the task needs interactive exploration and design iteration
+      — multiple valid approaches, unclear scope, or architectural decisions.
+      If the direction is already clear, conversation can dispatch directly
+      without switching. The switch preserves conversation context. Switch
+      back when the plan is approved and the user is ready to implement.
     model_class: large
     read_only: true
     output_type: report
