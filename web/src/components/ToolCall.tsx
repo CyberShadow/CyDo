@@ -10,6 +10,12 @@ import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
 
+const CYDO_PREFIX = "mcp__cydo__";
+
+function getDisplayName(name: string): string {
+  return name.startsWith(CYDO_PREFIX) ? name.slice(CYDO_PREFIX.length) : name;
+}
+
 interface Props {
   name: string;
   input: Record<string, unknown>;
@@ -658,6 +664,31 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   );
 }
 
+function formatTaskSpecsInput(
+  tasks: Array<Record<string, unknown>>,
+): h.JSX.Element {
+  return (
+    <div class="tool-input-formatted">
+      {tasks.map((task, i) => {
+        const taskType =
+          typeof task.task_type === "string" ? task.task_type : null;
+        const description =
+          typeof task.description === "string" ? task.description : null;
+        const prompt = typeof task.prompt === "string" ? task.prompt : null;
+        return (
+          <div key={i} class="cydo-task-spec">
+            <div class="tool-input-field">
+              {taskType && <span class="tool-subtitle-tag">{taskType}</span>}
+              {description && <span class="field-value"> {description}</span>}
+            </div>
+            {prompt && <Markdown text={prompt} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface AskQuestion {
   question: string;
   header: string;
@@ -777,6 +808,37 @@ function WebSearchResult({ content }: { content: string }) {
       {parsed.body && <Markdown text={parsed.body} class="text-content" />}
     </div>
   );
+}
+
+function parseCydoTaskResult(
+  content: string,
+): Record<string, unknown>[] | null {
+  try {
+    const parsed = JSON.parse(content);
+    // Backend returns either a raw array or {"tasks": [...]} wrapper
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.tasks)
+        ? parsed.tasks
+        : null;
+    return arr && arr.length > 0 ? arr : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatCydoTaskResultItem(item: Record<string, unknown>): {
+  fields: Record<string, unknown>;
+  text: string | null;
+} {
+  const text =
+    typeof item.summary === "string"
+      ? item.summary
+      : typeof item.result === "string"
+        ? item.result
+        : null;
+  const { summary, result: _result, ...rest } = item;
+  return { fields: rest, text };
 }
 
 function formatGenericInput(
@@ -909,6 +971,9 @@ const knownResultFields: Record<string, Set<string>> = {
   EnterPlanMode: new Set(["message"]),
   ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
   NotebookEdit: new Set([]),
+  mcp__cydo__Task: new Set(["tasks", "content", "structuredContent"]),
+  mcp__cydo__SwitchMode: new Set(["message"]),
+  mcp__cydo__Handoff: new Set(["message"]),
 };
 
 function formatToolUseResult(
@@ -917,6 +982,13 @@ function formatToolUseResult(
 ): h.JSX.Element | null {
   if (Array.isArray(toolUseResult)) {
     if (toolUseResult.length === 0) return null;
+    // Skip structured content blocks — already rendered by renderResultContent
+    if (
+      toolUseResult.every(
+        (b) => typeof b === "object" && b !== null && "type" in b,
+      )
+    )
+      return null;
     return (
       <pre class="tool-result">{JSON.stringify(toolUseResult, null, 2)}</pre>
     );
@@ -1029,6 +1101,75 @@ function getHeaderSubtitle(
       </span>
     );
   }
+  // --- CyDo MCP tools ---
+  if (
+    name === "mcp__cydo__SwitchMode" &&
+    typeof input.continuation === "string"
+  ) {
+    return <span class="tool-subtitle">{input.continuation}</span>;
+  }
+  if (name === "mcp__cydo__Handoff" && typeof input.continuation === "string") {
+    return <span class="tool-subtitle">{input.continuation}</span>;
+  }
+  if (name === "mcp__cydo__Task") {
+    const tasks = input.tasks as
+      | Array<{ task_type?: string; description?: string }>
+      | undefined;
+    if (Array.isArray(tasks)) {
+      if (tasks.length === 1 && tasks[0].description) {
+        return <span class="tool-subtitle">{tasks[0].description}</span>;
+      }
+      return <span class="tool-subtitle">{tasks.length} tasks</span>;
+    }
+  }
+  // --- Claude Code built-in tools ---
+  if (name === "SendMessage") {
+    const type = typeof input.type === "string" ? input.type : null;
+    const recipient =
+      typeof input.recipient === "string" ? input.recipient : null;
+    if (type && recipient) {
+      return (
+        <span class="tool-subtitle">
+          {type} → {recipient}
+        </span>
+      );
+    }
+    if (type) {
+      return <span class="tool-subtitle">{type}</span>;
+    }
+  }
+  if (name === "TaskCreate") {
+    const tasks = input.tasks as Array<{ description?: string }> | undefined;
+    if (Array.isArray(tasks)) {
+      if (tasks.length === 1 && tasks[0].description) {
+        return <span class="tool-subtitle">{tasks[0].description}</span>;
+      }
+      return <span class="tool-subtitle">{tasks.length} tasks</span>;
+    }
+  }
+  if (name === "TaskUpdate") {
+    const id = input.task_id ?? input.taskId;
+    const status = typeof input.status === "string" ? input.status : null;
+    if (id != null && status) {
+      return (
+        <span class="tool-subtitle">
+          #{String(id)} → {status}
+        </span>
+      );
+    }
+  }
+  if (name === "Skill" && typeof input.skill === "string") {
+    return <span class="tool-subtitle">{input.skill}</span>;
+  }
+  if (name === "TeamCreate" && typeof input.team_name === "string") {
+    return <span class="tool-subtitle">{input.team_name}</span>;
+  }
+  if (name === "EnterWorktree") {
+    const wName = typeof input.name === "string" ? input.name : null;
+    if (wName) {
+      return <span class="tool-subtitle">{wName}</span>;
+    }
+  }
   return null;
 }
 
@@ -1082,6 +1223,47 @@ function formatInput(
     const { pattern, path, ...remaining } = input;
     return formatGenericInput(remaining);
   }
+  // --- CyDo MCP tools ---
+  if (name === "mcp__cydo__Task" && Array.isArray(input.tasks)) {
+    return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
+  }
+  if (name === "mcp__cydo__Handoff") {
+    const { continuation, prompt: handoffPrompt, ...remaining } = input;
+    return formatGenericInput(
+      remaining,
+      typeof handoffPrompt === "string" ? (
+        <Markdown text={handoffPrompt} />
+      ) : undefined,
+    );
+  }
+  // --- Claude Code built-in tools ---
+  if (name === "SendMessage") {
+    const { type, recipient, summary, ...remaining } = input;
+    const content = typeof input.content === "string" ? input.content : null;
+    const filteredRemaining = Object.fromEntries(
+      Object.entries(remaining).filter(([k]) => k !== "content"),
+    );
+    return formatGenericInput(
+      filteredRemaining,
+      content ? <Markdown text={content} /> : undefined,
+    );
+  }
+  if (name === "Skill") {
+    const { skill, args: skillArgs, ...remaining } = input;
+    return formatGenericInput(
+      remaining,
+      typeof skillArgs === "string" ? (
+        <pre class="write-content">{skillArgs}</pre>
+      ) : undefined,
+    );
+  }
+  if (name === "TaskCreate" && Array.isArray(input.tasks)) {
+    return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
+  }
+  if (name === "TaskUpdate") {
+    const { task_id, taskId, status, ...remaining } = input;
+    return formatGenericInput(remaining);
+  }
   return formatGenericInput(input);
 }
 
@@ -1116,12 +1298,17 @@ const defaultExpandedTools = new Set([
   "TodoWrite",
   "AskUserQuestion",
   "WebFetch",
+  "mcp__cydo__Task",
+  "mcp__cydo__Handoff",
+  "SendMessage",
+  "TaskCreate",
 ]);
 const defaultExpandedResults = new Set([
   "Bash",
   "Task",
   "WebSearch",
   "WebFetch",
+  "mcp__cydo__Task",
 ]);
 
 export function ToolCall({ name, input, result, children }: Props) {
@@ -1132,6 +1319,13 @@ export function ToolCall({ name, input, result, children }: Props) {
   const subtitle = getHeaderSubtitle(name, input);
 
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
+  const cydoTaskItems =
+    name === "mcp__cydo__Task" &&
+    result &&
+    !result.isError &&
+    typeof result.content === "string"
+      ? parseCydoTaskResult(result.content as string)
+      : null;
   const useReadHighlight =
     name === "Read" &&
     filePath &&
@@ -1155,7 +1349,7 @@ export function ToolCall({ name, input, result, children }: Props) {
         <span class="tool-icon">
           {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
         </span>
-        <span class="tool-name">{name}</span>
+        <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
       </div>
@@ -1171,7 +1365,40 @@ export function ToolCall({ name, input, result, children }: Props) {
           </div>
           {resultOpen && (
             <>
-              {useReadHighlight ? (
+              {cydoTaskItems ? (
+                <div class="tool-input-formatted">
+                  {cydoTaskItems.map((item, i) => {
+                    const { fields, text } = formatCydoTaskResultItem(item);
+                    const taskType =
+                      typeof fields.task_type === "string"
+                        ? fields.task_type
+                        : null;
+                    const desc =
+                      typeof fields.description === "string"
+                        ? fields.description
+                        : null;
+                    const { task_type, description, ...rest } = fields;
+                    return (
+                      <div key={i} class="cydo-task-spec">
+                        <div class="tool-input-field">
+                          {taskType && (
+                            <span class="tool-subtitle-tag">{taskType}</span>
+                          )}
+                          {desc && <span class="field-value"> {desc}</span>}
+                        </div>
+                        {Object.keys(rest).length > 0 &&
+                          Object.entries(rest).map(([k, v]) => (
+                            <div key={k} class="tool-input-field">
+                              <span class="field-label">{k}:</span>
+                              <span class="field-value"> {String(v)}</span>
+                            </div>
+                          ))}
+                        {text && <Markdown text={text} class="text-content" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : useReadHighlight ? (
                 <ReadResult
                   content={result.content as string}
                   filePath={filePath!}

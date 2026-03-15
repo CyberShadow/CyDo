@@ -715,7 +715,7 @@ body,
 
 .tool-subtitle {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -741,7 +741,7 @@ body,
 
 .tool-subtitle-tag {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   background: var(--overlay-light-more);
   padding: 1px 5px;
   border-radius: 3px;
@@ -1515,6 +1515,10 @@ body,
   margin: 2px 0;
 }
 
+.tool-input-formatted > .markdown-wrap {
+  margin-top: 8px;
+}
+
 .field-label {
   color: var(--text-dim);
 }
@@ -2133,4 +2137,14 @@ pre.extra-field-value {
   text-align: center;
   color: var(--text-dim);
   font-size: 13px;
+}
+
+/* CyDo task spec cards */
+.cydo-task-spec {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+}
+
+.cydo-task-spec + .cydo-task-spec {
+  border-top: none;
 }
