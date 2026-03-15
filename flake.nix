@@ -15,6 +15,29 @@
           permittedInsecurePackages = [ "openssl-1.1.1w" ];
         };
       };
+
+      lib = nixpkgs.lib;
+
+      backendSrc = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./source
+          ./dub.sdl
+          ./dub.selections.json
+        ];
+      };
+
+      frontendSrc = lib.fileset.toSource {
+        root = ./web;
+        fileset = lib.fileset.unions [
+          ./web/src
+          ./web/index.html
+          ./web/package.json
+          ./web/package-lock.json
+          ./web/tsconfig.json
+          ./web/vite.config.ts
+        ];
+      };
     in
     {
       packages = forAllSystems (system:
@@ -56,7 +79,7 @@
           frontend = pkgs.buildNpmPackage {
             pname = "cydo-frontend";
             version = "0.1.0";
-            src = ./web;
+            src = frontendSrc;
             inherit nodejs;
             npmDepsHash = "sha256-4b5H74iCWo+/3m0c5nNIAGefz4CxpQfj9+Fep6vil1o=";
 
@@ -71,7 +94,7 @@
           backend = pkgs.buildDubPackage {
             pname = "cydo";
             version = "0.1.0";
-            src = ./.;
+            src = backendSrc;
 
             dubLock = ./dub-lock.json;
             dubBuildType = "release-debug";
@@ -232,7 +255,7 @@
           unittests = pkgs.buildDubPackage {
             pname = "cydo-unittests";
             version = "0.1.0";
-            src = ./.;
+            src = backendSrc;
 
             dubLock = ./dub-lock.json;
 
