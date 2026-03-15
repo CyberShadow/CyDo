@@ -542,7 +542,7 @@ class App : ToolsBackend
 
 		switch (json.type)
 		{
-			case "create_task":       handleCreateTaskMsg(json); break;
+			case "create_task":       handleCreateTaskMsg(ws, json); break;
 			case "request_history":   handleRequestHistory(ws, json); break;
 			case "message":           handleUserMessage(json); break;
 			case "resume":            handleResumeMsg(json); break;
@@ -557,7 +557,7 @@ class App : ToolsBackend
 		}
 	}
 
-	private void handleCreateTaskMsg(WsMessage json)
+	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
 
@@ -568,7 +568,11 @@ class App : ToolsBackend
 			tasks[tid].taskType = json.task_type;
 			persistence.setTaskType(tid, json.task_type);
 		}
-		broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
+		// Send task_created only to the requesting client (unicast) so that
+		// parallel test workers don't steal each other's task IDs.
+		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")).representation));
+		// Broadcast updated task list so all other clients see the new task.
+		broadcast(buildTasksList());
 
 		// If content is provided, send it as the first message atomically
 		if (json.content.length > 0)
