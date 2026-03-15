@@ -33,6 +33,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
+import cydo.task;
 
 void main(string[] args)
 {
@@ -70,7 +71,7 @@ void main(string[] args)
 class App : ToolsBackend
 {
 	import ae.sys.inotify : INotify, iNotify;
-	import cydo.inotify : RefCountedINotify;
+	import cydo.jsonl : JsonlTracker;
 
 	private HttpServer server;
 	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
@@ -88,11 +89,8 @@ class App : ToolsBackend
 	private enum taskTypesPath = "defs/task-types/types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
-	// inotify watches for JSONL file tracking (tid → handle)
-	private RefCountedINotify rcINotify;
-	private RefCountedINotify.Handle[int] jsonlWatches;
-	private size_t[int] jsonlReadPos;
-	private int[int] jsonlLineCount;  // cumulative line count for partial reads
+	// JSONL file tracking state
+	private JsonlTracker jsonlTracker;
 	// inotify watches for config file hot-reload
 	private INotify.WatchDescriptor configFileWatch;
 	private INotify.WatchDescriptor configDirWatch;
@@ -126,6 +124,10 @@ class App : ToolsBackend
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
 		agentsByType[config.default_agent_type] = agent;
+
+		jsonlTracker.getAgent = &agentForTask;
+		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
+		jsonlTracker.broadcast = &broadcast;
 
 		// Load task type definitions
 		auto types = getTaskTypes();
@@ -534,387 +536,420 @@ class App : ToolsBackend
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
-		import ae.utils.json : jsonParse, toJson;
-
+		import ae.utils.json : jsonParse;
 		auto json = jsonParse!WsMessage(text);
 
-		if (json.type == "create_task")
+		switch (json.type)
 		{
-			auto at = json.agent_type.length > 0 ? json.agent_type : config.default_agent_type;
-			auto tid = createTask(json.workspace, json.project_path, at);
-			if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
-			{
-				tasks[tid].taskType = json.task_type;
-				persistence.setTaskType(tid, json.task_type);
-			}
-			broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
-
-			// If content is provided, send it as the first message atomically
-			if (json.content.length > 0)
-			{
-				auto td = &tasks[tid];
-				auto typeDef = getTaskTypes().byName(td.taskType);
-				if (typeDef !is null)
-				{
-					auto sc = SessionConfig(
-						agentForTask(tid).resolveModelAlias(typeDef.model_class),
-					);
-					sc.disallowedTools = disallowedTools();
-					ensureTaskAgent(tid, sc);
-				}
-				else
-					ensureTaskAgent(tid);
-
-				auto messageToSend = json.content;
-				if (typeDef !is null)
-					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
-				broadcastUnconfirmedUserMessage(tid, json.content);
-				sendTaskMessage(tid, messageToSend);
-
-				td.description = json.content;
-				persistence.setDescription(tid, json.content);
-
-				td.title = truncateTitle(json.content, 80);
-				persistence.setTitle(tid, td.title);
-				broadcastTitleUpdate(tid, td.title);
-				generateTitle(tid, json.content);
-			}
+			case "create_task":       handleCreateTaskMsg(json); break;
+			case "request_history":   handleRequestHistory(ws, json); break;
+			case "message":           handleUserMessage(json); break;
+			case "resume":            handleResumeMsg(json); break;
+			case "interrupt":         handleInterruptMsg(json); break;
+			case "sigint":            handleSigintMsg(json); break;
+			case "close_stdin":       handleCloseStdinMsg(json); break;
+			case "stop":              handleStopMsg(json); break;
+			case "dismiss_attention": handleDismissAttention(json); break;
+			case "fork_task":         handleForkTaskMsg(ws, json); break;
+			case "undo_task":         handleUndoTaskMsg(ws, json); break;
+			default: break;
 		}
-		else if (json.type == "request_history")
+	}
+
+	private void handleCreateTaskMsg(WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto at = json.agent_type.length > 0 ? json.agent_type : config.default_agent_type;
+		auto tid = createTask(json.workspace, json.project_path, at);
+		if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
 		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-
-			// Load JSONL from disk if not already loaded
-			if (!td.historyLoaded && td.agentSessionId.length > 0)
-			{
-				auto ta = agentForTask(tid);
-				auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-				string[] steeringStash;
-				td.history = loadTaskHistory(tid, jsonlPath, (string line, int lineNum) {
-					if (isQueueOperation(line))
-					{
-						import ae.utils.json : jsonParse;
-						auto op = jsonParse!QueueOperationProbe(line);
-						if (op.operation == "enqueue")
-						{
-							steeringStash ~= op.content;
-							return buildSyntheticUserEvent(op.content, false, true);
-						}
-						else if (op.operation == "dequeue")
-						{
-							if (steeringStash.length > 0)
-								steeringStash = steeringStash[1 .. $];
-							return null; // skip — the real message/user follows
-						}
-						else if (op.operation == "remove")
-						{
-							if (steeringStash.length > 0)
-							{
-								auto text = steeringStash[0];
-								steeringStash = steeringStash[1 .. $];
-								// Emit steering confirmation at the remove position
-								return buildSyntheticUserEvent(text, true);
-							}
-							return null;
-						}
-						return null; // unknown queue operation
-					}
-					return ta.translateHistoryLine(line, lineNum);
-				});
-				td.historyLoaded = true;
-			}
-
-			// Send unified history to requesting client
-			foreach (msg; td.history)
-				ws.send(msg);
-
-			// Send forkable UUIDs extracted from JSONL
-			if (td.agentSessionId.length > 0)
-				sendForkableUuidsFromFile(ws, tid, td.agentSessionId, td.effectiveCwd);
-
-			// Send end marker
-			ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
+			tasks[tid].taskType = json.task_type;
+			persistence.setTaskType(tid, json.task_type);
 		}
-		else if (json.type == "message")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			// Auto-spawn agent session if task has no session yet.
-			// Resumable tasks (completed with agentSessionId) require explicit "resume".
-			if (td.session is null || !td.session.alive)
-			{
-				if (td.agentSessionId.length > 0)
-					return; // resumable but not resumed — ignore
-				// Build session config from task type if available
-				auto typeDef = getTaskTypes().byName(td.taskType);
-				if (typeDef !is null)
-				{
-					auto sc = SessionConfig(
-						agentForTask(tid).resolveModelAlias(typeDef.model_class),
-					);
-					sc.disallowedTools = disallowedTools();
-					ensureTaskAgent(tid, sc);
-				}
-				else
-					ensureTaskAgent(tid);
-			}
-			// Wrap first message in prompt template (e.g. conversation.md)
-			auto messageToSend = json.content;
-			if (td.description.length == 0)
-			{
-				auto typeDef = getTaskTypes().byName(td.taskType);
-				if (typeDef !is null)
-					messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
-			}
-			broadcastUnconfirmedUserMessage(tid, json.content);
-			sendTaskMessage(tid, messageToSend);
+		broadcast(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")));
 
-			// Store first message as task description
-			if (td.description.length == 0)
-			{
-				td.description = json.content;
-				persistence.setDescription(tid, json.content);
-			}
-
-			// Set initial title from first user message (truncated)
-			if (td.title.length == 0)
-			{
-				td.title = truncateTitle(json.content, 80);
-				persistence.setTitle(tid, td.title);
-				broadcastTitleUpdate(tid, td.title);
-				generateTitle(tid, json.content);
-			}
-		}
-		else if (json.type == "resume")
+		// If content is provided, send it as the first message atomically
+		if (json.content.length > 0)
 		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
 			auto td = &tasks[tid];
-			// Only resume if we have an agent session ID and no running process
-			if (td.agentSessionId.length == 0)
-				return;
-			if (td.session !is null && td.session.alive)
-				return;
 			auto typeDef = getTaskTypes().byName(td.taskType);
 			if (typeDef !is null)
 			{
-				auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
+				auto sc = SessionConfig(
+					agentForTask(tid).resolveModelAlias(typeDef.model_class),
+				);
 				sc.disallowedTools = disallowedTools();
 				ensureTaskAgent(tid, sc);
 			}
 			else
 				ensureTaskAgent(tid);
-			td.needsAttention = false;
-			td.notificationBody = "";
-			td.status = "active";
-			broadcast(buildTasksList());
-		}
-		else if (json.type == "interrupt")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.session)
-				td.session.interrupt();
-		}
-		else if (json.type == "sigint")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.session)
-				td.session.sigint();
-		}
-		else if (json.type == "close_stdin")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.session)
-				td.session.closeStdin();
-		}
-		else if (json.type == "stop")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.session)
-				td.session.stop();
-		}
-		else if (json.type == "dismiss_attention")
-		{
-			auto tid = json.tid;
-			if (tid >= 0 && tid in tasks)
-			{
-				tasks[tid].needsAttention = false;
-				tasks[tid].notificationBody = "";
-				broadcast(buildTasksList());
-			}
-		}
-		else if (json.type == "fork_task")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.agentSessionId.length == 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-				return;
-			}
 
+			auto messageToSend = json.content;
+			if (typeDef !is null)
+				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
+			broadcastUnconfirmedUserMessage(tid, json.content);
+			sendTaskMessage(tid, messageToSend);
+
+			td.description = json.content;
+			persistence.setDescription(tid, json.content);
+
+			td.title = truncateTitle(json.content, 80);
+			persistence.setTitle(tid, td.title);
+			broadcastTitleUpdate(tid, td.title);
+			generateTitle(tid, json.content);
+		}
+	}
+
+	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+
+		// Load JSONL from disk if not already loaded
+		if (!td.historyLoaded && td.agentSessionId.length > 0)
+		{
 			auto ta = agentForTask(tid);
-			auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
-				td.effectiveCwd, td.workspace, td.title,
-				(string sid) => ta.historyPath(sid, td.effectiveCwd),
-				&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-				td.description, td.taskType);
-			if (result.tid < 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: message UUID not found in task history", tid)).representation));
-				return;
-			}
-
-			auto newTd = TaskData(result.tid);
-			newTd.workspace = td.workspace;
-			newTd.projectPath = td.projectPath;
-			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
-			newTd.agentSessionId = result.agentSessionId;
-			newTd.parentTid = tid;
-			newTd.relationType = "fork";
-			newTd.status = "completed";
-			newTd.description = td.description;
-			newTd.taskType = td.taskType;
-			tasks[result.tid] = move(newTd);
-
-			broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
-			broadcast(buildTasksList());
-		}
-		else if (json.type == "undo_task")
-		{
-			auto tid = json.tid;
-			if (tid < 0 || tid !in tasks)
-				return;
-			auto td = &tasks[tid];
-			if (td.agentSessionId.length == 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-				return;
-			}
-
-			auto ta = agentForTask(tid);
-
-			if (json.dry_run)
-			{
-					auto count = countLinesAfterForkId(
-					ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid,
-					&ta.forkIdMatchesLine,
-					&ta.isForkableLine);
-				if (count < 0)
+			auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+			string[] steeringStash;
+			td.history = loadTaskHistory(tid, jsonlPath, (string line, int lineNum) {
+				if (isQueueOperation(line))
 				{
-					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-					return;
+					import ae.utils.json : jsonParse;
+					auto op = jsonParse!QueueOperationProbe(line);
+					if (op.operation == "enqueue")
+					{
+						steeringStash ~= op.content;
+						return buildSyntheticUserEvent(op.content, false, true);
+					}
+					else if (op.operation == "dequeue")
+					{
+						if (steeringStash.length > 0)
+							steeringStash = steeringStash[1 .. $];
+						return null; // skip — the real message/user follows
+					}
+					else if (op.operation == "remove")
+					{
+						if (steeringStash.length > 0)
+						{
+							auto text = steeringStash[0];
+							steeringStash = steeringStash[1 .. $];
+							// Emit steering confirmation at the remove position
+							return buildSyntheticUserEvent(text, true);
+						}
+						return null;
+					}
+					return null; // unknown queue operation
 				}
-				// +1 to include the target user message itself
-				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count + 1)).representation));
+				return ta.translateHistoryLine(line, lineNum);
+			});
+			td.historyLoaded = true;
+		}
+
+		// Send unified history to requesting client
+		foreach (msg; td.history)
+			ws.send(msg);
+
+		// Send forkable UUIDs extracted from JSONL
+		if (td.agentSessionId.length > 0)
+			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId, td.effectiveCwd);
+
+		// Send end marker
+		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
+	}
+
+	private void handleUserMessage(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		// Auto-spawn agent session if task has no session yet.
+		// Resumable tasks (completed with agentSessionId) require explicit "resume".
+		if (td.session is null || !td.session.alive)
+		{
+			if (td.agentSessionId.length > 0)
+				return; // resumable but not resumed — ignore
+			// Build session config from task type if available
+			auto typeDef = getTaskTypes().byName(td.taskType);
+			if (typeDef !is null)
+			{
+				auto sc = SessionConfig(
+					agentForTask(tid).resolveModelAlias(typeDef.model_class),
+				);
+				sc.disallowedTools = disallowedTools();
+				ensureTaskAgent(tid, sc);
 			}
 			else
+				ensureTaskAgent(tid);
+		}
+		// Wrap first message in prompt template (e.g. conversation.md)
+		auto messageToSend = json.content;
+		if (td.description.length == 0)
+		{
+			auto typeDef = getTaskTypes().byName(td.taskType);
+			if (typeDef !is null)
+				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
+		}
+		broadcastUnconfirmedUserMessage(tid, json.content);
+		sendTaskMessage(tid, messageToSend);
+
+		// Store first message as task description
+		if (td.description.length == 0)
+		{
+			td.description = json.content;
+			persistence.setDescription(tid, json.content);
+		}
+
+		// Set initial title from first user message (truncated)
+		if (td.title.length == 0)
+		{
+			td.title = truncateTitle(json.content, 80);
+			persistence.setTitle(tid, td.title);
+			broadcastTitleUpdate(tid, td.title);
+			generateTitle(tid, json.content);
+		}
+	}
+
+	private void handleResumeMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		// Only resume if we have an agent session ID and no running process
+		if (td.agentSessionId.length == 0)
+			return;
+		if (td.session !is null && td.session.alive)
+			return;
+		auto typeDef = getTaskTypes().byName(td.taskType);
+		if (typeDef !is null)
+		{
+			auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
+			sc.disallowedTools = disallowedTools();
+			ensureTaskAgent(tid, sc);
+		}
+		else
+			ensureTaskAgent(tid);
+		td.needsAttention = false;
+		td.notificationBody = "";
+		td.status = "active";
+		broadcast(buildTasksList());
+	}
+
+	private void handleInterruptMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.session)
+			td.session.interrupt();
+	}
+
+	private void handleSigintMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.session)
+			td.session.sigint();
+	}
+
+	private void handleCloseStdinMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.session)
+			td.session.closeStdin();
+	}
+
+	private void handleStopMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.session)
+			td.session.stop();
+	}
+
+	private void handleDismissAttention(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid >= 0 && tid in tasks)
+		{
+			tasks[tid].needsAttention = false;
+			tasks[tid].notificationBody = "";
+			broadcast(buildTasksList());
+		}
+	}
+
+	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.agentSessionId.length == 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
+			return;
+		}
+
+		auto ta = agentForTask(tid);
+		auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
+			td.effectiveCwd, td.workspace, td.title,
+			(string sid) => ta.historyPath(sid, td.effectiveCwd),
+			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
+			td.description, td.taskType);
+		if (result.tid < 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Fork failed: message UUID not found in task history", tid)).representation));
+			return;
+		}
+
+		auto newTd = TaskData(result.tid);
+		newTd.workspace = td.workspace;
+		newTd.projectPath = td.projectPath;
+		newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
+		newTd.agentSessionId = result.agentSessionId;
+		newTd.parentTid = tid;
+		newTd.relationType = "fork";
+		newTd.status = "completed";
+		newTd.description = td.description;
+		newTd.taskType = td.taskType;
+		tasks[result.tid] = move(newTd);
+
+		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
+		broadcast(buildTasksList());
+	}
+
+	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.agentSessionId.length == 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
+			return;
+		}
+
+		auto ta = agentForTask(tid);
+
+		if (json.dry_run)
+		{
+				auto count = countLinesAfterForkId(
+				ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid,
+				&ta.forkIdMatchesLine,
+				&ta.isForkableLine);
+			if (count < 0)
 			{
-				// Require session to be stopped
-				if (td.session && td.session.alive)
+				ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+				return;
+			}
+			// +1 to include the target user message itself
+			ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count + 1)).representation));
+		}
+		else
+		{
+			// Require session to be stopped
+			if (td.session && td.session.alive)
+			{
+				ws.send(Data(toJson(ErrorMessage("error", "Stop the session before undoing", tid)).representation));
+				return;
+			}
+
+			// 1. Revert file changes via one-shot --rewind-files invocation
+			// (done first so that on failure we haven't modified anything yet)
+			if (json.revert_files)
+			{
+				auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
+				if (err !is null)
 				{
-					ws.send(Data(toJson(ErrorMessage("error", "Stop the session before undoing", tid)).representation));
+					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
 					return;
 				}
-
-				// 1. Revert file changes via one-shot --rewind-files invocation
-				// (done first so that on failure we haven't modified anything yet)
-				if (json.revert_files)
-				{
-					auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
-					if (err !is null)
-					{
-						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
-						return;
-					}
-				}
-
-				// 2. Back up pre-undo state as a child task
-				if (json.revert_conversation)
-				{
-					auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd),
-						&ta.extractForkableIds);
-					if (lastForkId.length > 0)
-					{
-						auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
-							td.effectiveCwd, td.workspace, td.title,
-							(string sid) => ta.historyPath(sid, td.effectiveCwd),
-							&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-							td.description, td.taskType);
-						if (backup.tid >= 0)
-						{
-							auto bTd = TaskData(backup.tid);
-							bTd.workspace = td.workspace;
-							bTd.projectPath = td.projectPath;
-							bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
-							bTd.agentSessionId = backup.agentSessionId;
-							bTd.parentTid = tid;
-							bTd.relationType = "undo-backup";
-							bTd.status = "completed";
-							bTd.description = td.description;
-							bTd.taskType = td.taskType;
-							persistence.setRelationType(backup.tid, "undo-backup");
-							persistence.setTitle(backup.tid, bTd.title);
-							tasks[backup.tid] = move(bTd);
-							broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
-						}
-					}
-				}
-
-				// 3. Truncate conversation history
-				if (json.revert_conversation)
-				{
-					auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
-					if (removed < 0)
-					{
-						ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
-						return;
-					}
-					td.history = DataVec();
-					td.historyLoaded = false;
-				}
-
-				broadcast(toJson(TaskReloadMessage("task_reload", tid)));
-
-				// 4. Auto-resume so the input box shows immediately
-				// (the user's undone message text is recovered via preReloadDrafts)
-				if (json.revert_conversation && td.agentSessionId.length > 0)
-				{
-					auto typeDef = getTaskTypes().byName(td.taskType);
-					if (typeDef !is null)
-					{
-						auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-						sc.disallowedTools = disallowedTools();
-						ensureTaskAgent(tid, sc);
-					}
-					else
-						ensureTaskAgent(tid);
-					td.status = "active";
-				}
-
-				broadcast(buildTasksList());
 			}
+
+			// 2. Back up pre-undo state as a child task
+			if (json.revert_conversation)
+			{
+				auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd),
+					&ta.extractForkableIds);
+				if (lastForkId.length > 0)
+				{
+					auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
+						td.effectiveCwd, td.workspace, td.title,
+						(string sid) => ta.historyPath(sid, td.effectiveCwd),
+						&ta.rewriteSessionId, &ta.forkIdMatchesLine,
+						td.description, td.taskType);
+					if (backup.tid >= 0)
+					{
+						auto bTd = TaskData(backup.tid);
+						bTd.workspace = td.workspace;
+						bTd.projectPath = td.projectPath;
+						bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
+						bTd.agentSessionId = backup.agentSessionId;
+						bTd.parentTid = tid;
+						bTd.relationType = "undo-backup";
+						bTd.status = "completed";
+						bTd.description = td.description;
+						bTd.taskType = td.taskType;
+						persistence.setRelationType(backup.tid, "undo-backup");
+						persistence.setTitle(backup.tid, bTd.title);
+						tasks[backup.tid] = move(bTd);
+						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+					}
+				}
+			}
+
+			// 3. Truncate conversation history
+			if (json.revert_conversation)
+			{
+				auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
+				if (removed < 0)
+				{
+					ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
+					return;
+				}
+				td.history = DataVec();
+				td.historyLoaded = false;
+			}
+
+			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+
+			// 4. Auto-resume so the input box shows immediately
+			// (the user's undone message text is recovered via preReloadDrafts)
+			if (json.revert_conversation && td.agentSessionId.length > 0)
+			{
+				auto typeDef = getTaskTypes().byName(td.taskType);
+				if (typeDef !is null)
+				{
+					auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
+					sc.disallowedTools = disallowedTools();
+					ensureTaskAgent(tid, sc);
+				}
+				else
+					ensureTaskAgent(tid);
+				td.status = "active";
+			}
+
+			broadcast(buildTasksList());
 		}
 	}
 
@@ -1086,7 +1121,7 @@ class App : ToolsBackend
 		// For resumed tasks agentSessionId is already set; for new tasks
 		// it will be set later in tryExtractAgentSessionId which also calls this.
 		if (td.agentSessionId.length > 0)
-			startJsonlWatch(tid);
+			jsonlTracker.startJsonlWatch(tid);
 
 		td.session.onOutput = (string line) {
 			broadcastTask(tid, line);
@@ -1099,11 +1134,10 @@ class App : ToolsBackend
 
 				// Re-try JSONL watch if not yet established (Codex may
 				// not have the file at session-start time).
-				if (tid !in jsonlWatches && td.agentSessionId.length > 0)
-					startJsonlWatch(tid);
+				jsonlTracker.startJsonlWatch(tid);
 
 				// Broadcast forkable UUIDs now that JSONL should exist.
-				broadcastForkableUuidsFromFile(tid);
+				jsonlTracker.broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
 				td.resultText = taskAgent.extractResultText(line);
@@ -1134,7 +1168,7 @@ class App : ToolsBackend
 			tasks[tid].alive = false;
 			tasks[tid].isProcessing = false;
 			cleanup(tasks[tid].sandbox);
-			stopJsonlWatch(tid);
+			jsonlTracker.stopJsonlWatch(tid);
 
 			// Force JSONL reload on next request_history so that
 			// fork IDs from the file replace live-stream UUIDs.
@@ -1448,7 +1482,7 @@ class App : ToolsBackend
 		{
 			tasks[tid].agentSessionId = sessionId;
 			persistence.setAgentSessionId(tid, sessionId);
-			startJsonlWatch(tid);
+			jsonlTracker.startJsonlWatch(tid);
 		}
 	}
 
@@ -1545,167 +1579,6 @@ class App : ToolsBackend
 		writefln("  Config reloaded successfully");
 	}
 
-	/// Start watching the JSONL file (or directory if file doesn't exist yet).
-	private void startJsonlWatch(int tid)
-	{
-		import std.file : exists;
-		import std.path : baseName, dirName;
-
-		if (tid !in tasks)
-			return;
-		if (tid in jsonlWatches)
-			return; // already watching
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-			return;
-
-		auto jsonlPath = agentForTask(tid).historyPath(td.agentSessionId, td.effectiveCwd);
-		if (jsonlPath.length == 0)
-			return; // path not yet known (e.g. Codex before file is created)
-
-		if (exists(jsonlPath))
-		{
-			watchJsonlFile(tid, jsonlPath);
-		}
-		else
-		{
-			// File doesn't exist yet — watch directory for its creation.
-			// The directory may not exist either (e.g. worktree paths that
-			// Claude Code hasn't seen yet), so ensure it exists first.
-			auto dirPath = dirName(jsonlPath);
-			auto fileName = baseName(jsonlPath);
-			import std.file : mkdirRecurse;
-			mkdirRecurse(dirPath);
-			jsonlWatches[tid] = rcINotify.add(dirPath, INotify.Mask.create,
-				(in char[] name, INotify.Mask mask, uint cookie)
-				{
-					if (name == fileName)
-					{
-						// File appeared — switch to file watch
-						if (auto h = tid in jsonlWatches)
-						{
-							rcINotify.remove(*h);
-							jsonlWatches.remove(tid);
-						}
-						watchJsonlFile(tid, jsonlPath);
-					}
-				}
-			);
-		}
-	}
-
-	/// Start watching a JSONL file for modifications.
-	private void watchJsonlFile(int tid, string jsonlPath)
-	{
-		// Read any existing content
-		processNewJsonlContent(tid, jsonlPath);
-
-		jsonlWatches[tid] = rcINotify.add(jsonlPath, INotify.Mask.modify,
-			(in char[] name, INotify.Mask mask, uint cookie)
-			{
-				processNewJsonlContent(tid, jsonlPath);
-			}
-		);
-	}
-
-	/// Read new content from the JSONL file and broadcast forkable UUIDs.
-	private void processNewJsonlContent(int tid, string jsonlPath)
-	{
-		import std.file : exists, getSize;
-
-		if (jsonlPath.length == 0 || !exists(jsonlPath))
-			return;
-		auto fileSize = getSize(jsonlPath);
-		auto lastPos = jsonlReadPos.get(tid, 0);
-		if (fileSize <= lastPos)
-			return;
-
-		// Read only the new portion
-		auto f = File(jsonlPath, "r");
-		f.seek(lastPos);
-		char[] buf;
-		buf.length = cast(size_t)(fileSize - lastPos);
-		auto got = f.rawRead(buf);
-		jsonlReadPos[tid] = cast(size_t) fileSize;
-
-		auto newContent = cast(string) got;
-		auto lineOffset = jsonlLineCount.get(tid, 0);
-		auto uuids = agentForTask(tid).extractForkableIds(newContent, lineOffset);
-
-		// Count lines in the new content to update cumulative offset
-		import std.string : lineSplitter;
-		int newLines = 0;
-		foreach (_; newContent.lineSplitter)
-			newLines++;
-		jsonlLineCount[tid] = lineOffset + newLines;
-
-		if (uuids.length > 0)
-			broadcastForkableUuids(tid, uuids);
-	}
-
-	/// Send forkable UUIDs from the full JSONL file (used during history load).
-	private void sendForkableUuidsFromFile(WebSocketAdapter ws, int tid,
-		string agentSessionId, string projectPath)
-	{
-		import std.file : exists, readText;
-
-		auto jsonlPath = agentForTask(tid).historyPath(agentSessionId, projectPath);
-		if (jsonlPath.length == 0 || !exists(jsonlPath))
-			return;
-
-		auto content = readText(jsonlPath);
-		auto uuids = agentForTask(tid).extractForkableIds(content);
-		if (uuids.length > 0)
-		{
-			import ae.utils.json : toJson;
-			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
-		}
-	}
-
-	/// Broadcast forkable UUIDs from the full JSONL file to all clients.
-	/// Broadcast forkable IDs from the JSONL file.
-	/// For agents where the JSONL format differs from the protocol messages
-	/// (e.g. Codex), this also reloads the in-memory history from the JSONL
-	/// so that message UUIDs match the fork IDs.
-	private void broadcastForkableUuidsFromFile(int tid)
-	{
-		import std.file : exists, readText;
-
-		if (tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-			return;
-
-		auto ta = agentForTask(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-		if (jsonlPath.length == 0 || !exists(jsonlPath))
-			return;
-
-		auto uuids = ta.extractForkableIds(readText(jsonlPath));
-		if (uuids.length > 0)
-			broadcastForkableUuids(tid, uuids);
-	}
-
-	/// Broadcast forkable UUIDs to all clients.
-	private void broadcastForkableUuids(int tid, string[] uuids)
-	{
-		import ae.utils.json : toJson;
-		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
-	}
-
-	/// Stop watching the JSONL file for a task.
-	private void stopJsonlWatch(int tid)
-	{
-		if (auto h = tid in jsonlWatches)
-		{
-			rcINotify.remove(*h);
-			jsonlWatches.remove(tid);
-		}
-		jsonlReadPos.remove(tid);
-		jsonlLineCount.remove(tid);
-	}
-
 	/// Spawn a lightweight claude process to generate a concise title
 	/// from the user's initial message.
 	private void generateTitle(int tid, string userMessage)
@@ -1790,306 +1663,3 @@ class App : ToolsBackend
 	}
 }
 
-private:
-
-struct TaskData
-{
-	int tid;
-	string agentSessionId;
-	string description;
-	string taskType = "conversation";
-	string agentType = "claude";
-	int parentTid;
-	string relationType;
-	string workspace;
-	string projectPath;
-	bool hasWorktree;
-	string title;
-	string status = "pending";  // pending, active, completed, failed
-
-	/// Per-task directory: .cydo/tasks/<tid>/
-	@property string taskDir() const
-	{
-		if (projectPath.length == 0)
-			return "";
-		import std.path : buildPath;
-		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(tid));
-	}
-
-	/// Worktree path (if this task has one).
-	@property string worktreePath() const
-	{
-		if (!hasWorktree)
-			return "";
-		import std.path : buildPath;
-		return buildPath(taskDir, "worktree");
-	}
-
-	/// Output file path: .cydo/tasks/<tid>/output.md
-	@property string outputPath() const
-	{
-		if (taskDir.length == 0)
-			return "";
-		import std.path : buildPath;
-		return buildPath(taskDir, "output.md");
-	}
-
-	/// Effective working directory: worktree path if set, otherwise project path.
-	@property string effectiveCwd() const
-	{
-		return hasWorktree ? worktreePath : projectPath;
-	}
-
-	// Runtime state (not persisted)
-	AgentSession session;
-	ResolvedSandbox sandbox;
-	DataVec history;          // unified: JSONL file events + live stdout events
-	bool historyLoaded;       // whether JSONL has been loaded into history
-	bool alive = false;
-	bool isProcessing = false;
-	bool needsAttention = false;
-	string notificationBody;
-	string lastActivity;
-	string resultText;    // result from the "result" event (canonical sub-task output)
-	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
-	string handoffPrompt;      // prompt for the successor task (Handoff only)
-	bool titleGenDone; // true after LLM title generation completed
-	Object titleGenHandle; // prevent GC while running
-	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
-}
-
-struct TaskHistoryEndMessage
-{
-	string type = "task_history_end";
-	int tid;
-}
-
-/// Check if a raw line is a queue-operation event (fast string search).
-private bool isQueueOperation(string line)
-{
-	import std.algorithm : canFind;
-	return line.canFind(`"queue-operation"`);
-}
-
-/// Parsed queue-operation fields.
-@JSONPartial
-private struct QueueOperationProbe
-{
-	string type;
-	string operation;
-	string content;
-}
-
-/// Build a synthetic message/user JSON string with optional flags.
-private string buildSyntheticUserEvent(string text,
-	bool isSteering = false, bool pending = false)
-{
-	import ae.utils.json : toJson;
-	auto contentJson = toJson(text);
-	string extra;
-	if (isSteering) extra ~= `,"isSteering":true`;
-	if (pending) extra ~= `,"pending":true`;
-	return `{"type":"message/user","message":{"role":"user","content":`
-		~ contentJson ~ `}` ~ extra ~ `}`;
-}
-
-struct WsMessage
-{
-	string type;
-	string content;
-	int tid = -1;
-	string workspace;
-	string project_path;
-	string after_uuid;
-	string task_type;
-	string agent_type;
-	bool dry_run;
-	bool revert_conversation;
-	bool revert_files;
-}
-
-struct ExitMessage
-{
-	string type;
-	int code;
-}
-
-struct StderrMessage
-{
-	string type;
-	string text;
-}
-
-struct TaskCreatedMessage
-{
-	string type;
-	int tid;
-	string workspace;
-	string project_path;
-	int parent_tid;
-	string relation_type;
-}
-
-struct TasksListMessage
-{
-	string type;
-	TaskListEntry[] tasks;
-}
-
-struct TaskListEntry
-{
-	int tid;
-	bool alive;
-	bool resumable;
-	bool isProcessing;
-	bool needsAttention;
-	string notificationBody;
-	string lastActivity;
-	string title;
-	string workspace;
-	string project_path;
-	int parent_tid;
-	string relation_type;
-	string status;
-	string task_type;
-	string agent_type;
-}
-
-struct ProjectInfo
-{
-	string name;      // relative path within workspace
-	string path;      // absolute path
-}
-
-struct WorkspaceInfo
-{
-	string name;
-	ProjectInfo[] projects;
-}
-
-struct WorkspacesListMessage
-{
-	string type = "workspaces_list";
-	WorkspaceInfo[] workspaces;
-}
-
-struct TaskTypeListEntry
-{
-	string name;
-	string display_name;
-	string description;
-	string model_class;
-	bool read_only;
-}
-
-struct TaskTypesListMessage
-{
-	string type = "task_types_list";
-	TaskTypeListEntry[] task_types;
-}
-
-struct TaskReloadMessage
-{
-	string type = "task_reload";
-	int tid;
-}
-
-struct TitleUpdateMessage
-{
-	string type = "title_update";
-	int tid;
-	string title;
-}
-
-struct ForkableUuidsMessage
-{
-	string type = "forkable_uuids";
-	int tid;
-	string[] uuids;
-}
-
-struct ErrorMessage
-{
-	string type = "error";
-	string message;
-	int tid = -1;
-}
-
-struct UndoPreviewMessage
-{
-	string type = "undo_preview";
-	int tid;
-	int messages_removed;
-}
-
-struct SyntheticUserEventMessage
-{
-	string role;
-	string content;
-}
-
-struct SyntheticUserEvent
-{
-	string type;
-	SyntheticUserEventMessage message;
-}
-
-/// Structured result returned to the parent agent as JSON via MCP.
-struct TaskResult
-{
-	string result;          // main output text (output file content, or final message if no file)
-	string summary;         // agent's final message (one-sentence summary)
-	string output_file;     // path to output artifact, if any
-	string worktree;        // path to worktree, if any
-}
-
-struct McpContentItem
-{
-	string type;
-	string text;
-}
-
-struct McpContentResult
-{
-	import ae.utils.json : JSONOptional;
-
-	McpContentItem[] content;
-	bool isError;
-	@JSONOptional JSONFragment structuredContent;
-}
-
-/// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
-string truncateTitle(string text, size_t maxLen)
-{
-	import std.regex : ctRegex, replaceAll;
-
-	auto cleaned = text.replaceAll(ctRegex!`\s+`, " ");
-	if (cleaned.length <= maxLen)
-		return cleaned;
-	return cleaned[0 .. maxLen] ~ "…";
-}
-
-/// Extract text content from a stream-json assistant message line.
-/// Returns the concatenated text blocks, or empty string if not an assistant message.
-/// Extract the "event" field from a task envelope JSON string.
-/// Envelopes have the form: {"tid":N,"timestamp":"...","event":{...}}
-string extractEventFromEnvelope(string envelope)
-{
-	import std.string : indexOf;
-
-	// Find "event": prefix — the value is everything after it until the closing }
-	auto key = `"event":`;
-	auto idx = envelope.indexOf(key);
-	if (idx < 0)
-		return "";
-
-	auto start = idx + key.length;
-	if (start >= envelope.length)
-		return "";
-
-	// The event value is a JSON object/string that extends to the second-to-last char
-	// (the envelope's closing }). This works because "event" is the last field.
-	if (envelope[$ - 1] == '}')
-		return envelope[start .. $ - 1];
-	return envelope[start .. $];
-}
