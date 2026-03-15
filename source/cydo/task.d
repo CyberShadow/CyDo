@@ -32,13 +32,22 @@ struct TaskData
 		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(tid));
 	}
 
-	/// Worktree path (if this task has one).
+	/// Worktree path (if this task has one), with symlinks resolved.
 	@property string worktreePath() const
 	{
 		if (!hasWorktree)
 			return "";
 		import std.path : buildPath;
-		return buildPath(taskDir, "worktree");
+		auto path = buildPath(taskDir, "worktree");
+		try
+		{
+			import ae.sys.file : realPath;
+			return realPath(path);
+		}
+		catch (Exception)
+		{
+			return path;
+		}
 	}
 
 	/// Output file path: .cydo/tasks/<tid>/output.md
