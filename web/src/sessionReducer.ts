@@ -301,26 +301,26 @@ export function reduceAssistantMessage(
       existingMsg.extraFields = novel.length > 0 ? [...prev, ...novel] : prev;
     }
     updated[idx] = existingMsg;
+    bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
   }
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id: msgId,
-        type: "assistant" as const,
-        content: [...msg.message.content],
-        toolResults: new Map(),
-        model: msg.message.model,
-        isSidechain: msg.isSidechain,
-        parentToolUseId: msg.parent_tool_use_id,
-        usage: msg.message.usage,
-        extraFields: extras,
-        rawSource: msg,
-      },
-    ],
-  };
+  const messages = [
+    ...s.messages,
+    {
+      id: msgId,
+      type: "assistant" as const,
+      content: [...msg.message.content],
+      toolResults: new Map(),
+      model: msg.message.model,
+      isSidechain: msg.isSidechain,
+      parentToolUseId: msg.parent_tool_use_id,
+      usage: msg.message.usage,
+      extraFields: extras,
+      rawSource: msg,
+    },
+  ];
+  bumpNestedVersion(messages, msg.parent_tool_use_id);
+  return { ...s, messages };
 }
 
 // Applies both tool-result linking and user-text echo in a single pass.
@@ -432,10 +432,9 @@ export function reduceUserEcho(
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
     );
-    state = {
-      ...state,
-      messages: [...filtered, echoMsg],
-    };
+    const messages = [...filtered, echoMsg];
+    bumpNestedVersion(messages, parentToolUseId);
+    state = { ...state, messages };
   }
 
   return state;
@@ -499,6 +498,7 @@ export function reduceResultMessage(
         content: promoted.length > 0 ? [...m.content, ...promoted] : m.content,
         streamingBlocks: undefined,
       };
+      bumpNestedVersion(messages, m.parentToolUseId);
       break;
     }
   }
@@ -554,6 +554,35 @@ function insertBeforeStreaming(
   return [...messages, msg];
 }
 
+/**
+ * When a message with parentToolUseId is created or modified, bump the
+ * nestedVersion counter on the parent assistant message so its object
+ * reference changes.  Recurses upward: if the parent is itself nested,
+ * its grandparent is bumped too.
+ *
+ * Mutates the `messages` array in place (callers always pass a fresh copy).
+ */
+function bumpNestedVersion(
+  messages: DisplayMessage[],
+  parentToolUseId: string | null | undefined,
+): void {
+  if (!parentToolUseId) return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (
+      m.type === "assistant" &&
+      m.content.some(
+        (c) => c.type === "tool_use" && (c as any).id === parentToolUseId,
+      )
+    ) {
+      messages[i] = { ...m, nestedVersion: (m.nestedVersion ?? 0) + 1 };
+      // Recurse: if the parent is itself nested, bump its parent too.
+      bumpNestedVersion(messages, m.parentToolUseId);
+      return;
+    }
+  }
+}
+
 /** Find the last assistant message with active streaming blocks. */
 function findStreamingMsg(messages: DisplayMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -604,6 +633,7 @@ export function reduceStreamBlockStart(
         | undefined,
     },
   ];
+  bumpNestedVersion(messages, msg.parentToolUseId);
   return { ...s, messages };
 }
 
@@ -625,6 +655,7 @@ export function reduceStreamBlockDelta(
     else if (delta.type === "input_json_delta") append = delta.partial_json;
     return { ...b, text: b.text + append };
   });
+  bumpNestedVersion(messages, msg.parentToolUseId);
   return { ...s, messages };
 }
 
@@ -640,6 +671,7 @@ export function reduceStreamBlockStop(
   msg.streamingBlocks = msg.streamingBlocks!.filter(
     (b) => b.index !== event.index,
   );
+  bumpNestedVersion(messages, msg.parentToolUseId);
   return { ...s, messages };
 }
 
@@ -650,6 +682,7 @@ export function reduceStreamTurnStop(s: SessionState): SessionState {
     if (s.messages[i].type === "assistant" && s.messages[i].streamingBlocks) {
       const messages = s.messages.slice();
       messages[i] = { ...messages[i], streamingBlocks: undefined };
+      bumpNestedVersion(messages, messages[i].parentToolUseId);
       return { ...s, messages };
     }
   }

@@ -29,6 +29,8 @@ export interface DisplayMessage {
   isMeta?: boolean;
   isSteering?: boolean;
   parentToolUseId?: string | null;
+  /** Bumped when a nested child message under this message's tool_use blocks changes. */
+  nestedVersion?: number;
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields
   resultData?: {

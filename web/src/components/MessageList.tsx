@@ -306,7 +306,6 @@ const MessageView = memo(
     children,
   }: {
     msg: DisplayMessage;
-    hasNested?: boolean;
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     forkable?: boolean;
@@ -356,15 +355,11 @@ const MessageView = memo(
       </div>
     );
   },
-  (prev, next) => {
-    if (prev.hasNested || next.hasNested) return false;
-    return (
-      prev.msg === next.msg &&
-      prev.onFork === next.onFork &&
-      prev.onUndo === next.onUndo &&
-      prev.forkable === next.forkable
-    );
-  },
+  (prev, next) =>
+    prev.msg === next.msg &&
+    prev.onFork === next.onFork &&
+    prev.onUndo === next.onUndo &&
+    prev.forkable === next.forkable,
 );
 
 export function MessageList({
@@ -414,22 +409,40 @@ export function MessageList({
   }, []);
 
   // Partition messages: top-level vs nested under a parent tool_use_id
+  const prevChildrenRef = useRef(new Map<string, DisplayMessage[]>());
   const { childrenByParent, topLevelMessages } = useMemo(() => {
-    const childrenByParent = new Map<string, DisplayMessage[]>();
+    const newMap = new Map<string, DisplayMessage[]>();
     const topLevelMessages: DisplayMessage[] = [];
     for (const msg of messages) {
       if (msg.parentToolUseId) {
-        let list = childrenByParent.get(msg.parentToolUseId);
+        let list = newMap.get(msg.parentToolUseId);
         if (!list) {
           list = [];
-          childrenByParent.set(msg.parentToolUseId, list);
+          newMap.set(msg.parentToolUseId, list);
         }
         list.push(msg);
       } else {
         topLevelMessages.push(msg);
       }
     }
-    return { childrenByParent, topLevelMessages };
+
+    // Stabilize: reuse previous entry arrays when content hasn't changed
+    // (same length and same item references). This prevents AssistantMessage
+    // from doing unnecessary VDOM work when its parent re-renders.
+    const prev = prevChildrenRef.current;
+    for (const [key, arr] of newMap) {
+      const prevArr = prev.get(key);
+      if (
+        prevArr &&
+        prevArr.length === arr.length &&
+        prevArr.every((m, i) => m === arr[i])
+      ) {
+        newMap.set(key, prevArr);
+      }
+    }
+    prevChildrenRef.current = newMap;
+
+    return { childrenByParent: newMap, topLevelMessages };
   }, [messages]);
 
   return (
@@ -512,12 +525,6 @@ export function MessageList({
             <MessageView
               key={msg.id}
               msg={msg}
-              hasNested={
-                msg.type === "assistant" &&
-                msg.content.some(
-                  (b) => b.type === "tool_use" && childrenByParent.has(b.id),
-                )
-              }
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               forkable={isForkable}
