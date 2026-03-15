@@ -257,7 +257,9 @@ export function useTaskManager(): TaskManager {
     const updated = reduceStdoutMessage(prev, msg);
     liveStates.set(tid, updated);
 
-    // When an agent sub-task exits and it's currently focused, switch to parent.
+    // When an agent sub-task exits and it's currently focused, switch to the
+    // first alive ancestor. For continuations (Handoff), the direct parent is
+    // already completed; the actual result receiver is further up the chain.
     // User-created children (forks) stay focused — user navigates manually.
     if (
       msg.type === "process/exit" &&
@@ -265,9 +267,15 @@ export function useTaskManager(): TaskManager {
       prev.relationType !== "fork" &&
       activeTaskIdRef.current === tid
     ) {
-      const parent = liveStates.get(prev.parentTid);
-      if (parent) {
-        setActiveTaskId(prev.parentTid);
+      let targetTid = prev.parentTid;
+      while (targetTid) {
+        const t = liveStates.get(targetTid);
+        if (!t || !t.parentTid || t.alive) break;
+        targetTid = t.parentTid;
+      }
+      const target = liveStates.get(targetTid);
+      if (target) {
+        setActiveTaskId(targetTid);
       }
     }
 

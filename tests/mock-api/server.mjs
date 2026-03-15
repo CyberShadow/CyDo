@@ -285,6 +285,25 @@ function handleResponses(req, res) {
       return;
     }
 
+    // "call task <type> <prompt>" → MCP Task tool call
+    match = userText.match(/call task (\S+) (.*)/is);
+    if (match) {
+      oaiStreamFunctionCallResponse(res, "mcp__cydo__Task", {
+        tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }]
+      });
+      return;
+    }
+
+    // "call handoff <continuation> <prompt>" → MCP Handoff tool call
+    match = userText.match(/call handoff (\S+) (.*)/is);
+    if (match) {
+      oaiStreamFunctionCallResponse(res, "mcp__cydo__Handoff", {
+        continuation: match[1].trim(),
+        prompt: match[2].trim()
+      });
+      return;
+    }
+
     // Default: echo back
     oaiStreamTextResponse(res, userText);
   });
@@ -404,6 +423,25 @@ function handleMessages(req, res) {
     match = userText.match(/call switchmode (\S+)/i);
     if (match) {
       streamToolUseResponse(res, "mcp__cydo__SwitchMode", { continuation: match[1] }, model);
+      return;
+    }
+
+    // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
+    match = userText.match(/call task (\S+) (.*)/is);
+    if (match) {
+      streamToolUseResponse(res, "mcp__cydo__Task", {
+        tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }]
+      }, model);
+      return;
+    }
+
+    // "call handoff <continuation> <prompt>" → MCP Handoff tool call
+    match = userText.match(/call handoff (\S+) (.*)/is);
+    if (match) {
+      streamToolUseResponse(res, "mcp__cydo__Handoff", {
+        continuation: match[1].trim(),
+        prompt: match[2].trim()
+      }, model);
       return;
     }
 

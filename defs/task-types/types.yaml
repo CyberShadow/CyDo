@@ -107,6 +107,8 @@ task_types:
         worktree: true
         prompt_template: prompts/execute.md
         result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
+      test_handoff:
+        prompt_template: prompts/blank.md
     continuations:
       plan:
         task_type: plan_mode
@@ -374,6 +376,17 @@ task_types:
     model_class: medium
     output_type: patch
     parallelizable: true
+    user_visible: false
+
+  # Test type for e2e handoff navigation test
+  test_handoff:
+    description: "Test type with non-keep_context continuation for e2e tests"
+    prompt_template: prompts/blank.md
+    model_class: small
+    output_type: report
+    continuations:
+      done:
+        task_type: blank
     user_visible: false
 
   # =========================================================================

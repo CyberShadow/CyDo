@@ -33,6 +33,30 @@ test("unsent message recovered into input box after kill", async ({ page, agentT
   await expect(input).toHaveValue("this should be recovered", { timeout: 10_000 });
 });
 
+test("handoff continuation exit navigates to grandparent, not completed parent", async ({ page, agentType }) => {
+  test.skip(agentType !== "claude", "claude-only: handoff navigation");
+
+  // Create root task G and enter its session.
+  await enterSession(page, agentType);
+  const tidG = parseInt(page.url().match(/\/task\/(\d+)/)?.[1] ?? "0");
+  expect(tidG).toBeGreaterThan(0);
+
+  // G calls Task to create subtask A (type test_handoff).
+  // A's prompt is "call handoff done test-prompt" which triggers Handoff immediately.
+  // G's fiber blocks waiting for A's result, keeping G alive throughout.
+  await sendMessage(page, "call task test_handoff call handoff done test-prompt");
+
+  // Wait for subtask A to be created and auto-focused (URL changes away from G).
+  await expect(page).not.toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 15_000 });
+
+  // Flow: A calls Handoff → A completes → continuation C created → C auto-focused
+  //        → C responds → C exits → frontend should navigate to G (first alive ancestor)
+  //
+  // With the bug, it would navigate to A (completed direct parent).
+  // With the fix, it walks up through completed A to find alive G.
+  await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 30_000 });
+});
+
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "claude-only: mode switch input recovery");
   await enterSession(page, agentType);
