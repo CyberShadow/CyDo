@@ -1577,6 +1577,16 @@ body,
   background: rgba(76, 175, 80, 0.3);
 }
 
+.diff-gutter {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--text-dim);
+  user-select: none;
+  margin-right: 4px;
+  opacity: 0.6;
+}
+
 /* Write tool content preview */
 .write-content {
   margin-top: 6px;

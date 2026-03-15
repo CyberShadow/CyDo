@@ -292,6 +292,183 @@ function DiffView({
   );
 }
 
+interface PatchHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+function PatchView({
+  hunks,
+  filePath,
+}: {
+  hunks: PatchHunk[];
+  filePath?: string;
+}) {
+  const lang = filePath ? langFromPath(filePath) : null;
+
+  // Build old/new text for syntax highlighting
+  const oldLinesList: string[] = [];
+  const newLinesList: string[] = [];
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      const prefix = line[0];
+      const content = line.slice(1);
+      if (prefix === " " || prefix === "-") oldLinesList.push(content);
+      if (prefix === " " || prefix === "+") newLinesList.push(content);
+    }
+  }
+
+  const oldText = oldLinesList.join("\n");
+  const newText = newLinesList.join("\n");
+  const oldTokens = useHighlight(oldText, lang);
+  const newTokens = useHighlight(newText, lang);
+
+  const elements: h.JSX.Element[] = [];
+  let oldTokenIdx = 0;
+  let newTokenIdx = 0;
+
+  for (const hunk of hunks) {
+    elements.push(
+      <div key={`h${hunk.oldStart}`} class="diff-header">
+        @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
+      </div>,
+    );
+
+    let oldLineNum = hunk.oldStart;
+    let newLineNum = hunk.newStart;
+    const lines = hunk.lines;
+    let li = 0;
+
+    while (li < lines.length) {
+      const prefix = lines[li][0];
+      if (prefix === " ") {
+        const content = lines[li].slice(1);
+        const oldIdx = oldTokenIdx++;
+        newTokenIdx++;
+        const oNum = oldLineNum++;
+        const nNum = newLineNum++;
+        elements.push(
+          <div key={`c${oNum}`} class="diff-context">
+            <span class="diff-gutter">{oNum}</span>
+            <span class="diff-gutter">{nNum}</span>
+            {"  "}
+            {oldTokens?.[oldIdx] ? renderTokens(oldTokens[oldIdx]) : content}
+          </div>,
+        );
+        li++;
+      } else if (prefix === "-") {
+        // Collect consecutive removed lines
+        const removeStart = li;
+        while (li < lines.length && lines[li][0] === "-") li++;
+        const removedContents = lines
+          .slice(removeStart, li)
+          .map((l) => l.slice(1));
+
+        // Collect adjacent added lines
+        const addStart = li;
+        while (li < lines.length && lines[li][0] === "+") li++;
+        const addedContents = lines.slice(addStart, li).map((l) => l.slice(1));
+
+        const pairCount = Math.min(
+          removedContents.length,
+          addedContents.length,
+        );
+        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
+        for (let p = 0; p < pairCount; p++) {
+          const wc = diffWordsWithSpace(removedContents[p], addedContents[p]);
+          wordDiffs.push({
+            changes: wc,
+            similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
+          });
+        }
+
+        for (let p = 0; p < removedContents.length; p++) {
+          const oldIdx = oldTokenIdx++;
+          const oNum = oldLineNum++;
+          if (p < pairCount && wordDiffs[p].similar) {
+            const spans = overlayDiff(
+              oldTokens?.[oldIdx] ?? null,
+              wordDiffs[p].changes,
+              "old",
+            );
+            elements.push(
+              <div key={`r${oNum}`} class="diff-removed">
+                <span class="diff-gutter">{oNum}</span>
+                <span class="diff-gutter"></span>
+                {"- "}
+                {renderAnnotatedSpans(spans, "removed")}
+              </div>,
+            );
+          } else {
+            elements.push(
+              <div key={`r${oNum}`} class="diff-removed">
+                <span class="diff-gutter">{oNum}</span>
+                <span class="diff-gutter"></span>
+                {"- "}
+                {oldTokens?.[oldIdx]
+                  ? renderTokens(oldTokens[oldIdx])
+                  : removedContents[p]}
+              </div>,
+            );
+          }
+        }
+
+        for (let p = 0; p < addedContents.length; p++) {
+          const newIdx = newTokenIdx++;
+          const nNum = newLineNum++;
+          if (p < pairCount && wordDiffs[p].similar) {
+            const spans = overlayDiff(
+              newTokens?.[newIdx] ?? null,
+              wordDiffs[p].changes,
+              "new",
+            );
+            elements.push(
+              <div key={`a${nNum}`} class="diff-added">
+                <span class="diff-gutter"></span>
+                <span class="diff-gutter">{nNum}</span>
+                {"+ "}
+                {renderAnnotatedSpans(spans, "added")}
+              </div>,
+            );
+          } else {
+            elements.push(
+              <div key={`a${nNum}`} class="diff-added">
+                <span class="diff-gutter"></span>
+                <span class="diff-gutter">{nNum}</span>
+                {"+ "}
+                {newTokens?.[newIdx]
+                  ? renderTokens(newTokens[newIdx])
+                  : addedContents[p]}
+              </div>,
+            );
+          }
+        }
+      } else if (prefix === "+") {
+        // Pure added line (no preceding removed block)
+        const content = lines[li].slice(1);
+        const newIdx = newTokenIdx++;
+        const nNum = newLineNum++;
+        elements.push(
+          <div key={`a${nNum}`} class="diff-added">
+            <span class="diff-gutter"></span>
+            <span class="diff-gutter">{nNum}</span>
+            {"+ "}
+            {newTokens?.[newIdx] ? renderTokens(newTokens[newIdx]) : content}
+          </div>,
+        );
+        li++;
+      } else {
+        li++;
+      }
+    }
+  }
+
+  return <div class="diff-view">{elements}</div>;
+}
+
 function MarkdownDiffView({
   oldStr,
   newStr,
@@ -327,7 +504,13 @@ function MarkdownDiffView({
   );
 }
 
-function EditInput({ input }: { input: Record<string, unknown> }) {
+function EditInput({
+  input,
+  result,
+}: {
+  input: Record<string, unknown>;
+  result?: ToolResult;
+}) {
   const oldString = input.old_string as string;
   const newString = input.new_string as string;
   const filePath =
@@ -338,6 +521,9 @@ function EditInput({ input }: { input: Record<string, unknown> }) {
     ([k]) =>
       !["file_path", "old_string", "new_string", "replace_all"].includes(k),
   );
+  const patchHunks = (
+    result?.toolUseResult as Record<string, unknown> | undefined
+  )?.structuredPatch;
 
   return (
     <div class="tool-input-formatted">
@@ -347,7 +533,9 @@ function EditInput({ input }: { input: Record<string, unknown> }) {
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      {isMarkdown ? (
+      {Array.isArray(patchHunks) && patchHunks.length > 0 ? (
+        <PatchView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
+      ) : isMarkdown ? (
         <MarkdownDiffView oldStr={oldString} newStr={newString} />
       ) : (
         <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
@@ -847,9 +1035,10 @@ function getHeaderSubtitle(
 function formatInput(
   name: string,
   input: Record<string, unknown>,
+  result?: ToolResult,
 ): h.JSX.Element {
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
-    return <EditInput input={input} />;
+    return <EditInput input={input} result={result} />;
   }
   if (name === "Write" && "file_path" in input && "content" in input) {
     return <WriteInput input={input} />;
@@ -970,7 +1159,7 @@ export function ToolCall({ name, input, result, children }: Props) {
         {subtitle}
         {!result && <span class="tool-spinner" />}
       </div>
-      {inputOpen && formatInput(name, input)}
+      {inputOpen && formatInput(name, input, result)}
       {children}
       {result && (
         <div class="tool-result-section">
