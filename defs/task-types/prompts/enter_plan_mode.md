@@ -24,7 +24,8 @@ agent can read and cite them.
 
 Present the plan to the user. Discuss trade-offs, answer questions, and
 incorporate feedback. If the user requests changes:
-- For minor clarifications or adjustments, explain the change directly.
+- For minor clarifications or adjustments, edit your local copy of the plan
+  directly.
 - For significant revisions (new approach, changed scope), spawn a new **plan**
   sub-task with the updated requirements and the context of what was wrong with
   the previous draft. Include output file paths from any prior research or
