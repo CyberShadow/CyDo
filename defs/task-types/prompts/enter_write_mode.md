@@ -35,6 +35,7 @@ The user may want to iterate on changes:
 
 ## Switching back
 
-Stay in write mode until the user asks to switch back. Call
-`mcp__cydo__SwitchMode` with `back` when the user explicitly says they're done
-editing. Your context is preserved — you resume conversation where you left off.
+**Do NOT switch back on your own.** Stay in write mode until the user
+explicitly says they are done editing. Call `mcp__cydo__SwitchMode` with `back`
+only when the user asks to switch back. Your context is preserved — you resume
+conversation where you left off.

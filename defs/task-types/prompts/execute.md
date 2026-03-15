@@ -7,12 +7,13 @@ You have a plan. Decide how it should be executed.
 Choose one:
 
 - **implement** — The plan is small enough for a single implementation task.
-  Use this when changes touch a few files, have no parallelizable sub-parts,
-  and can be completed in one coherent commit.
+  Use this when changes touch a few files and can be completed in one coherent
+  commit.
 
-- **decompose** — The plan should be split into multiple parallel sub-tasks.
-  Use this when the plan involves independent changes across different areas
-  of the codebase, or when splitting would allow meaningful parallel work.
+- **decompose** — The plan should be split into smaller, focused sub-tasks.
+  Use this when the plan covers multiple distinct concerns that are better
+  handled as separate, self-contained work units. Decomposition produces
+  clarity, not parallelism — sub-tasks run serially.
 
 ## Constraints
 
@@ -20,7 +21,7 @@ Choose one:
   by the sandbox).
 - This is a routing decision only. Do not revise the plan.
 - Prefer `implement` when in doubt — decomposition adds overhead.
-- Choose `decompose` only when there are clearly independent work streams.
+- Choose `decompose` only when the plan has clearly separable concerns.
 
 ## Action
 

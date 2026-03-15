@@ -107,8 +107,8 @@ When a sub-task completes and returns a worktree path:
    write mode. Include the worktree path and commit hash in the switch
    description so write mode knows what to cherry-pick.
 
-Multiple sub-tasks may return worktrees in parallel. Present each one
-independently. The user decides which to pull in and in what order.
+Sub-tasks may return worktrees at different times. Present each one as it
+completes. The user decides which to pull in and in what order.
 
 ## Task
 
