@@ -707,9 +707,13 @@ class CodexSession : AgentSession
 	/// Called when the app-server process dies.
 	package void onServerExit(int status)
 	{
+		if (!alive_)
+			return; // Already stopped; avoid double-invocation of exitHandler_.
 		alive_ = false;
-		if (exitHandler_)
-			exitHandler_(status);
+		auto cb = exitHandler_;
+		exitHandler_ = null;
+		if (cb)
+			cb(status);
 	}
 
 	// ----- AgentSession interface -----
@@ -766,17 +770,40 @@ class CodexSession : AgentSession
 
 	void stop()
 	{
+		if (!alive_)
+			return;
+		// Send a thread-level interrupt (not server-level terminate) so that
+		// only this session stops and other concurrent sessions are unaffected.
+		if (threadId.length > 0)
+		{
+			server.sendRequest("turn/interrupt",
+				`{"threadId":"` ~ escapeJsonString(threadId) ~ `"}`,
+				(string result) {});
+			server.unregisterSession(threadId);
+		}
 		alive_ = false;
-		// Terminate first, then unregister — the exit callback iterates
-		// server.sessions, so the session must still be registered when
-		// the process exits.
-		server.terminate();
+		auto cb = exitHandler_;
+		exitHandler_ = null;
+		if (cb)
+			cb(1); // non-zero = killed by user
 	}
 
 	void closeStdin()
 	{
+		if (!alive_)
+			return;
+		if (threadId.length > 0)
+		{
+			server.sendRequest("turn/interrupt",
+				`{"threadId":"` ~ escapeJsonString(threadId) ~ `"}`,
+				(string result) {});
+			server.unregisterSession(threadId);
+		}
 		alive_ = false;
-		server.terminate();
+		auto cb = exitHandler_;
+		exitHandler_ = null;
+		if (cb)
+			cb(0); // zero = clean close
 	}
 
 	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
