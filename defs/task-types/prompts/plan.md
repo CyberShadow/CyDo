@@ -21,7 +21,9 @@ existing patterns, and produce a detailed implementation plan.
    around — it is a task to be completed first.
 4. **Design the approach** — Consider multiple options. Evaluate trade-offs.
    Pick the approach that is simplest, most consistent with existing patterns,
-   and easiest to review.
+   and easiest to review. Use **spike** sub-tasks when you need to *try*
+   something — test an API, prototype an approach, or benchmark alternatives.
+   Spikes run in their own worktree and can write and execute code.
 5. **Write the plan** — Be clear about what needs to happen and why. Describe
    the intent and approach at whatever level of abstraction fits the scope —
    a small change can name specific files and functions, a large initiative
