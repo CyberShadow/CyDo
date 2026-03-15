@@ -108,10 +108,10 @@ test("codex fork stays focused on forked session", async ({ page }) => {
 
   await forkBtn.click();
 
-  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: "(fork)" });
+  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: 'fork-source-codex" (fork)' });
   await expect(forkEntry).toBeVisible({ timeout: 10_000 });
 
-  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
+  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: 'fork-source-codex" (fork)' });
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
   await expect(page.locator(".btn-resume:visible").first()).toBeVisible({ timeout: 5_000 });

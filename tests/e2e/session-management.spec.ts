@@ -30,16 +30,16 @@ async function sendMessage(page: Page, text: string) {
 
 test("session creation shows sidebar entry", async ({ page }) => {
   await enterProject(page);
-  await sendMessage(page, 'Please reply with "hello"');
+  await sendMessage(page, 'Please reply with "hello-claude"');
 
   // A new sidebar item should appear with the message as title
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "hello"' }),
+    page.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "hello-claude"' }),
   ).toBeVisible({ timeout: 15_000 });
 
   // The session view should show this user message
   await expect(
-    page.locator(".message.user-message", { hasText: 'Please reply with "hello"' }),
+    page.locator(".message.user-message", { hasText: 'Please reply with "hello-claude"' }),
   ).toBeVisible({ timeout: 15_000 });
 });
 

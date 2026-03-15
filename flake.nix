@@ -127,6 +127,107 @@
             exec "$@"
           '';
         in
+        let
+          mkIntegrationTest = { name, testMatch }: pkgs.stdenv.mkDerivation {
+            pname = "cydo-integration-${name}";
+            version = "0.1.0";
+            src = ./tests;
+            taskTypeDocs = ./defs/task-types;
+
+            nativeBuildInputs = with pkgs; [
+              playwright-test
+              nodejs_22
+              curl
+              claude-code
+              codex
+              git
+            ];
+
+            FONTCONFIG_FILE = pkgs.makeFontsConf {
+              fontDirectories = [ pkgs.liberation_ttf ];
+            };
+            HOME = "/tmp/playwright-home";
+
+            ANTHROPIC_BASE_URL = "http://127.0.0.1:9000";
+            ANTHROPIC_API_KEY = "test-key-mock";
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+            DISABLE_TELEMETRY = "1";
+            DISABLE_AUTOUPDATER = "1";
+            CLAUDE_CONFIG_DIR = "/tmp/claude-test-home";
+
+            OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
+            OPENAI_API_KEY = "test-key-mock";
+            CODEX_HOME = "/tmp/codex-test-home";
+
+            buildPhase = ''
+              mkdir -p /tmp/playwright-home
+
+              mkdir -p $CLAUDE_CONFIG_DIR
+              cat > $CLAUDE_CONFIG_DIR/settings.json <<'SETTINGS'
+              {"hasCompletedOnboarding":true,"theme":"dark","skipDangerousModePermissionPrompt":true,"autoUpdates":false}
+              SETTINGS
+
+              mkdir -p $CODEX_HOME
+              cat > $CODEX_HOME/config.toml <<'CODEXCFG'
+              model = "codex-mini-latest"
+              approval_mode = "full-auto"
+              CODEXCFG
+
+              mkdir -p /tmp/cydo-test-workspace
+              cd /tmp/cydo-test-workspace
+              ${pkgs.git}/bin/git init -q
+              ${pkgs.git}/bin/git config user.email "test@test"
+              ${pkgs.git}/bin/git config user.name "Test"
+              echo "test" > README.md
+              ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
+
+              mkdir -p /tmp/cydo-test-workspace/defs
+              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs/task-types
+              chmod -R u+w /tmp/cydo-test-workspace/defs/task-types
+
+              ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
+              MOCK_PID=$!
+              for i in $(seq 1 15); do
+                if curl -sf http://127.0.0.1:9000/api/hello >/dev/null 2>&1; then break; fi
+                if ! kill -0 $MOCK_PID 2>/dev/null; then echo "Mock API server died"; exit 1; fi
+                sleep 1
+              done
+              echo "Mock API server ready"
+
+              mkdir -p /tmp/fake-bin
+              ln -sf ${fake-bwrap} /tmp/fake-bin/bwrap
+              export PATH="/tmp/fake-bin:$PATH"
+
+              ${cydo}/bin/cydo &
+              CYDO_PID=$!
+              for i in $(seq 1 30); do
+                if curl -sf http://127.0.0.1:3456/ >/dev/null 2>&1; then break; fi
+                if ! kill -0 $CYDO_PID 2>/dev/null; then echo "CyDo backend died"; exit 1; fi
+                sleep 1
+              done
+              echo "CyDo backend ready"
+
+              cp -r $src /tmp/tests
+              chmod -R u+w /tmp/tests
+              cd /tmp/tests
+              playwright test --reporter=list ${testMatch} || TEST_RESULT=$?
+
+              kill $CYDO_PID $MOCK_PID 2>/dev/null || true
+              wait $CYDO_PID $MOCK_PID 2>/dev/null || true
+
+              if [ "''${TEST_RESULT:-0}" != "0" ]; then
+                echo "Tests failed with exit code ''${TEST_RESULT}"
+                find /tmp/tests/test-results -name '*.md' -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+                exit 1
+              fi
+            '';
+
+            installPhase = ''
+              mkdir -p $out
+              echo "Tests passed" > $out/result
+            '';
+          };
+        in
         pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           unittests = pkgs.buildDubPackage {
             pname = "cydo-unittests";
@@ -149,116 +250,13 @@
               runHook postInstall
             '';
           };
-          integration = pkgs.stdenv.mkDerivation {
-            pname = "cydo-integration-test";
-            version = "0.1.0";
-            src = ./tests;
-            taskTypeDocs = ./defs/task-types;
-
-            nativeBuildInputs = with pkgs; [
-              playwright-test
-              nodejs_22
-              curl
-              claude-code
-              codex
-              git
-            ];
-
-            FONTCONFIG_FILE = pkgs.makeFontsConf {
-              fontDirectories = [ pkgs.liberation_ttf ];
-            };
-            HOME = "/tmp/playwright-home";
-
-            # Claude Code configuration — use mock API server
-            ANTHROPIC_BASE_URL = "http://127.0.0.1:9000";
-            ANTHROPIC_API_KEY = "test-key-mock";
-            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-            DISABLE_TELEMETRY = "1";
-            DISABLE_AUTOUPDATER = "1";
-            CLAUDE_CONFIG_DIR = "/tmp/claude-test-home";
-
-            # Codex CLI configuration — use same mock API server
-            OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
-            OPENAI_API_KEY = "test-key-mock";
-            CODEX_HOME = "/tmp/codex-test-home";
-
-            buildPhase = ''
-              mkdir -p /tmp/playwright-home
-
-              # Pre-create Claude config directory
-              mkdir -p $CLAUDE_CONFIG_DIR
-              cat > $CLAUDE_CONFIG_DIR/settings.json <<'SETTINGS'
-              {"hasCompletedOnboarding":true,"theme":"dark","skipDangerousModePermissionPrompt":true,"autoUpdates":false}
-              SETTINGS
-
-              # Pre-create Codex config directory
-              mkdir -p $CODEX_HOME
-              cat > $CODEX_HOME/config.toml <<'CODEXCFG'
-              model = "codex-mini-latest"
-              approval_mode = "full-auto"
-              CODEXCFG
-
-              # Create a workspace directory with a git project for CyDo
-              mkdir -p /tmp/cydo-test-workspace
-              cd /tmp/cydo-test-workspace
-              ${pkgs.git}/bin/git init -q
-              ${pkgs.git}/bin/git config user.email "test@test"
-              ${pkgs.git}/bin/git config user.name "Test"
-              echo "test" > README.md
-              ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
-
-              # Copy task-type definitions so the backend can load them
-              mkdir -p /tmp/cydo-test-workspace/defs
-              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs/task-types
-              chmod -R u+w /tmp/cydo-test-workspace/defs/task-types
-
-              # 1. Start mock API server
-              ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
-              MOCK_PID=$!
-              for i in $(seq 1 15); do
-                if curl -sf http://127.0.0.1:9000/api/hello >/dev/null 2>&1; then break; fi
-                if ! kill -0 $MOCK_PID 2>/dev/null; then echo "Mock API server died"; exit 1; fi
-                sleep 1
-              done
-              echo "Mock API server ready"
-
-              # 2. Install fake bwrap (real bwrap can't run inside Nix sandbox)
-              mkdir -p /tmp/fake-bin
-              ln -sf ${fake-bwrap} /tmp/fake-bin/bwrap
-              export PATH="/tmp/fake-bin:$PATH"
-
-              # 3. Start CyDo backend
-              ${cydo}/bin/cydo &
-              CYDO_PID=$!
-              for i in $(seq 1 30); do
-                if curl -sf http://127.0.0.1:3456/ >/dev/null 2>&1; then break; fi
-                if ! kill -0 $CYDO_PID 2>/dev/null; then echo "CyDo backend died"; exit 1; fi
-                sleep 1
-              done
-              echo "CyDo backend ready"
-
-              # 4. Run Playwright tests (copy to writable dir since Playwright writes test-results/)
-              cp -r $src /tmp/tests
-              chmod -R u+w /tmp/tests
-              cd /tmp/tests
-              playwright test --reporter=list || TEST_RESULT=$?
-
-              # 5. Cleanup
-              kill $CYDO_PID $MOCK_PID 2>/dev/null || true
-              wait $CYDO_PID $MOCK_PID 2>/dev/null || true
-
-              if [ "''${TEST_RESULT:-0}" != "0" ]; then
-                echo "Tests failed with exit code ''${TEST_RESULT}"
-                # Dump error context files for debugging
-                find /tmp/tests/test-results -name '*.md' -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
-                exit 1
-              fi
-            '';
-
-            installPhase = ''
-              mkdir -p $out
-              echo "Tests passed" > $out/result
-            '';
+          integration-claude = mkIntegrationTest {
+            name = "claude";
+            testMatch = "--grep-invert codex";
+          };
+          integration-codex = mkIntegrationTest {
+            name = "codex";
+            testMatch = "--grep codex";
           };
         });
 

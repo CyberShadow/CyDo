@@ -134,11 +134,11 @@ test("fork stays focused on forked session", async ({ page }) => {
   await forkBtn.click();
 
   // A forked session should appear in the sidebar with "(fork)" suffix
-  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: "(fork)" });
+  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: 'fork-source" (fork)' });
   await expect(forkEntry).toBeVisible({ timeout: 10_000 });
 
   // The forked session should be active (auto-focused)
-  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
+  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: 'fork-source" (fork)' });
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
   // The forked session should show a "Resume Session" button (fork has status "completed")
