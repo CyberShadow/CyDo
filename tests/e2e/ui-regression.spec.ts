@@ -66,29 +66,27 @@ test("sidebar status dot reflects session state", async ({ page }) => {
 });
 
 test("multi-client navigation isolation", async ({ page, context }) => {
-  // Open two tabs connected to the same backend
+  // Open two tabs each on their own task URL
   const pageA = page;
   const pageB = await context.newPage();
 
   await enterProject(pageA);
   await enterProject(pageB);
 
-  // Verify both are on the new-task view
-  await expect(pageA.locator(".session-empty")).toBeVisible({ timeout: 5_000 });
-  await expect(pageB.locator(".session-empty")).toBeVisible({ timeout: 5_000 });
-
-  // Create a task from page A
+  // Page A sends a message in its own task
   await sendMessage(pageA, 'Please reply with "isolation-a"');
 
-  // Page A should navigate to the new session
+  // Page A should show the user message
   await expect(
     pageA.locator(".message.user-message", { hasText: "isolation-a" }),
   ).toBeVisible({ timeout: 15_000 });
 
-  // Page B should still show the new-task view (not auto-navigated)
-  await expect(pageB.locator(".session-empty")).toBeVisible({ timeout: 5_000 });
+  // Page B should NOT show page A's message (each tab is on its own task URL)
+  await expect(
+    pageB.locator(".message.user-message", { hasText: "isolation-a" }),
+  ).not.toBeVisible();
 
-  // Page B's sidebar should show the new session entry though
+  // Page B's sidebar should show page A's session entry (cross-client task list sync)
   await expect(
     pageB.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "isolation-a"' }),
   ).toBeVisible({ timeout: 15_000 });
