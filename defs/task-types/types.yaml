@@ -100,6 +100,7 @@ task_types:
         prompt_template: prompts/verify.md
       execute:
         task_type: triage
+        worktree: true
         prompt_template: prompts/execute.md
     continuations:
       plan:
@@ -386,7 +387,6 @@ task_types:
     continuations:
       implement:
         task_type: implement
-        worktree: true
         requires_approval: true
         prompt_template: prompts/implement.md
       decompose:
