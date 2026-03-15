@@ -176,6 +176,10 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 	args ~= "--clearenv";
 	args ~= ["--setenv", "HOME", environment.get("HOME", "/tmp")];
 
+	auto nixPath = environment.get("NIX_PATH", "");
+	if (nixPath.length > 0)
+		args ~= ["--setenv", "NIX_PATH", nixPath];
+
 	foreach (k, v; sandbox.env)
 		args ~= ["--setenv", k, v];
 
