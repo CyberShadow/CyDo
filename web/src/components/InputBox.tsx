@@ -90,6 +90,11 @@ export function InputBox({
               <button
                 key={s}
                 class="btn btn-suggestion"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer!.setData("text/plain", s);
+                  e.dataTransfer!.effectAllowed = "copy";
+                }}
                 onClick={(e) => {
                   if (e.shiftKey) {
                     setText(s);
@@ -98,7 +103,7 @@ export function InputBox({
                     onSend(s);
                   }
                 }}
-                title="Click to send, Shift+click to edit"
+                title="Click to send, drag and drop to edit"
               >
                 {s}
               </button>
