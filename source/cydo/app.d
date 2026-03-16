@@ -5,7 +5,7 @@ import core.lifetime : move;
 import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
-import std.stdio : File, writefln;
+import std.stdio : File, stderr;
 import std.string : representation;
 
 import ae.net.asockets : socketManager, DisconnectType;
@@ -112,13 +112,13 @@ class App : ToolsBackend
 			auto types = loadTaskTypes(taskTypesPath);
 			auto errors = validateTaskTypes(types, taskTypesDir);
 			foreach (e; errors)
-				writefln("  WARN: task type: %s", e);
+				stderr.writefln("  WARN: task type: %s", e);
 			taskTypesCache = types;
 			return taskTypesCache;
 		}
 		catch (Exception e)
 		{
-			writefln("Warning: task types file changed but failed to parse, keeping previous version: %s", e.msg);
+			stderr.writefln("Warning: task types file changed but failed to parse, keeping previous version: %s", e.msg);
 			return taskTypesCache;
 		}
 	}
@@ -137,9 +137,9 @@ class App : ToolsBackend
 		// Load task type definitions
 		auto types = getTaskTypes();
 		if (types.length == 0)
-			writefln("Warning: no task types loaded");
+			stderr.writefln("Warning: no task types loaded");
 		else
-			writefln("Loaded %d task types", types.length);
+			stderr.writefln("Loaded %d task types", types.length);
 
 		// Discover projects in all workspaces
 		discoverAllWorkspaces();
@@ -186,7 +186,7 @@ class App : ToolsBackend
 		server.handleRequest = &handleRequest;
 		auto port = server.listen(3456);
 		auto proto = sslCert ? "https" : "http";
-		writefln("CyDo server listening on %s://localhost:%d", proto, port);
+		stderr.writefln("CyDo server listening on %s://localhost:%d", proto, port);
 
 		// Internal UNIX socket for MCP proxy calls (no auth required)
 		startMcpSocket();
@@ -293,7 +293,7 @@ class App : ToolsBackend
 		};
 		auto addr = new UnixAddress(mcpSocketPath);
 		mcpServer.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM, cast(ProtocolType) 0, addr, mcpSocketPath)]);
-		writefln("MCP socket listening on %s", mcpSocketPath);
+		stderr.writefln("MCP socket listening on %s", mcpSocketPath);
 	}
 
 	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
@@ -467,7 +467,7 @@ class App : ToolsBackend
 
 		if (description.length == 0)
 			generateTitle(childTid, prompt);
-		writefln("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
+		stderr.writefln("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
 		return promise;
 	}
@@ -501,7 +501,7 @@ class App : ToolsBackend
 		}
 
 		td.pendingContinuation = continuation;
-		writefln("SwitchMode: tid=%d continuation=%s (type %s → %s)",
+		stderr.writefln("SwitchMode: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
 		return McpResult(
@@ -543,7 +543,7 @@ class App : ToolsBackend
 
 		td.pendingContinuation = continuation;
 		td.handoffPrompt = prompt;
-		writefln("Handoff: tid=%d continuation=%s (type %s → %s)",
+		stderr.writefln("Handoff: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
 		return McpResult(
@@ -1106,10 +1106,10 @@ class App : ToolsBackend
 			{
 				td.hasWorktree = true;
 				persistence.setHasWorktree(td.tid, true);
-				writefln("Created worktree for task %d: %s", td.tid, wtPath);
+				stderr.writefln("Created worktree for task %d: %s", td.tid, wtPath);
 			}
 			else
-				writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
+				stderr.writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
 		}
 		else if (inheritFrom.length > 0)
 		{
@@ -1118,7 +1118,7 @@ class App : ToolsBackend
 			symlink(inheritFrom, wtPath);
 			td.hasWorktree = true;
 			persistence.setHasWorktree(td.tid, true);
-			writefln("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
+			stderr.writefln("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
 		}
 	}
 
@@ -1319,7 +1319,7 @@ class App : ToolsBackend
 
 		if (typeDef is null)
 		{
-			writefln("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
+			stderr.writefln("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
 			broadcast(buildTasksList());
@@ -1329,7 +1329,7 @@ class App : ToolsBackend
 		auto contDefP = contKey in typeDef.continuations;
 		if (contDefP is null)
 		{
-			writefln("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
+			stderr.writefln("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
 				contKey, td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
@@ -1341,14 +1341,14 @@ class App : ToolsBackend
 		auto newTypeDef = getTaskTypes().byName(contDef.task_type);
 		if (newTypeDef is null)
 		{
-			writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
+			stderr.writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
 			broadcast(buildTasksList());
 			return;
 		}
 
-		writefln("Continuation: tid=%d %s → %s (keep_context=%s)",
+		stderr.writefln("Continuation: tid=%d %s → %s (keep_context=%s)",
 			tid, td.taskType, contDef.task_type, contDef.keep_context);
 
 		if (contDef.keep_context)
@@ -1596,9 +1596,9 @@ class App : ToolsBackend
 				projInfos ~= ProjectInfo(p.name, p.path);
 			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
 
-			writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
+			stderr.writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
 			foreach (ref p; projects)
-				writefln("  - %s (%s)", p.name, p.path);
+				stderr.writefln("  - %s (%s)", p.name, p.path);
 		}
 	}
 
@@ -1617,7 +1617,7 @@ class App : ToolsBackend
 
 		if (!exists(cfgDir))
 		{
-			writefln("Config directory %s does not exist, skipping config watch", cfgDir);
+			stderr.writefln("Config directory %s does not exist, skipping config watch", cfgDir);
 			return;
 		}
 
@@ -1658,17 +1658,17 @@ class App : ToolsBackend
 
 	private void onConfigChanged()
 	{
-		writefln("Config file changed, reloading...");
+		stderr.writefln("Config file changed, reloading...");
 		auto result = reloadConfig();
 		if (result.isNull())
 		{
-			writefln("  Config reload failed (parse error), keeping current config");
+			stderr.writefln("  Config reload failed (parse error), keeping current config");
 			return;
 		}
 		config = result.get();
 		discoverAllWorkspaces();
 		broadcast(buildWorkspacesList());
-		writefln("  Config reloaded successfully");
+		stderr.writefln("  Config reloaded successfully");
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title
