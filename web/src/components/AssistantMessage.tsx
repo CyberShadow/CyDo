@@ -2,7 +2,6 @@ import { h } from "preact";
 import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
-import { ExtraFields } from "./ExtraFields";
 import { UserMessage } from "./UserMessage";
 
 /** Best-effort parse of an incomplete JSON string by closing open delimiters.
@@ -176,7 +175,6 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
           )}
         </div>
       ))}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }

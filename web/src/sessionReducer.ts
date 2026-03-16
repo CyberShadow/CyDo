@@ -17,8 +17,6 @@ import type {
   AssistantFileMessage,
   ResultMessage,
 } from "./schemas";
-import type { ExtraField } from "./extractExtras";
-import { schemaForStdout, schemaForFile, validateWith } from "./validate";
 
 // ---------------------------------------------------------------------------
 // Individual reducers
@@ -45,7 +43,6 @@ export function reduceParseError(
             text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}`,
           },
         ],
-        rawSource: raw,
       },
     ],
   };
@@ -54,13 +51,11 @@ export function reduceParseError(
 export function reduceSystemInit(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const initMsg: DisplayMessage = {
     id: `init-${++s.msgIdCounter}`,
     type: "system" as const,
     content: [],
-    extraFields: extras,
     rawSource: msg,
   };
   return {
@@ -87,7 +82,6 @@ export function reduceSystemInit(
 export function reduceSystemStatus(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const id = `status-${++s.msgIdCounter}`;
   return {
@@ -99,7 +93,6 @@ export function reduceSystemStatus(
         type: "system" as const,
         content: [],
         statusText: msg.status || "clear",
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -116,7 +109,6 @@ export function reduceStopHookSummary(
     hasOutput: boolean;
     [key: string]: unknown;
   },
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const parts: string[] = [];
   for (const hook of msg.hookInfos) {
@@ -137,7 +129,6 @@ export function reduceStopHookSummary(
         id,
         type: "system" as const,
         content: [{ type: "text" as const, text }],
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -147,7 +138,6 @@ export function reduceStopHookSummary(
 export function reduceCompactBoundary(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const id = `compact-${++s.msgIdCounter}`;
   const cm = msg.compact_metadata;
@@ -162,7 +152,6 @@ export function reduceCompactBoundary(
         compactMetadata: cm
           ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
           : undefined,
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -172,7 +161,6 @@ export function reduceCompactBoundary(
 export function reduceTaskLifecycle(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
@@ -191,7 +179,6 @@ export function reduceTaskLifecycle(
         id,
         type: "system" as const,
         content: [{ type: "text" as const, text }],
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -201,7 +188,6 @@ export function reduceTaskLifecycle(
 export function reduceSummary(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
@@ -212,7 +198,6 @@ export function reduceSummary(
         id,
         type: "summary" as const,
         content: [{ type: "text" as const, text: msg.summary || "" }],
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -222,7 +207,6 @@ export function reduceSummary(
 export function reduceRateLimit(
   s: SessionState,
   msg: any,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const id = `ratelimit-${++s.msgIdCounter}`;
   return {
@@ -234,7 +218,6 @@ export function reduceRateLimit(
         type: "rate_limit" as const,
         content: [],
         rateLimitInfo: msg.rate_limit_info,
-        extraFields: extras,
         rawSource: msg,
       },
     ],
@@ -244,7 +227,6 @@ export function reduceRateLimit(
 export function reduceAssistantMessage(
   s: SessionState,
   msg: AssistantMessage | AssistantFileMessage,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   const msgId = msg.message.id;
   let idx = s.messages.findIndex((m) => m.id === msgId);
@@ -293,13 +275,6 @@ export function reduceAssistantMessage(
         ? [...prev, msg]
         : [prev, msg]
       : msg;
-    // Merge extra fields (deduplicate by path+key)
-    if (extras) {
-      const prev = existingMsg.extraFields || [];
-      const seen = new Set(prev.map((e) => `${e.path}\0${e.key}`));
-      const novel = extras.filter((e) => !seen.has(`${e.path}\0${e.key}`));
-      existingMsg.extraFields = novel.length > 0 ? [...prev, ...novel] : prev;
-    }
     updated[idx] = existingMsg;
     bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
@@ -315,7 +290,6 @@ export function reduceAssistantMessage(
       isSidechain: msg.isSidechain,
       parentToolUseId: msg.parent_tool_use_id,
       usage: msg.message.usage,
-      extraFields: extras,
       rawSource: msg,
     },
   ];
@@ -329,7 +303,6 @@ export function reduceUserEcho(
   content: any[],
   isSidechain: boolean | undefined,
   parentToolUseId: string | null | undefined,
-  extras: ExtraField[] | undefined,
   rawMsg: unknown,
   isSynthetic?: boolean,
   isMeta?: boolean,
@@ -396,11 +369,6 @@ export function reduceUserEcho(
           ? [...prev, rawMsg]
           : [prev, rawMsg]
         : rawMsg;
-      if (extras && extras.length > 0) {
-        msg.extraFields = msg.extraFields
-          ? [...msg.extraFields, ...extras]
-          : extras;
-      }
     }
     state = { ...state, messages: updated };
   }
@@ -421,7 +389,6 @@ export function reduceUserEcho(
       isMeta: isMeta || undefined,
       isSteering: isSteering || undefined,
       parentToolUseId,
-      extraFields: extras,
       rawSource: rawMsg,
     };
     // Remove the pending placeholder (the user already sees their message
@@ -469,7 +436,6 @@ export function reduceUserReplay(
 export function reduceResultMessage(
   s: SessionState,
   msg: ResultMessage,
-  extras: ExtraField[] | undefined,
 ): SessionState {
   // A result (especially error_during_execution from an interrupt) means the
   // current turn is over.  Clear any lingering streaming state so the next
@@ -513,7 +479,6 @@ export function reduceResultMessage(
         id,
         type: "result" as const,
         content: [],
-        extraFields: extras,
         rawSource: msg,
         resultData: {
           subtype: msg.subtype,
@@ -730,40 +695,29 @@ export function reducePendingUserMessage(
 }
 
 // ---------------------------------------------------------------------------
-// Top-level dispatchers: validate + route to individual reducers
+// Top-level dispatchers: route to individual reducers
 // ---------------------------------------------------------------------------
 
 export function reduceStdoutMessage(
   s: SessionState,
   msg: AgnosticEvent,
 ): SessionState {
-  const { extras, schemaError } = validateWith(schemaForStdout, msg);
-  if (schemaError) {
-    s = reduceParseError(
-      s,
-      "stdout",
-      "Schema validation failed",
-      schemaError,
-      msg,
-    );
-  }
-
   switch (msg.type) {
     case "session/init":
-      return reduceSystemInit(s, msg, extras);
+      return reduceSystemInit(s, msg);
 
     case "session/status":
-      return reduceSystemStatus(s, msg, extras);
+      return reduceSystemStatus(s, msg);
 
     case "session/compacted":
-      return reduceCompactBoundary(s, msg, extras);
+      return reduceCompactBoundary(s, msg);
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg as any, extras);
+      return reduceTaskLifecycle(s, msg as any);
 
     case "message/assistant":
-      return reduceAssistantMessage(s, msg as AssistantMessage, extras);
+      return reduceAssistantMessage(s, msg as AssistantMessage);
 
     case "message/user": {
       const rawContent = (msg as any).message.content;
@@ -780,7 +734,6 @@ export function reduceStdoutMessage(
           contentBlocks,
           (msg as any).isSidechain,
           (msg as any).parent_tool_use_id,
-          extras,
           msg,
           (msg as any).isSynthetic,
           (msg as any).isMeta,
@@ -802,10 +755,10 @@ export function reduceStdoutMessage(
       return reduceStreamTurnStop(s);
 
     case "turn/result":
-      return reduceResultMessage(s, msg as ResultMessage, extras);
+      return reduceResultMessage(s, msg as ResultMessage);
 
     case "session/summary":
-      return reduceSummary(s, msg, extras);
+      return reduceSummary(s, msg);
 
     case "session/rate_limit":
       return s;
@@ -826,7 +779,6 @@ export function reduceStdoutMessage(
                 text: `Control response: ${resp?.subtype ?? "unknown"}`,
               },
             ],
-            extraFields: extras,
             rawSource: msg,
           },
         ],
@@ -854,34 +806,23 @@ export function reduceFileMessage(
   s: SessionState,
   msg: AgnosticFileEvent,
 ): SessionState {
-  const { extras, schemaError } = validateWith(schemaForFile, msg);
-  if (schemaError) {
-    s = reduceParseError(
-      s,
-      "file",
-      "Schema validation failed",
-      schemaError,
-      msg,
-    );
-  }
-
   switch (msg.type) {
     // Agnostic types (translated by backend)
     case "session/init":
-      return reduceSystemInit(s, msg, extras);
+      return reduceSystemInit(s, msg);
 
     case "session/status":
-      return reduceSystemStatus(s, msg, extras);
+      return reduceSystemStatus(s, msg);
 
     case "session/compacted":
-      return reduceCompactBoundary(s, msg, extras);
+      return reduceCompactBoundary(s, msg);
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg as any, extras);
+      return reduceTaskLifecycle(s, msg as any);
 
     case "message/assistant":
-      return reduceAssistantMessage(s, msg as AssistantFileMessage, extras);
+      return reduceAssistantMessage(s, msg as AssistantFileMessage);
 
     case "message/user": {
       const rawContent = (msg as any).message?.content;
@@ -904,7 +845,6 @@ export function reduceFileMessage(
         content,
         (msg as any).isSidechain,
         (msg as any).parent_tool_use_id,
-        extras,
         msg,
         (msg as any).isSynthetic,
         (msg as any).isMeta,
@@ -926,10 +866,10 @@ export function reduceFileMessage(
     }
 
     case "turn/result":
-      return reduceResultMessage(s, msg as ResultMessage, extras);
+      return reduceResultMessage(s, msg as ResultMessage);
 
     case "session/summary":
-      return reduceSummary(s, msg, extras);
+      return reduceSummary(s, msg);
 
     case "session/rate_limit":
       return s;
@@ -937,7 +877,7 @@ export function reduceFileMessage(
     // Pass-through system subtypes (not translated by backend)
     case "system":
       if ((msg as any).subtype === "stop_hook_summary") {
-        return reduceStopHookSummary(s, msg as any, extras);
+        return reduceStopHookSummary(s, msg as any);
       } else if (
         (msg as any).subtype === "api_error" ||
         (msg as any).subtype === "turn_duration"

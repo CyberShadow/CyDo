@@ -13,7 +13,6 @@ import { useHighlight, renderTokens } from "../highlight";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
-import { ExtraFields } from "./ExtraFields";
 
 interface Props {
   sessionId: number;
@@ -85,7 +84,6 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         </details>
       )}
       {d.result && <div class="result-text">{d.result}</div>}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -100,7 +98,6 @@ function SummaryMessageView({ message }: { message: DisplayMessage }) {
     <div class="message summary-message">
       <div class="summary-header">Session Summary</div>
       <Markdown text={text} class="summary-text" />
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -129,7 +126,6 @@ function RateLimitMessageView({ message }: { message: DisplayMessage }) {
           </span>
         )}
       </div>
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -145,7 +141,6 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
           {cm.preTokens.toLocaleString()} tokens before
         </span>
       )}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -219,7 +214,6 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
       {raw?.plugins?.length > 0 && (
         <InitDetailList label="Plugins" items={raw.plugins} />
       )}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -247,7 +241,6 @@ function TaskLifecycleView({ message }: { message: DisplayMessage }) {
       <span class="task-lifecycle-label">{label}</span>
       {taskType && <span class="task-lifecycle-type">{taskType}</span>}
       {description && <span class="task-lifecycle-desc">{description}</span>}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -259,7 +252,6 @@ function ControlResponseView({ message }: { message: DisplayMessage }) {
     <div class="message control-response-message">
       <span class="control-response-label">Control response</span>
       <span class="control-response-subtype">{subtype}</span>
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -268,7 +260,6 @@ function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
   return (
     <div class="message system-status-message">
       status: {message.statusText}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
@@ -558,7 +549,6 @@ export function MessageList({
                 inner = (
                   <div class="message system-message">
                     <pre>{text}</pre>
-                    <ExtraFields fields={msg.extraFields} />
                   </div>
                 );
               }

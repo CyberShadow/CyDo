@@ -91,6 +91,19 @@ interface Agent
 	/// Used for counting messages in undo preview.
 	bool isForkableLine(string line);
 
+	/// Translate a raw output line to agnostic protocol JSON.
+	/// Returns null for events that should be consumed.
+	string translateLiveEvent(string rawLine);
+
+	/// Whether a raw output line represents a completed turn.
+	bool isTurnResult(string rawLine);
+
+	/// Whether a raw JSONL line is a user message (for compaction detection).
+	bool isUserMessageLine(string rawLine);
+
+	/// Whether a raw JSONL line is an assistant message (for compaction detection).
+	bool isAssistantMessageLine(string rawLine);
+
 	/// Whether this agent supports reverting file changes.
 	/// When false, the UI should hide/disable the file revert option.
 	@property bool supportsFileRevert();

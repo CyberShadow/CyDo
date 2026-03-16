@@ -797,14 +797,14 @@ class App : ToolsBackend
 			// synthetic emission.
 			if (lastDequeuedText.length > 0)
 			{
-				if (isUserMessageLine(line))
+				if (ta.isUserMessageLine(line))
 				{
 					// Non-compacted: type:"user" echo present — pass through with UUID
 					lastDequeuedText = null;
 					auto t = ta.translateHistoryLine(line, lineNum);
 					return t !is null ? [t] : [];
 				}
-				if (isAssistantMessageLine(line))
+				if (ta.isAssistantMessageLine(line))
 				{
 					// Compacted: assistant response appeared without preceding user echo —
 					// emit synthetic before the assistant line.
@@ -1430,8 +1430,7 @@ class App : ToolsBackend
 		td.session.onOutput = (string line) {
 			broadcastTask(tid, line);
 
-			import std.algorithm : canFind;
-			if (line.canFind(`"type":"result"`) || line.canFind(`"type":"turn/result"`))
+			if (taskAgent.isTurnResult(line))
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
@@ -1742,8 +1741,6 @@ class App : ToolsBackend
 
 	private void broadcastTask(int tid, string rawLine)
 	{
-		import cydo.agent.protocol : translateClaudeEvent;
-
 		// Extract agent session ID before translation (uses raw Claude format)
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, rawLine);
@@ -1791,7 +1788,7 @@ class App : ToolsBackend
 		}
 
 		// Translate to agent-agnostic protocol
-		auto translated = translateClaudeEvent(rawLine);
+		auto translated = agentForTask(tid).translateLiveEvent(rawLine);
 		if (translated is null)
 			return; // consumed event, don't forward
 

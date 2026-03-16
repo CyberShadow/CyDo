@@ -269,6 +269,30 @@ class ClaudeCodeAgent : Agent
 		return result !is null ? result : line;
 	}
 
+	string translateLiveEvent(string rawLine)
+	{
+		import cydo.agent.protocol : translateClaudeEvent;
+		return translateClaudeEvent(rawLine);
+	}
+
+	bool isTurnResult(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"result"`);
+	}
+
+	bool isUserMessageLine(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"user"`);
+	}
+
+	bool isAssistantMessageLine(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"assistant"`);
+	}
+
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
 		import std.array : replace;

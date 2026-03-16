@@ -533,6 +533,34 @@ class CodexAgent : Agent
 		return null;
 	}
 
+	string translateLiveEvent(string rawLine)
+	{
+		// Codex emits agnostic format natively, but internally-generated
+		// stderr/exit events (type:"stderr", type:"exit") still need renaming
+		// to process/stderr and process/exit.  translateClaudeEvent handles
+		// those; all agnostic-format Codex events pass through unchanged.
+		import cydo.agent.protocol : translateClaudeEvent;
+		return translateClaudeEvent(rawLine);
+	}
+
+	bool isTurnResult(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"turn/result"`);
+	}
+
+	bool isUserMessageLine(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"message/user"`);
+	}
+
+	bool isAssistantMessageLine(string rawLine)
+	{
+		import std.algorithm : canFind;
+		return rawLine.canFind(`"type":"message/assistant"`);
+	}
+
 	string rewriteSessionId(string line, string oldId, string newId)
 	{
 		import std.array : replace;

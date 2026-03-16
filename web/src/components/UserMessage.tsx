@@ -1,6 +1,5 @@
 import { h } from "preact";
 import type { DisplayMessage } from "../types";
-import { ExtraFields } from "./ExtraFields";
 import { Markdown } from "./Markdown";
 
 interface Props {
@@ -32,7 +31,6 @@ export function UserMessage({ message }: Props) {
       ) : (
         <div class="user-text">{text}</div>
       )}
-      <ExtraFields fields={message.extraFields} />
     </div>
   );
 }
