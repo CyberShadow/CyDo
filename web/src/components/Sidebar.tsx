@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useEffect, useMemo } from "preact/hooks";
+import { useEffect, useMemo, useRef } from "preact/hooks";
 
 export interface SidebarTask {
   tid: number;
@@ -219,22 +219,30 @@ export function Sidebar({
   projectName,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (activeTaskId === null) return;
-    const el = document.querySelector(
-      `.sidebar-item[data-tid="${activeTaskId}"]`,
-    );
+    const selector = `.sidebar-item[data-tid="${activeTaskId}"]`;
+
+    // Try to scroll immediately (works when element already exists).
+    const el = listRef.current?.querySelector(selector);
     if (el) {
       el.scrollIntoView({ block: "nearest" });
-    } else {
-      // Element may not exist yet on initial load; retry once after render.
-      requestAnimationFrame(() =>
-        document
-          .querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
-          ?.scrollIntoView({ block: "nearest" }),
-      );
+      return;
     }
+
+    // Element doesn't exist yet (initial load). Watch for it to appear.
+    if (!listRef.current) return;
+    const observer = new MutationObserver(() => {
+      const target = listRef.current?.querySelector(selector);
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        observer.disconnect();
+      }
+    });
+    observer.observe(listRef.current, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, [activeTaskId]);
 
   return (
@@ -251,7 +259,7 @@ export function Sidebar({
         )}
         <span class="sidebar-title">{projectName || "Tasks"}</span>
       </div>
-      <div class="sidebar-list">
+      <div class="sidebar-list" ref={listRef}>
         <div
           class={`sidebar-item sidebar-new-task${activeTaskId === null ? " active" : ""}`}
           onClick={onNewTask}
