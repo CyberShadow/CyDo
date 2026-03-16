@@ -159,7 +159,7 @@ task_types:
     creatable_tasks:
       plan:
         prompt_template: prompts/plan.md
-        result_note: "Copy the output file to {{output_dir}} so you can edit it during iteration with the user."
+        result_note: "Read the output file for full findings. `cp` it to {{output_dir}} so you can edit it during iteration with the user."
       research:
         prompt_template: prompts/research.md
         result_note: "Read the output file for full findings."
