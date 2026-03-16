@@ -1409,6 +1409,10 @@ class App : ToolsBackend
 			{
 				askPending.fulfill(McpResult("Session ended while waiting for user response", true));
 				pendingAskUserQuestions.remove(tid);
+				tasks[tid].pendingAskToolUseId = null;
+				tasks[tid].pendingAskQuestions = JSONFragment.init;
+				tasks[tid].needsAttention = false;
+				tasks[tid].notificationBody = "";
 			}
 
 			// Force JSONL reload on next request_history so that
