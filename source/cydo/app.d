@@ -2182,9 +2182,25 @@ class App : ToolsBackend
 		}
 		catch (Exception) {}
 
-		// Try array content (assistant messages)
+		// Try flat array content (agnostic assistant messages: content at top level)
 		@JSONPartial
 		static struct Block { string type; string text; }
+		@JSONPartial
+		static struct FlatProbe { Block[] content; }
+
+		try
+		{
+			auto probe = jsonParse!FlatProbe(event);
+			string result;
+			foreach (ref block; probe.content)
+				if (block.type == "text")
+					result ~= block.text;
+			if (result.length > 0)
+				return result;
+		}
+		catch (Exception) {}
+
+		// Try wrapped array content (legacy format with message wrapper)
 		@JSONPartial
 		static struct ArrayMsg { Block[] content; }
 		@JSONPartial

@@ -81,7 +81,7 @@
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-4b5H74iCWo+/3m0c5nNIAGefz4CxpQfj9+Fep6vil1o=";
+            npmDepsHash = "sha256-IR466Wic52LQf2sPIM4xVMmqLiu4GlVRPItqFOzhRVY=";
 
             installPhase = ''
               runHook preInstall
