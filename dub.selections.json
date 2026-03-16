@@ -1,7 +1,7 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"ae": "0.0.3789",
+		"ae": "0.0.3796",
 		"configy": "2.2.0",
 		"dyaml": "0.10.0",
 		"openssl": "3.4.0",
