@@ -1,5 +1,5 @@
 import { h } from "preact";
-import { useRef, useEffect, useState } from "preact/hooks";
+import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
@@ -67,6 +67,11 @@ export function SessionView({
       inputRef.current?.focus();
     }
   }, [isActive, task.resumable]);
+
+  const handleSaveDraft = useCallback(
+    (draft: string) => onSaveDraft?.(task.tid, draft),
+    [onSaveDraft, task.tid],
+  );
 
   const quoteSelection = () => {
     const sel = window.getSelection();
@@ -178,9 +183,7 @@ export function SessionView({
           inputDraft={task.inputDraft}
           onInputDraftConsumed={() => onClearInputDraft(task.tid)}
           serverDraft={task.serverDraft}
-          onSaveDraft={
-            onSaveDraft ? (draft) => onSaveDraft(task.tid, draft) : undefined
-          }
+          onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
           inputRef={inputRef}
           insertTextRef={insertTextRef}
           suggestions={task.suggestions}
