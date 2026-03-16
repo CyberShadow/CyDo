@@ -1221,7 +1221,10 @@ class App : ToolsBackend
 				{
 					td.needsAttention = true;
 					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
-					try { generateSuggestions(tid); } catch (Exception) {}
+					try
+						generateSuggestions(tid);
+					catch (Exception e)
+						stderr.writeln("Error generating suggestions: ", e);
 				}
 				broadcast(buildTasksList());
 			}
