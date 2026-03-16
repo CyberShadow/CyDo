@@ -678,6 +678,7 @@ export interface TasksListMessage {
     task_type?: string;
     agent_type?: string;
     archived?: boolean;
+    draft?: string;
   }[];
 }
 export interface TaskReloadMessage {

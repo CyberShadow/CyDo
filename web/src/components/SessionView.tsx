@@ -25,6 +25,7 @@ interface Props {
   ) => void;
   onUndoDismiss: (tid: number) => void;
   onClearInputDraft: (tid: number) => void;
+  onSaveDraft?: (tid: number, draft: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
@@ -45,6 +46,7 @@ export function SessionView({
   onUndoConfirm,
   onUndoDismiss,
   onClearInputDraft,
+  onSaveDraft,
   theme,
   onToggleTheme,
   onToggleSidebar,
@@ -175,6 +177,10 @@ export function SessionView({
           sessionId={task.tid}
           inputDraft={task.inputDraft}
           onInputDraftConsumed={() => onClearInputDraft(task.tid)}
+          serverDraft={task.serverDraft}
+          onSaveDraft={
+            onSaveDraft ? (draft) => onSaveDraft(task.tid, draft) : undefined
+          }
           inputRef={inputRef}
           insertTextRef={insertTextRef}
           suggestions={task.suggestions}

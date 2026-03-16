@@ -141,6 +141,8 @@ export interface TaskState {
   } | null;
   /** Auto-generated reply suggestions, shown when it's the user's turn. */
   suggestions?: string[];
+  /** Server-provided draft for initial hydration on page load. */
+  serverDraft?: string;
 }
 
 export function makeTaskState(

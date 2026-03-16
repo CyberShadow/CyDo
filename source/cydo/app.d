@@ -163,6 +163,7 @@ class App : ToolsBackend
 			td.title = row.title;
 			td.status = row.status;
 			td.archived = row.archived;
+			td.draft = row.draft;
 			td.titleGenDone = row.title.length > 0;
 			tasks[row.tid] = move(td);
 		}
@@ -577,6 +578,7 @@ class App : ToolsBackend
 			case "fork_task":         handleForkTaskMsg(ws, json); break;
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(json); break;
+			case "set_draft":         handleSetDraftMsg(json); break;
 			default: break;
 		}
 	}
@@ -792,6 +794,13 @@ class App : ToolsBackend
 			broadcastTitleUpdate(tid, td.title);
 			generateTitle(tid, json.content);
 		}
+
+		// Clear draft when message is sent
+		if (td.draft.length > 0)
+		{
+			td.draft = "";
+			persistence.setDraft(tid, "");
+		}
 	}
 
 	private void handleResumeMsg(WsMessage json)
@@ -891,6 +900,16 @@ class App : ToolsBackend
 		td.archived = archived;
 		persistence.setArchived(tid, archived);
 		broadcast(buildTasksList());
+	}
+
+	private void handleSetDraftMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		tasks[tid].draft = json.content;
+		persistence.setDraft(tid, json.content);
+		// Do not broadcast — drafts are private to the authoring user
 	}
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -1755,7 +1774,7 @@ class App : ToolsBackend
 			entries ~= TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 				td.isProcessing, td.needsAttention, td.notificationBody,
 				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-				td.taskType, td.agentType, td.archived);
+				td.taskType, td.agentType, td.archived, td.draft);
 		return toJson(TasksListMessage("tasks_list", entries));
 	}
 

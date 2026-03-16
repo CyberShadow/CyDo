@@ -61,6 +61,8 @@ struct Persistence
 			"ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude';",
 			// Migration 9: archived flag for completed/inactive tasks
 			"ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
+			// Migration 10: draft text for unsent input
+			"ALTER TABLE tasks ADD COLUMN draft TEXT NOT NULL DEFAULT '';",
 		]);
 	}
 
@@ -135,6 +137,7 @@ struct Persistence
 		string status;
 		string agentType;
 		bool archived;
+		string draft;
 	}
 
 	TaskRow[] loadTasks()
@@ -142,12 +145,17 @@ struct Persistence
 		TaskRow[] result;
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
-			int hasWorktree, string title, string status, string agentType, int archived;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0) FROM tasks".iterate())
+			int hasWorktree, string title, string status, string agentType, int archived, string draft;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,'') FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0, draft);
 		}
 		return result;
+	}
+
+	void setDraft(int tid, string draft)
+	{
+		db.stmt!"UPDATE tasks SET draft = ? WHERE tid = ?".exec(draft, tid);
 	}
 }
 

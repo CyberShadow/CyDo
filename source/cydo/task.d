@@ -66,6 +66,8 @@ struct TaskData
 		return hasWorktree ? worktreePath : projectPath;
 	}
 
+	string draft;
+
 	// Runtime state (not persisted)
 	AgentSession session;
 	ResolvedSandbox sandbox;
@@ -200,6 +202,7 @@ struct TaskListEntry
 	string task_type;
 	string agent_type;
 	bool archived;
+	string draft;
 }
 
 struct ProjectInfo

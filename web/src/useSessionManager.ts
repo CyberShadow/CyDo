@@ -66,6 +66,7 @@ export interface TaskManager {
   dismissAttention: (tid: number) => void;
   clearInputDraft: (tid: number) => void;
   setArchived: (tid: number, archived: boolean) => void;
+  saveDraft: (tid: number, draft: string) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -396,22 +397,25 @@ export function useTaskManager(): TaskManager {
             const workspace = entry.workspace || "";
             const projectPath = entry.project_path || "";
             if (!next.has(entry.tid)) {
-              const t = makeTaskState(
-                entry.tid,
-                entry.alive,
-                entry.resumable,
-                entry.title,
-                false,
-                workspace,
-                projectPath,
-                entry.parent_tid || undefined,
-                entry.relation_type || undefined,
-                entry.status || "pending",
-                entry.isProcessing || false,
-                entry.needsAttention || false,
-                entry.task_type || undefined,
-                entry.archived || false,
-              );
+              const t = {
+                ...makeTaskState(
+                  entry.tid,
+                  entry.alive,
+                  entry.resumable,
+                  entry.title,
+                  false,
+                  workspace,
+                  projectPath,
+                  entry.parent_tid || undefined,
+                  entry.relation_type || undefined,
+                  entry.status || "pending",
+                  entry.isProcessing || false,
+                  entry.needsAttention || false,
+                  entry.task_type || undefined,
+                  entry.archived || false,
+                ),
+                serverDraft: entry.draft || undefined,
+              };
               liveStates.set(entry.tid, t);
               next.set(entry.tid, t);
             } else {
@@ -901,6 +905,10 @@ export function useTaskManager(): TaskManager {
     connRef.current?.setArchived(tid, archived);
   }, []);
 
+  const saveDraft = useCallback((tid: number, draft: string) => {
+    connRef.current?.saveDraft(tid, draft);
+  }, []);
+
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values());
@@ -947,6 +955,7 @@ export function useTaskManager(): TaskManager {
     dismissAttention,
     clearInputDraft,
     setArchived,
+    saveDraft,
     sidebarTasks,
     workspaces,
     taskTypes,

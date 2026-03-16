@@ -29,6 +29,7 @@ function AppContent() {
     dismissAttention,
     clearInputDraft,
     setArchived,
+    saveDraft,
     sidebarTasks,
     workspaces,
     taskTypes,
@@ -244,6 +245,7 @@ function AppContent() {
                   onUndoConfirm={undoConfirm}
                   onUndoDismiss={undoDismiss}
                   onClearInputDraft={clearInputDraft}
+                  onSaveDraft={saveDraft}
                   theme={theme}
                   onToggleTheme={toggleTheme}
                   onToggleSidebar={toggleSidebar}

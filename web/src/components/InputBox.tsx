@@ -1,5 +1,5 @@
 import { h, RefObject } from "preact";
-import { useState, useRef, useEffect } from "preact/hooks";
+import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 
 const drafts = new Map<number, string>();
 
@@ -11,10 +11,33 @@ interface Props {
   sessionId: number;
   inputDraft?: string;
   onInputDraftConsumed?: () => void;
+  serverDraft?: string;
+  onSaveDraft?: (text: string) => void;
   inputRef?: RefObject<HTMLTextAreaElement>;
   insertTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
   suggestions?: string[];
+}
+
+function debounce<T extends (...args: any[]) => void>(
+  fn: T,
+  ms: number,
+): T & { cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const debounced = (...args: Parameters<T>) => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, ms);
+  };
+  debounced.cancel = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  return debounced as T & { cancel: () => void };
 }
 
 export function InputBox({
@@ -25,21 +48,35 @@ export function InputBox({
   sessionId,
   inputDraft,
   onInputDraftConsumed,
+  serverDraft,
+  onSaveDraft,
   inputRef,
   insertTextRef,
   onEscape,
   suggestions,
 }: Props) {
-  const [text, setText] = useState(() => drafts.get(sessionId) ?? "");
+  const [text, setText] = useState(() => {
+    const memDraft = drafts.get(sessionId);
+    if (memDraft !== undefined) return memDraft;
+    return serverDraft ?? "";
+  });
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const textRef = useRef(text);
   textRef.current = text;
 
+  const saveDraftDebounced = useMemo(
+    () => debounce((t: string) => onSaveDraft?.(t), 500),
+    [onSaveDraft],
+  );
+
   useEffect(() => {
-    setText(drafts.get(sessionId) ?? "");
+    // On sessionId change: use in-memory draft if available, else server draft
+    const memDraft = drafts.get(sessionId);
+    setText(memDraft !== undefined ? memDraft : (serverDraft ?? ""));
     return () => {
       drafts.set(sessionId, textRef.current);
+      saveDraftDebounced.cancel();
     };
   }, [sessionId]);
 
@@ -61,6 +98,12 @@ export function InputBox({
     onInputDraftConsumed?.();
   }, [inputDraft]);
 
+  const handleChange = (newText: string) => {
+    setText(newText);
+    drafts.set(sessionId, newText);
+    saveDraftDebounced(newText);
+  };
+
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -76,6 +119,9 @@ export function InputBox({
     if (!trimmed) return;
     onSend(trimmed);
     setText("");
+    drafts.set(sessionId, "");
+    saveDraftDebounced.cancel();
+    onSaveDraft?.("");
     textareaRef.current?.focus();
   };
 
@@ -97,7 +143,7 @@ export function InputBox({
                 }}
                 onClick={(e) => {
                   if (e.shiftKey) {
-                    setText(s);
+                    handleChange(s);
                     textareaRef.current?.focus();
                   } else {
                     onSend(s);
@@ -115,7 +161,10 @@ export function InputBox({
         class="input-textarea"
         value={text}
         onInput={(e) => {
-          setText((e.target as HTMLTextAreaElement).value);
+          handleChange((e.target as HTMLTextAreaElement).value);
+        }}
+        onBlur={() => {
+          onSaveDraft?.(textRef.current);
         }}
         onKeyDown={handleKeyDown}
         placeholder={disabled ? "Connecting..." : "Type a message..."}

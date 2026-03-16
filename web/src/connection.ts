@@ -161,6 +161,10 @@ export class Connection {
     );
   }
 
+  saveDraft(tid: number, draft: string) {
+    this.ws?.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
+  }
+
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;
     this.reconnectTimer = setTimeout(() => {
