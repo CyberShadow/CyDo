@@ -45,8 +45,8 @@ export function App() {
     setSidebarOpen((v) => !v);
   }, []);
 
-  const active =
-    activeTaskId !== null ? (tasks.get(activeTaskId) ?? null) : null;
+  const activeTid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
+  const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
 
   useEffect(() => {
     document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
@@ -67,7 +67,7 @@ export function App() {
   const searchPopup = showSearch && (
     <SearchPopup
       tasks={tasks}
-      onSelect={setActiveTaskId}
+      onSelect={(tid) => setActiveTaskId(String(tid))}
       onClose={() => {
         setShowSearch(false);
         // Re-focus the input box or resume button after dismissing search
@@ -91,7 +91,7 @@ export function App() {
             workspaces={workspaces}
             tasks={tasks}
             attention={attention}
-            onSelectTask={setActiveTaskId}
+            onSelectTask={(tid) => setActiveTaskId(String(tid))}
             onNavigateToProject={navigateToProject}
           />
           {searchPopup}
@@ -128,11 +128,11 @@ export function App() {
         const idx = activeTaskId !== null ? order.indexOf(activeTaskId) : -1;
         const len = order.length;
         const dir = e.key === "ArrowUp" ? -1 : 1;
-        let next: number | undefined;
+        let next: string | undefined;
         for (let i = 1; i <= len; i++) {
           const candidate =
             order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
-          if (attention.has(candidate)) {
+          if (attention.has(parseInt(candidate, 10))) {
             next = candidate;
             break;
           }
@@ -144,7 +144,7 @@ export function App() {
           ?.scrollIntoView({ block: "nearest" });
       } else {
         // Visual order: tasks in flatTaskOrder, then New Task at bottom
-        const visual: (number | null)[] = [...order, null];
+        const visual: (string | null)[] = [...order, null];
         const idx = visual.indexOf(activeTaskId);
         const dir = e.key === "ArrowUp" ? -1 : 1;
         const nextIdx = (idx + dir + visual.length) % visual.length;
@@ -220,9 +220,9 @@ export function App() {
           projectName={activeProject || undefined}
         />
         {Array.from(tasks.values())
-          .filter((t) => t.historyLoaded || t.tid === activeTaskId)
+          .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
           .map((task) => {
-            const isActive = task.tid === activeTaskId;
+            const isActive = String(task.tid) === activeTaskId;
             return (
               <div
                 key={task.tid}

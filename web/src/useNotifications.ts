@@ -119,7 +119,7 @@ function startWorker() {
 // ---------------------------------------------------------------------------
 
 export function useNotifications(
-  activeTaskId: number | null,
+  activeTaskId: string | null,
   tasks: Map<number, TaskState>,
   onDismiss?: (tid: number) => void,
 ): Set<number> {
@@ -138,11 +138,12 @@ export function useNotifications(
 
   useEffect(() => {
     if (activeTaskId === null) return;
-    const t = tasks.get(activeTaskId);
+    const tid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
+    const t = !isNaN(tid) ? tasks.get(tid) : undefined;
     if (!t?.needsAttention) return;
 
     const dismiss = () => {
-      if (document.hasFocus()) onDismissRef.current?.(activeTaskId);
+      if (document.hasFocus()) onDismissRef.current?.(tid);
     };
     dismiss(); // dismiss immediately if focused
     window.addEventListener("focus", dismiss);

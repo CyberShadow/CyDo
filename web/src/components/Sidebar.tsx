@@ -17,11 +17,11 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-export function flatTaskOrder(tasks: SidebarTask[]): number[] {
-  const tids: number[] = [];
+export function flatTaskOrder(tasks: SidebarTask[]): string[] {
+  const tids: string[] = [];
   function walk(nodes: TreeNode[]) {
     for (const n of nodes) {
-      tids.push(n.task.tid);
+      tids.push(String(n.task.tid));
       walk(n.children);
     }
   }
@@ -57,9 +57,9 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
 function renderNode(
   node: TreeNode,
   depth: number,
-  activeTaskId: number | null,
+  activeTaskId: string | null,
   attention: Set<number>,
-  onSelectTask: (tid: number) => void,
+  onSelectTask: (id: string) => void,
 ): h.JSX.Element[] {
   const t = node.task;
   const elements: h.JSX.Element[] = [];
@@ -76,10 +76,10 @@ function renderNode(
   elements.push(
     <div
       key={t.tid}
-      class={`sidebar-item${t.tid === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
-      data-tid={t.tid}
+      class={`sidebar-item${String(t.tid) === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
+      data-tid={String(t.tid)}
       style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
-      onClick={() => onSelectTask(t.tid)}
+      onClick={() => onSelectTask(String(t.tid))}
     >
       {depth > 0 && (
         <span class="sidebar-relation-icon" title={t.relationType || "child"}>
@@ -108,9 +108,9 @@ function renderNode(
 
 interface Props {
   tasks: SidebarTask[];
-  activeTaskId: number | null;
+  activeTaskId: string | null;
   attention: Set<number>;
-  onSelectTask: (tid: number) => void;
+  onSelectTask: (id: string) => void;
   onNewTask: () => void;
   showBackButton?: boolean;
   onBack?: () => void;

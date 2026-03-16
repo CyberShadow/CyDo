@@ -47,8 +47,8 @@ export interface TaskTypeInfo {
 
 export interface TaskManager {
   tasks: Map<number, TaskState>;
-  activeTaskId: number | null;
-  setActiveTaskId: (tid: number) => void;
+  activeTaskId: string | null;
+  setActiveTaskId: (id: string) => void;
   connected: boolean;
   send: (text: string, taskType?: string) => void;
   interrupt: () => void;
@@ -86,39 +86,39 @@ export interface TaskManager {
 interface ParsedPath {
   workspace: string | null;
   project: string | null;
-  tid: number | null;
+  tid: string | null;
 }
 
 function parseFromPath(path: string): ParsedPath {
   // Legacy: /session/:sid (redirect handled elsewhere)
-  const legacyMatch = path.match(/^\/session\/(\d+)$/);
+  const legacyMatch = path.match(/^\/session\/([^/]+)$/);
   if (legacyMatch) {
-    return { workspace: null, project: null, tid: Number(legacyMatch[1]) };
+    return { workspace: null, project: null, tid: legacyMatch[1] };
   }
 
   // /task/:tid (no workspace context)
-  const taskMatch = path.match(/^\/task\/(\d+)$/);
+  const taskMatch = path.match(/^\/task\/([^/]+)$/);
   if (taskMatch) {
-    return { workspace: null, project: null, tid: Number(taskMatch[1]) };
+    return { workspace: null, project: null, tid: taskMatch[1] };
   }
 
   // /:workspace/:project/task/:tid
-  const wpTaskMatch = path.match(/^\/([^/]+)\/([^/]+)\/task\/(\d+)$/);
+  const wpTaskMatch = path.match(/^\/([^/]+)\/([^/]+)\/task\/([^/]+)$/);
   if (wpTaskMatch) {
     return {
       workspace: wpTaskMatch[1],
       project: wpTaskMatch[2].replace(/:/g, "/"),
-      tid: Number(wpTaskMatch[3]),
+      tid: wpTaskMatch[3],
     };
   }
 
   // Legacy: /:workspace/:project/session/:sid
-  const wpSessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/(\d+)$/);
+  const wpSessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/([^/]+)$/);
   if (wpSessionMatch) {
     return {
       workspace: wpSessionMatch[1],
       project: wpSessionMatch[2].replace(/:/g, "/"),
-      tid: Number(wpSessionMatch[3]),
+      tid: wpSessionMatch[3],
     };
   }
 
@@ -157,6 +157,13 @@ function extractTextContent(msg: AgnosticEvent): string {
 // background tabs.
 const liveStates = new Map<number, TaskState>();
 
+/** Convert a string task id to a numeric tid; returns null for non-numeric strings. */
+function parseTaskId(id: string | null): number | null {
+  if (id === null) return null;
+  const n = parseInt(id, 10);
+  return String(n) === id ? n : null;
+}
+
 export function useTaskManager(): TaskManager {
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
@@ -169,15 +176,16 @@ export function useTaskManager(): TaskManager {
   workspacesRef.current = workspaces;
 
   const parsed = useMemo(() => parseFromPath(path), [path]);
-  const activeTaskIdRef = useRef(parsed.tid);
+  const activeTaskIdRef = useRef<string | null>(parsed.tid);
   activeTaskIdRef.current = parsed.tid;
   const activeTaskId = parsed.tid;
   const activeWorkspace = parsed.workspace;
   const activeProject = parsed.project;
 
-  const setActiveTaskId = useCallback((tid: number) => {
+  const setActiveTaskId = useCallback((id: string) => {
     // Look up the task to build the full URL
-    const t = liveStates.get(tid);
+    const tid = parseInt(id, 10);
+    const t = !isNaN(tid) ? liveStates.get(tid) : undefined;
     if (t?.workspace && t?.projectPath) {
       // Find the project name from workspaces
       const projName = findProjectName(
@@ -187,11 +195,11 @@ export function useTaskManager(): TaskManager {
       );
       if (projName) {
         const encodedProject = projName.replace(/\//g, ":");
-        routeRef.current(`/${t.workspace}/${encodedProject}/task/${tid}`);
+        routeRef.current(`/${t.workspace}/${encodedProject}/task/${id}`);
         return;
       }
     }
-    routeRef.current(`/task/${tid}`);
+    routeRef.current(`/task/${id}`);
   }, []);
 
   const navigateHome = useCallback(() => {
@@ -266,7 +274,7 @@ export function useTaskManager(): TaskManager {
       msg.type === "process/exit" &&
       prev.parentTid &&
       prev.relationType !== "fork" &&
-      activeTaskIdRef.current === tid
+      activeTaskIdRef.current === String(tid)
     ) {
       let targetTid = prev.parentTid;
       while (targetTid) {
@@ -276,7 +284,7 @@ export function useTaskManager(): TaskManager {
       }
       const target = liveStates.get(targetTid);
       if (target) {
-        setActiveTaskId(targetTid);
+        setActiveTaskId(String(targetTid));
       }
     }
 
@@ -346,7 +354,7 @@ export function useTaskManager(): TaskManager {
           relationType === "undo-backup"
             ? false
             : parentTid
-              ? activeTaskIdRef.current === parentTid
+              ? activeTaskIdRef.current === String(parentTid)
               : pendingFocus.current;
         pendingFocus.current = false;
         if (shouldFocus) {
@@ -482,7 +490,7 @@ export function useTaskManager(): TaskManager {
         });
         // Re-request history if this is the active task — the useEffect
         // won't re-fire because activeTaskId hasn't changed.
-        if (tid === activeTaskIdRef.current) {
+        if (String(tid) === activeTaskIdRef.current) {
           requestedHistoryRef.current.add(tid);
           connRef.current?.requestHistory(tid);
         }
@@ -726,11 +734,13 @@ export function useTaskManager(): TaskManager {
   // Request history when the active task changes and hasn't been loaded yet
   useEffect(() => {
     if (!connected || activeTaskId === null) return;
-    if (requestedHistoryRef.current.has(activeTaskId)) return;
-    const t = liveStates.get(activeTaskId);
+    const tid = parseTaskId(activeTaskId);
+    if (tid === null) return;
+    if (requestedHistoryRef.current.has(tid)) return;
+    const t = liveStates.get(tid);
     if (t?.historyLoaded) return;
-    requestedHistoryRef.current.add(activeTaskId);
-    connRef.current?.requestHistory(activeTaskId);
+    requestedHistoryRef.current.add(tid);
+    connRef.current?.requestHistory(tid);
   }, [connected, activeTaskId]);
 
   const send = useCallback(
@@ -756,26 +766,31 @@ export function useTaskManager(): TaskManager {
         }
         return;
       }
-      connRef.current?.sendMessage(activeTaskId, text);
+      const tid = parseTaskId(activeTaskId);
+      if (tid === null) return;
+      connRef.current?.sendMessage(tid, text);
     },
     [activeTaskId],
   );
 
   const interrupt = useCallback(() => {
     if (activeTaskId !== null) {
-      connRef.current?.sendInterrupt(activeTaskId);
+      const tid = parseTaskId(activeTaskId);
+      if (tid !== null) connRef.current?.sendInterrupt(tid);
     }
   }, [activeTaskId]);
 
   const stop = useCallback(() => {
     if (activeTaskId !== null) {
-      connRef.current?.sendStop(activeTaskId);
+      const tid = parseTaskId(activeTaskId);
+      if (tid !== null) connRef.current?.sendStop(tid);
     }
   }, [activeTaskId]);
 
   const closeStdin = useCallback(() => {
     if (activeTaskId !== null) {
-      connRef.current?.sendCloseStdin(activeTaskId);
+      const tid = parseTaskId(activeTaskId);
+      if (tid !== null) connRef.current?.sendCloseStdin(tid);
     }
   }, [activeTaskId]);
 
@@ -854,8 +869,10 @@ export function useTaskManager(): TaskManager {
 
   const resume = useCallback(() => {
     if (activeTaskId !== null) {
-      connRef.current?.resumeTask(activeTaskId);
-      const t = liveStates.get(activeTaskId);
+      const tid = parseTaskId(activeTaskId);
+      if (tid === null) return;
+      connRef.current?.resumeTask(tid);
+      const t = liveStates.get(tid);
       if (t) {
         const updated = {
           ...t,
@@ -863,10 +880,10 @@ export function useTaskManager(): TaskManager {
           resumable: false,
           status: "active",
         };
-        liveStates.set(activeTaskId, updated);
+        liveStates.set(tid, updated);
         setTasks((prev) => {
           const next = new Map(prev);
-          next.set(activeTaskId, updated);
+          next.set(tid, updated);
           return next;
         });
       }
