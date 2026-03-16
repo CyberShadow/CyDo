@@ -1793,6 +1793,82 @@ body,
 .ask-option-desc p {
   margin: 0;
 }
+
+/* AskUserForm (interactive) */
+.ask-user-form {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.ask-user-form-question {
+  margin-bottom: 16px;
+}
+.ask-options-interactive {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ask-option-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--overlay-dark);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+}
+.ask-option-btn:hover {
+  border-color: var(--accent);
+}
+.ask-option-btn.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.ask-option-btn .ask-option-label {
+  font-weight: 600;
+}
+.ask-option-btn .ask-option-desc {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.ask-option-btn .ask-option-desc p {
+  margin: 0;
+}
+.ask-custom-input {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+.ask-submit-btn {
+  padding: 8px 24px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: inherit;
+}
+.ask-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .ask-multi-hint {
   margin-top: 4px;
   font-size: 12px;

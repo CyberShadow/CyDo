@@ -16,6 +16,7 @@ import { Connection } from "./connection";
 import type {
   AgnosticEvent,
   AgnosticFileEvent,
+  AskUserQuestionControlMessage,
   ControlMessage,
   SuggestionsUpdateMessage,
 } from "./schemas";
@@ -67,6 +68,7 @@ export interface TaskManager {
   clearInputDraft: (tid: number) => void;
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
+  sendAskUserResponse: (tid: number, content: string) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -621,6 +623,23 @@ export function useTaskManager(): TaskManager {
         });
         break;
       }
+      case "ask_user_question": {
+        const { tid, tool_use_id, questions } =
+          msg as AskUserQuestionControlMessage;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        const updated = {
+          ...t,
+          pendingAskUser: { toolUseId: tool_use_id, questions },
+        };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+        break;
+      }
       case "error": {
         const errMsg = (msg as any).message ?? "Unknown error";
         const errTid = (msg as any).tid as number | undefined;
@@ -909,6 +928,22 @@ export function useTaskManager(): TaskManager {
     connRef.current?.saveDraft(tid, draft);
   }, []);
 
+  const sendAskUserResponse = useCallback((tid: number, content: string) => {
+    connRef.current?.sendAskUserResponse(tid, content);
+    // Optimistically clear the pending question
+    const t = liveStates.get(tid);
+    if (t) {
+      const updated = { ...t, pendingAskUser: null, isProcessing: true };
+      liveStates.set(tid, updated);
+      setTasks((prev) => {
+        const next = new Map(prev);
+        next.set(tid, updated);
+        return next;
+      });
+    }
+  }, []);
+
+
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values());
@@ -956,6 +991,7 @@ export function useTaskManager(): TaskManager {
     clearInputDraft,
     setArchived,
     saveDraft,
+    sendAskUserResponse,
     sidebarTasks,
     workspaces,
     taskTypes,

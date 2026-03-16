@@ -14,6 +14,28 @@ struct TaskSpec
 	string prompt;
 }
 
+/// A single option for an AskUserQuestion question.
+struct AskOption
+{
+	@Description("Short label for this option")
+	string label;
+	@Description("Longer description of what this option means")
+	string description;
+}
+
+/// A single question in an AskUserQuestion request.
+struct AskQuestion
+{
+	@Description("Short header/label for the question (max 12 chars)")
+	string header;
+	@Description("The question text")
+	string question;
+	@Description("Available options to choose from (user can always type a custom answer)")
+	AskOption[] options;
+	@Description("Allow selecting multiple options (default: false)")
+	bool multiSelect;
+}
+
 /// Tool interface — each method is an MCP tool.
 /// Compile-time introspection generates metadata and dispatch.
 interface CydoTools
@@ -102,6 +124,22 @@ interface CydoTools
 		@Description("The prompt for the successor task — include all findings and context needed")
 		string prompt
 	);
+
+	@Description(
+	    "Ask the user one or more questions during execution. Use when you need to:\n"
+	    ~ "- Gather user preferences or requirements\n"
+	    ~ "- Clarify ambiguous instructions\n"
+	    ~ "- Get decisions on implementation choices\n"
+	    ~ "- Offer choices about what direction to take\n\n"
+	    ~ "Users can always choose \"Other\" to provide custom text input.\n"
+	    ~ "Use multiSelect: true to allow multiple answers per question.\n"
+	    ~ "If you recommend a specific option, make it the first option with \"(Recommended)\" in the label."
+	)
+	@McpName("AskUserQuestion")
+	McpResult askUserQuestion(
+	    @Description("Array of questions to ask the user")
+	    AskQuestion[] questions
+	);
 }
 
 import ae.utils.promise : Promise;
@@ -114,6 +152,7 @@ interface ToolsBackend
 		string description, string taskType, string prompt);
 	McpResult handleSwitchMode(string callerTid, string continuation);
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
+	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -192,5 +231,11 @@ class CydoToolsImpl : CydoTools
 	McpResult handoff(string continuation, string prompt)
 	{
 		return app.handleHandoff(callerTid, continuation, prompt);
+	}
+
+	McpResult askUserQuestion(AskQuestion[] questions)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleAskUserQuestion(callerTid, questions).await();
 	}
 }

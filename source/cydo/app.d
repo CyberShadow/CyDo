@@ -22,7 +22,7 @@ import ae.utils.promise : Promise, resolve;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
-import cydo.mcp.tools : ToolsBackend;
+import cydo.mcp.tools : AskQuestion, ToolsBackend;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
@@ -94,6 +94,8 @@ class App : ToolsBackend
 	private enum taskTypesPath = "defs/task-types/types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
+	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
+	private Promise!(McpResult)[int] pendingAskUserQuestions;
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// inotify watches for config file hot-reload
@@ -561,6 +563,96 @@ class App : ToolsBackend
 			~ "A new task will be created with your prompt. Your session is ending.");
 	}
 
+	/// Handle AskUserQuestion — broadcast questions to frontend, return promise
+	/// that resolves when the user responds.
+	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions)
+	{
+		import ae.utils.json : toJson;
+		import std.conv : to;
+
+		int tid;
+		try
+			tid = to!int(callerTid);
+		catch (Exception)
+			return resolve(McpResult("Invalid calling task ID", true));
+
+		auto tdp = tid in tasks;
+		if (tdp is null)
+			return resolve(McpResult("Task not found", true));
+
+		// Gate: only interactive (user_visible) task types
+		auto typeDef = getTaskTypes().byName(tdp.taskType);
+		if (typeDef is null || !typeDef.user_visible)
+			return resolve(McpResult(
+				"AskUserQuestion is only available for interactive tasks. "
+				~ "This task type (" ~ tdp.taskType ~ ") is not user-visible.", true));
+
+		// Only one pending AskUserQuestion per task
+		if (tid in pendingAskUserQuestions)
+			return resolve(McpResult("Another AskUserQuestion is already pending for this task", true));
+
+		auto promise = new Promise!McpResult;
+		pendingAskUserQuestions[tid] = promise;
+
+		// Correlation ID (tid is unique since only one pending per task)
+		auto toolUseId = format!"ask_%d"(tid);
+		auto questionsJson = toJson(questions);
+		tdp.pendingAskToolUseId = toolUseId;
+		tdp.pendingAskQuestions = JSONFragment(questionsJson);
+
+		// Broadcast to subscribed clients
+		auto msg = toJson(AskUserQuestionMessage("ask_user_question", tid, toolUseId, JSONFragment(questionsJson)));
+		sendToSubscribed(tid, Data(msg.representation));
+
+		// Update task state for sidebar
+		tdp.needsAttention = true;
+		tdp.notificationBody = "Waiting for your answer";
+		tdp.isProcessing = false;
+		broadcast(buildTasksList());
+
+		return promise;
+	}
+
+	private void handleAskUserResponse(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+
+		auto pending = tid in pendingAskUserQuestions;
+		if (pending is null)
+			return;
+
+		auto td = &tasks[tid];
+		td.pendingAskToolUseId = null;
+		td.pendingAskQuestions = JSONFragment.init;
+		td.needsAttention = false;
+		td.notificationBody = "";
+		td.isProcessing = true;
+
+		// json.content is the JSON answers from the frontend: {"answers": {"q": "a", ...}}
+		// Build a human-readable text result matching Claude Code's format
+		string resultText = json.content; // fallback: raw JSON
+		try
+		{
+			import std.json : parseJSON;
+			auto parsed = parseJSON(json.content);
+			if (auto answersObj = "answers" in parsed)
+			{
+				string[] parts;
+				foreach (key, val; answersObj.object)
+					parts ~= `"` ~ key ~ `"="` ~ val.str ~ `"`;
+				import std.array : join;
+				resultText = "User has answered your questions: " ~ parts.join(". ") ~ ".";
+			}
+		}
+		catch (Exception) {} // use raw JSON as fallback
+
+		pending.fulfill(McpResult(resultText));
+		pendingAskUserQuestions.remove(tid);
+		broadcast(buildTasksList());
+	}
+
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
 		import ae.utils.json : jsonParse;
@@ -581,6 +673,7 @@ class App : ToolsBackend
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(json); break;
 			case "set_draft":         handleSetDraftMsg(json); break;
+			case "ask_user_response": handleAskUserResponse(json); break;
 			default: break;
 		}
 	}
@@ -739,6 +832,13 @@ class App : ToolsBackend
 		// Send cached suggestions if available
 		if (td.lastSuggestions.length > 0)
 			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid, td.lastSuggestions, td.suggestGeneration)).representation));
+
+		// Re-broadcast pending AskUserQuestion (client reconnect / tab switch)
+		if (tid in pendingAskUserQuestions && tasks[tid].pendingAskToolUseId.length > 0)
+		{
+			auto tdask = &tasks[tid];
+			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid, tdask.pendingAskToolUseId, tdask.pendingAskQuestions)).representation));
+		}
 
 		// Subscribe client to live events for this task
 		clientSubscriptions.require(ws)[tid] = true;
@@ -1303,6 +1403,13 @@ class App : ToolsBackend
 			tasks[tid].isProcessing = false;
 			cleanup(tasks[tid].sandbox);
 			jsonlTracker.stopJsonlWatch(tid);
+
+			// Fulfill pending AskUserQuestion promise with error if session dies
+			if (auto askPending = tid in pendingAskUserQuestions)
+			{
+				askPending.fulfill(McpResult("Session ended while waiting for user response", true));
+				pendingAskUserQuestions.remove(tid);
+			}
 
 			// Force JSONL reload on next request_history so that
 			// fork IDs from the file replace live-stream UUIDs.

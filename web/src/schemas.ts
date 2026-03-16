@@ -730,6 +730,24 @@ export interface SuggestionsUpdateMessage {
   tid: number;
   suggestions: string[];
 }
+export interface AskUserQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface AskUserQuestionItem {
+  header: string;
+  question: string;
+  options: AskUserQuestionOption[];
+  multiSelect?: boolean;
+}
+
+export interface AskUserQuestionControlMessage {
+  type: "ask_user_question";
+  tid: number;
+  tool_use_id: string;
+  questions: AskUserQuestionItem[];
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -741,4 +759,5 @@ export type ControlMessage =
   | ForkableUuidsMessage
   | ErrorMessage
   | UndoPreviewMessage
-  | SuggestionsUpdateMessage;
+  | SuggestionsUpdateMessage
+  | AskUserQuestionControlMessage;

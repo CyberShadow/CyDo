@@ -88,6 +88,8 @@ struct TaskData
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] lastSuggestions; // most recent suggestions, sent on subscribe
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
+	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
+	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
 }
 
 struct TaskHistoryEndMessage
@@ -153,6 +155,7 @@ struct WsMessage
 	bool revert_conversation;
 	bool revert_files;
 	string correlation_id;
+	string tool_use_id;
 }
 
 struct ExitMessage
@@ -290,6 +293,14 @@ struct SyntheticUserEvent
 {
 	string type;
 	SyntheticUserEventMessage message;
+}
+
+struct AskUserQuestionMessage
+{
+	string type = "ask_user_question";
+	int tid;
+	string tool_use_id;
+	JSONFragment questions;  // serialized AskQuestion[]
 }
 
 /// Structured result returned to the parent agent as JSON via MCP.

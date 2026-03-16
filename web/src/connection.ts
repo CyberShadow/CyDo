@@ -56,7 +56,8 @@ export class Connection {
           raw.type === "forkable_uuids" ||
           raw.type === "error" ||
           raw.type === "undo_preview" ||
-          raw.type === "suggestions_update"
+          raw.type === "suggestions_update" ||
+          raw.type === "ask_user_question"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
@@ -164,6 +165,11 @@ export class Connection {
   saveDraft(tid: number, draft: string) {
     this.ws?.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
   }
+
+  sendAskUserResponse(tid: number, content: string) {
+    this.ws?.send(JSON.stringify({ type: "ask_user_response", tid, content }));
+  }
+
 
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;

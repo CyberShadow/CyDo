@@ -1337,6 +1337,7 @@ const defaultExpandedTools = new Set([
   "WebFetch",
   "mcp__cydo__Task",
   "mcp__cydo__Handoff",
+  "mcp__cydo__AskUserQuestion",
   "SendMessage",
   "TaskCreate",
 ]);

@@ -3,7 +3,7 @@
 // These are the frontend's internal representations — distinct from the Claude
 // Code wire-protocol types in schemas.ts.
 
-import type { AssistantContentBlock } from "./schemas";
+import type { AssistantContentBlock, AskUserQuestionItem } from "./schemas";
 import type { ExtraField } from "./extractExtras";
 
 export interface DisplayMessage {
@@ -143,6 +143,11 @@ export interface TaskState {
   suggestions?: string[];
   /** Server-provided draft for initial hydration on page load. */
   serverDraft?: string;
+  /** Pending AskUserQuestion from the agent, waiting for user response. */
+  pendingAskUser?: {
+    toolUseId: string;
+    questions: AskUserQuestionItem[];
+  } | null;
 }
 
 export function makeTaskState(

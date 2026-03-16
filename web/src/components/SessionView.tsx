@@ -6,6 +6,7 @@ import type { Theme } from "../useTheme";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
+import { AskUserForm } from "./AskUserForm";
 
 interface Props {
   task: TaskState;
@@ -26,6 +27,7 @@ interface Props {
   onUndoDismiss: (tid: number) => void;
   onClearInputDraft: (tid: number) => void;
   onSaveDraft?: (tid: number, draft: string) => void;
+  onAskUserResponse: (tid: number, content: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
@@ -47,6 +49,7 @@ export function SessionView({
   onUndoDismiss,
   onClearInputDraft,
   onSaveDraft,
+  onAskUserResponse,
   theme,
   onToggleTheme,
   onToggleSidebar,
@@ -173,6 +176,13 @@ export function SessionView({
             Resume Session
           </button>
         </div>
+      ) : task.pendingAskUser ? (
+        <AskUserForm
+          questions={task.pendingAskUser.questions}
+          onSubmit={(answers) => {
+            onAskUserResponse(task.tid, JSON.stringify({ answers }));
+          }}
+        />
       ) : (
         <InputBox
           onSend={onSend}

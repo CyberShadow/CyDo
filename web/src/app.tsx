@@ -30,6 +30,7 @@ function AppContent() {
     clearInputDraft,
     setArchived,
     saveDraft,
+    sendAskUserResponse,
     sidebarTasks,
     workspaces,
     taskTypes,
@@ -250,6 +251,7 @@ function AppContent() {
                   onToggleTheme={toggleTheme}
                   onToggleSidebar={toggleSidebar}
                   onSetArchived={setArchived}
+                  onAskUserResponse={sendAskUserResponse}
                 />
               </div>
             );
