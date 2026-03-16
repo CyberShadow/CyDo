@@ -235,7 +235,7 @@ export function Sidebar({
           ?.scrollIntoView({ block: "nearest" }),
       );
     }
-  }, [activeTaskId, tree]);
+  }, [activeTaskId]);
 
   return (
     <div class="sidebar">
