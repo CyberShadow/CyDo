@@ -1,9 +1,9 @@
 // Shared display types for the UI.
 //
-// These are the frontend's internal representations — distinct from the Claude
-// Code wire-protocol types in schemas.ts.
+// These are the frontend's internal representations — distinct from the
+// wire-protocol types in protocol.ts.
 
-import type { AssistantContentBlock, AskUserQuestionItem } from "./schemas";
+import type { AssistantContentBlock, AskUserQuestionItem } from "./protocol";
 
 export interface DisplayMessage {
   id: string;

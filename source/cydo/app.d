@@ -1464,12 +1464,18 @@ class App : ToolsBackend
 
 		td.session.onStderr = (string line) {
 			import ae.utils.json : toJson;
-			broadcastTask(tid, toJson(StderrMessage("stderr", line)));
+			import cydo.agent.protocol : ProcessStderrEvent;
+			ProcessStderrEvent ev;
+			ev.text = line;
+			broadcastTask(tid, toJson(ev));
 		};
 
 		td.session.onExit = (int exitCode) {
 			import ae.utils.json : toJson;
-			broadcastTask(tid, toJson(ExitMessage("exit", exitCode)));
+			import cydo.agent.protocol : ProcessExitEvent;
+			ProcessExitEvent ev;
+			ev.code = exitCode;
+			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
 				return;
 			tasks[tid].alive = false;

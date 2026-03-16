@@ -14,9 +14,8 @@ import type {
   AgnosticEvent,
   AgnosticFileEvent,
   AssistantMessage,
-  AssistantFileMessage,
   ResultMessage,
-} from "./schemas";
+} from "./protocol";
 
 // ---------------------------------------------------------------------------
 // Individual reducers
@@ -208,7 +207,7 @@ export function reduceRateLimit(s: SessionState, msg: any): SessionState {
 
 export function reduceAssistantMessage(
   s: SessionState,
-  msg: AssistantMessage | AssistantFileMessage,
+  msg: AssistantMessage,
 ): SessionState {
   const msgId = msg.id;
   let idx = s.messages.findIndex((m) => m.id === msgId);
@@ -800,7 +799,7 @@ export function reduceFileMessage(
       return reduceTaskLifecycle(s, msg as any);
 
     case "message/assistant":
-      return reduceAssistantMessage(s, msg as AssistantFileMessage);
+      return reduceAssistantMessage(s, msg as AssistantMessage);
 
     case "message/user": {
       const rawContent = (msg as any).content;

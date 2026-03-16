@@ -2,7 +2,7 @@ import type {
   AgnosticEvent,
   AgnosticFileEvent,
   ControlMessage,
-} from "./schemas";
+} from "./protocol";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.

@@ -22,7 +22,7 @@ import type {
   SuggestionsUpdateMessage,
   TaskReloadMessage,
   TaskUpdatedMessage,
-} from "./schemas";
+} from "./protocol";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
 import {

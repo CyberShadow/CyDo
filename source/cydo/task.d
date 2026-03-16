@@ -143,18 +143,6 @@ struct WsMessage
 	string tool_use_id;
 }
 
-struct ExitMessage
-{
-	string type;
-	int code;
-}
-
-struct StderrMessage
-{
-	string type;
-	string text;
-}
-
 struct TaskCreatedMessage
 {
 	string type;
@@ -285,18 +273,6 @@ struct DraftUpdatedMessage
 	string new_draft;
 }
 
-struct SyntheticUserEventMessage
-{
-	string role;
-	string content;
-}
-
-struct SyntheticUserEvent
-{
-	string type;
-	SyntheticUserEventMessage message;
-}
-
 struct AskUserQuestionMessage
 {
 	string type = "ask_user_question";
@@ -304,7 +280,6 @@ struct AskUserQuestionMessage
 	string tool_use_id;
 	JSONFragment questions;  // serialized AskQuestion[]
 }
-
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {

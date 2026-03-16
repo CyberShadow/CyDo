@@ -31,9 +31,6 @@ export interface UserContentBlock {
   [key: string]: unknown;
 }
 
-// Alias used in some file-message code paths
-export type UserFileContentBlock = UserContentBlock;
-
 export interface ContentDelta {
   type: string;
   text?: string;
@@ -111,8 +108,6 @@ export interface AssistantMessage {
   [key: string]: unknown;
 }
 
-// File-format assistant message (same shape as live)
-export type AssistantFileMessage = AssistantMessage;
 
 export interface UserEchoMessage {
   type: "message/user";
@@ -129,8 +124,6 @@ export interface UserEchoMessage {
   [key: string]: unknown;
 }
 
-// File-format user message (same shape as live)
-export type UserFileMessage = UserEchoMessage;
 
 export interface ResultMessage {
   type: "turn/result";
@@ -241,25 +234,6 @@ export interface SystemTurnDurationMessage {
   [key: string]: unknown;
 }
 
-export interface ProgressMessage {
-  type: "progress";
-  data: { type: string; [key: string]: unknown };
-  [key: string]: unknown;
-}
-
-export interface QueueOperationMessage {
-  type: "queue-operation";
-  operation: string;
-  [key: string]: unknown;
-}
-
-export interface FileHistorySnapshotMessage {
-  type: "file-history-snapshot";
-  messageId?: string;
-  snapshot?: unknown;
-  [key: string]: unknown;
-}
-
 // ---------------------------------------------------------------------------
 // Union event types
 // ---------------------------------------------------------------------------
@@ -284,9 +258,6 @@ export type AgnosticEvent =
   | ExitMessage
   | StderrMessage;
 
-// Backwards compat alias
-export type ClaudeMessage = AgnosticEvent;
-
 // File message union (translated + pass-through JSONL-only types)
 export type AgnosticFileEvent =
   | SystemInitMessage
@@ -296,17 +267,14 @@ export type AgnosticFileEvent =
   | SystemTurnDurationMessage
   | SystemTaskStartedMessage
   | SystemTaskNotificationMessage
-  | AssistantFileMessage
-  | UserFileMessage
+  | AssistantMessage
+  | UserEchoMessage
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
-  | ProgressMessage
-  | QueueOperationMessage
-  | FileHistorySnapshotMessage;
-
-// Backwards compat alias
-export type ClaudeFileMessage = AgnosticFileEvent;
+  | { type: "progress"; [key: string]: unknown }
+  | { type: "queue-operation"; [key: string]: unknown }
+  | { type: "file-history-snapshot"; [key: string]: unknown };
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };
 export type FileMessage = { tid: number; fileEvent: AgnosticFileEvent };
