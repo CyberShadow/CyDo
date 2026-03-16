@@ -28,6 +28,7 @@ struct WorkspaceConfig
 	uint max_depth = 3;
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
+	@Optional string task_types;
 }
 
 struct CydoConfig

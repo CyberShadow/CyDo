@@ -107,9 +107,11 @@ class App : ToolsBackend
 
 	private TaskTypeDef[] getTaskTypes()
 	{
+		import std.path : buildPath, expandTilde;
 		try
 		{
-			auto types = loadTaskTypes(taskTypesPath);
+			auto userTypesPath = buildPath(expandTilde("~/.config/cydo"), "task-types.yaml");
+			auto types = loadTaskTypes(taskTypesPath, userTypesPath);
 			auto errors = validateTaskTypes(types, taskTypesDir);
 			foreach (e; errors)
 				stderr.writefln("  WARN: task type: %s", e);

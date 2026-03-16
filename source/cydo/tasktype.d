@@ -102,14 +102,63 @@ inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
 // Loader
 // ---------------------------------------------------------------------------
 
-TaskTypeDef[] loadTaskTypes(string path)
-{
-	import configy.read : parseConfigFileSimple;
+import dyaml.node : Node, NodeID;
 
-	auto result = parseConfigFileSimple!TaskTypesFile(path);
-	if (result.isNull())
-		throw new Exception("Failed to parse task types from " ~ path);
-	return result.get().task_types;
+/// Load task types from one or more YAML files, merging them in order
+/// (later files override earlier ones at the YAML level).
+TaskTypeDef[] loadTaskTypes(string[] paths...)
+{
+	import configy.read : parseConfig, CLIArgs;
+	import dyaml.loader : Loader;
+	import std.file : exists;
+
+	Node root;
+	bool hasRoot = false;
+
+	foreach (path; paths)
+	{
+		if (path.length == 0 || !exists(path))
+			continue;
+		auto node = Loader.fromFile(path).load();
+		if (!hasRoot)
+		{
+			root = node;
+			hasRoot = true;
+		}
+		else
+			root = deepMerge(root, node);
+	}
+
+	if (!hasRoot)
+		throw new Exception("No task type files found in: " ~ paths.join(", "));
+
+	auto result = parseConfig!TaskTypesFile(CLIArgs(paths[0]), root);
+	return result.task_types;
+}
+
+/// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged
+/// into `base` recursively. For all other types, `overlay` wins outright.
+private Node deepMerge(Node base, Node overlay)
+{
+	if (base.nodeID != NodeID.mapping)
+		return overlay;
+	if (overlay.nodeID != NodeID.mapping)
+		return base;
+
+	auto basePairs = base.get!(Node.Pair[]).dup;
+	outer: foreach (ref oPair; overlay.get!(Node.Pair[]))
+	{
+		foreach (ref bPair; basePairs)
+		{
+			if (bPair.key == oPair.key)
+			{
+				bPair.value = deepMerge(bPair.value, oPair.value);
+				continue outer;
+			}
+		}
+		basePairs ~= oPair;
+	}
+	return Node(basePairs);
 }
 
 // ---------------------------------------------------------------------------
