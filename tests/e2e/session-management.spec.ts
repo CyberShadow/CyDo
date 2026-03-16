@@ -5,7 +5,7 @@ test("session creation shows sidebar entry", async ({ page, agentType }) => {
   await sendMessage(page, 'Please reply with "hello-claude"');
 
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "hello-claude"' }),
+    page.locator(".sidebar-item .sidebar-label", { hasText: "hello-claude" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   await expect(
@@ -30,7 +30,7 @@ test("session switching preserves messages", async ({ page, agentType }) => {
 
   // Switch back to first task via sidebar
   await page
-    .locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "first"' })
+    .locator(".sidebar-item .sidebar-label", { hasText: "first" })
     .click();
 
   await expect(

@@ -17,7 +17,7 @@ test("history survives page reload", async ({ page, agentType }) => {
   await page.reload();
 
   await page
-    .locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "persistent"' })
+    .locator(".sidebar-item .sidebar-label", { hasText: "persistent" })
     .click({ timeout: 15_000 });
 
   await expect(
@@ -42,7 +42,7 @@ test("no duplicate messages after reload", async ({ page, agentType }) => {
 
   await page.reload();
   await page
-    .locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "nodups"' })
+    .locator(".sidebar-item .sidebar-label", { hasText: "nodups" })
     .click({ timeout: 15_000 });
 
   await expect(

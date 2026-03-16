@@ -5,7 +5,7 @@ test("sidebar status dot reflects session state", async ({ page, agentType }) =>
   await sendMessage(page, 'Please reply with "dot-test"');
 
   const sidebarItem = page.locator(".sidebar-item", {
-    hasText: 'Please reply with "dot-test"',
+    hasText: "dot-test",
   });
   await expect(sidebarItem).toBeVisible({ timeout: responseTimeout(agentType) });
 
@@ -41,7 +41,7 @@ test("multi-client navigation isolation", async ({ page, agentType, context }) =
   ).not.toBeVisible();
 
   await expect(
-    pageB.locator(".sidebar-item .sidebar-label", { hasText: 'Please reply with "isolation-a"' }),
+    pageB.locator(".sidebar-item .sidebar-label", { hasText: "isolation-a" }),
   ).toBeVisible({ timeout: 15_000 });
 
   await pageB.close();
@@ -108,10 +108,10 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
 
   await forkBtn.click();
 
-  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: 'fork-source" (fork)' });
+  const forkEntry = page.locator(".sidebar-item .sidebar-label", { hasText: "(fork)" });
   await expect(forkEntry).toBeVisible({ timeout: 10_000 });
 
-  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: 'fork-source" (fork)' });
+  const forkSidebarItem = page.locator(".sidebar-item.active", { hasText: "(fork)" });
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
   // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
