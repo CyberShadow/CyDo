@@ -8,6 +8,7 @@ const tlsCert = process.env.CYDO_TLS_CERT;
 const tlsKey = process.env.CYDO_TLS_KEY;
 const authUser = process.env.CYDO_AUTH_USER;
 const authPass = process.env.CYDO_AUTH_PASS;
+const backendPort = process.env.CYDO_LISTEN_PORT ?? "3456";
 
 const backendProto =
   tlsCert && tlsKey && existsSync(tlsCert) && existsSync(tlsKey)
@@ -38,7 +39,7 @@ export default defineConfig({
     https,
     proxy: {
       "/ws": {
-        target: `${backendProto}://localhost:3456`,
+        target: `${backendProto}://localhost:${backendPort}`,
         ws: true,
         secure: false,
         configure: (proxy) => {

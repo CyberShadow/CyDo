@@ -183,10 +183,15 @@ class App : ToolsBackend
 		authUser = environment.get("CYDO_AUTH_USER", null);
 		authPass = environment.get("CYDO_AUTH_PASS", null);
 
+		import std.conv : to;
+		auto listenAddr = environment.get("CYDO_LISTEN_ADDRESS", null);
+		auto listenPort = to!ushort(environment.get("CYDO_LISTEN_PORT", "3456"));
+
 		server.handleRequest = &handleRequest;
-		auto port = server.listen(3456);
+		auto port = server.listen(listenPort, listenAddr);
 		auto proto = sslCert ? "https" : "http";
-		stderr.writefln("CyDo server listening on %s://localhost:%d", proto, port);
+		auto addrStr = listenAddr ? listenAddr : "0.0.0.0";
+		stderr.writefln("CyDo server listening on %s://%s:%d", proto, addrStr, port);
 
 		// Internal UNIX socket for MCP proxy calls (no auth required)
 		startMcpSocket();
