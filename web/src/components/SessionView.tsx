@@ -52,9 +52,11 @@ export function SessionView({
   const insertTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
 
-  // Auto-focus input box or resume button when session becomes active
+  // Auto-focus input box or resume button when session becomes active.
+  // Skip on touch devices to avoid opening the virtual keyboard.
   useEffect(() => {
     if (!isActive) return;
+    if (matchMedia("(pointer: coarse)").matches) return;
     if (task.resumable) {
       resumeRef.current?.focus();
     } else {
