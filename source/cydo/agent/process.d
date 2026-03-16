@@ -22,6 +22,8 @@ class AgentProcess
 	private LineBufferedAdapter stderrLines;
 	private Duplex duplex;
 	private bool exited;
+	private int exitStatus;
+	private bool stdoutEOF;
 
 	private bool disconnected;
 
@@ -105,6 +107,8 @@ class AgentProcess
 
 		stdoutLines.handleDisconnect = (string reason, DisconnectType type) {
 			disconnected = true;
+			stdoutEOF = true;
+			tryFireExit();
 		};
 
 		stderrLines = new LineBufferedAdapter(stderrConn, "\n");
@@ -116,12 +120,24 @@ class AgentProcess
 			}
 		};
 
-		// Async process exit notification
+		// Async process exit notification via SIGCHLD.
+		// The process may have exited but stdout pipe data can still be
+		// buffered in the kernel.  Defer onExit until both the process
+		// has exited AND stdout has reached EOF so all output is drained.
 		asyncWait(pid, (int status) {
 			exited = true;
-			if (onExit)
-				onExit(status);
+			exitStatus = status;
+			tryFireExit();
 		});
+	}
+
+	/// Fire onExit only once both conditions are met:
+	/// the process has exited AND stdout has been fully drained (EOF).
+	private void tryFireExit()
+	{
+		if (exited && stdoutEOF)
+			if (onExit)
+				onExit(exitStatus);
 	}
 
 	/// Write a line to the process stdin (appends newline via LineBufferedAdapter).
