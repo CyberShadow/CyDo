@@ -65,7 +65,7 @@ task_types:
   # =========================================================================
 
   blank:
-    description: "Raw Claude Code session with no prompt wrapping or tool restrictions"
+    description: "Raw agent session with no prompt wrapping or tool restrictions"
     prompt_template: prompts/blank.md
     model_class: large
     output_type: report
