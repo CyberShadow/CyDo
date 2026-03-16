@@ -1820,72 +1820,84 @@ class App : ToolsBackend
 		if (tid !in tasks)
 			return "";
 
-		auto taskAgent = agentForTask(tid);
-
 		string[] entries;
 		size_t totalLen = 0;
-		enum maxLen = 10_000;
+		enum maxLen = 2_500;
 		enum truncThreshold = 256;
+
+		// Iterating in reverse within each turn: the first assistant text
+		// we encounter is the last one chronologically — keep it.
+		// Subsequent assistant texts and tool calls (earlier in the turn)
+		// are collapsed to a single "[...]".
+		bool seenAssistantText = false;
+		bool turnCollapsed = false;
 
 		foreach_reverse (ref d; tasks[tid].history)
 		{
 			auto envelope = cast(string) d.toGC();
+			// History uses the agent-agnostic protocol:
+			// live events in "event" envelopes, JSONL in "fileEvent" envelopes.
 			auto event = extractEventFromEnvelope(envelope);
 			if (event.length == 0)
 				event = extractFileEventFromEnvelope(envelope);
 			if (event.length == 0)
 				continue;
 
+			import std.algorithm : canFind;
+
 			string entry;
 
-			auto userText = taskAgent.extractUserText(event);
-			if (userText.length > 0)
+			if (event.canFind(`"message/user"`))
 			{
-				entry = "USER: " ~ abbreviateText(userText, truncThreshold);
-			}
-			else
-			{
-				auto assistantText = taskAgent.extractAssistantText(event);
-				if (assistantText.length > 0)
+				auto text = extractMessageText(event);
+				if (text.length > 0)
 				{
-					entry = "A: " ~ abbreviateText(assistantText, truncThreshold);
+					seenAssistantText = false;
+					turnCollapsed = false;
+					entry = "USER: " ~ abbreviateText(text, truncThreshold);
+				}
+				else
+					continue;
+			}
+			else if (event.canFind(`"message/assistant"`) || event.canFind(`"turn/result"`))
+			{
+				auto text = extractMessageText(event);
+				if (text.length == 0)
+					continue;
+
+				if (!seenAssistantText)
+				{
+					seenAssistantText = true;
+					entry = "A: " ~ abbreviateText(text, truncThreshold);
 				}
 				else
 				{
-					auto resultText = taskAgent.extractResultText(event);
-					if (resultText.length > 0)
+					if (!turnCollapsed)
 					{
-						entry = "A: " ~ abbreviateText(resultText, truncThreshold);
+						turnCollapsed = true;
+						entry = "[...]";
 					}
 					else
-					{
-						import std.algorithm : canFind;
-						if (event.canFind(`"tool_use"`) || event.canFind(`"tool_result"`))
-						{
-							if (entries.length > 0 && entries[$ - 1].length > 1
-								&& entries[$ - 1][0] == '[')
-							{
-								import std.conv : to;
-								import std.string : indexOf;
-								auto bracket = entries[$ - 1].indexOf(' ');
-								if (bracket > 1)
-								{
-									try
-									{
-										auto count = entries[$ - 1][1 .. bracket].to!int + 1;
-										entries[$ - 1] = "[" ~ count.to!string ~ " tool calls]";
-									}
-									catch (Exception) {}
-								}
-								continue;
-							}
-							entry = "[1 tool calls]";
-						}
-						else
-							continue;
-					}
+						continue;
 				}
 			}
+			else if (event.canFind(`"tool_use"`) || event.canFind(`"tool_result"`))
+			{
+				if (seenAssistantText)
+				{
+					if (!turnCollapsed)
+					{
+						turnCollapsed = true;
+						entry = "[...]";
+					}
+					else
+						continue;
+				}
+				else
+					continue; // trailing tool calls — skip
+			}
+			else
+				continue;
 
 			totalLen += entry.length;
 			if (totalLen > maxLen)
@@ -1897,12 +1909,49 @@ class App : ToolsBackend
 		import std.algorithm : reverse;
 		entries.reverse();
 
-		foreach (ref e; entries)
-			if (e == "[1 tool calls]")
-				e = "[1 tool call]";
-
 		import std.array : join;
 		return entries.join("\n\n");
+	}
+
+	/// Extract text content from a translated protocol event (message/user,
+	/// message/assistant, turn/result). Handles both string and array content.
+	private static string extractMessageText(string event)
+	{
+		import ae.utils.json : jsonParse, JSONPartial;
+
+		// Try string content first (user messages)
+		@JSONPartial
+		static struct StringMsg { string content; }
+		@JSONPartial
+		static struct StringProbe { StringMsg message; bool pending; }
+
+		try
+		{
+			auto probe = jsonParse!StringProbe(event);
+			if (probe.message.content.length > 0 && !probe.pending)
+				return probe.message.content;
+		}
+		catch (Exception) {}
+
+		// Try array content (assistant messages)
+		@JSONPartial
+		static struct Block { string type; string text; }
+		@JSONPartial
+		static struct ArrayMsg { Block[] content; }
+		@JSONPartial
+		static struct ArrayProbe { ArrayMsg message; }
+
+		try
+		{
+			auto probe = jsonParse!ArrayProbe(event);
+			string result;
+			foreach (ref block; probe.message.content)
+				if (block.type == "text")
+					result ~= block.text;
+			return result;
+		}
+		catch (Exception)
+			return "";
 	}
 
 	private static string abbreviateText(string text, size_t threshold)

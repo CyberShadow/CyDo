@@ -326,8 +326,9 @@ string extractEventFromEnvelope(string envelope)
 {
 	import std.string : indexOf;
 
-	// Find "event": prefix — the value is everything after it until the closing }
-	auto key = `"event":`;
+	// Find ,"event": — comma prevents matching inside other keys
+	// like "unconfirmedUserEvent".
+	auto key = `,"event":`;
 	auto idx = envelope.indexOf(key);
 	if (idx < 0)
 		return "";
