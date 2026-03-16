@@ -410,6 +410,7 @@ body,
   align-items: center;
   gap: 12px;
   font-size: 12px;
+  margin-left: auto;
 }
 
 .banner-processing {
