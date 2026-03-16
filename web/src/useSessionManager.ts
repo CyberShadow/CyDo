@@ -20,6 +20,7 @@ import type {
   ControlMessage,
   SuggestionsUpdateMessage,
   TaskReloadMessage,
+  TaskUpdatedMessage,
 } from "./schemas";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
@@ -452,6 +453,65 @@ export function useTaskManager(): TaskManager {
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
             }
+          }
+          return next;
+        });
+        break;
+      }
+      case "task_updated": {
+        const entry = (msg as TaskUpdatedMessage).task;
+        setTasks((prev) => {
+          const next = new Map(prev);
+          const workspace = entry.workspace || "";
+          const projectPath = entry.project_path || "";
+          if (!next.has(entry.tid)) {
+            const t = {
+              ...makeTaskState(
+                entry.tid,
+                entry.alive,
+                entry.resumable,
+                entry.title,
+                false,
+                workspace,
+                projectPath,
+                entry.parent_tid || undefined,
+                entry.relation_type || undefined,
+                entry.status || "pending",
+                entry.isProcessing || false,
+                entry.needsAttention || false,
+                entry.task_type || undefined,
+                entry.archived || false,
+              ),
+              serverDraft: entry.draft || undefined,
+            };
+            liveStates.set(entry.tid, t);
+            next.set(entry.tid, t);
+          } else {
+            const t = next.get(entry.tid)!;
+            const needsHistory =
+              entry.resumable && t.messages.length === 0 && t.historyLoaded;
+            const updated = {
+              ...t,
+              alive: entry.alive,
+              resumable: entry.resumable,
+              isProcessing: entry.isProcessing || false,
+              needsAttention: entry.needsAttention || false,
+              historyLoaded: needsHistory ? false : t.historyLoaded,
+              title: entry.title || t.title,
+              workspace: workspace || t.workspace,
+              projectPath: projectPath || t.projectPath,
+              parentTid: entry.parent_tid || t.parentTid,
+              relationType: entry.relation_type || t.relationType,
+              status: entry.status || t.status,
+              taskType: entry.task_type || t.taskType,
+              suggestions:
+                entry.isProcessing && !t.isProcessing
+                  ? undefined
+                  : t.suggestions,
+              archived: entry.archived || false,
+            };
+            liveStates.set(entry.tid, updated);
+            next.set(entry.tid, updated);
           }
           return next;
         });

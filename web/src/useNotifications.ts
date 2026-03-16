@@ -59,6 +59,7 @@ function connect() {
       var text = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
       var raw = JSON.parse(text);
       if (raw.type === "tasks_list") handleTasksList(raw.tasks || []);
+      else if (raw.type === "task_updated" && raw.task) handleTasksList([raw.task]);
     } catch(e) {}
   };
 }

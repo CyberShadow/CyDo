@@ -681,6 +681,28 @@ export interface TasksListMessage {
     draft?: string;
   }[];
 }
+export interface TaskUpdatedMessage {
+  type: "task_updated";
+  task: {
+    tid: number;
+    alive: boolean;
+    resumable: boolean;
+    isProcessing: boolean;
+    needsAttention?: boolean;
+    notificationBody?: string;
+    lastActivity: string;
+    title?: string;
+    workspace?: string;
+    project_path?: string;
+    parent_tid?: number;
+    relation_type?: string;
+    status?: string;
+    task_type?: string;
+    agent_type?: string;
+    archived?: boolean;
+    draft?: string;
+  };
+}
 export interface TaskReloadMessage {
   type: "task_reload";
   tid: number;
@@ -752,6 +774,7 @@ export interface AskUserQuestionControlMessage {
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
+  | TaskUpdatedMessage
   | TaskReloadMessage
   | TitleUpdateMessage
   | TaskHistoryEndMessage

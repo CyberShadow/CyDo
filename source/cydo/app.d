@@ -443,7 +443,7 @@ class App : ToolsBackend
 		// Broadcast to UI
 		broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 			parentTd.workspace, parentTd.projectPath, parentTid, "subtask")));
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(childTid);
 
 		// Set up worktree from edge config: create new or inherit from parent
 		string edgeTemplate;
@@ -693,8 +693,8 @@ class App : ToolsBackend
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));
-		// Broadcast updated task list so all other clients see the new task.
-		broadcast(buildTasksList());
+		// Broadcast updated task state so all other clients see the new task.
+		broadcastTaskUpdate(tid);
 
 		// If content is provided, send it as the first message atomically
 		if (json.content.length > 0)
@@ -931,7 +931,7 @@ class App : ToolsBackend
 		td.needsAttention = false;
 		td.notificationBody = "";
 		td.status = "active";
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 		// Resumed session is immediately idle — generate suggestions.
 		try
 			generateSuggestions(tid);
@@ -986,7 +986,7 @@ class App : ToolsBackend
 		{
 			tasks[tid].needsAttention = false;
 			tasks[tid].notificationBody = "";
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 		}
 	}
 
@@ -1002,7 +1002,7 @@ class App : ToolsBackend
 		bool archived = json.content == "true";
 		td.archived = archived;
 		persistence.setArchived(tid, archived);
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 	}
 
 	private void handleSetDraftMsg(WsMessage json)
@@ -1055,7 +1055,7 @@ class App : ToolsBackend
 		tasks[result.tid] = move(newTd);
 
 		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(result.tid);
 	}
 
 	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -1137,6 +1137,7 @@ class App : ToolsBackend
 						persistence.setTitle(backup.tid, bTd.title);
 						tasks[backup.tid] = move(bTd);
 						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+						broadcastTaskUpdate(backup.tid);
 					}
 				}
 			}
@@ -1177,7 +1178,7 @@ class App : ToolsBackend
 					stderr.writeln("Error generating suggestions: ", e);
 			}
 
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 		}
 	}
 
@@ -1244,7 +1245,7 @@ class App : ToolsBackend
 		td.notificationBody = "";
 		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
 		td.suggestGeneration++;
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 	}
 
 	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude")
@@ -1429,7 +1430,7 @@ class App : ToolsBackend
 					catch (Exception e)
 						stderr.writeln("Error generating suggestions: ", e);
 				}
-				broadcast(buildTasksList());
+				broadcastTaskUpdate(tid);
 			}
 		};
 
@@ -1510,7 +1511,7 @@ class App : ToolsBackend
 			// No attention on exit — the session is over and there's
 			// nothing for the user to act on.  Turn-complete attention
 			// (in onOutput) is sufficient for interactive tasks.
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 		};
 
 		td.alive = true;
@@ -1539,7 +1540,7 @@ class App : ToolsBackend
 			stderr.writefln("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 			return;
 		}
 
@@ -1550,7 +1551,7 @@ class App : ToolsBackend
 				contKey, td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 			return;
 		}
 		auto contDef = *contDefP;
@@ -1561,7 +1562,7 @@ class App : ToolsBackend
 			stderr.writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 			return;
 		}
 
@@ -1594,7 +1595,7 @@ class App : ToolsBackend
 				sendTaskMessage(tid, renderedPrompt);
 			}
 
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 		}
 		else
 		{
@@ -1624,6 +1625,7 @@ class App : ToolsBackend
 
 			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 				td.workspace, td.projectPath, tid, "continuation")));
+			broadcastTaskUpdate(childTid);
 
 			// If this task was itself a pending sub-task, move the promise
 			// to the new child so the parent awaits the full chain
@@ -1652,7 +1654,7 @@ class App : ToolsBackend
 				sendTaskMessage(childTid, renderedPrompt);
 			}
 
-			broadcast(buildTasksList());
+			broadcastTaskUpdate(tid);
 		}
 	}
 
@@ -1922,17 +1924,29 @@ class App : ToolsBackend
 			ws.send(data);
 	}
 
+	private TaskListEntry buildTaskEntry(ref TaskData td)
+	{
+		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
+			td.isProcessing, td.needsAttention, td.notificationBody,
+			td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
+			td.taskType, td.agentType, td.archived, td.draft);
+	}
+
 	private string buildTasksList()
 	{
 		import ae.utils.json : toJson;
 
 		TaskListEntry[] entries;
 		foreach (ref td; tasks)
-			entries ~= TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
-				td.isProcessing, td.needsAttention, td.notificationBody,
-				td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-				td.taskType, td.agentType, td.archived, td.draft);
+			entries ~= buildTaskEntry(td);
 		return toJson(TasksListMessage("tasks_list", entries));
+	}
+
+	private void broadcastTaskUpdate(int tid)
+	{
+		import ae.utils.json : toJson;
+
+		broadcast(toJson(TaskUpdatedMessage("task_updated", buildTaskEntry(tasks[tid]))));
 	}
 
 	private string buildWorkspacesList()

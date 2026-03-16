@@ -48,6 +48,7 @@ export class Connection {
         if (
           raw.type === "task_created" ||
           raw.type === "tasks_list" ||
+          raw.type === "task_updated" ||
           raw.type === "task_reload" ||
           raw.type === "title_update" ||
           raw.type === "task_history_end" ||

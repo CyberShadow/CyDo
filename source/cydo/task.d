@@ -187,6 +187,12 @@ struct TasksListMessage
 	TaskListEntry[] tasks;
 }
 
+struct TaskUpdatedMessage
+{
+	string type;
+	TaskListEntry task;
+}
+
 struct TaskListEntry
 {
 	int tid;
