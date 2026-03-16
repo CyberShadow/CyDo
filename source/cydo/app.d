@@ -725,6 +725,10 @@ class App : ToolsBackend
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
 
+		// Send cached suggestions if available
+		if (td.lastSuggestions.length > 0)
+			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid, td.lastSuggestions, td.suggestGeneration)).representation));
+
 		// Subscribe client to live events for this task
 		clientSubscriptions.require(ws)[tid] = true;
 	}
@@ -762,6 +766,7 @@ class App : ToolsBackend
 			if (typeDef !is null)
 				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
 		}
+		td.lastSuggestions = null;
 		broadcastUnconfirmedUserMessage(tid, json.content);
 		sendTaskMessage(tid, messageToSend);
 
@@ -1804,6 +1809,7 @@ class App : ToolsBackend
 				if (tasks[tid].suggestGeneration != capturedGen)
 					return; // stale result from a prior subprocess
 				tasks[tid].suggestGenHandle = null;
+				tasks[tid].lastSuggestions = suggestions;
 				broadcastSuggestionsUpdate(tid, suggestions, capturedGen);
 			});
 	}

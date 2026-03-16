@@ -83,6 +83,7 @@ struct TaskData
 	Object titleGenHandle; // prevent GC while running
 	Object suggestGenHandle; // prevent GC while running
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
+	string[] lastSuggestions; // most recent suggestions, sent on subscribe
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 }
 
