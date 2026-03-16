@@ -26,11 +26,11 @@ string translateClaudeEvent(string rawLine)
 		case "assistant":
 			return translateAssistantMessage(rawLine);
 		case "user":
-			return renameType(rawLine, "message/user");
+			return normalizeUserMessage(rawLine);
 		case "stream_event":
 			return translateStreamEvent(rawLine);
 		case "result":
-			return renameType(rawLine, "turn/result");
+			return normalizeTurnResult(rawLine);
 		case "summary":
 			return renameType(rawLine, "session/summary");
 		case "rate_limit_event":
@@ -275,9 +275,9 @@ string translateSystemEvent(string rawLine, string subtype)
 		case "compact_boundary":
 			return replaceTypeRemoveSubtype(rawLine, "session/compacted");
 		case "task_started":
-			return replaceTypeRemoveSubtype(rawLine, "task/started");
+			return normalizeTaskStarted(rawLine);
 		case "task_notification":
-			return replaceTypeRemoveSubtype(rawLine, "task/notification");
+			return normalizeTaskNotification(rawLine);
 		default:
 			return rawLine; // unknown subtypes pass through
 	}
@@ -422,6 +422,112 @@ string translateAssistantMessage(string rawLine)
 	return toJson(ev);
 }
 
+
+/// Normalize a Claude user message to the agnostic UserMessageEvent format.
+/// Flattens message.content to top level, renames camelCase flags, unifies
+/// toolUseResult/tool_use_result → tool_result, drops session_id/slug/role/uuid-less fields.
+string normalizeUserMessage(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeUserMsg
+	{
+		JSONFragment content;
+	}
+
+	@JSONPartial
+	static struct ClaudeUser
+	{
+		ClaudeUserMsg message;
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+		@JSONOptional bool isReplay;
+		@JSONOptional bool isSynthetic;
+		@JSONOptional bool isMeta;
+		@JSONOptional bool isSteering;
+		@JSONOptional bool pending;
+		@JSONOptional string uuid;
+		@JSONOptional JSONFragment toolUseResult;
+		@JSONOptional JSONFragment tool_use_result;
+	}
+
+	ClaudeUser raw;
+	try
+		raw = jsonParse!ClaudeUser(rawLine);
+	catch (Exception)
+		return renameType(rawLine, "message/user"); // fallback
+
+	UserMessageEvent ev;
+	ev.content            = raw.message.content;
+	ev.parent_tool_use_id = raw.parent_tool_use_id;
+	ev.is_sidechain       = raw.isSidechain;
+	ev.is_replay          = raw.isReplay;
+	ev.is_synthetic       = raw.isSynthetic;
+	ev.is_meta            = raw.isMeta;
+	ev.is_steering        = raw.isSteering;
+	ev.pending            = raw.pending;
+	ev.uuid               = raw.uuid;
+	if (raw.toolUseResult.json !is null && raw.toolUseResult.json.length > 0)
+		ev.tool_result = raw.toolUseResult;
+	else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
+		ev.tool_result = raw.tool_use_result;
+	return toJson(ev);
+}
+
+/// Normalize a Claude result event to the agnostic TurnResultEvent format.
+/// Renames modelUsage → model_usage, normalizes usage to input/output only,
+/// drops uuid and session_id.
+string normalizeTurnResult(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeUsage
+	{
+		@JSONOptional int input_tokens;
+		@JSONOptional int output_tokens;
+	}
+
+	@JSONPartial
+	static struct ClaudeResult
+	{
+		string subtype;
+		bool is_error;
+		@JSONOptional string result;
+		int num_turns;
+		int duration_ms;
+		@JSONOptional int duration_api_ms;
+		double total_cost_usd;
+		@JSONOptional ClaudeUsage usage;
+		@JSONOptional JSONFragment modelUsage;
+		@JSONOptional JSONFragment model_usage;
+		@JSONOptional JSONFragment permission_denials;
+		@JSONOptional string stop_reason;
+		@JSONOptional string[] errors;
+	}
+
+	ClaudeResult raw;
+	try
+		raw = jsonParse!ClaudeResult(rawLine);
+	catch (Exception)
+		return renameType(rawLine, "turn/result"); // fallback
+
+	TurnResultEvent ev;
+	ev.subtype            = raw.subtype;
+	ev.is_error           = raw.is_error;
+	ev.result             = raw.result;
+	ev.num_turns          = raw.num_turns;
+	ev.duration_ms        = raw.duration_ms;
+	ev.duration_api_ms    = raw.duration_api_ms;
+	ev.total_cost_usd     = raw.total_cost_usd;
+	ev.usage              = UsageInfo(raw.usage.input_tokens, raw.usage.output_tokens);
+	if (raw.modelUsage.json !is null && raw.modelUsage.json.length > 0)
+		ev.model_usage = raw.modelUsage;
+	else if (raw.model_usage.json !is null && raw.model_usage.json.length > 0)
+		ev.model_usage = raw.model_usage;
+	ev.permission_denials = raw.permission_denials;
+	ev.stop_reason        = raw.stop_reason;
+	ev.errors             = raw.errors;
+	return toJson(ev);
+}
+
 /// Translate stream_event: unwrap inner event and map to stream/* types.
 string translateStreamEvent(string rawLine)
 {
@@ -468,8 +574,38 @@ string translateStreamEvent(string rawLine)
 			newType = "stream/block_start";
 			break;
 		case "content_block_delta":
+		{
+			// Probe delta type — drop signature_delta, rename thinking_delta field
+			@JSONPartial
+			static struct BlockDeltaProbe
+			{
+				@JSONPartial
+				static struct DeltaProbe
+				{
+					string type;
+					@JSONOptional string thinking;
+				}
+				int index;
+				DeltaProbe delta;
+			}
+			try
+			{
+				auto probe = jsonParse!BlockDeltaProbe(innerEvent);
+				if (probe.delta.type == "signature_delta")
+					return null; // drop
+				if (probe.delta.type == "thinking_delta")
+				{
+					StreamBlockDeltaEvent ev;
+					ev.index = probe.index;
+					ev.delta.type = "thinking_delta";
+					ev.delta.text = probe.delta.thinking;
+					return toJson(ev);
+				}
+			}
+			catch (Exception) {}
 			newType = "stream/block_delta";
 			break;
+		}
 		case "content_block_stop":
 			newType = "stream/block_stop";
 			break;
@@ -582,6 +718,60 @@ string replaceTypeRemoveSubtype(string rawLine, string newType)
 		subtypeIdx--;
 
 	return renamed[0 .. subtypeIdx] ~ renamed[fieldEnd .. $];
+}
+
+/// Normalize a Claude task_started system event to the agnostic TaskStartedEvent format.
+/// Drops uuid and session_id fields.
+string normalizeTaskStarted(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeTaskStarted
+	{
+		string task_id;
+		@JSONOptional string tool_use_id;
+		@JSONOptional string description;
+		@JSONOptional string task_type;
+	}
+
+	ClaudeTaskStarted raw;
+	try
+		raw = jsonParse!ClaudeTaskStarted(rawLine);
+	catch (Exception)
+		return replaceTypeRemoveSubtype(rawLine, "task/started"); // fallback
+
+	TaskStartedEvent ev;
+	ev.task_id      = raw.task_id;
+	ev.tool_use_id  = raw.tool_use_id;
+	ev.description  = raw.description;
+	ev.task_type    = raw.task_type;
+	return toJson(ev);
+}
+
+/// Normalize a Claude task_notification system event to the agnostic TaskNotificationEvent format.
+/// Drops uuid and session_id fields.
+string normalizeTaskNotification(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeTaskNotification
+	{
+		string task_id;
+		string status;
+		@JSONOptional string output_file;
+		@JSONOptional string summary;
+	}
+
+	ClaudeTaskNotification raw;
+	try
+		raw = jsonParse!ClaudeTaskNotification(rawLine);
+	catch (Exception)
+		return replaceTypeRemoveSubtype(rawLine, "task/notification"); // fallback
+
+	TaskNotificationEvent ev;
+	ev.task_id     = raw.task_id;
+	ev.status      = raw.status;
+	ev.output_file = raw.output_file;
+	ev.summary     = raw.summary;
+	return toJson(ev);
 }
 
 /// Find the index of the closing brace matching the opening brace at pos.

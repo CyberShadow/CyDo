@@ -37,7 +37,6 @@ export type UserFileContentBlock = UserContentBlock;
 export interface ContentDelta {
   type: string;
   text?: string;
-  thinking?: string;
   partial_json?: string;
   [key: string]: unknown;
 }
@@ -86,8 +85,6 @@ export interface SystemTaskStartedMessage {
   tool_use_id?: string;
   description?: string;
   task_type?: string;
-  uuid?: string;
-  session_id?: string;
   [key: string]: unknown;
 }
 
@@ -97,8 +94,6 @@ export interface SystemTaskNotificationMessage {
   status: string;
   output_file?: string;
   summary?: string;
-  uuid?: string;
-  session_id?: string;
   [key: string]: unknown;
 }
 
@@ -121,23 +116,15 @@ export type AssistantFileMessage = AssistantMessage;
 
 export interface UserEchoMessage {
   type: "message/user";
-  session_id?: string;
-  message: {
-    role: string;
-    content: string | UserContentBlock[];
-    [key: string]: unknown;
-  };
+  content: string | UserContentBlock[];
   parent_tool_use_id?: string | null;
-  isSidechain?: boolean;
-  tool_use_result?: unknown;
-  toolUseResult?: unknown;
-  sourceToolAssistantUUID?: string;
-  isReplay?: boolean;
-  isSynthetic?: boolean;
-  isMeta?: boolean;
-  isSteering?: boolean;
+  is_sidechain?: boolean;
+  tool_result?: unknown;
+  is_replay?: boolean;
+  is_synthetic?: boolean;
+  is_meta?: boolean;
+  is_steering?: boolean;
   pending?: boolean;
-  slug?: string;
   uuid?: string;
   [key: string]: unknown;
 }
@@ -148,8 +135,6 @@ export type UserFileMessage = UserEchoMessage;
 export interface ResultMessage {
   type: "turn/result";
   subtype: string;
-  uuid?: string;
-  session_id?: string;
   is_error: boolean;
   result?: string;
   num_turns: number;
@@ -157,7 +142,7 @@ export interface ResultMessage {
   duration_api_ms?: number;
   total_cost_usd: number;
   usage: Usage;
-  modelUsage?: Record<string, Record<string, unknown>>;
+  model_usage?: Record<string, Record<string, unknown>>;
   permission_denials?: unknown[];
   stop_reason?: string | null;
   errors?: string[];
@@ -186,7 +171,12 @@ export interface RateLimitEventMessage {
 export interface StreamBlockStart {
   type: "stream/block_start";
   index: number;
-  content_block: { type: string; id?: string; name?: string; [key: string]: unknown };
+  content_block: {
+    type: string;
+    id?: string;
+    name?: string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 

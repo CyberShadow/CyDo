@@ -1714,15 +1714,17 @@ class App : ToolsBackend
 	}
 
 	/// Broadcast an unconfirmed user message to all clients.
-	/// This is shown as pending until Claude echoes it back with isReplay.
+	/// This is shown as pending until Claude echoes it back with is_replay.
 	private void broadcastUnconfirmedUserMessage(int tid, string content)
 	{
 		import ae.utils.json : toJson;
+		import cydo.agent.protocol : UserMessageEvent;
 
 		auto now = Clock.currTime.toISOExtString();
-		// Build a user message event matching Claude's replay format
-		auto userEvent = toJson(SyntheticUserEvent("user",
-			SyntheticUserEventMessage("user", content)));
+		UserMessageEvent ev;
+		ev.content = JSONFragment(toJson(content));
+		ev.pending = true;
+		auto userEvent = toJson(ev);
 		string injected = `{"tid":` ~ format!"%d"(tid)
 			~ `,"timestamp":"` ~ now
 			~ `","unconfirmedUserEvent":` ~ userEvent ~ `}`;

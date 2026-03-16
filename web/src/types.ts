@@ -74,7 +74,7 @@ export interface ToolResult {
   content: ToolResultContent;
   isError?: boolean;
   // opaque tool result payload — varies by tool, rendered via ToolCall dispatch
-  toolUseResult?: unknown;
+  toolResult?: unknown;
 }
 
 export interface StreamingBlock {

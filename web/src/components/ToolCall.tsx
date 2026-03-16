@@ -564,9 +564,8 @@ function EditInput({
     ([k]) =>
       !["file_path", "old_string", "new_string", "replace_all"].includes(k),
   );
-  const patchHunks = (
-    result?.toolUseResult as Record<string, unknown> | undefined
-  )?.structuredPatch;
+  const patchHunks = (result?.toolResult as Record<string, unknown> | undefined)
+    ?.structuredPatch;
 
   return (
     <div class="tool-input-formatted">
@@ -955,7 +954,7 @@ function formatGenericInput(
   );
 }
 
-// Map tool name → set of known (ignored + consumed) toolUseResult field names.
+// Map tool name → set of known (ignored + consumed) toolResult field names.
 const knownResultFields: Record<string, Set<string>> = {
   Bash: new Set([
     "stdout",
@@ -1067,27 +1066,25 @@ const knownResultFields: Record<string, Set<string>> = {
 
 function formatToolUseResult(
   name: string,
-  toolUseResult: Record<string, unknown> | unknown[],
+  toolResult: Record<string, unknown> | unknown[],
 ): h.JSX.Element | null {
-  if (Array.isArray(toolUseResult)) {
-    if (toolUseResult.length === 0) return null;
+  if (Array.isArray(toolResult)) {
+    if (toolResult.length === 0) return null;
     // Skip structured content blocks — already rendered by renderResultContent
     if (
-      toolUseResult.every(
+      toolResult.every(
         (b) => typeof b === "object" && b !== null && "type" in b,
       )
     )
       return null;
-    return (
-      <pre class="tool-result">{JSON.stringify(toolUseResult, null, 2)}</pre>
-    );
+    return <pre class="tool-result">{JSON.stringify(toolResult, null, 2)}</pre>;
   }
 
-  if (Object.keys(toolUseResult).length === 0) return null;
+  if (Object.keys(toolResult).length === 0) return null;
 
   const known = knownResultFields[name];
   const unknown: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(toolUseResult)) {
+  for (const [k, v] of Object.entries(toolResult)) {
     if (!known?.has(k)) unknown[k] = v;
   }
 
@@ -1511,11 +1508,11 @@ export function ToolCall({ name, input, result, children }: Props) {
               ) : (
                 renderResultContent(result.content, result.isError)
               )}
-              {result.toolUseResult != null &&
-                typeof result.toolUseResult === "object" &&
+              {result.toolResult != null &&
+                typeof result.toolResult === "object" &&
                 formatToolUseResult(
                   name,
-                  result.toolUseResult as Record<string, unknown> | unknown[],
+                  result.toolResult as Record<string, unknown> | unknown[],
                 )}
             </>
           )}

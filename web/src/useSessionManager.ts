@@ -97,10 +97,10 @@ export interface TaskManager {
 /// Extract text content from a user message event (for unconfirmed display).
 function extractTextContent(msg: AgnosticEvent): string {
   const raw = msg as any;
-  if (raw?.message?.content) {
-    if (typeof raw.message.content === "string") return raw.message.content;
-    if (Array.isArray(raw.message.content)) {
-      return raw.message.content
+  if (raw?.content) {
+    if (typeof raw.content === "string") return raw.content;
+    if (Array.isArray(raw.content)) {
+      return raw.content
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
         .join("");

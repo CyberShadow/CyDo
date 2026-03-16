@@ -121,10 +121,9 @@ string buildSyntheticUserEvent(string text,
 	import ae.utils.json : toJson;
 	auto contentJson = toJson(text);
 	string extra;
-	if (isSteering) extra ~= `,"isSteering":true`;
+	if (isSteering) extra ~= `,"is_steering":true`;
 	if (pending) extra ~= `,"pending":true`;
-	return `{"type":"message/user","message":{"role":"user","content":`
-		~ contentJson ~ `}` ~ extra ~ `}`;
+	return `{"type":"message/user","content":` ~ contentJson ~ extra ~ `}`;
 }
 
 struct WsMessage

@@ -854,7 +854,7 @@ class CodexSession : AgentSession
 				handleDelta(rawLine, "text_delta", "text");
 				break;
 			case "item/reasoning/textDelta":
-				handleDelta(rawLine, "thinking_delta", "thinking");
+				handleDelta(rawLine, "thinking_delta", "text");
 				break;
 			case "item/commandExecution/outputDelta":
 				handleDelta(rawLine, "text_delta", "text");
@@ -1078,18 +1078,15 @@ class CodexSession : AgentSession
 
 			if (toolResultParts.length > 0 && outputHandler_)
 				outputHandler_(
-					`{"type":"message/user","message":{"role":"user","content":[`
-					~ toolResultParts.join(",") ~ `]}}`);
+					`{"type":"message/user","content":[`
+					~ toolResultParts.join(",") ~ `]}`);
 		}
 
 		// 4. turn/result
-		auto resultUuid = randomUUID().toString();
 		if (outputHandler_)
 			outputHandler_(
 				`{"type":"turn/result","subtype":"success"`
-				~ `,"uuid":"` ~ resultUuid
-				~ `","session_id":"` ~ escapeJsonString(sessionId)
-				~ `","is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
+				~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 				~ `,"usage":{"input_tokens":0,"output_tokens":0}}`);
 
 		completedItems = null;
@@ -1300,8 +1297,7 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 			? `,"uuid":"` ~ forkId ~ `"`
 			: ``;
 		return `{"type":"message/user"` ~ uuidField
-			~ `,"message":{"role":"` ~ escapeJsonString(role)
-			~ `","content":` ~ content ~ `}}`;
+			~ `,"content":` ~ content ~ `}`;
 	}
 }
 
@@ -1346,9 +1342,9 @@ string translateRolloutToolResult(string callId, string outputJson)
 		text = `"(output)"`;
 	}
 
-	return `{"type":"message/user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"`
+	return `{"type":"message/user","content":[{"type":"tool_result","tool_use_id":"`
 		~ escapeJsonString(callId)
-		~ `","content":` ~ text ~ `}]}}`;
+		~ `","content":` ~ text ~ `}]}`;
 }
 
 /// Construct a message/assistant with a thinking content block from reasoning.
@@ -1436,11 +1432,8 @@ string translateRolloutEventMsg(string line)
 
 	if (probe.payload.type == "task_complete")
 	{
-		import std.uuid : randomUUID;
-		auto uuid = randomUUID().toString();
 		return `{"type":"turn/result","subtype":"success"`
-			~ `,"uuid":"` ~ uuid
-			~ `","session_id":"","is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
+			~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 			~ `,"usage":{"input_tokens":0,"output_tokens":0}}`;
 	}
 

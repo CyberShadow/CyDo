@@ -48,10 +48,7 @@ export function reduceParseError(
   };
 }
 
-export function reduceSystemInit(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceSystemInit(s: SessionState, msg: any): SessionState {
   const initMsg: DisplayMessage = {
     id: `init-${++s.msgIdCounter}`,
     type: "system" as const,
@@ -79,10 +76,7 @@ export function reduceSystemInit(
   };
 }
 
-export function reduceSystemStatus(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceSystemStatus(s: SessionState, msg: any): SessionState {
   const id = `status-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -135,10 +129,7 @@ export function reduceStopHookSummary(
   };
 }
 
-export function reduceCompactBoundary(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceCompactBoundary(s: SessionState, msg: any): SessionState {
   const id = `compact-${++s.msgIdCounter}`;
   const cm = msg.compact_metadata;
   return {
@@ -158,10 +149,7 @@ export function reduceCompactBoundary(
   };
 }
 
-export function reduceTaskLifecycle(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceTaskLifecycle(s: SessionState, msg: any): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
   if (msg.type === "task/started") {
@@ -185,10 +173,7 @@ export function reduceTaskLifecycle(
   };
 }
 
-export function reduceSummary(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceSummary(s: SessionState, msg: any): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -204,10 +189,7 @@ export function reduceSummary(
   };
 }
 
-export function reduceRateLimit(
-  s: SessionState,
-  msg: any,
-): SessionState {
+export function reduceRateLimit(s: SessionState, msg: any): SessionState {
   const id = `ratelimit-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -328,7 +310,7 @@ export function reduceUserEcho(
 
   // Extract the opaque tool result payload (varies by tool)
   const raw = rawMsg as any;
-  const toolUseResult = raw?.toolUseResult ?? raw?.tool_use_result ?? undefined;
+  const toolUseResult = raw?.tool_result ?? undefined;
 
   // Link tool results to their parent assistant messages
   if (toolResults.length > 0) {
@@ -347,7 +329,7 @@ export function reduceUserEcho(
               toolUseId: block.tool_use_id,
               content: block.content,
               isError: block.is_error,
-              toolUseResult,
+              toolResult: toolUseResult,
             });
             updated[i] = newMsg;
             touchedIndices.add(i);
@@ -485,7 +467,7 @@ export function reduceResultMessage(
           durationApiMs: msg.duration_api_ms,
           totalCostUsd: msg.total_cost_usd,
           usage: msg.usage,
-          modelUsage: msg.modelUsage,
+          modelUsage: msg.model_usage,
           permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
           errors: msg.errors,
@@ -612,7 +594,7 @@ export function reduceStreamBlockDelta(
     const delta = event.delta;
     let append = "";
     if (delta.type === "text_delta") append = delta.text;
-    else if (delta.type === "thinking_delta") append = delta.thinking;
+    else if (delta.type === "thinking_delta") append = delta.text;
     else if (delta.type === "input_json_delta") append = delta.partial_json;
     return { ...b, text: b.text + append };
   });
@@ -716,24 +698,24 @@ export function reduceStdoutMessage(
       return reduceAssistantMessage(s, msg as AssistantMessage);
 
     case "message/user": {
-      const rawContent = (msg as any).message.content;
+      const rawContent = (msg as any).content;
       const contentBlocks: any[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
           : rawContent;
 
-      if ("isReplay" in msg && (msg as any).isReplay) {
+      if ("is_replay" in msg && (msg as any).is_replay) {
         return reduceUserReplay(s, contentBlocks, msg);
       } else {
         return reduceUserEcho(
           s,
           contentBlocks,
-          (msg as any).isSidechain,
+          (msg as any).is_sidechain,
           (msg as any).parent_tool_use_id,
           msg,
-          (msg as any).isSynthetic,
-          (msg as any).isMeta,
-          (msg as any).isSteering,
+          (msg as any).is_synthetic,
+          (msg as any).is_meta,
+          (msg as any).is_steering,
         );
       }
     }
@@ -821,7 +803,7 @@ export function reduceFileMessage(
       return reduceAssistantMessage(s, msg as AssistantFileMessage);
 
     case "message/user": {
-      const rawContent = (msg as any).message?.content;
+      const rawContent = (msg as any).content;
       const content: any[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
@@ -839,12 +821,12 @@ export function reduceFileMessage(
       s = reduceUserEcho(
         s,
         content,
-        (msg as any).isSidechain,
+        (msg as any).is_sidechain,
         (msg as any).parent_tool_use_id,
         msg,
-        (msg as any).isSynthetic,
-        (msg as any).isMeta,
-        (msg as any).isSteering,
+        (msg as any).is_synthetic,
+        (msg as any).is_meta,
+        (msg as any).is_steering,
       );
       if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
         const text = content
