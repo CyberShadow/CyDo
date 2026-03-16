@@ -190,11 +190,8 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
       </div>
       <div class="init-meta">
         {raw?.model && <span>Model: {raw.model}</span>}
-        {raw?.claude_code_version && <span>v{raw.claude_code_version}</span>}
-        {raw?.permissionMode && <span>{raw.permissionMode}</span>}
-        {raw?.output_style && raw.output_style !== "default" && (
-          <span>Style: {raw.output_style}</span>
-        )}
+        {raw?.agent_version && <span>v{raw.agent_version}</span>}
+        {raw?.permission_mode && <span>{raw.permission_mode}</span>}
       </div>
       {raw?.tools?.length > 0 && (
         <InitDetailList label="Tools" items={raw.tools} />
@@ -207,9 +204,6 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
       )}
       {raw?.skills?.length > 0 && (
         <InitDetailList label="Skills" items={raw.skills} />
-      )}
-      {raw?.slash_commands?.length > 0 && (
-        <InitDetailList label="Slash commands" items={raw.slash_commands} />
       )}
       {raw?.plugins?.length > 0 && (
         <InitDetailList label="Plugins" items={raw.plugins} />

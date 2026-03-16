@@ -19,8 +19,6 @@ export interface AssistantContentBlock {
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
-  thinking?: string;
-  signature?: string;
   [key: string]: unknown;
 }
 
@@ -51,20 +49,17 @@ export interface ContentDelta {
 export interface SystemInitMessage {
   type: "session/init";
   session_id: string;
-  uuid?: string;
   model: string;
   cwd: string;
   tools: string[];
-  claude_code_version: string;
-  permissionMode: string;
+  agent_version: string;
+  permission_mode: string;
   mcp_servers?: unknown[];
   agents?: unknown[];
-  apiKeySource?: string;
+  api_key_source?: string;
   skills?: string[];
   plugins?: unknown[];
   fast_mode_state?: string;
-  slash_commands?: string[];
-  output_style?: string;
   agent?: string;
   [key: string]: unknown;
 }
@@ -107,24 +102,17 @@ export interface SystemTaskNotificationMessage {
   [key: string]: unknown;
 }
 
-interface AssistantInnerMessage {
+export interface AssistantMessage {
+  type: "message/assistant";
   id: string;
-  role?: string;
   content: AssistantContentBlock[];
   model: string;
   stop_reason: string | null;
-  usage: Usage;
-  [key: string]: unknown;
-}
-
-export interface AssistantMessage {
-  type: "message/assistant";
-  uuid?: string;
-  session_id?: string;
+  usage?: Usage;
   parent_tool_use_id?: string | null;
-  isSidechain?: boolean;
-  isApiErrorMessage?: boolean;
-  message: AssistantInnerMessage;
+  is_sidechain?: boolean;
+  is_api_error?: boolean;
+  uuid?: string;
   [key: string]: unknown;
 }
 

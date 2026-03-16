@@ -90,10 +90,10 @@ export interface SessionInfo {
   sessionId: string;
   cwd: string;
   tools: string[];
-  permissionMode: string;
+  permission_mode: string;
   mcp_servers?: unknown[];
   agents?: unknown[];
-  apiKeySource?: string;
+  api_key_source?: string;
   skills?: string[];
   plugins?: unknown[];
   fast_mode_state?: string;

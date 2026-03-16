@@ -4,7 +4,7 @@ import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
 
-import ae.utils.json : JSONFragment, JSONPartial, jsonParse;
+import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess;
@@ -452,16 +452,10 @@ class CodexAgent : Agent
 		}
 
 		@JSONPartial
-		static struct Message
-		{
-			ContentBlock[] content;
-		}
-
-		@JSONPartial
 		static struct AssistantProbe
 		{
 			string type;
-			Message message;
+			ContentBlock[] content;
 		}
 
 		try
@@ -470,7 +464,7 @@ class CodexAgent : Agent
 			if (probe.type != "message/assistant")
 				return "";
 			string result;
-			foreach (ref block; probe.message.content)
+			foreach (ref block; probe.content)
 				if (block.type == "text")
 					result ~= block.text;
 			return result;
@@ -719,15 +713,16 @@ class CodexSession : AgentSession
 		server.registerSession(threadId, this);
 
 		// Emit synthetic session/init.
-		import std.uuid : randomUUID;
-		auto uuid = randomUUID().toString();
-		auto initEvent = `{"type":"session/init"`
-			~ `,"session_id":"` ~ escapeJsonString(threadId)
-			~ `","uuid":"` ~ uuid
-			~ `","model":"` ~ escapeJsonString(model)
-			~ `","cwd":"` ~ escapeJsonString(workDir)
-			~ `","tools":[],"claude_code_version":"","permissionMode":"dangerously-skip-permissions"`
-			~ `,"agent":"codex"}`;
+		import cydo.agent.protocol : SessionInitEvent;
+		SessionInitEvent initEv;
+		initEv.session_id      = threadId;
+		initEv.model           = model;
+		initEv.cwd             = workDir;
+		initEv.tools           = [];
+		initEv.agent_version   = "";
+		initEv.permission_mode = "dangerously-skip-permissions";
+		initEv.agent           = "codex";
+		auto initEvent = toJson(initEv);
 
 		if (outputHandler_)
 			outputHandler_(initEvent);
@@ -1041,34 +1036,37 @@ class CodexSession : AgentSession
 		// 2. Synthetic message/assistant
 		if (completedItems.length > 0)
 		{
+			import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
 			auto msgId = "msg_" ~ randomUUID().toString();
-			auto uuid = randomUUID().toString();
 
-			string[] contentParts;
+			ContentBlock[] contentBlocks;
 			foreach (ref ci; completedItems)
 			{
+				ContentBlock cb;
+				cb.type = ci.type;
 				if (ci.type == "text")
-					contentParts ~= `{"type":"text","text":"` ~ escapeJsonString(ci.text) ~ `"}`;
+					cb.text = ci.text;
 				else if (ci.type == "thinking")
-					contentParts ~= `{"type":"thinking","thinking":"` ~ escapeJsonString(ci.text) ~ `","signature":""}`;
+					cb.text = ci.text; // normalized: text field, no signature
 				else if (ci.type == "tool_use")
-					contentParts ~= `{"type":"tool_use","id":"` ~ escapeJsonString(ci.id)
-						~ `","name":"` ~ escapeJsonString(ci.name)
-						~ `","input":` ~ (ci.input.length > 0 ? ci.input : `{}`) ~ `}`;
+				{
+					cb.id   = ci.id;
+					cb.name = ci.name;
+					import ae.utils.json : JSONFragment;
+					cb.input = JSONFragment(ci.input.length > 0 ? ci.input : `{}`);
+				}
+				contentBlocks ~= cb;
 			}
 
-			auto assistantEvent = `{"type":"message/assistant"`
-				~ `,"uuid":"` ~ uuid
-				~ `","session_id":"` ~ escapeJsonString(sessionId)
-				~ `","parent_tool_use_id":null`
-				~ `,"message":{"id":"` ~ msgId
-				~ `","role":"assistant","content":[` ~ contentParts.join(",") ~ `]`
-				~ `,"model":"` ~ escapeJsonString(model)
-				~ `","stop_reason":"end_turn","stop_sequence":null`
-				~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+			AssistantMessageEvent aev;
+			aev.id          = msgId;
+			aev.content     = contentBlocks;
+			aev.model       = model;
+			aev.stop_reason = "end_turn";
+			aev.usage       = UsageInfo(0, 0);
 
 			if (outputHandler_)
-				outputHandler_(assistantEvent);
+				outputHandler_(toJson(aev));
 
 			// 3. Synthetic message/user with tool_result blocks
 			string[] toolResultParts;
@@ -1155,15 +1153,16 @@ string translateRolloutSessionMeta(string line)
 	if (probe.payload.id.length == 0)
 		return null;
 
-	import std.uuid : randomUUID;
-	auto uuid = randomUUID().toString();
-
-	return `{"type":"session/init"`
-		~ `,"session_id":"` ~ escapeJsonString(probe.payload.id)
-		~ `","uuid":"` ~ uuid
-		~ `","model":"","cwd":"` ~ escapeJsonString(probe.payload.cwd)
-		~ `","tools":[],"claude_code_version":"` ~ escapeJsonString(probe.payload.cli_version)
-		~ `","permissionMode":"dangerously-skip-permissions","agent":"codex"}`;
+	import cydo.agent.protocol : SessionInitEvent;
+	SessionInitEvent ev;
+	ev.session_id      = probe.payload.id;
+	ev.model           = "";
+	ev.cwd             = probe.payload.cwd;
+	ev.tools           = [];
+	ev.agent_version   = probe.payload.cli_version;
+	ev.permission_mode = "dangerously-skip-permissions";
+	ev.agent           = "codex";
+	return toJson(ev);
 }
 
 /// Translate a response_item rollout line → message/assistant or message/user.
@@ -1240,16 +1239,59 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 
 	if (role == "assistant")
 	{
-		// Use forkId as UUID when available (history load); random UUID for live stream
-		auto uuid = forkId !is null ? forkId : randomUUID().toString();
+		import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
+		import ae.utils.json : jsonParse, JSONFragment, JSONOptional, JSONPartial;
+
+		// Parse content blocks from the JSON array string
+		@JSONPartial
+		static struct RawBlock
+		{
+			string type;
+			@JSONOptional string text;
+			@JSONOptional string id;
+			@JSONOptional string name;
+			@JSONOptional JSONFragment input;
+		}
+
+		ContentBlock[] blocks;
+		try
+		{
+			auto rawBlocks = jsonParse!(RawBlock[])(content);
+			foreach (ref rb; rawBlocks)
+			{
+				ContentBlock cb;
+				cb.type = rb.type;
+				cb.text = rb.text;
+				cb.id   = rb.id;
+				cb.name = rb.name;
+				cb.input = rb.input;
+				blocks ~= cb;
+			}
+		}
+		catch (Exception)
+		{
+			// Content parse failed — emit empty assistant message
+		}
+
 		auto msgId = "msg_" ~ randomUUID().toString();
-		return `{"type":"message/assistant"`
-			~ `,"uuid":"` ~ uuid
-			~ `","session_id":"","parent_tool_use_id":null`
-			~ `,"message":{"id":"` ~ msgId
-			~ `","role":"assistant","content":` ~ content
-			~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
-			~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+		AssistantMessageEvent aev;
+		aev.id          = msgId;
+		aev.content     = blocks;
+		aev.model       = "";
+		aev.stop_reason = "end_turn";
+		aev.usage       = UsageInfo(0, 0);
+		// Embed forkId as uuid in rawSource for fork support via JSON passthrough
+		// The agnostic format doesn't carry uuid, so we encode it as a separate field
+		// by appending to the serialized JSON.
+		auto base = toJson(aev);
+		if (forkId !is null)
+		{
+			// Insert "uuid":"<forkId>" into the top-level object
+			// Remove trailing "}" and append the uuid field
+			if (base.length > 0 && base[$-1] == '}')
+				return base[0..$-1] ~ `,"uuid":"` ~ escapeJsonString(forkId) ~ `"}`;
+		}
+		return base;
 	}
 	else // user, developer, system
 	{
@@ -1267,22 +1309,25 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 string translateRolloutToolUse(string callId, string toolName, string inputJson)
 {
 	import std.uuid : randomUUID;
+	import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
 
 	if (callId.length == 0)
 		callId = randomUUID().toString();
 
-	auto uuid = randomUUID().toString();
+	ContentBlock cb;
+	cb.type  = "tool_use";
+	cb.id    = callId;
+	cb.name  = toolName;
+	cb.input = JSONFragment(inputJson);
+
 	auto msgId = "msg_" ~ randomUUID().toString();
-	return `{"type":"message/assistant"`
-		~ `,"uuid":"` ~ uuid
-		~ `","session_id":"","parent_tool_use_id":null`
-		~ `,"message":{"id":"` ~ msgId
-		~ `","role":"assistant","content":[{"type":"tool_use","id":"`
-		~ escapeJsonString(callId)
-		~ `","name":"` ~ escapeJsonString(toolName)
-		~ `","input":` ~ inputJson ~ `}]`
-		~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
-		~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+	AssistantMessageEvent aev;
+	aev.id          = msgId;
+	aev.content     = [cb];
+	aev.model       = "";
+	aev.stop_reason = "end_turn";
+	aev.usage       = UsageInfo(0, 0);
+	return toJson(aev);
 }
 
 /// Construct a message/user with a tool_result content block.
@@ -1354,17 +1399,19 @@ string translateRolloutReasoning(string summaryJson, string contentJson)
 	if (thinkingText.length == 0)
 		return null;
 
-	auto uuid = randomUUID().toString();
+	import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
+	ContentBlock cb;
+	cb.type = "thinking";
+	cb.text = thinkingText; // normalized: text field, no signature
+
 	auto msgId = "msg_" ~ randomUUID().toString();
-	return `{"type":"message/assistant"`
-		~ `,"uuid":"` ~ uuid
-		~ `","session_id":"","parent_tool_use_id":null`
-		~ `,"message":{"id":"` ~ msgId
-		~ `","role":"assistant","content":[{"type":"thinking","thinking":"`
-		~ escapeJsonString(thinkingText)
-		~ `","signature":""}]`
-		~ `,"model":"","stop_reason":"end_turn","stop_sequence":null`
-		~ `,"usage":{"input_tokens":0,"output_tokens":0}}}`;
+	AssistantMessageEvent aev;
+	aev.id          = msgId;
+	aev.content     = [cb];
+	aev.model       = "";
+	aev.stop_reason = "end_turn";
+	aev.usage       = UsageInfo(0, 0);
+	return toJson(aev);
 }
 
 /// Translate an event_msg rollout line → turn/result (for task_complete).

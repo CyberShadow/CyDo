@@ -61,8 +61,8 @@ export function SystemBanner({
             {sessionInfo.model}
           </span>
         )}
-        {sessionInfo?.permissionMode && (
-          <span class="banner-perms">{sessionInfo.permissionMode}</span>
+        {sessionInfo?.permission_mode && (
+          <span class="banner-perms">{sessionInfo.permission_mode}</span>
         )}
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
@@ -129,12 +129,12 @@ export function SystemBanner({
           </div>
           <div class="banner-detail-row">
             <span class="detail-label">Permissions:</span>{" "}
-            {sessionInfo.permissionMode}
+            {sessionInfo.permission_mode}
           </div>
-          {sessionInfo.apiKeySource && (
+          {sessionInfo.api_key_source && (
             <div class="banner-detail-row">
               <span class="detail-label">API Key:</span>{" "}
-              {sessionInfo.apiKeySource}
+              {sessionInfo.api_key_source}
             </div>
           )}
           {sessionInfo.fast_mode_state &&

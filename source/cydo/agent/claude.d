@@ -153,18 +153,19 @@ class ClaudeCodeAgent : Agent
 			string text;
 		}
 
-		@JSONPartial
-		static struct Message
-		{
-			ContentBlock[] content;
-		}
-
+		// Agnostic format (post-translation): flat, content at top level.
 		@JSONPartial
 		static struct AssistantProbe
 		{
 			string type;
-			Message message;
+			ContentBlock[] content;
 		}
+
+		// Raw Claude format (pre-translation): nested message wrapper.
+		@JSONPartial
+		static struct WrappedMessage { ContentBlock[] content; }
+		@JSONPartial
+		static struct WrappedProbe { string type; WrappedMessage message; }
 
 		try
 		{
@@ -172,8 +173,20 @@ class ClaudeCodeAgent : Agent
 			if (probe.type != "assistant" && probe.type != "message/assistant")
 				return "";
 
+			// Flat format (agnostic)
+			if (probe.content.length > 0)
+			{
+				string result;
+				foreach (ref block; probe.content)
+					if (block.type == "text")
+						result ~= block.text;
+				return result;
+			}
+
+			// Wrapped format (raw Claude, before translation)
+			auto wrapped = jsonParse!WrappedProbe(line);
 			string result;
-			foreach (ref block; probe.message.content)
+			foreach (ref block; wrapped.message.content)
 				if (block.type == "text")
 					result ~= block.text;
 			return result;

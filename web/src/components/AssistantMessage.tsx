@@ -102,7 +102,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
       {message.content.map((block, i) => {
         if (block.type === "thinking") {
           return (
-            <Markdown key={i} text={block.thinking} class="thinking-text" />
+            <Markdown key={i} text={block.text} class="thinking-text" />
           );
         }
         if (block.type === "tool_use") {

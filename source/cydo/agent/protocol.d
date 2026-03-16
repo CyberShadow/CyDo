@@ -24,7 +24,7 @@ string translateClaudeEvent(string rawLine)
 		case "system":
 			return translateSystemEvent(rawLine, probe.subtype);
 		case "assistant":
-			return renameType(rawLine, "message/assistant");
+			return translateAssistantMessage(rawLine);
 		case "user":
 			return renameType(rawLine, "message/user");
 		case "stream_event":
@@ -266,30 +266,160 @@ private:
 /// Translate system events by mapping subtype to the agnostic type string.
 string translateSystemEvent(string rawLine, string subtype)
 {
-	string newType;
 	switch (subtype)
 	{
 		case "init":
-			newType = "session/init";
-			break;
+			return translateSessionInit(rawLine);
 		case "status":
-			newType = "session/status";
-			break;
+			return replaceTypeRemoveSubtype(rawLine, "session/status");
 		case "compact_boundary":
-			newType = "session/compacted";
-			break;
+			return replaceTypeRemoveSubtype(rawLine, "session/compacted");
 		case "task_started":
-			newType = "task/started";
-			break;
+			return replaceTypeRemoveSubtype(rawLine, "task/started");
 		case "task_notification":
-			newType = "task/notification";
-			break;
+			return replaceTypeRemoveSubtype(rawLine, "task/notification");
 		default:
 			return rawLine; // unknown subtypes pass through
 	}
+}
 
-	// Replace "type":"system" with the agnostic type and remove "subtype"
-	return replaceTypeRemoveSubtype(rawLine, newType);
+/// Normalize a Claude session/init event to the agnostic SessionInitEvent format.
+/// Renames fields and drops Claude-specific fields.
+string translateSessionInit(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeInit
+	{
+		string session_id;
+		string model;
+		string cwd;
+		@JSONOptional string[] tools;
+		@JSONOptional string claude_code_version;
+		@JSONOptional string permissionMode;
+		@JSONOptional string apiKeySource;
+		@JSONOptional string fast_mode_state;
+		@JSONOptional string[] skills;
+		@JSONOptional JSONFragment mcp_servers;
+		@JSONOptional JSONFragment agents;
+		@JSONOptional JSONFragment plugins;
+		@JSONOptional string agent;
+	}
+
+	ClaudeInit raw;
+	try
+		raw = jsonParse!ClaudeInit(rawLine);
+	catch (Exception)
+		return replaceTypeRemoveSubtype(rawLine, "session/init"); // fallback
+
+	SessionInitEvent ev;
+	ev.session_id    = raw.session_id;
+	ev.model         = raw.model;
+	ev.cwd           = raw.cwd;
+	ev.tools         = raw.tools;
+	ev.agent_version = raw.claude_code_version;
+	ev.permission_mode = raw.permissionMode;
+	ev.agent         = raw.agent;
+	ev.api_key_source  = raw.apiKeySource;
+	ev.fast_mode_state = raw.fast_mode_state;
+	ev.skills        = raw.skills;
+	ev.mcp_servers   = raw.mcp_servers;
+	ev.agents        = raw.agents;
+	ev.plugins       = raw.plugins;
+	return toJson(ev);
+}
+
+/// Normalize a Claude assistant message to the agnostic AssistantMessageEvent format.
+/// Flattens message.* fields to top level, renames isSidechain/isApiErrorMessage,
+/// renames thinking blocks' "thinking" field to "text", drops signature.
+string translateAssistantMessage(string rawLine)
+{
+	@JSONPartial
+	static struct ClaudeThinkingBlock
+	{
+		string type;     // "thinking"
+		@JSONOptional string thinking;
+		@JSONOptional string text;
+		@JSONOptional string id;
+		@JSONOptional string name;
+		@JSONOptional JSONFragment input;
+	}
+
+	@JSONPartial
+	static struct ClaudeMessage
+	{
+		string id;
+		ClaudeThinkingBlock[] content;
+		@JSONOptional string model;
+		@JSONOptional string stop_reason;
+		@JSONOptional int input_tokens;
+		@JSONOptional int output_tokens;
+		@JSONOptional JSONFragment usage;
+	}
+
+	@JSONPartial
+	static struct ClaudeAssistant
+	{
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+		@JSONOptional bool isApiErrorMessage;
+		ClaudeMessage message;
+	}
+
+	ClaudeAssistant raw;
+	try
+		raw = jsonParse!ClaudeAssistant(rawLine);
+	catch (Exception)
+		return renameType(rawLine, "message/assistant"); // fallback
+
+	// Build normalized content blocks
+	ContentBlock[] content;
+	foreach (ref b; raw.message.content)
+	{
+		ContentBlock cb;
+		cb.type = b.type;
+		if (b.type == "thinking")
+		{
+			// Rename "thinking" field → "text"; drop signature
+			cb.text = b.thinking.length > 0 ? b.thinking : b.text;
+		}
+		else if (b.type == "text")
+		{
+			cb.text = b.text;
+		}
+		else if (b.type == "tool_use")
+		{
+			cb.id    = b.id;
+			cb.name  = b.name;
+			cb.input = b.input;
+		}
+		content ~= cb;
+	}
+
+	// Extract usage
+	UsageInfo usage;
+	if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
+	{
+		@JSONPartial
+		static struct UsageProbe { @JSONOptional int input_tokens; @JSONOptional int output_tokens; }
+		try
+		{
+			auto u = jsonParse!UsageProbe(raw.message.usage.json);
+			usage.input_tokens  = u.input_tokens;
+			usage.output_tokens = u.output_tokens;
+		}
+		catch (Exception) {}
+	}
+
+	AssistantMessageEvent ev;
+	ev.id                  = raw.message.id;
+	ev.content             = content;
+	ev.model               = raw.message.model;
+	ev.stop_reason         = raw.message.stop_reason;
+	ev.usage               = usage;
+	ev.parent_tool_use_id  = raw.parent_tool_use_id;
+	ev.is_sidechain        = raw.isSidechain;
+	ev.is_api_error        = raw.isApiErrorMessage;
+	return toJson(ev);
 }
 
 /// Translate stream_event: unwrap inner event and map to stream/* types.

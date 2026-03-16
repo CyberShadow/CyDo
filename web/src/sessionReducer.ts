@@ -62,14 +62,14 @@ export function reduceSystemInit(
     ...s,
     sessionInfo: {
       model: msg.model,
-      version: msg.claude_code_version,
+      version: msg.agent_version,
       sessionId: msg.session_id,
       cwd: msg.cwd,
       tools: msg.tools,
-      permissionMode: msg.permissionMode,
+      permission_mode: msg.permission_mode,
       mcp_servers: msg.mcp_servers,
       agents: msg.agents,
-      apiKeySource: msg.apiKeySource,
+      api_key_source: msg.api_key_source,
       skills: msg.skills,
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
@@ -228,7 +228,7 @@ export function reduceAssistantMessage(
   s: SessionState,
   msg: AssistantMessage | AssistantFileMessage,
 ): SessionState {
-  const msgId = msg.message.id;
+  const msgId = msg.id;
   let idx = s.messages.findIndex((m) => m.id === msgId);
 
   // If not found by real ID, search backwards for a streaming placeholder
@@ -254,19 +254,19 @@ export function reduceAssistantMessage(
     const existingMsg = { ...updated[idx] };
     // Replace temp ID with real one when adopting a streaming placeholder
     if (existingMsg.id !== msgId) existingMsg.id = msgId;
-    existingMsg.content = [...existingMsg.content, ...msg.message.content];
+    existingMsg.content = [...existingMsg.content, ...msg.content];
     // Only keep streamingBlocks active if it was a streaming placeholder;
     // during JSONL replay there's no streaming so leave it undefined.
     if (existingMsg.streamingBlocks !== undefined) {
       existingMsg.streamingBlocks = [];
     }
     // Update usage if present (later messages may have updated counts)
-    if (msg.message.usage) {
-      existingMsg.usage = msg.message.usage;
+    if (msg.usage) {
+      existingMsg.usage = msg.usage;
     }
     // Set fields that may not have been on the placeholder
-    existingMsg.model ??= msg.message.model;
-    existingMsg.isSidechain ??= msg.isSidechain;
+    existingMsg.model ??= msg.model;
+    existingMsg.isSidechain ??= msg.is_sidechain;
     existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
     // Accumulate raw sources
     const prev = existingMsg.rawSource;
@@ -284,12 +284,12 @@ export function reduceAssistantMessage(
     {
       id: msgId,
       type: "assistant" as const,
-      content: [...msg.message.content],
+      content: [...msg.content],
       toolResults: new Map(),
-      model: msg.message.model,
-      isSidechain: msg.isSidechain,
+      model: msg.model,
+      isSidechain: msg.is_sidechain,
       parentToolUseId: msg.parent_tool_use_id,
-      usage: msg.message.usage,
+      usage: msg.usage,
       rawSource: msg,
     },
   ];
@@ -452,11 +452,7 @@ export function reduceResultMessage(
         .filter((b) => b.text)
         .map((b) => {
           if (b.type === "thinking")
-            return {
-              type: "thinking" as const,
-              thinking: b.text,
-              signature: "",
-            };
+            return { type: "thinking" as const, text: b.text };
           return { type: "text" as const, text: b.text };
         });
       messages[i] = {
