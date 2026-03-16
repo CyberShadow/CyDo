@@ -1008,23 +1008,24 @@ body,
   padding-bottom: 4px;
 }
 
-.btn-suggestion {
+.btn.btn-suggestion {
   background: transparent;
   color: var(--text-dim);
   border: 1px solid var(--border);
-  padding: 3px 10px;
-  font-size: 0.8em;
-  font-family: var(--font-mono);
+  padding: 2px 10px;
+  font-size: 0.85em;
+  font-family: sans-serif;
   cursor: pointer;
   white-space: nowrap;
 }
 
-.btn-suggestion:hover {
+.btn.btn-suggestion:hover {
   color: var(--text);
+  background: var(--bg-secondary);
   border-color: var(--accent);
 }
 
-.btn-suggestion:focus {
+.btn.btn-suggestion:focus {
   outline: none;
 }
 
