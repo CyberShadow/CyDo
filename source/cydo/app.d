@@ -1879,6 +1879,10 @@ class App : ToolsBackend
 
 	private static string abbreviateText(string text, size_t threshold)
 	{
+		import std.regex : replaceAll;
+		import ae.utils.regex : re;
+
+		text = text.replaceAll(re!`\s+`, " ");
 		if (text.length <= threshold)
 			return text;
 		auto keepEach = threshold / 2 - 3;
