@@ -59,6 +59,8 @@ struct Persistence
 			"ALTER TABLE tasks RENAME COLUMN claude_session_id TO agent_session_id;",
 			// Migration 8: agent type (claude, codex, etc.)
 			"ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude';",
+			// Migration 9: archived flag for completed/inactive tasks
+			"ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
 		]);
 	}
 
@@ -113,6 +115,11 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET has_worktree = ? WHERE tid = ?".exec(hasWorktree ? 1 : 0, tid);
 	}
 
+	void setArchived(int tid, bool archived)
+	{
+		db.stmt!"UPDATE tasks SET archived = ? WHERE tid = ?".exec(archived ? 1 : 0, tid);
+	}
+
 	struct TaskRow
 	{
 		int tid;
@@ -127,6 +134,7 @@ struct Persistence
 		string title;
 		string status;
 		string agentType;
+		bool archived;
 	}
 
 	TaskRow[] loadTasks()
@@ -134,10 +142,10 @@ struct Persistence
 		TaskRow[] result;
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
-			int hasWorktree, string title, string status, string agentType;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude') FROM tasks".iterate())
+			int hasWorktree, string title, string status, string agentType, int archived;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0) FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0);
 		}
 		return result;
 	}

@@ -28,6 +28,7 @@ function AppContent() {
     undoDismiss,
     dismissAttention,
     clearInputDraft,
+    setArchived,
     sidebarTasks,
     workspaces,
     taskTypes,
@@ -246,12 +247,19 @@ function AppContent() {
                   theme={theme}
                   onToggleTheme={toggleTheme}
                   onToggleSidebar={toggleSidebar}
+                  onSetArchived={setArchived}
                 />
               </div>
             );
           })}
         {!active &&
-          (!connected || activeTaskId !== null ? (
+          (activeTaskId?.startsWith("archive") ? (
+            <div class="session-empty">
+              <div class="session-empty-inner">
+                <span class="archive-placeholder">Archived tasks</span>
+              </div>
+            </div>
+          ) : !connected || activeTaskId !== null ? (
             <div class="session-empty no-sidebar">
               <div class="session-empty-inner">
                 <span>{connected ? "Loading task…" : "Connecting…"}</span>
@@ -311,8 +319,15 @@ export function App() {
   return (
     <Router>
       <Route path="/:workspace/:project/task/:tid" component={AppContent} />
+      <Route
+        path="/:workspace/:project/archive/:parentTid"
+        component={AppContent}
+      />
+      <Route path="/:workspace/:project/archive" component={AppContent} />
       <Route path="/:workspace/:project/session/:sid" component={AppContent} />
       <Route path="/:workspace/:project" component={AppContent} />
+      <Route path="/archive/:parentTid" component={AppContent} />
+      <Route path="/archive" component={AppContent} />
       <Route path="/" component={AppContent} />
       <Route default component={NotFound} />
     </Router>

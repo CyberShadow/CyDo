@@ -15,6 +15,8 @@ interface Props {
   onCloseStdin: () => void;
   taskType?: string;
   onToggleSidebar?: () => void;
+  archived?: boolean;
+  onSetArchived?: () => void;
 }
 
 export function SystemBanner({
@@ -29,6 +31,8 @@ export function SystemBanner({
   onCloseStdin,
   taskType,
   onToggleSidebar,
+  archived,
+  onSetArchived,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -81,6 +85,15 @@ export function SystemBanner({
               Kill
             </button>
           </>
+        )}
+        {!alive && onSetArchived && (
+          <button
+            class={`btn-banner-archive${archived ? " archived" : ""}`}
+            onClick={onSetArchived}
+            title={archived ? "Unarchive task" : "Archive task"}
+          >
+            {archived ? "Unarchive" : "Archive"}
+          </button>
         )}
         {totalCost > 0 && (
           <span class="banner-cost">${totalCost.toFixed(4)}</span>

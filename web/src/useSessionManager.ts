@@ -65,6 +65,7 @@ export interface TaskManager {
   undoDismiss: (tid: number) => void;
   dismissAttention: (tid: number) => void;
   clearInputDraft: (tid: number) => void;
+  setArchived: (tid: number, archived: boolean) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -74,6 +75,7 @@ export interface TaskManager {
     parentTid?: number;
     relationType?: string;
     status?: string;
+    archived?: boolean;
   }>;
   workspaces: WorkspaceInfo[];
   taskTypes: TaskTypeInfo[];
@@ -122,15 +124,28 @@ export function useTaskManager(): TaskManager {
   const workspacesRef = useRef(workspaces);
   workspacesRef.current = workspaces;
 
-  const { params } = useRoute();
-  const parsed = useMemo(
-    () => ({
+  const { params, path } = useRoute();
+  const parsed = useMemo(() => {
+    // Archive routes set parentTid param; derive the virtual archive ID
+    const isArchive = path.includes("/archive");
+    const tid = isArchive
+      ? params.parentTid
+        ? `archive:${params.parentTid}`
+        : "archive"
+      : (params.tid ?? params.sid ?? null);
+    return {
       workspace: params.workspace ?? null,
       project: params.project ? params.project.replace(/:/g, "/") : null,
-      tid: params.tid ?? params.sid ?? null,
-    }),
-    [params.workspace, params.project, params.tid, params.sid],
-  );
+      tid,
+    };
+  }, [
+    path,
+    params.workspace,
+    params.project,
+    params.tid,
+    params.sid,
+    params.parentTid,
+  ]);
   const activeTaskIdRef = useRef<string | null>(parsed.tid);
   activeTaskIdRef.current = parsed.tid;
   const activeTaskId = parsed.tid;
@@ -142,22 +157,58 @@ export function useTaskManager(): TaskManager {
   activeProjectRef.current = activeProject;
 
   const setActiveTaskId = useCallback((id: string) => {
-    // Look up the task to build the full URL
-    const tid = parseInt(id, 10);
-    const t = !isNaN(tid) ? liveStates.get(tid) : undefined;
-    if (t?.workspace && t?.projectPath) {
-      // Find the project name from workspaces
+    // Helper: build a URL with optional workspace/project prefix
+    const buildUrl = (
+      ws: string | null,
+      proj: string | null,
+      suffix: string,
+    ) => {
+      if (ws && proj) {
+        const enc = proj.replace(/\//g, ":");
+        return `/${ws}/${enc}${suffix}`;
+      }
+      return suffix;
+    };
+
+    // Helper: find workspace/project for a numeric task ID
+    const taskContext = (tid: number): [string | null, string | null] => {
+      const t = liveStates.get(tid);
+      if (!t?.workspace || !t?.projectPath) return [null, null];
       const projName = findProjectName(
         workspacesRef.current,
         t.workspace,
         t.projectPath,
       );
-      if (projName) {
-        const encodedProject = projName.replace(/\//g, ":");
-        routeRef.current(`/${t.workspace}/${encodedProject}/task/${id}`);
-        return;
-      }
+      return projName ? [t.workspace, projName] : [null, null];
+    };
+
+    // Archive nodes: route to /archive or /:ws/:proj/archive/:parentTid
+    if (id === "archive") {
+      routeRef.current(
+        buildUrl(
+          activeWorkspaceRef.current,
+          activeProjectRef.current,
+          "/archive",
+        ),
+      );
+      return;
     }
+    const archiveMatch = id.match(/^archive:(\d+)$/);
+    if (archiveMatch) {
+      const parentTid = parseInt(archiveMatch[1], 10);
+      const [ws, proj] = taskContext(parentTid);
+      routeRef.current(buildUrl(ws, proj, `/archive/${parentTid}`));
+      return;
+    }
+
+    // Regular task: look up workspace/project from task state
+    const tid = parseInt(id, 10);
+    if (!isNaN(tid)) {
+      const [ws, proj] = taskContext(tid);
+      routeRef.current(buildUrl(ws, proj, `/task/${id}`));
+      return;
+    }
+
     routeRef.current("/");
   }, []);
 
@@ -359,6 +410,7 @@ export function useTaskManager(): TaskManager {
                 entry.isProcessing || false,
                 entry.needsAttention || false,
                 entry.task_type || undefined,
+                entry.archived || false,
               );
               liveStates.set(entry.tid, t);
               next.set(entry.tid, t);
@@ -387,6 +439,7 @@ export function useTaskManager(): TaskManager {
                   entry.isProcessing && !t.isProcessing
                     ? undefined
                     : t.suggestions,
+                archived: entry.archived || false,
               };
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
@@ -844,6 +897,10 @@ export function useTaskManager(): TaskManager {
     }
   }, [activeTaskId]);
 
+  const setArchived = useCallback((tid: number, archived: boolean) => {
+    connRef.current?.setArchived(tid, archived);
+  }, []);
+
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values());
@@ -869,6 +926,7 @@ export function useTaskManager(): TaskManager {
         parentTid: t.parentTid,
         relationType: t.relationType,
         status: t.status,
+        archived: t.archived,
       }));
   }, [tasks, activeWorkspace, activeProject, workspaces]);
 
@@ -888,6 +946,7 @@ export function useTaskManager(): TaskManager {
     undoDismiss,
     dismissAttention,
     clearInputDraft,
+    setArchived,
     sidebarTasks,
     workspaces,
     taskTypes,

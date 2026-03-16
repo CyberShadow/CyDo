@@ -155,6 +155,12 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "dismiss_attention", tid }));
   }
 
+  setArchived(tid: number, archived: boolean) {
+    this.ws?.send(
+      JSON.stringify({ type: "set_archived", tid, content: String(archived) }),
+    );
+  }
+
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;
     this.reconnectTimer = setTimeout(() => {

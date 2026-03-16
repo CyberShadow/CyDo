@@ -133,6 +133,7 @@ export interface TaskState {
   forkableUuids: Set<string>;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
+  archived?: boolean;
   /** Pending undo confirmation (set by dry_run preview, cleared on confirm/dismiss). */
   undoPending?: {
     afterUuid: string;
@@ -156,6 +157,7 @@ export function makeTaskState(
   isProcessing: boolean = false,
   needsAttention: boolean = false,
   taskType?: string,
+  archived: boolean = false,
 ): TaskState {
   return {
     tid,
@@ -176,5 +178,6 @@ export function makeTaskState(
     relationType,
     forkableUuids: new Set(),
     taskType,
+    archived,
   };
 }

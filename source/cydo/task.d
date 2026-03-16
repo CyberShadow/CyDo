@@ -22,6 +22,7 @@ struct TaskData
 	bool hasWorktree;
 	string title;
 	string status = "pending";  // pending, active, completed, failed
+	bool archived;
 
 	/// Per-task directory: .cydo/tasks/<tid>/
 	@property string taskDir() const
@@ -198,6 +199,7 @@ struct TaskListEntry
 	string status;
 	string task_type;
 	string agent_type;
+	bool archived;
 }
 
 struct ProjectInfo

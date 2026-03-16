@@ -447,6 +447,31 @@ body,
   color: var(--error);
 }
 
+.btn-banner-archive {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.btn-banner-archive:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sidebar-archive-node {
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: pointer;
+}
+
+.archive-placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .banner-cost {
   color: var(--text-dim);
 }

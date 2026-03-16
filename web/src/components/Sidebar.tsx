@@ -10,23 +10,51 @@ export interface SidebarTask {
   parentTid?: number;
   relationType?: string;
   status?: string;
+  archived?: boolean;
+  isArchiveNode?: boolean;
 }
 
 interface TreeNode {
+  id: string;
   task: SidebarTask;
   children: TreeNode[];
 }
 
 export function flatTaskOrder(tasks: SidebarTask[]): string[] {
-  const tids: string[] = [];
+  const ids: string[] = [];
   function walk(nodes: TreeNode[]) {
     for (const n of nodes) {
-      tids.push(String(n.task.tid));
+      ids.push(n.id);
       walk(n.children);
     }
   }
   walk(buildTree(tasks));
-  return tids;
+  return ids;
+}
+
+function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
+  return nodes.map((node) => {
+    const processed = insertArchiveNodes(node.children);
+    const archived = processed.filter((c) => c.task.archived);
+    const active = processed.filter((c) => !c.task.archived);
+    if (archived.length === 0) {
+      return { ...node, children: active };
+    }
+    const archiveNode: TreeNode = {
+      id: `archive:${node.task.tid}`,
+      task: {
+        tid: 0,
+        alive: false,
+        resumable: false,
+        isProcessing: false,
+        title: "Archive",
+        status: "completed",
+        isArchiveNode: true,
+      },
+      children: archived,
+    };
+    return { ...node, children: [archiveNode, ...active] };
+  });
 }
 
 function buildTree(tasks: SidebarTask[]): TreeNode[] {
@@ -46,12 +74,43 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
 
   function toNodes(list: SidebarTask[]): TreeNode[] {
     return list.map((t) => ({
+      id: String(t.tid),
       task: t,
       children: toNodes(childMap.get(t.tid) || []),
     }));
   }
 
-  return toNodes(roots);
+  let tree = toNodes(roots);
+  tree = insertArchiveNodes(tree);
+
+  // Handle archived roots
+  const archivedRoots = tree.filter((n) => n.task.archived);
+  const activeRoots = tree.filter((n) => !n.task.archived);
+  if (archivedRoots.length > 0) {
+    const archiveRoot: TreeNode = {
+      id: "archive",
+      task: {
+        tid: 0,
+        alive: false,
+        resumable: false,
+        isProcessing: false,
+        title: "Archive",
+        status: "completed",
+        isArchiveNode: true,
+      },
+      children: archivedRoots,
+    };
+    tree = [archiveRoot, ...activeRoots];
+  }
+
+  return tree;
+}
+
+function hasDescendant(node: TreeNode, id: string): boolean {
+  for (const c of node.children) {
+    if (c.id === id || hasDescendant(c, id)) return true;
+  }
+  return false;
 }
 
 function renderNode(
@@ -64,6 +123,38 @@ function renderNode(
   const t = node.task;
   const elements: h.JSX.Element[] = [];
 
+  if (t.isArchiveNode) {
+    const isSelected = node.id === activeTaskId;
+    const isExpanded =
+      isSelected ||
+      (activeTaskId !== null && hasDescendant(node, activeTaskId));
+    elements.push(
+      <div
+        key={node.id}
+        class={`sidebar-item sidebar-archive-node${isSelected ? " active" : ""}`}
+        data-tid={node.id}
+        style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
+        onClick={() => onSelectTask(node.id)}
+      >
+        <span class="sidebar-label">Archive ({node.children.length})</span>
+      </div>,
+    );
+    if (isExpanded) {
+      for (const child of node.children) {
+        elements.push(
+          ...renderNode(
+            child,
+            depth + 1,
+            activeTaskId,
+            attention,
+            onSelectTask,
+          ),
+        );
+      }
+    }
+    return elements;
+  }
+
   // Status dot class based on task status
   let dotClass = "sidebar-dot";
   if (t.isProcessing) dotClass += " processing";
@@ -75,11 +166,11 @@ function renderNode(
 
   elements.push(
     <div
-      key={t.tid}
-      class={`sidebar-item${String(t.tid) === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
-      data-tid={String(t.tid)}
+      key={node.id}
+      class={`sidebar-item${node.id === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
+      data-tid={node.id}
       style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
-      onClick={() => onSelectTask(String(t.tid))}
+      onClick={() => onSelectTask(node.id)}
     >
       {depth > 0 && (
         <span class="sidebar-relation-icon" title={t.relationType || "child"}>

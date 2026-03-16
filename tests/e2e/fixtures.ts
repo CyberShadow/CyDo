@@ -29,11 +29,11 @@ export async function sendMessage(page: Page, text: string) {
   await sendBtn.click();
 }
 
-/** Kill the active session and wait for the resume button. */
+/** Kill the active session and wait for it to become inactive. */
 export async function killSession(page: Page, agentType: AgentType) {
   await page.locator(".btn-banner-stop").click();
-  const timeout = agentType === "codex" ? 15_000 : 10_000;
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout });
+  const timeout = 15_000;
+  await expect(page.locator(".btn-banner-archive")).toBeVisible({ timeout });
 }
 
 /** Return an appropriate response timeout for the given agent. */

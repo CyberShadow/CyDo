@@ -28,6 +28,7 @@ interface Props {
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
+  onSetArchived?: (tid: number, archived: boolean) => void;
 }
 
 export function SessionView({
@@ -47,6 +48,7 @@ export function SessionView({
   theme,
   onToggleTheme,
   onToggleSidebar,
+  onSetArchived,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -122,6 +124,12 @@ export function SessionView({
         onCloseStdin={onCloseStdin}
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
+        archived={task.archived}
+        onSetArchived={
+          onSetArchived
+            ? () => onSetArchived(task.tid, !task.archived)
+            : undefined
+        }
       />
       {!task.historyLoaded ? (
         <div class="session-loading">
