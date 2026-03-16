@@ -347,6 +347,36 @@ body,
   background: var(--error);
 }
 
+.sidebar-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  width: 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.sidebar-icon.processing {
+  color: #f0d050;
+}
+
+.sidebar-icon.alive {
+  color: var(--success);
+}
+
+.sidebar-icon.resumable {
+  color: var(--success);
+  opacity: 0.4;
+}
+
+.sidebar-icon.completed {
+  color: var(--accent);
+}
+
+.sidebar-icon.failed {
+  color: var(--error);
+}
+
 .sidebar-new-task {
   border-top: 1px solid var(--border);
 }

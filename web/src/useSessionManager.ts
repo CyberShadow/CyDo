@@ -47,6 +47,7 @@ export interface TaskTypeInfo {
   description: string;
   model_class: string;
   read_only: boolean;
+  icon?: string;
 }
 
 export interface TaskManager {
@@ -1066,6 +1067,7 @@ export function useTaskManager(): TaskManager {
         relationType: t.relationType,
         status: t.status,
         archived: t.archived,
+        taskType: t.taskType,
       }));
   }, [tasks, activeWorkspace, activeProject, workspaces]);
 

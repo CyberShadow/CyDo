@@ -728,9 +728,11 @@ export interface TaskTypesListMessage {
   type: "task_types_list";
   task_types: {
     name: string;
+    display_name?: string;
     description: string;
     model_class: string;
     read_only: boolean;
+    icon?: string;
   }[];
 }
 export interface ForkableUuidsMessage {

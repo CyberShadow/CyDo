@@ -1,5 +1,6 @@
 import { h } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
+import type { TaskTypeInfo } from "../useSessionManager";
 
 export interface SidebarTask {
   tid: number;
@@ -12,6 +13,7 @@ export interface SidebarTask {
   status?: string;
   archived?: boolean;
   isArchiveNode?: boolean;
+  taskType?: string;
 }
 
 interface TreeNode {
@@ -119,6 +121,7 @@ function renderNode(
   activeTaskId: string | null,
   attention: Set<number>,
   onSelectTask: (id: string) => void,
+  taskTypes: TaskTypeInfo[],
 ): h.JSX.Element[] {
   const t = node.task;
   const elements: h.JSX.Element[] = [];
@@ -148,6 +151,7 @@ function renderNode(
             activeTaskId,
             attention,
             onSelectTask,
+            taskTypes,
           ),
         );
       }
@@ -155,14 +159,17 @@ function renderNode(
     return elements;
   }
 
-  // Status dot class based on task status
-  let dotClass = "sidebar-dot";
-  if (t.isProcessing) dotClass += " processing";
-  else if (t.alive) dotClass += " alive";
-  else if (t.status === "failed") dotClass += " failed";
-  else if (t.resumable) dotClass += " resumable";
-  else if (t.status === "completed") dotClass += " completed";
+  // Status modifier for dot/icon
+  let statusClass = "";
+  if (t.isProcessing) statusClass = "processing";
+  else if (t.alive) statusClass = "alive";
+  else if (t.status === "failed") statusClass = "failed";
+  else if (t.resumable) statusClass = "resumable";
+  else if (t.status === "completed") statusClass = "completed";
   // pending = no extra class (gray)
+
+  const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
+  const icon = typeInfo?.icon;
 
   elements.push(
     <div
@@ -179,8 +186,10 @@ function renderNode(
       )}
       {attention.has(t.tid) ? (
         <span class="sidebar-dot check">&#x2713;</span>
+      ) : icon ? (
+        <span class={`sidebar-icon${statusClass ? ` ${statusClass}` : ""}`}>{icon}</span>
       ) : (
-        <span class={dotClass} />
+        <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
       )}
       <span class="sidebar-label" title={t.title || `Task ${t.tid}`}>
         {t.title || `Task ${t.tid}`}
@@ -190,7 +199,7 @@ function renderNode(
 
   for (const child of node.children) {
     elements.push(
-      ...renderNode(child, depth + 1, activeTaskId, attention, onSelectTask),
+      ...renderNode(child, depth + 1, activeTaskId, attention, onSelectTask, taskTypes),
     );
   }
 
@@ -206,6 +215,7 @@ interface Props {
   showBackButton?: boolean;
   onBack?: () => void;
   projectName?: string;
+  taskTypes: TaskTypeInfo[];
 }
 
 export function Sidebar({
@@ -217,6 +227,7 @@ export function Sidebar({
   showBackButton,
   onBack,
   projectName,
+  taskTypes,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -269,7 +280,7 @@ export function Sidebar({
         </div>
         {tree
           .flatMap((node) =>
-            renderNode(node, 0, activeTaskId, attention, onSelectTask),
+            renderNode(node, 0, activeTaskId, attention, onSelectTask, taskTypes),
           )
           .reverse()}
       </div>

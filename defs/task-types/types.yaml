@@ -66,6 +66,7 @@ task_types:
 
   blank:
     description: "Raw agent session with no prompt wrapping or tool restrictions"
+    icon: "○"
     prompt_template: prompts/blank.md
     model_class: large
     output_type: report
@@ -84,6 +85,7 @@ task_types:
   conversation:
     display_name: agentic
     description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
+    icon: "◉"
     prompt_template: prompts/conversation.md
     model_class: large
     read_only: true
@@ -125,6 +127,7 @@ task_types:
 
   plan_mode:
     description: "Interactive planning mode — explore, plan, get approval, then implement"
+    icon: "◇"
     agent_description: >
       Interactive planning mode. Delegates plan drafting to a plan sub-task,
       then lets the user iterate on the result. When the plan is approved,
@@ -177,6 +180,7 @@ task_types:
 
   bug_mode:
     description: "Interactive bug investigation — reproduce, diagnose, then fix"
+    icon: "◈"
     agent_description: >
       Interactive bug investigation mode. Delegates investigation to a bug
       sub-task, then lets the user iterate on findings. When the diagnosis
@@ -228,6 +232,7 @@ task_types:
   write_mode:
     display_name: direct
     description: "Hands-on session — read-write access, edit and iterate directly"
+    icon: "✎"
     agent_description: >
       Write mode grants read-write access to the main checkout. Use when:
 
@@ -270,6 +275,7 @@ task_types:
 
   plan:
     description: "Create a detailed implementation plan"
+    icon: "▷"
     agent_description: >
       Software architect agent for designing implementation plans. Reads the
       codebase, identifies critical files, considers trade-offs, and returns a
@@ -298,6 +304,7 @@ task_types:
 
   research:
     description: "Investigate a topic, gather information, produce findings"
+    icon: "◌"
     agent_description: >
       Fast read-only agent for exploring codebases and gathering information.
       Use when: you need to understand how a subsystem works before modifying it,
@@ -323,6 +330,7 @@ task_types:
 
   bug:
     description: "Investigate a bug report — reproduce, find root cause, report findings"
+    icon: "⊘"
     agent_description: >
       Use for investigating bugs as a sub-task. The agent reproduces the issue,
       identifies the root cause, and reports findings back to the parent.
@@ -349,6 +357,7 @@ task_types:
 
   spike:
     description: "Test a theory or prototype an approach in an isolated worktree"
+    icon: "⚡"
     agent_description: >
       Use when you need to test a theory, prototype an approach, or verify
       feasibility before committing to a plan. Runs in its own worktree so
@@ -368,6 +377,7 @@ task_types:
 
   test:
     description: "Write or fix tests for implemented changes"
+    icon: "⬡"
     agent_description: >
       Use to add test coverage for new or changed code. Works on the same
       tree as the parent implementation task.
@@ -386,6 +396,7 @@ task_types:
 
   triage:
     description: "Execute a plan — implement directly or decompose into sub-tasks"
+    icon: "⊳"
     agent_description: >
       Execute a plan. Reads the plan and decides: implement directly
       (small, single-commit change) or decompose into sub-tasks.
@@ -412,6 +423,7 @@ task_types:
 
   decompose:
     description: "Break a plan into smaller sub-tasks"
+    icon: "⊞"
     agent_description: >
       Use when a plan is too large or ambiguous for a single implementation
       task. Clarifies unknowns via research/spike, then splits the work into
@@ -436,6 +448,7 @@ task_types:
 
   implement:
     description: "Execute a specific, pre-planned coding task"
+    icon: "⚙"
     agent_description: >
       Use for well-scoped coding tasks with a clear plan. The agent works in its
       own isolated worktree and produces a commit. Use when: you have a clear
@@ -463,6 +476,7 @@ task_types:
 
   verify:
     description: "Run the code and verify the implementation actually works"
+    icon: "✓"
     agent_description: >
       Adversarial verification agent. Runs builds, test suites, linters, and
       probes to confirm the implementation works correctly. Tries to break the
@@ -476,6 +490,7 @@ task_types:
 
   review:
     description: "Review code changes for correctness and quality"
+    icon: "⊙"
     agent_description: >
       Code review agent. Verifies the implementation matches the plan and is
       ready to land. Checks for correctness, plan alignment, and adherence to
@@ -492,6 +507,7 @@ task_types:
 
   steward_quality:
     description: "Review artifacts for code quality and project conventions"
+    icon: "⬢"
     prompt_template: prompts/steward_quality.md
     steward: true
     steward_domain: >
@@ -507,6 +523,7 @@ task_types:
 
   steward_security:
     description: "Review artifacts for security vulnerabilities"
+    icon: "⛨"
     prompt_template: prompts/steward_security.md
     steward: true
     steward_domain: >

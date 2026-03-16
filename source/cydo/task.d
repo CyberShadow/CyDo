@@ -239,6 +239,7 @@ struct TaskTypeListEntry
 	string description;
 	string model_class;
 	bool read_only;
+	string icon;
 }
 
 struct TaskTypesListMessage

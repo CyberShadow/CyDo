@@ -223,6 +223,7 @@ function AppContent() {
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}
+          taskTypes={taskTypes}
         />
         {Array.from(tasks.values())
           .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
