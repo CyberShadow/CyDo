@@ -107,6 +107,7 @@ export class Connection {
     taskType?: string,
     content?: string,
     agentType?: string,
+    correlationId?: string,
   ) {
     this.ws?.send(
       JSON.stringify({
@@ -116,6 +117,7 @@ export class Connection {
         task_type: taskType ?? "",
         content: content ?? "",
         agent_type: agentType ?? "",
+        correlation_id: correlationId ?? "",
       }),
     );
   }

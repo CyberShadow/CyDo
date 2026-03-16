@@ -149,6 +149,7 @@ struct WsMessage
 	bool dry_run;
 	bool revert_conversation;
 	bool revert_files;
+	string correlation_id;
 }
 
 struct ExitMessage
@@ -171,6 +172,7 @@ struct TaskCreatedMessage
 	string project_path;
 	int parent_tid;
 	string relation_type;
+	string correlation_id;
 }
 
 struct TasksListMessage

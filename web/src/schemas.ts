@@ -657,6 +657,7 @@ export interface TaskCreatedMessage {
   project_path?: string;
   parent_tid?: number;
   relation_type?: string;
+  correlation_id?: string;
 }
 export interface TasksListMessage {
   type: "tasks_list";

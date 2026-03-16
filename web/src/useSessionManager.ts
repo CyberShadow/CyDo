@@ -174,8 +174,9 @@ export function useTaskManager(): TaskManager {
   );
 
   const connRef = useRef<Connection | null>(null);
-  // True when this client initiated a task creation and should focus it
-  const pendingFocus = useRef(false);
+  // Correlation ID of the most recent createTask call; set to null once consumed.
+  // The client only auto-focuses a new task when the task_created response echoes this ID.
+  const pendingFocusId = useRef<string | null>(null);
   // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
@@ -306,7 +307,7 @@ export function useTaskManager(): TaskManager {
         });
 
         // Navigate to the new task only if:
-        // - this client created it (top-level), or
+        // - this client created it (top-level, correlation ID matches), or
         // - its parent is currently focused (sub-task visible in context)
         // Never auto-focus undo-backup tasks (they're invisible backups).
         const shouldFocus =
@@ -314,8 +315,9 @@ export function useTaskManager(): TaskManager {
             ? false
             : parentTid
               ? activeTaskIdRef.current === String(parentTid)
-              : pendingFocus.current;
-        pendingFocus.current = false;
+              : pendingFocusId.current !== null &&
+                msg.correlation_id === pendingFocusId.current;
+        pendingFocusId.current = null;
         if (shouldFocus) {
           if (workspace && projectPath) {
             const projName = findProjectName(
@@ -691,14 +693,29 @@ export function useTaskManager(): TaskManager {
     (text: string, taskType?: string) => {
       if (activeTaskId === null) {
         // No active task — create one with the message atomically
-        pendingFocus.current = true;
+        const correlationId = crypto.randomUUID();
+        pendingFocusId.current = correlationId;
         const ws = activeWorkspaceRef.current;
         const proj = activeProjectRef.current;
         if (ws && proj) {
           const projPath = findProjectPath(workspacesRef.current, ws, proj);
-          connRef.current?.createTask(ws, projPath || "", taskType, text);
+          connRef.current?.createTask(
+            ws,
+            projPath || "",
+            taskType,
+            text,
+            undefined,
+            correlationId,
+          );
         } else {
-          connRef.current?.createTask(undefined, undefined, taskType, text);
+          connRef.current?.createTask(
+            undefined,
+            undefined,
+            taskType,
+            text,
+            undefined,
+            correlationId,
+          );
         }
         return;
       }
@@ -807,8 +824,9 @@ export function useTaskManager(): TaskManager {
     if (activeTaskId !== null) {
       const tid = parseTaskId(activeTaskId);
       if (tid === null) return;
-      connRef.current?.resumeTask(tid);
       const t = liveStates.get(tid);
+      if (t?.archived) return;
+      connRef.current?.resumeTask(tid);
       if (t) {
         const updated = {
           ...t,

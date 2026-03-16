@@ -592,7 +592,7 @@ class App : ToolsBackend
 		}
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
-		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "")).representation));
+		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));
 		// Broadcast updated task list so all other clients see the new task.
 		broadcast(buildTasksList());
 
