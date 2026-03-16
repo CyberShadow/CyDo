@@ -62,6 +62,24 @@ export function SessionView({
     }
   }, [isActive, task.resumable]);
 
+  const quoteSelection = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return false;
+    const anchor =
+      sel.anchorNode instanceof Element
+        ? sel.anchorNode
+        : sel.anchorNode?.parentElement;
+    if (!anchor?.closest(".message-list")) return false;
+    const quote = new MarkdownQuote();
+    const text = quote.quotedText;
+    if (text) {
+      insertTextRef.current?.(text);
+      sel.removeAllRanges();
+      return true;
+    }
+    return false;
+  };
+
   useEffect(() => {
     if (!isActive) return;
     const handler = (e: KeyboardEvent) => {
@@ -75,22 +93,9 @@ export function SessionView({
 
       // Quote-reply: press r with text selected inside the message list
       if (e.key === "r") {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed) {
-          const anchor =
-            sel.anchorNode instanceof Element
-              ? sel.anchorNode
-              : sel.anchorNode?.parentElement;
-          if (anchor?.closest(".message-list")) {
-            e.preventDefault();
-            const quote = new MarkdownQuote();
-            const text = quote.quotedText;
-            if (text) {
-              insertTextRef.current?.(text);
-              sel.removeAllRanges();
-            }
-            return;
-          }
+        if (quoteSelection()) {
+          e.preventDefault();
+          return;
         }
       }
 
@@ -144,6 +149,7 @@ export function SessionView({
           onDismiss={() => onUndoDismiss(task.tid)}
         />
       )}
+      <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
       {task.resumable ? (
         <div class="resume-bar">
           <button ref={resumeRef} class="btn btn-resume" onClick={onResume}>
@@ -165,6 +171,71 @@ export function SessionView({
         />
       )}
     </>
+  );
+}
+
+function QuoteSelectionButton({
+  isActive,
+  onQuote,
+}: {
+  isActive: boolean;
+  onQuote: () => boolean;
+}) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(hover: hover) and (pointer: fine)");
+    setIsMobile(!mql.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(!e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile || !isActive) {
+      setPos(null);
+      return;
+    }
+    const update = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        setPos(null);
+        return;
+      }
+      const anchor =
+        sel.anchorNode instanceof Element
+          ? sel.anchorNode
+          : sel.anchorNode?.parentElement;
+      if (!anchor?.closest(".message-list")) {
+        setPos(null);
+        return;
+      }
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      setPos({
+        x: rect.left + rect.width / 2,
+        y: rect.bottom,
+      });
+    };
+
+    document.addEventListener("selectionchange", update);
+    return () => document.removeEventListener("selectionchange", update);
+  }, [isMobile, isActive]);
+
+  if (!pos) return null;
+
+  return (
+    <button
+      class="quote-selection-btn"
+      style={{ left: `${pos.x}px`, top: `${pos.y}px` }}
+      onPointerDown={(e: PointerEvent) => e.preventDefault()}
+      onClick={() => {
+        onQuote();
+        setPos(null);
+      }}
+    >
+      Quote
+    </button>
   );
 }
 
