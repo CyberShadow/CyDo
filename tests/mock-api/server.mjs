@@ -385,6 +385,20 @@ function handleMessages(req, res) {
     // Pattern matching
     let match;
 
+    // Suggestion generation subprocess — must be checked before other patterns
+    // because the prompt contains abbreviated history that may match them.
+    if (userText.startsWith("[SUGGESTION MODE:")) {
+      streamTextResponse(res, '["run the tests", "commit this"]', model);
+      return;
+    }
+
+    // Title generation subprocess — extract a recognizable title from the prompt
+    if (userText.startsWith("Generate a concise title")) {
+      const innerMatch = userText.match(/reply with "([^"]*)"/i);
+      streamTextResponse(res, innerMatch ? innerMatch[1] : "Test Task", model);
+      return;
+    }
+
     // "reply with "<text>""
     match = userText.match(/reply with "([^"]*)"/i);
     if (match) {
@@ -442,18 +456,6 @@ function handleMessages(req, res) {
         continuation: match[1].trim(),
         prompt: match[2].trim()
       }, model);
-      return;
-    }
-
-    // Suggestion generation subprocess — prompt starts with "[SUGGESTION MODE:"
-    if (userText && userText.startsWith("[SUGGESTION MODE:")) {
-      streamTextResponse(res, "run the tests\ncommit this", model);
-      return;
-    }
-
-    // Title generation subprocess
-    if (userText && userText.startsWith("Generate a concise title")) {
-      streamTextResponse(res, "Test Task", model);
       return;
     }
 
