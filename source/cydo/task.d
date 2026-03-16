@@ -245,6 +245,7 @@ struct TaskReloadMessage
 {
 	string type = "task_reload";
 	int tid;
+	string reason;
 }
 
 struct TitleUpdateMessage

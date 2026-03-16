@@ -264,6 +264,45 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newSessionId);
 }
 
+/// Edit a message in a JSONL file by replacing its content.
+/// matchFn checks whether a line matches the target ID.
+/// editFn transforms the matched line (receives original, returns replacement).
+/// Returns true if the message was found and edited, false otherwise.
+bool editJsonlMessage(string jsonlPath, string targetId,
+	bool delegate(string line, int lineNum, string id) matchFn,
+	string delegate(string line) editFn)
+{
+	import std.file : exists, readText, write;
+	import std.string : lineSplitter;
+
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
+		return false;
+
+	string output;
+	bool found = false;
+	int lineNum = 0;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		lineNum++;
+		if (line.length == 0)
+			continue;
+
+		if (!found && matchFn(line, lineNum, targetId))
+		{
+			found = true;
+			output ~= editFn(line) ~ "\n";
+		}
+		else
+			output ~= line ~ "\n";
+	}
+
+	if (!found)
+		return false;
+
+	write(jsonlPath, output);
+	return true;
+}
+
 /// Truncate a task's JSONL file in-place after the given fork ID.
 /// matchFn checks whether a line (at 1-based lineNum) matches the fork ID.
 /// Returns the number of lines removed, or -1 if fork ID not found.

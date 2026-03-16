@@ -32,6 +32,7 @@ interface Props {
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
   onSetArchived?: (tid: number, archived: boolean) => void;
+  onEditMessage?: (tid: number, uuid: string, content: string) => void;
 }
 
 export function SessionView({
@@ -54,6 +55,7 @@ export function SessionView({
   onToggleTheme,
   onToggleSidebar,
   onSetArchived,
+  onEditMessage,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -159,6 +161,7 @@ export function SessionView({
           isProcessing={task.isProcessing}
           onFork={onFork}
           onUndo={onUndo}
+          onEditMessage={!task.alive ? onEditMessage : undefined}
           forkableUuids={task.forkableUuids}
         />
       )}

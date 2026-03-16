@@ -170,6 +170,12 @@ export class Connection {
     this.ws?.send(JSON.stringify({ type: "ask_user_response", tid, content }));
   }
 
+  editMessage(tid: number, uuid: string, content: string) {
+    this.ws?.send(
+      JSON.stringify({ type: "edit_message", tid, after_uuid: uuid, content }),
+    );
+  }
+
 
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;

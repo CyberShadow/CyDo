@@ -19,6 +19,7 @@ import type {
   AskUserQuestionControlMessage,
   ControlMessage,
   SuggestionsUpdateMessage,
+  TaskReloadMessage,
 } from "./schemas";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
@@ -69,6 +70,7 @@ export interface TaskManager {
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
+  editMessage: (tid: number, uuid: string, content: string) => void;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -460,16 +462,21 @@ export function useTaskManager(): TaskManager {
         requestedHistoryRef.current.delete(tid);
         const t = liveStates.get(tid);
         if (!t) break;
-        // Collect user message texts to detect unsaved prompts after replay
-        const userTexts = t.messages
-          .filter((m) => m.type === "user")
-          .map((m) =>
-            m.content
-              .filter((b) => b.type === "text")
-              .map((b) => ("text" in b ? b.text : ""))
-              .join(""),
-          )
-          .filter((t) => t.length > 0);
+        // Collect user message texts to detect unsaved prompts after replay.
+        // Skip for edit-triggered reloads: the message was intentionally
+        // replaced, not removed, so old text should not become inputDraft.
+        const isEdit = (msg as TaskReloadMessage).reason === "edit";
+        const userTexts = isEdit
+          ? []
+          : t.messages
+              .filter((m) => m.type === "user")
+              .map((m) =>
+                m.content
+                  .filter((b) => b.type === "text")
+                  .map((b) => ("text" in b ? b.text : ""))
+                  .join(""),
+              )
+              .filter((t) => t.length > 0);
         const reset = {
           ...makeTaskState(
             tid,
@@ -943,6 +950,10 @@ export function useTaskManager(): TaskManager {
     }
   }, []);
 
+  const editMessage = useCallback((tid: number, uuid: string, content: string) => {
+    connRef.current?.editMessage(tid, uuid, content);
+  }, []);
+
 
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const sidebarTasks = useMemo(() => {
@@ -992,6 +1003,7 @@ export function useTaskManager(): TaskManager {
     setArchived,
     saveDraft,
     sendAskUserResponse,
+    editMessage,
     sidebarTasks,
     workspaces,
     taskTypes,

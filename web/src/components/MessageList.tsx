@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   useMemo,
+  useCallback,
 } from "preact/hooks";
 import type { DisplayMessage } from "../types";
 import { useHighlight, renderTokens } from "../highlight";
@@ -20,6 +21,7 @@ interface Props {
   isProcessing: boolean;
   onFork?: (sid: number, afterUuid: string) => void;
   onUndo?: (tid: number, afterUuid: string) => void;
+  onEditMessage?: (tid: number, uuid: string, content: string) => void;
   forkableUuids?: Set<string>;
 }
 
@@ -302,23 +304,51 @@ const MessageView = memo(
     msg,
     onFork,
     onUndo,
+    onEdit,
     forkable,
     children,
   }: {
     msg: DisplayMessage;
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
+    onEdit?: (uuid: string, content: string) => void;
     forkable?: boolean;
     children: ComponentChildren;
   }) {
     const [showSource, setShowSource] = useState(false);
+    const [editing, setEditing] = useState(false);
+    const [editText, setEditText] = useState("");
     const raw = Array.isArray(msg.rawSource)
       ? msg.rawSource[msg.rawSource.length - 1]
       : msg.rawSource;
     const uuid = (raw as any)?.uuid as string | undefined;
+
+    const startEdit = useCallback(() => {
+      const text = msg.content
+        .filter((b): b is { type: "text"; text: string } => b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      setEditText(text);
+      setEditing(true);
+    }, [msg.content]);
+
+    const saveEdit = useCallback(() => {
+      if (uuid && onEdit) onEdit(uuid, editText);
+      setEditing(false);
+    }, [uuid, onEdit, editText]);
+
     return (
       <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
         <div class="message-actions">
+          {uuid && onEdit && (
+            <button
+              class="msg-action-btn edit-btn"
+              onClick={startEdit}
+              title="Edit message"
+            >
+              {"✎"}
+            </button>
+          )}
           {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
             <button
               class="msg-action-btn view-source-btn"
@@ -329,7 +359,28 @@ const MessageView = memo(
             </button>
           )}
         </div>
-        {showSource ? <SourceView msg={msg} /> : children}
+        {editing ? (
+          <div class="message user-message editing">
+            <textarea
+              class="edit-textarea"
+              value={editText}
+              onInput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setEditing(false);
+                } else if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  saveEdit();
+                }
+              }}
+              ref={(el) => el?.focus()}
+            />
+            <div class="edit-actions">
+              <button class="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+              <button class="btn btn-sm btn-primary" onClick={saveEdit}>Save</button>
+            </div>
+          </div>
+        ) : showSource ? <SourceView msg={msg} /> : children}
         {uuid && forkable && (onFork || onUndo) && (
           <div class="message-actions message-actions-bottom">
             {onFork && (
@@ -359,6 +410,7 @@ const MessageView = memo(
     prev.msg === next.msg &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
+    prev.onEdit === next.onEdit &&
     prev.forkable === next.forkable,
 );
 
@@ -368,6 +420,7 @@ export function MessageList({
   isProcessing,
   onFork,
   onUndo,
+  onEditMessage,
   forkableUuids,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -380,6 +433,13 @@ export function MessageList({
     () =>
       onUndo ? (afterUuid: string) => onUndo(sessionId, afterUuid) : undefined,
     [onUndo, sessionId],
+  );
+  const handleEditMessage = useMemo(
+    () =>
+      onEditMessage
+        ? (uuid: string, content: string) => onEditMessage(sessionId, uuid, content)
+        : undefined,
+    [onEditMessage, sessionId],
   );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
@@ -527,6 +587,7 @@ export function MessageList({
               msg={msg}
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
+              onEdit={msg.type === "user" ? handleEditMessage : undefined}
               forkable={isForkable}
             >
               {inner}

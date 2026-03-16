@@ -29,7 +29,7 @@ import cydo.agent.session : AgentSession;
 import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
-	forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
+	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
@@ -671,6 +671,7 @@ class App : ToolsBackend
 			case "dismiss_attention": handleDismissAttention(json); break;
 			case "fork_task":         handleForkTaskMsg(ws, json); break;
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
+			case "edit_message":      handleEditMessage(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(json); break;
 			case "set_draft":         handleSetDraftMsg(json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
@@ -1178,6 +1179,49 @@ class App : ToolsBackend
 
 			broadcast(buildTasksList());
 		}
+	}
+
+	private void handleEditMessage(WebSocketAdapter ws, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.agentSessionId.length == 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
+			return;
+		}
+
+		if (td.session && td.session.alive)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing messages", tid)).representation));
+			return;
+		}
+
+		auto ta = agentForTask(tid);
+		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		auto newContent = json.content;
+		auto targetUuid = json.after_uuid;
+
+		auto edited = editJsonlMessage(jsonlPath, targetUuid,
+			&ta.forkIdMatchesLine,
+			(string line) => replaceUserMessageContent(line, newContent));
+
+		if (!edited)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Message UUID not found in history", tid)).representation));
+			return;
+		}
+
+		td.history = DataVec();
+		td.historyLoaded = false;
+		unsubscribeAll(tid);
+
+		broadcast(toJson(TaskReloadMessage("task_reload", tid, "edit")));
+		broadcast(buildTasksList());
 	}
 
 	/// Send a user message to a task's agent session.
@@ -2128,5 +2172,17 @@ class App : ToolsBackend
 		auto keepEach = threshold / 2 - 3;
 		return text[0 .. keepEach] ~ " [...] " ~ text[$ - keepEach .. $];
 	}
+}
+
+/// Replace the text content in a user message JSONL line.
+/// Handles both string content and array-of-blocks content.
+private string replaceUserMessageContent(string line, string newContent)
+{
+	import std.json : parseJSON, JSONValue;
+
+	auto json = parseJSON(line);
+	if ("message" in json)
+		json["message"]["content"] = JSONValue(newContent);
+	return json.toString();
 }
 

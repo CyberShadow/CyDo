@@ -31,6 +31,7 @@ function AppContent() {
     setArchived,
     saveDraft,
     sendAskUserResponse,
+    editMessage,
     sidebarTasks,
     workspaces,
     taskTypes,
@@ -252,6 +253,7 @@ function AppContent() {
                   onToggleSidebar={toggleSidebar}
                   onSetArchived={setArchived}
                   onAskUserResponse={sendAskUserResponse}
+                  onEditMessage={editMessage}
                 />
               </div>
             );

@@ -1234,6 +1234,31 @@ body,
   color: var(--warn);
 }
 
+.edit-textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  justify-content: flex-end;
+}
+
+.user-message.editing {
+  padding: 8px;
+}
+
 /* Mobile quote-selection button */
 .quote-selection-btn {
   position: fixed;
