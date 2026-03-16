@@ -806,6 +806,11 @@ class App : ToolsBackend
 		td.notificationBody = "";
 		td.status = "active";
 		broadcast(buildTasksList());
+		// Resumed session is immediately idle — generate suggestions.
+		try
+			generateSuggestions(tid);
+		catch (Exception e)
+			stderr.writeln("Error generating suggestions: ", e);
 	}
 
 	private void handleInterruptMsg(WsMessage json)
@@ -1015,6 +1020,10 @@ class App : ToolsBackend
 				else
 					ensureTaskAgent(tid);
 				td.status = "active";
+				try
+					generateSuggestions(tid);
+				catch (Exception e)
+					stderr.writeln("Error generating suggestions: ", e);
 			}
 
 			broadcast(buildTasksList());
