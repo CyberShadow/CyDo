@@ -1758,6 +1758,15 @@ class App : ToolsBackend
 		return "";
 	}
 
+	private bool hasSubscribers(int tid)
+	{
+		foreach (ws; clients)
+			if (auto subs = ws in clientSubscriptions)
+				if (tid in *subs)
+					return true;
+		return false;
+	}
+
 	private void generateSuggestions(int tid)
 	{
 		if (tid !in tasks)
@@ -1766,6 +1775,10 @@ class App : ToolsBackend
 
 		// Only generate for interactive (non-sub-task) sessions
 		if (td.parentTid != 0)
+			return;
+
+		// Only generate when someone is actually viewing this task
+		if (!hasSubscribers(tid))
 			return;
 
 		auto history = buildAbbreviatedHistory(tid);
