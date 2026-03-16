@@ -46,8 +46,8 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   await sendMessage(page, "call task test_handoff call handoff done test-prompt");
 
   // Wait for the task URL to settle so we can capture G's tid.
-  await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 15_000 });
-  const tidG = parseInt(page.url().match(/\/task\/(\d+)/)?.[1] ?? "0");
+  await expect(page).toHaveURL(/\/[^/]+\/[^/]+\/task\/\d+/, { timeout: 15_000 });
+  const tidG = parseInt(page.url().match(/\/[^/]+\/[^/]+\/task\/(\d+)/)?.[1] ?? "0");
   expect(tidG).toBeGreaterThan(0);
 
   // Wait for subtask A to be created and auto-focused (URL changes away from G).

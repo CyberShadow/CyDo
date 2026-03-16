@@ -1,5 +1,6 @@
 import { h } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useTheme, ThemeContext } from "./useTheme";
@@ -10,7 +11,7 @@ import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
 import { SearchPopup } from "./components/SearchPopup";
 
-export function App() {
+function AppContent() {
   const {
     tasks,
     activeTaskId,
@@ -293,5 +294,27 @@ export function App() {
         {searchPopup}
       </div>
     </ThemeContext.Provider>
+  );
+}
+
+function NotFound() {
+  return (
+    <div class="not-found">
+      <h1>Page not found</h1>
+      <p>The URL you requested does not match any known route.</p>
+      <a href="/">Go to home</a>
+    </div>
+  );
+}
+
+export function App() {
+  return (
+    <Router>
+      <Route path="/:workspace/:project/task/:tid" component={AppContent} />
+      <Route path="/:workspace/:project/session/:sid" component={AppContent} />
+      <Route path="/:workspace/:project" component={AppContent} />
+      <Route path="/" component={AppContent} />
+      <Route default component={NotFound} />
+    </Router>
   );
 }

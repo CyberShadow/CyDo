@@ -11,7 +11,7 @@ import {
   useCallback,
   useMemo,
 } from "preact/hooks";
-import { useLocation } from "preact-iso";
+import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
 import type {
   AgnosticEvent,
@@ -83,59 +83,6 @@ export interface TaskManager {
   navigateToProject: (workspace: string, projectName: string) => void;
 }
 
-interface ParsedPath {
-  workspace: string | null;
-  project: string | null;
-  tid: string | null;
-}
-
-function parseFromPath(path: string): ParsedPath {
-  // Legacy: /session/:sid (redirect handled elsewhere)
-  const legacyMatch = path.match(/^\/session\/([^/]+)$/);
-  if (legacyMatch) {
-    return { workspace: null, project: null, tid: legacyMatch[1] };
-  }
-
-  // /task/:tid (no workspace context)
-  const taskMatch = path.match(/^\/task\/([^/]+)$/);
-  if (taskMatch) {
-    return { workspace: null, project: null, tid: taskMatch[1] };
-  }
-
-  // /:workspace/:project/task/:tid
-  const wpTaskMatch = path.match(/^\/([^/]+)\/([^/]+)\/task\/([^/]+)$/);
-  if (wpTaskMatch) {
-    return {
-      workspace: wpTaskMatch[1],
-      project: wpTaskMatch[2].replace(/:/g, "/"),
-      tid: wpTaskMatch[3],
-    };
-  }
-
-  // Legacy: /:workspace/:project/session/:sid
-  const wpSessionMatch = path.match(/^\/([^/]+)\/([^/]+)\/session\/([^/]+)$/);
-  if (wpSessionMatch) {
-    return {
-      workspace: wpSessionMatch[1],
-      project: wpSessionMatch[2].replace(/:/g, "/"),
-      tid: wpSessionMatch[3],
-    };
-  }
-
-  // /:workspace/:project
-  const projectMatch = path.match(/^\/([^/]+)\/([^/]+)$/);
-  if (projectMatch) {
-    return {
-      workspace: projectMatch[1],
-      project: projectMatch[2].replace(/:/g, "/"),
-      tid: null,
-    };
-  }
-
-  // / (welcome page) or anything else
-  return { workspace: null, project: null, tid: null };
-}
-
 /// Extract text content from a user message event (for unconfirmed display).
 function extractTextContent(msg: AgnosticEvent): string {
   const raw = msg as any;
@@ -169,18 +116,30 @@ export function useTaskManager(): TaskManager {
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskTypeInfo[]>([]);
-  const { path, route } = useLocation();
+  const { route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
   const workspacesRef = useRef(workspaces);
   workspacesRef.current = workspaces;
 
-  const parsed = useMemo(() => parseFromPath(path), [path]);
+  const { params } = useRoute();
+  const parsed = useMemo(
+    () => ({
+      workspace: params.workspace ?? null,
+      project: params.project ? params.project.replace(/:/g, "/") : null,
+      tid: params.tid ?? params.sid ?? null,
+    }),
+    [params.workspace, params.project, params.tid, params.sid],
+  );
   const activeTaskIdRef = useRef<string | null>(parsed.tid);
   activeTaskIdRef.current = parsed.tid;
   const activeTaskId = parsed.tid;
   const activeWorkspace = parsed.workspace;
   const activeProject = parsed.project;
+  const activeWorkspaceRef = useRef(activeWorkspace);
+  activeWorkspaceRef.current = activeWorkspace;
+  const activeProjectRef = useRef(activeProject);
+  activeProjectRef.current = activeProject;
 
   const setActiveTaskId = useCallback((id: string) => {
     // Look up the task to build the full URL
@@ -199,7 +158,7 @@ export function useTaskManager(): TaskManager {
         return;
       }
     }
-    routeRef.current(`/task/${id}`);
+    routeRef.current("/");
   }, []);
 
   const navigateHome = useCallback(() => {
@@ -368,10 +327,10 @@ export function useTaskManager(): TaskManager {
               const encodedProject = projName.replace(/\//g, ":");
               routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
             } else {
-              routeRef.current(`/task/${tid}`);
+              routeRef.current("/");
             }
           } else {
-            routeRef.current(`/task/${tid}`);
+            routeRef.current("/");
           }
         }
 
@@ -433,21 +392,6 @@ export function useTaskManager(): TaskManager {
           }
           return next;
         });
-        // Navigate to most recently active task if on a project page without a task
-        // Do NOT auto-navigate when on welcome page (/)
-        const currentParsed = parseFromPath(location.pathname);
-        if (
-          msg.tasks.length > 0 &&
-          currentParsed.tid === null &&
-          currentParsed.workspace === null &&
-          location.pathname !== "/"
-        ) {
-          // Legacy: no path structure, not welcome page
-          const latest = msg.tasks.reduce((a, b) =>
-            (b.lastActivity || "") > (a.lastActivity || "") ? b : a,
-          );
-          routeRef.current(`/task/${latest.tid}`, true);
-        }
         break;
       }
       case "task_reload": {
@@ -748,19 +692,11 @@ export function useTaskManager(): TaskManager {
       if (activeTaskId === null) {
         // No active task — create one with the message atomically
         pendingFocus.current = true;
-        const parsed = parseFromPath(location.pathname);
-        if (parsed.workspace && parsed.project) {
-          const projPath = findProjectPath(
-            workspacesRef.current,
-            parsed.workspace,
-            parsed.project,
-          );
-          connRef.current?.createTask(
-            parsed.workspace,
-            projPath || "",
-            taskType,
-            text,
-          );
+        const ws = activeWorkspaceRef.current;
+        const proj = activeProjectRef.current;
+        if (ws && proj) {
+          const projPath = findProjectPath(workspacesRef.current, ws, proj);
+          connRef.current?.createTask(ws, projPath || "", taskType, text);
         } else {
           connRef.current?.createTask(undefined, undefined, taskType, text);
         }
