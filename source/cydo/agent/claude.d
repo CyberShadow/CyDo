@@ -27,10 +27,10 @@ class ClaudeCodeAgent : Agent
 			if (mode == PathMode.ro)
 			{
 				if (auto existing = path in paths)
-					if (*existing == PathMode.rw)
+					if (*existing == PathMode.rw || *existing == PathMode.always_rw)
 						return;
 				foreach (existing, existingMode; paths)
-					if (existingMode == PathMode.rw && path.startsWith(existing ~ "/"))
+					if ((existingMode == PathMode.rw || existingMode == PathMode.always_rw) && path.startsWith(existing ~ "/"))
 						return;
 			}
 			paths[path] = mode;

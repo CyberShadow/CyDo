@@ -40,7 +40,8 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 	// Read-only mode: downgrade all rw paths to ro before agent layer
 	if (readOnly)
 		foreach (ref mode; result.paths)
-			mode = PathMode.ro;
+			if (mode != PathMode.always_rw)
+				mode = PathMode.ro;
 
 	// Layer 3: agent-declared paths/env (last — always rw for agent state)
 	agent.configureSandbox(result.paths, result.env);
@@ -152,6 +153,7 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 		{
 			case PathMode.ro: args ~= ["--ro-bind", entry.key, entry.key]; break;
 			case PathMode.rw: args ~= ["--bind", entry.key, entry.key]; break;
+			case PathMode.always_rw: args ~= ["--bind", entry.key, entry.key]; break;
 		}
 	}
 
