@@ -678,7 +678,7 @@ class App : ToolsBackend
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
 			case "edit_message":      handleEditMessage(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(json); break;
-			case "set_draft":         handleSetDraftMsg(json); break;
+			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
 			default: break;
 		}
@@ -906,8 +906,12 @@ class App : ToolsBackend
 		// Clear draft when message is sent
 		if (td.draft.length > 0)
 		{
+			import ae.utils.json : toJson;
+			auto oldDraft = td.draft;
 			td.draft = "";
 			persistence.setDraft(tid, "");
+			auto draftData = Data(toJson(DraftUpdatedMessage("draft_updated", tid, oldDraft, "")).representation);
+			sendToSubscribed(tid, draftData);
 		}
 	}
 
@@ -1010,14 +1014,23 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
-	private void handleSetDraftMsg(WsMessage json)
+	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)
 	{
+		import ae.utils.json : toJson;
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
-		tasks[tid].draft = json.content;
+		auto td = &tasks[tid];
+		string oldDraft = td.draft;
+		td.draft = json.content;
 		persistence.setDraft(tid, json.content);
-		// Do not broadcast — drafts are private to the authoring user
+		// Broadcast to other subscribed clients (not the sender)
+		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, oldDraft, json.content)).representation);
+		foreach (ws; clients)
+			if (ws !is senderWs)
+				if (auto subs = ws in clientSubscriptions)
+					if (tid in *subs)
+						ws.send(data);
 	}
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)

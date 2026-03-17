@@ -771,6 +771,12 @@ export interface AskUserQuestionControlMessage {
   tool_use_id: string;
   questions: AskUserQuestionItem[];
 }
+export interface DraftUpdatedMessage {
+  type: "draft_updated";
+  tid: number;
+  old_draft: string;
+  new_draft: string;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -784,4 +790,5 @@ export type ControlMessage =
   | ErrorMessage
   | UndoPreviewMessage
   | SuggestionsUpdateMessage
-  | AskUserQuestionControlMessage;
+  | AskUserQuestionControlMessage
+  | DraftUpdatedMessage;

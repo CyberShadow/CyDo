@@ -64,6 +64,7 @@ export function InputBox({
   const textareaRef = inputRef ?? internalRef;
   const textRef = useRef(text);
   textRef.current = text;
+  const lastServerDraftRef = useRef<string>(serverDraft ?? "");
 
   const saveDraftDebounced = useMemo(
     () => debounce((t: string) => onSaveDraft?.(t), 500),
@@ -73,12 +74,25 @@ export function InputBox({
   useEffect(() => {
     // On sessionId change: use in-memory draft if available, else server draft
     const memDraft = drafts.get(sessionId);
-    setText(memDraft !== undefined ? memDraft : (serverDraft ?? ""));
+    const initial = memDraft !== undefined ? memDraft : (serverDraft ?? "");
+    setText(initial);
+    lastServerDraftRef.current = serverDraft ?? "";
     return () => {
       drafts.set(sessionId, textRef.current);
       saveDraftDebounced.cancel();
     };
   }, [sessionId]);
+
+  // Apply incoming draft_updated from other clients if local text hasn't diverged
+  useEffect(() => {
+    if (serverDraft === undefined) return;
+    const localText = textRef.current;
+    if (localText === "" || localText === lastServerDraftRef.current) {
+      setText(serverDraft);
+      drafts.set(sessionId, serverDraft);
+    }
+    lastServerDraftRef.current = serverDraft;
+  }, [serverDraft]);
 
   useEffect(() => {
     if (!insertTextRef) return;

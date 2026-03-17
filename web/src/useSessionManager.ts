@@ -18,6 +18,7 @@ import type {
   AgnosticFileEvent,
   AskUserQuestionControlMessage,
   ControlMessage,
+  DraftUpdatedMessage,
   SuggestionsUpdateMessage,
   TaskReloadMessage,
   TaskUpdatedMessage,
@@ -658,6 +659,19 @@ export function useTaskManager(): TaskManager {
           next.set(tid, updated);
           return next;
         });
+        break;
+      }
+      case "draft_updated": {
+        const { tid, new_draft } = msg as DraftUpdatedMessage;
+        setTasks((prev) => {
+          const task = prev.get(tid);
+          if (!task) return prev;
+          const next = new Map(prev);
+          next.set(tid, { ...task, serverDraft: new_draft });
+          return next;
+        });
+        const t = liveStates.get(tid);
+        if (t) liveStates.set(tid, { ...t, serverDraft: new_draft });
         break;
       }
       case "forkable_uuids": {

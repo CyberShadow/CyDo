@@ -290,6 +290,14 @@ struct UndoPreviewMessage
 	int messages_removed;
 }
 
+struct DraftUpdatedMessage
+{
+	string type = "draft_updated";
+	int tid;
+	string old_draft;
+	string new_draft;
+}
+
 struct SyntheticUserEventMessage
 {
 	string role;
