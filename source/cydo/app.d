@@ -733,6 +733,97 @@ class App : ToolsBackend
 		}
 	}
 
+	/// Load JSONL history from disk if not already loaded.
+	/// Must be called before appending to td.history to avoid a later
+	/// reload silently replacing events that were appended while
+	/// historyLoaded was false (e.g. continuation prompts).
+	private void ensureHistoryLoaded(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.historyLoaded || td.agentSessionId.length == 0)
+			return;
+
+		auto ta = agentForTask(tid);
+		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		string[] steeringStash;
+		string lastDequeuedText;
+		td.history = loadTaskHistory(tid, jsonlPath, delegate string[](string line, int lineNum) {
+			if (isQueueOperation(line))
+			{
+				import ae.utils.json : jsonParse;
+				auto op = jsonParse!QueueOperationProbe(line);
+				if (op.operation == "enqueue")
+				{
+					steeringStash ~= op.content;
+					return [buildSyntheticUserEvent(op.content, false, true)];
+				}
+				else if (op.operation == "dequeue")
+				{
+					string[] result;
+					// Flush any deferred synthetic from a prior dequeue
+					// (handles compacted back-to-back dequeues)
+					if (lastDequeuedText.length > 0)
+					{
+						result ~= buildSyntheticUserEvent(lastDequeuedText);
+						lastDequeuedText = null;
+					}
+					if (steeringStash.length > 0)
+					{
+						lastDequeuedText = steeringStash[0];
+						steeringStash = steeringStash[1 .. $];
+						// Defer: wait to see if type:"user" echo follows
+					}
+					return result;
+				}
+				else if (op.operation == "remove")
+				{
+					if (steeringStash.length > 0)
+					{
+						auto text = steeringStash[0];
+						steeringStash = steeringStash[1 .. $];
+						return [buildSyntheticUserEvent(text, true)];
+					}
+					return [];
+				}
+				return []; // unknown queue operation
+			}
+			// Deferred compaction check: if a type:"user" echo follows the
+			// dequeue, pass it through with its UUID intact (non-compacted).
+			// Neutral lines (file-history-snapshot, progress, etc.) pass through
+			// without leaving deferred mode — they can appear between dequeue and
+			// the user echo. Only type:"assistant" confirms compaction and triggers
+			// synthetic emission.
+			if (lastDequeuedText.length > 0)
+			{
+				if (isUserMessageLine(line))
+				{
+					// Non-compacted: type:"user" echo present — pass through with UUID
+					lastDequeuedText = null;
+					auto t = ta.translateHistoryLine(line, lineNum);
+					return t !is null ? [t] : [];
+				}
+				if (isAssistantMessageLine(line))
+				{
+					// Compacted: assistant response appeared without preceding user echo —
+					// emit synthetic before the assistant line.
+					auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
+					lastDequeuedText = null;
+					auto t = ta.translateHistoryLine(line, lineNum);
+					return t !is null ? [synthetic, t] : [synthetic];
+				}
+				// Neutral line (file-history-snapshot, progress, etc.) — pass through,
+				// stay in deferred mode waiting for type:"user" or type:"assistant".
+				auto t = ta.translateHistoryLine(line, lineNum);
+				return t !is null ? [t] : [];
+			}
+			auto t = ta.translateHistoryLine(line, lineNum);
+			return t !is null ? [t] : [];
+		});
+		td.historyLoaded = true;
+	}
+
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
@@ -742,87 +833,7 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 
-		// Load JSONL from disk if not already loaded
-		if (!td.historyLoaded && td.agentSessionId.length > 0)
-		{
-			auto ta = agentForTask(tid);
-			auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-			string[] steeringStash;
-			string lastDequeuedText;
-			td.history = loadTaskHistory(tid, jsonlPath, delegate string[](string line, int lineNum) {
-				if (isQueueOperation(line))
-				{
-					import ae.utils.json : jsonParse;
-					auto op = jsonParse!QueueOperationProbe(line);
-					if (op.operation == "enqueue")
-					{
-						steeringStash ~= op.content;
-						return [buildSyntheticUserEvent(op.content, false, true)];
-					}
-					else if (op.operation == "dequeue")
-					{
-						string[] result;
-						// Flush any deferred synthetic from a prior dequeue
-						// (handles compacted back-to-back dequeues)
-						if (lastDequeuedText.length > 0)
-						{
-							result ~= buildSyntheticUserEvent(lastDequeuedText);
-							lastDequeuedText = null;
-						}
-						if (steeringStash.length > 0)
-						{
-							lastDequeuedText = steeringStash[0];
-							steeringStash = steeringStash[1 .. $];
-							// Defer: wait to see if type:"user" echo follows
-						}
-						return result;
-					}
-					else if (op.operation == "remove")
-					{
-						if (steeringStash.length > 0)
-						{
-							auto text = steeringStash[0];
-							steeringStash = steeringStash[1 .. $];
-							return [buildSyntheticUserEvent(text, true)];
-						}
-						return [];
-					}
-					return []; // unknown queue operation
-				}
-				// Deferred compaction check: if a type:"user" echo follows the
-				// dequeue, pass it through with its UUID intact (non-compacted).
-				// Neutral lines (file-history-snapshot, progress, etc.) pass through
-				// without leaving deferred mode — they can appear between dequeue and
-				// the user echo. Only type:"assistant" confirms compaction and triggers
-				// synthetic emission.
-				if (lastDequeuedText.length > 0)
-				{
-					if (isUserMessageLine(line))
-					{
-						// Non-compacted: type:"user" echo present — pass through with UUID
-						lastDequeuedText = null;
-						auto t = ta.translateHistoryLine(line, lineNum);
-						return t !is null ? [t] : [];
-					}
-					if (isAssistantMessageLine(line))
-					{
-						// Compacted: assistant response appeared without preceding user echo —
-						// emit synthetic before the assistant line.
-						auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
-						lastDequeuedText = null;
-						auto t = ta.translateHistoryLine(line, lineNum);
-						return t !is null ? [synthetic, t] : [synthetic];
-					}
-					// Neutral line (file-history-snapshot, progress, etc.) — pass through,
-					// stay in deferred mode waiting for type:"user" or type:"assistant".
-					auto t = ta.translateHistoryLine(line, lineNum);
-					return t !is null ? [t] : [];
-				}
-				auto t = ta.translateHistoryLine(line, lineNum);
-				return t !is null ? [t] : [];
-			});
-			td.historyLoaded = true;
-		}
+		ensureHistoryLoaded(tid);
 
 		// Send unified history to requesting client
 		foreach (msg; td.history)
@@ -1721,6 +1732,7 @@ class App : ToolsBackend
 
 		if (tid in tasks)
 		{
+			ensureHistoryLoaded(tid);
 			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
 		}
@@ -1767,6 +1779,7 @@ class App : ToolsBackend
 							~ `,"timestamp":"` ~ now
 							~ `","event":` ~ steeringEvent ~ `}`;
 						auto data = Data(injected.representation);
+						ensureHistoryLoaded(tid);
 						td.lastActivity = now;
 						td.history ~= data;
 						sendToSubscribed(tid, data);
@@ -1790,6 +1803,7 @@ class App : ToolsBackend
 
 		if (tid in tasks)
 		{
+			ensureHistoryLoaded(tid);
 			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
 		}
