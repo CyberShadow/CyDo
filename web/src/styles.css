@@ -292,7 +292,7 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 6px 16px;
   cursor: pointer;
   font-size: 13px;
   border-left: 3px solid transparent;
