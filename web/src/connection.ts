@@ -58,7 +58,8 @@ export class Connection {
           raw.type === "error" ||
           raw.type === "undo_preview" ||
           raw.type === "suggestions_update" ||
-          raw.type === "ask_user_question"
+          raw.type === "ask_user_question" ||
+          raw.type === "draft_updated"
         ) {
           this.onControlMessage?.(raw as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
@@ -176,7 +177,6 @@ export class Connection {
       JSON.stringify({ type: "edit_message", tid, after_uuid: uuid, content }),
     );
   }
-
 
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;
