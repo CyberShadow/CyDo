@@ -48,7 +48,7 @@ function toMaskUri(raw: string): string {
 // Inject a <style> element with one class per icon type, so the mask-image
 // data URI is parsed once per icon type rather than once per element.
 let styleInjected = false;
-function ensureIconStyles() {
+export function ensureIconStyles() {
   if (styleInjected) return;
   styleInjected = true;
   const rules = Object.entries(rawIcons)

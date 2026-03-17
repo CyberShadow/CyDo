@@ -1,7 +1,8 @@
 import { h } from "preact";
-import { useEffect, useMemo, useRef } from "preact/hooks";
+import { memo } from "preact/compat";
+import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import type { TaskTypeInfo } from "../useSessionManager";
-import { TaskTypeIcon } from "./TaskTypeIcon";
+import { ensureIconStyles } from "./TaskTypeIcon";
 import relSubtaskIcon from "../icons/rel-subtask.svg?raw";
 import relForkIcon from "../icons/rel-fork.svg?raw";
 import relUndoBackupIcon from "../icons/rel-undo-backup.svg?raw";
@@ -67,7 +68,6 @@ function TreeJunction({
   isLast: boolean;
   relationType?: string;
 }) {
-  ensureRelationIconStyles();
   const iconClass =
     relationType && relationIcons[relationType]
       ? `relation-icon relation-icon-${relationType}`
@@ -231,126 +231,169 @@ function hasDescendant(node: TreeNode, id: string): boolean {
   return false;
 }
 
-function renderNode(
-  node: TreeNode,
-  depth: number,
-  guides: boolean[],
-  activeTaskId: string | null,
-  attention: Set<number>,
-  onSelectTask: (id: string) => void,
-  taskTypes: TaskTypeInfo[],
-): h.JSX.Element[] {
-  const t = node.task;
-  const elements: h.JSX.Element[] = [];
+// --- Flattened data item for memoized rendering ---
 
-  if (t.isArchiveNode) {
-    const isSelected = node.id === activeTaskId;
-    const isExpanded =
-      isSelected ||
-      (activeTaskId !== null && hasDescendant(node, activeTaskId));
-    elements.push(
-      <div
-        key={node.id}
-        class={`sidebar-item sidebar-archive-node${isSelected ? " active" : ""}`}
-        data-tid={node.id}
-        onClick={() => onSelectTask(node.id)}
-      >
-        {depth > 0 && (
-          <span class="tree-connectors">
-            {guides.slice(0, -1).map((hasLine, i) => (
-              <TreeGuide key={i} hasLine={hasLine} />
-            ))}
-            <TreeJunction isLast={!guides[guides.length - 1]} />
-          </span>
-        )}
-        <span class="sidebar-label">Archive ({node.children.length})</span>
-      </div>,
-    );
-    if (isExpanded) {
-      for (let i = 0; i < node.children.length; i++) {
-        const child = node.children[i];
-        const isLast = i === node.children.length - 1;
-        elements.push(
-          ...renderNode(
-            child,
+interface FlatItem {
+  id: string;
+  tid: number;
+  depth: number;
+  guides: number; // bitmask: bit i set = vertical line at depth i
+  relationType?: string;
+  statusClass: string;
+  title: string;
+  iconName?: string;
+  isArchive: boolean;
+}
+
+function computeStatusClass(t: SidebarTask): string {
+  if (t.isProcessing) return "processing";
+  if (t.alive) return "alive";
+  if (t.status === "failed") return "failed";
+  if (t.resumable) return "resumable";
+  if (t.status === "completed") return "completed";
+  return "";
+}
+
+function flattenTree(
+  tree: TreeNode[],
+  activeTaskId: string | null,
+  taskTypes: TaskTypeInfo[],
+): FlatItem[] {
+  const items: FlatItem[] = [];
+
+  function walk(node: TreeNode, depth: number, guides: number) {
+    const t = node.task;
+
+    if (t.isArchiveNode) {
+      items.push({
+        id: node.id,
+        tid: t.tid,
+        depth,
+        guides,
+        statusClass: "",
+        title: `Archive (${node.children.length})`,
+        isArchive: true,
+      });
+      const isExpanded =
+        node.id === activeTaskId ||
+        (activeTaskId !== null && hasDescendant(node, activeTaskId));
+      if (isExpanded) {
+        for (let i = 0; i < node.children.length; i++) {
+          const isLast = i === node.children.length - 1;
+          walk(
+            node.children[i],
             depth + 1,
-            [...guides, !isLast],
-            activeTaskId,
-            attention,
-            onSelectTask,
-            taskTypes,
-          ),
-        );
+            isLast ? guides : guides | (1 << depth),
+          );
+        }
       }
+      return;
     }
-    return elements;
+
+    const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
+    items.push({
+      id: node.id,
+      tid: t.tid,
+      depth,
+      guides,
+      relationType: t.relationType,
+      statusClass: computeStatusClass(t),
+      title: t.title || `Task ${t.tid}`,
+      iconName: typeInfo?.icon,
+      isArchive: false,
+    });
+
+    for (let i = 0; i < node.children.length; i++) {
+      const isLast = i === node.children.length - 1;
+      walk(
+        node.children[i],
+        depth + 1,
+        isLast ? guides : guides | (1 << depth),
+      );
+    }
   }
 
-  // Status modifier for dot/icon
-  let statusClass = "";
-  if (t.isProcessing) statusClass = "processing";
-  else if (t.alive) statusClass = "alive";
-  else if (t.status === "failed") statusClass = "failed";
-  else if (t.resumable) statusClass = "resumable";
-  else if (t.status === "completed") statusClass = "completed";
-  // pending = no extra class (gray)
+  for (const node of tree) walk(node, 0, 0);
+  return items;
+}
 
-  const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
-  const hasIcon = typeInfo?.icon != null;
+// --- Memoized sidebar item ---
 
-  elements.push(
+const SidebarItem = memo(function SidebarItem({
+  id,
+  depth,
+  guides,
+  relationType,
+  statusClass,
+  title,
+  iconName,
+  isArchive,
+  isActive,
+  hasAttention,
+  onSelect,
+}: {
+  id: string;
+  depth: number;
+  guides: number;
+  relationType?: string;
+  statusClass: string;
+  title: string;
+  iconName?: string;
+  isArchive: boolean;
+  isActive: boolean;
+  hasAttention: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const treeConnectors =
+    depth > 0 ? (
+      <span class="tree-connectors">
+        {Array.from({ length: depth - 1 }, (_, i) => (
+          <TreeGuide key={i} hasLine={(guides & (1 << i)) !== 0} />
+        ))}
+        <TreeJunction
+          isLast={(guides & (1 << (depth - 1))) === 0}
+          relationType={isArchive ? undefined : relationType}
+        />
+      </span>
+    ) : null;
+
+  if (isArchive) {
+    return (
+      <div
+        class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}`}
+        data-tid={id}
+        onClick={() => onSelect(id)}
+      >
+        {treeConnectors}
+        <span class="sidebar-label">{title}</span>
+      </div>
+    );
+  }
+
+  return (
     <div
-      key={node.id}
-      class={`sidebar-item${node.id === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
-      data-tid={node.id}
-      onClick={() => onSelectTask(node.id)}
+      class={`sidebar-item${isActive ? " active" : ""}${hasAttention ? " attention" : ""}`}
+      data-tid={id}
+      onClick={() => onSelect(id)}
     >
-      {depth > 0 && (
-        <span class="tree-connectors">
-          {guides.slice(0, -1).map((hasLine, i) => (
-            <TreeGuide key={i} hasLine={hasLine} />
-          ))}
-          <TreeJunction
-            isLast={!guides[guides.length - 1]}
-            relationType={t.relationType}
-          />
-        </span>
-      )}
-      {attention.has(t.tid) ? (
+      {treeConnectors}
+      {hasAttention ? (
         <span class="sidebar-dot check">&#x2713;</span>
-      ) : hasIcon ? (
-        <TaskTypeIcon
-          taskType={t.taskType}
-          taskTypes={taskTypes}
-          class={statusClass || undefined}
+      ) : iconName ? (
+        <span
+          class={`task-type-icon task-type-icon-${iconName}${statusClass ? ` ${statusClass}` : ""}`}
         />
       ) : (
         <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
       )}
-      <span class="sidebar-label" title={t.title || `Task ${t.tid}`}>
-        {t.title || `Task ${t.tid}`}
+      <span class="sidebar-label" title={title}>
+        {title}
       </span>
-    </div>,
+    </div>
   );
+});
 
-  for (let i = 0; i < node.children.length; i++) {
-    const child = node.children[i];
-    const isLast = i === node.children.length - 1;
-    elements.push(
-      ...renderNode(
-        child,
-        depth + 1,
-        [...guides, !isLast],
-        activeTaskId,
-        attention,
-        onSelectTask,
-        taskTypes,
-      ),
-    );
-  }
-
-  return elements;
-}
+// --- Sidebar component ---
 
 interface Props {
   tasks: SidebarTask[];
@@ -376,7 +419,20 @@ export function Sidebar({
   taskTypes,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
+  const flatItems = useMemo(
+    () => flattenTree(tree, activeTaskId, taskTypes),
+    [tree, activeTaskId, taskTypes],
+  );
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Stable callback via ref — survives parent re-renders
+  const onSelectRef = useRef(onSelectTask);
+  onSelectRef.current = onSelectTask;
+  const handleSelect = useCallback((id: string) => onSelectRef.current(id), []);
+
+  // Ensure icon styles are injected once
+  ensureIconStyles();
+  ensureRelationIconStyles();
 
   useEffect(() => {
     if (activeTaskId === null) return;
@@ -424,18 +480,23 @@ export function Sidebar({
           <span class="sidebar-dot new">+</span>
           <span class="sidebar-label">New Task</span>
         </div>
-        {tree
-          .flatMap((node) =>
-            renderNode(
-              node,
-              0,
-              [],
-              activeTaskId,
-              attention,
-              onSelectTask,
-              taskTypes,
-            ),
-          )
+        {flatItems
+          .map((item) => (
+            <SidebarItem
+              key={item.id}
+              id={item.id}
+              depth={item.depth}
+              guides={item.guides}
+              relationType={item.relationType}
+              statusClass={item.statusClass}
+              title={item.title}
+              iconName={item.iconName}
+              isArchive={item.isArchive}
+              isActive={item.id === activeTaskId}
+              hasAttention={attention.has(item.tid)}
+              onSelect={handleSelect}
+            />
+          ))
           .reverse()}
       </div>
     </div>
