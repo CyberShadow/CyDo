@@ -1949,8 +1949,10 @@ class App : ToolsBackend
 		if (td.titleGenHandle is null)
 		{
 			import ae.utils.json : toJson;
-			broadcastTask(tid, toJson(StderrMessage("stderr",
-				"failed to spawn claude for title generation; is the claude binary installed and on PATH?")));
+			import cydo.agent.protocol : ProcessStderrEvent;
+			ProcessStderrEvent ev;
+			ev.text = "failed to spawn claude for title generation; is the claude binary installed and on PATH?";
+			broadcastTask(tid, toJson(ev));
 		}
 	}
 
