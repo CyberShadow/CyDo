@@ -964,6 +964,7 @@ body,
 /* Markdown toggle */
 .markdown-wrap {
   position: relative;
+  width: 100%;
 }
 
 .markdown-toggle-btn {
@@ -1818,11 +1819,25 @@ body,
 .ask-option-desc p {
   margin: 0;
 }
+.ask-option-selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--overlay-dark));
+}
+.ask-answer {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--accent);
+}
+.ask-answer-label {
+  font-weight: 600;
+}
 
 /* AskUserForm (interactive) */
 .ask-user-form {
   padding: 12px 16px;
   border-top: 1px solid var(--border);
+  max-height: 50vh;
+  overflow-y: auto;
 }
 .ask-user-form-question {
   margin-bottom: 16px;
@@ -1839,7 +1854,6 @@ body,
   align-items: flex-start;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
   background: var(--overlay-dark);
   color: var(--text);
   cursor: pointer;
@@ -1871,7 +1885,6 @@ body,
   min-height: 60px;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
   background: var(--bg);
   color: var(--text);
   font-family: inherit;
@@ -1880,18 +1893,24 @@ body,
   margin-top: 4px;
   box-sizing: border-box;
 }
+.ask-submit-row {
+  display: flex;
+  justify-content: flex-end;
+}
 .ask-submit-btn {
-  padding: 8px 24px;
+  padding: 10px 20px;
   border: none;
-  border-radius: 6px;
   background: var(--accent);
-  color: white;
+  color: var(--bg);
   cursor: pointer;
-  font-weight: 600;
-  font-size: inherit;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+.ask-submit-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
 }
 .ask-submit-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 .ask-multi-hint {

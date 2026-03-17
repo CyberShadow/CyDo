@@ -30,14 +30,14 @@ export function AskUserForm({ questions, onSubmit }: Props) {
       } else {
         set.clear();
         set.add(label);
+        // Deselect "Other" only for single-select
+        setUseCustom((prev) => {
+          const next = new Map(prev);
+          next.set(qi, false);
+          return next;
+        });
       }
       next.set(qi, set);
-      return next;
-    });
-    // Deselect "Other" when selecting a regular option
-    setUseCustom((prev) => {
-      const next = new Map(prev);
-      next.set(qi, false);
       return next;
     });
   };
@@ -46,19 +46,20 @@ export function AskUserForm({ questions, onSubmit }: Props) {
     const answers: Record<string, string> = {};
     for (let qi = 0; qi < questions.length; qi++) {
       const q = questions[qi];
-      if (useCustom.get(qi)) {
-        answers[q.question] = customTexts.get(qi) ?? "";
-      } else {
-        const selected = Array.from(selections.get(qi) ?? []);
-        answers[q.question] = selected.join(", ");
-      }
+      const selected = Array.from(selections.get(qi) ?? []);
+      const custom = useCustom.get(qi) ? (customTexts.get(qi) ?? "") : "";
+      const parts = [...selected];
+      if (custom) parts.push(custom);
+      answers[q.question] = parts.join(", ");
     }
     onSubmit(answers);
   };
 
   const hasAnyAnswer = questions.some((_, qi) => {
-    if (useCustom.get(qi)) return (customTexts.get(qi) ?? "").length > 0;
-    return (selections.get(qi)?.size ?? 0) > 0;
+    const hasSelection = (selections.get(qi)?.size ?? 0) > 0;
+    const hasCustom =
+      useCustom.get(qi) && (customTexts.get(qi) ?? "").length > 0;
+    return hasSelection || hasCustom;
   });
 
   return (
@@ -69,9 +70,7 @@ export function AskUserForm({ questions, onSubmit }: Props) {
           <div class="ask-question-text">{q.question}</div>
           <div class="ask-options-interactive">
             {q.options.map((opt, oi) => {
-              const selected =
-                !useCustom.get(qi) &&
-                (selections.get(qi)?.has(opt.label) ?? false);
+              const selected = selections.get(qi)?.has(opt.label) ?? false;
               return (
                 <button
                   key={oi}
@@ -90,16 +89,21 @@ export function AskUserForm({ questions, onSubmit }: Props) {
             <button
               class={`ask-option-btn other ${useCustom.get(qi) ? "selected" : ""}`}
               onClick={() => {
+                const isMulti = q.multiSelect ?? false;
                 setUseCustom((prev) => {
                   const next = new Map(prev);
-                  next.set(qi, true);
+                  const wasCustom = prev.get(qi) ?? false;
+                  next.set(qi, isMulti ? !wasCustom : true);
                   return next;
                 });
-                setSelections((prev) => {
-                  const next = new Map(prev);
-                  next.set(qi, new Set());
-                  return next;
-                });
+                if (!isMulti) {
+                  // Single-select: clear option selections
+                  setSelections((prev) => {
+                    const next = new Map(prev);
+                    next.set(qi, new Set());
+                    return next;
+                  });
+                }
               }}
             >
               Other
@@ -123,13 +127,15 @@ export function AskUserForm({ questions, onSubmit }: Props) {
           </div>
         </div>
       ))}
-      <button
-        class="ask-submit-btn"
-        disabled={!hasAnyAnswer}
-        onClick={handleSubmit}
-      >
-        Submit
-      </button>
+      <div class="ask-submit-row">
+        <button
+          class="ask-submit-btn"
+          disabled={!hasAnyAnswer}
+          onClick={handleSubmit}
+        >
+          Submit
+        </button>
+      </div>
     </div>
   );
 }

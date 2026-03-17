@@ -733,28 +733,79 @@ interface AskQuestion {
   multiSelect?: boolean;
 }
 
-function AskUserQuestionInput({ input }: { input: Record<string, unknown> }) {
+function getAskAnswers(
+  input: Record<string, unknown>,
+  result?: ToolResult,
+): Record<string, string> | null {
+  // Built-in AskUserQuestion: answers in toolUseResult
+  const tur = result?.toolUseResult as Record<string, unknown> | undefined;
+  if (tur?.answers && typeof tur.answers === "object") {
+    return tur.answers as Record<string, string>;
+  }
+  // MCP AskUserQuestion: parse from result text
+  // Format: User has answered your questions: "Q"="A". "Q2"="A2".
+  if (result && typeof result.content === "string") {
+    const prefix = "User has answered your questions: ";
+    const text = result.content;
+    if (text.startsWith(prefix)) {
+      const answers: Record<string, string> = {};
+      const body = text.slice(prefix.length);
+      const re = /"([^"]*)"="([^"]*)"/g;
+      let m;
+      while ((m = re.exec(body)) !== null) {
+        answers[m[1]] = m[2];
+      }
+      if (Object.keys(answers).length > 0) return answers;
+    }
+  }
+  return null;
+}
+
+function AskUserQuestionInput({
+  input,
+  result,
+}: {
+  input: Record<string, unknown>;
+  result?: ToolResult;
+}) {
   const questions = input.questions as AskQuestion[];
+  const answers = getAskAnswers(input, result);
 
   return (
     <div class="tool-input-formatted">
-      {questions.map((q, qi) => (
-        <div key={qi} class="ask-question">
-          <div class="ask-question-header">{q.header}</div>
-          <div class="ask-question-text">{q.question}</div>
-          <div class="ask-options">
-            {q.options.map((opt, oi) => (
-              <div key={oi} class="ask-option">
-                <div class="ask-option-label">{opt.label}</div>
-                <Markdown text={opt.description} class="ask-option-desc" />
+      {questions.map((q, qi) => {
+        const answer = answers?.[q.question];
+        return (
+          <div key={qi} class="ask-question">
+            <div class="ask-question-header">{q.header}</div>
+            <div class="ask-question-text">{q.question}</div>
+            <div class="ask-options">
+              {q.options.map((opt, oi) => {
+                const isSelected =
+                  answer != null &&
+                  answer.split(", ").some((a) => a === opt.label);
+                return (
+                  <div
+                    key={oi}
+                    class={`ask-option${isSelected ? " ask-option-selected" : ""}`}
+                  >
+                    <div class="ask-option-label">{opt.label}</div>
+                    <Markdown text={opt.description} class="ask-option-desc" />
+                  </div>
+                );
+              })}
+            </div>
+            {answer != null && (
+              <div class="ask-answer">
+                <span class="ask-answer-label">Answer:</span> {answer}
               </div>
-            ))}
+            )}
+            {!answer && q.multiSelect && (
+              <div class="ask-multi-hint">Multiple selections allowed</div>
+            )}
           </div>
-          {q.multiSelect && (
-            <div class="ask-multi-hint">Multiple selections allowed</div>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -957,6 +1008,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "durationMs",
   ]),
   AskUserQuestion: new Set(["questions", "answers", "annotations"]),
+  mcp__cydo__AskUserQuestion: new Set(["questions", "answers"]),
   Task: new Set([
     "status",
     "prompt",
@@ -1102,7 +1154,10 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+  if (
+    (name === "AskUserQuestion" || name === "mcp__cydo__AskUserQuestion") &&
+    Array.isArray(input.questions)
+  ) {
     const questions = input.questions as AskQuestion[];
     if (questions.length === 1) {
       return <span class="tool-subtitle">{questions[0].header}</span>;
@@ -1227,8 +1282,11 @@ function formatInput(
   ) {
     return formatTodoWriteInput(input);
   }
-  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
-    return <AskUserQuestionInput input={input} />;
+  if (
+    (name === "AskUserQuestion" || name === "mcp__cydo__AskUserQuestion") &&
+    Array.isArray(input.questions)
+  ) {
+    return <AskUserQuestionInput input={input} result={result} />;
   }
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
     const { plan, ...remaining } = input;
