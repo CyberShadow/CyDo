@@ -65,14 +65,12 @@ test("archiving a task moves it under Archive node", async ({
   // Select "arch-archive-me" in the sidebar and archive it
   await page
     .locator(".sidebar-item .sidebar-label", { hasText: "arch-archive-me" })
-    .first()
     .click();
   await page.locator(".btn-banner-archive").click();
 
   // Navigate to "arch-keep-me" so the archive node collapses
   await page
     .locator(".sidebar-item .sidebar-label", { hasText: "arch-keep-me" })
-    .first()
     .click();
 
   // Archive node must appear
@@ -80,12 +78,12 @@ test("archiving a task moves it under Archive node", async ({
 
   // "arch-archive-me" must NOT be visible as a direct item (hidden under collapsed archive)
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-archive-me" }).first(),
+    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-archive-me" }),
   ).not.toBeVisible();
 
   // "arch-keep-me" must still be visible directly
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-keep-me" }).first(),
+    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-keep-me" }),
   ).toBeVisible();
 });
 
@@ -114,7 +112,7 @@ test("archive node expands when selected", async ({ page, agentType }) => {
   // visible scroll area even though it is rendered in the DOM.
   const hiddenTaskLabel = page.locator(".sidebar-item .sidebar-label", {
     hasText: "arch-hidden-task",
-  }).first();
+  });
   await hiddenTaskLabel.scrollIntoViewIfNeeded();
   await expect(hiddenTaskLabel).toBeVisible();
 
@@ -143,7 +141,7 @@ test("unarchiving a task removes it from Archive", async ({
   await page.locator(".sidebar-archive-node").click();
   const restoreLabel = page.locator(".sidebar-item .sidebar-label", {
     hasText: "arch-restore-me",
-  }).first();
+  });
   await restoreLabel.scrollIntoViewIfNeeded();
   await restoreLabel.click();
 
@@ -156,7 +154,7 @@ test("unarchiving a task removes it from Archive", async ({
 
   // Task must be back in the normal sidebar list (not under the Archive node)
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-restore-me" }).first(),
+    page.locator(".sidebar-item .sidebar-label", { hasText: "arch-restore-me" }),
   ).toBeVisible();
 });
 
@@ -183,12 +181,12 @@ test("archive node shows count", async ({ page, agentType }) => {
   await page.locator(".sidebar-archive-node").click();
   const countOneLabel = page.locator(".sidebar-item .sidebar-label", {
     hasText: "arch-count-one",
-  }).first();
+  });
   await countOneLabel.scrollIntoViewIfNeeded();
   await expect(countOneLabel).toBeVisible();
   const countTwoLabel = page.locator(".sidebar-item .sidebar-label", {
     hasText: "arch-count-two",
-  }).first();
+  });
   await countTwoLabel.scrollIntoViewIfNeeded();
   await expect(countTwoLabel).toBeVisible();
 });
@@ -212,7 +210,7 @@ test("archived task cannot be resumed without unarchiving", async ({
   await page.locator(".sidebar-archive-node").click();
   const noResumeLabel = page.locator(".sidebar-item .sidebar-label", {
     hasText: "arch-no-resume",
-  }).first();
+  });
   await noResumeLabel.scrollIntoViewIfNeeded();
   await noResumeLabel.click();
 

@@ -1,5 +1,8 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Page, WorkerInfo } from "@playwright/test";
+import { spawn } from "child_process";
+import type { ChildProcess } from "child_process";
+import { mkdirSync, cpSync, rmSync, symlinkSync } from "fs";
 
 type AgentType = "claude" | "codex";
 
@@ -41,21 +44,88 @@ export function responseTimeout(agentType: AgentType): number {
   return agentType === "codex" ? 60_000 : 30_000;
 }
 
+type WorkerFixtures = {
+  backend: { port: number; baseURL: string };
+};
+
 /**
- * Extended test fixture that automatically asserts no unknown message types
- * appear during any test.
- *
- * The frontend renders unknown message type errors as system messages
- * containing "Unknown message type".  This fixture checks the DOM after
- * every test and fails if any such messages exist.
+ * Extended test fixture that:
+ * - Starts a per-worker CyDo backend on a unique port (worker-scoped)
+ * - Overrides baseURL to point to the per-worker backend
+ * - Automatically asserts no unknown message types appear during any test
  *
  * Usage: import { test, expect } from "./fixtures" instead of "@playwright/test".
  */
-export const test = base.extend<{ agentType: AgentType }>({
+export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
+  backend: [
+    async ({}, use: (r: WorkerFixtures["backend"]) => Promise<void>, workerInfo: WorkerInfo) => {
+      const port = 4000 + workerInfo.workerIndex;
+      const workDir = `/tmp/cydo-worker-${workerInfo.workerIndex}`;
+      const workerHome = `${workDir}/home`;
+
+      // Set up working directory with data dir (for SQLite) and defs
+      // (task type definitions are loaded relative to CWD)
+      mkdirSync(`${workDir}/data`, { recursive: true });
+      symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
+
+      // Copy config from the shared playwright HOME
+      mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
+      cpSync(
+        "/tmp/playwright-home/.config/cydo/config.yaml",
+        `${workerHome}/.config/cydo/config.yaml`,
+      );
+
+      // Start backend
+      const proc = spawn(process.env.CYDO_BIN!, [], {
+        cwd: workDir,
+        env: {
+          ...process.env,
+          HOME: workerHome,
+          CYDO_LISTEN_PORT: String(port),
+        },
+        stdio: ["ignore", "ignore", "inherit"],
+      });
+
+      // Wait for ready (poll up to 30s)
+      const baseURL = `http://localhost:${port}`;
+      let ready = false;
+      for (let i = 0; i < 60; i++) {
+        try {
+          const res = await fetch(baseURL);
+          if (res.ok || res.status < 500) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // not ready yet
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (!ready) {
+        proc.kill();
+        throw new Error(`CyDo backend on port ${port} did not start in time`);
+      }
+
+      await use({ port, baseURL });
+
+      // Teardown
+      proc.kill();
+      await new Promise<void>((r) => proc.on("exit", r));
+      rmSync(workDir, { recursive: true, force: true });
+    },
+    { scope: "worker" },
+  ],
+
+  // Override baseURL per worker so page.goto("/") uses the right backend
+  baseURL: async ({ backend }, use) => {
+    await use(backend.baseURL);
+  },
+
   agentType: async ({}, use, testInfo) => {
     const at = (testInfo.project.use as any).agentType ?? "claude";
     await use(at);
   },
+
   page: async ({ page }, use) => {
     await use(page);
 

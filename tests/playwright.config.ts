@@ -7,7 +7,6 @@ export default defineConfig({
   fullyParallel: true,
   workers: 4,
   use: {
-    baseURL: "http://localhost:3456",
     headless: true,
     screenshot: "on",
     launchOptions: {

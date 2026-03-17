@@ -231,22 +231,15 @@
                   root: /tmp/cydo-test-workspace
               CYDO_CFG
 
-              ${cydo}/bin/cydo &
-              CYDO_PID=$!
-              for i in $(seq 1 30); do
-                if curl -sf http://127.0.0.1:3456/ >/dev/null 2>&1; then break; fi
-                if ! kill -0 $CYDO_PID 2>/dev/null; then echo "CyDo backend died"; exit 1; fi
-                sleep 1
-              done
-              echo "CyDo backend ready"
+              export CYDO_BIN="${cydo}/bin/cydo"
 
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests
               cd /tmp/tests
               playwright test --reporter=list ${testMatch} || TEST_RESULT=$?
 
-              kill $CYDO_PID $MOCK_PID 2>/dev/null || true
-              wait $CYDO_PID $MOCK_PID 2>/dev/null || true
+              kill $MOCK_PID 2>/dev/null || true
+              wait $MOCK_PID 2>/dev/null || true
 
               if [ "''${TEST_RESULT:-0}" != "0" ]; then
                 echo "Tests failed with exit code ''${TEST_RESULT}"
