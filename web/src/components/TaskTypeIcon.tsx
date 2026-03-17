@@ -1,23 +1,23 @@
 import { h } from "preact";
 import type { TaskTypeInfo } from "../useSessionManager";
 
-import blankIcon from "../icons/blank.svg";
-import conversationIcon from "../icons/conversation.svg";
-import planModeIcon from "../icons/plan-mode.svg";
-import bugModeIcon from "../icons/bug-mode.svg";
-import writeModeIcon from "../icons/write-mode.svg";
-import planIcon from "../icons/plan.svg";
-import researchIcon from "../icons/research.svg";
-import bugIcon from "../icons/bug.svg";
-import spikeIcon from "../icons/spike.svg";
-import testIcon from "../icons/test.svg";
-import triageIcon from "../icons/triage.svg";
-import decomposeIcon from "../icons/decompose.svg";
-import implementIcon from "../icons/implement.svg";
-import verifyIcon from "../icons/verify.svg";
-import reviewIcon from "../icons/review.svg";
-import stewardQualityIcon from "../icons/steward-quality.svg";
-import stewardSecurityIcon from "../icons/steward-security.svg";
+import blankIcon from "../icons/blank.svg?raw";
+import conversationIcon from "../icons/conversation.svg?raw";
+import planModeIcon from "../icons/plan-mode.svg?raw";
+import bugModeIcon from "../icons/bug-mode.svg?raw";
+import writeModeIcon from "../icons/write-mode.svg?raw";
+import planIcon from "../icons/plan.svg?raw";
+import researchIcon from "../icons/research.svg?raw";
+import bugIcon from "../icons/bug.svg?raw";
+import spikeIcon from "../icons/spike.svg?raw";
+import testIcon from "../icons/test.svg?raw";
+import triageIcon from "../icons/triage.svg?raw";
+import decomposeIcon from "../icons/decompose.svg?raw";
+import implementIcon from "../icons/implement.svg?raw";
+import verifyIcon from "../icons/verify.svg?raw";
+import reviewIcon from "../icons/review.svg?raw";
+import stewardQualityIcon from "../icons/steward-quality.svg?raw";
+import stewardSecurityIcon from "../icons/steward-security.svg?raw";
 
 const iconMap: Record<string, string> = {
   blank: blankIcon,
@@ -52,23 +52,14 @@ export function TaskTypeIcon({
 }: TaskTypeIconProps) {
   const typeInfo = taskTypes.find((tt) => tt.name === taskType);
   const iconName = typeInfo?.icon;
-  const iconUrl = iconName ? iconMap[iconName] : undefined;
+  const svgMarkup = iconName ? iconMap[iconName] : undefined;
 
-  if (!iconUrl) return null;
+  if (!svgMarkup) return null;
 
   return (
     <span
       class={`task-type-icon${className ? ` ${className}` : ""}`}
-      style={{
-        maskImage: `url(${iconUrl})`,
-        WebkitMaskImage: `url(${iconUrl})`,
-        maskSize: "contain",
-        WebkitMaskSize: "contain",
-        maskRepeat: "no-repeat",
-        WebkitMaskRepeat: "no-repeat",
-        maskPosition: "center",
-        WebkitMaskPosition: "center",
-      }}
+      dangerouslySetInnerHTML={{ __html: svgMarkup }}
     />
   );
 }
