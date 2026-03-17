@@ -3,6 +3,7 @@ module cydo.agent.claude;
 import std.conv : to;
 import std.format : format;
 import std.path : dirName, expandTilde;
+import std.stdio : stderr;
 
 import ae.utils.json : toJson;
 
@@ -344,21 +345,38 @@ class ClaudeCodeAgent : Agent
 
 	Object generateTitle(string userMessage, void delegate(string title) onTitle)
 	{
+		import std.path : buildPath;
+		import std.process : environment;
+
+		auto claudeBinDir = resolveClaudeBinary();
+		auto claudeBin = claudeBinDir.length > 0 ? buildPath(claudeBinDir, "claude") : "claude";
 		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
 
-		auto proc = new AgentProcess([
-			"claude",
-			"-p",
-			"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
-			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
-			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
-			"Initial request / task description:\n\n" ~ msg,
-			"--output-format", "text",
-			"--model", "haiku",
-			"--max-turns", "1",
-			"--tools", "",
-			"--no-session-persistence",
-		], null, null, true); // noStdin
+		string[string] env = [
+			"PATH": environment.get("PATH", ""),
+			"HOME": environment.get("HOME", ""),
+		];
+
+		AgentProcess proc;
+		try
+			proc = new AgentProcess([
+				claudeBin,
+				"-p",
+				"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
+				"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
+				"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
+				"Initial request / task description:\n\n" ~ msg,
+				"--output-format", "text",
+				"--model", "haiku",
+				"--max-turns", "1",
+				"--tools", "",
+				"--no-session-persistence",
+			], env, null, true); // noStdin
+		catch (Exception e)
+		{
+			stderr.writeln("generateTitle: failed to spawn claude: ", e.msg);
+			return null;
+		}
 
 		string titleText;
 

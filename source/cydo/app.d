@@ -1730,6 +1730,13 @@ class App : ToolsBackend
 			persistence.setTitle(tid, title);
 			broadcastTitleUpdate(tid, title);
 		});
+
+		if (td.titleGenHandle is null)
+		{
+			import ae.utils.json : toJson;
+			broadcastTask(tid, toJson(StderrMessage("stderr",
+				"failed to spawn claude for title generation; is the claude binary installed and on PATH?")));
+		}
 	}
 
 	private void broadcast(string message)
