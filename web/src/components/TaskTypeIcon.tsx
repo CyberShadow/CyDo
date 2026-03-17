@@ -19,7 +19,7 @@ import reviewIcon from "../icons/review.svg?raw";
 import stewardQualityIcon from "../icons/steward-quality.svg?raw";
 import stewardSecurityIcon from "../icons/steward-security.svg?raw";
 
-const iconMap: Record<string, string> = {
+const rawIcons: Record<string, string> = {
   blank: blankIcon,
   conversation: conversationIcon,
   "plan-mode": planModeIcon,
@@ -39,6 +39,74 @@ const iconMap: Record<string, string> = {
   "steward-security": stewardSecurityIcon,
 };
 
+/** Parse raw SVG string into a <symbol> element, rewriting internal ids to avoid collisions. */
+function svgToSymbol(name: string, raw: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(raw, "image/svg+xml");
+  const svg = doc.documentElement;
+  const viewBox = svg.getAttribute("viewBox") || "0 0 16 16";
+
+  // Rewrite id attributes and their url(#id) references to be unique per symbol
+  const prefix = `icon-${name}-`;
+  const idMap = new Map<string, string>();
+  svg.querySelectorAll("[id]").forEach((el) => {
+    const oldId = el.getAttribute("id")!;
+    const newId = prefix + oldId;
+    idMap.set(oldId, newId);
+    el.setAttribute("id", newId);
+  });
+  if (idMap.size > 0) {
+    const refAttrs = ["mask", "clip-path", "fill", "stroke", "filter"];
+    svg.querySelectorAll("*").forEach((el) => {
+      for (const attr of refAttrs) {
+        const val = el.getAttribute(attr);
+        if (val) {
+          const replaced = val.replace(/url\(#([^)]+)\)/g, (_, id) => {
+            const newId = idMap.get(id);
+            return newId ? `url(#${newId})` : `url(#${id})`;
+          });
+          if (replaced !== val) el.setAttribute(attr, replaced);
+        }
+      }
+    });
+  }
+
+  // Copy presentational attributes from <svg> to <symbol>
+  const presentAttrs = [
+    "fill",
+    "stroke",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+  ];
+  const attrStr = presentAttrs
+    .map((a) => {
+      const v = svg.getAttribute(a);
+      return v ? `${a}="${v}"` : "";
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  return `<symbol id="icon-${name}" viewBox="${viewBox}"${attrStr ? " " + attrStr : ""}>${svg.innerHTML}</symbol>`;
+}
+
+let spriteInjected = false;
+
+/** Inject a single hidden SVG sprite sheet into the document. */
+function ensureSpriteSheet() {
+  if (spriteInjected) return;
+  spriteInjected = true;
+
+  const symbols = Object.entries(rawIcons)
+    .map(([name, raw]) => svgToSymbol(name, raw))
+    .join("\n");
+
+  const sprite = document.createElement("div");
+  sprite.style.display = "none";
+  sprite.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg">${symbols}</svg>`;
+  document.body.prepend(sprite);
+}
+
 interface TaskTypeIconProps {
   taskType?: string;
   taskTypes: TaskTypeInfo[];
@@ -52,14 +120,16 @@ export function TaskTypeIcon({
 }: TaskTypeIconProps) {
   const typeInfo = taskTypes.find((tt) => tt.name === taskType);
   const iconName = typeInfo?.icon;
-  const svgMarkup = iconName ? iconMap[iconName] : undefined;
 
-  if (!svgMarkup) return null;
+  if (!iconName || !rawIcons[iconName]) return null;
+
+  ensureSpriteSheet();
 
   return (
-    <span
-      class={`task-type-icon${className ? ` ${className}` : ""}`}
-      dangerouslySetInnerHTML={{ __html: svgMarkup }}
-    />
+    <span class={`task-type-icon${className ? ` ${className}` : ""}`}>
+      <svg viewBox="0 0 16 16">
+        <use href={`#icon-${iconName}`} />
+      </svg>
+    </span>
   );
 }
