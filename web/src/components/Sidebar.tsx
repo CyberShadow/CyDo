@@ -2,6 +2,107 @@ import { h } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
 import type { TaskTypeInfo } from "../useSessionManager";
 import { TaskTypeIcon } from "./TaskTypeIcon";
+import relSubtaskIcon from "../icons/rel-subtask.svg?raw";
+import relForkIcon from "../icons/rel-fork.svg?raw";
+import relUndoBackupIcon from "../icons/rel-undo-backup.svg?raw";
+import relContinuationIcon from "../icons/rel-continuation.svg?raw";
+
+const relationIcons: Record<string, string> = {
+  subtask: relSubtaskIcon,
+  fork: relForkIcon,
+  "undo-backup": relUndoBackupIcon,
+  continuation: relContinuationIcon,
+};
+
+function toMaskUri(raw: string): string {
+  const mask = raw.replace(/currentColor/g, "black");
+  return `url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
+}
+
+let relationStylesInjected = false;
+function ensureRelationIconStyles() {
+  if (relationStylesInjected) return;
+  relationStylesInjected = true;
+  const rules = Object.entries(relationIcons)
+    .map(([name, raw]) => {
+      const uri = toMaskUri(raw);
+      return `.relation-icon-${CSS.escape(name)}{mask-image:${uri};-webkit-mask-image:${uri}}`;
+    })
+    .join("\n");
+  const style = document.createElement("style");
+  style.textContent = rules;
+  document.head.appendChild(style);
+}
+
+const ROW_HEIGHT = 31;
+const COL_WIDTH = 20;
+const LINE_X = 10;
+const JUNCTION_Y = ROW_HEIGHT / 2;
+
+function TreeGuide({ hasLine }: { hasLine: boolean }) {
+  return (
+    <svg
+      viewBox={`0 0 ${COL_WIDTH} ${ROW_HEIGHT}`}
+      preserveAspectRatio="none"
+      width={COL_WIDTH}
+    >
+      {hasLine && (
+        <line
+          x1={LINE_X} y1={0}
+          x2={LINE_X} y2={ROW_HEIGHT}
+          stroke="var(--border)"
+          stroke-width={1}
+        />
+      )}
+    </svg>
+  );
+}
+
+function TreeJunction({
+  isLast,
+  relationType,
+}: {
+  isLast: boolean;
+  relationType?: string;
+}) {
+  ensureRelationIconStyles();
+  const iconClass = relationType && relationIcons[relationType]
+    ? `relation-icon relation-icon-${relationType}`
+    : "relation-icon relation-icon-subtask";
+  return (
+    <span style={{ position: "relative", width: COL_WIDTH, flexShrink: 0, alignSelf: "stretch" }}>
+      <svg
+        viewBox={`0 0 ${COL_WIDTH} ${ROW_HEIGHT}`}
+        preserveAspectRatio="none"
+        width={COL_WIDTH}
+        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
+      >
+        <line
+          x1={LINE_X} y1={0}
+          x2={LINE_X} y2={isLast ? JUNCTION_Y : ROW_HEIGHT}
+          stroke="var(--border)"
+          stroke-width={1}
+        />
+        <line
+          x1={LINE_X} y1={JUNCTION_Y}
+          x2={COL_WIDTH + 4} y2={JUNCTION_Y}
+          stroke="var(--border)"
+          stroke-width={1}
+        />
+      </svg>
+      <span
+        class={iconClass}
+        style={{
+          position: "absolute",
+          left: LINE_X - 5,
+          top: "50%",
+          transform: "translateY(-50%)",
+        }}
+        title={relationType || "child"}
+      />
+    </span>
+  );
+}
 
 export interface SidebarTask {
   tid: number;
@@ -119,6 +220,7 @@ function hasDescendant(node: TreeNode, id: string): boolean {
 function renderNode(
   node: TreeNode,
   depth: number,
+  guides: boolean[],
   activeTaskId: string | null,
   attention: Set<number>,
   onSelectTask: (id: string) => void,
@@ -137,18 +239,28 @@ function renderNode(
         key={node.id}
         class={`sidebar-item sidebar-archive-node${isSelected ? " active" : ""}`}
         data-tid={node.id}
-        style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
         onClick={() => onSelectTask(node.id)}
       >
+        {depth > 0 && (
+          <span class="tree-connectors">
+            {guides.slice(0, -1).map((hasLine, i) => (
+              <TreeGuide key={i} hasLine={hasLine} />
+            ))}
+            <TreeJunction isLast={!guides[guides.length - 1]} />
+          </span>
+        )}
         <span class="sidebar-label">Archive ({node.children.length})</span>
       </div>,
     );
     if (isExpanded) {
-      for (const child of node.children) {
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i];
+        const isLast = i === node.children.length - 1;
         elements.push(
           ...renderNode(
             child,
             depth + 1,
+            [...guides, !isLast],
             activeTaskId,
             attention,
             onSelectTask,
@@ -177,12 +289,17 @@ function renderNode(
       key={node.id}
       class={`sidebar-item${node.id === activeTaskId ? " active" : ""}${attention.has(t.tid) ? " attention" : ""}`}
       data-tid={node.id}
-      style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
       onClick={() => onSelectTask(node.id)}
     >
       {depth > 0 && (
-        <span class="sidebar-relation-icon" title={t.relationType || "child"}>
-          ↳
+        <span class="tree-connectors">
+          {guides.slice(0, -1).map((hasLine, i) => (
+            <TreeGuide key={i} hasLine={hasLine} />
+          ))}
+          <TreeJunction
+            isLast={!guides[guides.length - 1]}
+            relationType={t.relationType}
+          />
         </span>
       )}
       {attention.has(t.tid) ? (
@@ -202,11 +319,14 @@ function renderNode(
     </div>,
   );
 
-  for (const child of node.children) {
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i];
+    const isLast = i === node.children.length - 1;
     elements.push(
       ...renderNode(
         child,
         depth + 1,
+        [...guides, !isLast],
         activeTaskId,
         attention,
         onSelectTask,
@@ -295,6 +415,7 @@ export function Sidebar({
             renderNode(
               node,
               0,
+              [],
               activeTaskId,
               attention,
               onSelectTask,

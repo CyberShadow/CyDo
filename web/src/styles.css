@@ -292,10 +292,35 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px;
+  min-height: 31px;
+  padding: 0 16px;
   cursor: pointer;
   font-size: 13px;
   border-left: 3px solid transparent;
+}
+
+.tree-connectors {
+  display: flex;
+  align-self: stretch;
+  flex-shrink: 0;
+}
+
+.tree-connectors svg {
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.relation-icon {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background-color: var(--text-dim);
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
 }
 
 .sidebar-item:hover {
@@ -394,11 +419,6 @@ body,
   color: var(--text-dim);
 }
 
-.sidebar-relation-icon {
-  color: var(--text-dim);
-  font-size: 12px;
-  flex-shrink: 0;
-}
 
 .sidebar-label {
   flex: 1;
