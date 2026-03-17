@@ -1,14 +1,17 @@
 import { h } from "preact";
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 import type { TaskState } from "../types";
+import type { TaskTypeInfo } from "../useSessionManager";
+import { TaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
   tasks: Map<number, TaskState>;
   onSelect: (tid: number) => void;
   onClose: () => void;
+  taskTypes: TaskTypeInfo[];
 }
 
-export function SearchPopup({ tasks, onSelect, onClose }: Props) {
+export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -76,12 +79,14 @@ export function SearchPopup({ tasks, onSelect, onClose }: Props) {
         />
         <div class="search-results" ref={listRef}>
           {filtered.map((t, i) => {
-            let dotClass = "sidebar-dot";
-            if (t.isProcessing) dotClass += " processing";
-            else if (t.alive) dotClass += " alive";
-            else if (t.resumable) dotClass += " resumable";
-            else if (t.status === "completed") dotClass += " completed";
-            else if (t.status === "failed") dotClass += " failed";
+            let statusClass = "";
+            if (t.isProcessing) statusClass = "processing";
+            else if (t.alive) statusClass = "alive";
+            else if (t.resumable) statusClass = "resumable";
+            else if (t.status === "completed") statusClass = "completed";
+            else if (t.status === "failed") statusClass = "failed";
+            const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
+            const hasIcon = typeInfo?.icon != null;
             return (
               <div
                 key={t.tid}
@@ -92,7 +97,17 @@ export function SearchPopup({ tasks, onSelect, onClose }: Props) {
                 }}
                 onMouseEnter={() => setSelectedIdx(i)}
               >
-                <span class={dotClass} />
+                {hasIcon ? (
+                  <TaskTypeIcon
+                    taskType={t.taskType}
+                    taskTypes={taskTypes}
+                    class={statusClass || undefined}
+                  />
+                ) : (
+                  <span
+                    class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`}
+                  />
+                )}
                 <span class="search-result-title">
                   {t.title || `Task ${t.tid}`}
                 </span>

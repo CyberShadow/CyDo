@@ -1,6 +1,7 @@
 import { h } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
 import type { TaskTypeInfo } from "../useSessionManager";
+import { TaskTypeIcon } from "./TaskTypeIcon";
 
 export interface SidebarTask {
   tid: number;
@@ -169,7 +170,7 @@ function renderNode(
   // pending = no extra class (gray)
 
   const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
-  const icon = typeInfo?.icon;
+  const hasIcon = typeInfo?.icon != null;
 
   elements.push(
     <div
@@ -186,8 +187,12 @@ function renderNode(
       )}
       {attention.has(t.tid) ? (
         <span class="sidebar-dot check">&#x2713;</span>
-      ) : icon ? (
-        <span class={`sidebar-icon${statusClass ? ` ${statusClass}` : ""}`}>{icon}</span>
+      ) : hasIcon ? (
+        <TaskTypeIcon
+          taskType={t.taskType}
+          taskTypes={taskTypes}
+          class={statusClass || undefined}
+        />
       ) : (
         <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
       )}
@@ -199,7 +204,14 @@ function renderNode(
 
   for (const child of node.children) {
     elements.push(
-      ...renderNode(child, depth + 1, activeTaskId, attention, onSelectTask, taskTypes),
+      ...renderNode(
+        child,
+        depth + 1,
+        activeTaskId,
+        attention,
+        onSelectTask,
+        taskTypes,
+      ),
     );
   }
 
@@ -280,7 +292,14 @@ export function Sidebar({
         </div>
         {tree
           .flatMap((node) =>
-            renderNode(node, 0, activeTaskId, attention, onSelectTask, taskTypes),
+            renderNode(
+              node,
+              0,
+              activeTaskId,
+              attention,
+              onSelectTask,
+              taskTypes,
+            ),
           )
           .reverse()}
       </div>

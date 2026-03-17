@@ -1,6 +1,7 @@
 import { h } from "preact";
 import type { TaskState } from "../types";
-import type { WorkspaceInfo } from "../useSessionManager";
+import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
+import { TaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -8,6 +9,7 @@ interface Props {
   attention: Set<number>;
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
+  taskTypes: TaskTypeInfo[];
 }
 
 export function WelcomePage({
@@ -16,6 +18,7 @@ export function WelcomePage({
   attention,
   onSelectTask,
   onNavigateToProject,
+  taskTypes,
 }: Props) {
   // Group tasks by workspace+projectPath
   const tasksByProject = new Map<string, TaskState[]>();
@@ -30,6 +33,28 @@ export function WelcomePage({
   const ungrouped = (tasksByProject.get(":") || []).sort(
     (a, b) => b.tid - a.tid,
   );
+
+  function renderTaskDot(t: TaskState) {
+    let statusClass = "";
+    if (t.isProcessing) statusClass = "processing";
+    else if (t.alive) statusClass = "alive";
+    else if (t.status === "failed") statusClass = "failed";
+    else if (t.resumable) statusClass = "resumable";
+    else if (t.status === "completed") statusClass = "completed";
+    const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
+    if (typeInfo?.icon) {
+      return (
+        <TaskTypeIcon
+          taskType={t.taskType}
+          taskTypes={taskTypes}
+          class={statusClass || undefined}
+        />
+      );
+    }
+    return (
+      <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
+    );
+  }
 
   return (
     <div class="welcome-page">
@@ -75,9 +100,7 @@ export function WelcomePage({
                           {attention.has(t.tid) ? (
                             <span class="sidebar-dot check">&#x2713;</span>
                           ) : (
-                            <span
-                              class={`sidebar-dot${t.alive ? " alive" : t.resumable ? " resumable" : ""}`}
-                            />
+                            renderTaskDot(t)
                           )}
                           <span
                             class="sidebar-label"
@@ -113,9 +136,7 @@ export function WelcomePage({
                     {attention.has(t.tid) ? (
                       <span class="sidebar-dot check">&#x2713;</span>
                     ) : (
-                      <span
-                        class={`sidebar-dot${t.alive ? " alive" : t.resumable ? " resumable" : ""}`}
-                      />
+                      renderTaskDot(t)
                     )}
                     <span
                       class="sidebar-label"

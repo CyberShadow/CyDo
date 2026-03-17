@@ -48,6 +48,7 @@ export interface TaskTypeInfo {
   model_class: string;
   read_only: boolean;
   icon?: string;
+  user_visible?: boolean;
 }
 
 export interface TaskManager {

@@ -18,9 +18,10 @@ export function SessionConfig({
   onConfirm,
   onType,
 }: Props) {
-  if (taskTypes.length === 0) return null;
+  const visibleTypes = taskTypes.filter((t) => t.user_visible !== false);
+  if (visibleTypes.length === 0) return null;
 
-  const selectedIdx = taskTypes.findIndex((t) => t.name === selected);
+  const selectedIdx = visibleTypes.findIndex((t) => t.name === selected);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (
@@ -32,8 +33,9 @@ export function SessionConfig({
     ) {
       e.preventDefault();
       const dir = e.key === "ArrowDown" ? 1 : -1;
-      const next = (selectedIdx + dir + taskTypes.length) % taskTypes.length;
-      onTaskTypeChange(taskTypes[next].name);
+      const next =
+        (selectedIdx + dir + visibleTypes.length) % visibleTypes.length;
+      onTaskTypeChange(visibleTypes[next].name);
     } else if (e.key === "Enter") {
       e.preventDefault();
       onConfirm?.();
@@ -50,7 +52,7 @@ export function SessionConfig({
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
-      {taskTypes.map((t) => (
+      {visibleTypes.map((t) => (
         <button
           key={t.name}
           class={`task-type-row ${t.name === selected ? "selected" : ""}`}

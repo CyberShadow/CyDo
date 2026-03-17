@@ -733,6 +733,7 @@ export interface TaskTypesListMessage {
     model_class: string;
     read_only: boolean;
     icon?: string;
+    user_visible?: boolean;
   }[];
 }
 export interface ForkableUuidsMessage {

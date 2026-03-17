@@ -1993,8 +1993,7 @@ class App : ToolsBackend
 
 		TaskTypeListEntry[] entries;
 		foreach (ref def; getTaskTypes())
-			if (def.user_visible)
-				entries ~= TaskTypeListEntry(def.name, def.display_name, def.description, def.model_class, def.read_only, def.icon);
+			entries ~= TaskTypeListEntry(def.name, def.display_name, def.description, def.model_class, def.read_only, def.icon, def.user_visible);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
 	}
 

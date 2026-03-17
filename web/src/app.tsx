@@ -72,6 +72,7 @@ function AppContent() {
   const searchPopup = showSearch && (
     <SearchPopup
       tasks={tasks}
+      taskTypes={taskTypes}
       onSelect={(tid) => setActiveTaskId(String(tid))}
       onClose={() => {
         setShowSearch(false);
@@ -96,6 +97,7 @@ function AppContent() {
             workspaces={workspaces}
             tasks={tasks}
             attention={attention}
+            taskTypes={taskTypes}
             onSelectTask={(tid) => setActiveTaskId(String(tid))}
             onNavigateToProject={navigateToProject}
           />

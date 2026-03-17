@@ -14,12 +14,12 @@ test("sidebar status dot reflects session state", async ({ page, agentType }) =>
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   const dotAliveTimeout = agentType === "codex" ? 10_000 : 5_000;
-  await expect(sidebarItem.locator(":is(.sidebar-dot, .sidebar-icon).alive")).toBeVisible({ timeout: dotAliveTimeout });
+  await expect(sidebarItem.locator(":is(.sidebar-dot, .task-type-icon).alive")).toBeVisible({ timeout: dotAliveTimeout });
 
   await killSession(page, agentType);
 
   const dotFailedTimeout = agentType === "codex" ? 10_000 : 5_000;
-  await expect(sidebarItem.locator(":is(.sidebar-dot, .sidebar-icon).failed")).toBeVisible({ timeout: dotFailedTimeout });
+  await expect(sidebarItem.locator(":is(.sidebar-dot, .task-type-icon).failed")).toBeVisible({ timeout: dotFailedTimeout });
 });
 
 test("multi-client navigation isolation", async ({ page, agentType, context }) => {

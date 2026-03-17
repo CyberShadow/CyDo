@@ -347,34 +347,33 @@ body,
   background: var(--error);
 }
 
-.sidebar-icon {
+.task-type-icon {
+  display: inline-block;
   flex-shrink: 0;
-  font-size: 12px;
-  line-height: 1;
-  width: 16px;
-  text-align: center;
-  color: var(--text-dim);
+  width: 14px;
+  height: 14px;
+  background-color: var(--text-dim);
 }
 
-.sidebar-icon.processing {
-  color: #f0d050;
+.task-type-icon.processing {
+  background-color: #f0d050;
 }
 
-.sidebar-icon.alive {
-  color: var(--success);
+.task-type-icon.alive {
+  background-color: var(--success);
 }
 
-.sidebar-icon.resumable {
-  color: var(--success);
+.task-type-icon.resumable {
+  background-color: var(--success);
   opacity: 0.4;
 }
 
-.sidebar-icon.completed {
-  color: var(--accent);
+.task-type-icon.completed {
+  background-color: var(--accent);
 }
 
-.sidebar-icon.failed {
-  color: var(--error);
+.task-type-icon.failed {
+  background-color: var(--error);
 }
 
 .sidebar-new-task {
