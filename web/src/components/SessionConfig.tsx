@@ -1,5 +1,6 @@
 import { h, RefObject } from "preact";
 import type { TaskTypeInfo } from "../useSessionManager";
+import { ensureIconStyles } from "./TaskTypeIcon";
 
 interface Props {
   taskTypes: TaskTypeInfo[];
@@ -18,6 +19,7 @@ export function SessionConfig({
   onConfirm,
   onType,
 }: Props) {
+  ensureIconStyles();
   const visibleTypes = taskTypes.filter((t) => t.user_visible !== false);
   if (visibleTypes.length === 0) return null;
 
@@ -61,6 +63,9 @@ export function SessionConfig({
           onClick={() => onTaskTypeChange(t.name)}
         >
           <div class="task-type-header">
+            {t.icon && (
+              <span class={`task-type-icon task-type-icon-${t.icon}`} />
+            )}
             <span class="task-type-name">{t.display_name || t.name}</span>
             <span class="task-type-badges">
               <span class="config-badge">{t.model_class}</span>
