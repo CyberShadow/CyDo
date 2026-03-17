@@ -36,20 +36,22 @@ function ensureRelationIconStyles() {
 
 const ROW_HEIGHT = 31;
 const COL_WIDTH = 20;
-const LINE_X = 10;
+const LINE_X = 8;
 const JUNCTION_Y = ROW_HEIGHT / 2;
 
 function TreeGuide({ hasLine }: { hasLine: boolean }) {
   return (
     <svg
       viewBox={`0 0 ${COL_WIDTH} ${ROW_HEIGHT}`}
-      preserveAspectRatio="none"
       width={COL_WIDTH}
+      height={ROW_HEIGHT}
     >
       {hasLine && (
         <line
-          x1={LINE_X} y1={0}
-          x2={LINE_X} y2={ROW_HEIGHT}
+          x1={LINE_X + 0.5}
+          y1={0}
+          x2={LINE_X + 0.5}
+          y2={ROW_HEIGHT}
           stroke="var(--border)"
           stroke-width={1}
         />
@@ -66,26 +68,38 @@ function TreeJunction({
   relationType?: string;
 }) {
   ensureRelationIconStyles();
-  const iconClass = relationType && relationIcons[relationType]
-    ? `relation-icon relation-icon-${relationType}`
-    : "relation-icon relation-icon-subtask";
+  const iconClass =
+    relationType && relationIcons[relationType]
+      ? `relation-icon relation-icon-${relationType}`
+      : "relation-icon relation-icon-subtask";
   return (
-    <span style={{ position: "relative", width: COL_WIDTH, flexShrink: 0, alignSelf: "stretch" }}>
+    <span
+      style={{
+        position: "relative",
+        width: COL_WIDTH,
+        height: ROW_HEIGHT,
+        flexShrink: 0,
+      }}
+    >
       <svg
         viewBox={`0 0 ${COL_WIDTH} ${ROW_HEIGHT}`}
-        preserveAspectRatio="none"
         width={COL_WIDTH}
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}
+        height={ROW_HEIGHT}
+        style={{ position: "absolute", top: 0, left: 0 }}
       >
         <line
-          x1={LINE_X} y1={0}
-          x2={LINE_X} y2={isLast ? JUNCTION_Y : ROW_HEIGHT}
+          x1={LINE_X + 0.5}
+          y1={0}
+          x2={LINE_X + 0.5}
+          y2={isLast ? JUNCTION_Y : ROW_HEIGHT}
           stroke="var(--border)"
           stroke-width={1}
         />
         <line
-          x1={LINE_X} y1={JUNCTION_Y}
-          x2={COL_WIDTH + 4} y2={JUNCTION_Y}
+          x1={LINE_X + 0.5}
+          y1={JUNCTION_Y}
+          x2={COL_WIDTH}
+          y2={JUNCTION_Y}
           stroke="var(--border)"
           stroke-width={1}
         />
@@ -94,7 +108,7 @@ function TreeJunction({
         class={iconClass}
         style={{
           position: "absolute",
-          left: LINE_X - 5,
+          left: LINE_X - 7,
           top: "50%",
           transform: "translateY(-50%)",
         }}

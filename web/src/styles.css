@@ -301,8 +301,8 @@ body,
 
 .tree-connectors {
   display: flex;
-  align-self: stretch;
   flex-shrink: 0;
+  margin-right: -8px;
 }
 
 .tree-connectors svg {
@@ -312,9 +312,9 @@ body,
 
 .relation-icon {
   display: inline-block;
-  width: 10px;
-  height: 10px;
-  background-color: var(--text-dim);
+  width: 15px;
+  height: 15px;
+  background-color: #666;
   mask-size: contain;
   mask-repeat: no-repeat;
   mask-position: center;
@@ -418,7 +418,6 @@ body,
   text-align: center;
   color: var(--text-dim);
 }
-
 
 .sidebar-label {
   flex: 1;
