@@ -336,7 +336,7 @@ body,
 
 .sidebar-dot.resumable {
   background: var(--success);
-  opacity: 0.4;
+  opacity: 0.5;
 }
 
 .sidebar-dot.completed {
@@ -370,7 +370,7 @@ body,
 
 .task-type-icon.resumable {
   color: var(--success);
-  opacity: 0.4;
+  opacity: 0.5;
 }
 
 .task-type-icon.completed {
