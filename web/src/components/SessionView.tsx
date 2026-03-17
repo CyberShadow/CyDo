@@ -168,6 +168,7 @@ export function SessionView({
       {task.undoPending && task.undoPending.messagesRemoved >= 0 && (
         <UndoConfirmDialog
           messagesRemoved={task.undoPending.messagesRemoved}
+          supportsFileRevert={task.sessionInfo?.agent !== "codex"}
           onConfirm={(rc, rf) => onUndoConfirm(task.tid, rc, rf)}
           onDismiss={() => onUndoDismiss(task.tid)}
         />
@@ -273,15 +274,17 @@ function QuoteSelectionButton({
 
 function UndoConfirmDialog({
   messagesRemoved,
+  supportsFileRevert,
   onConfirm,
   onDismiss,
 }: {
   messagesRemoved: number;
+  supportsFileRevert: boolean;
   onConfirm: (revertConversation: boolean, revertFiles: boolean) => void;
   onDismiss: () => void;
 }) {
   const [revertConversation, setRevertConversation] = useState(true);
-  const [revertFiles, setRevertFiles] = useState(true);
+  const [revertFiles, setRevertFiles] = useState(supportsFileRevert);
   const neitherSelected = !revertConversation && !revertFiles;
 
   return (
@@ -307,9 +310,11 @@ function UndoConfirmDialog({
             <input
               type="checkbox"
               checked={revertFiles}
+              disabled={!supportsFileRevert}
               onChange={() => setRevertFiles(!revertFiles)}
             />{" "}
             Revert file changes
+            {!supportsFileRevert && " (not supported for this agent type)"}
           </label>
         </div>
         <div class="undo-dialog-actions">

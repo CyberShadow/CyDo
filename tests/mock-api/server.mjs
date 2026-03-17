@@ -173,6 +173,34 @@ function oaiStreamShellCallResponse(res, command) {
   res.end();
 }
 
+function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
+  const respId = nextRespId();
+  const callId = nextCallId();
+  oaiSseEvent(res, "response.created", {
+    type: "response.created",
+    response: { id: respId },
+  });
+  oaiSseEvent(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    item: {
+      type: "local_shell_call",
+      call_id: callId,
+      status: "completed",
+      action: { type: "exec", command: ["sh", "-c", command] },
+    },
+  });
+  setTimeout(() => {
+    oaiSseEvent(res, "response.completed", {
+      type: "response.completed",
+      response: {
+        id: respId,
+        usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+      },
+    });
+    res.end();
+  }, delayMs);
+}
+
 function oaiStreamFunctionCallResponse(res, name, args) {
   const respId = nextRespId();
   const callId = nextCallId();
@@ -197,6 +225,66 @@ function oaiStreamFunctionCallResponse(res, name, args) {
     },
   });
   res.end();
+}
+
+// ---------------------------------------------------------------------------
+// Protocol-agnostic pattern matching
+// ---------------------------------------------------------------------------
+
+// Match a user text against known patterns and return a structured intent.
+// Returns one of:
+//   { type: "text", text: string }
+//   { type: "shell", command: string }
+//   { type: "tool_call", name: string, input: object }
+function matchPattern(userText) {
+  // Suggestion generation — must be checked before other patterns
+  // because the prompt contains abbreviated history that may match them.
+  if (userText.startsWith("[SUGGESTION MODE:")) {
+    return { type: "text", text: '["run the tests", "commit this"]' };
+  }
+
+  // Title generation subprocess — extract a recognizable title from the prompt
+  if (userText.startsWith("Generate a concise title")) {
+    const innerMatch = userText.match(/reply with "([^"]*)"/i);
+    return { type: "text", text: innerMatch ? innerMatch[1] : "Test Task" };
+  }
+
+  let match;
+
+  // "reply with "<text>""
+  match = userText.match(/reply with "([^"]*)"/i);
+  if (match) return { type: "text", text: match[1] };
+
+  // "run command <cmd>"
+  match = userText.match(/run command (.+)/i);
+  if (match) return { type: "shell", command: match[1].trim() };
+
+  // "create file <path> with content <text>"
+  match = userText.match(/create file (\S+) with content (.+)/is);
+  if (match) return { type: "tool_call", name: "write_file", input: { path: match[1], content: match[2] } };
+
+  // "read file <path>"
+  match = userText.match(/read file (\S+)/i);
+  if (match) return { type: "tool_call", name: "read_file", input: { path: match[1] } };
+
+  // "call switchmode <continuation>" → MCP SwitchMode tool call
+  match = userText.match(/call switchmode (\S+)/i);
+  if (match) return { type: "tool_call", name: "mcp__cydo__SwitchMode", input: { continuation: match[1] } };
+
+  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
+  match = userText.match(/call task (\S+) (.*)/is);
+  if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+
+  // "call handoff <continuation> <prompt>" → MCP Handoff tool call
+  match = userText.match(/call handoff (\S+) (.*)/is);
+  if (match) return { type: "tool_call", name: "mcp__cydo__Handoff", input: { continuation: match[1].trim(), prompt: match[2].trim() } };
+
+  // "call askuserquestion <question>" → MCP AskUserQuestion tool call
+  match = userText.match(/call askuserquestion (.*)/is);
+  if (match) return { type: "tool_call", name: "mcp__cydo__AskUserQuestion", input: { questions: [{ header: "Test", question: match[1].trim(), options: [{ label: "Yes", description: "Confirm" }, { label: "No", description: "Deny" }], multiSelect: false }] } };
+
+  // Default: echo back
+  return { type: "text", text: userText };
 }
 
 // Extract the last user text from the Responses API input array.
@@ -258,71 +346,23 @@ function handleResponses(req, res) {
       return;
     }
 
-    // Pattern matching (same patterns as Anthropic handler)
-    let match;
+    const intent = matchPattern(userText);
 
-    // "reply with "<text>""
-    match = userText.match(/reply with "([^"]*)"/i);
-    if (match) {
-      oaiStreamTextResponse(res, match[1]);
-      return;
+    if (intent.type === "text") {
+      oaiStreamTextResponse(res, intent.text);
+    } else if (intent.type === "shell") {
+      if (intent.command.match(/sleep\s+\d+/)) {
+        // Simulate blocking execution: send output_item.done immediately but
+        // delay response.completed by 5s so turnInProgress stays true while
+        // the test sends a second message.
+        oaiStreamShellCallResponseDelayed(res, intent.command, 5000);
+      } else {
+        oaiStreamShellCallResponse(res, intent.command);
+      }
+    } else {
+      // tool_call — names are already correct for the OpenAI/Codex protocol
+      oaiStreamFunctionCallResponse(res, intent.name, intent.input);
     }
-
-    // "run command <cmd>"
-    match = userText.match(/run command (.+)/i);
-    if (match) {
-      oaiStreamShellCallResponse(res, match[1].trim());
-      return;
-    }
-
-    // "create file <path> with content <text>"
-    match = userText.match(/create file (\S+) with content (.+)/is);
-    if (match) {
-      oaiStreamFunctionCallResponse(res, "write_file", {
-        path: match[1],
-        content: match[2],
-      });
-      return;
-    }
-
-    // "call task <type> <prompt>" → MCP Task tool call
-    match = userText.match(/call task (\S+) (.*)/is);
-    if (match) {
-      oaiStreamFunctionCallResponse(res, "mcp__cydo__Task", {
-        tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }]
-      });
-      return;
-    }
-
-    // "call handoff <continuation> <prompt>" → MCP Handoff tool call
-    match = userText.match(/call handoff (\S+) (.*)/is);
-    if (match) {
-      oaiStreamFunctionCallResponse(res, "mcp__cydo__Handoff", {
-        continuation: match[1].trim(),
-        prompt: match[2].trim()
-      });
-      return;
-    }
-
-    // "call askuserquestion <question>" → MCP AskUserQuestion tool call
-    match = userText.match(/call askuserquestion (.*)/is);
-    if (match) {
-      oaiStreamFunctionCallResponse(res, "mcp__cydo__AskUserQuestion", {
-        questions: [{
-          header: "Test",
-          question: match[1].trim(),
-          options: [
-            { label: "Yes", description: "Confirm" },
-            { label: "No", description: "Deny" },
-          ],
-          multiSelect: false,
-        }]
-      });
-      return;
-    }
-
-    // Default: echo back
-    oaiStreamTextResponse(res, userText);
   });
 }
 
@@ -399,102 +439,25 @@ function handleMessages(req, res) {
       return;
     }
 
-    // Pattern matching
-    let match;
+    const intent = matchPattern(userText);
 
-    // Suggestion generation subprocess — must be checked before other patterns
-    // because the prompt contains abbreviated history that may match them.
-    if (userText.startsWith("[SUGGESTION MODE:")) {
-      streamTextResponse(res, '["run the tests", "commit this"]', model);
-      return;
+    if (intent.type === "text") {
+      streamTextResponse(res, intent.text, model);
+    } else if (intent.type === "shell") {
+      streamToolUseResponse(res, "Bash", { command: intent.command, description: "Running command" }, model);
+    } else {
+      // tool_call — map generic names to Anthropic tool names
+      let toolName = intent.name;
+      let input = intent.input;
+      if (intent.name === "write_file") {
+        toolName = "Write";
+        input = { file_path: intent.input.path, content: intent.input.content };
+      } else if (intent.name === "read_file") {
+        toolName = "Read";
+        input = { file_path: intent.input.path };
+      }
+      streamToolUseResponse(res, toolName, input, model);
     }
-
-    // Title generation subprocess — extract a recognizable title from the prompt
-    if (userText.startsWith("Generate a concise title")) {
-      const innerMatch = userText.match(/reply with "([^"]*)"/i);
-      streamTextResponse(res, innerMatch ? innerMatch[1] : "Test Task", model);
-      return;
-    }
-
-    // "reply with "<text>""
-    match = userText.match(/reply with "([^"]*)"/i);
-    if (match) {
-      streamTextResponse(res, match[1], model);
-      return;
-    }
-
-    // "run command <cmd>"
-    match = userText.match(/run command (.+)/i);
-    if (match) {
-      streamToolUseResponse(res, "Bash", {
-        command: match[1].trim(),
-        description: "Running command",
-      }, model);
-      return;
-    }
-
-    // "create file <path> with content <text>"
-    match = userText.match(/create file (\S+) with content (.+)/is);
-    if (match) {
-      streamToolUseResponse(res, "Write", {
-        file_path: match[1],
-        content: match[2],
-      }, model);
-      return;
-    }
-
-    // "read file <path>"
-    match = userText.match(/read file (\S+)/i);
-    if (match) {
-      streamToolUseResponse(res, "Read", { file_path: match[1] }, model);
-      return;
-    }
-
-    // "call switchmode <continuation>" → MCP SwitchMode tool call
-    match = userText.match(/call switchmode (\S+)/i);
-    if (match) {
-      streamToolUseResponse(res, "mcp__cydo__SwitchMode", { continuation: match[1] }, model);
-      return;
-    }
-
-    // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
-    match = userText.match(/call task (\S+) (.*)/is);
-    if (match) {
-      streamToolUseResponse(res, "mcp__cydo__Task", {
-        tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }]
-      }, model);
-      return;
-    }
-
-    // "call handoff <continuation> <prompt>" → MCP Handoff tool call
-    match = userText.match(/call handoff (\S+) (.*)/is);
-    if (match) {
-      streamToolUseResponse(res, "mcp__cydo__Handoff", {
-        continuation: match[1].trim(),
-        prompt: match[2].trim()
-      }, model);
-      return;
-    }
-
-    // "call askuserquestion <question>" → MCP AskUserQuestion tool call
-    match = userText.match(/call askuserquestion (.*)/is);
-    if (match) {
-      streamToolUseResponse(res, "mcp__cydo__AskUserQuestion", {
-        questions: [{
-          header: "Test",
-          question: match[1].trim(),
-          options: [
-            { label: "Yes", description: "Confirm" },
-            { label: "No", description: "Deny" },
-          ],
-          multiSelect: false,
-        }]
-      }, model);
-      return;
-    }
-
-    // Default: echo back
-    streamTextResponse(res, userText, model);
   });
 }
 

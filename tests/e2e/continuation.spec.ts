@@ -1,7 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("keep_context continuation injects prompt template", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: continuation");
   await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");
@@ -12,7 +11,12 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
 });
 
 test("unsent message recovered into input box after kill", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: unsent message recovery");
+  // Codex writes turn/steer messages to its JSONL immediately upon receipt (before the
+  // LLM responds), so the preReloadDrafts confirmation logic incorrectly marks the steer
+  // as "confirmed" even though the LLM never processed it.  The first message also fails
+  // to match because codex stores the full rendered prompt template, not the raw text.
+  test.skip(agentType === "codex", "codex writes steers to JSONL eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers");
+
   await enterSession(page);
 
   await sendMessage(page, "run command sleep 60");
@@ -34,7 +38,6 @@ test("unsent message recovered into input box after kill", async ({ page, agentT
 });
 
 test("handoff continuation exit navigates to grandparent, not completed parent", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: handoff navigation");
 
   // Create root task G and enter its session.
   await enterSession(page);
@@ -62,7 +65,6 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
 });
 
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: mode switch input recovery");
   await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");

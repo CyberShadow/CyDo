@@ -1104,7 +1104,7 @@ class App : ToolsBackend
 
 			// 1. Revert file changes via one-shot --rewind-files invocation
 			// (done first so that on failure we haven't modified anything yet)
-			if (json.revert_files)
+			if (json.revert_files && ta.supportsFileRevert())
 			{
 				auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 				if (err !is null)

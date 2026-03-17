@@ -48,7 +48,6 @@ test("multi-client navigation isolation", async ({ page, agentType, context }) =
 });
 
 test("auto-scroll stays at bottom for new messages", async ({ page, agentType }) => {
-  test.skip(agentType === "codex", "claude-only test");
   await enterSession(page);
 
   await sendMessage(page, 'Please reply with "scroll-test"');

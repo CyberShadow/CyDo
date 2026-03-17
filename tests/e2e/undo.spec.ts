@@ -1,7 +1,6 @@
 import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
 
 test("undo moves user message text to input box", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: undo");
   await enterSession(page);
 
   await sendMessage(page, 'Please reply with "first-reply"');

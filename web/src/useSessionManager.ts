@@ -537,6 +537,14 @@ export function useTaskManager(): TaskManager {
                   .join(""),
               )
               .filter((t) => t.length > 0);
+        // When a session has already started (sessionInfo set), the first user
+        // message was rendered into the prompt template before being sent to
+        // the agent, so it is stored in JSONL as the full template text — not
+        // the raw user input.  Exact-match confirmation during replay therefore
+        // never fires for it, which would incorrectly keep it in inputDraft.
+        // Since the first message always starts the session (it was definitely
+        // delivered), exclude it from recovery tracking entirely.
+        const textsToRecover = t.sessionInfo ? userTexts.slice(1) : userTexts;
         const reset = {
           ...makeTaskState(
             tid,
@@ -551,7 +559,7 @@ export function useTaskManager(): TaskManager {
             t.status,
           ),
           resumable: t.resumable,
-          preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
+          preReloadDrafts: textsToRecover.length > 0 ? textsToRecover : undefined,
         };
         liveStates.set(tid, reset);
         setTasks((prev) => {
