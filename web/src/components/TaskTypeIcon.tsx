@@ -39,72 +39,27 @@ const rawIcons: Record<string, string> = {
   "steward-security": stewardSecurityIcon,
 };
 
-/** Parse raw SVG string into a <symbol> element, rewriting internal ids to avoid collisions. */
-function svgToSymbol(name: string, raw: string): string {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(raw, "image/svg+xml");
-  const svg = doc.documentElement;
-  const viewBox = svg.getAttribute("viewBox") || "0 0 16 16";
-
-  // Rewrite id attributes and their url(#id) references to be unique per symbol
-  const prefix = `icon-${name}-`;
-  const idMap = new Map<string, string>();
-  svg.querySelectorAll("[id]").forEach((el) => {
-    const oldId = el.getAttribute("id")!;
-    const newId = prefix + oldId;
-    idMap.set(oldId, newId);
-    el.setAttribute("id", newId);
-  });
-  if (idMap.size > 0) {
-    const refAttrs = ["mask", "clip-path", "fill", "stroke", "filter"];
-    svg.querySelectorAll("*").forEach((el) => {
-      for (const attr of refAttrs) {
-        const val = el.getAttribute(attr);
-        if (val) {
-          const replaced = val.replace(/url\(#([^)]+)\)/g, (_, id) => {
-            const newId = idMap.get(id);
-            return newId ? `url(#${newId})` : `url(#${id})`;
-          });
-          if (replaced !== val) el.setAttribute(attr, replaced);
-        }
-      }
-    });
-  }
-
-  // Copy presentational attributes from <svg> to <symbol>
-  const presentAttrs = [
-    "fill",
-    "stroke",
-    "stroke-width",
-    "stroke-linecap",
-    "stroke-linejoin",
-  ];
-  const attrStr = presentAttrs
-    .map((a) => {
-      const v = svg.getAttribute(a);
-      return v ? `${a}="${v}"` : "";
-    })
-    .filter(Boolean)
-    .join(" ");
-
-  return `<symbol id="icon-${name}" viewBox="${viewBox}"${attrStr ? " " + attrStr : ""}>${svg.innerHTML}</symbol>`;
+/** Convert raw SVG to a CSS data URI for mask-image. */
+function toMaskUri(raw: string): string {
+  const mask = raw.replace(/currentColor/g, "black");
+  return `url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
 }
 
-let spriteInjected = false;
-
-/** Inject a single hidden SVG sprite sheet into the document. */
-function ensureSpriteSheet() {
-  if (spriteInjected) return;
-  spriteInjected = true;
-
-  const symbols = Object.entries(rawIcons)
-    .map(([name, raw]) => svgToSymbol(name, raw))
+// Inject a <style> element with one class per icon type, so the mask-image
+// data URI is parsed once per icon type rather than once per element.
+let styleInjected = false;
+function ensureIconStyles() {
+  if (styleInjected) return;
+  styleInjected = true;
+  const rules = Object.entries(rawIcons)
+    .map(([name, raw]) => {
+      const uri = toMaskUri(raw);
+      return `.task-type-icon-${CSS.escape(name)}{mask-image:${uri};-webkit-mask-image:${uri}}`;
+    })
     .join("\n");
-
-  const sprite = document.createElement("div");
-  sprite.style.display = "none";
-  sprite.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg">${symbols}</svg>`;
-  document.body.prepend(sprite);
+  const style = document.createElement("style");
+  style.textContent = rules;
+  document.head.appendChild(style);
 }
 
 interface TaskTypeIconProps {
@@ -123,13 +78,11 @@ export function TaskTypeIcon({
 
   if (!iconName || !rawIcons[iconName]) return null;
 
-  ensureSpriteSheet();
+  ensureIconStyles();
 
   return (
-    <span class={`task-type-icon${className ? ` ${className}` : ""}`}>
-      <svg viewBox="0 0 16 16">
-        <use href={`#icon-${iconName}`} />
-      </svg>
-    </span>
+    <span
+      class={`task-type-icon task-type-icon-${iconName}${className ? ` ${className}` : ""}`}
+    />
   );
 }
