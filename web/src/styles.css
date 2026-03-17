@@ -350,8 +350,8 @@ body,
 .task-type-icon {
   display: inline-block;
   flex-shrink: 0;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   background-color: var(--text-dim);
 }
 
