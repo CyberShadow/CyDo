@@ -360,7 +360,7 @@ const SidebarItem = memo(function SidebarItem({
   if (isArchive) {
     return (
       <div
-        class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}`}
+        class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}${depth === 0 ? " top-level" : ""}`}
         data-tid={id}
         onClick={() => onSelect(id)}
       >
@@ -372,7 +372,7 @@ const SidebarItem = memo(function SidebarItem({
 
   return (
     <div
-      class={`sidebar-item${isActive ? " active" : ""}${hasAttention ? " attention" : ""}`}
+      class={`sidebar-item${isActive ? " active" : ""}${hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
       onClick={() => onSelect(id)}
     >

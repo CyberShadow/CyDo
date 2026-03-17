@@ -299,6 +299,10 @@ body,
   border-left: 3px solid transparent;
 }
 
+.sidebar-item.top-level {
+  border-top: 1px solid var(--border);
+}
+
 .tree-connectors {
   display: flex;
   flex-shrink: 0;
@@ -357,6 +361,10 @@ body,
 
 .sidebar-item.attention {
   background: rgba(76, 175, 80, 0.1);
+}
+
+.sidebar-item.top-level {
+  border-top: 1px solid var(--border);
 }
 
 .sidebar-dot.resumable {
