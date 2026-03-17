@@ -650,6 +650,11 @@ class App : ToolsBackend
 
 		pending.fulfill(McpResult(resultText));
 		pendingAskUserQuestions.remove(tid);
+
+		// Broadcast clear to all subscribed clients (so other tabs/windows dismiss the form)
+		import ae.utils.json : toJson;
+		sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question", tid, "", JSONFragment("[]"))).representation));
+
 		broadcast(buildTasksList());
 	}
 

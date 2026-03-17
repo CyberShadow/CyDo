@@ -304,6 +304,23 @@ function handleResponses(req, res) {
       return;
     }
 
+    // "call askuserquestion <question>" → MCP AskUserQuestion tool call
+    match = userText.match(/call askuserquestion (.*)/is);
+    if (match) {
+      oaiStreamFunctionCallResponse(res, "mcp__cydo__AskUserQuestion", {
+        questions: [{
+          header: "Test",
+          question: match[1].trim(),
+          options: [
+            { label: "Yes", description: "Confirm" },
+            { label: "No", description: "Deny" },
+          ],
+          multiSelect: false,
+        }]
+      });
+      return;
+    }
+
     // Default: echo back
     oaiStreamTextResponse(res, userText);
   });
@@ -455,6 +472,23 @@ function handleMessages(req, res) {
       streamToolUseResponse(res, "mcp__cydo__Handoff", {
         continuation: match[1].trim(),
         prompt: match[2].trim()
+      }, model);
+      return;
+    }
+
+    // "call askuserquestion <question>" → MCP AskUserQuestion tool call
+    match = userText.match(/call askuserquestion (.*)/is);
+    if (match) {
+      streamToolUseResponse(res, "mcp__cydo__AskUserQuestion", {
+        questions: [{
+          header: "Test",
+          question: match[1].trim(),
+          options: [
+            { label: "Yes", description: "Confirm" },
+            { label: "No", description: "Deny" },
+          ],
+          multiSelect: false,
+        }]
       }, model);
       return;
     }

@@ -695,10 +695,11 @@ export function useTaskManager(): TaskManager {
           msg as AskUserQuestionControlMessage;
         const t = liveStates.get(tid);
         if (!t) break;
-        const updated = {
-          ...t,
-          pendingAskUser: { toolUseId: tool_use_id, questions },
-        };
+        // Empty tool_use_id signals that the question was answered (clear the form)
+        const pendingAskUser = tool_use_id
+          ? { toolUseId: tool_use_id, questions }
+          : null;
+        const updated = { ...t, pendingAskUser };
         liveStates.set(tid, updated);
         setTasks((prev) => {
           const next = new Map(prev);
@@ -1010,10 +1011,12 @@ export function useTaskManager(): TaskManager {
     }
   }, []);
 
-  const editMessage = useCallback((tid: number, uuid: string, content: string) => {
-    connRef.current?.editMessage(tid, uuid, content);
-  }, []);
-
+  const editMessage = useCallback(
+    (tid: number, uuid: string, content: string) => {
+      connRef.current?.editMessage(tid, uuid, content);
+    },
+    [],
+  );
 
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const sidebarTasks = useMemo(() => {
