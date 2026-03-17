@@ -68,10 +68,7 @@ function TreeJunction({
   isLast: boolean;
   relationType?: string;
 }) {
-  const iconClass =
-    relationType && relationIcons[relationType]
-      ? `relation-icon relation-icon-${relationType}`
-      : "relation-icon relation-icon-subtask";
+  const hasIcon = relationType != null && relationType in relationIcons;
   return (
     <span
       style={{
@@ -104,16 +101,18 @@ function TreeJunction({
           stroke-width={1}
         />
       </svg>
-      <span
-        class={iconClass}
-        style={{
-          position: "absolute",
-          left: LINE_X - 7,
-          top: "50%",
-          transform: "translateY(-50%)",
-        }}
-        title={relationType || "child"}
-      />
+      {hasIcon && (
+        <span
+          class={`relation-icon relation-icon-${relationType}`}
+          style={{
+            position: "absolute",
+            left: LINE_X - 7,
+            top: "50%",
+            transform: "translateY(-50%)",
+          }}
+          title={relationType}
+        />
+      )}
     </span>
   );
 }
