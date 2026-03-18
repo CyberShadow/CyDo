@@ -11,6 +11,7 @@ import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
 import { SearchPopup } from "./components/SearchPopup";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 function AppContent() {
   const {
@@ -336,19 +337,21 @@ function NotFound() {
 
 export function App() {
   return (
-    <Router>
-      <Route path="/:workspace/:project/task/:tid" component={AppContent} />
-      <Route
-        path="/:workspace/:project/archive/:parentTid"
-        component={AppContent}
-      />
-      <Route path="/:workspace/:project/archive" component={AppContent} />
-      <Route path="/:workspace/:project/session/:sid" component={AppContent} />
-      <Route path="/:workspace/:project" component={AppContent} />
-      <Route path="/archive/:parentTid" component={AppContent} />
-      <Route path="/archive" component={AppContent} />
-      <Route path="/" component={AppContent} />
-      <Route default component={NotFound} />
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <Route path="/:workspace/:project/task/:tid" component={AppContent} />
+        <Route
+          path="/:workspace/:project/archive/:parentTid"
+          component={AppContent}
+        />
+        <Route path="/:workspace/:project/archive" component={AppContent} />
+        <Route path="/:workspace/:project/session/:sid" component={AppContent} />
+        <Route path="/:workspace/:project" component={AppContent} />
+        <Route path="/archive/:parentTid" component={AppContent} />
+        <Route path="/archive" component={AppContent} />
+        <Route path="/" component={AppContent} />
+        <Route default component={NotFound} />
+      </Router>
+    </ErrorBoundary>
   );
 }

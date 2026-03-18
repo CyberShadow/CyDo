@@ -2636,3 +2636,54 @@ pre.extra-field-value {
 .cydo-task-spec + .cydo-task-spec {
   border-top: none;
 }
+
+/* Error boundary */
+.error-boundary {
+  padding: 32px;
+  max-width: 800px;
+  margin: 40px auto;
+  color: var(--text);
+}
+
+.error-boundary h2 {
+  color: var(--error);
+  margin: 0 0 16px;
+}
+
+.error-boundary-message {
+  padding: 12px;
+  background: var(--overlay-dark);
+  border: 1px solid var(--error);
+  color: var(--error);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.error-boundary-stack {
+  padding: 12px;
+  background: var(--overlay-dark);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 16px;
+  font-size: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.error-boundary-reset {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 6px 16px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.error-boundary-reset:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
