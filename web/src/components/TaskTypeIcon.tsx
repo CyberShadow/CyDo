@@ -21,11 +21,13 @@ import stewardSecurityIcon from "../icons/steward-security.svg?raw";
 import checkIcon from "../icons/check.svg?raw";
 import dotIcon from "../icons/dot.svg?raw";
 import plusIcon from "../icons/plus.svg?raw";
+import archiveIcon from "../icons/archive.svg?raw";
 
 const rawIcons: Record<string, string> = {
   check: checkIcon,
   dot: dotIcon,
   plus: plusIcon,
+  archive: archiveIcon,
   blank: blankIcon,
   conversation: conversationIcon,
   "plan-mode": planModeIcon,

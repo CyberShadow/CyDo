@@ -364,6 +364,7 @@ const SidebarItem = memo(function SidebarItem({
         onClick={() => onSelect(id)}
       >
         {treeConnectors}
+        <span class="task-type-icon task-type-icon-archive" />
         <span class="sidebar-label">{title}</span>
       </div>
     );
