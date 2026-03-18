@@ -354,7 +354,7 @@ class ClaudeCodeAgent : Agent
 			{
 				auto start = idx + prefix.length;
 				auto end = line.indexOf('"', start);
-				if (end > start)
+				if (end >= 0 && end > idx + cast(ptrdiff_t) prefix.length)
 					ids ~= line[start .. end];
 			}
 		}
