@@ -350,22 +350,6 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	if (!found)
 		return -1;
 
-	// Strip trailing neutral/queue-op lines that preceded the truncation target
-	// (the "run-up" to a steered user message being undone).
-	import std.string : lastIndexOf;
-	while (output.length > 0)
-	{
-		auto nlPos = output[0 .. $ - 1].lastIndexOf('\n');
-		auto lastLine = nlPos >= 0 ? output[nlPos + 1 .. $ - 1] : output[0 .. $ - 1];
-		if (isNeutralOrQueueOp(lastLine))
-		{
-			output = nlPos >= 0 ? output[0 .. nlPos + 1] : "";
-			removedCount++;
-		}
-		else
-			break;
-	}
-
 	write(jsonlPath, output);
 	return removedCount;
 }

@@ -318,31 +318,72 @@ class ClaudeCodeAgent : Agent
 	string[] extractForkableIds(string content, int lineOffset = 0)
 	{
 		import std.algorithm : canFind;
+		import std.format : format;
 		import std.string : indexOf, lineSplitter;
 
 		string[] ids;
+		int lineNum = lineOffset;
 		foreach (line; content.lineSplitter)
 		{
+			lineNum++;
 			if (line.length == 0)
 				continue;
+			// Queue-op enqueue lines become undo anchors for steering messages.
+			// Truncating at the enqueue naturally removes the enqueue itself plus
+			// all subsequent lines (tool_result, responses, dequeue, echo).
+			// Parse the operation field properly to avoid whitespace sensitivity.
+			if (line.canFind(`"queue-operation"`))
+			{
+				import ae.utils.json : jsonParse, JSONPartial;
+				@JSONPartial static struct QueueOpProbe { string operation; }
+				try
+				{
+					auto qop = jsonParse!QueueOpProbe(line);
+					if (qop.operation == "enqueue")
+						ids ~= format!"enqueue-%d"(lineNum);
+				}
+				catch (Exception) {}
+				continue;
+			}
 			if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
 				continue;
 			// Extract "uuid":"<value>" by prefix scanning
 			enum prefix = `"uuid":"`;
 			auto idx = line.indexOf(prefix);
-			if (idx < 0)
-				continue;
-			auto start = idx + prefix.length;
-			auto end = line.indexOf('"', start);
-			if (end > start)
-				ids ~= line[start .. end];
+			if (idx >= 0)
+			{
+				auto start = idx + prefix.length;
+				auto end = line.indexOf('"', start);
+				if (end > start)
+					ids ~= line[start .. end];
+			}
 		}
 		return ids;
 	}
 
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
 	{
-		import std.algorithm : canFind;
+		import std.algorithm : canFind, startsWith;
+		// Handle synthetic enqueue UUID "enqueue-N" (line-number-based).
+		// The undo anchor for a steering message is the queue-op-enqueue line;
+		// truncating there (excludeMatch=true) removes it and all following lines.
+		if (forkId.startsWith("enqueue-"))
+		{
+			import std.conv : to;
+			try
+			{
+				auto targetLine = forkId["enqueue-".length .. $].to!int;
+				if (lineNum != targetLine || !line.canFind(`"queue-operation"`))
+					return false;
+				// Parse operation field to avoid whitespace sensitivity.
+				import ae.utils.json : jsonParse, JSONPartial;
+				@JSONPartial static struct QueueOpProbe { string operation; }
+				try { return jsonParse!QueueOpProbe(line).operation == "enqueue"; }
+				catch (Exception) { return false; }
+			}
+			catch (Exception)
+				return false;
+		}
 		return line.canFind(`"uuid":"` ~ forkId ~ `"`);
 	}
 

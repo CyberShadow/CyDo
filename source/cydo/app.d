@@ -754,22 +754,33 @@ class App : ToolsBackend
 
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		// steeringStash holds (text, enqueueLineNum) for queued steering messages.
+		// Using parallel arrays to avoid struct allocation in a delegate closure.
 		string[] steeringStash;
+		int[] steeringEnqueueLineNums;
 		string lastDequeuedText;
+		int lastDequeuedEnqueueLineNum;
 		td.history = loadTaskHistory(tid, jsonlPath, delegate string[](string line, int lineNum) {
 			if (isQueueOperation(line))
 			{
 				import ae.utils.json : jsonParse;
+				import std.format : format;
 				auto op = jsonParse!QueueOperationProbe(line);
 				if (op.operation == "enqueue")
 				{
 					steeringStash ~= op.content;
-					return [buildSyntheticUserEvent(op.content, false, true)];
+					steeringEnqueueLineNums ~= lineNum;
+					// Emit pending synthetic with the enqueue UUID so the undo
+					// button is visible on the pending message immediately.
+					auto synthetic = buildSyntheticUserEvent(op.content, false, true);
+					synthetic = synthetic[0 .. $ - 1]
+						~ `,"uuid":"enqueue-` ~ format!"%d"(lineNum) ~ `"}`;
+					return [synthetic];
 				}
-				else if (op.operation == "dequeue")
+				else if (op.operation == "dequeue" || op.operation == "remove")
 				{
 					string[] result;
-					// Flush any deferred synthetic from a prior dequeue
+					// Flush any deferred synthetic from a prior dequeue/remove
 					// (handles compacted back-to-back dequeues)
 					if (lastDequeuedText.length > 0)
 					{
@@ -779,25 +790,18 @@ class App : ToolsBackend
 					if (steeringStash.length > 0)
 					{
 						lastDequeuedText = steeringStash[0];
+						lastDequeuedEnqueueLineNum = steeringEnqueueLineNums[0];
 						steeringStash = steeringStash[1 .. $];
+						steeringEnqueueLineNums = steeringEnqueueLineNums[1 .. $];
 						// Defer: wait to see if type:"user" echo follows
 					}
 					return result;
 				}
-				else if (op.operation == "remove")
-				{
-					if (steeringStash.length > 0)
-					{
-						auto text = steeringStash[0];
-						steeringStash = steeringStash[1 .. $];
-						return [buildSyntheticUserEvent(text, true)];
-					}
-					return [];
-				}
 				return []; // unknown queue operation
 			}
 			// Deferred compaction check: if a type:"user" echo follows the
-			// dequeue, pass it through with its UUID intact (non-compacted).
+			// dequeue/remove, pass it through with the enqueue UUID injected so the
+			// undo button appears on the confirmed message after reload.
 			// Neutral lines (file-history-snapshot, progress, etc.) pass through
 			// without leaving deferred mode — they can appear between dequeue and
 			// the user echo. Only type:"assistant" confirms compaction and triggers
@@ -806,17 +810,42 @@ class App : ToolsBackend
 			{
 				if (ta.isUserMessageLine(line))
 				{
-					// Non-compacted: type:"user" echo present — pass through with UUID
+					// Non-compacted: type:"user" echo present — pass through with
+					// the enqueue UUID injected (always override any existing uuid so
+					// that undo truncates at the enqueue line, not the echo line).
+					auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
 					lastDequeuedText = null;
+					lastDequeuedEnqueueLineNum = 0;
 					auto t = ta.translateHistoryLine(line, lineNum);
-					return t !is null ? [t] : [];
+					if (t !is null)
+					{
+						import std.string : indexOf;
+						import std.format : format;
+						auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
+						enum uuidPrefix = `"uuid":"`;
+						auto uIdx = t.indexOf(uuidPrefix);
+						if (uIdx >= 0)
+						{
+							auto vStart = uIdx + uuidPrefix.length;
+							auto vEnd = t.indexOf('"', vStart);
+							t = t[0 .. vStart] ~ enqueueUuid ~ t[vEnd .. $];
+						}
+						else
+							t = t[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
+						return [t];
+					}
+					return [];
 				}
 				if (ta.isAssistantMessageLine(line))
 				{
 					// Compacted: assistant response appeared without preceding user echo —
-					// emit synthetic before the assistant line.
-					auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
+					// emit synthetic with enqueue UUID before the assistant line.
+					import std.format : format;
+					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
+					auto synthetic = buildSyntheticUserEvent(lastDequeuedText, true);
+					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
 					lastDequeuedText = null;
+					lastDequeuedEnqueueLineNum = 0;
 					auto t = ta.translateHistoryLine(line, lineNum);
 					return t !is null ? [synthetic, t] : [synthetic];
 				}
@@ -1135,7 +1164,10 @@ class App : ToolsBackend
 
 			// 1. Revert file changes via one-shot --rewind-files invocation
 			// (done first so that on failure we haven't modified anything yet)
-			if (json.revert_files && ta.supportsFileRevert())
+			// Skip for synthetic enqueue UUIDs: they have no file checkpoints.
+			import std.algorithm : startsWith;
+			if (json.revert_files && ta.supportsFileRevert()
+				&& !json.after_uuid.startsWith("enqueue-"))
 			{
 				auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
 				if (err !is null)
