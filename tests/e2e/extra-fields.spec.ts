@@ -123,9 +123,10 @@ test("extra fields on assistant message are surfaced", async ({
   await enterSession(page);
   await sendMessage(page, 'reply with "hello"');
 
+  // Use "_test_extra:" (with colon) to avoid matching "_test_extra_block:"
   await expect(
     page.locator(".message.assistant-message .unknown-extra-fields", {
-      hasText: "_test_extra",
+      hasText: "_test_extra:",
     }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
@@ -155,9 +156,14 @@ test("extra fields on result event are surfaced", async ({
   await enterSession(page);
   await sendMessage(page, 'reply with "hello"');
 
+  // Result message starts collapsed as a divider; click to expand it
+  const resultDivider = page.locator(".result-divider.result-success");
+  await resultDivider.first().waitFor({ timeout: responseTimeout(agentType) });
+  await resultDivider.first().click();
+
   await expect(
     page.locator(".message.result-message .unknown-extra-fields", {
-      hasText: "_test_extra",
+      hasText: "_test_extra:",
     }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  ).toBeVisible();
 });

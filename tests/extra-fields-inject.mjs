@@ -27,8 +27,13 @@ for await (const line of rl) {
   }
 
   // Inject extra field inside toolUseResult for user events with tool results
-  if (obj.type === "user" && obj.toolUseResult) {
-    obj.toolUseResult._test_extra_result = "tool_result";
+  // Claude Code may use either camelCase or snake_case for the field name
+  if (obj.type === "user") {
+    if (obj.toolUseResult && typeof obj.toolUseResult === "object") {
+      obj.toolUseResult._test_extra_result = "tool_result";
+    } else if (obj.tool_use_result && typeof obj.tool_use_result === "object") {
+      obj.tool_use_result._test_extra_result = "tool_result";
+    }
   }
 
   process.stdout.write(JSON.stringify(obj) + "\n");
