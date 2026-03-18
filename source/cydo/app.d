@@ -800,7 +800,7 @@ class App : ToolsBackend
 			// Deferred compaction check: if a type:"user" echo follows the
 			// dequeue/remove, pass it through with the enqueue UUID injected so the
 			// undo button appears on the confirmed message after reload.
-			// Neutral lines (file-history-snapshot, progress, etc.) pass through
+			// Other lines (file-history-snapshot, progress, etc.) are translated/dropped
 			// without leaving deferred mode — they can appear between dequeue and
 			// the user echo. Only type:"assistant" confirms compaction and triggers
 			// synthetic emission.
@@ -847,7 +847,7 @@ class App : ToolsBackend
 					auto t = ta.translateHistoryLine(line, lineNum);
 					return t !is null ? [synthetic, t] : [synthetic];
 				}
-				// Neutral line (file-history-snapshot, progress, etc.) — pass through,
+				// Other lines (file-history-snapshot, progress, etc.) are translated/dropped;
 				// stay in deferred mode waiting for type:"user" or type:"assistant".
 				auto t = ta.translateHistoryLine(line, lineNum);
 				return t !is null ? [t] : [];

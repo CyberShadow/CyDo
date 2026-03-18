@@ -43,6 +43,9 @@ string translateClaudeEvent(string rawLine)
 			return renameType(rawLine, "process/exit");
 		case "queue-operation":
 			return null; // consumed — handled by broadcastTask / stateful replay closure
+		case "progress":
+		case "file-history-snapshot":
+			return null; // not used by frontend
 		default:
 			return rawLine; // unknown → pass through
 	}

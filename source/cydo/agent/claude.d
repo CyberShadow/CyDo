@@ -279,8 +279,7 @@ class ClaudeCodeAgent : Agent
 	string translateHistoryLine(string line, int lineNum)
 	{
 		import cydo.agent.protocol : translateClaudeEvent;
-		auto result = translateClaudeEvent(line);
-		return result !is null ? result : line;
+		return translateClaudeEvent(line);
 	}
 
 	string translateLiveEvent(string rawLine)
