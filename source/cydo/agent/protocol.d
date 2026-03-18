@@ -330,7 +330,8 @@ string translateSessionInit(string rawLine)
 	return preserveExtraFields(rawLine, result,
 		["type", "subtype", "session_id", "model", "cwd", "tools",
 		 "claude_code_version", "permissionMode", "apiKeySource",
-		 "fast_mode_state", "skills", "mcp_servers", "agents", "plugins", "agent"]);
+		 "fast_mode_state", "skills", "mcp_servers", "agents", "plugins", "agent"]
+		~ claudeMetadataFields);
 }
 
 /// Normalize a Claude assistant message to the agnostic AssistantMessageEvent format.
@@ -428,7 +429,8 @@ string translateAssistantMessage(string rawLine)
 	ev.uuid                = raw.uuid;
 	auto result = toJson(ev);
 	result = preserveExtraFields(rawLine, result,
-		["type", "message", "parent_tool_use_id", "isSidechain", "isApiErrorMessage", "uuid"]);
+		["type", "message", "parent_tool_use_id", "isSidechain", "isApiErrorMessage"]
+		~ claudeMetadataFields);
 	result = preserveExtraContentFields(rawLine, result,
 		["type", "text", "thinking", "id", "name", "input", "signature"], "message.content");
 	return result;
@@ -485,8 +487,9 @@ string normalizeUserMessage(string rawLine)
 	auto result = toJson(ev);
 	return preserveExtraFields(rawLine, result,
 		["type", "message", "parent_tool_use_id", "isSidechain", "isReplay",
-		 "isSynthetic", "isMeta", "isSteering", "pending", "uuid",
-		 "toolUseResult", "tool_use_result"]);
+		 "isSynthetic", "isMeta", "isSteering", "pending",
+		 "toolUseResult", "tool_use_result", "slug", "role"]
+		~ claudeMetadataFields);
 }
 
 /// Normalize a Claude result event to the agnostic TurnResultEvent format.
@@ -545,7 +548,8 @@ string normalizeTurnResult(string rawLine)
 	return preserveExtraFields(rawLine, result,
 		["type", "subtype", "is_error", "result", "num_turns", "duration_ms",
 		 "duration_api_ms", "total_cost_usd", "usage", "modelUsage", "model_usage",
-		 "permission_denials", "stop_reason", "errors", "uuid", "session_id"]);
+		 "permission_denials", "stop_reason", "errors"]
+		~ claudeMetadataFields);
 }
 
 /// Translate stream_event: unwrap inner event and map to stream/* types.
@@ -662,6 +666,15 @@ string renameType(string rawLine, string newType)
 	}
 	return rawLine;
 }
+
+/// Claude Code metadata fields present in both stream-json and JSONL formats
+/// that are intentionally dropped during protocol translation.
+enum claudeMetadataFields = [
+	"uuid", "session_id", "sessionId",   // session identifiers
+	"agentId", "parentUuid", "requestId", // agent/request tracking
+	"cwd", "gitBranch", "version",        // environment context
+	"userType", "timestamp",              // JSONL persistence fields
+];
 
 /// Merge unknown top-level fields from rawLine into translatedLine.
 /// knownInputFields: field names in the raw input that are consumed by translation.
@@ -856,8 +869,8 @@ string normalizeTaskStarted(string rawLine)
 	ev.task_type    = raw.task_type;
 	auto result = toJson(ev);
 	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "task_id", "tool_use_id", "description", "task_type",
-		 "uuid", "session_id"]);
+		["type", "subtype", "task_id", "tool_use_id", "description", "task_type"]
+		~ claudeMetadataFields);
 }
 
 /// Normalize a Claude task_notification system event to the agnostic TaskNotificationEvent format.
@@ -886,8 +899,8 @@ string normalizeTaskNotification(string rawLine)
 	ev.summary     = raw.summary;
 	auto result = toJson(ev);
 	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "task_id", "status", "output_file", "summary",
-		 "uuid", "session_id"]);
+		["type", "subtype", "task_id", "status", "output_file", "summary"]
+		~ claudeMetadataFields);
 }
 
 /// Find the index of the closing brace matching the opening brace at pos.
