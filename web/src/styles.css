@@ -740,6 +740,7 @@ body,
   padding: 8px 12px;
   cursor: pointer;
   user-select: none;
+  position: relative;
 }
 
 .tool-header:hover {
@@ -1229,6 +1230,10 @@ body,
   padding: 8px;
 }
 
+.file-viewer .content-viewer-body .text-content {
+  padding: 8px 16px;
+}
+
 .file-viewer .edit-history {
   width: 180px;
   min-width: 120px;
@@ -1242,7 +1247,6 @@ body,
   height: 4px;
   cursor: row-resize;
   background: transparent;
-  transition: background 0.15s;
   flex-shrink: 0;
 }
 
@@ -1301,7 +1305,8 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: 12px;
   color: var(--text-dim);
 }
 
@@ -1351,12 +1356,16 @@ body,
   font-size: 11px;
 }
 
-/* Eye icon button on tool header */
+/* Eye icon button on tool header — absolutely positioned so it doesn't
+   change the header's height when shown on hover. */
 .tool-view-file {
   display: none;
   align-items: center;
   justify-content: center;
-  margin-left: auto;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   padding: 2px 4px;
   border: none;
   background: none;
@@ -1364,7 +1373,6 @@ body,
   cursor: pointer;
   border-radius: 3px;
   opacity: 0.7;
-  flex-shrink: 0;
 }
 
 .tool-view-file:hover {

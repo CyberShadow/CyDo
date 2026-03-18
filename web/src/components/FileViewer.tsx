@@ -1,8 +1,10 @@
 import { h, Fragment } from "preact";
-import { useState } from "preact/hooks";
+import { memo } from "preact/compat";
+import { useRef, useState } from "preact/hooks";
 import type { TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
-import { DiffView } from "./ToolCall";
+import { DiffView, PatchView } from "./ToolCall";
+import type { PatchHunk } from "./ToolCall";
 import { Markdown } from "./Markdown";
 
 interface FileViewerProps {
@@ -16,7 +18,7 @@ interface FileViewerProps {
   onChangeViewMode: (mode: "source" | "diff" | "rendered") => void;
   onClose: () => void;
   onResize: (height: number) => void;
-  onScrollToMessage: (messageId: string) => void;
+  onScrollToToolCall: (toolUseId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +174,7 @@ function SourceView({
   );
 }
 
-function ContentViewer({
+const ContentViewer = memo(function ContentViewer({
   file,
   selectedEditIndex,
   viewMode,
@@ -187,22 +189,8 @@ function ContentViewer({
   const edit = selectedEditIndex != null ? file.edits[selectedEditIndex] : null;
   const content = edit ? edit.contentAfter : file.currentContent;
 
-  // Diff content: from edit or last two edits
-  let diffOld = "";
-  let diffNew = "";
-  if (viewMode === "diff") {
-    if (edit) {
-      diffOld = edit.contentBefore ?? "";
-      diffNew = edit.contentAfter;
-    } else if (file.edits.length >= 2) {
-      const last = file.edits[file.edits.length - 1];
-      diffOld = last.contentBefore ?? "";
-      diffNew = last.contentAfter;
-    } else if (file.edits.length === 1) {
-      diffOld = file.edits[0].contentBefore ?? "";
-      diffNew = file.edits[0].contentAfter;
-    }
-  }
+  // Diff: use the selected edit, or fall back to the last edit
+  const diffEdit = edit ?? file.edits[file.edits.length - 1] ?? null;
 
   return (
     <div class="content-viewer">
@@ -232,8 +220,20 @@ function ContentViewer({
         {viewMode === "source" && (
           <SourceView content={content} filePath={file.path} />
         )}
-        {viewMode === "diff" && (
-          <DiffView oldStr={diffOld} newStr={diffNew} filePath={file.path} />
+        {viewMode === "diff" && diffEdit?.structuredPatch?.length ? (
+          <PatchView
+            hunks={diffEdit.structuredPatch as PatchHunk[]}
+            filePath={file.path}
+          />
+        ) : (
+          viewMode === "diff" &&
+          diffEdit && (
+            <DiffView
+              oldStr={diffEdit.contentBefore ?? ""}
+              newStr={diffEdit.contentAfter}
+              filePath={file.path}
+            />
+          )
         )}
         {viewMode === "rendered" && isMarkdown && (
           <Markdown text={content} class="text-content" />
@@ -244,7 +244,7 @@ function ContentViewer({
       </div>
     </div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Edit history
@@ -254,12 +254,12 @@ function EditHistory({
   file,
   selectedEditIndex,
   onSelectEdit,
-  onScrollToMessage,
+  onScrollToToolCall,
 }: {
   file: TrackedFile;
   selectedEditIndex: number | null;
   onSelectEdit: (index: number | null) => void;
-  onScrollToMessage: (messageId: string) => void;
+  onScrollToToolCall: (toolUseId: string) => void;
 }) {
   return (
     <div class="edit-history">
@@ -270,7 +270,7 @@ function EditHistory({
           onClick={() => {
             const deselecting = selectedEditIndex === i;
             onSelectEdit(deselecting ? null : i);
-            if (!deselecting) onScrollToMessage(edit.messageId);
+            if (!deselecting) onScrollToToolCall(edit.toolUseId);
           }}
         >
           <span class="edit-history-num">#{i + 1}</span>
@@ -298,30 +298,39 @@ export function FileViewer({
   onChangeViewMode,
   onClose,
   onResize,
-  onScrollToMessage,
+  onScrollToToolCall,
 }: FileViewerProps) {
   const paths = [...trackedFiles.keys()];
   const treeNodes = buildFileTree(paths);
   const file = selectedFile ? trackedFiles.get(selectedFile) : null;
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
     const startY = e.clientY;
     const startHeight = height;
     const onMove = (e: PointerEvent) => {
-      const delta = e.clientY - startY;
-      onResize(Math.max(100, startHeight + delta));
+      const newHeight = Math.max(100, startHeight + (e.clientY - startY));
+      if (containerRef.current) {
+        containerRef.current.style.height = `${newHeight}px`;
+      }
     };
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      const finalHeight = Math.max(100, startHeight + (e.clientY - startY));
+      onResize(finalHeight);
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
   };
 
   return (
-    <div class="file-viewer" style={{ height: `${height}px` }}>
+    <div
+      ref={containerRef}
+      class="file-viewer"
+      style={{ height: `${height}px` }}
+    >
       <div class="file-viewer-header">
         <span>Files</span>
         <button class="file-viewer-close" onClick={onClose} title="Close">
@@ -352,7 +361,7 @@ export function FileViewer({
               file={file}
               selectedEditIndex={selectedEditIndex}
               onSelectEdit={onSelectEdit}
-              onScrollToMessage={onScrollToMessage}
+              onScrollToToolCall={onScrollToToolCall}
             />
           </>
         ) : (

@@ -75,7 +75,9 @@ export function SessionView({
       open: true,
       selectedFile: filePath,
       selectedEditIndex: null,
-      viewMode: prev?.viewMode ?? "source",
+      viewMode:
+        prev?.viewMode ??
+        (/\.(md|mdx)$/i.test(filePath) ? "rendered" : "source"),
       height: prev?.height ?? 300,
     }));
   }, []);
@@ -84,8 +86,8 @@ export function SessionView({
     setFileViewerState(null);
   }, []);
 
-  const scrollToMessage = useCallback((messageId: string) => {
-    const el = document.getElementById(`msg-${messageId}`);
+  const scrollToToolCall = useCallback((toolUseId: string) => {
+    const el = document.getElementById(`tool-${toolUseId}`);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
@@ -113,7 +115,7 @@ export function SessionView({
       sel.anchorNode instanceof Element
         ? sel.anchorNode
         : sel.anchorNode?.parentElement;
-    if (!anchor?.closest(".message-list")) return false;
+    if (!anchor?.closest(".message-list, .file-viewer")) return false;
     const quote = new MarkdownQuote();
     const text = quote.quotedText;
     if (text) {
@@ -195,7 +197,7 @@ export function SessionView({
           onResize={(h) =>
             setFileViewerState((s) => (s ? { ...s, height: h } : s))
           }
-          onScrollToMessage={scrollToMessage}
+          onScrollToToolCall={scrollToToolCall}
         />
       )}
       {!task.historyLoaded ? (
@@ -302,7 +304,7 @@ function QuoteSelectionButton({
         sel.anchorNode instanceof Element
           ? sel.anchorNode
           : sel.anchorNode?.parentElement;
-      if (!anchor?.closest(".message-list")) {
+      if (!anchor?.closest(".message-list, .file-viewer")) {
         setPos(null);
         return;
       }

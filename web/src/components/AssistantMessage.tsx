@@ -115,6 +115,7 @@ export function AssistantMessage({
             <ToolCall
               key={i}
               name={block.name}
+              toolUseId={block.id}
               input={block.input}
               result={result}
               onViewFile={onViewFile}

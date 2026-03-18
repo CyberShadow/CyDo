@@ -84,6 +84,7 @@ export interface FileEdit {
   type: "edit" | "write";
   contentBefore: string | null; // null for brand-new files
   contentAfter: string;
+  structuredPatch?: unknown[]; // hunk array from tool result, if available
 }
 
 /** Accumulated state for a single tracked file. */

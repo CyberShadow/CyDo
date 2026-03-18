@@ -348,12 +348,16 @@ function trackFileEdits(
         state.trackedFiles ?? new Map<string, TrackedFile>(),
       );
       const existing = trackedFiles.get(filePath);
+      const structuredPatch = Array.isArray(tr.structuredPatch)
+        ? tr.structuredPatch
+        : undefined;
       const edit: FileEdit = {
         toolUseId: block.tool_use_id,
         messageId,
         type: toolName === "Edit" ? "edit" : "write",
         contentBefore,
         contentAfter,
+        structuredPatch,
       };
 
       if (existing) {

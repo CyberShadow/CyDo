@@ -18,6 +18,7 @@ function getDisplayName(name: string): string {
 
 interface Props {
   name: string;
+  toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
   children?: ComponentChildren;
@@ -299,7 +300,7 @@ export function DiffView({
   );
 }
 
-interface PatchHunk {
+export interface PatchHunk {
   oldStart: number;
   oldLines: number;
   newStart: number;
@@ -307,7 +308,7 @@ interface PatchHunk {
   lines: string[];
 }
 
-function PatchView({
+export function PatchView({
   hunks,
   filePath,
 }: {
@@ -1407,7 +1408,14 @@ const defaultExpandedResults = new Set([
 
 const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
 
-export function ToolCall({ name, input, result, children, onViewFile }: Props) {
+export function ToolCall({
+  name,
+  toolUseId,
+  input,
+  result,
+  children,
+  onViewFile,
+}: Props) {
   // Collapse pending AskUserQuestion input — the interactive form shows the same content
   const isAsk = askToolNames.has(name);
   const [inputOpen, setInputOpen] = useState(
@@ -1448,7 +1456,10 @@ export function ToolCall({ name, input, result, children, onViewFile }: Props) {
     typeof result.content === "string";
 
   return (
-    <div class={`tool-call ${result?.isError ? "tool-error" : ""}`}>
+    <div
+      id={toolUseId ? `tool-${toolUseId}` : undefined}
+      class={`tool-call ${result?.isError ? "tool-error" : ""}`}
+    >
       <div class="tool-header" onClick={() => setInputOpen(!inputOpen)}>
         <span class="tool-icon">
           {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
