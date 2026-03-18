@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
+import { useErrorOverlay } from "./useErrorOverlay";
 import { useTheme, ThemeContext } from "./useTheme";
 import { InputBox } from "./components/InputBox";
 import { SessionConfig } from "./components/SessionConfig";
@@ -43,6 +44,7 @@ function AppContent() {
 
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
+  const { errors, dismissError, clearErrors } = useErrorOverlay();
   const [showSearch, setShowSearch] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
