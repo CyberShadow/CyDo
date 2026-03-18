@@ -350,6 +350,22 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 	if (!found)
 		return -1;
 
+	// Strip trailing neutral/queue-op lines that preceded the truncation target
+	// (the "run-up" to a steered user message being undone).
+	import std.string : lastIndexOf;
+	while (output.length > 0)
+	{
+		auto nlPos = output[0 .. $ - 1].lastIndexOf('\n');
+		auto lastLine = nlPos >= 0 ? output[nlPos + 1 .. $ - 1] : output[0 .. $ - 1];
+		if (isNeutralOrQueueOp(lastLine))
+		{
+			output = nlPos >= 0 ? output[0 .. nlPos + 1] : "";
+			removedCount++;
+		}
+		else
+			break;
+	}
+
 	write(jsonlPath, output);
 	return removedCount;
 }
@@ -368,6 +384,7 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
 		return -1;
 
+	string[] beforeLines;
 	bool pastTarget = false;
 	int count = 0;
 	int lineNum = 0;
@@ -385,7 +402,18 @@ int countLinesAfterForkId(string jsonlPath, string afterForkId,
 		else if (matchFn(line, lineNum, afterForkId))
 		{
 			pastTarget = true;
+			// Count trailing neutral/queue-op lines preceding the match;
+			// truncateJsonl will strip these too, so include them in the preview.
+			foreach_reverse (bl; beforeLines)
+			{
+				if (isNeutralOrQueueOp(bl))
+					count++;
+				else
+					break;
+			}
 		}
+		else
+			beforeLines ~= line;
 	}
 
 	return pastTarget ? count : -1;
@@ -403,6 +431,17 @@ string lastForkIdInJsonl(string jsonlPath, string[] delegate(string content, int
 
 	auto ids = extractFn(readText(jsonlPath));
 	return ids.length > 0 ? ids[$ - 1] : null;
+}
+
+/// Returns true if this JSONL line is a queue-operation, file-history-snapshot,
+/// or progress event — lines that are "run-up" to a steered user message and
+/// should be stripped together with it on undo.
+private bool isNeutralOrQueueOp(string line)
+{
+	import std.algorithm : canFind;
+	return line.canFind(`"queue-operation"`)
+		|| line.canFind(`"file-history-snapshot"`)
+		|| line.canFind(`"progress"`);
 }
 
 /// Extract a string field value from a JSON line by prefix scanning.
