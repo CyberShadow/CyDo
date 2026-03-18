@@ -178,6 +178,16 @@ function AppContent() {
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
+  const handleSidebarSelect = useCallback((tid: string) => {
+    setActiveTaskId(tid);
+    setSidebarOpen(false);
+  }, [setActiveTaskId]);
+
+  const handleSidebarNewTask = useCallback(() => {
+    handleNewTask();
+    setSidebarOpen(false);
+  }, [handleNewTask]);
+
   const focusNewTaskInput = useCallback(() => {
     newTaskInputRef.current?.focus();
   }, []);
@@ -214,14 +224,8 @@ function AppContent() {
           tasks={sidebarTasks}
           activeTaskId={activeTaskId}
           attention={attention}
-          onSelectTask={(tid) => {
-            setActiveTaskId(tid);
-            setSidebarOpen(false);
-          }}
-          onNewTask={() => {
-            handleNewTask();
-            setSidebarOpen(false);
-          }}
+          onSelectTask={handleSidebarSelect}
+          onNewTask={handleSidebarNewTask}
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}

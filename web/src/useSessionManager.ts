@@ -1043,6 +1043,7 @@ export function useTaskManager(): TaskManager {
   );
 
   // Build sidebar task list filtered by active workspace/project and sorted by tid
+  const prevSidebarTasksRef = useRef<import("./components/Sidebar").SidebarTask[]>([]);
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values());
     if (activeWorkspace !== null && activeProject !== null) {
@@ -1056,7 +1057,7 @@ export function useTaskManager(): TaskManager {
         return t.workspace === activeWorkspace && projName === activeProject;
       });
     }
-    return filtered
+    const result = filtered
       .sort((a, b) => a.tid - b.tid)
       .map((t) => ({
         tid: t.tid,
@@ -1070,6 +1071,30 @@ export function useTaskManager(): TaskManager {
         archived: t.archived,
         taskType: t.taskType,
       }));
+
+    const prev = prevSidebarTasksRef.current;
+    if (
+      prev.length === result.length &&
+      result.every((t, i) => {
+        const p = prev[i];
+        return (
+          t.tid === p.tid &&
+          t.alive === p.alive &&
+          t.resumable === p.resumable &&
+          t.isProcessing === p.isProcessing &&
+          t.title === p.title &&
+          t.parentTid === p.parentTid &&
+          t.relationType === p.relationType &&
+          t.status === p.status &&
+          t.archived === p.archived &&
+          t.taskType === p.taskType
+        );
+      })
+    ) {
+      return prev;
+    }
+    prevSidebarTasksRef.current = result;
+    return result;
   }, [tasks, activeWorkspace, activeProject, workspaces]);
 
   return {

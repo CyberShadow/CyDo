@@ -409,7 +409,7 @@ interface Props {
   taskTypes: TaskTypeInfo[];
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   tasks,
   activeTaskId,
   attention,
@@ -503,4 +503,4 @@ export function Sidebar({
       </div>
     </div>
   );
-}
+});

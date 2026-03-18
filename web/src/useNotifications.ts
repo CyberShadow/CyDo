@@ -125,11 +125,17 @@ export function useNotifications(
   onDismiss?: (tid: number) => void,
 ): Set<number> {
   // Derive attention set from tasks map
+  const prevAttentionRef = useRef<Set<number>>(new Set());
   const attention = useMemo(() => {
     const set = new Set<number>();
     for (const [tid, t] of tasks) {
       if (t.needsAttention) set.add(tid);
     }
+    const prev = prevAttentionRef.current;
+    if (set.size === prev.size && [...set].every((tid) => prev.has(tid))) {
+      return prev;
+    }
+    prevAttentionRef.current = set;
     return set;
   }, [tasks]);
 
