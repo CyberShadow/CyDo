@@ -5,7 +5,6 @@ export default defineConfig({
   timeout: 60_000,
   retries: 1,
   fullyParallel: true,
-  workers: 4,
   use: {
     headless: true,
     screenshot: "on",
