@@ -235,6 +235,7 @@
 
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests
+              chmod +x /tmp/tests/extra-fields-wrapper.sh
               cd /tmp/tests
               playwright test --reporter=list ${testMatch} || TEST_RESULT=$?
 

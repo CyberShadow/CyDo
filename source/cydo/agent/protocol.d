@@ -326,7 +326,11 @@ string translateSessionInit(string rawLine)
 	ev.mcp_servers   = raw.mcp_servers;
 	ev.agents        = raw.agents;
 	ev.plugins       = raw.plugins;
-	return toJson(ev);
+	auto result = toJson(ev);
+	return preserveExtraFields(rawLine, result,
+		["type", "subtype", "session_id", "model", "cwd", "tools",
+		 "claude_code_version", "permissionMode", "apiKeySource",
+		 "fast_mode_state", "skills", "mcp_servers", "agents", "plugins", "agent"]);
 }
 
 /// Normalize a Claude assistant message to the agnostic AssistantMessageEvent format.
@@ -422,7 +426,12 @@ string translateAssistantMessage(string rawLine)
 	ev.is_sidechain        = raw.isSidechain;
 	ev.is_api_error        = raw.isApiErrorMessage;
 	ev.uuid                = raw.uuid;
-	return toJson(ev);
+	auto result = toJson(ev);
+	result = preserveExtraFields(rawLine, result,
+		["type", "message", "parent_tool_use_id", "isSidechain", "isApiErrorMessage", "uuid"]);
+	result = preserveExtraContentFields(rawLine, result,
+		["type", "text", "thinking", "id", "name", "input", "signature"], "message.content");
+	return result;
 }
 
 
@@ -473,7 +482,11 @@ string normalizeUserMessage(string rawLine)
 		ev.tool_result = raw.toolUseResult;
 	else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
 		ev.tool_result = raw.tool_use_result;
-	return toJson(ev);
+	auto result = toJson(ev);
+	return preserveExtraFields(rawLine, result,
+		["type", "message", "parent_tool_use_id", "isSidechain", "isReplay",
+		 "isSynthetic", "isMeta", "isSteering", "pending", "uuid",
+		 "toolUseResult", "tool_use_result"]);
 }
 
 /// Normalize a Claude result event to the agnostic TurnResultEvent format.
@@ -528,7 +541,11 @@ string normalizeTurnResult(string rawLine)
 	ev.permission_denials = raw.permission_denials;
 	ev.stop_reason        = raw.stop_reason;
 	ev.errors             = raw.errors;
-	return toJson(ev);
+	auto result = toJson(ev);
+	return preserveExtraFields(rawLine, result,
+		["type", "subtype", "is_error", "result", "num_turns", "duration_ms",
+		 "duration_api_ms", "total_cost_usd", "usage", "modelUsage", "model_usage",
+		 "permission_denials", "stop_reason", "errors", "uuid", "session_id"]);
 }
 
 /// Translate stream_event: unwrap inner event and map to stream/* types.
@@ -646,6 +663,96 @@ string renameType(string rawLine, string newType)
 	return rawLine;
 }
 
+/// Merge unknown top-level fields from rawLine into translatedLine.
+/// knownInputFields: field names in the raw input that are consumed by translation.
+/// Any raw field NOT in this list is preserved in the output.
+private string preserveExtraFields(string rawLine, string translatedLine, const(string)[] knownInputFields)
+{
+	import std.json : parseJSON, JSONValue, JSONType;
+
+	JSONValue raw, translated;
+	try {
+		raw = parseJSON(rawLine);
+		translated = parseJSON(translatedLine);
+	} catch (Exception) {
+		return translatedLine;
+	}
+
+	if (raw.type != JSONType.object || translated.type != JSONType.object)
+		return translatedLine;
+
+	bool hasExtra = false;
+	foreach (key, value; raw.objectNoRef) {
+		bool isKnown = false;
+		foreach (k; knownInputFields) {
+			if (key == k) { isKnown = true; break; }
+		}
+		if (!isKnown) {
+			translated.object[key] = value;
+			hasExtra = true;
+		}
+	}
+
+	return hasExtra ? translated.toString() : translatedLine;
+}
+
+/// Merge unknown fields from content blocks in the raw input into the translated output.
+/// rawContentPath: dot-delimited path to content array in raw JSON (e.g. "message.content").
+/// translatedContentKey: key name for content array in translated JSON (always "content").
+private string preserveExtraContentFields(string rawLine, string translatedLine,
+	const(string)[] knownBlockFields, string rawContentPath = "content")
+{
+	import std.json : parseJSON, JSONValue, JSONType;
+	import std.algorithm : splitter;
+
+	JSONValue raw, translated;
+	try {
+		raw = parseJSON(rawLine);
+		translated = parseJSON(translatedLine);
+	} catch (Exception) {
+		return translatedLine;
+	}
+
+	// Navigate to raw content array
+	JSONValue rawContent = raw;
+	foreach (part; rawContentPath.splitter(".")) {
+		if (rawContent.type != JSONType.object || part !in rawContent.objectNoRef)
+			return translatedLine;
+		rawContent = rawContent[part];
+	}
+	if (rawContent.type != JSONType.array)
+		return translatedLine;
+
+	// Get translated content array
+	if (translated.type != JSONType.object || "content" !in translated.objectNoRef)
+		return translatedLine;
+	auto transContent = translated["content"];
+	if (transContent.type != JSONType.array)
+		return translatedLine;
+
+	bool hasExtra = false;
+	auto rawArr = rawContent.array;
+	auto transArr = transContent.array;
+	auto len = rawArr.length < transArr.length ? rawArr.length : transArr.length;
+
+	for (size_t i = 0; i < len; i++) {
+		if (rawArr[i].type != JSONType.object || transArr[i].type != JSONType.object)
+			continue;
+		foreach (key, value; rawArr[i].objectNoRef) {
+			bool isKnown = false;
+			foreach (k; knownBlockFields) {
+				if (key == k) { isKnown = true; break; }
+			}
+			if (!isKnown) {
+				transArr[i].object[key] = value;
+				hasExtra = true;
+			}
+		}
+	}
+
+	return hasExtra ? translated.toString() : translatedLine;
+}
+
 /// Find the byte offset of the top-level `"type":"` in a JSON object string.
 /// Returns -1 if not found.  Only matches at brace depth 1 (top-level keys).
 private int findTopLevelType(string s)
@@ -747,7 +854,10 @@ string normalizeTaskStarted(string rawLine)
 	ev.tool_use_id  = raw.tool_use_id;
 	ev.description  = raw.description;
 	ev.task_type    = raw.task_type;
-	return toJson(ev);
+	auto result = toJson(ev);
+	return preserveExtraFields(rawLine, result,
+		["type", "subtype", "task_id", "tool_use_id", "description", "task_type",
+		 "uuid", "session_id"]);
 }
 
 /// Normalize a Claude task_notification system event to the agnostic TaskNotificationEvent format.
@@ -774,7 +884,10 @@ string normalizeTaskNotification(string rawLine)
 	ev.status      = raw.status;
 	ev.output_file = raw.output_file;
 	ev.summary     = raw.summary;
-	return toJson(ev);
+	auto result = toJson(ev);
+	return preserveExtraFields(rawLine, result,
+		["type", "subtype", "task_id", "status", "output_file", "summary",
+		 "uuid", "session_id"]);
 }
 
 /// Find the index of the closing brace matching the opening brace at pos.

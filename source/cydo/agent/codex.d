@@ -380,7 +380,7 @@ class CodexAgent : Agent
 			if (!existing.dead)
 				return *existing;
 
-		string[] codexArgs = ["codex", "app-server", "--listen", "stdio://"];
+		string[] codexArgs = [getCodexBinName(), "app-server", "--listen", "stdio://"];
 		string[] args;
 		if (bwrapPrefix !is null)
 			args = bwrapPrefix ~ codexArgs;
@@ -631,7 +631,7 @@ class CodexAgent : Agent
 			// --skip-git-repo-check avoids the "not inside a trusted directory"
 			// error when the process CWD is not a git repo root.
 			proc = new AgentProcess([
-				"codex", "exec",
+				getCodexBinName(), "exec",
 				"--ephemeral",
 				"--skip-git-repo-check",
 				"-m", resolveModelAlias(modelClass),
@@ -1527,17 +1527,29 @@ string escapeJsonString(string s)
 		.replace("\t", `\t`);
 }
 
+/// Get the codex binary name/path.
+/// If CYDO_CODEX_BIN is set, use it (can be absolute path); else "codex".
+private string getCodexBinName()
+{
+	import std.process : environment;
+	return environment.get("CYDO_CODEX_BIN", "codex");
+}
+
 /// Resolve the codex binary path by searching PATH.
 string resolveCodexBinary()
 {
-	import std.algorithm : splitter;
+	import std.algorithm : splitter, startsWith;
 	import std.file : exists, isFile;
 	import std.process : environment;
+
+	auto binName = getCodexBinName();
+	if (binName.startsWith("/"))
+		return dirName(binName);
 
 	auto pathVar = environment.get("PATH", "");
 	foreach (dir; pathVar.splitter(':'))
 	{
-		auto candidate = buildPath(dir, "codex");
+		auto candidate = buildPath(dir, binName);
 		if (exists(candidate) && isFile(candidate))
 			return dir; // return the directory, not the binary itself
 	}

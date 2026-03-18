@@ -1,4 +1,4 @@
-import { h } from "preact";
+import { h, Fragment } from "preact";
 import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
@@ -105,46 +105,71 @@ export function AssistantMessage({
         </div>
       )}
       {message.content.map((block, i) => {
+        const knownBlockKeys = new Set(['type', 'text', 'id', 'name', 'input']);
+        const blockExtra = Object.entries(block).filter(([k]) => !knownBlockKeys.has(k));
+        const blockExtraEl = blockExtra.length > 0 ? (
+          <div class="unknown-extra-fields">
+            {blockExtra.map(([k, v]) => (
+              <div key={k} class="tool-input-field">
+                <span class="field-label">{k}:</span>
+                <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
+              </div>
+            ))}
+          </div>
+        ) : null;
+
         if (block.type === "thinking") {
-          return <Markdown key={i} text={block.text} class="thinking-text" />;
+          return (
+            <Fragment key={i}>
+              <Markdown text={block.text} class="thinking-text" />
+              {blockExtraEl}
+            </Fragment>
+          );
         }
         if (block.type === "tool_use") {
           const result = message.toolResults?.get(block.id);
           const nested = childrenByParent?.get(block.id);
           return (
-            <ToolCall
-              key={i}
-              name={block.name}
-              toolUseId={block.id}
-              input={block.input}
-              result={result}
-              onViewFile={onViewFile}
-            >
-              {nested && nested.length > 0 && (
-                <div class="sub-agent-messages">
-                  {nested.map((child) => {
-                    if (child.type === "assistant") {
-                      return (
-                        <AssistantMessage
-                          key={child.id}
-                          message={child}
-                          childrenByParent={childrenByParent}
-                          onViewFile={onViewFile}
-                        />
-                      );
-                    }
-                    if (child.type === "user") {
-                      return <UserMessage key={child.id} message={child} />;
-                    }
-                    return null;
-                  })}
-                </div>
-              )}
-            </ToolCall>
+            <Fragment key={i}>
+              <ToolCall
+                name={block.name}
+                toolUseId={block.id}
+                input={block.input}
+                result={result}
+                onViewFile={onViewFile}
+              >
+                {nested && nested.length > 0 && (
+                  <div class="sub-agent-messages">
+                    {nested.map((child) => {
+                      if (child.type === "assistant") {
+                        return (
+                          <AssistantMessage
+                            key={child.id}
+                            message={child}
+                            childrenByParent={childrenByParent}
+                            onViewFile={onViewFile}
+                          />
+                        );
+                      }
+                      if (child.type === "user") {
+                        return <UserMessage key={child.id} message={child} />;
+                      }
+                      return null;
+                    })}
+                  </div>
+                )}
+              </ToolCall>
+              {blockExtraEl}
+            </Fragment>
           );
         }
         if (block.type === "text") {
-          return <Markdown key={i} text={block.text} class="text-content" />;
+          return (
+            <Fragment key={i}>
+              <Markdown text={block.text} class="text-content" />
+              {blockExtraEl}
+            </Fragment>
+          );
         }
         // Unknown content block type - display it rather than silently dropping
         return (
@@ -153,9 +178,20 @@ export function AssistantMessage({
               Unknown block type: {(block as any).type}
             </div>
             <pre>{JSON.stringify(block, null, 2)}</pre>
+            {blockExtraEl}
           </div>
         );
       })}
+      {message.extraFields && Object.keys(message.extraFields).length > 0 && (
+        <div class="unknown-extra-fields">
+          {Object.entries(message.extraFields).map(([k, v]) => (
+            <div key={k} class="tool-input-field">
+              <span class="field-label">{k}:</span>
+              <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {message.streamingBlocks?.map((block) => (
         <div key={`s${block.index}`} class={`content-block ${block.type}`}>
           {block.type === "thinking" && (

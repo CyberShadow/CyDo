@@ -403,10 +403,11 @@ class ClaudeCodeAgent : Agent
 			"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
 			"PATH": environment.get("PATH", ""),
 			"HOME": environment.get("HOME", ""),
+			"CLAUDE_BIN": getClaudeBinName(),
 		];
 		auto result = execute([
 			"bash", "-c",
-			`exec 2>&1; exec claude --resume "$1" --rewind-files "$2" `
+			`exec 2>&1; exec "$CLAUDE_BIN" --resume "$1" --rewind-files "$2" `
 				~ `--settings '{"fileCheckpointingEnabled": true}'`,
 			"--", sessionId, afterUuid],
 			env, Config.none, size_t.max,
@@ -432,7 +433,10 @@ class ClaudeCodeAgent : Agent
 		auto promise = new Promise!string;
 
 		auto claudeBinDir = resolveClaudeBinary();
-		auto claudeBin = claudeBinDir.length > 0 ? buildPath(claudeBinDir, "claude") : "claude";
+		auto binName = getClaudeBinName();
+		import std.algorithm : startsWith;
+		auto claudeBin = claudeBinDir.length > 0 && !binName.startsWith("/")
+			? buildPath(claudeBinDir, binName) : binName;
 
 		string[string] env = [
 			"PATH": environment.get("PATH", ""),
@@ -486,7 +490,7 @@ class ClaudeCodeSession : AgentSession
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
 		string[] claudeArgs = [
-			"claude",
+			getClaudeBinName(),
 			"-p",
 			"--input-format", "stream-json",
 			"--output-format", "stream-json",
@@ -668,18 +672,30 @@ string escapeJsonString(string s)
 	return s.replace(`\`, `\\`).replace(`"`, `\"`).replace("\n", `\n`).replace("\r", `\r`).replace("\t", `\t`);
 }
 
+/// Get the claude binary name/path.
+/// If CYDO_CLAUDE_BIN is set, use it (can be absolute path); else "claude".
+private string getClaudeBinName()
+{
+	import std.process : environment;
+	return environment.get("CYDO_CLAUDE_BIN", "claude");
+}
+
 /// Resolve the claude binary path by searching PATH.
 string resolveClaudeBinary()
 {
-	import std.algorithm : splitter;
+	import std.algorithm : splitter, startsWith;
 	import std.file : exists, isFile;
 	import std.path : buildPath;
 	import std.process : environment;
 
+	auto binName = getClaudeBinName();
+	if (binName.startsWith("/"))
+		return dirName(binName);
+
 	auto pathVar = environment.get("PATH", "");
 	foreach (dir; pathVar.splitter(':'))
 	{
-		auto candidate = buildPath(dir, "claude");
+		auto candidate = buildPath(dir, binName);
 		if (exists(candidate) && isFile(candidate))
 			return dir; // return the directory, not the binary itself
 	}

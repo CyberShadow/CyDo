@@ -2311,6 +2311,15 @@ pre.extra-field-value {
 .unknown-result-fields {
 }
 
+.unknown-extra-fields {
+  background: var(--color-warning-bg, rgba(255, 200, 0, 0.1));
+  border-left: 3px solid var(--color-warning, #c8a000);
+  padding: 4px 8px;
+  margin-top: 4px;
+  font-family: monospace;
+  font-size: 11px;
+}
+
 /* Welcome page */
 .welcome-page-container {
   height: 100%;

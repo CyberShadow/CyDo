@@ -19,6 +19,17 @@ import type {
   ResultMessage,
 } from "./protocol";
 
+function extractExtraFields(
+  msg: Record<string, unknown>,
+  knownKeys: Set<string>,
+): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(msg)) {
+    if (!knownKeys.has(k)) extra[k] = v;
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Individual reducers
 // ---------------------------------------------------------------------------
@@ -232,6 +243,11 @@ export function reduceAssistantMessage(
     }
   }
 
+  const assistantKnownKeys = new Set([
+    'type', 'id', 'content', 'model', 'stop_reason', 'usage',
+    'parent_tool_use_id', 'is_sidechain', 'is_api_error', 'uuid',
+  ]);
+
   if (idx >= 0) {
     const updated = [...s.messages];
     const existingMsg = { ...updated[idx] };
@@ -251,6 +267,7 @@ export function reduceAssistantMessage(
     existingMsg.model ??= msg.model;
     existingMsg.isSidechain ??= msg.is_sidechain;
     existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
+    existingMsg.extraFields ??= extractExtraFields(msg as any, assistantKnownKeys);
     // Accumulate raw sources
     const prev = existingMsg.rawSource;
     existingMsg.rawSource = prev
@@ -262,6 +279,7 @@ export function reduceAssistantMessage(
     bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
   }
+  const extraFields = extractExtraFields(msg as any, assistantKnownKeys);
   const messages = [
     ...s.messages,
     {
@@ -273,6 +291,7 @@ export function reduceAssistantMessage(
       isSidechain: msg.is_sidechain,
       parentToolUseId: msg.parent_tool_use_id,
       usage: msg.usage,
+      extraFields,
       rawSource: msg,
     },
   ];
@@ -510,6 +529,12 @@ export function reduceResultMessage(
   }
 
   const id = `result-${++s.msgIdCounter}`;
+  const resultKnownKeys = new Set([
+    'type', 'subtype', 'is_error', 'result', 'num_turns', 'duration_ms',
+    'duration_api_ms', 'total_cost_usd', 'usage', 'model_usage',
+    'permission_denials', 'stop_reason', 'errors',
+  ]);
+  const resultExtraFields = extractExtraFields(msg as any, resultKnownKeys);
   return {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
@@ -520,6 +545,7 @@ export function reduceResultMessage(
         type: "result" as const,
         content: [],
         rawSource: msg,
+        extraFields: resultExtraFields,
         resultData: {
           subtype: msg.subtype,
           isError: msg.is_error,

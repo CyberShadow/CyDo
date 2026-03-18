@@ -63,6 +63,8 @@ export interface DisplayMessage {
   statusText?: string;
   // Original wire-protocol message(s) for "view source"
   rawSource?: unknown;
+  /** Extra/unknown fields from the wire protocol, surfaced in the UI. */
+  extraFields?: Record<string, unknown>;
 }
 
 export type ToolResultContent =
