@@ -10,13 +10,10 @@ const authUser = process.env.CYDO_AUTH_USER;
 const authPass = process.env.CYDO_AUTH_PASS;
 const backendPort = process.env.CYDO_LISTEN_PORT ?? "3456";
 
-const backendProto =
-  tlsCert && tlsKey && existsSync(tlsCert) && existsSync(tlsKey)
-    ? "https"
-    : "http";
+const backendProto = tlsCert && tlsKey ? "https" : "http";
 
 const https: ServerOptions | undefined =
-  backendProto === "https"
+  tlsCert && tlsKey && existsSync(tlsCert) && existsSync(tlsKey)
     ? { cert: readFileSync(tlsCert!), key: readFileSync(tlsKey!) }
     : undefined;
 
