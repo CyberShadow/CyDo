@@ -332,40 +332,12 @@ body,
   border-left-color: var(--accent);
 }
 
-.sidebar-dot {
-  width: 8px;
-  height: 8px;
-  background: var(--text-dim);
-  flex-shrink: 0;
-}
-
-.sidebar-dot.processing {
-  background: #f0d050;
-}
-
-.sidebar-dot.alive {
-  background: var(--success);
-}
-
 .sidebar-item.attention {
   background: rgba(76, 175, 80, 0.1);
 }
 
 .sidebar-item.top-level {
   border-top: 1px solid var(--border);
-}
-
-.sidebar-dot.resumable {
-  background: var(--success);
-  opacity: 0.5;
-}
-
-.sidebar-dot.completed {
-  background: var(--accent);
-}
-
-.sidebar-dot.failed {
-  background: var(--error);
 }
 
 .task-type-icon {
@@ -405,14 +377,6 @@ body,
 
 .sidebar-new-task {
   border-top: 1px solid var(--border);
-}
-
-.sidebar-dot.new {
-  background: none;
-  font-size: 16px;
-  line-height: 8px;
-  text-align: center;
-  color: var(--text-dim);
 }
 
 .sidebar-label {

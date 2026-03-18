@@ -383,7 +383,9 @@ const SidebarItem = memo(function SidebarItem({
           class={`task-type-icon task-type-icon-${iconName}${statusClass ? ` ${statusClass}` : ""}`}
         />
       ) : (
-        <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
+        <span
+          class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+        />
       )}
       <span class="sidebar-label" title={title}>
         {title}
@@ -476,7 +478,7 @@ export function Sidebar({
           class={`sidebar-item sidebar-new-task${activeTaskId === null ? " active" : ""}`}
           onClick={onNewTask}
         >
-          <span class="sidebar-dot new">+</span>
+          <span class="task-type-icon task-type-icon-plus" />
           <span class="sidebar-label">New Task</span>
         </div>
         {flatItems

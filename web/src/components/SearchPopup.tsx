@@ -105,7 +105,7 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
                   />
                 ) : (
                   <span
-                    class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`}
+                    class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
                   />
                 )}
                 <span class="search-result-title">

@@ -52,7 +52,9 @@ export function WelcomePage({
       );
     }
     return (
-      <span class={`sidebar-dot${statusClass ? ` ${statusClass}` : ""}`} />
+      <span
+        class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+      />
     );
   }
 
