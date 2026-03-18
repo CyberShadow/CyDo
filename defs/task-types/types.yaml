@@ -370,7 +370,7 @@ task_types:
     tool_guidance: >
       Use when you want to try something before committing to it. The worktree
       is disposable — experiment freely.
-    model_class: medium
+    model_class: large
     output_type: report
     parallelizable: true
     user_visible: false
