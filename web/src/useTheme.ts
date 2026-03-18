@@ -1,5 +1,5 @@
 import { createContext } from "preact";
-import { useState, useEffect, useContext } from "preact/hooks";
+import { useState, useEffect, useContext, useCallback } from "preact/hooks";
 
 export type Theme = "dark" | "light";
 
@@ -23,7 +23,10 @@ export function useTheme() {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+  const toggleTheme = useCallback(
+    () => setTheme((t) => (t === "dark" ? "light" : "dark")),
+    [],
+  );
 
   return { theme, toggleTheme } as const;
 }
