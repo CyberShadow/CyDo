@@ -66,7 +66,7 @@ export function SessionView({
     open: boolean;
     selectedFile: string | null;
     selectedEditIndex: number | null;
-    viewMode: "source" | "diff" | "rendered";
+    viewMode: "source" | "diff" | "cumulative" | "rendered";
     height: number;
   } | null>(null);
 

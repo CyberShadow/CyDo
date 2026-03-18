@@ -1,6 +1,7 @@
 import { h, Fragment } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
+import { structuredPatch } from "diff";
 import type { DisplayMessage, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { DiffView, PatchView } from "./ToolCall";
@@ -84,40 +85,79 @@ function resolveEditContent(
   return null;
 }
 
+interface ResolvedFileContent {
+  /** Content before any edits (first edit's contentBefore, or "" for new files). */
+  originalContent: string;
+  currentContent: string;
+  resolved: Map<number, ResolvedEdit>;
+}
+
 /** Resolve all edits for a file and return the current (latest) content. */
 function resolveFileContent(
   file: TrackedFile,
   messages: DisplayMessage[],
-): { currentContent: string; resolved: Map<number, ResolvedEdit> } | null {
+): ResolvedFileContent | null {
   const resolved = new Map<number, ResolvedEdit>();
   let currentContent: string | null = null;
+  let originalContent: string | null = null;
 
   for (let i = 0; i < file.edits.length; i++) {
     const r = resolveEditContent(file.edits[i], messages);
     if (r) {
       resolved.set(i, r);
+      if (originalContent == null) originalContent = r.contentBefore ?? "";
       currentContent = r.contentAfter;
     }
   }
 
   if (currentContent == null) return null;
-  return { currentContent, resolved };
+  return { originalContent: originalContent ?? "", currentContent, resolved };
+}
+
+/** Compute line-level diffstat between two strings. */
+function computeDiffstat(
+  oldStr: string,
+  newStr: string,
+): { added: number; removed: number } {
+  const oldLines = oldStr.split("\n");
+  const newLines = newStr.split("\n");
+  // Simple line diff: count lines present in new but not old (added) and vice versa.
+  // For accuracy we use a set-based approach on indexed lines, but a proper diff
+  // would be better.  For a quick stat, compare line counts after a longest-common-
+  // subsequence style estimate.  We'll use the simple heuristic: run through both
+  // and count net changes.
+  const oldSet = new Map<string, number>();
+  for (const line of oldLines) oldSet.set(line, (oldSet.get(line) ?? 0) + 1);
+  let kept = 0;
+  for (const line of newLines) {
+    const c = oldSet.get(line);
+    if (c && c > 0) {
+      oldSet.set(line, c - 1);
+      kept++;
+    }
+  }
+  return {
+    added: newLines.length - kept,
+    removed: oldLines.length - kept,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
+type ViewMode = "source" | "diff" | "cumulative" | "rendered";
+
 interface FileViewerProps {
   trackedFiles: Map<string, TrackedFile>;
   messages: DisplayMessage[];
   selectedFile: string | null;
   selectedEditIndex: number | null;
-  viewMode: "source" | "diff" | "rendered";
+  viewMode: ViewMode;
   height: number;
   onSelectFile: (path: string) => void;
   onSelectEdit: (index: number | null) => void;
-  onChangeViewMode: (mode: "source" | "diff" | "rendered") => void;
+  onChangeViewMode: (mode: ViewMode) => void;
   onClose: () => void;
   onResize: (height: number) => void;
   onScrollToToolCall: (toolUseId: string) => void;
@@ -276,22 +316,47 @@ function SourceView({
   );
 }
 
+function CumulativeDiff({
+  oldStr,
+  newStr,
+  filePath,
+}: {
+  oldStr: string;
+  newStr: string;
+  filePath: string;
+}) {
+  const patch = useMemo(
+    () =>
+      structuredPatch("", "", oldStr, newStr, undefined, undefined, {
+        context: 3,
+      }),
+    [oldStr, newStr],
+  );
+  return <PatchView hunks={patch.hunks as PatchHunk[]} filePath={filePath} />;
+}
+
 const ContentViewer = memo(function ContentViewer({
   filePath,
   currentContent,
+  originalContent,
   resolvedEdit,
   diffEdit,
+  cumulativeContent,
   viewMode,
   onChangeViewMode,
 }: {
   filePath: string;
   currentContent: string;
+  /** Content before any edits (for cumulative diff baseline). */
+  originalContent: string;
   /** Resolved content for the selected edit (null when no edit selected). */
   resolvedEdit: ResolvedEdit | null;
   /** Resolved content for diff view — falls back to last edit when none selected. */
   diffEdit: ResolvedEdit | null;
-  viewMode: "source" | "diff" | "rendered";
-  onChangeViewMode: (mode: "source" | "diff" | "rendered") => void;
+  /** Content after applying edits up to and including the selected one (for cumulative diff). */
+  cumulativeContent: string;
+  viewMode: ViewMode;
+  onChangeViewMode: (mode: ViewMode) => void;
 }) {
   const isMarkdown = /\.(md|mdx)$/i.test(filePath);
   const content = resolvedEdit ? resolvedEdit.contentAfter : currentContent;
@@ -310,6 +375,12 @@ const ContentViewer = memo(function ContentViewer({
           onClick={() => onChangeViewMode("diff")}
         >
           Diff
+        </button>
+        <button
+          class={viewMode === "cumulative" ? "active" : ""}
+          onClick={() => onChangeViewMode("cumulative")}
+        >
+          Cumulative
         </button>
         {isMarkdown && (
           <button
@@ -339,6 +410,13 @@ const ContentViewer = memo(function ContentViewer({
             />
           )
         )}
+        {viewMode === "cumulative" && (
+          <CumulativeDiff
+            oldStr={originalContent}
+            newStr={cumulativeContent}
+            filePath={filePath}
+          />
+        )}
         {viewMode === "rendered" && isMarkdown && (
           <Markdown text={content} class="text-content" />
         )}
@@ -356,33 +434,52 @@ const ContentViewer = memo(function ContentViewer({
 
 function EditHistory({
   file,
+  resolvedEdits,
   selectedEditIndex,
   onSelectEdit,
   onScrollToToolCall,
 }: {
   file: TrackedFile;
+  resolvedEdits: Map<number, ResolvedEdit>;
   selectedEditIndex: number | null;
   onSelectEdit: (index: number | null) => void;
   onScrollToToolCall: (toolUseId: string) => void;
 }) {
   return (
     <div class="edit-history">
-      {file.edits.map((edit, i) => (
-        <div
-          key={i}
-          class={`edit-history-item${selectedEditIndex === i ? " selected" : ""}`}
-          onClick={() => {
-            const deselecting = selectedEditIndex === i;
-            onSelectEdit(deselecting ? null : i);
-            if (!deselecting) onScrollToToolCall(edit.toolUseId);
-          }}
-        >
-          <span class="edit-history-num">#{i + 1}</span>
-          <span class="edit-type">
-            {edit.type === "edit" ? "Edit" : "Write"}
-          </span>
-        </div>
-      ))}
+      {file.edits.map((edit, i) => {
+        const r = resolvedEdits.get(i);
+        let diffstat: { added: number; removed: number } | null = null;
+        if (r) {
+          diffstat = computeDiffstat(r.contentBefore ?? "", r.contentAfter);
+        }
+        return (
+          <div
+            key={i}
+            class={`edit-history-item${selectedEditIndex === i ? " selected" : ""}`}
+            onClick={() => {
+              const deselecting = selectedEditIndex === i;
+              onSelectEdit(deselecting ? null : i);
+              if (!deselecting) onScrollToToolCall(edit.toolUseId);
+            }}
+          >
+            <span class="edit-history-num">#{i + 1}</span>
+            <span class="edit-type">
+              {edit.type === "edit" ? "Edit" : "Write"}
+            </span>
+            {diffstat && (
+              <span class="edit-diffstat">
+                {diffstat.added > 0 && (
+                  <span class="diffstat-added">+{diffstat.added}</span>
+                )}
+                {diffstat.removed > 0 && (
+                  <span class="diffstat-removed">-{diffstat.removed}</span>
+                )}
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -467,6 +564,7 @@ export function FileViewer({
             <ContentViewer
               filePath={file.path}
               currentContent={resolved.currentContent}
+              originalContent={resolved.originalContent}
               resolvedEdit={
                 selectedEditIndex != null
                   ? (resolved.resolved.get(selectedEditIndex) ?? null)
@@ -477,11 +575,18 @@ export function FileViewer({
                   ? (resolved.resolved.get(selectedEditIndex) ?? null)
                   : (resolved.resolved.get(file.edits.length - 1) ?? null)
               }
+              cumulativeContent={
+                selectedEditIndex != null
+                  ? (resolved.resolved.get(selectedEditIndex)?.contentAfter ??
+                    resolved.currentContent)
+                  : resolved.currentContent
+              }
               viewMode={viewMode}
               onChangeViewMode={onChangeViewMode}
             />
             <EditHistory
               file={file}
+              resolvedEdits={resolved.resolved}
               selectedEditIndex={selectedEditIndex}
               onSelectEdit={onSelectEdit}
               onScrollToToolCall={onScrollToToolCall}

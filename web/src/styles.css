@@ -1356,6 +1356,22 @@ body,
   font-size: 11px;
 }
 
+.edit-diffstat {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  display: flex;
+  gap: 4px;
+}
+
+.diffstat-added {
+  color: var(--success);
+}
+
+.diffstat-removed {
+  color: var(--error);
+}
+
 /* Eye icon button on tool header — absolutely positioned so it doesn't
    change the header's height when shown on hover. */
 .tool-view-file {

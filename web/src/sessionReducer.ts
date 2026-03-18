@@ -293,6 +293,7 @@ function trackFileEdits(
   }>,
 ): SessionState {
   for (const block of toolResults) {
+    if (block.is_error) continue;
     for (let i = state.messages.length - 1; i >= 0; i--) {
       const m = state.messages[i];
       if (m.type !== "assistant") continue;
