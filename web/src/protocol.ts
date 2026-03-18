@@ -58,6 +58,7 @@ export interface SystemInitMessage {
   plugins?: unknown[];
   fast_mode_state?: string;
   agent?: string;
+  supports_file_revert?: boolean;
   [key: string]: unknown;
 }
 

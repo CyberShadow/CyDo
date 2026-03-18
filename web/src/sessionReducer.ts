@@ -83,6 +83,7 @@ export function reduceSystemInit(s: SessionState, msg: any): SessionState {
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
       agent: msg.agent,
+      supports_file_revert: msg.supports_file_revert,
     },
     messages: [...s.messages, initMsg],
   };

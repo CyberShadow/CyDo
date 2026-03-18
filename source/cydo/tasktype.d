@@ -835,27 +835,6 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 	return result.length > 0 ? result : null;
 }
 
-/// Return the comma-separated list of Claude Code tools to disallow.
-/// The built-in "Task" tool is always disallowed (replaced by our MCP tool).
-/// Plan mode tools are disallowed (replaced by our SwitchMode continuations).
-/// Read-only enforcement is handled by the sandbox (ro mount), not by tool removal.
-string disallowedTools()
-{
-	return "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion";
-}
-
-/// Map model_class to Claude CLI model alias.
-string modelClassToAlias(string modelClass)
-{
-	switch (modelClass)
-	{
-		case "small":  return "haiku";
-		case "medium": return "sonnet";
-		case "large":  return "opus";
-		default:       return "sonnet";
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Dot (Graphviz) Generator
 // ---------------------------------------------------------------------------
@@ -1085,7 +1064,7 @@ void runDumpContext(string[] args)
 
 	// Task type metadata
 	writefln("Description:    %s", def.description);
-	writefln("Model:          %s (%s)", def.model_class, modelClassToAlias(def.model_class));
+	writefln("Model:          %s", def.model_class);
 	writefln("Output:         %s", def.output_type);
 	writefln("Read-only:      %s", def.read_only);
 	writefln("Parallelizable: %s", def.parallelizable);
@@ -1097,7 +1076,7 @@ void runDumpContext(string[] args)
 	}
 	if (def.max_turns > 0)
 		writefln("Max turns:      %d", def.max_turns);
-	writefln("Disallowed:     %s", disallowedTools());
+	writefln("Disallowed:     (agent-specific)");
 	writeln();
 
 	// Rendered prompt

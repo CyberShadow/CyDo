@@ -18,19 +18,22 @@ struct ResolvedSandbox
 	string[] tempFiles; // temp files to clean up on exit
 }
 
-/// Merge three layers of sandbox config: agent defaults → global config → per-workspace config.
+/// Merge four layers of sandbox config: agent defaults → global config → per-agent config → per-workspace config.
 /// When readOnly is true, all config/workspace/project paths are downgraded
 /// to ro before the agent layer runs — so agent-declared paths (e.g. ~/.claude)
 /// stay rw while the project tree becomes read-only.
-ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Agent agent,
-	string projectDir, bool readOnly = false)
+ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConfig,
+	SandboxConfig workspace, Agent agent, string projectDir, bool readOnly = false)
 {
 	ResolvedSandbox result;
 
 	// Layer 1: global config paths
 	mergePaths(result.paths, global.paths);
 
-	// Layer 2: per-workspace config paths
+	// Layer 1.5: per-agent config paths (overrides global)
+	mergePaths(result.paths, agentTypeConfig.paths);
+
+	// Layer 2: per-workspace config paths (overrides per-agent)
 	mergePaths(result.paths, workspace.paths);
 
 	// Add project directory
@@ -58,8 +61,9 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 	}
 	result.paths = expanded;
 
-	// Merge env: global, then workspace overrides
+	// Merge env: global, then per-agent, then workspace overrides
 	mergeEnv(result.env, global.env);
+	mergeEnv(result.env, agentTypeConfig.env);
 	mergeEnv(result.env, workspace.env);
 
 	// Expand ~ in env values (replace all occurrences, not just leading ~)
@@ -69,13 +73,17 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig workspace, Ag
 		expandedEnv[k] = expandAllTildes(v, home);
 	result.env = expandedEnv;
 
-	// Git identity: agent defaults, overridden by config
+	// Git identity: agent defaults, overridden by global, per-agent, workspace
 	result.gitName = agent.gitName;
 	result.gitEmail = agent.gitEmail;
 	if (global.git.name.length > 0)
 		result.gitName = global.git.name;
 	if (global.git.email.length > 0)
 		result.gitEmail = global.git.email;
+	if (agentTypeConfig.git.name.length > 0)
+		result.gitName = agentTypeConfig.git.name;
+	if (agentTypeConfig.git.email.length > 0)
+		result.gitEmail = agentTypeConfig.git.email;
 	if (workspace.git.name.length > 0)
 		result.gitName = workspace.git.name;
 	if (workspace.git.email.length > 0)

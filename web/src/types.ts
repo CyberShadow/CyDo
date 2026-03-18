@@ -116,6 +116,7 @@ export interface SessionInfo {
   plugins?: unknown[];
   fast_mode_state?: string;
   agent?: string; // "claude" | "codex" | undefined
+  supports_file_revert?: boolean;
 }
 
 export interface TaskState {

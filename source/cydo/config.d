@@ -21,6 +21,11 @@ struct SandboxConfig
 	@Optional GitIdentityConfig git;
 }
 
+struct AgentConfig
+{
+	@Optional SandboxConfig sandbox;
+}
+
 struct WorkspaceConfig
 {
 	string name;
@@ -36,6 +41,7 @@ struct CydoConfig
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent_type = "claude";
+	@Optional AgentConfig[string] agents;
 }
 
 string configPath()

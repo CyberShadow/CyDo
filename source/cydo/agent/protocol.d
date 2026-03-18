@@ -111,6 +111,7 @@ struct SessionInitEvent
 	@JSONOptional JSONFragment mcp_servers;
 	@JSONOptional JSONFragment agents;
 	@JSONOptional JSONFragment plugins;
+	bool supports_file_revert;
 }
 
 /// session/status
@@ -326,6 +327,7 @@ string translateSessionInit(string rawLine)
 	ev.mcp_servers   = raw.mcp_servers;
 	ev.agents        = raw.agents;
 	ev.plugins       = raw.plugins;
+	ev.supports_file_revert = true;
 	auto result = toJson(ev);
 	return preserveExtraFields(rawLine, result,
 		["type", "subtype", "session_id", "model", "cwd", "tools",

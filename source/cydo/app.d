@@ -26,13 +26,13 @@ import cydo.mcp.tools : AskQuestion, ToolsBackend;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
-import cydo.config : CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
+import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
 import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
-	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs, disallowedTools;
+	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
 import cydo.task;
 
 void main(string[] args)
@@ -465,7 +465,6 @@ class App : ToolsBackend
 		auto sessionConfig = SessionConfig(
 			agentForTask(childTid).resolveModelAlias(childTypeDef.model_class),
 		);
-		sessionConfig.disallowedTools = disallowedTools();
 		ensureTaskAgent(childTid, sessionConfig);
 
 		// Send rendered prompt template as first user message
@@ -718,7 +717,6 @@ class App : ToolsBackend
 				auto sc = SessionConfig(
 					agentForTask(tid).resolveModelAlias(typeDef.model_class),
 				);
-				sc.disallowedTools = disallowedTools();
 				ensureTaskAgent(tid, sc);
 			}
 			else
@@ -916,7 +914,6 @@ class App : ToolsBackend
 				auto sc = SessionConfig(
 					agentForTask(tid).resolveModelAlias(typeDef.model_class),
 				);
-				sc.disallowedTools = disallowedTools();
 				ensureTaskAgent(tid, sc);
 			}
 			else
@@ -979,7 +976,6 @@ class App : ToolsBackend
 		if (typeDef !is null)
 		{
 			auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-			sc.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sc);
 		}
 		else
@@ -1234,7 +1230,6 @@ class App : ToolsBackend
 				if (typeDef !is null)
 				{
 					auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-					sc.disallowedTools = disallowedTools();
 					ensureTaskAgent(tid, sc);
 				}
 				else
@@ -1413,9 +1408,6 @@ class App : ToolsBackend
 		if (sessionConfig.handoffs.length == 0)
 			sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
 
-		// Disable built-in tools that are replaced by our MCP equivalents
-		if (sessionConfig.disallowedTools.length == 0)
-			sessionConfig.disallowedTools = disallowedTools();
 
 		// Pass UNIX socket path for MCP proxy communication
 		if (sessionConfig.mcpSocketPath.length == 0)
@@ -1435,10 +1427,11 @@ class App : ToolsBackend
 		// Use worktree path as chdir if available; sandbox covers project dir (rw)
 		auto chdir = td.hasWorktree ? td.worktreePath : workDir;
 
-		// Resolve sandbox config: agent defaults + global + per-workspace
+		// Resolve sandbox config: agent defaults + global + per-agent + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
+		auto agentTypeSandbox = findAgentTypeSandbox(td.agentType);
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		td.sandbox = resolveSandbox(config.sandbox, wsSandbox, taskAgent, workDir, readOnly);
+		td.sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox, taskAgent, workDir, readOnly);
 
 		// Task directory is always writable (even for read-only tasks)
 		if (td.taskDir.length > 0)
@@ -1669,7 +1662,6 @@ class App : ToolsBackend
 
 			// Spawn successor session — will --resume the existing agentSessionId
 			auto sessionConfig = SessionConfig(agentForTask(tid).resolveModelAlias(newTypeDef.model_class));
-			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(tid, sessionConfig);
 
 			// Send the continuation's prompt template as first message to successor.
@@ -1729,7 +1721,6 @@ class App : ToolsBackend
 
 			// Spawn the successor agent
 			auto sessionConfig = SessionConfig(agentForTask(childTid).resolveModelAlias(newTypeDef.model_class));
-			sessionConfig.disallowedTools = disallowedTools();
 			ensureTaskAgent(childTid, sessionConfig);
 
 			if (childTd.session !is null)
@@ -1749,6 +1740,14 @@ class App : ToolsBackend
 		foreach (ref ws; config.workspaces)
 			if (ws.name == workspaceName)
 				return ws.sandbox;
+		return SandboxConfig.init;
+	}
+
+	private SandboxConfig findAgentTypeSandbox(string agentType)
+	{
+		if (config.agents !is null)
+			if (auto ac = agentType in config.agents)
+				return ac.sandbox;
 		return SandboxConfig.init;
 	}
 

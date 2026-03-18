@@ -340,14 +340,11 @@ class CodexAgent : Agent
 			{
 				// Build developerInstructions: system prompt + disallowedTools restriction
 				string devInstructions = config.appendSystemPrompt;
-				if (config.disallowedTools.length > 0)
-				{
-					if (devInstructions.length > 0)
-						devInstructions ~= "\n\n";
-					devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
-						~ config.disallowedTools
-						~ ". If you attempt to use them, they will fail.";
-				}
+				if (devInstructions.length > 0)
+					devInstructions ~= "\n\n";
+				devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
+					~ "spawn_agent,update_plan,request_user_input"
+					~ ". If you attempt to use them, they will fail.";
 
 				// Build MCP config override for CyDo tools
 				auto mcpConfig = buildMcpConfigOverride(tid,
@@ -615,6 +612,7 @@ class CodexAgent : Agent
 		return "File revert is not supported for Codex sessions";
 	}
 
+	/// Currently unused — no callers in the codebase. Implement if a caller is added.
 	string extractUserText(string line) { return ""; }
 
 	Promise!string completeOneShot(string prompt, string modelClass)

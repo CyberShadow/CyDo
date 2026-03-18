@@ -228,7 +228,7 @@ function SessionViewInner({
       {task.undoPending && task.undoPending.messagesRemoved >= 0 && (
         <UndoConfirmDialog
           messagesRemoved={task.undoPending.messagesRemoved}
-          supportsFileRevert={task.sessionInfo?.agent !== "codex"}
+          supportsFileRevert={task.sessionInfo?.supports_file_revert !== false}
           onConfirm={(rc, rf) => onUndoConfirm(task.tid, rc, rf)}
           onDismiss={() => onUndoDismiss(task.tid)}
         />
