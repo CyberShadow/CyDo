@@ -881,7 +881,7 @@ class App : ToolsBackend
 
 		// Send cached suggestions if available
 		if (td.lastSuggestions.length > 0)
-			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid, td.lastSuggestions, td.suggestGeneration)).representation));
+			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid, td.lastSuggestions)).representation));
 
 		// Re-broadcast pending AskUserQuestion (client reconnect / tab switch)
 		if (tid in pendingAskUserQuestions && tasks[tid].pendingAskToolUseId.length > 0)
@@ -950,10 +950,9 @@ class App : ToolsBackend
 		if (td.draft.length > 0)
 		{
 			import ae.utils.json : toJson;
-			auto oldDraft = td.draft;
 			td.draft = "";
 			persistence.setDraft(tid, "");
-			auto draftData = Data(toJson(DraftUpdatedMessage("draft_updated", tid, oldDraft, "")).representation);
+			auto draftData = Data(toJson(DraftUpdatedMessage("draft_updated", tid, "")).representation);
 			sendToSubscribed(tid, draftData);
 		}
 	}
@@ -1063,11 +1062,10 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		string oldDraft = td.draft;
 		td.draft = json.content;
 		persistence.setDraft(tid, json.content);
 		// Broadcast to other subscribed clients (not the sender)
-		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, oldDraft, json.content)).representation);
+		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, json.content)).representation);
 		foreach (ws; clients)
 			if (ws !is senderWs)
 				if (auto subs = ws in clientSubscriptions)
@@ -1876,10 +1874,10 @@ class App : ToolsBackend
 		broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
 	}
 
-	private void broadcastSuggestionsUpdate(int tid, string[] suggestions, uint generation)
+	private void broadcastSuggestionsUpdate(int tid, string[] suggestions)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(SuggestionsUpdateMessage("suggestions_update", tid, suggestions, generation)));
+		broadcast(toJson(SuggestionsUpdateMessage("suggestions_update", tid, suggestions)));
 	}
 
 	/// Discover projects in all configured workspaces and populate workspacesInfo.
@@ -2168,7 +2166,7 @@ Conversation:
 			if (suggestionList.length > 0)
 			{
 				tasks[tid].lastSuggestions = suggestionList;
-				broadcastSuggestionsUpdate(tid, suggestionList, capturedGen);
+				broadcastSuggestionsUpdate(tid, suggestionList);
 			}
 		});
 		td.suggestGenHandle.except((Exception e) {

@@ -405,7 +405,6 @@ export interface AskUserQuestionControlMessage {
 export interface DraftUpdatedMessage {
   type: "draft_updated";
   tid: number;
-  old_draft: string;
   new_draft: string;
 }
 export type ControlMessage =

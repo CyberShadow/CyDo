@@ -239,7 +239,6 @@ struct SuggestionsUpdateMessage
 	string type = "suggestions_update";
 	int tid;
 	string[] suggestions;
-	uint generation;
 }
 
 struct ForkableUuidsMessage
@@ -267,7 +266,6 @@ struct DraftUpdatedMessage
 {
 	string type = "draft_updated";
 	int tid;
-	string old_draft;
 	string new_draft;
 }
 
