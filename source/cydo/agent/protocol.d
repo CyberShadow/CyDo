@@ -674,6 +674,7 @@ enum claudeMetadataFields = [
 	"agentId", "parentUuid", "requestId", // agent/request tracking
 	"cwd", "gitBranch", "version",        // environment context
 	"userType", "timestamp",              // JSONL persistence fields
+	"slug",                               // session slug
 ];
 
 /// Merge unknown top-level fields from rawLine into translatedLine.
