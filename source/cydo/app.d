@@ -1563,11 +1563,24 @@ class App : ToolsBackend
 			if (auto pending = tid in pendingSubTasks)
 			{
 				auto success = tasks[tid].status == "completed";
+				bool hasOutput = outputContent.length > 0;
+				bool hasWorktree = tasks[tid].hasWorktree;
+
+				// Build contextual note based on what's actually present
+				string note;
+				if (hasOutput && hasWorktree)
+					note = "Read the output file for full findings. The worktree path is included for adopting changes.";
+				else if (hasOutput)
+					note = "Read the output file for full findings.";
+				else if (hasWorktree)
+					note = "The worktree contains the implementation.";
+				// else: no note
+
 				auto taskResult = TaskResult(
 					tasks[tid].resultText,
-					tasks[tid].outputPath.length > 0 ? tasks[tid].outputPath : null,
-					tasks[tid].hasWorktree ? tasks[tid].worktreePath : null,
-					tasks[tid].resultNote,
+					hasOutput ? tasks[tid].outputPath : null,
+					hasWorktree ? tasks[tid].worktreePath : null,
+					note,
 				);
 				auto resultJson = toJson(taskResult);
 				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));

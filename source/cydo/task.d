@@ -284,10 +284,12 @@ struct AskUserQuestionMessage
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {
-	string summary;         // agent's final message (one-sentence summary)
-	string output_file;     // path to output artifact, if any
-	string worktree;        // path to worktree, if any
-	string note;            // reminder from the edge definition about what to do with the result
+	import ae.utils.json : JSONOptional;
+
+	string summary;                   // agent's final message (one-sentence summary)
+	@JSONOptional string output_file; // path to output artifact, if any
+	@JSONOptional string worktree;    // path to worktree, if any
+	@JSONOptional string note;        // contextual guidance for the parent agent
 }
 
 struct McpContentItem
