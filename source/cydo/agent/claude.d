@@ -48,7 +48,7 @@ class ClaudeCodeAgent : Agent
 		auto claudeBinDir = resolveClaudeBinary();
 		addIfNotRw(claudeBinDir, PathMode.ro);
 		{
-			import std.file : isSymlink, readLink;
+			import std.file : exists, isSymlink, readLink;
 			import std.path : absolutePath, buildPath, dirName;
 			auto candidate = buildPath(claudeBinDir, "claude");
 			if (claudeBinDir.length > 0 && exists(candidate) && isSymlink(candidate))
