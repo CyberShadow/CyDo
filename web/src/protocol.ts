@@ -20,6 +20,7 @@ export interface AssistantContentBlock {
   name?: string;
   input?: Record<string, unknown>;
   caller?: { type: string; tool_id?: string };
+  _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -107,9 +108,9 @@ export interface AssistantMessage {
   is_sidechain?: boolean;
   is_api_error?: boolean;
   uuid?: string;
+  _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
-
 
 export interface UserEchoMessage {
   type: "message/user";
@@ -125,9 +126,9 @@ export interface UserEchoMessage {
   uuid?: string;
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
+  _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
-
 
 export interface ResultMessage {
   type: "turn/result";
@@ -143,6 +144,7 @@ export interface ResultMessage {
   permission_denials?: unknown[];
   stop_reason?: string | null;
   errors?: string[];
+  _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 

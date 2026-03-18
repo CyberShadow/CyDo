@@ -1177,19 +1177,21 @@ private string preserveExtraFields(string rawLine, string translatedLine, const(
 	if (raw.type != JSONType.object || translated.type != JSONType.object)
 		return translatedLine;
 
-	bool hasExtra = false;
+	JSONValue extras = JSONValue(cast(JSONValue[string])null);
 	foreach (key, value; raw.objectNoRef) {
 		bool isKnown = false;
 		foreach (k; knownInputFields) {
 			if (key == k) { isKnown = true; break; }
 		}
 		if (!isKnown) {
-			translated.object[key] = value;
-			hasExtra = true;
+			extras.object[key] = value;
 		}
 	}
 
-	return hasExtra ? translated.toString() : translatedLine;
+	if (extras.object.length == 0)
+		return translatedLine;
+	translated.object["_extras"] = extras;
+	return translated.toString();
 }
 
 /// Merge unknown fields from content blocks in the raw input into the translated output.
@@ -1234,15 +1236,19 @@ private string preserveExtraContentFields(string rawLine, string translatedLine,
 	for (size_t i = 0; i < len; i++) {
 		if (rawArr[i].type != JSONType.object || transArr[i].type != JSONType.object)
 			continue;
+		JSONValue extras = JSONValue(cast(JSONValue[string])null);
 		foreach (key, value; rawArr[i].objectNoRef) {
 			bool isKnown = false;
 			foreach (k; knownBlockFields) {
 				if (key == k) { isKnown = true; break; }
 			}
 			if (!isKnown) {
-				transArr[i].object[key] = value;
-				hasExtra = true;
+				extras.object[key] = value;
 			}
+		}
+		if (extras.object.length > 0) {
+			transArr[i].object["_extras"] = extras;
+			hasExtra = true;
 		}
 	}
 

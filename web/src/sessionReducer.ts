@@ -19,15 +19,19 @@ import type {
   ResultMessage,
 } from "./protocol";
 
-function extractExtraFields(
+function getExtras(
   msg: Record<string, unknown>,
-  knownKeys: Set<string>,
 ): Record<string, unknown> | undefined {
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(msg)) {
-    if (!knownKeys.has(k)) extra[k] = v;
+  const extras = msg._extras;
+  if (
+    extras &&
+    typeof extras === "object" &&
+    !Array.isArray(extras) &&
+    Object.keys(extras).length > 0
+  ) {
+    return extras as Record<string, unknown>;
   }
-  return Object.keys(extra).length > 0 ? extra : undefined;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,11 +248,6 @@ export function reduceAssistantMessage(
     }
   }
 
-  const assistantKnownKeys = new Set([
-    'type', 'id', 'content', 'model', 'stop_reason', 'usage',
-    'parent_tool_use_id', 'is_sidechain', 'is_api_error', 'uuid',
-  ]);
-
   if (idx >= 0) {
     const updated = [...s.messages];
     const existingMsg = { ...updated[idx] };
@@ -268,7 +267,7 @@ export function reduceAssistantMessage(
     existingMsg.model ??= msg.model;
     existingMsg.isSidechain ??= msg.is_sidechain;
     existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
-    existingMsg.extraFields ??= extractExtraFields(msg as any, assistantKnownKeys);
+    existingMsg.extraFields ??= getExtras(msg as any);
     // Accumulate raw sources
     const prev = existingMsg.rawSource;
     existingMsg.rawSource = prev
@@ -280,7 +279,7 @@ export function reduceAssistantMessage(
     bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
   }
-  const extraFields = extractExtraFields(msg as any, assistantKnownKeys);
+  const extraFields = getExtras(msg as any);
   const messages = [
     ...s.messages,
     {
@@ -361,11 +360,6 @@ function trackFileEdits(
 }
 
 // Applies both tool-result linking and user-text echo in a single pass.
-const userKnownKeys = new Set([
-  'type', 'content', 'parent_tool_use_id', 'is_sidechain', 'tool_result',
-  'is_replay', 'is_synthetic', 'is_meta', 'is_steering', 'pending', 'uuid',
-  'isCompactSummary', 'isVisibleInTranscriptOnly',
-]);
 
 export function reduceUserEcho(
   s: SessionState,
@@ -461,7 +455,7 @@ export function reduceUserEcho(
       isSteering: isSteering || undefined,
       isCompactSummary: isCompactSummary || undefined,
       parentToolUseId,
-      extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
+      extraFields: getExtras(rawMsg as Record<string, unknown>),
       rawSource: rawMsg,
     };
     // Remove the pending placeholder (the user already sees their message
@@ -496,7 +490,7 @@ export function reduceUserReplay(
     type: "user" as const,
     content: [{ type: "text" as const, text }],
     isCompactSummary: isCompactSummary || undefined,
-    extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
+    extraFields: getExtras(rawMsg as Record<string, unknown>),
     rawSource: rawMsg,
   };
   // Remove the pending placeholder, then insert the echo before any
@@ -542,12 +536,7 @@ export function reduceResultMessage(
   }
 
   const id = `result-${++s.msgIdCounter}`;
-  const resultKnownKeys = new Set([
-    'type', 'subtype', 'is_error', 'result', 'num_turns', 'duration_ms',
-    'duration_api_ms', 'total_cost_usd', 'usage', 'model_usage',
-    'permission_denials', 'stop_reason', 'errors',
-  ]);
-  const resultExtraFields = extractExtraFields(msg as any, resultKnownKeys);
+  const resultExtraFields = getExtras(msg as any);
   return {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,

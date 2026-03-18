@@ -105,16 +105,15 @@ export function AssistantMessage({
         </div>
       )}
       {message.content.map((block, i) => {
-        const knownBlockKeys = new Set(['type', 'text', 'id', 'name', 'input', 'caller']);
-        const blockExtra = Object.entries(block).filter(([k]) => !knownBlockKeys.has(k));
-        // Surface non-direct caller values as extra fields
-        const caller = (block as any).caller;
-        if (caller && (typeof caller !== 'object' || caller.type !== 'direct')) {
-          blockExtra.push(['caller', caller]);
+        const blockExtras = { ...block._extras };
+        // Hide direct callers (the common case) — only surface non-direct callers
+        const caller = blockExtras.caller;
+        if (caller && typeof caller === 'object' && (caller as any).type === 'direct') {
+          delete blockExtras.caller;
         }
-        const blockExtraEl = blockExtra.length > 0 ? (
+        const blockExtraEl = Object.keys(blockExtras).length > 0 ? (
           <div class="unknown-extra-fields">
-            {blockExtra.map(([k, v]) => (
+            {Object.entries(blockExtras).map(([k, v]) => (
               <div key={k} class="tool-input-field">
                 <span class="field-label">{k}:</span>
                 <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
