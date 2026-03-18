@@ -186,6 +186,12 @@ export function SessionView({
           onSubmit={(answers) => {
             onAskUserResponse(task.tid, JSON.stringify({ answers }));
           }}
+          onAbort={() => {
+            onAskUserResponse(
+              task.tid,
+              JSON.stringify({ error: "User refused to answer questions" }),
+            );
+          }}
         />
       ) : (
         <InputBox

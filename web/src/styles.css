@@ -1954,6 +1954,22 @@ body,
 .ask-submit-row {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+}
+.ask-abort-btn {
+  padding: 10px 20px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  transition:
+    border-color 0.2s,
+    color 0.2s;
+}
+.ask-abort-btn:hover {
+  border-color: var(--error);
+  color: var(--error);
 }
 .ask-submit-btn {
   padding: 10px 20px;

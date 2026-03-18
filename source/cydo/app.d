@@ -630,14 +630,21 @@ class App : ToolsBackend
 		td.notificationBody = "";
 		td.isProcessing = true;
 
-		// json.content is the JSON answers from the frontend: {"answers": {"q": "a", ...}}
-		// Build a human-readable text result matching Claude Code's format
+		// json.content is the JSON from the frontend:
+		//   {"answers": {"q": "a", ...}} — normal response
+		//   {"error": "..."} — user aborted
 		string resultText = json.content; // fallback: raw JSON
+		bool isError = false;
 		try
 		{
 			import std.json : parseJSON;
 			auto parsed = parseJSON(json.content);
-			if (auto answersObj = "answers" in parsed)
+			if (auto errorMsg = "error" in parsed)
+			{
+				resultText = errorMsg.str;
+				isError = true;
+			}
+			else if (auto answersObj = "answers" in parsed)
 			{
 				string[] parts;
 				foreach (key, val; answersObj.object)
@@ -648,7 +655,7 @@ class App : ToolsBackend
 		}
 		catch (Exception) {} // use raw JSON as fallback
 
-		pending.fulfill(McpResult(resultText));
+		pending.fulfill(McpResult(resultText, isError));
 		pendingAskUserQuestions.remove(tid);
 
 		// Broadcast clear to all subscribed clients (so other tabs/windows dismiss the form)

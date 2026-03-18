@@ -6,9 +6,10 @@ import { Markdown } from "./Markdown";
 interface Props {
   questions: AskUserQuestionItem[];
   onSubmit: (answers: Record<string, string>) => void;
+  onAbort: () => void;
 }
 
-export function AskUserForm({ questions, onSubmit }: Props) {
+export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
   // For each question index: selected option labels (or empty if using custom)
   const [selections, setSelections] = useState<Map<number, Set<string>>>(
     () => new Map(questions.map((_, i) => [i, new Set<string>()])),
@@ -128,6 +129,9 @@ export function AskUserForm({ questions, onSubmit }: Props) {
         </div>
       ))}
       <div class="ask-submit-row">
+        <button class="ask-abort-btn" onClick={onAbort}>
+          Dismiss
+        </button>
         <button
           class="ask-submit-btn"
           disabled={!hasAnyAnswer}
