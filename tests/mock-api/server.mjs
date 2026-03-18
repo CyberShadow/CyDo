@@ -378,14 +378,13 @@ function extractLastUserText(messages) {
     if (msg.role !== "user") continue;
     if (typeof msg.content === "string") return msg.content;
     if (Array.isArray(msg.content)) {
-      // Check if this is a tool_result message
-      const hasToolResult = msg.content.some((b) => b.type === "tool_result");
-      if (hasToolResult) return null; // signal tool_result
-      // Find first text block that isn't a system-reminder
+      // Find user text first — steering messages may appear alongside tool_results
       for (const block of msg.content) {
         if (block.type === "text" && !block.text.trimStart().startsWith("<system-reminder>"))
           return block.text;
       }
+      // No user text found; signal tool_result if present
+      if (msg.content.some((b) => b.type === "tool_result")) return null;
     }
   }
   return null;
@@ -396,6 +395,11 @@ function hasToolResult(messages) {
     const msg = messages[i];
     if (msg.role !== "user") continue;
     if (Array.isArray(msg.content)) {
+      // Don't signal tool_result if there's also user text (e.g. a steering message)
+      const hasUserText = msg.content.some(
+        (b) => b.type === "text" && !b.text.trimStart().startsWith("<system-reminder>"),
+      );
+      if (hasUserText) return false;
       return msg.content.some((b) => b.type === "tool_result");
     }
     return false;

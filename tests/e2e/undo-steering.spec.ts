@@ -16,11 +16,12 @@ test("undo removes preceding queue-operation lines from steering message", async
   //    This creates queue-operation enqueue/dequeue in the JSONL.
   await sendMessage(page, 'reply with "steered-reply"');
 
-  // 3. Wait for the steering message to be fully processed:
-  //    the agent should eventually reply with "steered-reply".
+  // 3. Wait for the steering message to be confirmed (non-pending user echo visible).
+  //    This happens after queue-operation dequeue — the tool finished and Claude
+  //    dequeued the steering message into the JSONL as a confirmed type:"user" line.
   await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "steered-reply" }),
-  ).toBeVisible({ timeout: 60_000 });
+    page.locator(".message.user-message:not(.pending)", { hasText: "steered-reply" }),
+  ).toBeVisible({ timeout: 30_000 });
 
   // 4. Kill the session so we can undo.
   await killSession(page, agentType);
