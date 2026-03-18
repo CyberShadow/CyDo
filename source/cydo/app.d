@@ -1943,24 +1943,35 @@ class App : ToolsBackend
 		if (td.titleGenDone || td.titleGenHandle !is null)
 			return;
 
-		td.titleGenHandle = agentForTask(tid).generateTitle(userMessage, (string title) {
+		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
+		auto prompt = "Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
+			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
+			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
+			"Initial request / task description:\n\n" ~ msg;
+
+		td.titleGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		td.titleGenHandle.then((string title) {
 			if (tid !in tasks)
 				return;
 			tasks[tid].titleGenHandle = null;
 			tasks[tid].titleGenDone = true;
-			tasks[tid].title = title;
-			persistence.setTitle(tid, title);
-			broadcastTitleUpdate(tid, title);
+			if (title.length > 0 && title.length < 200)
+			{
+				tasks[tid].title = title;
+				persistence.setTitle(tid, title);
+				broadcastTitleUpdate(tid, title);
+			}
 		});
-
-		if (td.titleGenHandle is null)
-		{
+		td.titleGenHandle.except((Exception e) {
+			if (tid !in tasks)
+				return;
+			tasks[tid].titleGenHandle = null;
 			import ae.utils.json : toJson;
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
-			ev.text = "failed to spawn claude for title generation; is the claude binary installed and on PATH?";
+			ev.text = "failed to generate title: " ~ e.msg;
 			broadcastTask(tid, toJson(ev));
-		}
+		});
 	}
 
 	private void broadcast(string message)
@@ -2068,16 +2079,68 @@ class App : ToolsBackend
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
 
-		td.suggestGenHandle = agentForTask(tid).generateSuggestions(history,
-			(string[] suggestions) {
-				if (tid !in tasks)
-					return;
-				if (tasks[tid].suggestGeneration != capturedGen)
-					return; // stale result from a prior subprocess
-				tasks[tid].suggestGenHandle = null;
-				tasks[tid].lastSuggestions = suggestions;
-				broadcastSuggestionsUpdate(tid, suggestions, capturedGen);
-			});
+		auto prompt = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
+
+You will be given an abbreviated conversation between a user and an AI coding assistant.
+Your job is to predict what the user would type next — not what you think they should do.
+
+THE TEST: Would they think "I was just about to type that"?
+
+EXAMPLES:
+User asked "fix the bug and run tests", bug is fixed → "run the tests"
+After code written → "try it out"
+Claude offers options → suggest each option the user might pick
+Claude asks to continue → "go ahead", "no, let's try something else"
+Task complete, obvious follow-ups → "commit this", "push it", "run the tests"
+After error or misunderstanding → say nothing (let them assess/correct)
+
+Be specific: "run the tests" beats "continue".
+Suggest multiple alternatives when there are several plausible next steps.
+
+NEVER SUGGEST:
+- Evaluative ("looks good", "thanks")
+- Questions ("what about...?")
+- Claude-voice ("Let me...", "I'll...", "Here's...")
+- New ideas they didn't ask about
+- Multiple sentences
+- Same thing expressed differently ("yes" + "go ahead")
+
+Say nothing if the next step isn't obvious from what the user said.
+
+Format: Reply with a JSON array of strings, e.g. ["run the tests", "commit this"].
+Do not add Markdown ` ~ "```" ~ `-blocks.
+Each suggestion should be 2-12 words, matching the user's style.
+Reply with [] if no obvious next step.
+
+Conversation:
+` ~ history;
+
+		td.suggestGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		td.suggestGenHandle.then((string result) {
+			if (tid !in tasks)
+				return;
+			if (tasks[tid].suggestGeneration != capturedGen)
+				return;
+			tasks[tid].suggestGenHandle = null;
+
+			import ae.utils.json : jsonParse;
+			string[] suggestionList;
+			try
+				suggestionList = jsonParse!(string[])(result);
+			catch (Exception)
+				return;
+
+			if (suggestionList.length > 0)
+			{
+				tasks[tid].lastSuggestions = suggestionList;
+				broadcastSuggestionsUpdate(tid, suggestionList, capturedGen);
+			}
+		});
+		td.suggestGenHandle.except((Exception e) {
+			if (tid !in tasks)
+				return;
+			tasks[tid].suggestGenHandle = null;
+		});
 	}
 
 	/// Build an abbreviated conversation history string for suggestion generation.

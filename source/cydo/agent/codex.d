@@ -5,6 +5,7 @@ import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
 
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
+import ae.utils.promise : Promise;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess;
@@ -616,15 +617,11 @@ class CodexAgent : Agent
 
 	string extractUserText(string line) { return ""; }
 
-	Object generateTitle(string userMessage, void delegate(string title) onTitle)
+	Promise!string completeOneShot(string prompt, string modelClass)
 	{
-		// TODO: Implement title generation for Codex sessions.
-		return null;
-	}
-
-	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions)
-	{
-		return null;
+		auto promise = new Promise!string;
+		promise.reject(new Exception("completeOneShot not supported for Codex"));
+		return promise;
 	}
 }
 

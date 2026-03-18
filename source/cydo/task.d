@@ -4,6 +4,7 @@ import std.format : format;
 
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONPartial;
+import ae.utils.promise : Promise;
 
 import cydo.agent.session : AgentSession;
 import cydo.sandbox : ResolvedSandbox;
@@ -83,8 +84,8 @@ struct TaskData
 	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
-	Object titleGenHandle; // prevent GC while running
-	Object suggestGenHandle; // prevent GC while running
+	Promise!string titleGenHandle;   // prevent GC while running
+	Promise!string suggestGenHandle; // prevent GC while running
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] lastSuggestions; // most recent suggestions, sent on subscribe
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts

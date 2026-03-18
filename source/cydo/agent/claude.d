@@ -6,6 +6,7 @@ import std.path : dirName, expandTilde;
 import std.stdio : stderr;
 
 import ae.utils.json : toJson;
+import ae.utils.promise : Promise;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess;
@@ -380,14 +381,17 @@ class ClaudeCodeAgent : Agent
 		return null;
 	}
 
-	Object generateTitle(string userMessage, void delegate(string title) onTitle)
+	Promise!string completeOneShot(string prompt, string modelClass)
 	{
 		import std.path : buildPath;
 		import std.process : environment;
+		import std.string : strip;
+		import ae.utils.promise : Promise;
+
+		auto promise = new Promise!string;
 
 		auto claudeBinDir = resolveClaudeBinary();
 		auto claudeBin = claudeBinDir.length > 0 ? buildPath(claudeBinDir, "claude") : "claude";
-		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
 
 		string[string] env = [
 			"PATH": environment.get("PATH", ""),
@@ -398,90 +402,19 @@ class ClaudeCodeAgent : Agent
 		try
 			proc = new AgentProcess([
 				claudeBin,
-				"-p",
-				"Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
-				"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
-				"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
-				"Initial request / task description:\n\n" ~ msg,
+				"-p", prompt,
 				"--output-format", "text",
-				"--model", "haiku",
+				"--model", resolveModelAlias(modelClass),
 				"--max-turns", "1",
 				"--tools", "",
 				"--no-session-persistence",
 			], env, null, true); // noStdin
 		catch (Exception e)
 		{
-			stderr.writeln("generateTitle: failed to spawn claude: ", e.msg);
-			return null;
+			stderr.writeln("completeOneShot: failed to spawn claude: ", e.msg);
+			promise.reject(new Exception("failed to spawn claude: " ~ e.msg));
+			return promise;
 		}
-
-		string titleText;
-
-		proc.onStdoutLine = (string line) {
-			titleText ~= line;
-		};
-
-		proc.onExit = (int status) {
-			if (status != 0)
-				return;
-
-			import std.string : strip;
-			auto title = titleText.strip();
-			if (title.length > 0 && title.length < 200)
-				onTitle(title);
-		};
-
-		return proc;
-	}
-
-	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions)
-	{
-		auto prompt = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
-
-You will be given an abbreviated conversation between a user and an AI coding assistant.
-Your job is to predict what the user would type next — not what you think they should do.
-
-THE TEST: Would they think "I was just about to type that"?
-
-EXAMPLES:
-User asked "fix the bug and run tests", bug is fixed → "run the tests"
-After code written → "try it out"
-Claude offers options → suggest each option the user might pick
-Claude asks to continue → "go ahead", "no, let's try something else"
-Task complete, obvious follow-ups → "commit this", "push it", "run the tests"
-After error or misunderstanding → say nothing (let them assess/correct)
-
-Be specific: "run the tests" beats "continue".
-Suggest multiple alternatives when there are several plausible next steps.
-
-NEVER SUGGEST:
-- Evaluative ("looks good", "thanks")
-- Questions ("what about...?")
-- Claude-voice ("Let me...", "I'll...", "Here's...")
-- New ideas they didn't ask about
-- Multiple sentences
-- Same thing expressed differently ("yes" + "go ahead")
-
-Say nothing if the next step isn't obvious from what the user said.
-
-Format: Reply with a JSON array of strings, e.g. ["run the tests", "commit this"].
-Do not add Markdown ` ~ "```" ~ `-blocks.
-Each suggestion should be 2-12 words, matching the user's style.
-Reply with [] if no obvious next step.
-
-Conversation:
-` ~ abbreviatedHistory;
-
-		auto proc = new AgentProcess([
-			"claude",
-			"-p",
-			prompt,
-			"--output-format", "text",
-			"--model", "haiku",
-			"--max-turns", "1",
-			"--tools", "",
-			"--no-session-persistence",
-		], null, null, true); // noStdin
 
 		string responseText;
 
@@ -491,22 +424,12 @@ Conversation:
 
 		proc.onExit = (int status) {
 			if (status != 0)
-				return;
-
-			import std.string : strip;
-			import ae.utils.json : jsonParse;
-
-			string[] suggestionList;
-			try
-				suggestionList = jsonParse!(string[])(responseText.strip());
-			catch (Exception)
-				return;
-
-			if (suggestionList.length > 0)
-				onSuggestions(suggestionList);
+				promise.reject(new Exception("claude exited with status " ~ status.to!string));
+			else
+				promise.fulfill(responseText.strip());
 		};
 
-		return proc;
+		return promise;
 	}
 }
 

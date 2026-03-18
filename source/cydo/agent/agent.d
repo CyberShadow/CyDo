@@ -1,5 +1,7 @@
 module cydo.agent.agent;
 
+import ae.utils.promise : Promise;
+
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -116,15 +118,7 @@ interface Agent
 	/// Extract user message text from a raw event line.
 	string extractUserText(string line);
 
-	/// Generate a short title for a user message. Spawns a lightweight
-	/// agent subprocess. onTitle is called with the generated title on
-	/// success (may not be called on failure). Returns an opaque handle
-	/// that the caller must keep alive (prevents GC of the process).
-	Object generateTitle(string userMessage, void delegate(string title) onTitle);
-
-	/// Generate reply suggestions for a conversation. Spawns a lightweight
-	/// agent subprocess. onSuggestions is called with the generated suggestions
-	/// on success (may not be called if nothing obvious). Returns an opaque handle
-	/// that the caller must keep alive (prevents GC of the process).
-	Object generateSuggestions(string abbreviatedHistory, void delegate(string[] suggestions) onSuggestions);
+	/// Run a one-shot LLM completion. Returns a Promise that resolves with
+	/// the raw response text, or rejects on failure/non-zero exit.
+	Promise!string completeOneShot(string prompt, string modelClass);
 }
