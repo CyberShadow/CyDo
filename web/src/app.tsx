@@ -12,6 +12,7 @@ import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ErrorToast } from "./components/ErrorToast";
 
 function AppContent() {
   const {
@@ -105,6 +106,7 @@ function AppContent() {
             onNavigateToProject={navigateToProject}
           />
           {searchPopup}
+          <ErrorToast errors={errors} onDismiss={dismissError} onClearAll={clearErrors} />
         </div>
       </ThemeContext.Provider>
     );
@@ -320,6 +322,7 @@ function AppContent() {
             </div>
           ))}
         {searchPopup}
+        <ErrorToast errors={errors} onDismiss={dismissError} onClearAll={clearErrors} />
       </div>
     </ThemeContext.Provider>
   );

@@ -2687,3 +2687,77 @@ pre.extra-field-value {
   background: var(--accent);
   color: var(--bg);
 }
+
+/* Error toast overlay */
+.error-toast-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 10000;
+  max-width: 480px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.error-toast-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--error);
+  color: var(--error);
+  font-weight: 600;
+}
+
+.error-toast-clear {
+  background: none;
+  border: 1px solid var(--error);
+  color: var(--error);
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.error-toast-clear:hover {
+  background: var(--error);
+  color: var(--bg);
+}
+
+.error-toast-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--error);
+}
+
+.error-toast-message {
+  flex: 1;
+  margin: 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.error-toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.error-toast-dismiss:hover {
+  color: var(--error);
+}
