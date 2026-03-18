@@ -407,6 +407,7 @@ interface Props {
   onBack?: () => void;
   projectName?: string;
   taskTypes: TaskTypeInfo[];
+  visible?: boolean;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -419,6 +420,7 @@ export const Sidebar = memo(function Sidebar({
   onBack,
   projectName,
   taskTypes,
+  visible,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const flatItems = useMemo(
@@ -459,6 +461,17 @@ export const Sidebar = memo(function Sidebar({
     observer.observe(listRef.current, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [activeTaskId]);
+
+  // Scroll to active item when sidebar becomes visible (mobile hamburger).
+  const prevVisible = useRef(visible);
+  useEffect(() => {
+    const wasHidden = prevVisible.current === false;
+    prevVisible.current = visible;
+    if (!visible || !wasHidden || activeTaskId === null) return;
+    listRef.current
+      ?.querySelector(`.sidebar-item[data-tid="${activeTaskId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [visible, activeTaskId]);
 
   return (
     <div class="sidebar">

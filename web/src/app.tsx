@@ -178,10 +178,13 @@ function AppContent() {
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
-  const handleSidebarSelect = useCallback((tid: string) => {
-    setActiveTaskId(tid);
-    setSidebarOpen(false);
-  }, [setActiveTaskId]);
+  const handleSidebarSelect = useCallback(
+    (tid: string) => {
+      setActiveTaskId(tid);
+      setSidebarOpen(false);
+    },
+    [setActiveTaskId],
+  );
 
   const handleSidebarNewTask = useCallback(() => {
     handleNewTask();
@@ -230,6 +233,7 @@ function AppContent() {
           onBack={navigateHome}
           projectName={activeProject || undefined}
           taskTypes={taskTypes}
+          visible={sidebarOpen}
         />
         {Array.from(tasks.values())
           .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
