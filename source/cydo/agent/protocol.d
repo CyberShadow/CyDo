@@ -139,6 +139,7 @@ struct AssistantMessageEvent
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;       // was isSidechain
 	@JSONOptional bool is_api_error;       // was isApiErrorMessage
+	@JSONOptional string uuid;             // for fork support
 }
 
 /// message/user (flat — no message wrapper)
@@ -362,6 +363,7 @@ string translateAssistantMessage(string rawLine)
 		@JSONOptional string parent_tool_use_id;
 		@JSONOptional bool isSidechain;
 		@JSONOptional bool isApiErrorMessage;
+		@JSONOptional string uuid;
 		ClaudeMessage message;
 	}
 
@@ -419,6 +421,7 @@ string translateAssistantMessage(string rawLine)
 	ev.parent_tool_use_id  = raw.parent_tool_use_id;
 	ev.is_sidechain        = raw.isSidechain;
 	ev.is_api_error        = raw.isApiErrorMessage;
+	ev.uuid                = raw.uuid;
 	return toJson(ev);
 }
 
