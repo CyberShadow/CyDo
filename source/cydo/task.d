@@ -314,7 +314,7 @@ string truncateTitle(string text, size_t maxLen)
 }
 
 /// Extract the "event" field from a task envelope JSON string.
-/// Envelopes have the form: {"tid":N,"timestamp":"...","event":{...}}
+/// Envelopes have the form: {"tid":N,"event":{...}}
 string extractEventFromEnvelope(string envelope)
 {
 	import std.string : indexOf;
