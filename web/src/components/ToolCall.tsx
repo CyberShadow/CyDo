@@ -1,5 +1,5 @@
 import { h, Fragment, ComponentChildren } from "preact";
-import { useState, useMemo } from "preact/hooks";
+import { useState, useMemo, useEffect } from "preact/hooks";
 import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import HtmlDiff from "htmldiff-js";
 import { marked } from "marked";
@@ -1404,8 +1404,18 @@ const defaultExpandedResults = new Set([
   "mcp__cydo__Task",
 ]);
 
+const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
+
 export function ToolCall({ name, input, result, children }: Props) {
-  const [inputOpen, setInputOpen] = useState(defaultExpandedTools.has(name));
+  // Collapse pending AskUserQuestion input — the interactive form shows the same content
+  const isAsk = askToolNames.has(name);
+  const [inputOpen, setInputOpen] = useState(
+    isAsk ? !!result : defaultExpandedTools.has(name),
+  );
+  // Auto-expand when result arrives for ask tools
+  useEffect(() => {
+    if (isAsk && result) setInputOpen(true);
+  }, [isAsk, !!result]);
   const [resultOpen, setResultOpen] = useState(
     defaultExpandedResults.has(name),
   );
