@@ -8,10 +8,7 @@ import {
 } from "./fixtures";
 import type { Page, AgentType } from "./fixtures";
 
-// Archive tests depend on sequenced task operations and share server state
-// (archived tasks accumulate across tests). Serial mode ensures they run
-// sequentially so count assertions and "archive disappears" checks are accurate.
-test.describe.configure({ mode: "serial" });
+
 
 
 /** Creates a task with a known sidebar title and kills it (leaves it inactive). */
