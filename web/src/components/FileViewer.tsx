@@ -302,16 +302,18 @@ function SourceView({
 }) {
   const lang = langFromPath(filePath);
   const tokenLines = useHighlight(content, lang);
+  const renderLines = tokenLines ?? content.split("\n");
+  const gutterWidth = `${String(renderLines.length).length}ch`;
   return (
     <pre class="file-viewer-source">
-      {tokenLines
-        ? tokenLines.map((line, i) => (
-            <Fragment key={i}>
-              {i > 0 && "\n"}
-              {renderTokens(line)}
-            </Fragment>
-          ))
-        : content}
+      {renderLines.map((line, i) => (
+        <div key={i} class="source-line">
+          <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+            {i + 1}
+          </span>
+          {tokenLines ? renderTokens(line) : line}
+        </div>
+      ))}
     </pre>
   );
 }
