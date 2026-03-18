@@ -619,8 +619,46 @@ class CodexAgent : Agent
 
 	Promise!string completeOneShot(string prompt, string modelClass)
 	{
+		import std.stdio : stderr;
+		import std.string : strip;
+
 		auto promise = new Promise!string;
-		promise.reject(new Exception("completeOneShot not supported for Codex"));
+
+		AgentProcess proc;
+		try
+			// Pass null env to inherit the full parent environment, matching
+			// how AppServerProcess spawns the main codex session.
+			// --skip-git-repo-check avoids the "not inside a trusted directory"
+			// error when the process CWD is not a git repo root.
+			proc = new AgentProcess([
+				"codex", "exec",
+				"--ephemeral",
+				"--skip-git-repo-check",
+				"-m", resolveModelAlias(modelClass),
+				prompt,
+			], null, null, true); // noStdin
+		catch (Exception e)
+		{
+			stderr.writeln("completeOneShot: failed to spawn codex: ", e.msg);
+			promise.reject(new Exception("failed to spawn codex: " ~ e.msg));
+			return promise;
+		}
+
+		// When stdout is a pipe (not a TTY), codex exec writes only the final
+		// response text to stdout; all headers and diagnostics go to stderr.
+		string responseText;
+
+		proc.onStdoutLine = (string line) {
+			responseText ~= line;
+		};
+
+		proc.onExit = (int status) {
+			if (status != 0)
+				promise.reject(new Exception("codex exited with status " ~ status.to!string));
+			else
+				promise.fulfill(responseText.strip());
+		};
+
 		return promise;
 	}
 }

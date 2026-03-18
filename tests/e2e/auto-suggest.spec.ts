@@ -1,7 +1,6 @@
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
 test("suggestions appear after agent responds", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: suggestions");
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
@@ -21,7 +20,6 @@ test("suggestions appear after agent responds", async ({ page, agentType }) => {
 });
 
 test("suggestions disappear when user types", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: suggestions");
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
@@ -44,7 +42,6 @@ test("suggestions disappear when user types", async ({ page, agentType }) => {
 });
 
 test("clicking suggestion sends it immediately", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: suggestions");
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
@@ -74,7 +71,6 @@ test("clicking suggestion sends it immediately", async ({ page, agentType }) => 
 });
 
 test("shift+click suggestion pre-fills input without sending", async ({ page, agentType }) => {
-  test.skip(agentType !== "claude", "claude-only: suggestions");
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
