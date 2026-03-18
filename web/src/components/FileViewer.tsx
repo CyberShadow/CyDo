@@ -1,14 +1,116 @@
 import { h, Fragment } from "preact";
 import { memo } from "preact/compat";
-import { useRef, useState } from "preact/hooks";
-import type { TrackedFile } from "../types";
+import { useMemo, useRef, useState } from "preact/hooks";
+import type { DisplayMessage, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { DiffView, PatchView } from "./ToolCall";
 import type { PatchHunk } from "./ToolCall";
 import { Markdown } from "./Markdown";
 
+// ---------------------------------------------------------------------------
+// On-demand content resolution
+// ---------------------------------------------------------------------------
+
+/** Resolved file content for a single edit, computed on-demand. */
+interface ResolvedEdit {
+  contentBefore: string | null;
+  contentAfter: string;
+  structuredPatch?: unknown[];
+}
+
+/** Resolve the content for a single FileEdit by looking up the tool_use input
+ *  and tool_result payload from the messages array.  This avoids storing full
+ *  file contents in the reducer — content is only computed when the viewer
+ *  is actually rendering. */
+function resolveEditContent(
+  edit: FileEdit,
+  messages: DisplayMessage[],
+): ResolvedEdit | null {
+  // Find the assistant message containing the tool_use block
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type !== "assistant") continue;
+    const toolUse = m.content.find(
+      (c) => c.type === "tool_use" && (c as any).id === edit.toolUseId,
+    );
+    if (!toolUse) continue;
+
+    const input = (toolUse as any).input as Record<string, unknown>;
+    const toolResult = m.toolResults?.get(edit.toolUseId);
+    const tr = (toolResult?.toolResult ?? {}) as Record<string, unknown>;
+
+    const originalFile =
+      typeof tr.originalFile === "string" ? tr.originalFile : null;
+    const structuredPatch = Array.isArray(tr.structuredPatch)
+      ? tr.structuredPatch
+      : undefined;
+
+    if (edit.type === "edit") {
+      if (originalFile == null) return null;
+      const oldString =
+        typeof input.old_string === "string" ? input.old_string : "";
+      const newString =
+        typeof input.new_string === "string" ? input.new_string : "";
+      let contentAfter: string;
+      if (input.replace_all) {
+        contentAfter = originalFile.split(oldString).join(newString);
+      } else {
+        const idx = originalFile.indexOf(oldString);
+        if (idx >= 0) {
+          contentAfter =
+            originalFile.slice(0, idx) +
+            newString +
+            originalFile.slice(idx + oldString.length);
+        } else {
+          contentAfter = originalFile;
+        }
+      }
+      return { contentBefore: originalFile, contentAfter, structuredPatch };
+    }
+
+    if (edit.type === "write") {
+      const contentAfter =
+        typeof input.content === "string" ? input.content : null;
+      if (contentAfter == null) return null;
+      return {
+        contentBefore: originalFile,
+        contentAfter,
+        structuredPatch,
+      };
+    }
+
+    return null;
+  }
+  return null;
+}
+
+/** Resolve all edits for a file and return the current (latest) content. */
+function resolveFileContent(
+  file: TrackedFile,
+  messages: DisplayMessage[],
+): { currentContent: string; resolved: Map<number, ResolvedEdit> } | null {
+  const resolved = new Map<number, ResolvedEdit>();
+  let currentContent: string | null = null;
+
+  for (let i = 0; i < file.edits.length; i++) {
+    const r = resolveEditContent(file.edits[i], messages);
+    if (r) {
+      resolved.set(i, r);
+      currentContent = r.contentAfter;
+    }
+  }
+
+  if (currentContent == null) return null;
+  return { currentContent, resolved };
+}
+
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+
 interface FileViewerProps {
   trackedFiles: Map<string, TrackedFile>;
+  messages: DisplayMessage[];
   selectedFile: string | null;
   selectedEditIndex: number | null;
   viewMode: "source" | "diff" | "rendered";
@@ -175,22 +277,24 @@ function SourceView({
 }
 
 const ContentViewer = memo(function ContentViewer({
-  file,
-  selectedEditIndex,
+  filePath,
+  currentContent,
+  resolvedEdit,
+  diffEdit,
   viewMode,
   onChangeViewMode,
 }: {
-  file: TrackedFile;
-  selectedEditIndex: number | null;
+  filePath: string;
+  currentContent: string;
+  /** Resolved content for the selected edit (null when no edit selected). */
+  resolvedEdit: ResolvedEdit | null;
+  /** Resolved content for diff view — falls back to last edit when none selected. */
+  diffEdit: ResolvedEdit | null;
   viewMode: "source" | "diff" | "rendered";
   onChangeViewMode: (mode: "source" | "diff" | "rendered") => void;
 }) {
-  const isMarkdown = /\.(md|mdx)$/i.test(file.path);
-  const edit = selectedEditIndex != null ? file.edits[selectedEditIndex] : null;
-  const content = edit ? edit.contentAfter : file.currentContent;
-
-  // Diff: use the selected edit, or fall back to the last edit
-  const diffEdit = edit ?? file.edits[file.edits.length - 1] ?? null;
+  const isMarkdown = /\.(md|mdx)$/i.test(filePath);
+  const content = resolvedEdit ? resolvedEdit.contentAfter : currentContent;
 
   return (
     <div class="content-viewer">
@@ -218,12 +322,12 @@ const ContentViewer = memo(function ContentViewer({
       </div>
       <div class="content-viewer-body">
         {viewMode === "source" && (
-          <SourceView content={content} filePath={file.path} />
+          <SourceView content={content} filePath={filePath} />
         )}
         {viewMode === "diff" && diffEdit?.structuredPatch?.length ? (
           <PatchView
             hunks={diffEdit.structuredPatch as PatchHunk[]}
-            filePath={file.path}
+            filePath={filePath}
           />
         ) : (
           viewMode === "diff" &&
@@ -231,7 +335,7 @@ const ContentViewer = memo(function ContentViewer({
             <DiffView
               oldStr={diffEdit.contentBefore ?? ""}
               newStr={diffEdit.contentAfter}
-              filePath={file.path}
+              filePath={filePath}
             />
           )
         )}
@@ -239,7 +343,7 @@ const ContentViewer = memo(function ContentViewer({
           <Markdown text={content} class="text-content" />
         )}
         {viewMode === "rendered" && !isMarkdown && (
-          <SourceView content={content} filePath={file.path} />
+          <SourceView content={content} filePath={filePath} />
         )}
       </div>
     </div>
@@ -289,6 +393,7 @@ function EditHistory({
 
 export function FileViewer({
   trackedFiles,
+  messages,
   selectedFile,
   selectedEditIndex,
   viewMode,
@@ -304,6 +409,14 @@ export function FileViewer({
   const treeNodes = buildFileTree(paths);
   const file = selectedFile ? trackedFiles.get(selectedFile) : null;
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Resolve file content on-demand — only computed when the viewer is open
+  // and a file is selected.  useMemo ensures we don't recompute on every render
+  // unless the file or messages actually change.
+  const resolved = useMemo(
+    () => (file ? resolveFileContent(file, messages) : null),
+    [file, messages],
+  );
 
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
@@ -349,11 +462,21 @@ export function FileViewer({
             />
           ))}
         </div>
-        {file ? (
+        {file && resolved ? (
           <>
             <ContentViewer
-              file={file}
-              selectedEditIndex={selectedEditIndex}
+              filePath={file.path}
+              currentContent={resolved.currentContent}
+              resolvedEdit={
+                selectedEditIndex != null
+                  ? (resolved.resolved.get(selectedEditIndex) ?? null)
+                  : null
+              }
+              diffEdit={
+                selectedEditIndex != null
+                  ? (resolved.resolved.get(selectedEditIndex) ?? null)
+                  : (resolved.resolved.get(file.edits.length - 1) ?? null)
+              }
               viewMode={viewMode}
               onChangeViewMode={onChangeViewMode}
             />

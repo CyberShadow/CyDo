@@ -176,6 +176,7 @@ export function SessionView({
       {fileViewerState && task.trackedFiles.size > 0 && (
         <FileViewer
           trackedFiles={task.trackedFiles}
+          messages={task.messages}
           selectedFile={fileViewerState.selectedFile}
           selectedEditIndex={fileViewerState.selectedEditIndex}
           viewMode={fileViewerState.viewMode}

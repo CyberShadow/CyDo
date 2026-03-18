@@ -280,6 +280,10 @@ export function reduceAssistantMessage(
   return { ...s, messages };
 }
 
+/** Lightweight file-edit tracker: records only metadata (toolUseId, messageId,
+ *  filePath, type).  Actual file content is resolved on-demand by
+ *  resolveEditContent() in FileViewer, avoiding string ops and memory
+ *  overhead when the viewer is never opened. */
 function trackFileEdits(
   state: SessionState,
   toolResults: Array<{
@@ -287,11 +291,7 @@ function trackFileEdits(
     content: ToolResultContent;
     is_error?: boolean;
   }>,
-  toolUseResult: unknown,
 ): SessionState {
-  if (!toolUseResult || typeof toolUseResult !== "object") return state;
-  const tr = toolUseResult as Record<string, unknown>;
-
   for (const block of toolResults) {
     for (let i = state.messages.length - 1; i >= 0; i--) {
       const m = state.messages[i];
@@ -302,75 +302,33 @@ function trackFileEdits(
       if (!toolUse) continue;
 
       const toolName = (toolUse as any).name as string;
+      if (toolName !== "Edit" && toolName !== "Write") break;
+
       const input = (toolUse as any).input as Record<string, unknown>;
       const filePath =
         typeof input?.file_path === "string" ? input.file_path : null;
       if (!filePath) break;
 
-      let contentBefore: string | null = null;
-      let contentAfter: string | null = null;
+      const edit: FileEdit = {
+        toolUseId: block.tool_use_id,
+        messageId: m.id,
+        filePath,
+        type: toolName === "Edit" ? "edit" : "write",
+      };
 
-      if (toolName === "Edit") {
-        const originalFile =
-          typeof tr.originalFile === "string" ? tr.originalFile : null;
-        const oldString =
-          typeof input.old_string === "string" ? input.old_string : "";
-        const newString =
-          typeof input.new_string === "string" ? input.new_string : "";
-
-        if (originalFile != null) {
-          contentBefore = originalFile;
-          if (input.replace_all) {
-            contentAfter = originalFile.split(oldString).join(newString);
-          } else {
-            const idx = originalFile.indexOf(oldString);
-            if (idx >= 0) {
-              contentAfter =
-                originalFile.slice(0, idx) +
-                newString +
-                originalFile.slice(idx + oldString.length);
-            } else {
-              contentAfter = originalFile;
-            }
-          }
-        }
-      } else if (toolName === "Write") {
-        const originalFile =
-          typeof tr.originalFile === "string" ? tr.originalFile : null;
-        contentBefore = originalFile;
-        contentAfter = typeof input.content === "string" ? input.content : null;
-      }
-
-      if (contentAfter == null) break;
-
-      const messageId = m.id;
       const trackedFiles = new Map(
         state.trackedFiles ?? new Map<string, TrackedFile>(),
       );
       const existing = trackedFiles.get(filePath);
-      const structuredPatch = Array.isArray(tr.structuredPatch)
-        ? tr.structuredPatch
-        : undefined;
-      const edit: FileEdit = {
-        toolUseId: block.tool_use_id,
-        messageId,
-        type: toolName === "Edit" ? "edit" : "write",
-        contentBefore,
-        contentAfter,
-        structuredPatch,
-      };
-
       if (existing) {
         trackedFiles.set(filePath, {
           ...existing,
           edits: [...existing.edits, edit],
-          currentContent: contentAfter,
         });
       } else {
         trackedFiles.set(filePath, {
           path: filePath,
           edits: [edit],
-          currentContent: contentAfter,
         });
       }
 
@@ -455,7 +413,7 @@ export function reduceUserEcho(
         : rawMsg;
     }
     state = { ...state, messages: updated };
-    state = trackFileEdits(state, toolResults, toolUseResult);
+    state = trackFileEdits(state, toolResults);
   }
 
   // If there are text blocks (actual user text, not just tool results), show as user message

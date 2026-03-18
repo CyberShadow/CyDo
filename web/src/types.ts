@@ -77,21 +77,20 @@ export interface ToolResult {
   toolResult?: unknown;
 }
 
-/** A single edit operation on a file, linked to a tool call. */
+/** A single edit operation on a file, linked to a tool call.
+ *  Stores only lightweight metadata; file content is resolved on-demand
+ *  via resolveEditContent() to avoid memory overhead when the viewer is closed. */
 export interface FileEdit {
   toolUseId: string; // links to the tool_use block ID
   messageId: string; // DisplayMessage.id for scroll-to
+  filePath: string;
   type: "edit" | "write";
-  contentBefore: string | null; // null for brand-new files
-  contentAfter: string;
-  structuredPatch?: unknown[]; // hunk array from tool result, if available
 }
 
 /** Accumulated state for a single tracked file. */
 export interface TrackedFile {
   path: string;
   edits: FileEdit[];
-  currentContent: string; // latest contentAfter
 }
 
 export interface StreamingBlock {
