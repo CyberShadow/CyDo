@@ -361,6 +361,11 @@ function trackFileEdits(
 }
 
 // Applies both tool-result linking and user-text echo in a single pass.
+const userKnownKeys = new Set([
+  'type', 'content', 'parent_tool_use_id', 'is_sidechain', 'tool_result',
+  'is_replay', 'is_synthetic', 'is_meta', 'is_steering', 'pending', 'uuid',
+]);
+
 export function reduceUserEcho(
   s: SessionState,
   content: any[],
@@ -453,6 +458,7 @@ export function reduceUserEcho(
       isMeta: isMeta || undefined,
       isSteering: isSteering || undefined,
       parentToolUseId,
+      extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
       rawSource: rawMsg,
     };
     // Remove the pending placeholder (the user already sees their message
@@ -485,6 +491,7 @@ export function reduceUserReplay(
     id,
     type: "user" as const,
     content: [{ type: "text" as const, text }],
+    extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
     rawSource: rawMsg,
   };
   // Remove the pending placeholder, then insert the echo before any
