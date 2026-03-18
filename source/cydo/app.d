@@ -2,7 +2,6 @@ module cydo.app;
 
 import core.lifetime : move;
 
-import std.datetime : Clock;
 import std.file : exists, isFile;
 import std.format : format;
 import std.stdio : File, stderr;
@@ -1777,21 +1776,18 @@ class App : ToolsBackend
 		import ae.utils.json : toJson;
 		import cydo.agent.protocol : UserMessageEvent;
 
-		auto now = Clock.currTime.toISOExtString();
 		UserMessageEvent ev;
 		ev.content = JSONFragment(toJson(content));
 		ev.pending = true;
 		auto userEvent = toJson(ev);
 		string injected = `{"tid":` ~ format!"%d"(tid)
-			~ `,"timestamp":"` ~ now
-			~ `","unconfirmedUserEvent":` ~ userEvent ~ `}`;
+			~ `,"unconfirmedUserEvent":` ~ userEvent ~ `}`;
 
 		auto data = Data(injected.representation);
 
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
-			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
 		}
 
@@ -1829,14 +1825,11 @@ class App : ToolsBackend
 						auto text = td.enqueuedSteeringTexts[0];
 						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
 						// Broadcast synthetic steering confirmation
-						auto now = Clock.currTime.toISOExtString();
 						auto steeringEvent = buildSyntheticUserEvent(text, true);
 						string injected = `{"tid":` ~ format!"%d"(tid)
-							~ `,"timestamp":"` ~ now
-							~ `","event":` ~ steeringEvent ~ `}`;
+							~ `,"event":` ~ steeringEvent ~ `}`;
 						auto data = Data(injected.representation);
 						ensureHistoryLoaded(tid);
-						td.lastActivity = now;
 						td.history ~= data;
 						sendToSubscribed(tid, data);
 					}
@@ -1851,16 +1844,14 @@ class App : ToolsBackend
 		if (translated is null)
 			return; // consumed event, don't forward
 
-		// Wrap the event with a task envelope including timestamp
-		auto now = Clock.currTime.toISOExtString();
-		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"timestamp":"` ~ now ~ `","event":` ~ translated ~ `}`;
+		// Wrap the event in a task envelope
+		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
 
 		auto data = Data(injected.representation);
 
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
-			tasks[tid].lastActivity = now;
 			tasks[tid].history ~= data;
 		}
 

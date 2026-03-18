@@ -78,7 +78,6 @@ struct TaskData
 	bool isProcessing = false;
 	bool needsAttention = false;
 	string notificationBody;
-	string lastActivity;
 	string resultText;    // result from the "result" event (canonical sub-task output)
 	string resultNote;        // note from the creatable_tasks edge, returned with result
 	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
