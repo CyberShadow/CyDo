@@ -606,7 +606,7 @@ class App : ToolsBackend
 		tdp.needsAttention = true;
 		tdp.notificationBody = "Waiting for your answer";
 		tdp.isProcessing = false;
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 
 		return promise;
 	}
@@ -660,7 +660,7 @@ class App : ToolsBackend
 		import ae.utils.json : toJson;
 		sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question", tid, "", JSONFragment("[]"))).representation));
 
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 	}
 
 	private void handleWsMessage(WebSocketAdapter ws, string text)
@@ -1282,7 +1282,7 @@ class App : ToolsBackend
 		unsubscribeAll(tid);
 
 		broadcast(toJson(TaskReloadMessage("task_reload", tid, "edit")));
-		broadcast(buildTasksList());
+		broadcastTaskUpdate(tid);
 	}
 
 	/// Send a user message to a task's agent session.

@@ -680,6 +680,7 @@ enum claudeMetadataFields = [
 	"cwd", "gitBranch", "version",        // environment context
 	"userType", "timestamp",              // JSONL persistence fields
 	"slug",                               // session slug
+	"permissionMode",                     // session permission level (JSONL metadata)
 ];
 
 /// Merge unknown top-level fields from rawLine into translatedLine.
