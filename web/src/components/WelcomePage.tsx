@@ -98,7 +98,7 @@ export function WelcomePage({
                           onClick={() => onSelectTask(t.tid)}
                         >
                           {attention.has(t.tid) ? (
-                            <span class="sidebar-dot check">&#x2713;</span>
+                            <span class="task-type-icon task-type-icon-check alive" />
                           ) : (
                             renderTaskDot(t)
                           )}
@@ -134,7 +134,7 @@ export function WelcomePage({
                     onClick={() => onSelectTask(t.tid)}
                   >
                     {attention.has(t.tid) ? (
-                      <span class="sidebar-dot check">&#x2713;</span>
+                      <span class="task-type-icon task-type-icon-check alive" />
                     ) : (
                       renderTaskDot(t)
                     )}

@@ -377,7 +377,7 @@ const SidebarItem = memo(function SidebarItem({
     >
       {treeConnectors}
       {hasAttention ? (
-        <span class="sidebar-dot check">&#x2713;</span>
+        <span class="task-type-icon task-type-icon-check alive" />
       ) : iconName ? (
         <span
           class={`task-type-icon task-type-icon-${iconName}${statusClass ? ` ${statusClass}` : ""}`}

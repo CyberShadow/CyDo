@@ -18,8 +18,10 @@ import verifyIcon from "../icons/verify.svg?raw";
 import reviewIcon from "../icons/review.svg?raw";
 import stewardQualityIcon from "../icons/steward-quality.svg?raw";
 import stewardSecurityIcon from "../icons/steward-security.svg?raw";
+import checkIcon from "../icons/check.svg?raw";
 
 const rawIcons: Record<string, string> = {
+  check: checkIcon,
   blank: blankIcon,
   conversation: conversationIcon,
   "plan-mode": planModeIcon,

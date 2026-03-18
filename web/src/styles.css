@@ -347,14 +347,6 @@ body,
   background: var(--success);
 }
 
-.sidebar-dot.check {
-  background: none;
-  color: var(--success);
-  font-size: 14px;
-  line-height: 8px;
-  font-weight: bold;
-}
-
 .sidebar-item.attention {
   background: rgba(76, 175, 80, 0.1);
 }
