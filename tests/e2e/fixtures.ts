@@ -159,6 +159,21 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
         `Unknown tool result fields rendered in DOM:\n${descriptions.join("\n---\n")}`,
       ).toBe(0);
     }
+
+    // Assert no unknown extra fields on messages — every agent field should
+    // be explicitly listed in the protocol translation known-fields lists.
+    const unknownExtraFields = page.locator(".unknown-extra-fields");
+    const unknownExtraCount = await unknownExtraFields.count();
+    if (unknownExtraCount > 0) {
+      const descriptions: string[] = [];
+      for (let i = 0; i < unknownExtraCount; i++) {
+        descriptions.push(await unknownExtraFields.nth(i).innerText());
+      }
+      expect(
+        unknownExtraCount,
+        `Unknown extra fields rendered in DOM:\n${descriptions.join("\n---\n")}`,
+      ).toBe(0);
+    }
   },
 });
 
