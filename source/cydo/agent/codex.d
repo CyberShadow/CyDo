@@ -647,14 +647,24 @@ class CodexAgent : Agent
 		// When stdout is a pipe (not a TTY), codex exec writes only the final
 		// response text to stdout; all headers and diagnostics go to stderr.
 		string responseText;
+		string stderrText;
 
 		proc.onStdoutLine = (string line) {
 			responseText ~= line;
 		};
 
+		proc.onStderrLine = (string line) {
+			stderrText ~= line ~ "\n";
+		};
+
 		proc.onExit = (int status) {
 			if (status != 0)
-				promise.reject(new Exception("codex exited with status " ~ status.to!string));
+			{
+				auto msg = "codex exited with status " ~ status.to!string;
+				if (stderrText.length > 0)
+					stderr.writeln("completeOneShot: ", msg, "\n", stderrText);
+				promise.reject(new Exception(msg));
+			}
 			else
 				promise.fulfill(responseText.strip());
 		};
