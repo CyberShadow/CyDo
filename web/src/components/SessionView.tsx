@@ -1,4 +1,5 @@
 import { h } from "preact";
+import { memo } from "preact/compat";
 import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
@@ -36,7 +37,7 @@ interface Props {
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
 }
 
-export function SessionView({
+function SessionViewInner({
   task,
   connected,
   isActive,
@@ -271,6 +272,8 @@ export function SessionView({
     </>
   );
 }
+
+export const SessionView = memo(SessionViewInner);
 
 function QuoteSelectionButton({
   isActive,
