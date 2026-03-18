@@ -7,6 +7,7 @@ import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
 import { AskUserForm } from "./AskUserForm";
+import { FileViewer } from "./FileViewer";
 
 interface Props {
   task: TaskState;
@@ -60,6 +61,33 @@ export function SessionView({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
+
+  const [fileViewerState, setFileViewerState] = useState<{
+    open: boolean;
+    selectedFile: string | null;
+    selectedEditIndex: number | null;
+    viewMode: "source" | "diff" | "rendered";
+    height: number;
+  } | null>(null);
+
+  const openFileViewer = useCallback((filePath: string) => {
+    setFileViewerState((prev) => ({
+      open: true,
+      selectedFile: filePath,
+      selectedEditIndex: null,
+      viewMode: prev?.viewMode ?? "source",
+      height: prev?.height ?? 300,
+    }));
+  }, []);
+
+  const closeFileViewer = useCallback(() => {
+    setFileViewerState(null);
+  }, []);
+
+  const scrollToMessage = useCallback((messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
 
   // Auto-focus input box or resume button when session becomes active.
   // Skip on touch devices to avoid opening the virtual keyboard.
@@ -143,6 +171,33 @@ export function SessionView({
             : undefined
         }
       />
+      {fileViewerState && task.trackedFiles.size > 0 && (
+        <FileViewer
+          trackedFiles={task.trackedFiles}
+          selectedFile={fileViewerState.selectedFile}
+          selectedEditIndex={fileViewerState.selectedEditIndex}
+          viewMode={fileViewerState.viewMode}
+          height={fileViewerState.height}
+          onSelectFile={(path) =>
+            setFileViewerState((s) =>
+              s ? { ...s, selectedFile: path, selectedEditIndex: null } : s,
+            )
+          }
+          onSelectEdit={(idx) =>
+            setFileViewerState((s) =>
+              s ? { ...s, selectedEditIndex: idx } : s,
+            )
+          }
+          onChangeViewMode={(mode) =>
+            setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s))
+          }
+          onClose={closeFileViewer}
+          onResize={(h) =>
+            setFileViewerState((s) => (s ? { ...s, height: h } : s))
+          }
+          onScrollToMessage={scrollToMessage}
+        />
+      )}
       {!task.historyLoaded ? (
         <div class="session-loading">
           <span>Loading session…</span>
@@ -163,6 +218,7 @@ export function SessionView({
           onUndo={onUndo}
           onEditMessage={!task.alive ? onEditMessage : undefined}
           forkableUuids={task.forkableUuids}
+          onViewFile={openFileViewer}
         />
       )}
       {task.undoPending && task.undoPending.messagesRemoved >= 0 && (

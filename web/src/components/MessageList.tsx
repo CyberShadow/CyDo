@@ -22,6 +22,7 @@ interface Props {
   onUndo?: (tid: number, afterUuid: string) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   forkableUuids?: Set<string>;
+  onViewFile?: (filePath: string) => void;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -323,7 +324,10 @@ const MessageView = memo(
     }, [uuid, onEdit, editText]);
 
     return (
-      <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
+      <div
+        id={`msg-${msg.id}`}
+        class={`message-wrapper${showSource ? " show-source" : ""}`}
+      >
         <div class="message-actions">
           {uuid && onEdit && (
             <button
@@ -349,7 +353,9 @@ const MessageView = memo(
             <textarea
               class="edit-textarea"
               value={editText}
-              onInput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+              onInput={(e) =>
+                setEditText((e.target as HTMLTextAreaElement).value)
+              }
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   setEditing(false);
@@ -361,11 +367,19 @@ const MessageView = memo(
               ref={(el) => el?.focus()}
             />
             <div class="edit-actions">
-              <button class="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button>
-              <button class="btn btn-sm btn-primary" onClick={saveEdit}>Save</button>
+              <button class="btn btn-sm" onClick={() => setEditing(false)}>
+                Cancel
+              </button>
+              <button class="btn btn-sm btn-primary" onClick={saveEdit}>
+                Save
+              </button>
             </div>
           </div>
-        ) : showSource ? <SourceView msg={msg} /> : children}
+        ) : showSource ? (
+          <SourceView msg={msg} />
+        ) : (
+          children
+        )}
         {uuid && forkable && (onFork || onUndo) && (
           <div class="message-actions message-actions-bottom">
             {onFork && (
@@ -407,6 +421,7 @@ export function MessageList({
   onUndo,
   onEditMessage,
   forkableUuids,
+  onViewFile,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
@@ -422,7 +437,8 @@ export function MessageList({
   const handleEditMessage = useMemo(
     () =>
       onEditMessage
-        ? (uuid: string, content: string) => onEditMessage(sessionId, uuid, content)
+        ? (uuid: string, content: string) =>
+            onEditMessage(sessionId, uuid, content)
         : undefined,
     [onEditMessage, sessionId],
   );
@@ -504,6 +520,7 @@ export function MessageList({
                 <AssistantMessage
                   message={msg}
                   childrenByParent={childrenByParent}
+                  onViewFile={onViewFile}
                 />
               );
               break;

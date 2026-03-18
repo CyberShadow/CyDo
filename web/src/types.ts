@@ -77,6 +77,22 @@ export interface ToolResult {
   toolResult?: unknown;
 }
 
+/** A single edit operation on a file, linked to a tool call. */
+export interface FileEdit {
+  toolUseId: string; // links to the tool_use block ID
+  messageId: string; // DisplayMessage.id for scroll-to
+  type: "edit" | "write";
+  contentBefore: string | null; // null for brand-new files
+  contentAfter: string;
+}
+
+/** Accumulated state for a single tracked file. */
+export interface TrackedFile {
+  path: string;
+  edits: FileEdit[];
+  currentContent: string; // latest contentAfter
+}
+
 export interface StreamingBlock {
   index: number;
   type: string;
@@ -145,6 +161,8 @@ export interface TaskState {
     toolUseId: string;
     questions: AskUserQuestionItem[];
   } | null;
+  /** Files modified by the agent, keyed by absolute file path. */
+  trackedFiles: Map<string, TrackedFile>;
 }
 
 export function makeTaskState(
@@ -183,5 +201,6 @@ export function makeTaskState(
     forkableUuids: new Set(),
     taskType,
     archived,
+    trackedFiles: new Map(),
   };
 }

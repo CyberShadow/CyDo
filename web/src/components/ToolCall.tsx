@@ -21,6 +21,7 @@ interface Props {
   input: Record<string, unknown>;
   result?: ToolResult;
   children?: ComponentChildren;
+  onViewFile?: (filePath: string) => void;
 }
 
 /** Render an array of token lines (no trailing newline). */
@@ -149,7 +150,7 @@ function wordDiffSimilarity(wordChanges: Change[]): number {
 
 const WORD_DIFF_THRESHOLD = 0.4;
 
-function DiffView({
+export function DiffView({
   oldStr,
   newStr,
   filePath,
@@ -1406,7 +1407,7 @@ const defaultExpandedResults = new Set([
 
 const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
 
-export function ToolCall({ name, input, result, children }: Props) {
+export function ToolCall({ name, input, result, children, onViewFile }: Props) {
   // Collapse pending AskUserQuestion input — the interactive form shows the same content
   const isAsk = askToolNames.has(name);
   const [inputOpen, setInputOpen] = useState(
@@ -1455,6 +1456,30 @@ export function ToolCall({ name, input, result, children }: Props) {
         <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
+        {(name === "Edit" || name === "Write") && filePath && onViewFile && (
+          <button
+            class="tool-view-file"
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewFile(filePath);
+            }}
+            title="View file"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        )}
       </div>
       {inputOpen && formatInput(name, input, result)}
       {children}

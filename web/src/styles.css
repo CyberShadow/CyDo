@@ -89,7 +89,7 @@ body,
 .app.has-sidebar {
   display: grid;
   grid-template-columns: minmax(240px, 0.2fr) minmax(0, 1fr);
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
 }
 
 .app.has-sidebar .sidebar {
@@ -102,15 +102,20 @@ body,
   grid-row: 1;
 }
 
-.app.has-sidebar .message-list {
+.app.has-sidebar .file-viewer {
   grid-column: 2;
   grid-row: 2;
+}
+
+.app.has-sidebar .message-list {
+  grid-column: 2;
+  grid-row: 3;
   min-height: 0;
 }
 
 .app.has-sidebar .input-box {
   grid-column: 2;
-  grid-row: 3;
+  grid-row: 4;
 }
 
 /* Hide sidebar during loading/connecting state */
@@ -1155,7 +1160,220 @@ body,
 
 .app.has-sidebar .resume-bar {
   grid-column: 2;
-  grid-row: 3;
+  grid-row: 4;
+}
+
+/* File viewer pane */
+.file-viewer {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.file-viewer-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 500;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.file-viewer-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.file-viewer-close:hover {
+  background: var(--overlay-light);
+  color: var(--text);
+}
+
+.file-viewer-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-viewer .file-tree {
+  width: 200px;
+  min-width: 150px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+
+.file-viewer .content-viewer {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.file-viewer .content-viewer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+.file-viewer .edit-history {
+  width: 180px;
+  min-width: 120px;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+
+.file-viewer .resize-handle {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.file-viewer .resize-handle:hover {
+  background: var(--accent);
+}
+
+.file-viewer-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 16px;
+}
+
+/* View mode tabs */
+.content-viewer-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.content-viewer-tabs button {
+  padding: 2px 8px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.content-viewer-tabs button.active {
+  background: var(--overlay-light);
+  color: var(--text);
+}
+
+.content-viewer-tabs button:hover:not(.active) {
+  background: var(--overlay-light-less);
+  color: var(--text);
+}
+
+/* File viewer source view */
+.file-viewer-source {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* File tree items */
+.file-tree-item {
+  padding: 2px 8px 2px calc(8px + var(--depth, 0) * 16px);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.file-tree-item:hover {
+  background: var(--overlay-light);
+}
+
+.file-tree-item.selected {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+
+.file-tree-item.directory {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* Edit history items */
+.edit-history-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.edit-history-item:hover {
+  background: var(--overlay-light);
+}
+
+.edit-history-item.selected {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+
+.edit-history-item .edit-type {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--overlay-light);
+}
+
+.edit-history-num {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* Eye icon button on tool header */
+.tool-view-file {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.tool-view-file:hover {
+  opacity: 1;
+  background: var(--overlay-light);
+}
+
+.tool-header:hover .tool-view-file {
+  display: inline-flex;
 }
 
 .btn-resume {
@@ -2263,6 +2481,7 @@ pre.extra-field-value {
   }
 
   .app.has-sidebar .system-banner,
+  .app.has-sidebar .file-viewer,
   .app.has-sidebar .message-list,
   .app.has-sidebar .input-box,
   .app.has-sidebar .resume-bar,

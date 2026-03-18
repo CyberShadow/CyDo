@@ -82,9 +82,14 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
 interface Props {
   message: DisplayMessage;
   childrenByParent?: Map<string, DisplayMessage[]>;
+  onViewFile?: (filePath: string) => void;
 }
 
-export function AssistantMessage({ message, childrenByParent }: Props) {
+export function AssistantMessage({
+  message,
+  childrenByParent,
+  onViewFile,
+}: Props) {
   const hasStreamingBlocks = (message.streamingBlocks?.length ?? 0) > 0;
   const isSynthetic = message.model === "<synthetic>";
   return (
@@ -101,9 +106,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
       )}
       {message.content.map((block, i) => {
         if (block.type === "thinking") {
-          return (
-            <Markdown key={i} text={block.text} class="thinking-text" />
-          );
+          return <Markdown key={i} text={block.text} class="thinking-text" />;
         }
         if (block.type === "tool_use") {
           const result = message.toolResults?.get(block.id);
@@ -114,6 +117,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
               name={block.name}
               input={block.input}
               result={result}
+              onViewFile={onViewFile}
             >
               {nested && nested.length > 0 && (
                 <div class="sub-agent-messages">
@@ -124,6 +128,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
                           key={child.id}
                           message={child}
                           childrenByParent={childrenByParent}
+                          onViewFile={onViewFile}
                         />
                       );
                     }
@@ -165,6 +170,7 @@ export function AssistantMessage({ message, childrenByParent }: Props) {
             <ToolCall
               name={block.name}
               input={tryParsePartialJson(block.text)}
+              onViewFile={onViewFile}
             />
           )}
           {block.type === "tool_use" && !block.name && (
