@@ -1850,6 +1850,23 @@ class App : ToolsBackend
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
+			// Coalesce streaming deltas: when message/assistant arrives, remove
+			// preceding streaming entries. Live clients already received the deltas
+			// in real-time; only the compact final message is needed for replay.
+			import std.algorithm : canFind;
+			if (translated.canFind(`"type":"message/assistant"`))
+			{
+				size_t keepCount = tasks[tid].history.length;
+				while (keepCount > 0)
+				{
+					auto entry = cast(const(char)[])tasks[tid].history[keepCount - 1].unsafeContents;
+					if (entry.canFind(`"type":"stream/block_`) || entry.canFind(`"type":"stream/turn_stop"`))
+						keepCount--;
+					else
+						break;
+				}
+				tasks[tid].history.length = keepCount;
+			}
 			tasks[tid].history ~= data;
 		}
 
