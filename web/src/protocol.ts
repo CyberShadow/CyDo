@@ -300,7 +300,6 @@ export interface TasksListMessage {
     isProcessing: boolean;
     needsAttention?: boolean;
     notificationBody?: string;
-    lastActivity: string;
     title?: string;
     workspace?: string;
     project_path?: string;
@@ -308,7 +307,6 @@ export interface TasksListMessage {
     relation_type?: string;
     status?: string;
     task_type?: string;
-    agent_type?: string;
     archived?: boolean;
     draft?: string;
   }[];
@@ -322,7 +320,6 @@ export interface TaskUpdatedMessage {
     isProcessing: boolean;
     needsAttention?: boolean;
     notificationBody?: string;
-    lastActivity: string;
     title?: string;
     workspace?: string;
     project_path?: string;
@@ -330,7 +327,6 @@ export interface TaskUpdatedMessage {
     relation_type?: string;
     status?: string;
     task_type?: string;
-    agent_type?: string;
     archived?: boolean;
     draft?: string;
   };

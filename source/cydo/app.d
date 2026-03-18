@@ -2029,8 +2029,8 @@ class App : ToolsBackend
 	{
 		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 			td.isProcessing, td.needsAttention, td.notificationBody,
-			td.lastActivity, td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.agentType, td.archived, td.draft);
+			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
+			td.taskType, td.archived, td.draft);
 	}
 
 	private string buildTasksList()

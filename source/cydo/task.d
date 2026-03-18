@@ -175,7 +175,6 @@ struct TaskListEntry
 	bool isProcessing;
 	bool needsAttention;
 	string notificationBody;
-	string lastActivity;
 	string title;
 	string workspace;
 	string project_path;
@@ -183,7 +182,6 @@ struct TaskListEntry
 	string relation_type;
 	string status;
 	string task_type;
-	string agent_type;
 	bool archived;
 	string draft;
 }
