@@ -89,7 +89,7 @@ function streamToolUseResponse(res, toolName, input, model = "claude-sonnet-4-20
   sseEvent(res, "content_block_start", {
     type: "content_block_start",
     index: 0,
-    content_block: { type: "tool_use", id: toolId, name: toolName, input: {} },
+    content_block: { type: "tool_use", id: toolId, name: toolName, input: {}, caller: { type: "direct" } },
   });
   sseEvent(res, "content_block_delta", {
     type: "content_block_delta",

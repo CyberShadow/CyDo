@@ -105,8 +105,13 @@ export function AssistantMessage({
         </div>
       )}
       {message.content.map((block, i) => {
-        const knownBlockKeys = new Set(['type', 'text', 'id', 'name', 'input']);
+        const knownBlockKeys = new Set(['type', 'text', 'id', 'name', 'input', 'caller']);
         const blockExtra = Object.entries(block).filter(([k]) => !knownBlockKeys.has(k));
+        // Surface non-direct caller values as extra fields
+        const caller = (block as any).caller;
+        if (caller && (typeof caller !== 'object' || caller.type !== 'direct')) {
+          blockExtra.push(['caller', caller]);
+        }
         const blockExtraEl = blockExtra.length > 0 ? (
           <div class="unknown-extra-fields">
             {blockExtra.map(([k, v]) => (

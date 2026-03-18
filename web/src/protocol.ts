@@ -19,6 +19,7 @@ export interface AssistantContentBlock {
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
+  caller?: { type: string; tool_id?: string };
   [key: string]: unknown;
 }
 
