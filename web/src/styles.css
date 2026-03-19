@@ -1614,6 +1614,16 @@ body,
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
+.meta-badge.compact-summary {
+  background: rgba(140, 160, 176, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(140, 160, 176, 0.3);
+}
+
+.user-message.compact-summary-message {
+  opacity: 0.7;
+}
+
 /* Nested sub-agent messages inside a tool call */
 .sub-agent-messages {
   margin: 8px 0;

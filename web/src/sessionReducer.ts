@@ -364,6 +364,7 @@ function trackFileEdits(
 const userKnownKeys = new Set([
   'type', 'content', 'parent_tool_use_id', 'is_sidechain', 'tool_result',
   'is_replay', 'is_synthetic', 'is_meta', 'is_steering', 'pending', 'uuid',
+  'isCompactSummary', 'isVisibleInTranscriptOnly',
 ]);
 
 export function reduceUserEcho(
@@ -445,6 +446,7 @@ export function reduceUserEcho(
   // If there are text blocks (actual user text, not just tool results), show as user message
   const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
   if (meaningfulText.length > 0 && toolResults.length === 0) {
+    const isCompactSummary = !!(rawMsg as any).isCompactSummary;
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
@@ -457,6 +459,7 @@ export function reduceUserEcho(
       isSynthetic: isSynthetic || undefined,
       isMeta: isMeta || undefined,
       isSteering: isSteering || undefined,
+      isCompactSummary: isCompactSummary || undefined,
       parentToolUseId,
       extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
       rawSource: rawMsg,
@@ -486,11 +489,13 @@ export function reduceUserReplay(
     .filter((b: any) => b.type === "text")
     .map((b: any) => b.text)
     .join("");
+  const isCompactSummary = !!(rawMsg as any).isCompactSummary;
   const id = `user-${++s.msgIdCounter}`;
   const echoMsg: DisplayMessage = {
     id,
     type: "user" as const,
     content: [{ type: "text" as const, text }],
+    isCompactSummary: isCompactSummary || undefined,
     extraFields: extractExtraFields(rawMsg as Record<string, unknown>, userKnownKeys),
     rawSource: rawMsg,
   };

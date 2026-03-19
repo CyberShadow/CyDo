@@ -14,8 +14,13 @@ export function UserMessage({ message }: Props) {
 
   return (
     <div
-      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}${message.isSteering ? " steering-message" : ""}`}
+      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}${message.isSteering ? " steering-message" : ""}${message.isCompactSummary ? " compact-summary-message" : ""}`}
     >
+      {message.isCompactSummary && (
+        <div class="message-meta">
+          <span class="meta-badge compact-summary">compact summary</span>
+        </div>
+      )}
       {message.isMeta && (
         <div class="message-meta">
           <span class="meta-badge meta">meta</span>
@@ -26,7 +31,7 @@ export function UserMessage({ message }: Props) {
           <span class="meta-badge steering">steering</span>
         </div>
       )}
-      {message.isSynthetic || message.parentToolUseId ? (
+      {message.isSynthetic || message.parentToolUseId || message.isCompactSummary ? (
         <Markdown text={text} />
       ) : (
         <div class="user-text">{text}</div>

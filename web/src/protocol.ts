@@ -123,6 +123,8 @@ export interface UserEchoMessage {
   is_steering?: boolean;
   pending?: boolean;
   uuid?: string;
+  isCompactSummary?: boolean;
+  isVisibleInTranscriptOnly?: boolean;
   [key: string]: unknown;
 }
 

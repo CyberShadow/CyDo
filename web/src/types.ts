@@ -27,6 +27,7 @@ export interface DisplayMessage {
   isSynthetic?: boolean;
   isMeta?: boolean;
   isSteering?: boolean;
+  isCompactSummary?: boolean;
   parentToolUseId?: string | null;
   /** Bumped when a nested child message under this message's tool_use blocks changes. */
   nestedVersion?: number;
