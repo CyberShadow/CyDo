@@ -101,7 +101,7 @@
             dontStrip = true;
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
-            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 ];
+            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
 
             installPhase = ''
               runHook preInstall
@@ -263,7 +263,7 @@
 
             dubLock = ./dub-lock.json;
 
-            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 ];
+            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
 
             buildPhase = ''
               runHook preBuild
