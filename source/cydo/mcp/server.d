@@ -114,6 +114,7 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string socketPat
 	httpReq.method = "POST";
 	httpReq.headers["Content-Type"] = "application/json";
 	httpReq.headers["Host"] = "localhost";
+	httpReq.headers["Accept-Encoding"] = "identity"; // prevent server from compressing; client doesn't decompress
 	httpReq.data = DataVec(Data(bodyJson.asBytes));
 
 	auto client = new HttpClient(Duration.zero, new UnixConnector(socketPath));
