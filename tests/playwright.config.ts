@@ -16,11 +16,18 @@ export default defineConfig({
   projects: [
     {
       name: "claude",
+      testIgnore: /process-failure/,
       use: { agentType: "claude" } as any,
     },
     {
       name: "codex",
+      testIgnore: /process-failure/,
       use: { agentType: "codex" } as any,
+    },
+    {
+      name: "failure",
+      testMatch: /process-failure/,
+      use: { agentType: "claude" } as any,
     },
   ],
 });

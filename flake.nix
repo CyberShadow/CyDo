@@ -149,9 +149,14 @@
             [[ -n "$chdir" ]] && cd "$chdir"
             exec "$@"
           '';
+
+          fail-claude = pkgs.writeShellScript "fail-claude" ''
+            echo "Error: simulated process failure for testing" >&2
+            exit 1
+          '';
         in
         let
-          mkIntegrationTest = { name, testMatch, agentType }: pkgs.stdenv.mkDerivation {
+          mkIntegrationTest = { name, testMatch, agentType, claudeBin ? null }: pkgs.stdenv.mkDerivation {
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
@@ -222,7 +227,9 @@
 
               mkdir -p /tmp/fake-bin
               ln -sf ${fake-bwrap} /tmp/fake-bin/bwrap
+              ln -sf ${fail-claude} /tmp/fake-bin/fail-claude
               export PATH="/tmp/fake-bin:$PATH"
+              ${if claudeBin != null then "export CYDO_CLAUDE_BIN=\"${claudeBin}\"" else ""}
 
               mkdir -p /tmp/playwright-home/.config/cydo
               cat > /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
@@ -287,6 +294,12 @@
             name = "codex";
             testMatch = "--project=codex";
             agentType = "codex";
+          };
+          integration-failure = mkIntegrationTest {
+            name = "failure";
+            testMatch = "--project=failure";
+            agentType = "claude";
+            claudeBin = "fail-claude";
           };
         });
 

@@ -234,7 +234,11 @@ function SessionViewInner({
         />
       )}
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
-      {task.resumable ? (
+      {task.error && !task.alive ? (
+        <div class="resume-bar">
+          <span class="session-failed-label">Session failed: {task.error}</span>
+        </div>
+      ) : task.resumable ? (
         <div class="resume-bar">
           <button ref={resumeRef} class="btn btn-resume" onClick={onResume}>
             Resume Session

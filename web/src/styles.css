@@ -1165,6 +1165,11 @@ body,
   grid-row: 4;
 }
 
+.session-failed-label {
+  color: var(--error);
+  font-weight: 500;
+}
+
 /* File viewer pane */
 .file-viewer {
   display: flex;
