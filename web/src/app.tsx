@@ -239,6 +239,7 @@ function AppContent() {
           projectName={activeProject || undefined}
           taskTypes={taskTypes}
           visible={sidebarOpen}
+          onOpenSearch={() => setShowSearch(true)}
         />
         {Array.from(tasks.values())
           .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)

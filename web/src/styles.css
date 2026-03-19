@@ -2439,6 +2439,37 @@ pre.extra-field-value {
   color: var(--accent);
 }
 
+.sidebar-header-left,
+.sidebar-header-right {
+  width: 28px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.sidebar-header-right {
+  justify-content: flex-end;
+}
+
+.sidebar-search-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar-search-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Session empty state (project view without active session) */
 .session-empty {
   display: flex;

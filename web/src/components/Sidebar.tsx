@@ -408,6 +408,7 @@ interface Props {
   projectName?: string;
   taskTypes: TaskTypeInfo[];
   visible?: boolean;
+  onOpenSearch?: () => void;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -421,6 +422,7 @@ export const Sidebar = memo(function Sidebar({
   projectName,
   taskTypes,
   visible,
+  onOpenSearch,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const flatItems = useMemo(
@@ -476,16 +478,28 @@ export const Sidebar = memo(function Sidebar({
   return (
     <div class="sidebar">
       <div class="sidebar-header">
-        {showBackButton && onBack && (
-          <button
-            class="sidebar-back-btn"
-            onClick={onBack}
-            title="Back to home"
-          >
-            ←
-          </button>
-        )}
+        <div class="sidebar-header-left">
+          {showBackButton && onBack && (
+            <button
+              class="sidebar-back-btn"
+              onClick={onBack}
+              title="Back to home"
+            >
+              ←
+            </button>
+          )}
+        </div>
         <span class="sidebar-title">{projectName || "Tasks"}</span>
+        <div class="sidebar-header-right">
+          {onOpenSearch && (
+            <button class="sidebar-search-btn" onClick={onOpenSearch} title="Search (Ctrl+K)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
       <div class="sidebar-list" ref={listRef}>
         <div
