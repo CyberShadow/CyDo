@@ -3,6 +3,7 @@ module cydo.agent.codex;
 import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
+import std.stdio : stderr;
 
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
@@ -163,8 +164,11 @@ class AppServerProcess
 		RpcProbe probe;
 		try
 			probe = jsonParse!RpcProbe(line);
-		catch (Exception)
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing line from codex: ", e.msg);
 			return;
+		}
 
 		bool hasId = probe.id.json !is null && probe.id.json.length > 0;
 		bool hasMethod = probe.method.length > 0;
@@ -178,8 +182,11 @@ class AppServerProcess
 			int numId;
 			try
 				numId = to!int(probe.id.json);
-			catch (Exception)
+			catch (Exception e)
+			{
+				stderr.writeln("Error parsing response id: ", e.msg);
 				return;
+			}
 			handleResponse(numId, line);
 		}
 	}
@@ -199,8 +206,11 @@ class AppServerProcess
 		ResponseData data;
 		try
 			data = jsonParse!ResponseData(line);
-		catch (Exception)
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing response: ", e.msg);
 			return;
+		}
 
 		auto callback = *cb;
 		pendingCallbacks.remove(id);
@@ -236,11 +246,16 @@ class AppServerProcess
 		ThreadProbe tp;
 		try
 			tp = jsonParse!ThreadProbe(line);
-		catch (Exception)
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing notification: ", e.msg);
 			return;
+		}
 
 		if (auto session = tp.params.threadId in sessions)
 			session.handleNotification(method, line);
+		else
+			stderr.writeln("Notification for unknown thread: ", tp.params.threadId);
 	}
 
 	private void handleServerRequest(string rawId, string method, string line)
@@ -408,9 +423,15 @@ class CodexAgent : Agent
 			auto probe = jsonParse!InitProbe(line);
 			if (probe.type == "session/init" && probe.session_id.length > 0)
 				return probe.session_id;
+
+			stderr.writeln("Unexpected session/init event: ", line);
+			return null;
 		}
-		catch (Exception) {}
-		return null;
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing session id: ", e.msg);
+			return null;
+		}
 	}
 
 	string extractResultText(string line)
@@ -431,9 +452,15 @@ class CodexAgent : Agent
 			auto probe = jsonParse!ResultProbe(line);
 			if (probe.type == "turn/result")
 				return probe.result;
+
+			stderr.writeln("Unexpected turn/result event: ", line);
+			return "";
 		}
-		catch (Exception) {}
-		return "";
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing result: ", e.msg);
+			return "";
+		}
 	}
 
 	string extractAssistantText(string line)
@@ -467,8 +494,11 @@ class CodexAgent : Agent
 					result ~= block.text;
 			return result;
 		}
-		catch (Exception)
+		catch (Exception e)
+		{
+			stderr.writeln("Error parsing assistant message: ", e.msg);
 			return "";
+		}
 	}
 
 	string resolveModelAlias(string modelClass)
@@ -497,9 +527,14 @@ class CodexAgent : Agent
 		{
 			foreach (entry; dirEntries(sessionsDir, "*-" ~ sessionId ~ ".jsonl", SpanMode.depth))
 				return entry.name;
+			stderr.writeln("Could not find session file for ", sessionId);
+			return null;
 		}
-		catch (Exception) {}
-		return "";
+		catch (Exception e)
+		{
+			stderr.writeln("Error reading Codex session history: ", e.msg);
+			return null;
+		}
 	}
 
 	string translateHistoryLine(string line, int lineNum)
