@@ -45,3 +45,36 @@ test("ask_user_question clears on all connected clients when one answers", async
 
   await context2.close();
 });
+
+test("sidebar shows asking status while AskUserQuestion is pending", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  await sendMessage(page, "call askuserquestion Do you agree?");
+
+  // Wait for the AskUserForm to appear
+  const form = page.locator(".ask-user-form");
+  await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  // The active sidebar item should have the .asking class
+  const sidebarItem = page.locator(".sidebar-item.active");
+  await expect(sidebarItem).toHaveClass(/asking/, { timeout: 5_000 });
+
+  // The question icon should be visible
+  const questionIcon = sidebarItem.locator(".task-type-icon-question");
+  await expect(questionIcon).toBeVisible();
+
+  // Answer the question
+  await page.locator(".ask-option-btn", { hasText: "Yes" }).click();
+  await page.locator(".ask-submit-btn").click();
+
+  // Form should disappear
+  await expect(form).not.toBeVisible({ timeout: 5_000 });
+
+  // The .asking class should be removed from the sidebar item
+  await expect(sidebarItem).not.toHaveClass(/asking/, { timeout: 5_000 });
+
+  // The question icon should no longer be visible
+  await expect(questionIcon).not.toBeVisible({ timeout: 5_000 });
+});
