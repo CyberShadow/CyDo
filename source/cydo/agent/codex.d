@@ -310,7 +310,12 @@ class CodexAgent : Agent
 		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
 		paths[codexHome] = PathMode.rw;
 
-		addIfNotRw(resolveCodexBinary(), PathMode.ro);
+		auto codexBinary = resolveCodexBinary();
+		if (codexBinary == home ~ "/.npm-packages/bin")
+			addIfNotRw(home ~ "/.npm-packages", PathMode.ro);
+		else
+			addIfNotRw(resolveCodexBinary(), PathMode.ro);
+
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 
 		// Pass through Codex-required env vars so they survive --clearenv
