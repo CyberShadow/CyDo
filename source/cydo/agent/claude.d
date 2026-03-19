@@ -39,7 +39,6 @@ class ClaudeCodeAgent : Agent
 
 		paths[expandTilde("~/.claude")]             = PathMode.rw;
 		paths[expandTilde("~/.claude.json")]         = PathMode.rw;
-		paths[expandTilde("~/.cache/claude-status")] = PathMode.rw;
 
 		// resolve the claude binary and add its directory as ro;
 		// claude's self-updater installs versions under ~/.local/share/claude/versions/
