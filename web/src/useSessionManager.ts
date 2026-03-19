@@ -574,8 +574,9 @@ export function useTaskManager(): TaskManager {
         // Re-request history if this is the active task — the useEffect
         // won't re-fire because activeTaskId hasn't changed.
         if (String(tid) === activeTaskIdRef.current) {
-          requestedHistoryRef.current.add(tid);
-          connRef.current?.requestHistory(tid);
+          if (connRef.current?.requestHistory(tid)) {
+            requestedHistoryRef.current.add(tid);
+          }
         }
         break;
       }
@@ -853,8 +854,9 @@ export function useTaskManager(): TaskManager {
     if (requestedHistoryRef.current.has(tid)) return;
     const t = liveStates.get(tid);
     if (t?.historyLoaded) return;
-    requestedHistoryRef.current.add(tid);
-    connRef.current?.requestHistory(tid);
+    if (connRef.current?.requestHistory(tid)) {
+      requestedHistoryRef.current.add(tid);
+    }
   }, [connected, activeTaskId]);
 
   const send = useCallback(

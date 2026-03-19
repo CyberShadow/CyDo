@@ -84,10 +84,12 @@ export class Connection {
     };
   }
 
-  private send(data: string) {
+  private send(data: string): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(data);
+      return true;
     }
+    return false;
   }
 
   sendMessage(tid: number, content: string) {
@@ -131,8 +133,8 @@ export class Connection {
     );
   }
 
-  requestHistory(tid: number) {
-    this.send(JSON.stringify({ type: "request_history", tid }));
+  requestHistory(tid: number): boolean {
+    return this.send(JSON.stringify({ type: "request_history", tid }));
   }
 
   forkTask(tid: number, afterUuid: string) {
