@@ -1850,10 +1850,119 @@ class App : ToolsBackend
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
-			tasks[tid].history ~= data;
+			// Merge adjacent streaming deltas with matching type+index to keep
+			// history compact without reordering events.
+			if (!mergeStreamingDelta(tid, translated, data))
+				tasks[tid].history ~= data;
 		}
 
 		sendToSubscribed(tid, data);
+	}
+
+	/// Try to merge a streaming delta into the last history entry.
+	/// Returns true if merged (caller should NOT append), false otherwise.
+	private bool mergeStreamingDelta(int tid, string translated, Data data)
+	{
+		import std.algorithm : canFind;
+
+		// Only merge stream/block_delta events
+		if (!translated.canFind(`"type":"stream/block_delta"`))
+			return false;
+
+		auto history = &tasks[tid].history;
+		if (history.length == 0)
+			return false;
+
+		auto lastEntry = cast(const(char)[])(*history)[$ - 1].unsafeContents;
+		// std.json.toString() escapes '/' as '\/', so merged entries use the
+		// escaped form; accept both.
+		if (!lastEntry.canFind(`"type":"stream/block_delta"`) &&
+		    !lastEntry.canFind(`"type":"stream\/block_delta"`))
+			return false;
+
+		// Both are stream/block_delta — parse index from both to ensure they
+		// match (same content block). Use simple string scanning for speed.
+		auto lastIndex = extractStreamIndex(lastEntry);
+		auto newIndex = extractStreamIndex(translated);
+		if (lastIndex < 0 || newIndex < 0 || lastIndex != newIndex)
+			return false;
+
+		// Merge: concatenate the text/partial_json content.
+		// Parse the delta from both, combine, and replace last entry.
+		auto merged = mergeDeltas(lastEntry, translated);
+		if (merged is null)
+			return false;
+
+		(*history)[$ - 1] = Data(merged.representation);
+		return true;
+	}
+
+	/// Extract the "index" value from a stream/block_delta event string.
+	/// Returns -1 if not found.
+	private static int extractStreamIndex(const(char)[] s)
+	{
+		import std.string : indexOf;
+		import std.conv : to;
+
+		auto idx = s.indexOf(`"index":`);
+		if (idx < 0)
+			return -1;
+		auto start = idx + `"index":`.length;
+		// Skip whitespace
+		while (start < s.length && s[start] == ' ')
+			start++;
+		// Parse integer
+		auto end = start;
+		while (end < s.length && s[end] >= '0' && s[end] <= '9')
+			end++;
+		if (end == start)
+			return -1;
+		try
+			return s[start .. end].to!int;
+		catch (Exception)
+			return -1;
+	}
+
+	/// Merge two stream/block_delta envelope strings by concatenating delta text.
+	/// Returns the merged envelope string, or null if merging failed.
+	private string mergeDeltas(const(char)[] lastEnvelope, string newTranslated)
+	{
+		import std.json : parseJSON, JSONValue, JSONType;
+
+		// Parse the last envelope to get its event
+		JSONValue lastJson, newEventJson;
+		try
+		{
+			lastJson = parseJSON(lastEnvelope);
+			newEventJson = parseJSON(newTranslated);
+		}
+		catch (Exception)
+			return null;
+
+		// Navigate to delta objects
+		auto lastEvent = lastJson["event"];
+		auto lastDelta = lastEvent["delta"];
+		auto newDelta = newEventJson["delta"];
+
+		// Concatenate the appropriate text field based on delta type
+		if (auto lastText = "text" in lastDelta.objectNoRef)
+		{
+			if (auto newText = "text" in newDelta.objectNoRef)
+			{
+				(*lastText).str = (*lastText).str ~ (*newText).str;
+				return lastJson.toString();
+			}
+		}
+		else if (auto lastPJ = "partial_json" in lastDelta.objectNoRef)
+		{
+			if (auto newPJ = "partial_json" in newDelta.objectNoRef)
+			{
+				(*lastPJ).str = (*lastPJ).str ~ (*newPJ).str;
+				return lastJson.toString();
+			}
+		}
+
+		return null; // delta types don't match or unknown field
 	}
 
 	/// Try to extract agent session ID from an output line using the Agent interface.
