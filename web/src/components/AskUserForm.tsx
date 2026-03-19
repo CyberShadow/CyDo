@@ -68,7 +68,7 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
       {questions.map((q, qi) => (
         <div key={qi} class="ask-user-form-question">
           <div class="ask-question-header">{q.header}</div>
-          <div class="ask-question-text">{q.question}</div>
+          <Markdown text={q.question} class="ask-question-text" />
           <div class="ask-options-interactive">
             {q.options.map((opt, oi) => {
               const selected = selections.get(qi)?.has(opt.label) ?? false;
