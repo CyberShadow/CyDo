@@ -43,7 +43,7 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	// Read-only mode: downgrade all rw paths to ro before agent layer
 	if (readOnly)
 		foreach (ref mode; result.paths)
-			if (mode != PathMode.always_rw)
+			if (mode == PathMode.rw)
 				mode = PathMode.ro;
 
 	// Layer 3: agent-declared paths/env (last — always rw for agent state)
@@ -180,6 +180,15 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 			case PathMode.ro: args ~= ["--ro-bind", entry.key, entry.key]; break;
 			case PathMode.rw: args ~= ["--bind", entry.key, entry.key]; break;
 			case PathMode.always_rw: args ~= ["--bind", entry.key, entry.key]; break;
+			case PathMode.tmpfs:
+				args ~= ["--tmpfs", entry.key];
+				break;
+			case PathMode.empty_dir:
+				args ~= ["--ro-bind", emptyDirPath(), entry.key];
+				break;
+			case PathMode.empty_file:
+				args ~= ["--ro-bind", emptyFilePath(), entry.key];
+				break;
 		}
 	}
 
@@ -237,6 +246,69 @@ void cleanup(ref ResolvedSandbox sandbox)
 }
 
 private:
+
+/// Return the CyDo runtime directory (e.g. /run/user/1000/cydo/).
+/// Uses $XDG_RUNTIME_DIR if set, otherwise /tmp/cydo-<uid>/.
+string runtimeDir()
+{
+	import std.conv : to;
+	import std.file : mkdirRecurse, exists;
+	import core.sys.posix.unistd : getuid;
+
+	auto xdg = environment.get("XDG_RUNTIME_DIR", "");
+	string base;
+	if (xdg.length > 0)
+		base = buildPath(xdg, "cydo");
+	else
+		base = buildPath("/tmp", "cydo-" ~ getuid().to!string);
+
+	if (!exists(base))
+		mkdirRecurse(base);
+	return base;
+}
+
+/// Return path to a guaranteed-empty directory for ro-bind mounts.
+string emptyDirPath()
+{
+	import std.file : exists, isDir, isFile, mkdirRecurse, dirEntries,
+		SpanMode, remove, rmdirRecurse;
+
+	auto path = buildPath(runtimeDir(), "empty-dir");
+
+	// If it exists as a file, remove it
+	if (exists(path) && !isDir(path))
+		remove(path);
+
+	if (!exists(path))
+		mkdirRecurse(path);
+
+	// Ensure empty (in case leftover from previous run)
+	foreach (entry; dirEntries(path, SpanMode.shallow))
+	{
+		if (isDir(entry.name))
+			rmdirRecurse(entry.name);
+		else
+			remove(entry.name);
+	}
+	return path;
+}
+
+/// Return path to a guaranteed-empty file for ro-bind mounts.
+string emptyFilePath()
+{
+	import std.file : exists, isDir, isFile, write, rmdirRecurse;
+
+	auto path = buildPath(runtimeDir(), "empty-file");
+
+	// If it exists as a directory, remove it
+	if (exists(path) && isDir(path))
+		rmdirRecurse(path);
+
+	if (!exists(path) || !isFile(path))
+		write(path, "");
+
+	return path;
+}
 
 /// Find the bwrap binary.
 string findBwrap()

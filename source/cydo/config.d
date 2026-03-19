@@ -5,7 +5,7 @@ import configy.read : parseConfigFileSimple;
 
 import std.typecons : Nullable;
 
-enum PathMode { ro, rw, always_rw }
+enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
 
 struct GitIdentityConfig
 {
