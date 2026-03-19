@@ -120,9 +120,27 @@ string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
 
 	if (currentSystem.length > 0)
 	{
-		// NixOS: tmpfs /run with just the current-system symlink
+		// NixOS: mount nix store, system binaries, and minimal /etc + /run
+		// entries needed for DNS, TLS, and bwrap-wrapped binaries.
+		static immutable nixPaths = [
+			"/nix",
+			"/bin",
+			"/lib64",
+			"/usr/bin",
+			"/etc/nix",
+			"/etc/static/nix",
+			"/etc/resolv.conf",
+			"/etc/ssl",
+			"/etc/static/ssl",
+		];
+		foreach (p; nixPaths)
+			if (exists(p))
+				args ~= ["--ro-bind", p, p];
+
 		args ~= ["--tmpfs", "/run"];
 		args ~= ["--symlink", currentSystem, "/run/current-system"];
+		if (exists("/run/wrappers"))
+			args ~= ["--ro-bind", "/run/wrappers", "/run/wrappers"];
 	}
 	else
 	{
