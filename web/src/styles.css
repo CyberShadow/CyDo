@@ -2123,6 +2123,7 @@ body,
   border-top: 1px solid var(--border);
   max-height: 50vh;
   overflow-y: auto;
+  background: var(--bg-secondary);
 }
 .ask-user-form-question {
   margin-bottom: 16px;
