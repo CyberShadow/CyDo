@@ -1159,7 +1159,8 @@ body,
   border-top: 1px solid var(--border);
 }
 
-.app.has-sidebar .resume-bar {
+.app.has-sidebar .resume-bar,
+.app.has-sidebar .ask-user-form {
   grid-column: 2;
   grid-row: 4;
 }
@@ -2572,6 +2573,7 @@ pre.extra-field-value {
   .app.has-sidebar .message-list,
   .app.has-sidebar .input-box,
   .app.has-sidebar .resume-bar,
+  .app.has-sidebar .ask-user-form,
   .app.has-sidebar .session-loading,
   .app.has-sidebar .session-empty {
     grid-column: 1;
