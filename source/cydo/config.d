@@ -24,6 +24,7 @@ struct SandboxConfig
 struct AgentConfig
 {
 	@Optional SandboxConfig sandbox;
+	@Optional string[string] model_aliases;
 }
 
 struct WorkspaceConfig

@@ -68,6 +68,7 @@ class ClaudeCodeAgent : Agent
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
 
+	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
 
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
@@ -238,8 +239,15 @@ class ClaudeCodeAgent : Agent
 		}
 	}
 
+	void setModelAliases(string[string] aliases)
+	{
+		modelAliasOverrides = aliases;
+	}
+
 	string resolveModelAlias(string modelClass)
 	{
+		if (auto p = modelClass in modelAliasOverrides)
+			return *p;
 		switch (modelClass)
 		{
 			case "small":  return "haiku";

@@ -282,6 +282,7 @@ class AppServerProcess
 class CodexAgent : Agent
 {
 	private AppServerProcess[string] serverPool; // keyed by workspace
+	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
@@ -506,8 +507,15 @@ class CodexAgent : Agent
 		}
 	}
 
+	void setModelAliases(string[string] aliases)
+	{
+		modelAliasOverrides = aliases;
+	}
+
 	string resolveModelAlias(string modelClass)
 	{
+		if (auto p = modelClass in modelAliasOverrides)
+			return *p;
 		switch (modelClass)
 		{
 			case "small":  return "gpt-5-nano";

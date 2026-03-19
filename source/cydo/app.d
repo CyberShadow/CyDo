@@ -133,6 +133,8 @@ class App : ToolsBackend
 		persistence = Persistence("data/cydo.db");
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
+		if (auto ac = config.default_agent_type in config.agents)
+			agent.setModelAliases(ac.model_aliases);
 		agentsByType[config.default_agent_type] = agent;
 
 		jsonlTracker.getAgent = &agentForTask;
@@ -1359,6 +1361,8 @@ class App : ToolsBackend
 		if (auto p = td.agentType in agentsByType)
 			return *p;
 		auto a = createAgent(td.agentType);
+		if (auto ac = td.agentType in config.agents)
+			a.setModelAliases(ac.model_aliases);
 		agentsByType[td.agentType] = a;
 		return a;
 	}
@@ -2369,6 +2373,13 @@ class App : ToolsBackend
 			return;
 		}
 		config = result.get();
+		foreach (agentType, a; agentsByType)
+		{
+			if (auto ac = agentType in config.agents)
+				a.setModelAliases(ac.model_aliases);
+			else
+				a.setModelAliases(null);
+		}
 		discoverAllWorkspaces();
 		broadcast(buildWorkspacesList());
 		stderr.writefln("  Config reloaded successfully");

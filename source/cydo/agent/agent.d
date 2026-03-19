@@ -53,6 +53,10 @@ interface Agent
 	/// Returns empty string if the line is not an assistant message.
 	string extractAssistantText(string line);
 
+	/// Set config-driven model alias overrides.
+	/// These take precedence over hardcoded defaults in resolveModelAlias.
+	void setModelAliases(string[string] aliases);
+
 	/// Map abstract model class ("small", "medium", "large") to
 	/// agent-specific model name/alias.
 	string resolveModelAlias(string modelClass);
