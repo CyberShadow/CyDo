@@ -84,24 +84,30 @@ export class Connection {
     };
   }
 
+  private send(data: string) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    }
+  }
+
   sendMessage(tid: number, content: string) {
-    this.ws?.send(JSON.stringify({ type: "message", tid, content }));
+    this.send(JSON.stringify({ type: "message", tid, content }));
   }
 
   sendInterrupt(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "interrupt", tid }));
+    this.send(JSON.stringify({ type: "interrupt", tid }));
   }
 
   sendStop(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "stop", tid }));
+    this.send(JSON.stringify({ type: "stop", tid }));
   }
 
   sendCloseStdin(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "close_stdin", tid }));
+    this.send(JSON.stringify({ type: "close_stdin", tid }));
   }
 
   resumeTask(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "resume", tid }));
+    this.send(JSON.stringify({ type: "resume", tid }));
   }
 
   createTask(
@@ -112,7 +118,7 @@ export class Connection {
     agentType?: string,
     correlationId?: string,
   ) {
-    this.ws?.send(
+    this.send(
       JSON.stringify({
         type: "create_task",
         workspace: workspace ?? "",
@@ -126,11 +132,11 @@ export class Connection {
   }
 
   requestHistory(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "request_history", tid }));
+    this.send(JSON.stringify({ type: "request_history", tid }));
   }
 
   forkTask(tid: number, afterUuid: string) {
-    this.ws?.send(
+    this.send(
       JSON.stringify({ type: "fork_task", tid, after_uuid: afterUuid }),
     );
   }
@@ -142,7 +148,7 @@ export class Connection {
     revertConversation?: boolean,
     revertFiles?: boolean,
   ) {
-    this.ws?.send(
+    this.send(
       JSON.stringify({
         type: "undo_task",
         tid,
@@ -155,25 +161,25 @@ export class Connection {
   }
 
   dismissAttention(tid: number) {
-    this.ws?.send(JSON.stringify({ type: "dismiss_attention", tid }));
+    this.send(JSON.stringify({ type: "dismiss_attention", tid }));
   }
 
   setArchived(tid: number, archived: boolean) {
-    this.ws?.send(
+    this.send(
       JSON.stringify({ type: "set_archived", tid, content: String(archived) }),
     );
   }
 
   saveDraft(tid: number, draft: string) {
-    this.ws?.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
+    this.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
   }
 
   sendAskUserResponse(tid: number, content: string) {
-    this.ws?.send(JSON.stringify({ type: "ask_user_response", tid, content }));
+    this.send(JSON.stringify({ type: "ask_user_response", tid, content }));
   }
 
   editMessage(tid: number, uuid: string, content: string) {
-    this.ws?.send(
+    this.send(
       JSON.stringify({ type: "edit_message", tid, after_uuid: uuid, content }),
     );
   }
