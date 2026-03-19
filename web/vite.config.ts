@@ -8,7 +8,7 @@ const tlsCert = process.env.CYDO_TLS_CERT;
 const tlsKey = process.env.CYDO_TLS_KEY;
 const authUser = process.env.CYDO_AUTH_USER;
 const authPass = process.env.CYDO_AUTH_PASS;
-const backendPort = process.env.CYDO_LISTEN_PORT ?? "3456";
+const backendPort = process.env.CYDO_LISTEN_PORT ?? "3940";
 
 const backendProto = tlsCert && tlsKey ? "https" : "http";
 

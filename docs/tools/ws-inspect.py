@@ -18,7 +18,7 @@ import sys
 
 import websockets
 
-URL = "ws://localhost:3456/ws"
+URL = "ws://localhost:3940/ws"
 
 
 def fmt(obj):

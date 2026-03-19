@@ -190,7 +190,7 @@ class App : ToolsBackend
 
 		import std.conv : to;
 		auto listenAddr = environment.get("CYDO_LISTEN_ADDRESS", null);
-		auto listenPort = to!ushort(environment.get("CYDO_LISTEN_PORT", "3456"));
+		auto listenPort = to!ushort(environment.get("CYDO_LISTEN_PORT", "3940"));
 
 		server.handleRequest = &handleRequest;
 		auto port = server.listen(listenPort, listenAddr);

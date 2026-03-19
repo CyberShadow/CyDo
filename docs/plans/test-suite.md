@@ -11,7 +11,7 @@
 │  nix flake check (stdenv.mkDerivation)                  │
 │                                                         │
 │  1. Start mock Anthropic API server  (Node.js, :9000)   │
-│  2. Start CyDo backend              (dub binary, :3456) │
+│  2. Start CyDo backend              (dub binary, :3940) │
 │  3. Run Playwright tests            (Chromium)          │
 │  4. Kill services, check result                         │
 └─────────────────────────────────────────────────────────┘
@@ -20,7 +20,7 @@
 Three components run inside the Nix sandbox derivation:
 
 1. **Mock Anthropic API server** — Node.js HTTP server implementing `POST /v1/messages` with SSE streaming. Simple pattern-matching on input to produce predictable responses.
-2. **CyDo backend** — The real `build/cydo` binary, serving HTTP+WebSocket on `:3456`, spawning real Claude Code CLI processes configured to use the mock API.
+2. **CyDo backend** — The real `build/cydo` binary, serving HTTP+WebSocket on `:3940`, spawning real Claude Code CLI processes configured to use the mock API.
 3. **Playwright** — Browser automation tests via `pkgs.playwright-test`.
 
 **Test isolation:** Each test creates a new task via the WebSocket `create_task` message. Tasks are independent — separate Claude Code subprocess, separate session state. The mock server is stateless (pattern-matches each request independently). All tests run against a single CyDo backend instance within one derivation.
@@ -198,7 +198,7 @@ checks = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
       cydo &
       CYDO_PID=$!
       for i in $(seq 1 30); do
-        if curl -sf http://localhost:3456/; then break; fi
+        if curl -sf http://localhost:3940/; then break; fi
         if ! kill -0 $CYDO_PID 2>/dev/null; then echo "CyDo died"; exit 1; fi
         sleep 1
       done
@@ -251,7 +251,7 @@ tests/
 export default defineConfig({
   testDir: './e2e',
   use: {
-    baseURL: 'http://localhost:3456',
+    baseURL: 'http://localhost:3940',
     headless: true,
     launchOptions: {
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,

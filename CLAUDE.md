@@ -10,13 +10,13 @@ Please see @docs/VISION.md
 make all          # Build backend + frontend
 make backend      # dub build → build/cydo
 make frontend     # npm install + vite build in web/
-make run          # Build all, then dub run (serves on :3456)
+make run          # Build all, then dub run (serves on :3940)
 make clean        # Remove build/, web/dist/, web/node_modules/
 ```
 
 **Development with hot reload:**
 - Backend: `dub run` (recompiles and runs)
-- Frontend: `cd web && npm run dev` (Vite dev server on :5173, proxies `/ws` to :3456)
+- Frontend: `cd web && npm run dev` (Vite dev server on :5173, proxies `/ws` to :3940)
 
 **Testing:**
 ```bash
@@ -32,7 +32,7 @@ CyDo wraps Claude Code CLI (`claude --input-format stream-json --output-format s
 
 ### Backend (D + ae library)
 
-Single-threaded async event loop (`ae.net.asockets.socketManager`). Serves HTTP on port 3456.
+Single-threaded async event loop (`ae.net.asockets.socketManager`). Serves HTTP on port 3940.
 
 - `source/cydo/app.d` — Entry point: HTTP server, WebSocket handler, session routing, message broadcasting
 - `source/cydo/agent/claude.d` — Spawns `claude` CLI process, formats NDJSON input, handles output stream
