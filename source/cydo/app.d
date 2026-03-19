@@ -679,7 +679,7 @@ class App : ToolsBackend
 				resultText = "User has answered your questions: " ~ parts.join(". ") ~ ".";
 			}
 		}
-		catch (Exception) {} // use raw JSON as fallback
+		catch (Exception e) { stderr.writeln("AskUserQuestion response parse error: ", e.msg); } // use raw JSON as fallback
 
 		pending.fulfill(McpResult(resultText, isError));
 		pendingAskUserQuestions.remove(tid);
@@ -2244,8 +2244,8 @@ class App : ToolsBackend
 			lastJson = parseJSON(lastEnvelope);
 			newEventJson = parseJSON(newTranslated);
 		}
-		catch (Exception)
-			return null;
+		catch (Exception e)
+		{ stderr.writeln("tryMergeStreamDeltas: JSON parse error: ", e.msg); return null; }
 
 		// Navigate to delta objects
 		auto lastEvent = lastJson["event"];
@@ -2584,8 +2584,8 @@ Conversation:
 			string[] suggestionList;
 			try
 				suggestionList = jsonParse!(string[])(result);
-			catch (Exception)
-				return;
+			catch (Exception e)
+			{ stderr.writeln("generateSuggestions: failed to parse result: ", e.msg); return; }
 
 			if (suggestionList.length > 0)
 			{
@@ -2752,8 +2752,8 @@ Conversation:
 					result ~= block.text;
 			return result;
 		}
-		catch (Exception)
-			return "";
+		catch (Exception e)
+		{ stderr.writeln("extractAssistantText: all parse attempts failed: ", e.msg); return ""; }
 	}
 
 	private static string abbreviateText(string text, size_t threshold)

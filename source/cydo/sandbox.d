@@ -266,8 +266,8 @@ string resolveNixCurrentSystem()
 	{
 		try
 			return readLink(path);
-		catch (Exception)
-			return "";
+		catch (Exception e)
+		{ stderr.writeln("nixCurrentSystem: readLink failed: ", e.msg); return ""; }
 	}
 	return "";
 }

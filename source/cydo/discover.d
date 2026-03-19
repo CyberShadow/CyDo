@@ -2,7 +2,7 @@ module cydo.discover;
 
 import std.path : baseName, buildPath, relativePath;
 import std.file : exists, isDir, dirEntries, SpanMode;
-import std.stdio : writefln;
+import std.stdio : writefln, stderr;
 
 import cydo.config : WorkspaceConfig;
 
@@ -82,8 +82,8 @@ private void scanDir(string dir, string wsRoot, uint depth, uint maxDepth,
 			scanDir(entry.name, wsRoot, depth + 1, maxDepth, exclude, wsName, results);
 		}
 	}
-	catch (Exception)
+	catch (Exception e)
 	{
-		// Permission errors, etc. — skip silently
+		stderr.writeln("scanDir: error scanning ", dir, ": ", e.msg);
 	}
 }

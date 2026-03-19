@@ -788,7 +788,7 @@ class CodexSession : AgentSession
 			if (parsed.thread.id.length > 0)
 				threadId = parsed.thread.id;
 		}
-		catch (Exception) {}
+		catch (Exception e) { stderr.writeln("extractThreadId: parse error: ", e.msg); }
 
 		if (threadId.length == 0 && resumeId.length > 0)
 			threadId = resumeId;
@@ -991,8 +991,8 @@ class CodexSession : AgentSession
 		Notification n;
 		try
 			n = jsonParse!Notification(rawLine);
-		catch (Exception)
-			return;
+		catch (Exception e)
+		{ stderr.writeln("handleNotification: parse error: ", e.msg); return; }
 
 		auto item = n.params.item;
 
@@ -1084,8 +1084,8 @@ class CodexSession : AgentSession
 		Notification n;
 		try
 			n = jsonParse!Notification(rawLine);
-		catch (Exception)
-			return;
+		catch (Exception e)
+		{ stderr.writeln("handleStreamNotification: parse error: ", e.msg); return; }
 
 		activeItem.text ~= n.params.delta;
 
@@ -1235,8 +1235,8 @@ string translateRolloutSessionMeta(string line)
 	Probe probe;
 	try
 		probe = jsonParse!Probe(line);
-	catch (Exception)
-		return null;
+	catch (Exception e)
+	{ stderr.writeln("translateHistoryEvent: probe parse error: ", e.msg); return null; }
 
 	if (probe.payload.id.length == 0)
 		return null;
@@ -1287,8 +1287,8 @@ string translateRolloutResponseItem(string line, string forkId = null)
 	Probe probe;
 	try
 		probe = jsonParse!Probe(line);
-	catch (Exception)
-		return null;
+	catch (Exception e)
+	{ stderr.writeln("translateHistoryStreamEvent: probe parse error: ", e.msg); return null; }
 
 	auto ptype = probe.payload.type;
 
@@ -1356,10 +1356,8 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 				blocks ~= cb;
 			}
 		}
-		catch (Exception)
-		{
-			// Content parse failed — emit empty assistant message
-		}
+		catch (Exception e)
+		{ stderr.writeln("translateHistoryEvent: content parse error: ", e.msg); }
 
 		auto msgId = "msg_" ~ randomUUID().toString();
 		AssistantMessageEvent aev;
@@ -1480,7 +1478,7 @@ string translateRolloutReasoning(string summaryJson, string contentJson)
 				if (item.text.length > 0)
 					thinkingText ~= item.text;
 		}
-		catch (Exception) {}
+		catch (Exception e) { stderr.writeln("extractThinkingBlock: parse error: ", e.msg); }
 	}
 
 	if (thinkingText.length == 0)
@@ -1518,8 +1516,8 @@ string translateRolloutEventMsg(string line)
 	Probe probe;
 	try
 		probe = jsonParse!Probe(line);
-	catch (Exception)
-		return null;
+	catch (Exception e)
+	{ stderr.writeln("translateStreamEvent: probe parse error: ", e.msg); return null; }
 
 	if (probe.payload.type == "task_complete")
 	{
@@ -1557,8 +1555,8 @@ string extractCommandInput(JSONFragment action)
 		}
 		return `{"command":"` ~ escapeJsonString(cmd) ~ `","description":""}`;
 	}
-	catch (Exception)
-		return `{}`;
+	catch (Exception e)
+	{ stderr.writeln("extractBashInput: parse error: ", e.msg); return `{}`; }
 }
 
 /// Escape a string for embedding in JSON.

@@ -1,6 +1,7 @@
 module cydo.agent.protocol;
 
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
+import std.stdio : stderr;
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.
 /// Returns null for events that should be consumed (not forwarded).
@@ -16,8 +17,8 @@ string translateClaudeEvent(string rawLine)
 	TypeProbe probe;
 	try
 		probe = jsonParse!TypeProbe(rawLine);
-	catch (Exception)
-		return rawLine; // unparseable → pass through
+	catch (Exception e)
+	{ stderr.writeln("translateEvent: type probe parse error: ", e.msg); return rawLine; }
 
 	switch (probe.type)
 	{
@@ -313,8 +314,8 @@ string translateSessionInit(string rawLine)
 	ClaudeInit raw;
 	try
 		raw = jsonParse!ClaudeInit(rawLine);
-	catch (Exception)
-		return replaceTypeRemoveSubtype(rawLine, "session/init"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateSystemInit: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "session/init"); }
 
 	SessionInitEvent ev;
 	ev.session_id    = raw.session_id;
@@ -380,8 +381,8 @@ string translateAssistantMessage(string rawLine)
 	ClaudeAssistant raw;
 	try
 		raw = jsonParse!ClaudeAssistant(rawLine);
-	catch (Exception)
-		return renameType(rawLine, "message/assistant"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateAssistant: parse error: ", e.msg); return renameType(rawLine, "message/assistant"); }
 
 	// Build normalized content blocks
 	ContentBlock[] content;
@@ -419,7 +420,7 @@ string translateAssistantMessage(string rawLine)
 			usage.input_tokens  = u.input_tokens;
 			usage.output_tokens = u.output_tokens;
 		}
-		catch (Exception) {}
+		catch (Exception e) { stderr.writeln("translateAssistant: usage parse error: ", e.msg); }
 	}
 
 	AssistantMessageEvent ev;
@@ -472,8 +473,8 @@ string normalizeUserMessage(string rawLine)
 	ClaudeUser raw;
 	try
 		raw = jsonParse!ClaudeUser(rawLine);
-	catch (Exception)
-		return renameType(rawLine, "message/user"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateUser: parse error: ", e.msg); return renameType(rawLine, "message/user"); }
 
 	UserMessageEvent ev;
 	ev.content            = raw.message.content;
@@ -530,8 +531,8 @@ string normalizeTurnResult(string rawLine)
 	ClaudeResult raw;
 	try
 		raw = jsonParse!ClaudeResult(rawLine);
-	catch (Exception)
-		return renameType(rawLine, "turn/result"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateResult: parse error: ", e.msg); return renameType(rawLine, "turn/result"); }
 
 	TurnResultEvent ev;
 	ev.subtype            = raw.subtype;
@@ -593,8 +594,8 @@ string translateStreamEvent(string rawLine)
 	InnerProbe inner;
 	try
 		inner = jsonParse!InnerProbe(innerEvent);
-	catch (Exception)
-		return rawLine;
+	catch (Exception e)
+	{ stderr.writeln("translateStreamEvent: inner probe parse error: ", e.msg); return rawLine; }
 
 	string newType;
 	switch (inner.type)
@@ -631,7 +632,7 @@ string translateStreamEvent(string rawLine)
 					return toJson(ev);
 				}
 			}
-			catch (Exception) {}
+			catch (Exception e) { stderr.writeln("translateStreamEvent: thinking delta parse error: ", e.msg); }
 			newType = "stream/block_delta";
 			break;
 		}
@@ -694,8 +695,8 @@ private string preserveExtraFields(string rawLine, string translatedLine, const(
 	try {
 		raw = parseJSON(rawLine);
 		translated = parseJSON(translatedLine);
-	} catch (Exception) {
-		return translatedLine;
+	} catch (Exception e) {
+		stderr.writeln("enrichAssistantBlocks: JSON parse error: ", e.msg); return translatedLine;
 	}
 
 	if (raw.type != JSONType.object || translated.type != JSONType.object)
@@ -729,8 +730,8 @@ private string preserveExtraContentFields(string rawLine, string translatedLine,
 	try {
 		raw = parseJSON(rawLine);
 		translated = parseJSON(translatedLine);
-	} catch (Exception) {
-		return translatedLine;
+	} catch (Exception e) {
+		stderr.writeln("enrichUserBlocks: JSON parse error: ", e.msg); return translatedLine;
 	}
 
 	// Navigate to raw content array
@@ -866,8 +867,8 @@ string normalizeTaskStarted(string rawLine)
 	ClaudeTaskStarted raw;
 	try
 		raw = jsonParse!ClaudeTaskStarted(rawLine);
-	catch (Exception)
-		return replaceTypeRemoveSubtype(rawLine, "task/started"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateTaskStarted: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/started"); }
 
 	TaskStartedEvent ev;
 	ev.task_id      = raw.task_id;
@@ -896,8 +897,8 @@ string normalizeTaskNotification(string rawLine)
 	ClaudeTaskNotification raw;
 	try
 		raw = jsonParse!ClaudeTaskNotification(rawLine);
-	catch (Exception)
-		return replaceTypeRemoveSubtype(rawLine, "task/notification"); // fallback
+	catch (Exception e)
+	{ stderr.writeln("translateTaskNotification: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/notification"); }
 
 	TaskNotificationEvent ev;
 	ev.task_id     = raw.task_id;

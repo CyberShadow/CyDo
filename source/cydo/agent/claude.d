@@ -103,9 +103,8 @@ class ClaudeCodeAgent : Agent
 			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
 				return probe.session_id;
 		}
-		catch (Exception)
-		{
-		}
+		catch (Exception e)
+		{ stderr.writeln("extractSessionId: parse error: ", e.msg); }
 		return null;
 	}
 
@@ -127,10 +126,8 @@ class ClaudeCodeAgent : Agent
 				return probe.result;
 			return "";
 		}
-		catch (Exception)
-		{
-			return "";
-		}
+		catch (Exception e)
+		{ stderr.writeln("extractResultText: parse error: ", e.msg); return ""; }
 	}
 
 	string extractAssistantText(string line)
@@ -186,10 +183,8 @@ class ClaudeCodeAgent : Agent
 					result ~= block.text;
 			return result;
 		}
-		catch (Exception)
-		{
-			return "";
-		}
+		catch (Exception e)
+		{ stderr.writeln("extractAssistantText: parse error: ", e.msg); return ""; }
 	}
 
 	string extractUserText(string line)
@@ -233,10 +228,8 @@ class ClaudeCodeAgent : Agent
 					result ~= block.text;
 			return result;
 		}
-		catch (Exception)
-		{
-			return "";
-		}
+		catch (Exception e)
+		{ stderr.writeln("extractUserContent: all parse attempts failed: ", e.msg); return ""; }
 	}
 
 	void setModelAliases(string[string] aliases)
@@ -342,7 +335,7 @@ class ClaudeCodeAgent : Agent
 					if (qop.operation == "enqueue")
 						ids ~= format!"enqueue-%d"(lineNum);
 				}
-				catch (Exception) {}
+				catch (Exception e) { stderr.writeln("history scan: queue op parse error: ", e.msg); }
 				continue;
 			}
 			if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
@@ -379,10 +372,10 @@ class ClaudeCodeAgent : Agent
 				import ae.utils.json : jsonParse, JSONPartial;
 				@JSONPartial static struct QueueOpProbe { string operation; }
 				try { return jsonParse!QueueOpProbe(line).operation == "enqueue"; }
-				catch (Exception) { return false; }
+				catch (Exception e) { stderr.writeln("matchesForkId: queue op parse error: ", e.msg); return false; }
 			}
-			catch (Exception)
-				return false;
+			catch (Exception e)
+			{ stderr.writeln("matchesForkId: error: ", e.msg); return false; }
 		}
 		return line.canFind(`"uuid":"` ~ forkId ~ `"`);
 	}
