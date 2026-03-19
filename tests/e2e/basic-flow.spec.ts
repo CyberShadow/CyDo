@@ -46,6 +46,20 @@ test("tool call flow", async ({ page, agentType }) => {
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
+test("codex tool call renders output content", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only test");
+  // This test verifies that Codex tool results include structured content
+  // that the frontend can render (not just the tool name).
+  await enterSession(page);
+  await sendMessage(page, "run command echo hello-from-test");
+  await expect(
+    page.locator(".tool-result", { hasText: "hello-from-test" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+});
+
 test("codex agent type indicator", async ({ page, agentType }) => {
   test.skip(agentType !== "codex", "codex-only test");
   await enterSession(page);

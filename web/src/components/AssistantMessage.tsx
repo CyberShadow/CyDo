@@ -126,7 +126,7 @@ export function AssistantMessage({
         if (block.type === "thinking") {
           return (
             <Fragment key={i}>
-              <Markdown text={block.text} class="thinking-text" />
+              <Markdown text={block.text ?? ""} class="thinking-text" />
               {blockExtraEl}
             </Fragment>
           );
@@ -171,7 +171,7 @@ export function AssistantMessage({
         if (block.type === "text") {
           return (
             <Fragment key={i}>
-              <Markdown text={block.text} class="text-content" />
+              <Markdown text={block.text ?? ""} class="text-content" />
               {blockExtraEl}
             </Fragment>
           );

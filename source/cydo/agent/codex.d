@@ -745,6 +745,7 @@ class CodexSession : AgentSession
 		string name; // tool_use name
 		string text; // accumulated delta text (content for text/thinking, output for tools)
 		string input; // tool_use input JSON
+		bool isError; // whether tool execution reported an error
 	}
 	private CompletedItem activeItem;
 	private CompletedItem[] completedItems;
@@ -1109,6 +1110,30 @@ class CodexSession : AgentSession
 			outputHandler_(
 				`{"type":"stream/block_stop","index":` ~ to!string(idx) ~ `}`);
 
+		// Parse error status from the completed item notification.
+		@JSONPartial
+		static struct CompletedNotif
+		{
+			@JSONPartial
+			static struct Params
+			{
+				@JSONPartial
+				static struct Item
+				{
+					import ae.utils.json : JSONOptional;
+					@JSONOptional bool is_error;
+				}
+				Item item;
+			}
+			Params params;
+		}
+		try
+		{
+			auto cn = jsonParse!CompletedNotif(rawLine);
+			activeItem.isError = cn.params.item.is_error;
+		}
+		catch (Exception) {}
+
 		completedItems ~= activeItem;
 		activeItem = CompletedItem.init;
 	}
@@ -1165,7 +1190,9 @@ class CodexSession : AgentSession
 				if (ci.type == "tool_use")
 					toolResultParts ~= `{"type":"tool_result","tool_use_id":"`
 						~ escapeJsonString(ci.id)
-						~ `","content":"` ~ escapeJsonString(ci.text) ~ `"}`;
+						~ `","content":"` ~ escapeJsonString(ci.text) ~ `"`
+						~ (ci.isError ? `,"is_error":true` : ``)
+						~ `}`;
 
 			if (toolResultParts.length > 0 && outputHandler_)
 				outputHandler_(

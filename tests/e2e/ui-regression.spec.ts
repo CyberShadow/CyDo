@@ -116,3 +116,17 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
   await expect(page.locator(".btn-resume:visible").first()).toBeVisible({ timeout: 5_000 });
 });
+
+test("assistant messages do not render literal undefined", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  await sendMessage(page, 'reply with "hello"');
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "hello" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  // Ensure no text block renders literal "undefined"
+  const undefinedBlocks = page.locator(".text-content", { hasText: /^undefined$/ });
+  await expect(undefinedBlocks).toHaveCount(0);
+});

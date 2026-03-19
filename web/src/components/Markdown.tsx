@@ -18,6 +18,7 @@ interface Props {
 export const Markdown: FunctionComponent<Props> = memo(
   ({ text, class: className }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
+    if (!text) return null;
     const html = useMemo(
       () => sanitizeHtml(marked.parse(text, { async: false }) as string),
       [text],
