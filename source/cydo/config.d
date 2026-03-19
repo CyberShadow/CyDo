@@ -3,7 +3,6 @@ module cydo.config;
 import configy.attributes : Key, Optional;
 import configy.read : parseConfigFileSimple;
 
-import std.file : getcwd;
 import std.typecons : Nullable;
 
 enum PathMode { ro, rw, always_rw }
@@ -55,15 +54,17 @@ CydoConfig loadConfig()
 {
 	auto result = parseConfigFileSimple!CydoConfig(configPath);
 
-	if (result.isNull())
+	CydoConfig config = result.isNull() ? CydoConfig.init : result.get();
+
+	if (config.workspaces.length == 0)
 	{
-		// No config file or parse error — fall back to single workspace at cwd
-		return CydoConfig([
-			WorkspaceConfig("local", getcwd(), 3, null),
-		]);
+		import std.path : expandTilde;
+		config.workspaces = [
+			WorkspaceConfig("local", expandTilde("~"), 3, null),
+		];
 	}
 
-	return result.get();
+	return config;
 }
 
 /// Re-parse config file. Returns null on parse error (caller keeps old config).
