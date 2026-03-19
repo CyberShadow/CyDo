@@ -475,10 +475,10 @@ class CodexAgent : Agent
 	{
 		switch (modelClass)
 		{
-			case "small":  return "o4-mini";
-			case "medium": return "o3";
-			case "large":  return "o3";
-			default:       return "o4-mini";
+			case "small":  return "gpt-5-nano";
+			case "medium": return "gpt-5.3-codex";
+			case "large":  return "gpt-5.4";
+			default:       return "gpt-5-nano";
 		}
 	}
 
