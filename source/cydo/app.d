@@ -422,7 +422,7 @@ class App : ToolsBackend
 			return resolve(McpResult("Unknown task type: " ~ resolvedTaskType, true));
 
 		// Create child task
-		auto childTid = createTask(parentTd.workspace, parentTd.projectPath);
+		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, config.default_agent_type);
 		auto childTd = &tasks[childTid];
 		childTd.taskType = resolvedTaskType;
 		childTd.description = prompt;
@@ -1732,7 +1732,7 @@ class App : ToolsBackend
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;
-			auto childTid = createTask(td.workspace, td.projectPath);
+			auto childTid = createTask(td.workspace, td.projectPath, config.default_agent_type);
 			auto childTd = &tasks[childTid];
 			childTd.taskType = contDef.task_type;
 			childTd.description = successorPrompt;
