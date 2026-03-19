@@ -93,6 +93,8 @@ class App : ToolsBackend
 	private enum taskTypesPath = "defs/task-types/types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
+	// In-memory mirror of task_deps table (childTid → parentTid)
+	private int[int] taskDeps;
 	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
 	private Promise!(McpResult)[int] pendingAskUserQuestions;
 	// JSONL file tracking state
@@ -170,6 +172,8 @@ class App : ToolsBackend
 			td.titleGenDone = row.title.length > 0;
 			tasks[row.tid] = move(td);
 		}
+
+		resumeInFlightTasks();
 
 		import std.process : environment;
 
@@ -438,6 +442,11 @@ class App : ToolsBackend
 		// Create promise — fulfilled when child task exits
 		auto promise = new Promise!McpResult;
 		pendingSubTasks[childTid] = promise;
+		persistence.addTaskDep(parentTid, childTid);
+		taskDeps[childTid] = parentTid;
+		parentTd.status = "waiting";
+		persistence.setStatus(parentTid, "waiting");
+		broadcastTaskUpdate(parentTid);
 
 		// Broadcast to UI
 		broadcast(toJson(TaskCreatedMessage("task_created", childTid,
@@ -609,6 +618,23 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 
 		return promise;
+	}
+
+	void onSubTasksComplete(string callerTidStr)
+	{
+		import std.conv : to;
+		int tid;
+		try tid = to!int(callerTidStr);
+		catch (Exception) return;
+		if (auto td = tid in tasks)
+		{
+			if (td.status == "waiting")
+			{
+				td.status = "active";
+				persistence.setStatus(tid, "active");
+				broadcastTaskUpdate(tid);
+			}
+		}
 	}
 
 	private void handleAskUserResponse(WsMessage json)
@@ -928,6 +954,11 @@ class App : ToolsBackend
 		}
 		td.lastSuggestions = null;
 		broadcastUnconfirmedUserMessage(tid, json.content);
+		if (td.status == "alive")
+		{
+			td.status = "active";
+			persistence.setStatus(tid, "active");
+		}
 		sendTaskMessage(tid, messageToSend);
 
 		// Store first message as task description
@@ -981,6 +1012,7 @@ class App : ToolsBackend
 		td.needsAttention = false;
 		td.notificationBody = "";
 		td.status = "active";
+		persistence.setStatus(tid, "active");
 		broadcastTaskUpdate(tid);
 		// Resumed session is immediately idle — generate suggestions.
 		try
@@ -1476,10 +1508,14 @@ class App : ToolsBackend
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
-				if (tid in pendingSubTasks || td.pendingContinuation.length > 0)
+				// Also check taskDeps for post-restart sub-tasks (no promise in pendingSubTasks).
+				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
+					|| tid in taskDeps)
 					td.session.closeStdin();
 				else
 				{
+					td.status = "alive";
+					persistence.setStatus(tid, "alive");
 					td.needsAttention = true;
 					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
 					try
@@ -1553,28 +1589,39 @@ class App : ToolsBackend
 			if (auto pending = tid in pendingSubTasks)
 			{
 				auto success = tasks[tid].status == "completed";
-				bool hasOutput = outputContent.length > 0;
-				bool hasWorktree = tasks[tid].hasWorktree;
-
-				// Build contextual note based on what's actually present
-				string note;
-				if (hasOutput && hasWorktree)
-					note = "Read the output file for full findings. The worktree path is included for adopting changes.";
-				else if (hasOutput)
-					note = "Read the output file for full findings.";
-				else if (hasWorktree)
-					note = "The worktree contains the implementation.";
-				// else: no note
-
-				auto taskResult = TaskResult(
-					tasks[tid].resultText,
-					hasOutput ? tasks[tid].outputPath : null,
-					hasWorktree ? tasks[tid].worktreePath : null,
-					note,
-				);
+				auto taskResult = buildTaskResult(tid);
 				auto resultJson = toJson(taskResult);
 				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));
 				pendingSubTasks.remove(tid);
+				persistence.removeAllChildDeps(tid);
+				taskDeps.remove(tid);
+			}
+			else if (auto parentTidPtr = tid in taskDeps)
+			{
+				// Fallback path: post-restart, no promise — deliver via system message
+				auto parentTid = *parentTidPtr;
+				if (parentTid in tasks)
+				{
+					auto taskResult = buildTaskResult(tid);
+					deliverFallbackResult(parentTid, tid, taskResult);
+					persistence.removeTaskDep(parentTid, tid);
+					taskDeps.remove(tid);
+
+					// Check if this was the last pending child
+					bool anyRemaining;
+					foreach (dep; taskDeps)
+						if (dep == parentTid)
+						{
+							anyRemaining = true;
+							break;
+						}
+					if (!anyRemaining && tasks[parentTid].status == "waiting")
+					{
+						tasks[parentTid].status = "alive";
+						persistence.setStatus(parentTid, "alive");
+						broadcastTaskUpdate(parentTid);
+					}
+				}
 			}
 
 			// Store the best result text for UI display
@@ -1592,6 +1639,7 @@ class App : ToolsBackend
 
 		td.alive = true;
 		td.status = "active";
+		persistence.setStatus(tid, "active");
 	}
 
 	/// Transition a task to its successor via continuation.
@@ -1708,6 +1756,11 @@ class App : ToolsBackend
 			{
 				pendingSubTasks[childTid] = *pending;
 				pendingSubTasks.remove(tid);
+				// Transfer dependency: the parent that was waiting on tid now waits on childTid
+				persistence.removeAllChildDeps(tid);
+				persistence.addTaskDep(td.parentTid, childTid);
+				taskDeps.remove(tid);
+				taskDeps[childTid] = td.parentTid;
 			}
 
 			// Set up worktree from edge config: create new or inherit from predecessor
@@ -1746,6 +1799,251 @@ class App : ToolsBackend
 			if (auto ac = agentType in config.agents)
 				return ac.sandbox;
 		return SandboxConfig.init;
+	}
+
+	private TaskResult buildTaskResult(int tid)
+	{
+		import std.file : exists;
+		auto td = &tasks[tid];
+		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
+		bool hasWorktree = td.hasWorktree;
+		string note;
+		if (hasOutput && hasWorktree)
+			note = "Read the output file for full findings. The worktree path is included for adopting changes.";
+		else if (hasOutput)
+			note = "Read the output file for full findings.";
+		else if (hasWorktree)
+			note = "The worktree contains the implementation.";
+		return TaskResult(
+			td.resultText,
+			hasOutput ? td.outputPath : null,
+			hasWorktree ? td.worktreePath : null,
+			note.length > 0 ? note : td.resultNote,
+		);
+	}
+
+	private void deliverFallbackResult(int parentTid, int childTid, TaskResult result)
+	{
+		import ae.utils.json : toJson;
+		import std.conv : to;
+
+		if (parentTid !in tasks)
+			return;
+		auto td = &tasks[parentTid];
+		if (td.session is null || !td.session.alive)
+			return;
+
+		auto resultJson = toJson(result);
+		auto msg =
+			"[SYSTEM: Sub-task " ~ to!string(childTid) ~ " completed]\n\n"
+			~ "Result delivered after session interruption:\n\n"
+			~ "<task_results>\n[" ~ resultJson ~ "]\n</task_results>\n\n"
+			~ "Process this result as if it was returned normally by the Task tool.";
+		sendTaskMessage(parentTid, msg);
+	}
+
+	private void resumeInFlightTasks()
+	{
+		// Load persisted dependencies into memory.
+		foreach (parentTid, children; persistence.loadTaskDeps())
+			foreach (childTid; children)
+				taskDeps[childTid] = parentTid;
+
+		// Collect tasks that need resuming
+		int[] toResume;
+		foreach (ref td; tasks)
+		{
+			if (td.status == "alive" || td.status == "active" || td.status == "waiting")
+				toResume ~= td.tid;
+		}
+
+		if (toResume.length == 0)
+			return;
+
+		stderr.writefln("Resuming %d in-flight task(s) after restart", toResume.length);
+
+		// Resume order doesn't matter: children that already completed have
+		// their results in the DB; children still in-flight will deliver
+		// results via the fallback onExit path when they eventually finish.
+		foreach (tid; toResume)
+		{
+			if (tid !in tasks)
+				continue;
+			auto status = tasks[tid].status;
+
+			if (status == "waiting")
+			{
+				// Check if all children already completed
+				bool allChildrenDone = true;
+				foreach (childTid, parentTid; taskDeps)
+					if (parentTid == tid && childTid in tasks
+						&& tasks[childTid].status != "completed" && tasks[childTid].status != "failed")
+					{
+						allChildrenDone = false;
+						break;
+					}
+
+				if (allChildrenDone)
+					resumeAndDeliverResults(tid);
+				else
+					resumeWaitingTask(tid);
+			}
+			else if (status == "active")
+			{
+				resumeTask(tid);
+				sendSystemNudge(tid);
+			}
+			else if (status == "alive")
+			{
+				resumeTask(tid);
+			}
+		}
+	}
+
+	private void resumeTask(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		auto savedStatus = td.status;
+		auto typeDef = getTaskTypes().byName(td.taskType);
+		SessionConfig sc;
+		if (typeDef !is null)
+			sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
+		ensureTaskAgent(tid, sc); // sets status to "active"
+		// Restore the original status — ensureTaskAgent unconditionally sets
+		// "active", but for "alive" (idle) or "waiting" tasks we need to preserve
+		// the correct state so a subsequent restart handles them properly.
+		if (savedStatus != "active")
+		{
+			td.status = savedStatus;
+			persistence.setStatus(tid, savedStatus);
+		}
+		broadcastTaskUpdate(tid);
+	}
+
+	private void sendSystemNudge(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.session !is null && td.session.alive)
+		{
+			// Defer to event loop — resumeInFlightTasks runs before
+			// socketManager.loop() so stdin writes would stall otherwise.
+			import ae.net.asockets : onNextTick;
+			socketManager.onNextTick(() {
+				sendTaskMessage(tid,
+					"[SYSTEM: Your session was interrupted by a backend restart. "
+					~ "Continue from where you left off. If you had a tool call in progress "
+					~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]");
+			});
+		}
+	}
+
+	/// Collect child tids for a given parent from the in-memory taskDeps map.
+	private int[] childrenOf(int parentTid)
+	{
+		int[] children;
+		foreach (childTid, depParent; taskDeps)
+			if (depParent == parentTid)
+				children ~= childTid;
+		return children;
+	}
+
+	private void resumeAndDeliverResults(int tid)
+	{
+		import ae.utils.json : toJson;
+		import std.array : join;
+
+		resumeTask(tid);
+
+		auto children = childrenOf(tid);
+		if (children.length == 0)
+			return;
+
+		string[] resultJsons;
+		foreach (childTid; children)
+		{
+			if (childTid !in tasks)
+				continue;
+			resultJsons ~= toJson(buildTaskResult(childTid));
+			persistence.removeTaskDep(tid, childTid);
+			taskDeps.remove(childTid);
+		}
+
+		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
+		auto msg =
+			"[SYSTEM: Session resumed after backend restart]\n\n"
+			~ "The following sub-task(s) completed while your session was interrupted. "
+			~ "Their results are provided below exactly as they would have been returned by the Task tool.\n\n"
+			~ "<task_results>\n"
+			~ resultsArray ~ "\n"
+			~ "</task_results>\n\n"
+			~ "Continue from where you left off. Process these results as if they were returned normally by the Task tool.";
+
+		// Defer message delivery to the event loop — resumeInFlightTasks runs
+		// during start() before socketManager.loop(), so stdin writes would
+		// be buffered but never flushed until the event loop starts processing I/O.
+		import ae.net.asockets : onNextTick;
+		socketManager.onNextTick(() { sendTaskMessage(tid, msg); });
+	}
+
+	private void resumeWaitingTask(int tid)
+	{
+		import ae.utils.json : toJson;
+		import std.array : join;
+		import std.conv : to;
+
+		resumeTask(tid);
+
+		auto children = childrenOf(tid);
+		if (children.length == 0)
+			return;
+
+		string[] completedResultJsons;
+		int[] pendingChildTids;
+
+		foreach (childTid; children)
+		{
+			if (childTid !in tasks)
+				continue;
+			auto childStatus = tasks[childTid].status;
+			if (childStatus == "completed" || childStatus == "failed")
+			{
+				completedResultJsons ~= toJson(buildTaskResult(childTid));
+				persistence.removeTaskDep(tid, childTid);
+				taskDeps.remove(childTid);
+			}
+			else
+				pendingChildTids ~= childTid;
+		}
+
+		string msg = "[SYSTEM: Session resumed after backend restart]\n\n";
+
+		if (completedResultJsons.length > 0)
+		{
+			auto resultsArray = "[" ~ completedResultJsons.join(",") ~ "]";
+			msg ~= "The following sub-task(s) completed while your session was interrupted:\n\n"
+				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n";
+		}
+
+		if (pendingChildTids.length > 0)
+		{
+			msg ~= "Sub-task(s) still running: ";
+			foreach (i, cid; pendingChildTids)
+			{
+				if (i > 0) msg ~= ", ";
+				msg ~= to!string(cid);
+			}
+			msg ~= ". Results will be delivered when they complete.\n\n";
+		}
+
+		msg ~= "Continue from where you left off. Process completed results as if they were returned normally by the Task tool.";
+
+		// Defer to event loop (same reason as resumeAndDeliverResults).
+		import ae.net.asockets : onNextTick;
+		socketManager.onNextTick(() { sendTaskMessage(tid, msg); });
 	}
 
 	/// Send data to all clients subscribed to the given task.

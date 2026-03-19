@@ -249,6 +249,11 @@ function matchPattern(userText) {
     return { type: "text", text: innerMatch ? innerMatch[1] : "Test Task" };
   }
 
+  // Backend restart nudge — acknowledge and respond with Done.
+  if (userText.startsWith("[SYSTEM:")) {
+    return { type: "text", text: "Done." };
+  }
+
   let match;
 
   // "reply with "<text>""

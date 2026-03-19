@@ -63,7 +63,55 @@ struct Persistence
 			"ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
 			// Migration 10: draft text for unsent input
 			"ALTER TABLE tasks ADD COLUMN draft TEXT NOT NULL DEFAULT '';",
+			// Migration 11: task dependency tracking for resumable sub-task awaits
+			"CREATE TABLE task_deps (" ~
+			"    parent_tid INTEGER NOT NULL," ~
+			"    child_tid INTEGER NOT NULL," ~
+			"    PRIMARY KEY (parent_tid, child_tid)" ~
+			");",
 		]);
+	}
+
+	void addTaskDep(int parentTid, int childTid)
+	{
+		db.stmt!"INSERT OR IGNORE INTO task_deps (parent_tid, child_tid) VALUES (?, ?)".exec(parentTid, childTid);
+	}
+
+	void removeTaskDep(int parentTid, int childTid)
+	{
+		db.stmt!"DELETE FROM task_deps WHERE parent_tid = ? AND child_tid = ?".exec(parentTid, childTid);
+	}
+
+	void removeAllChildDeps(int childTid)
+	{
+		db.stmt!"DELETE FROM task_deps WHERE child_tid = ?".exec(childTid);
+	}
+
+	/// Load all dependency rows. Returns parentTid → [childTids].
+	int[][int] loadTaskDeps()
+	{
+		int[][int] deps;
+		foreach (int parentTid, int childTid;
+			db.stmt!"SELECT parent_tid, child_tid FROM task_deps".iterate())
+		{
+			deps.require(parentTid) ~= childTid;
+		}
+		return deps;
+	}
+
+	int[] loadChildDeps(int parentTid)
+	{
+		int[] children;
+		foreach (int childTid; db.stmt!"SELECT child_tid FROM task_deps WHERE parent_tid = ?".iterate(parentTid))
+			children ~= childTid;
+		return children;
+	}
+
+	int findParentForChild(int childTid)
+	{
+		foreach (int parentTid; db.stmt!"SELECT parent_tid FROM task_deps WHERE child_tid = ?".iterate(childTid))
+			return parentTid;
+		return 0;
 	}
 
 	int createTask(string workspace = "", string projectPath = "", string agentType = "claude")

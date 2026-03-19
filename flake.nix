@@ -164,6 +164,7 @@
               claude-code
               codex
               git
+              sqlite
             ];
 
             FONTCONFIG_FILE = pkgs.makeFontsConf {
