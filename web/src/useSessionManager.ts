@@ -213,6 +213,7 @@ export function useTaskManager(): TaskManager {
     // Regular task: look up workspace/project from task state
     const tid = parseInt(id, 10);
     if (!isNaN(tid)) {
+      activeTaskIdRef.current = id;
       const [ws, proj] = taskContext(tid);
       routeRef.current(buildUrl(ws, proj, `/task/${id}`));
       return;
@@ -379,6 +380,7 @@ export function useTaskManager(): TaskManager {
                 msg.correlation_id === pendingFocusId.current;
         pendingFocusId.current = null;
         if (shouldFocus) {
+          activeTaskIdRef.current = String(tid);
           if (workspace && projectPath) {
             const projName = findProjectName(
               workspacesRef.current,
