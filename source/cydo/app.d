@@ -424,7 +424,7 @@ class App : ToolsBackend
 			return resolve(McpResult("Unknown task type: " ~ resolvedTaskType, true));
 
 		// Create child task
-		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, config.default_agent_type);
+		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, defaultAgentType(parentTd.workspace));
 		auto childTd = &tasks[childTid];
 		childTd.taskType = resolvedTaskType;
 		childTd.description = prompt;
@@ -721,7 +721,7 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : toJson;
 
-		auto at = json.agent_type.length > 0 ? json.agent_type : config.default_agent_type;
+		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
 		auto tid = createTask(json.workspace, json.project_path, at);
 		if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
 		{
@@ -1742,7 +1742,7 @@ class App : ToolsBackend
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;
-			auto childTid = createTask(td.workspace, td.projectPath, config.default_agent_type);
+			auto childTid = createTask(td.workspace, td.projectPath, defaultAgentType(td.workspace));
 			auto childTd = &tasks[childTid];
 			childTd.taskType = contDef.task_type;
 			childTd.description = successorPrompt;
@@ -1793,6 +1793,14 @@ class App : ToolsBackend
 
 			broadcastTaskUpdate(tid);
 		}
+	}
+
+	private string defaultAgentType(string workspaceName)
+	{
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName && ws.default_agent_type.length > 0)
+				return ws.default_agent_type;
+		return config.default_agent_type;
 	}
 
 	private SandboxConfig findWorkspaceSandbox(string workspaceName)

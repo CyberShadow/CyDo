@@ -34,6 +34,7 @@ struct WorkspaceConfig
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
 	@Optional string task_types;
+	@Optional string default_agent_type;
 }
 
 struct CydoConfig
