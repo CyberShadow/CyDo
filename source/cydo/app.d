@@ -1531,12 +1531,15 @@ class App : ToolsBackend
 			}
 		};
 
+		string lastStderr;
+
 		td.session.onStderr = (string line) {
 			import ae.utils.json : toJson;
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = line;
 			broadcastTask(tid, toJson(ev));
+			lastStderr = line;
 		};
 
 		td.session.onExit = (int exitCode) {
@@ -1549,6 +1552,8 @@ class App : ToolsBackend
 				return;
 			tasks[tid].alive = false;
 			tasks[tid].isProcessing = false;
+			if (exitCode != 0)
+				tasks[tid].error = lastStderr;
 			cleanup(tasks[tid].sandbox);
 			jsonlTracker.stopJsonlWatch(tid);
 
@@ -1644,6 +1649,7 @@ class App : ToolsBackend
 		td.alive = true;
 		td.status = "active";
 		persistence.setStatus(tid, "active");
+		td.error = null;
 	}
 
 	/// Transition a task to its successor via continuation.
@@ -2437,7 +2443,7 @@ class App : ToolsBackend
 		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 			td.isProcessing, td.needsAttention, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.archived, td.draft);
+			td.taskType, td.archived, td.draft, td.error);
 	}
 
 	private string buildTasksList()

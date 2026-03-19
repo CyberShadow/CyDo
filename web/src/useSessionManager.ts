@@ -423,6 +423,7 @@ export function useTaskManager(): TaskManager {
                   entry.archived || false,
                 ),
                 serverDraft: entry.draft || undefined,
+                error: entry.error || undefined,
               };
               liveStates.set(entry.tid, t);
               next.set(entry.tid, t);
@@ -452,6 +453,7 @@ export function useTaskManager(): TaskManager {
                     ? undefined
                     : t.suggestions,
                 archived: entry.archived || false,
+                error: entry.error || undefined,
               };
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
@@ -486,6 +488,7 @@ export function useTaskManager(): TaskManager {
                 entry.archived || false,
               ),
               serverDraft: entry.draft || undefined,
+              error: entry.error || undefined,
             };
             liveStates.set(entry.tid, t);
             next.set(entry.tid, t);
@@ -512,6 +515,7 @@ export function useTaskManager(): TaskManager {
                   ? undefined
                   : t.suggestions,
               archived: entry.archived || false,
+              error: entry.error || undefined,
             };
             liveStates.set(entry.tid, updated);
             next.set(entry.tid, updated);

@@ -90,6 +90,7 @@ struct TaskData
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
+	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 
 struct TaskHistoryEndMessage
@@ -183,6 +184,7 @@ struct TaskListEntry
 	string task_type;
 	bool archived;
 	string draft;
+	string error;
 }
 
 struct ProjectInfo

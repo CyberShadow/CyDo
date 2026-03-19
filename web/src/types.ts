@@ -151,6 +151,8 @@ export interface TaskState {
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
   archived?: boolean;
+  /** Last stderr text from non-zero exit; cleared on restart. */
+  error?: string;
   /** Pending undo confirmation (set by dry_run preview, cleared on confirm/dismiss). */
   undoPending?: {
     afterUuid: string;
