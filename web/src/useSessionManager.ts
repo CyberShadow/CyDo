@@ -422,6 +422,7 @@ export function useTaskManager(): TaskManager {
                   entry.status || "pending",
                   entry.isProcessing || false,
                   entry.needsAttention || false,
+                  entry.hasPendingQuestion || false,
                   entry.task_type || undefined,
                   entry.archived || false,
                 ),
@@ -443,6 +444,7 @@ export function useTaskManager(): TaskManager {
                 resumable: entry.resumable,
                 isProcessing: entry.isProcessing || false,
                 needsAttention: entry.needsAttention || false,
+                hasPendingQuestion: entry.hasPendingQuestion || false,
                 historyLoaded: needsHistory ? false : t.historyLoaded,
                 title: entry.title || t.title,
                 workspace: workspace || t.workspace,
@@ -487,6 +489,7 @@ export function useTaskManager(): TaskManager {
                 entry.status || "pending",
                 entry.isProcessing || false,
                 entry.needsAttention || false,
+                entry.hasPendingQuestion || false,
                 entry.task_type || undefined,
                 entry.archived || false,
               ),
@@ -505,6 +508,7 @@ export function useTaskManager(): TaskManager {
               resumable: entry.resumable,
               isProcessing: entry.isProcessing || false,
               needsAttention: entry.needsAttention || false,
+              hasPendingQuestion: entry.hasPendingQuestion || false,
               historyLoaded: needsHistory ? false : t.historyLoaded,
               title: entry.title || t.title,
               workspace: workspace || t.workspace,
@@ -1079,7 +1083,7 @@ export function useTaskManager(): TaskManager {
         status: t.status,
         archived: t.archived,
         taskType: t.taskType,
-        hasPendingQuestion: !!t.pendingAskUser,
+        hasPendingQuestion: t.hasPendingQuestion,
       }));
 
     const prev = prevSidebarTasksRef.current;

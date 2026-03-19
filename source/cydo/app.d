@@ -619,6 +619,7 @@ class App : ToolsBackend
 
 		// Update task state for sidebar
 		tdp.needsAttention = true;
+		tdp.hasPendingQuestion = true;
 		tdp.notificationBody = "Waiting for your answer";
 		tdp.isProcessing = false;
 		broadcastTaskUpdate(tid);
@@ -657,6 +658,7 @@ class App : ToolsBackend
 		td.pendingAskToolUseId = null;
 		td.pendingAskQuestions = JSONFragment.init;
 		td.needsAttention = false;
+		td.hasPendingQuestion = false;
 		td.notificationBody = "";
 		td.isProcessing = true;
 
@@ -1569,6 +1571,7 @@ class App : ToolsBackend
 				tasks[tid].pendingAskToolUseId = null;
 				tasks[tid].pendingAskQuestions = JSONFragment.init;
 				tasks[tid].needsAttention = false;
+				tasks[tid].hasPendingQuestion = false;
 				tasks[tid].notificationBody = "";
 			}
 
@@ -2453,7 +2456,7 @@ class App : ToolsBackend
 	private TaskListEntry buildTaskEntry(ref TaskData td)
 	{
 		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
-			td.isProcessing, td.needsAttention, td.notificationBody,
+			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 			td.taskType, td.archived, td.draft, td.error);
 	}

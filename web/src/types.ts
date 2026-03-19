@@ -127,6 +127,7 @@ export interface TaskState {
   sessionInfo: SessionInfo | null;
   isProcessing: boolean;
   needsAttention: boolean;
+  hasPendingQuestion: boolean;
   totalCost: number;
   alive: boolean;
   resumable: boolean;
@@ -184,6 +185,7 @@ export function makeTaskState(
   status: string = "pending",
   isProcessing: boolean = false,
   needsAttention: boolean = false,
+  hasPendingQuestion: boolean = false,
   taskType?: string,
   archived: boolean = false,
 ): TaskState {
@@ -194,6 +196,7 @@ export function makeTaskState(
     sessionInfo: null,
     isProcessing,
     needsAttention,
+    hasPendingQuestion,
     totalCost: 0,
     alive,
     resumable,

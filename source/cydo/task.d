@@ -77,6 +77,7 @@ struct TaskData
 	bool alive = false;
 	bool isProcessing = false;
 	bool needsAttention = false;
+	bool hasPendingQuestion = false;
 	string notificationBody;
 	string resultText;    // result from the "result" event (canonical sub-task output)
 	string resultNote;        // note from the creatable_tasks edge, returned with result
@@ -174,6 +175,7 @@ struct TaskListEntry
 	bool resumable;
 	bool isProcessing;
 	bool needsAttention;
+	bool hasPendingQuestion;
 	string notificationBody;
 	string title;
 	string workspace;

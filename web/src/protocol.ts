@@ -303,6 +303,7 @@ export interface TasksListMessage {
     resumable: boolean;
     isProcessing: boolean;
     needsAttention?: boolean;
+    hasPendingQuestion?: boolean;
     notificationBody?: string;
     title?: string;
     workspace?: string;
@@ -323,6 +324,7 @@ export interface TaskUpdatedMessage {
     resumable: boolean;
     isProcessing: boolean;
     needsAttention?: boolean;
+    hasPendingQuestion?: boolean;
     notificationBody?: string;
     title?: string;
     workspace?: string;
