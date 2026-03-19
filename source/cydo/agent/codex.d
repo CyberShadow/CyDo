@@ -579,7 +579,7 @@ class CodexAgent : Agent
 		// stderr/exit events (type:"stderr", type:"exit") still need renaming
 		// to process/stderr and process/exit.  translateClaudeEvent handles
 		// those; all agnostic-format Codex events pass through unchanged.
-		import cydo.agent.protocol : translateClaudeEvent;
+		import cydo.agent.claude : translateClaudeEvent;
 		return translateClaudeEvent(rawLine);
 	}
 
