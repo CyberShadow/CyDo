@@ -37,8 +37,9 @@ class ClaudeCodeAgent : Agent
 			paths[path] = mode;
 		}
 
-		paths[expandTilde("~/.claude")]             = PathMode.rw;
+		paths[expandTilde("~/.claude")]              = PathMode.rw;
 		paths[expandTilde("~/.claude.json")]         = PathMode.rw;
+		paths[expandTilde("~/.local/share/claude")]  = PathMode.ro;
 
 		// resolve the claude binary and add its directory as ro;
 		// claude's self-updater installs versions under ~/.local/share/claude/versions/
@@ -46,13 +47,6 @@ class ClaudeCodeAgent : Agent
 		// directory must also be mounted for execvp to find the actual binary
 		auto claudeBinDir = resolveClaudeBinary();
 		addIfNotRw(claudeBinDir, PathMode.ro);
-		{
-			import std.file : exists, isSymlink, readLink;
-			import std.path : absolutePath, buildPath, dirName;
-			auto candidate = buildPath(claudeBinDir, "claude");
-			if (claudeBinDir.length > 0 && exists(candidate) && isSymlink(candidate))
-				addIfNotRw(dirName(absolutePath(readLink(candidate), claudeBinDir)), PathMode.ro);
-		}
 
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
