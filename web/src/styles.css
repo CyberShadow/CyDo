@@ -161,9 +161,6 @@ body,
   font-size: 13px;
   cursor: pointer;
   text-align: left;
-  transition:
-    background 0.1s,
-    border-color 0.1s;
 }
 
 .task-type-row:hover {
@@ -1106,7 +1103,6 @@ body,
   border: none;
   font-size: 14px;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
 .btn:disabled {
@@ -1426,7 +1422,6 @@ body,
   border: none;
   font-size: 14px;
   cursor: pointer;
-  transition: background 0.2s;
 }
 
 .btn-resume:hover {
@@ -2191,9 +2186,6 @@ body,
   color: var(--text-dim);
   cursor: pointer;
   font-size: 14px;
-  transition:
-    border-color 0.2s,
-    color 0.2s;
 }
 .ask-abort-btn:hover {
   border-color: var(--error);
@@ -2206,7 +2198,6 @@ body,
   color: var(--bg);
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.2s;
 }
 .ask-submit-btn:hover:not(:disabled) {
   background: var(--accent-dim);
