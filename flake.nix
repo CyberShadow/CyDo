@@ -322,6 +322,7 @@
               nodejs_22
               sqlite
               openssl
+              zlib
               pkg-config
             ];
           };
