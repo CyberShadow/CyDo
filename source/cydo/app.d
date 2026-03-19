@@ -15,6 +15,7 @@ import ae.net.http.websocket : WebSocketAdapter, accept;
 import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
+import ae.sys.pidfile : createPidFile;
 import ae.utils.json : JSONFragment, JSONPartial;
 import ae.utils.promise : Promise, resolve;
 
@@ -131,6 +132,7 @@ class App : ToolsBackend
 	void start()
 	{
 		persistence = Persistence("data/cydo.db");
+		createPidFile("cydo.pid", "data/");
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
 		if (auto ac = config.default_agent_type in config.agents)
