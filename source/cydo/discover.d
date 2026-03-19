@@ -2,7 +2,7 @@ module cydo.discover;
 
 import std.path : baseName, buildPath, relativePath;
 import std.file : exists, isDir, dirEntries, SpanMode;
-import std.stdio : writefln, stderr;
+import std.stdio : stderr;
 
 import cydo.config : WorkspaceConfig;
 
