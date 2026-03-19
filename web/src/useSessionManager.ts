@@ -85,6 +85,7 @@ export interface TaskManager {
     relationType?: string;
     status?: string;
     archived?: boolean;
+    hasPendingQuestion?: boolean;
   }>;
   workspaces: WorkspaceInfo[];
   taskTypes: TaskTypeInfo[];
@@ -1078,6 +1079,7 @@ export function useTaskManager(): TaskManager {
         status: t.status,
         archived: t.archived,
         taskType: t.taskType,
+        hasPendingQuestion: !!t.pendingAskUser,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -1095,7 +1097,8 @@ export function useTaskManager(): TaskManager {
           t.relationType === p.relationType &&
           t.status === p.status &&
           t.archived === p.archived &&
-          t.taskType === p.taskType
+          t.taskType === p.taskType &&
+          t.hasPendingQuestion === p.hasPendingQuestion
         );
       })
     ) {

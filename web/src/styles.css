@@ -338,6 +338,10 @@ body,
   background: rgba(76, 175, 80, 0.1);
 }
 
+.sidebar-item.asking {
+  background: rgba(255, 152, 0, 0.12);
+}
+
 .sidebar-item.top-level {
   border-top: 1px solid var(--border);
 }
@@ -375,6 +379,10 @@ body,
 
 .task-type-icon.failed {
   background-color: var(--error);
+}
+
+.task-type-icon.asking {
+  background-color: #f0a030;
 }
 
 .sidebar-new-task {

@@ -129,6 +129,7 @@ export interface SidebarTask {
   archived?: boolean;
   isArchiveNode?: boolean;
   taskType?: string;
+  hasPendingQuestion?: boolean;
 }
 
 interface TreeNode {
@@ -242,6 +243,7 @@ interface FlatItem {
   title: string;
   iconName?: string;
   isArchive: boolean;
+  hasPendingQuestion: boolean;
 }
 
 function computeStatusClass(t: SidebarTask): string {
@@ -272,6 +274,7 @@ function flattenTree(
         statusClass: "",
         title: `Archive (${node.children.length})`,
         isArchive: true,
+        hasPendingQuestion: false,
       });
       const isExpanded =
         node.id === activeTaskId ||
@@ -300,6 +303,7 @@ function flattenTree(
       title: t.title || `Task ${t.tid}`,
       iconName: typeInfo?.icon,
       isArchive: false,
+      hasPendingQuestion: !!t.hasPendingQuestion,
     });
 
     for (let i = 0; i < node.children.length; i++) {
@@ -329,6 +333,7 @@ const SidebarItem = memo(function SidebarItem({
   isArchive,
   isActive,
   hasAttention,
+  hasPendingQuestion,
   onSelect,
 }: {
   id: string;
@@ -341,6 +346,7 @@ const SidebarItem = memo(function SidebarItem({
   isArchive: boolean;
   isActive: boolean;
   hasAttention: boolean;
+  hasPendingQuestion: boolean;
   onSelect: (id: string) => void;
 }) {
   const treeConnectors =
@@ -372,12 +378,14 @@ const SidebarItem = memo(function SidebarItem({
 
   return (
     <div
-      class={`sidebar-item${isActive ? " active" : ""}${hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
+      class={`sidebar-item${isActive ? " active" : ""}${hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
       onClick={() => onSelect(id)}
     >
       {treeConnectors}
-      {hasAttention ? (
+      {hasPendingQuestion ? (
+        <span class="task-type-icon task-type-icon-question asking" />
+      ) : hasAttention ? (
         <span class="task-type-icon task-type-icon-check alive" />
       ) : iconName ? (
         <span
@@ -523,6 +531,7 @@ export const Sidebar = memo(function Sidebar({
               isArchive={item.isArchive}
               isActive={item.id === activeTaskId}
               hasAttention={attention.has(item.tid)}
+              hasPendingQuestion={item.hasPendingQuestion}
               onSelect={handleSelect}
             />
           ))
