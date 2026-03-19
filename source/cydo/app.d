@@ -254,7 +254,7 @@ class App : ToolsBackend
 		{
 			auto response = new HttpResponseEx();
 			response.setStatus(HttpStatusCode.BadRequest);
-			conn.sendResponse(response.serveData("Bad WebSocket request"));
+			conn.sendResponse(response.serveData("Bad WebSocket request: " ~ e.msg));
 			return;
 		}
 
