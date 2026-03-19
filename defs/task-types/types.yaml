@@ -372,6 +372,10 @@ task_types:
       is disposable — experiment freely.
     model_class: large
     output_type: report
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
     parallelizable: true
     user_visible: false
 
