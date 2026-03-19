@@ -123,7 +123,7 @@ class AppServerProcess
 			environment.get("OPENAI_API_KEY", ""));
 		if (apiKey.length == 0)
 		{
-			state_ = State.failed;
+			onLoginCompleted();
 			return;
 		}
 
