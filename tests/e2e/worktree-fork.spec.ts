@@ -55,8 +55,11 @@ test("forked worktree task history is accessible without restart", async ({ page
   //    the in-memory projectPath points to the original project path
   //    instead of the worktree path, so historyPath() looks in the
   //    wrong ~/.claude/projects/ directory.
+  //    Scope to the active session container ([style*='display: contents'])
+  //    to avoid strict-mode violations when both the spike session and the
+  //    forked session are rendered in the DOM simultaneously.
   await expect(
-    page.locator(".message.assistant-message .text-content", {
+    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
       hasText: "worktree-fork-content",
     }),
   ).toBeVisible({ timeout: 15_000 });
