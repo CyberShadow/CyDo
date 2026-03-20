@@ -710,7 +710,6 @@ class CodexAgent : Agent
 		{
 			foreach (entry; dirEntries(sessionsDir, "*-" ~ sessionId ~ ".jsonl", SpanMode.depth))
 				return entry.name;
-			stderr.writeln("Could not find session file for ", sessionId);
 			return null;
 		}
 		catch (Exception e)
