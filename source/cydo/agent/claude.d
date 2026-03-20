@@ -5,7 +5,7 @@ import std.format : format;
 import std.path : dirName, expandTilde;
 import std.stdio : stderr;
 
-import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
+import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
 import cydo.agent.agent : Agent, SessionConfig;
@@ -768,7 +768,6 @@ private string translateSystemEvent(string rawLine, string subtype)
 /// Renames fields and drops Claude-specific fields.
 private string translateSessionInit(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeInit
 	{
 		string session_id;
@@ -784,6 +783,20 @@ private string translateSessionInit(string rawLine)
 		@JSONOptional JSONFragment agents;
 		@JSONOptional JSONFragment plugins;
 		@JSONOptional string agent;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string subtype;
+		@JSONOptional string uuid;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		JSONExtras _extras;
 	}
 
 	ClaudeInit raw;
@@ -807,12 +820,8 @@ private string translateSessionInit(string rawLine)
 	ev.agents        = raw.agents;
 	ev.plugins       = raw.plugins;
 	ev.supports_file_revert = true;
-	auto result = toJson(ev);
-	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "session_id", "model", "cwd", "tools",
-		 "claude_code_version", "permissionMode", "apiKeySource",
-		 "fast_mode_state", "skills", "mcp_servers", "agents", "plugins", "agent"]
-		~ claudeMetadataFields);
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 /// Normalize a Claude assistant message to the agnostic AssistantMessageEvent format.
@@ -820,7 +829,6 @@ private string translateSessionInit(string rawLine)
 /// renames thinking blocks' "thinking" field to "text", drops signature.
 private string translateAssistantMessage(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeThinkingBlock
 	{
 		string type;     // "thinking"
@@ -829,9 +837,10 @@ private string translateAssistantMessage(string rawLine)
 		@JSONOptional string id;
 		@JSONOptional string name;
 		@JSONOptional JSONFragment input;
+		@JSONOptional string signature;
+		JSONExtras _extras;
 	}
 
-	@JSONPartial
 	static struct ClaudeMessage
 	{
 		string id;
@@ -841,9 +850,13 @@ private string translateAssistantMessage(string rawLine)
 		@JSONOptional int input_tokens;
 		@JSONOptional int output_tokens;
 		@JSONOptional JSONFragment usage;
+		@JSONOptional string stop_sequence;          // TODO: metadata, not forwarded
+		@JSONOptional string type;                   // TODO: metadata — always "message", not forwarded
+		@JSONOptional string role;                   // TODO: metadata — always "assistant", not forwarded
+		@JSONOptional JSONFragment context_management; // TODO: context compaction metadata, not forwarded
+		JSONExtras _extras;
 	}
 
-	@JSONPartial
 	static struct ClaudeAssistant
 	{
 		@JSONOptional string parent_tool_use_id;
@@ -851,6 +864,21 @@ private string translateAssistantMessage(string rawLine)
 		@JSONOptional bool isApiErrorMessage;
 		@JSONOptional string uuid;
 		ClaudeMessage message;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
 	}
 
 	ClaudeAssistant raw;
@@ -880,6 +908,7 @@ private string translateAssistantMessage(string rawLine)
 			cb.name  = b.name;
 			cb.input = b.input;
 		}
+		cb._extras = extrasToFragment(b._extras);
 		content ~= cb;
 	}
 
@@ -908,13 +937,8 @@ private string translateAssistantMessage(string rawLine)
 	ev.is_sidechain        = raw.isSidechain;
 	ev.is_api_error        = raw.isApiErrorMessage;
 	ev.uuid                = raw.uuid;
-	auto result = toJson(ev);
-	result = preserveExtraFields(rawLine, result,
-		["type", "message", "parent_tool_use_id", "isSidechain", "isApiErrorMessage"]
-		~ claudeMetadataFields);
-	result = preserveExtraContentFields(rawLine, result,
-		["type", "text", "thinking", "id", "name", "input", "signature"], "message.content");
-	return result;
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 
@@ -923,13 +947,13 @@ private string translateAssistantMessage(string rawLine)
 /// toolUseResult/tool_use_result → tool_result, drops session_id/slug/role/uuid-less fields.
 private string normalizeUserMessage(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeUserMsg
 	{
 		JSONFragment content;
+		@JSONOptional string role; // TODO: metadata — always "user", not forwarded
+		JSONExtras _extras;
 	}
 
-	@JSONPartial
 	static struct ClaudeUser
 	{
 		ClaudeUserMsg message;
@@ -943,6 +967,21 @@ private string normalizeUserMessage(string rawLine)
 		@JSONOptional string uuid;
 		@JSONOptional JSONFragment toolUseResult;
 		@JSONOptional JSONFragment tool_use_result;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
 	}
 
 	ClaudeUser raw;
@@ -965,12 +1004,8 @@ private string normalizeUserMessage(string rawLine)
 		ev.tool_result = raw.toolUseResult;
 	else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
 		ev.tool_result = raw.tool_use_result;
-	auto result = toJson(ev);
-	return preserveExtraFields(rawLine, result,
-		["type", "message", "parent_tool_use_id", "isSidechain", "isReplay",
-		 "isSynthetic", "isMeta", "isSteering", "pending",
-		 "toolUseResult", "tool_use_result", "slug", "role"]
-		~ claudeMetadataFields);
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 /// Normalize a Claude result event to the agnostic TurnResultEvent format.
@@ -978,14 +1013,13 @@ private string normalizeUserMessage(string rawLine)
 /// drops uuid and session_id.
 private string normalizeTurnResult(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeUsage
 	{
 		@JSONOptional int input_tokens;
 		@JSONOptional int output_tokens;
+		JSONExtras _extras;
 	}
 
-	@JSONPartial
 	static struct ClaudeResult
 	{
 		string subtype;
@@ -1001,6 +1035,22 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional JSONFragment permission_denials;
 		@JSONOptional string stop_reason;
 		@JSONOptional string[] errors;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string uuid;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
 	}
 
 	ClaudeResult raw;
@@ -1025,12 +1075,8 @@ private string normalizeTurnResult(string rawLine)
 	ev.permission_denials = raw.permission_denials;
 	ev.stop_reason        = raw.stop_reason;
 	ev.errors             = raw.errors;
-	auto result = toJson(ev);
-	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "is_error", "result", "num_turns", "duration_ms",
-		 "duration_api_ms", "total_cost_usd", "usage", "modelUsage", "model_usage",
-		 "permission_denials", "stop_reason", "errors"]
-		~ claudeMetadataFields);
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 /// Translate stream_event: unwrap inner event and map to stream/* types.
@@ -1148,111 +1194,38 @@ private string renameType(string rawLine, string newType)
 	return rawLine;
 }
 
-/// Claude Code metadata fields present in both stream-json and JSONL formats
-/// that are intentionally dropped during protocol translation.
-private enum claudeMetadataFields = [
-	"uuid", "session_id", "sessionId",   // session identifiers
-	"agentId", "parentUuid", "requestId", // agent/request tracking
-	"cwd", "gitBranch", "version",        // environment context
-	"userType", "timestamp",              // JSONL persistence fields
-	"slug",                               // session slug
-	"permissionMode",                     // session permission level (JSONL metadata)
-];
-
-/// Merge unknown top-level fields from rawLine into translatedLine.
-/// knownInputFields: field names in the raw input that are consumed by translation.
-/// Any raw field NOT in this list is preserved in the output.
-private string preserveExtraFields(string rawLine, string translatedLine, const(string)[] knownInputFields)
+/// Convert a JSONExtras map to a JSONFragment wrapping it in a JSON object.
+/// Returns JSONFragment.init (null) if the extras map is empty.
+private JSONFragment extrasToFragment(JSONExtras extras)
 {
-	import std.json : parseJSON, JSONValue, JSONType;
-
-	JSONValue raw, translated;
-	try {
-		raw = parseJSON(rawLine);
-		translated = parseJSON(translatedLine);
-	} catch (Exception e) {
-		stderr.writeln("enrichAssistantBlocks: JSON parse error: ", e.msg); return translatedLine;
-	}
-
-	if (raw.type != JSONType.object || translated.type != JSONType.object)
-		return translatedLine;
-
-	JSONValue extras = JSONValue(cast(JSONValue[string])null);
-	foreach (key, value; raw.objectNoRef) {
-		bool isKnown = false;
-		foreach (k; knownInputFields) {
-			if (key == k) { isKnown = true; break; }
-		}
-		if (!isKnown) {
-			extras.object[key] = value;
-		}
-	}
-
-	if (extras.object.length == 0)
-		return translatedLine;
-	translated.object["_extras"] = extras;
-	return translated.toString();
+	if (extras._data is null || extras._data.length == 0)
+		return JSONFragment.init;
+	return JSONFragment(toJson(extras._data));
 }
 
-/// Merge unknown fields from content blocks in the raw input into the translated output.
-/// rawContentPath: dot-delimited path to content array in raw JSON (e.g. "message.content").
-/// translatedContentKey: key name for content array in translated JSON (always "content").
-private string preserveExtraContentFields(string rawLine, string translatedLine,
-	const(string)[] knownBlockFields, string rawContentPath = "content")
+/// Recursively collect all JSONExtras from a struct and its nested struct fields.
+/// Arrays are skipped (content blocks are handled per-element by the caller).
+private JSONExtras collectAllExtras(S)(ref const S s)
 {
-	import std.json : parseJSON, JSONValue, JSONType;
-	import std.algorithm : splitter;
-
-	JSONValue raw, translated;
-	try {
-		raw = parseJSON(rawLine);
-		translated = parseJSON(translatedLine);
-	} catch (Exception e) {
-		stderr.writeln("enrichUserBlocks: JSON parse error: ", e.msg); return translatedLine;
-	}
-
-	// Navigate to raw content array
-	JSONValue rawContent = raw;
-	foreach (part; rawContentPath.splitter(".")) {
-		if (rawContent.type != JSONType.object || part !in rawContent.objectNoRef)
-			return translatedLine;
-		rawContent = rawContent[part];
-	}
-	if (rawContent.type != JSONType.array)
-		return translatedLine;
-
-	// Get translated content array
-	if (translated.type != JSONType.object || "content" !in translated.objectNoRef)
-		return translatedLine;
-	auto transContent = translated["content"];
-	if (transContent.type != JSONType.array)
-		return translatedLine;
-
-	bool hasExtra = false;
-	auto rawArr = rawContent.array;
-	auto transArr = transContent.array;
-	auto len = rawArr.length < transArr.length ? rawArr.length : transArr.length;
-
-	for (size_t i = 0; i < len; i++) {
-		if (rawArr[i].type != JSONType.object || transArr[i].type != JSONType.object)
-			continue;
-		JSONValue extras = JSONValue(cast(JSONValue[string])null);
-		foreach (key, value; rawArr[i].objectNoRef) {
-			bool isKnown = false;
-			foreach (k; knownBlockFields) {
-				if (key == k) { isKnown = true; break; }
-			}
-			if (!isKnown) {
-				extras.object[key] = value;
-			}
+	JSONExtras result;
+	static foreach (i, field; S.tupleof)
+	{{
+		alias FT = typeof(field);
+		static if (is(FT == JSONExtras))
+		{
+			if (s.tupleof[i]._data !is null)
+				foreach (k, v; s.tupleof[i]._data)
+					result[k] = v;
 		}
-		if (extras.object.length > 0) {
-			transArr[i].object["_extras"] = extras;
-			hasExtra = true;
+		else static if (is(FT == struct) && !is(FT == JSONFragment))
+		{
+			auto nested = collectAllExtras(s.tupleof[i]);
+			if (nested._data !is null)
+				foreach (k, v; nested._data)
+					result[k] = v;
 		}
-	}
-
-	return hasExtra ? translated.toString() : translatedLine;
+	}}
+	return result;
 }
 
 /// Find the byte offset of the top-level `"type":"` in a JSON object string.
@@ -1336,13 +1309,29 @@ private string replaceTypeRemoveSubtype(string rawLine, string newType)
 /// Drops uuid and session_id fields.
 private string normalizeTaskStarted(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeTaskStarted
 	{
 		string task_id;
 		@JSONOptional string tool_use_id;
 		@JSONOptional string description;
 		@JSONOptional string task_type;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string subtype;
+		@JSONOptional string uuid;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
 	}
 
 	ClaudeTaskStarted raw;
@@ -1356,23 +1345,37 @@ private string normalizeTaskStarted(string rawLine)
 	ev.tool_use_id  = raw.tool_use_id;
 	ev.description  = raw.description;
 	ev.task_type    = raw.task_type;
-	auto result = toJson(ev);
-	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "task_id", "tool_use_id", "description", "task_type"]
-		~ claudeMetadataFields);
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 /// Normalize a Claude task_notification system event to the agnostic TaskNotificationEvent format.
 /// Drops uuid and session_id fields.
 private string normalizeTaskNotification(string rawLine)
 {
-	@JSONPartial
 	static struct ClaudeTaskNotification
 	{
 		string task_id;
 		string status;
 		@JSONOptional string output_file;
 		@JSONOptional string summary;
+		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
+		@JSONOptional string type;
+		@JSONOptional string subtype;
+		@JSONOptional string uuid;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
 	}
 
 	ClaudeTaskNotification raw;
@@ -1386,10 +1389,8 @@ private string normalizeTaskNotification(string rawLine)
 	ev.status      = raw.status;
 	ev.output_file = raw.output_file;
 	ev.summary     = raw.summary;
-	auto result = toJson(ev);
-	return preserveExtraFields(rawLine, result,
-		["type", "subtype", "task_id", "status", "output_file", "summary"]
-		~ claudeMetadataFields);
+	ev._extras = extrasToFragment(collectAllExtras(raw));
+	return toJson(ev);
 }
 
 /// Find the index of the closing brace matching the opening brace at pos.

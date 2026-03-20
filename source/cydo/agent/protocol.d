@@ -1,6 +1,6 @@
 module cydo.agent.protocol;
 
-import ae.utils.json : JSONFragment, JSONOptional;
+import ae.utils.json : JSONFragment, JSONOptional, JSONExtras;
 
 // ── Agnostic protocol struct definitions ───────────────────────────────────
 
@@ -14,6 +14,7 @@ struct ContentBlock
 	@JSONOptional string id;         // tool_use blocks
 	@JSONOptional string name;       // tool_use blocks
 	@JSONOptional JSONFragment input; // tool_use blocks (opaque)
+	@JSONOptional JSONFragment _extras;
 }
 
 /// Usage info (token counts).
@@ -66,6 +67,7 @@ struct SessionInitEvent
 	@JSONOptional JSONFragment agents;
 	@JSONOptional JSONFragment plugins;
 	bool supports_file_revert;
+	@JSONOptional JSONFragment _extras;
 }
 
 /// session/status
@@ -95,6 +97,7 @@ struct AssistantMessageEvent
 	@JSONOptional bool is_sidechain;       // was isSidechain
 	@JSONOptional bool is_api_error;       // was isApiErrorMessage
 	@JSONOptional string uuid;             // for fork support
+	@JSONOptional JSONFragment _extras;
 }
 
 /// message/user (flat — no message wrapper)
@@ -111,6 +114,7 @@ struct UserMessageEvent
 	@JSONOptional bool is_steering;        // was isSteering
 	@JSONOptional bool pending;
 	@JSONOptional string uuid;             // for fork support
+	@JSONOptional JSONFragment _extras;
 }
 
 /// turn/result
@@ -129,6 +133,7 @@ struct TurnResultEvent
 	@JSONOptional JSONFragment permission_denials;
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;
+	@JSONOptional JSONFragment _extras;
 }
 
 /// session/summary
@@ -153,6 +158,7 @@ struct TaskStartedEvent
 	@JSONOptional string tool_use_id;
 	@JSONOptional string description;
 	@JSONOptional string task_type;
+	@JSONOptional JSONFragment _extras;
 }
 
 /// task/notification
@@ -163,6 +169,7 @@ struct TaskNotificationEvent
 	string status;
 	@JSONOptional string output_file;
 	@JSONOptional string summary;
+	@JSONOptional JSONFragment _extras;
 }
 
 /// stream/block_start
