@@ -1226,7 +1226,7 @@ class App : ToolsBackend
 					{
 						auto bTd = TaskData(backup.tid);
 						bTd.workspace = td.workspace;
-						bTd.projectPath = td.projectPath;
+						bTd.projectPath = td.effectiveCwd;
 						bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
 						bTd.agentSessionId = backup.agentSessionId;
 						bTd.parentTid = tid;
@@ -1237,7 +1237,7 @@ class App : ToolsBackend
 						persistence.setRelationType(backup.tid, "undo-backup");
 						persistence.setTitle(backup.tid, bTd.title);
 						tasks[backup.tid] = move(bTd);
-						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.effectiveCwd, tid, "undo-backup")));
 						broadcastTaskUpdate(backup.tid);
 					}
 				}
