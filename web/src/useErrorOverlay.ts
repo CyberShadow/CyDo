@@ -15,8 +15,7 @@ export function useErrorOverlay() {
 
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
-      const message =
-        e.error instanceof Error ? e.error.message : String(e.message);
+      const message = e.error instanceof Error ? e.error.message : e.message;
       setErrorsRef.current((prev) =>
         [...prev, { id: ++counter, message, timestamp: Date.now() }].slice(-5),
       );

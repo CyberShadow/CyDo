@@ -40,11 +40,10 @@ export class Connection {
 
     this.ws.onmessage = (ev) => {
       try {
+        const data = ev.data as string | ArrayBuffer;
         const text =
-          typeof ev.data === "string"
-            ? ev.data
-            : new TextDecoder().decode(ev.data);
-        const raw = JSON.parse(text);
+          typeof data === "string" ? data : new TextDecoder().decode(data);
+        const raw = JSON.parse(text) as Record<string, unknown>;
         if (
           raw.type === "task_created" ||
           raw.type === "tasks_list" ||
@@ -61,7 +60,7 @@ export class Connection {
           raw.type === "ask_user_question" ||
           raw.type === "draft_updated"
         ) {
-          this.onControlMessage?.(raw as ControlMessage);
+          this.onControlMessage?.(raw as unknown as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
           if ("unconfirmedUserEvent" in raw) {
             this.onUnconfirmedUserMessage?.(

@@ -149,7 +149,9 @@ function SessionViewInner({
       inputRef.current?.focus();
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
   }, [isActive]);
 
   return (
@@ -169,7 +171,9 @@ function SessionViewInner({
         archived={task.archived}
         onSetArchived={
           onSetArchived
-            ? () => onSetArchived(task.tid, !task.archived)
+            ? () => {
+                onSetArchived(task.tid, !task.archived);
+              }
             : undefined
         }
       />
@@ -181,23 +185,23 @@ function SessionViewInner({
           selectedEditIndex={fileViewerState.selectedEditIndex}
           viewMode={fileViewerState.viewMode}
           height={fileViewerState.height}
-          onSelectFile={(path) =>
+          onSelectFile={(path) => {
             setFileViewerState((s) =>
               s ? { ...s, selectedFile: path, selectedEditIndex: null } : s,
-            )
-          }
-          onSelectEdit={(idx) =>
+            );
+          }}
+          onSelectEdit={(idx) => {
             setFileViewerState((s) =>
               s ? { ...s, selectedEditIndex: idx } : s,
-            )
-          }
-          onChangeViewMode={(mode) =>
-            setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s))
-          }
+            );
+          }}
+          onChangeViewMode={(mode) => {
+            setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s));
+          }}
           onClose={closeFileViewer}
-          onResize={(h) =>
-            setFileViewerState((s) => (s ? { ...s, height: h } : s))
-          }
+          onResize={(h) => {
+            setFileViewerState((s) => (s ? { ...s, height: h } : s));
+          }}
           onScrollToToolCall={scrollToToolCall}
         />
       )}
@@ -228,8 +232,12 @@ function SessionViewInner({
         <UndoConfirmDialog
           messagesRemoved={task.undoPending.messagesRemoved}
           supportsFileRevert={task.sessionInfo?.supports_file_revert !== false}
-          onConfirm={(rc, rf) => onUndoConfirm(task.tid, rc, rf)}
-          onDismiss={() => onUndoDismiss(task.tid)}
+          onConfirm={(rc, rf) => {
+            onUndoConfirm(task.tid, rc, rf);
+          }}
+          onDismiss={() => {
+            onUndoDismiss(task.tid);
+          }}
         />
       )}
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
@@ -269,7 +277,9 @@ function SessionViewInner({
           disabled={!connected}
           sessionId={task.tid}
           inputDraft={task.inputDraft}
-          onInputDraftConsumed={() => onClearInputDraft(task.tid)}
+          onInputDraftConsumed={() => {
+            onClearInputDraft(task.tid);
+          }}
           serverDraft={task.serverDraft}
           onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
           inputRef={inputRef}
@@ -296,9 +306,13 @@ function QuoteSelectionButton({
   useEffect(() => {
     const mql = window.matchMedia("(hover: hover) and (pointer: fine)");
     setIsMobile(!mql.matches);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(!e.matches);
+    const handler = (e: MediaQueryListEvent) => {
+      setIsMobile(!e.matches);
+    };
     mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
+    return () => {
+      mql.removeEventListener("change", handler);
+    };
   }, []);
 
   useEffect(() => {
@@ -328,7 +342,9 @@ function QuoteSelectionButton({
     };
 
     document.addEventListener("selectionchange", update);
-    return () => document.removeEventListener("selectionchange", update);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+    };
   }, [isMobile, isActive]);
 
   if (!pos) return null;
@@ -337,7 +353,9 @@ function QuoteSelectionButton({
     <button
       class="quote-selection-btn"
       style={{ left: `${pos.x}px`, top: `${pos.y}px` }}
-      onPointerDown={(e: PointerEvent) => e.preventDefault()}
+      onPointerDown={(e: PointerEvent) => {
+        e.preventDefault();
+      }}
       onClick={() => {
         onQuote();
         setPos(null);
@@ -365,7 +383,12 @@ function UndoConfirmDialog({
 
   return (
     <div class="undo-overlay" onClick={onDismiss}>
-      <div class="undo-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        class="undo-dialog"
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
         <div class="undo-dialog-header">Undo to this point?</div>
         {messagesRemoved > 0 && (
           <div class="undo-dialog-count">
@@ -378,7 +401,9 @@ function UndoConfirmDialog({
             <input
               type="checkbox"
               checked={revertConversation}
-              onChange={() => setRevertConversation(!revertConversation)}
+              onChange={() => {
+                setRevertConversation(!revertConversation);
+              }}
             />{" "}
             Revert conversation history
           </label>
@@ -387,7 +412,9 @@ function UndoConfirmDialog({
               type="checkbox"
               checked={revertFiles}
               disabled={!supportsFileRevert}
-              onChange={() => setRevertFiles(!revertFiles)}
+              onChange={() => {
+                setRevertFiles(!revertFiles);
+              }}
             />{" "}
             Revert file changes
             {!supportsFileRevert && " (not supported for this agent type)"}
@@ -400,7 +427,9 @@ function UndoConfirmDialog({
           <button
             class="btn btn-undo"
             disabled={neitherSelected}
-            onClick={() => onConfirm(revertConversation, revertFiles)}
+            onClick={() => {
+              onConfirm(revertConversation, revertFiles);
+            }}
           >
             Undo
           </button>

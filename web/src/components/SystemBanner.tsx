@@ -51,7 +51,9 @@ export function SystemBanner({
         {sessionInfo && (
           <span
             class="banner-model clickable"
-            onClick={() => setDetailsOpen(!detailsOpen)}
+            onClick={() => {
+              setDetailsOpen(!detailsOpen);
+            }}
             title="Click for session details"
           >
             {sessionInfo.agent && sessionInfo.agent !== "claude" && (
@@ -143,7 +145,7 @@ export function SystemBanner({
                 {sessionInfo.fast_mode_state}
               </div>
             )}
-          {sessionInfo.tools && sessionInfo.tools.length > 0 && (
+          {sessionInfo.tools.length > 0 && (
             <div class="banner-detail-row">
               <span class="detail-label">
                 Tools ({sessionInfo.tools.length}):

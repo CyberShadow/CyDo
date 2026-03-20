@@ -44,7 +44,9 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
 
   // Scroll selected item into view
   useEffect(() => {
-    const item = listRef.current?.children[selectedIdx] as HTMLElement;
+    const item = listRef.current?.children[selectedIdx] as
+      | HTMLElement
+      | undefined;
     item?.scrollIntoView({ block: "nearest" });
   }, [selectedIdx]);
 
@@ -66,14 +68,21 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
 
   return (
     <div class="search-overlay" onClick={onClose}>
-      <div class="search-popup" onClick={(e) => e.stopPropagation()}>
+      <div
+        class="search-popup"
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
         <input
           ref={inputRef}
           class="search-input"
           type="text"
           placeholder="Search sessions..."
           value={query}
-          onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+          onInput={(e) => {
+            setQuery((e.target as HTMLInputElement).value);
+          }}
           onKeyDown={handleKeyDown}
         />
         <div class="search-results" ref={listRef}>
@@ -95,7 +104,9 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
                   onSelect(t.tid);
                   onClose();
                 }}
-                onMouseEnter={() => setSelectedIdx(i)}
+                onMouseEnter={() => {
+                  setSelectedIdx(i);
+                }}
               >
                 {hasIcon ? (
                   <TaskTypeIcon

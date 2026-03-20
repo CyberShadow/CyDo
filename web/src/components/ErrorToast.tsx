@@ -24,7 +24,12 @@ export function ErrorToast({ errors, onDismiss, onClearAll }: Props) {
       {errors.map((err) => (
         <div key={err.id} class="error-toast-item">
           <pre class="error-toast-message">{err.message}</pre>
-          <button class="error-toast-dismiss" onClick={() => onDismiss(err.id)}>
+          <button
+            class="error-toast-dismiss"
+            onClick={() => {
+              onDismiss(err.id);
+            }}
+          >
             &times;
           </button>
         </div>

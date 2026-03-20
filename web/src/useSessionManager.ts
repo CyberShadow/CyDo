@@ -16,12 +16,7 @@ import { Connection } from "./connection";
 import type {
   AgnosticEvent,
   AgnosticFileEvent,
-  AskUserQuestionControlMessage,
   ControlMessage,
-  DraftUpdatedMessage,
-  SuggestionsUpdateMessage,
-  TaskReloadMessage,
-  TaskUpdatedMessage,
 } from "./protocol";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
@@ -181,7 +176,7 @@ export function useTaskManager(): TaskManager {
     // Helper: find workspace/project for a numeric task ID
     const taskContext = (tid: number): [string | null, string | null] => {
       const t = liveStates.get(tid);
-      if (!t?.workspace || !t?.projectPath) return [null, null];
+      if (!t || !t.workspace || !t.projectPath) return [null, null];
       const projName = findProjectName(
         workspacesRef.current,
         t.workspace,
@@ -467,7 +462,7 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "task_updated": {
-        const entry = (msg as TaskUpdatedMessage).task;
+        const entry = msg.task;
         setTasks((prev) => {
           const next = new Map(prev);
           const workspace = entry.workspace || "";
@@ -537,7 +532,7 @@ export function useTaskManager(): TaskManager {
         // Collect user message texts to detect unsaved prompts after replay.
         // Skip for edit-triggered reloads: the message was intentionally
         // replaced, not removed, so old text should not become inputDraft.
-        const isEdit = (msg as TaskReloadMessage).reason === "edit";
+        const isEdit = msg.reason === "edit";
         const userTexts = isEdit
           ? []
           : t.messages
@@ -661,7 +656,7 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "suggestions_update": {
-        const { tid, suggestions } = msg as SuggestionsUpdateMessage;
+        const { tid, suggestions } = msg;
         const t = liveStates.get(tid);
         if (!t) break;
         const updated = { ...t, suggestions };
@@ -675,7 +670,7 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "draft_updated": {
-        const { tid, new_draft } = msg as DraftUpdatedMessage;
+        const { tid, new_draft } = msg;
         setTasks((prev) => {
           const task = prev.get(tid);
           if (!task) return prev;
@@ -726,8 +721,7 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "ask_user_question": {
-        const { tid, tool_use_id, questions } =
-          msg as AskUserQuestionControlMessage;
+        const { tid, tool_use_id, questions } = msg;
         const t = liveStates.get(tid);
         if (!t) break;
         // Empty tool_use_id signals that the question was answered (clear the form)

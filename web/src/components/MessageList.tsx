@@ -35,7 +35,9 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
     return (
       <div
         class={`result-divider ${d.isError ? "result-error" : "result-success"}`}
-        onClick={() => setExpanded(true)}
+        onClick={() => {
+          setExpanded(true);
+        }}
       >
         <hr />
         <span class="result-divider-icon">{d.isError ? "!" : "\u2713"}</span>
@@ -47,7 +49,9 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
   return (
     <div
       class={`message result-message ${d.isError ? "result-error" : "result-success"}`}
-      onClick={() => setExpanded(false)}
+      onClick={() => {
+        setExpanded(false);
+      }}
     >
       <div class="result-header">
         {d.isError ? "Session Failed" : "Session Complete"}
@@ -62,24 +66,37 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         )}
         {d.totalCostUsd > 0 && <span>Cost: ${d.totalCostUsd.toFixed(4)}</span>}
 
-        {d.stopReason && d.stopReason !== null && (
-          <span>Stop: {d.stopReason}</span>
-        )}
+        {d.stopReason && <span>Stop: {d.stopReason}</span>}
       </div>
       {d.modelUsage && Object.keys(d.modelUsage).length > 0 && (
-        <details class="result-details" onClick={(e) => e.stopPropagation()}>
+        <details
+          class="result-details"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
           <summary>Per-model usage</summary>
           <pre>{JSON.stringify(d.modelUsage, null, 2)}</pre>
         </details>
       )}
       {d.permissionDenials && d.permissionDenials.length > 0 && (
-        <details class="result-details" onClick={(e) => e.stopPropagation()}>
+        <details
+          class="result-details"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
           <summary>Permission denials ({d.permissionDenials.length})</summary>
           <pre>{JSON.stringify(d.permissionDenials, null, 2)}</pre>
         </details>
       )}
       {d.errors && d.errors.length > 0 && (
-        <details class="result-details" onClick={(e) => e.stopPropagation()}>
+        <details
+          class="result-details"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
           <summary>Errors ({d.errors.length})</summary>
           <pre>{d.errors.join("\n\n")}</pre>
         </details>
@@ -188,7 +205,9 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
     return (
       <div
         class="result-divider init-message"
-        onClick={() => setExpanded(true)}
+        onClick={() => {
+          setExpanded(true);
+        }}
       >
         <hr />
         <span class="result-divider-icon">{"☀"}</span>
@@ -199,27 +218,32 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
 
   return (
     <div class="message system-message init-message">
-      <div class="init-header" onClick={() => setExpanded(false)}>
+      <div
+        class="init-header"
+        onClick={() => {
+          setExpanded(false);
+        }}
+      >
         Session Init
       </div>
       <div class="init-meta">
-        {raw?.model && <span>Model: {raw.model}</span>}
-        {raw?.agent_version && <span>v{raw.agent_version}</span>}
-        {raw?.permission_mode && <span>{raw.permission_mode}</span>}
+        {raw.model && <span>Model: {raw.model}</span>}
+        {raw.agent_version && <span>v{raw.agent_version}</span>}
+        {raw.permission_mode && <span>{raw.permission_mode}</span>}
       </div>
-      {Array.isArray(raw?.tools) && raw.tools.length > 0 && (
+      {Array.isArray(raw.tools) && raw.tools.length > 0 && (
         <InitDetailList label="Tools" items={raw.tools} />
       )}
-      {Array.isArray(raw?.mcp_servers) && raw.mcp_servers.length > 0 && (
+      {Array.isArray(raw.mcp_servers) && raw.mcp_servers.length > 0 && (
         <InitDetailList label="MCP servers" items={raw.mcp_servers} />
       )}
-      {Array.isArray(raw?.agents) && raw.agents.length > 0 && (
+      {Array.isArray(raw.agents) && raw.agents.length > 0 && (
         <InitDetailList label="Agents" items={raw.agents} />
       )}
-      {Array.isArray(raw?.skills) && raw.skills.length > 0 && (
+      {Array.isArray(raw.skills) && raw.skills.length > 0 && (
         <InitDetailList label="Skills" items={raw.skills} />
       )}
-      {Array.isArray(raw?.plugins) && raw.plugins.length > 0 && (
+      {Array.isArray(raw.plugins) && raw.plugins.length > 0 && (
         <InitDetailList label="Plugins" items={raw.plugins} />
       )}
     </div>
@@ -228,22 +252,22 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
 
 function TaskLifecycleView({ message }: { message: DisplayMessage }) {
   const raw = message.rawSource as Record<string, unknown>;
-  const isStarted = raw?.subtype === "task_started";
-  const taskType = raw?.task_type;
-  const taskId = raw?.task_id;
+  const isStarted = raw.subtype === "task_started";
+  const taskType = raw.task_type;
+  const taskId = raw.task_id;
 
   let label: string;
   let description: string;
   if (isStarted) {
     label = "Task started";
     description =
-      (raw?.description as string | undefined) ||
+      (raw.description as string | undefined) ||
       (taskId as string | undefined) ||
       "";
   } else {
-    label = `Task ${raw?.status || "updated"}`;
+    label = `Task ${typeof raw.status === "string" ? raw.status : "updated"}`;
     description =
-      (raw?.summary as string | undefined) ||
+      (raw.summary as string | undefined) ||
       (taskId as string | undefined) ||
       "";
   }
@@ -281,7 +305,9 @@ function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
 }
 
 function jsonReplacer(_key: string, value: unknown) {
-  return value instanceof Map ? Object.fromEntries(value) : value;
+  return value instanceof Map
+    ? (Object.fromEntries(value) as Record<string, unknown>)
+    : value;
 }
 
 function SourceView({ msg }: { msg: DisplayMessage }) {
@@ -325,10 +351,13 @@ const MessageView = memo(
     const [showSource, setShowSource] = useState(false);
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState("");
+    const rawArr = msg.rawSource as unknown[];
     const raw = Array.isArray(msg.rawSource)
-      ? msg.rawSource[msg.rawSource.length - 1]
+      ? rawArr[rawArr.length - 1]
       : msg.rawSource;
-    const uuid = (raw as Record<string, unknown>)?.uuid as string | undefined;
+    const uuid = (raw as Record<string, unknown> | undefined)?.uuid as
+      | string
+      | undefined;
 
     const startEdit = useCallback(() => {
       const text = msg.content
@@ -362,7 +391,9 @@ const MessageView = memo(
           {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
             <button
               class="msg-action-btn view-source-btn"
-              onClick={() => setShowSource(!showSource)}
+              onClick={() => {
+                setShowSource(!showSource);
+              }}
               title="View source"
             >
               {"{}"}
@@ -374,9 +405,9 @@ const MessageView = memo(
             <textarea
               class="edit-textarea"
               value={editText}
-              onInput={(e) =>
-                setEditText((e.target as HTMLTextAreaElement).value)
-              }
+              onInput={(e) => {
+                setEditText((e.target as HTMLTextAreaElement).value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   setEditing(false);
@@ -388,7 +419,12 @@ const MessageView = memo(
               ref={(el) => el?.focus()}
             />
             <div class="edit-actions">
-              <button class="btn btn-sm" onClick={() => setEditing(false)}>
+              <button
+                class="btn btn-sm"
+                onClick={() => {
+                  setEditing(false);
+                }}
+              >
                 Cancel
               </button>
               <button class="btn btn-sm btn-primary" onClick={saveEdit}>
@@ -406,7 +442,9 @@ const MessageView = memo(
             {onFork && (
               <button
                 class="msg-action-btn fork-btn"
-                onClick={() => onFork(uuid)}
+                onClick={() => {
+                  onFork(uuid);
+                }}
                 title="Fork session after this point"
               >
                 {"\u2442"}
@@ -415,7 +453,9 @@ const MessageView = memo(
             {onUndo && (
               <button
                 class="msg-action-btn undo-btn"
-                onClick={() => onUndo(uuid)}
+                onClick={() => {
+                  onUndo(uuid);
+                }}
                 title="Undo: rewind to this point"
               >
                 {"\u21B6"}
@@ -446,19 +486,28 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
     () =>
-      onFork ? (afterUuid: string) => onFork(sessionId, afterUuid) : undefined,
+      onFork
+        ? (afterUuid: string) => {
+            onFork(sessionId, afterUuid);
+          }
+        : undefined,
     [onFork, sessionId],
   );
   const handleUndo = useMemo(
     () =>
-      onUndo ? (afterUuid: string) => onUndo(sessionId, afterUuid) : undefined,
+      onUndo
+        ? (afterUuid: string) => {
+            onUndo(sessionId, afterUuid);
+          }
+        : undefined,
     [onUndo, sessionId],
   );
   const handleEditMessage = useMemo(
     () =>
       onEditMessage
-        ? (uuid: string, content: string) =>
-            onEditMessage(sessionId, uuid, content)
+        ? (uuid: string, content: string) => {
+            onEditMessage(sessionId, uuid, content);
+          }
         : undefined,
     [onEditMessage, sessionId],
   );
@@ -486,7 +535,9 @@ export function MessageList({
       el.style.overflowAnchor = el.scrollTop >= -1 ? "none" : "auto";
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+    };
   }, []);
 
   // Partition messages: top-level vs nested under a parent tool_use_id
@@ -557,7 +608,9 @@ export function MessageList({
               inner = <CompactBoundaryMessageView message={msg} />;
               break;
             case "system": {
-              const rawType = (msg.rawSource as Record<string, unknown>)?.type;
+              const rawType = (
+                msg.rawSource as Record<string, unknown> | undefined
+              )?.type;
               if (rawType === "session/init") {
                 inner = <SystemInitView message={msg} />;
               } else if (msg.statusText !== undefined) {
@@ -596,12 +649,12 @@ export function MessageList({
                 </div>
               );
           }
+          const rawSrcArr = msg.rawSource as unknown[];
           const rawSrc = Array.isArray(msg.rawSource)
-            ? msg.rawSource[msg.rawSource.length - 1]
+            ? rawSrcArr[rawSrcArr.length - 1]
             : msg.rawSource;
-          const msgUuid = (rawSrc as Record<string, unknown>)?.uuid as
-            | string
-            | undefined;
+          const msgUuid = (rawSrc as Record<string, unknown> | undefined)
+            ?.uuid as string | undefined;
           const isForkable =
             !!msgUuid && !!forkableUuids && forkableUuids.has(msgUuid);
           return (

@@ -18,6 +18,7 @@ export const Markdown: FunctionComponent<Props> = memo(
 
     const parserRef = useRef<IncremarkParser | null>(null);
     if (!parserRef.current) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- breaks is valid but not in @incremark/core types
       parserRef.current = createIncremarkParser({
         gfm: true,
         breaks: true,
@@ -46,14 +47,15 @@ export const Markdown: FunctionComponent<Props> = memo(
         return update.ast;
       }
     }, [text]);
-
     const tokens = useHighlight(showRaw ? text : null, "markdown");
 
     return (
       <div class={`markdown-wrap ${showRaw ? "markdown-raw" : ""}`}>
         <button
           class="markdown-toggle-btn"
-          onClick={() => setShowRaw(!showRaw)}
+          onClick={() => {
+            setShowRaw(!showRaw);
+          }}
           title={showRaw ? "Show rendered" : "Show source"}
         >
           {showRaw ? "◉" : "◎"}

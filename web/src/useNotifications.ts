@@ -107,7 +107,9 @@ function startWorker() {
     });
     const url = URL.createObjectURL(blob);
     worker = new SharedWorker(url, { name: "cydo-notifications" });
-    worker.onerror = (e) => console.error("[CyDo] SharedWorker error:", e);
+    worker.onerror = (e) => {
+      console.error("[CyDo] SharedWorker error:", e);
+    };
     worker.port.start();
   } catch (e) {
     console.error("[CyDo] Failed to create SharedWorker:", e);
@@ -145,7 +147,7 @@ export function useNotifications(
 
   useEffect(() => {
     if (activeTaskId === null) return;
-    const tid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
+    const tid = parseInt(activeTaskId, 10);
     const t = !isNaN(tid) ? tasks.get(tid) : undefined;
     if (!t?.needsAttention) return;
 
@@ -154,13 +156,15 @@ export function useNotifications(
     };
     dismiss(); // dismiss immediately if focused
     window.addEventListener("focus", dismiss);
-    return () => window.removeEventListener("focus", dismiss);
+    return () => {
+      window.removeEventListener("focus", dismiss);
+    };
   }, [activeTaskId, tasks]);
 
   // Request Notification permission
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+      void Notification.requestPermission();
     }
   }, []);
 

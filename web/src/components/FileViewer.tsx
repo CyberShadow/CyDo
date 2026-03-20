@@ -1,5 +1,5 @@
 import { Fragment } from "preact";
-import type { JSX } from "preact";
+import type { CSSProperties, PointerEventHandler } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { structuredPatch } from "diff";
@@ -71,16 +71,14 @@ function resolveEditContent(
       return { contentBefore: originalFile, contentAfter, structuredPatch };
     }
 
-    if (edit.type === "write") {
-      const contentAfter =
-        typeof input.content === "string" ? input.content : null;
-      if (contentAfter == null) return null;
-      return {
-        contentBefore: originalFile,
-        contentAfter,
-        structuredPatch,
-      };
-    }
+    const contentAfter =
+      typeof input.content === "string" ? input.content : null;
+    if (contentAfter == null) return null;
+    return {
+      contentBefore: originalFile,
+      contentAfter,
+      structuredPatch,
+    };
 
     return null;
   }
@@ -259,8 +257,10 @@ function FileTreeNode({
     return (
       <div
         class={`file-tree-item${selectedFile === node.fullPath ? " selected" : ""}`}
-        style={{ "--depth": depth } as JSX.CSSProperties}
-        onClick={() => onSelectFile(node.fullPath)}
+        style={{ "--depth": depth } as CSSProperties}
+        onClick={() => {
+          onSelectFile(node.fullPath);
+        }}
         title={node.fullPath}
       >
         {node.label}
@@ -272,8 +272,10 @@ function FileTreeNode({
     <Fragment>
       <div
         class="file-tree-item directory"
-        style={{ "--depth": depth } as JSX.CSSProperties}
-        onClick={() => setExpanded(!expanded)}
+        style={{ "--depth": depth } as CSSProperties}
+        onClick={() => {
+          setExpanded(!expanded);
+        }}
       >
         {expanded ? "\u25BE" : "\u25B8"} {node.label}
       </div>
@@ -370,26 +372,34 @@ const ContentViewer = memo(function ContentViewer({
       <div class="content-viewer-tabs">
         <button
           class={viewMode === "source" ? "active" : ""}
-          onClick={() => onChangeViewMode("source")}
+          onClick={() => {
+            onChangeViewMode("source");
+          }}
         >
           Source
         </button>
         <button
           class={viewMode === "diff" ? "active" : ""}
-          onClick={() => onChangeViewMode("diff")}
+          onClick={() => {
+            onChangeViewMode("diff");
+          }}
         >
           Diff
         </button>
         <button
           class={viewMode === "cumulative" ? "active" : ""}
-          onClick={() => onChangeViewMode("cumulative")}
+          onClick={() => {
+            onChangeViewMode("cumulative");
+          }}
         >
           Cumulative
         </button>
         {isMarkdown && (
           <button
             class={viewMode === "rendered" ? "active" : ""}
-            onClick={() => onChangeViewMode("rendered")}
+            onClick={() => {
+              onChangeViewMode("rendered");
+            }}
           >
             Rendered
           </button>
@@ -606,9 +616,7 @@ export function FileViewer({
       </div>
       <div
         class="resize-handle"
-        onPointerDown={
-          handlePointerDown as JSX.PointerEventHandler<HTMLDivElement>
-        }
+        onPointerDown={handlePointerDown as PointerEventHandler<HTMLDivElement>}
       />
     </div>
   );

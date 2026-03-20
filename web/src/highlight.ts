@@ -148,7 +148,7 @@ export function useHighlight(
       return;
     }
     let cancelled = false;
-    tokenize(code, lang, shikiTheme).then((t) => {
+    void tokenize(code, lang, shikiTheme).then((t) => {
       if (!cancelled) setTokens(t);
     });
     return () => {

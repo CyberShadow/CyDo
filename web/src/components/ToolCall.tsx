@@ -69,7 +69,7 @@ function overlayDiff(
   if (!syntaxTokens) {
     return relevant.map((c) => ({
       content: c.value,
-      emphasized: side === "old" ? !!c.removed : !!c.added,
+      emphasized: side === "old" ? c.removed : c.added,
     }));
   }
 
@@ -79,7 +79,7 @@ function overlayDiff(
 
   for (const change of relevant) {
     let remaining = change.value.length;
-    const emphasized = side === "old" ? !!change.removed : !!change.added;
+    const emphasized = side === "old" ? change.removed : change.added;
 
     while (remaining > 0 && tIdx < syntaxTokens.length) {
       const token = syntaxTokens[tIdx]!;
@@ -523,8 +523,8 @@ function MarkdownDiffView({
 }) {
   const [showSource, setShowSource] = useState(true);
   const diffHtml = useMemo(() => {
-    const oldHtml = marked.parse(oldStr, { async: false }) as string;
-    const newHtml = marked.parse(newStr, { async: false }) as string;
+    const oldHtml = marked.parse(oldStr, { async: false });
+    const newHtml = marked.parse(newStr, { async: false });
     return sanitizeHtml(HtmlDiff.execute(oldHtml, newHtml));
   }, [oldStr, newStr]);
 
@@ -532,7 +532,9 @@ function MarkdownDiffView({
     <div class="markdown-diff-wrap">
       <button
         class="markdown-toggle-btn"
-        onClick={() => setShowSource(!showSource)}
+        onClick={() => {
+          setShowSource(!showSource);
+        }}
         title={showSource ? "Show rendered" : "Show source"}
       >
         {showSource ? "\u25C9" : "\u25CE"}
@@ -869,7 +871,7 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
         current = { links: [], body: "" };
       }
       try {
-        const parsed = JSON.parse(line.slice(7));
+        const parsed: unknown = JSON.parse(line.slice(7));
         if (Array.isArray(parsed)) {
           current.links = parsed.filter(
             (l: unknown): l is WebSearchLink =>
@@ -931,14 +933,18 @@ function parseCydoTaskResult(
   content: string,
 ): Record<string, unknown>[] | null {
   try {
-    const parsed = JSON.parse(content);
+    const parsed = JSON.parse(content) as unknown;
     // Backend returns either a raw array or {"tasks": [...]} wrapper
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed?.tasks)
-        ? parsed.tasks
+    const parsedObj =
+      !Array.isArray(parsed) && typeof parsed === "object" && parsed !== null
+        ? (parsed as Record<string, unknown>)
         : null;
-    return arr && arr.length > 0 ? arr : null;
+    const arr: unknown[] | null = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsedObj?.tasks)
+        ? parsedObj.tasks
+        : null;
+    return arr && arr.length > 0 ? (arr as Record<string, unknown>[]) : null;
   } catch {
     return null;
   }
@@ -1120,7 +1126,7 @@ function formatToolUseResult(
 
   const consumed: h.JSX.Element | null = null;
 
-  if (!consumed && Object.keys(unknown).length === 0) return null;
+  if (Object.keys(unknown).length === 0) return null;
 
   return (
     <>
@@ -1201,7 +1207,9 @@ function getHeaderSubtitle(
         href={input.url}
         target="_blank"
         rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
       >
         {input.url}
       </a>
@@ -1267,12 +1275,16 @@ function getHeaderSubtitle(
     }
   }
   if (name === "TaskUpdate") {
-    const id = input.task_id ?? input.taskId;
+    const rawId = input.task_id ?? input.taskId;
+    const idStr =
+      typeof rawId === "string" || typeof rawId === "number"
+        ? String(rawId)
+        : null;
     const status = typeof input.status === "string" ? input.status : null;
-    if (id != null && status) {
+    if (idStr !== null && status) {
       return (
         <span class="tool-subtitle">
-          #{String(id)} → {status}
+          #{idStr} → {status}
         </span>
       );
     }
@@ -1467,7 +1479,7 @@ export function ToolCall({
     result &&
     !result.isError &&
     typeof result.content === "string"
-      ? parseCydoTaskResult(result.content as string)
+      ? parseCydoTaskResult(result.content)
       : null;
   const useReadHighlight =
     name === "Read" &&
@@ -1491,7 +1503,12 @@ export function ToolCall({
       id={toolUseId ? `tool-${toolUseId}` : undefined}
       class={`tool-call ${result?.isError ? "tool-error" : ""}`}
     >
-      <div class="tool-header" onClick={() => setInputOpen(!inputOpen)}>
+      <div
+        class="tool-header"
+        onClick={() => {
+          setInputOpen(!inputOpen);
+        }}
+      >
         <span class="tool-icon">
           {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
         </span>
@@ -1529,7 +1546,9 @@ export function ToolCall({
         <div class="tool-result-section">
           <div
             class="tool-result-header"
-            onClick={() => setResultOpen(!resultOpen)}
+            onClick={() => {
+              setResultOpen(!resultOpen);
+            }}
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result
           </div>
@@ -1571,7 +1590,7 @@ export function ToolCall({
               ) : useReadHighlight ? (
                 <ReadResult
                   content={result.content as string}
-                  filePath={filePath!}
+                  filePath={filePath}
                 />
               ) : useWebSearchResult ? (
                 <WebSearchResult content={result.content as string} />

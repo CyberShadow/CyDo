@@ -24,7 +24,9 @@ export class ErrorBoundary extends Component<Props, State> {
           <pre class="error-boundary-stack">{this.state.error.stack}</pre>
           <button
             class="error-boundary-reset"
-            onClick={() => this.setState({ error: null })}
+            onClick={() => {
+              this.setState({ error: null });
+            }}
           >
             Try Again
           </button>

@@ -59,8 +59,12 @@ export function SessionConfig({
           key={t.name}
           class={`task-type-row ${t.name === selected ? "selected" : ""}`}
           tabIndex={-1}
-          onMouseDown={(e: MouseEvent) => e.preventDefault()}
-          onClick={() => onTaskTypeChange(t.name)}
+          onMouseDown={(e: MouseEvent) => {
+            e.preventDefault();
+          }}
+          onClick={() => {
+            onTaskTypeChange(t.name);
+          }}
         >
           <div class="task-type-header">
             {t.icon && (

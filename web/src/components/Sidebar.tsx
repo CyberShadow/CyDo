@@ -366,7 +366,9 @@ const SidebarItem = memo(function SidebarItem({
       <div
         class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}${depth === 0 ? " top-level" : ""}`}
         data-tid={id}
-        onClick={() => onSelect(id)}
+        onClick={() => {
+          onSelect(id);
+        }}
       >
         {treeConnectors}
         <span class="task-type-icon task-type-icon-archive" />
@@ -379,7 +381,9 @@ const SidebarItem = memo(function SidebarItem({
     <div
       class={`sidebar-item${isActive ? " active" : ""}${hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
-      onClick={() => onSelect(id)}
+      onClick={() => {
+        onSelect(id);
+      }}
     >
       {treeConnectors}
       {hasPendingQuestion ? (
@@ -441,7 +445,9 @@ export const Sidebar = memo(function Sidebar({
   // Stable callback via ref — survives parent re-renders
   const onSelectRef = useRef(onSelectTask);
   onSelectRef.current = onSelectTask;
-  const handleSelect = useCallback((id: string) => onSelectRef.current(id), []);
+  const handleSelect = useCallback((id: string) => {
+    onSelectRef.current(id);
+  }, []);
 
   // Ensure icon styles are injected once
   ensureIconStyles();
@@ -468,7 +474,9 @@ export const Sidebar = memo(function Sidebar({
       }
     });
     observer.observe(listRef.current, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+    };
   }, [activeTaskId]);
 
   // Scroll to active item when sidebar becomes visible (mobile hamburger).

@@ -11,7 +11,7 @@ import { UserMessage } from "./UserMessage";
 function tryParsePartialJson(partial: string): Record<string, unknown> {
   if (!partial) return {};
   try {
-    return JSON.parse(partial);
+    return JSON.parse(partial) as Record<string, unknown>;
   } catch {}
 
   let s = partial;
@@ -66,13 +66,13 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
   // Phase 3: Try parsing with computed closers, then fall back to snapshots
   const closers = [...stack].reverse().join("");
   try {
-    return JSON.parse(s + closers);
+    return JSON.parse(s + closers) as Record<string, unknown>;
   } catch {}
   for (let i = snapshots.length - 1; i >= 0; i--) {
     const snap = snapshots[i]!;
     const c = [...snap.stack].reverse().join("");
     try {
-      return JSON.parse(s.slice(0, snap.pos) + c);
+      return JSON.parse(s.slice(0, snap.pos) + c) as Record<string, unknown>;
     } catch {}
   }
 

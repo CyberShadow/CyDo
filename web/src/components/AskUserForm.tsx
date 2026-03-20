@@ -75,9 +75,9 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
                 <button
                   key={oi}
                   class={`ask-option-btn ${selected ? "selected" : ""}`}
-                  onClick={() =>
-                    toggleOption(qi, opt.label, q.multiSelect ?? false)
-                  }
+                  onClick={() => {
+                    toggleOption(qi, opt.label, q.multiSelect ?? false);
+                  }}
                 >
                   <span class="ask-option-label">{opt.label}</span>
                   {opt.description && (

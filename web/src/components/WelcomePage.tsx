@@ -77,13 +77,17 @@ export function WelcomePage({
                   <div class="project-card-header">
                     <span
                       class="project-card-title"
-                      onClick={() => onNavigateToProject(ws.name, proj.name)}
+                      onClick={() => {
+                        onNavigateToProject(ws.name, proj.name);
+                      }}
                     >
                       {proj.name}
                     </span>
                     <button
                       class="sidebar-new-btn"
-                      onClick={() => onNavigateToProject(ws.name, proj.name)}
+                      onClick={() => {
+                        onNavigateToProject(ws.name, proj.name);
+                      }}
                       title="New task"
                     >
                       +
@@ -97,7 +101,9 @@ export function WelcomePage({
                         <div
                           key={t.tid}
                           class={`sidebar-item${attention.has(t.tid) ? " attention" : ""}`}
-                          onClick={() => onSelectTask(t.tid)}
+                          onClick={() => {
+                            onSelectTask(t.tid);
+                          }}
                         >
                           {attention.has(t.tid) ? (
                             <span class="task-type-icon task-type-icon-check alive" />
@@ -133,7 +139,9 @@ export function WelcomePage({
                   <div
                     key={t.tid}
                     class={`sidebar-item${attention.has(t.tid) ? " attention" : ""}`}
-                    onClick={() => onSelectTask(t.tid)}
+                    onClick={() => {
+                      onSelectTask(t.tid);
+                    }}
                   >
                     {attention.has(t.tid) ? (
                       <span class="task-type-icon task-type-icon-check alive" />

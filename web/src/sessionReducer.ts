@@ -10,7 +10,6 @@ import type {
   DisplayMessage,
   ToolResultContent,
   FileEdit,
-  TrackedFile,
 } from "./types";
 import type {
   AgnosticEvent,
@@ -28,8 +27,6 @@ import type {
   StreamBlockDelta,
   StreamBlockStop,
   UserEchoMessage,
-  ControlResponseMessage,
-  StderrMessage,
   UserContentBlock,
 } from "./protocol";
 
@@ -285,7 +282,7 @@ export function reduceAssistantMessage(
     const existingMsg = { ...updated[idx]! };
     // Replace temp ID with real one when adopting a streaming placeholder
     if (existingMsg.id !== msgId) existingMsg.id = msgId;
-    existingMsg.content = [...existingMsg.content, ...(msg.content ?? [])];
+    existingMsg.content = [...existingMsg.content, ...msg.content];
     // Only keep streamingBlocks active if it was a streaming placeholder;
     // during JSONL replay there's no streaming so leave it undefined.
     if (existingMsg.streamingBlocks !== undefined) {
@@ -304,7 +301,7 @@ export function reduceAssistantMessage(
     const prev = existingMsg.rawSource;
     existingMsg.rawSource = prev
       ? Array.isArray(prev)
-        ? [...prev, msg]
+        ? [...(prev as unknown[]), msg]
         : [prev, msg]
       : msg;
     updated[idx] = existingMsg;
@@ -358,7 +355,7 @@ function trackFileEdits(
 
       const input = toolUse.input ?? {};
       const filePath =
-        typeof input?.file_path === "string" ? input.file_path : null;
+        typeof input.file_path === "string" ? input.file_path : null;
       if (!filePath) break;
 
       const edit: FileEdit = {
@@ -368,9 +365,7 @@ function trackFileEdits(
         type: toolName === "Edit" ? "edit" : "write",
       };
 
-      const trackedFiles = new Map(
-        state.trackedFiles ?? new Map<string, TrackedFile>(),
-      );
+      const trackedFiles = new Map(state.trackedFiles);
       const existing = trackedFiles.get(filePath);
       if (existing) {
         trackedFiles.set(filePath, {
@@ -443,7 +438,7 @@ export function reduceUserEcho(
           );
           if (hasToolUse) {
             const newMsg = { ...m, toolResults: new Map(m.toolResults) };
-            newMsg.toolResults!.set(block.tool_use_id, {
+            newMsg.toolResults.set(block.tool_use_id, {
               toolUseId: block.tool_use_id,
               content: block.content,
               isError: block.is_error,
@@ -466,7 +461,7 @@ export function reduceUserEcho(
       const prev = msg.rawSource;
       msg.rawSource = prev
         ? Array.isArray(prev)
-          ? [...prev, rawMsg]
+          ? [...(prev as unknown[]), rawMsg]
           : [prev, rawMsg]
         : rawMsg;
     }
@@ -866,7 +861,7 @@ export function reduceStdoutMessage(
       return s;
 
     case "control/response": {
-      const resp = (msg as ControlResponseMessage).response;
+      const resp = msg.response;
       const id = `control-response-${++s.msgIdCounter}`;
       return {
         ...s,
@@ -878,7 +873,7 @@ export function reduceStdoutMessage(
             content: [
               {
                 type: "text" as const,
-                text: `Control response: ${resp?.subtype ?? "unknown"}`,
+                text: `Control response: ${resp.subtype}`,
               },
             ],
             rawSource: msg,
@@ -891,7 +886,7 @@ export function reduceStdoutMessage(
       return reduceExit(s);
 
     case "process/stderr":
-      return reduceStderr(s, (msg as StderrMessage).text);
+      return reduceStderr(s, msg.text);
 
     default:
       return reduceParseError(
@@ -931,7 +926,7 @@ export function reduceFileMessage(
       const content: UserContentBlock[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
-          : (rawContent ?? []);
+          : rawContent;
 
       // Pending steering message during JSONL replay: create unconfirmed placeholder
       if (msg.pending) {

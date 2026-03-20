@@ -69,23 +69,25 @@ function AppContent() {
       }
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
   }, []);
 
   const searchPopup = showSearch && (
     <SearchPopup
       tasks={tasks}
       taskTypes={taskTypes}
-      onSelect={(tid) => setActiveTaskId(String(tid))}
+      onSelect={(tid) => {
+        setActiveTaskId(String(tid));
+      }}
       onClose={() => {
         setShowSearch(false);
         // Re-focus the input box or resume button after dismissing search
         requestAnimationFrame(() => {
-          const input = document.querySelector(
-            ".input-textarea",
-          ) as HTMLElement;
-          const resume = document.querySelector(".btn-resume") as HTMLElement;
-          (input ?? resume)?.focus();
+          const input = document.querySelector(".input-textarea");
+          const resume = document.querySelector(".btn-resume");
+          ((input ?? resume) as HTMLElement | null)?.focus();
         });
       }}
     />
@@ -101,7 +103,9 @@ function AppContent() {
             tasks={tasks}
             attention={attention}
             taskTypes={taskTypes}
-            onSelectTask={(tid) => setActiveTaskId(String(tid))}
+            onSelectTask={(tid) => {
+              setActiveTaskId(String(tid));
+            }}
             onNavigateToProject={navigateToProject}
           />
           {searchPopup}
@@ -163,7 +167,7 @@ function AppContent() {
         const idx = visual.indexOf(activeTaskId);
         const dir = e.key === "ArrowUp" ? -1 : 1;
         const nextIdx = (idx + dir + visual.length) % visual.length;
-        const next = visual[nextIdx]!;
+        const next = visual[nextIdx] ?? null;
         if (next !== null) {
           setActiveTaskId(next);
           document
@@ -179,7 +183,9 @@ function AppContent() {
       e.preventDefault();
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
   }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
 
   const [selectedTaskType, setSelectedTaskType] = useState("conversation");
@@ -222,14 +228,21 @@ function AppContent() {
       newTaskInputRef.current?.focus();
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
   }, [active, connected]);
 
   return (
     <ThemeContext.Provider value={theme}>
       <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         {sidebarOpen && (
-          <div class="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+          <div
+            class="sidebar-backdrop"
+            onClick={() => {
+              setSidebarOpen(false);
+            }}
+          />
         )}
         <Sidebar
           tasks={sidebarTasks}
@@ -242,7 +255,9 @@ function AppContent() {
           projectName={activeProject || undefined}
           taskTypes={taskTypes}
           visible={sidebarOpen}
-          onOpenSearch={() => setShowSearch(true)}
+          onOpenSearch={() => {
+            setShowSearch(true);
+          }}
         />
         {Array.from(tasks.values())
           .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
@@ -313,9 +328,9 @@ function AppContent() {
                 />
                 <InputBox
                   inputRef={newTaskInputRef}
-                  onSend={(text: string) =>
-                    send(text, selectedTaskType || taskTypes[0]?.name)
-                  }
+                  onSend={(text: string) => {
+                    send(text, selectedTaskType || taskTypes[0]?.name);
+                  }}
                   onInterrupt={interrupt}
                   onEscape={focusTaskTypePicker}
                   isProcessing={false}
