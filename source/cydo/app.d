@@ -2563,6 +2563,7 @@ After error or misunderstanding → say nothing (let them assess/correct)
 
 Be specific: "run the tests" beats "continue".
 Suggest multiple alternatives when there are several plausible next steps.
+Reply with at most 3 suggestions.
 
 NEVER SUGGEST:
 - Evaluative ("looks good", "thanks")
@@ -2616,23 +2617,36 @@ Conversation:
 		if (tid !in tasks)
 			return "";
 
+		// First pass: count stats for structured header
+		int userMsgCount = 0;
+		int toolUseCount = 0;
+		foreach (ref d; tasks[tid].history)
+		{
+			auto envelope = cast(string) d.toGC();
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length == 0)
+				event = extractFileEventFromEnvelope(envelope);
+			if (event.length == 0)
+				continue;
+			import std.algorithm : canFind;
+			if (event.canFind(`"message/user"`))
+				userMsgCount++;
+			if (event.canFind(`"tool_use"`))
+				toolUseCount++;
+		}
+
+		// Second pass: build entries (same logic as before)
 		string[] entries;
 		size_t totalLen = 0;
 		enum maxLen = 2_500;
 		enum truncThreshold = 256;
 
-		// Iterating in reverse within each turn: the first assistant text
-		// we encounter is the last one chronologically — keep it.
-		// Subsequent assistant texts and tool calls (earlier in the turn)
-		// are collapsed to a single "[...]".
 		bool seenAssistantText = false;
 		bool turnCollapsed = false;
 
 		foreach_reverse (ref d; tasks[tid].history)
 		{
 			auto envelope = cast(string) d.toGC();
-			// History uses the agent-agnostic protocol:
-			// live events in "event" envelopes, JSONL in "fileEvent" envelopes.
 			auto event = extractEventFromEnvelope(envelope);
 			if (event.length == 0)
 				event = extractFileEventFromEnvelope(envelope);
@@ -2690,7 +2704,7 @@ Conversation:
 						continue;
 				}
 				else
-					continue; // trailing tool calls — skip
+					continue;
 			}
 			else
 				continue;
@@ -2705,8 +2719,16 @@ Conversation:
 		import std.algorithm : reverse;
 		entries.reverse();
 
+		// Structured context: header + last 4 entries only
+		if (entries.length > 4)
+			entries = entries[$ - 4 .. $];
+
+		import std.conv : to;
 		import std.array : join;
-		return entries.join("\n\n");
+		string header = "[Session: " ~ userMsgCount.to!string ~ " user messages, "
+			~ toolUseCount.to!string ~ " tool uses]\n\n";
+
+		return header ~ entries.join("\n\n");
 	}
 
 	/// Extract text content from a translated protocol event (message/user,
