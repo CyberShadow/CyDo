@@ -77,6 +77,7 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
 
       // Start backend
       const proc = spawn(process.env.CYDO_BIN!, [], {
+        detached: true,
         cwd: workDir,
         env: {
           ...process.env,
@@ -102,14 +103,14 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
         await new Promise((r) => setTimeout(r, 500));
       }
       if (!ready) {
-        proc.kill();
+        process.kill(-proc.pid!, "SIGTERM");
         throw new Error(`CyDo backend on port ${port} did not start in time`);
       }
 
       await use({ port, baseURL });
 
       // Teardown
-      proc.kill();
+      process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", r));
       rmSync(workDir, { recursive: true, force: true });
     },

@@ -36,6 +36,7 @@ async function waitForBackend(baseURL: string, timeoutMs = 30_000): Promise<void
 
 function spawnBackend(port: number, workDir: string, workerHome: string): ChildProcess {
   return spawn(process.env.CYDO_BIN!, [], {
+    detached: true,
     cwd: workDir,
     env: {
       ...process.env,
@@ -74,7 +75,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     await waitForBackend(baseURL);
 
     const restart = async () => {
-      proc.kill("SIGTERM");
+      process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", () => r()));
       proc = spawnBackend(port, workDir, workerHome);
       await waitForBackend(baseURL);
@@ -82,7 +83,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     await use({ port, baseURL, workDir, restart });
 
-    proc.kill("SIGTERM");
+    process.kill(-proc.pid!, "SIGTERM");
     await new Promise<void>((r) => proc.on("exit", () => r()));
     rmSync(workDir, { recursive: true, force: true });
   },

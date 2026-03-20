@@ -43,6 +43,7 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
       const wrapperPath = path.join(__dirname, "..", "extra-fields-wrapper.sh");
 
       const proc = spawn(process.env.CYDO_BIN!, [], {
+        detached: true,
         cwd: workDir,
         env: {
           ...process.env,
@@ -69,7 +70,7 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
         await new Promise((r) => setTimeout(r, 500));
       }
       if (!ready) {
-        proc.kill();
+        process.kill(-proc.pid!, "SIGTERM");
         throw new Error(
           `CyDo extra-fields backend on port ${port} did not start in time`,
         );
@@ -77,7 +78,7 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
 
       await use({ port, baseURL });
 
-      proc.kill();
+      process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", r));
       const { rmSync } = await import("fs");
       rmSync(workDir, { recursive: true, force: true });
