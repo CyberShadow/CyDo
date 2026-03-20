@@ -307,9 +307,10 @@ class AppServerProcess
 	// Actions queued until server reaches ready state.
 	private void delegate()[] readyQueue;
 
-	this(string[] args, string[string] env, string workDir)
+	this(string[] args)
 	{
-		process = new AgentProcess(args, env, workDir);
+		// Environment and current directory are handled by bwrap (included in args).
+		process = new AgentProcess(args, null, null);
 
 		// Set up bidirectional JSON-RPC codec on the process connection.
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
@@ -574,7 +575,7 @@ class CodexAgent : Agent
 		else
 			args = codexArgs;
 
-		auto server = new AppServerProcess(args, null, null);
+		auto server = new AppServerProcess(args);
 		serverPool[workspace] = server;
 		return server;
 	}
