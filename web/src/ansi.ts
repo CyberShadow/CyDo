@@ -159,7 +159,7 @@ export function renderAnsi(text: string): h.JSX.Element {
   if (lastIndex < text.length) {
     const chunk = text.slice(lastIndex);
     if (hasStyleProps(style)) {
-      children.push(h("span", { key: idx++, style: { ...style } }, chunk));
+      children.push(h("span", { key: idx, style: { ...style } }, chunk));
     } else {
       children.push(chunk);
     }

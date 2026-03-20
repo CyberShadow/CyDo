@@ -17,6 +17,20 @@ import type {
   AgnosticFileEvent,
   AssistantMessage,
   ResultMessage,
+  SystemInitMessage,
+  SystemStatusMessage,
+  SystemCompactBoundaryMessage,
+  SystemTaskStartedMessage,
+  SystemTaskNotificationMessage,
+  SummaryMessage,
+  RateLimitEventMessage,
+  StreamBlockStart,
+  StreamBlockDelta,
+  StreamBlockStop,
+  UserEchoMessage,
+  ControlResponseMessage,
+  StderrMessage,
+  UserContentBlock,
 } from "./protocol";
 
 function getExtras(
@@ -64,7 +78,10 @@ export function reduceParseError(
   };
 }
 
-export function reduceSystemInit(s: SessionState, msg: any): SessionState {
+export function reduceSystemInit(
+  s: SessionState,
+  msg: SystemInitMessage,
+): SessionState {
   const initMsg: DisplayMessage = {
     id: `init-${++s.msgIdCounter}`,
     type: "system" as const,
@@ -93,7 +110,10 @@ export function reduceSystemInit(s: SessionState, msg: any): SessionState {
   };
 }
 
-export function reduceSystemStatus(s: SessionState, msg: any): SessionState {
+export function reduceSystemStatus(
+  s: SessionState,
+  msg: SystemStatusMessage,
+): SessionState {
   const id = `status-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -146,7 +166,10 @@ export function reduceStopHookSummary(
   };
 }
 
-export function reduceCompactBoundary(s: SessionState, msg: any): SessionState {
+export function reduceCompactBoundary(
+  s: SessionState,
+  msg: SystemCompactBoundaryMessage,
+): SessionState {
   const id = `compact-${++s.msgIdCounter}`;
   const cm = msg.compact_metadata;
   return {
@@ -166,7 +189,10 @@ export function reduceCompactBoundary(s: SessionState, msg: any): SessionState {
   };
 }
 
-export function reduceTaskLifecycle(s: SessionState, msg: any): SessionState {
+export function reduceTaskLifecycle(
+  s: SessionState,
+  msg: SystemTaskStartedMessage | SystemTaskNotificationMessage,
+): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
   if (msg.type === "task/started") {
@@ -190,7 +216,10 @@ export function reduceTaskLifecycle(s: SessionState, msg: any): SessionState {
   };
 }
 
-export function reduceSummary(s: SessionState, msg: any): SessionState {
+export function reduceSummary(
+  s: SessionState,
+  msg: SummaryMessage,
+): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -206,7 +235,10 @@ export function reduceSummary(s: SessionState, msg: any): SessionState {
   };
 }
 
-export function reduceRateLimit(s: SessionState, msg: any): SessionState {
+export function reduceRateLimit(
+  s: SessionState,
+  msg: RateLimitEventMessage,
+): SessionState {
   const id = `ratelimit-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -267,7 +299,7 @@ export function reduceAssistantMessage(
     existingMsg.model ??= msg.model;
     existingMsg.isSidechain ??= msg.is_sidechain;
     existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
-    existingMsg.extraFields ??= getExtras(msg as any);
+    existingMsg.extraFields ??= getExtras(msg);
     // Accumulate raw sources
     const prev = existingMsg.rawSource;
     existingMsg.rawSource = prev
@@ -279,7 +311,7 @@ export function reduceAssistantMessage(
     bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
   }
-  const extraFields = getExtras(msg as any);
+  const extraFields = getExtras(msg);
   const messages = [
     ...s.messages,
     {
@@ -317,14 +349,14 @@ function trackFileEdits(
       const m = state.messages[i]!;
       if (m.type !== "assistant") continue;
       const toolUse = m.content.find(
-        (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id,
+        (c) => c.type === "tool_use" && c.id === block.tool_use_id,
       );
       if (!toolUse) continue;
 
-      const toolName = (toolUse as any).name as string;
-      if (toolName !== "Edit" && toolName !== "Write") break;
+      const toolName = toolUse.name;
+      if (!toolName || (toolName !== "Edit" && toolName !== "Write")) break;
 
-      const input = (toolUse as any).input as Record<string, unknown>;
+      const input = toolUse.input ?? {};
       const filePath =
         typeof input?.file_path === "string" ? input.file_path : null;
       if (!filePath) break;
@@ -363,10 +395,10 @@ function trackFileEdits(
 
 export function reduceUserEcho(
   s: SessionState,
-  content: any[],
+  content: UserContentBlock[],
   isSidechain: boolean | undefined,
   parentToolUseId: string | null | undefined,
-  rawMsg: unknown,
+  rawMsg: UserEchoMessage,
   isSynthetic?: boolean,
   isMeta?: boolean,
   isSteering?: boolean,
@@ -381,17 +413,22 @@ export function reduceUserEcho(
 
   for (const block of content) {
     if (block.type === "tool_result") {
-      toolResults.push(block);
+      toolResults.push(
+        block as {
+          tool_use_id: string;
+          content: ToolResultContent;
+          is_error?: boolean;
+        },
+      );
     } else if (block.type === "text") {
-      textBlocks.push(block.text);
+      textBlocks.push(block.text ?? "");
     }
   }
 
   let state = s;
 
   // Extract the opaque tool result payload (varies by tool)
-  const raw = rawMsg as any;
-  const toolUseResult = raw?.tool_result ?? undefined;
+  const toolUseResult = rawMsg.tool_result ?? undefined;
 
   // Link tool results to their parent assistant messages
   if (toolResults.length > 0) {
@@ -402,7 +439,7 @@ export function reduceUserEcho(
         const m = updated[i]!;
         if (m.type === "assistant") {
           const hasToolUse = m.content.some(
-            (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id,
+            (c) => c.type === "tool_use" && c.id === block.tool_use_id,
           );
           if (hasToolUse) {
             const newMsg = { ...m, toolResults: new Map(m.toolResults) };
@@ -440,7 +477,7 @@ export function reduceUserEcho(
   // If there are text blocks (actual user text, not just tool results), show as user message
   const meaningfulText = textBlocks.filter((t) => t.trim().length > 0);
   if (meaningfulText.length > 0 && toolResults.length === 0) {
-    const isCompactSummary = !!(rawMsg as any).isCompactSummary;
+    const isCompactSummary = !!rawMsg.isCompactSummary;
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
@@ -476,14 +513,14 @@ export function reduceUserEcho(
 
 export function reduceUserReplay(
   s: SessionState,
-  contentBlocks: any[],
-  rawMsg: unknown,
+  contentBlocks: UserContentBlock[],
+  rawMsg: UserEchoMessage,
 ): SessionState {
   const text = contentBlocks
-    .filter((b: any) => b.type === "text")
-    .map((b: any) => b.text)
+    .filter((b) => b.type === "text")
+    .map((b) => b.text ?? "")
     .join("");
-  const isCompactSummary = !!(rawMsg as any).isCompactSummary;
+  const isCompactSummary = !!rawMsg.isCompactSummary;
   const id = `user-${++s.msgIdCounter}`;
   const echoMsg: DisplayMessage = {
     id,
@@ -536,7 +573,7 @@ export function reduceResultMessage(
   }
 
   const id = `result-${++s.msgIdCounter}`;
-  const resultExtraFields = getExtras(msg as any);
+  const resultExtraFields = getExtras(msg);
   return {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
@@ -604,9 +641,7 @@ function bumpNestedVersion(
     const m = messages[i]!;
     if (
       m.type === "assistant" &&
-      m.content.some(
-        (c) => c.type === "tool_use" && (c as any).id === parentToolUseId,
-      )
+      m.content.some((c) => c.type === "tool_use" && c.id === parentToolUseId)
     ) {
       messages[i] = { ...m, nestedVersion: (m.nestedVersion ?? 0) + 1 };
       // Recurse: if the parent is itself nested, bump its parent too.
@@ -651,7 +686,7 @@ function getStreamingMessage(s: SessionState): {
 
 export function reduceStreamBlockStart(
   s: SessionState,
-  event: any,
+  event: StreamBlockStart,
 ): SessionState {
   const { messages, msgIdx } = getStreamingMessage(s);
   const msg = messages[msgIdx]!;
@@ -661,9 +696,7 @@ export function reduceStreamBlockStart(
       index: event.index,
       type: event.content_block.type,
       text: "",
-      name: (event.content_block as Record<string, unknown>).name as
-        | string
-        | undefined,
+      name: event.content_block.name,
     },
   ];
   bumpNestedVersion(messages, msg.parentToolUseId);
@@ -672,7 +705,7 @@ export function reduceStreamBlockStart(
 
 export function reduceStreamBlockDelta(
   s: SessionState,
-  event: any,
+  event: StreamBlockDelta,
 ): SessionState {
   const targetIdx = findStreamingMsg(s.messages);
   if (targetIdx < 0) return s;
@@ -683,9 +716,10 @@ export function reduceStreamBlockDelta(
     if (b.index !== event.index) return b;
     const delta = event.delta;
     let append = "";
-    if (delta.type === "text_delta") append = delta.text;
-    else if (delta.type === "thinking_delta") append = delta.text;
-    else if (delta.type === "input_json_delta") append = delta.partial_json;
+    if (delta.type === "text_delta") append = delta.text ?? "";
+    else if (delta.type === "thinking_delta") append = delta.text ?? "";
+    else if (delta.type === "input_json_delta")
+      append = delta.partial_json ?? "";
     return { ...b, text: b.text + append };
   });
   bumpNestedVersion(messages, msg.parentToolUseId);
@@ -694,7 +728,7 @@ export function reduceStreamBlockDelta(
 
 export function reduceStreamBlockStop(
   s: SessionState,
-  event: any,
+  event: StreamBlockStop,
 ): SessionState {
   const targetIdx = findStreamingMsg(s.messages);
   if (targetIdx < 0) return s;
@@ -782,30 +816,30 @@ export function reduceStdoutMessage(
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg as any);
+      return reduceTaskLifecycle(s, msg);
 
     case "message/assistant":
-      return reduceAssistantMessage(s, msg as AssistantMessage);
+      return reduceAssistantMessage(s, msg);
 
     case "message/user": {
-      const rawContent = (msg as any).content;
-      const contentBlocks: any[] =
+      const rawContent = msg.content;
+      const contentBlocks: UserContentBlock[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
           : rawContent;
 
-      if ("is_replay" in msg && (msg as any).is_replay) {
+      if (msg.is_replay) {
         return reduceUserReplay(s, contentBlocks, msg);
       } else {
         return reduceUserEcho(
           s,
           contentBlocks,
-          (msg as any).is_sidechain,
-          (msg as any).parent_tool_use_id,
+          msg.is_sidechain,
+          msg.parent_tool_use_id,
           msg,
-          (msg as any).is_synthetic,
-          (msg as any).is_meta,
-          (msg as any).is_steering,
+          msg.is_synthetic,
+          msg.is_meta,
+          msg.is_steering,
         );
       }
     }
@@ -823,7 +857,7 @@ export function reduceStdoutMessage(
       return reduceStreamTurnStop(s);
 
     case "turn/result":
-      return reduceResultMessage(s, msg as ResultMessage);
+      return reduceResultMessage(s, msg);
 
     case "session/summary":
       return reduceSummary(s, msg);
@@ -832,7 +866,7 @@ export function reduceStdoutMessage(
       return s;
 
     case "control/response": {
-      const resp = (msg as any).response;
+      const resp = (msg as ControlResponseMessage).response;
       const id = `control-response-${++s.msgIdCounter}`;
       return {
         ...s,
@@ -857,14 +891,14 @@ export function reduceStdoutMessage(
       return reduceExit(s);
 
     case "process/stderr":
-      return reduceStderr(s, (msg as any).text);
+      return reduceStderr(s, (msg as StderrMessage).text);
 
     default:
       return reduceParseError(
         s,
         "stdout",
         "Unknown message type",
-        (msg as any).type,
+        (msg as Record<string, unknown>).type as string,
         msg,
       );
   }
@@ -887,23 +921,23 @@ export function reduceFileMessage(
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg as any);
+      return reduceTaskLifecycle(s, msg);
 
     case "message/assistant":
-      return reduceAssistantMessage(s, msg as AssistantMessage);
+      return reduceAssistantMessage(s, msg);
 
     case "message/user": {
-      const rawContent = (msg as any).content;
-      const content: any[] =
+      const rawContent = msg.content;
+      const content: UserContentBlock[] =
         typeof rawContent === "string"
           ? [{ type: "text", text: rawContent }]
           : (rawContent ?? []);
 
       // Pending steering message during JSONL replay: create unconfirmed placeholder
-      if ((msg as any).pending) {
+      if (msg.pending) {
         const text = content
-          .filter((b: any) => b.type === "text")
-          .map((b: any) => b.text ?? "")
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
           .join("");
         return text ? reducePendingUserMessage(s, text) : s;
       }
@@ -911,17 +945,17 @@ export function reduceFileMessage(
       s = reduceUserEcho(
         s,
         content,
-        (msg as any).is_sidechain,
-        (msg as any).parent_tool_use_id,
+        msg.is_sidechain,
+        msg.parent_tool_use_id,
         msg,
-        (msg as any).is_synthetic,
-        (msg as any).is_meta,
-        (msg as any).is_steering,
+        msg.is_synthetic,
+        msg.is_meta,
+        msg.is_steering,
       );
       if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
         const text = content
-          .filter((b: any) => b.type === "text")
-          .map((b: any) => b.text ?? "")
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
           .join("");
         if (text && s.preReloadDrafts.includes(text)) {
           s = {
@@ -934,7 +968,7 @@ export function reduceFileMessage(
     }
 
     case "turn/result":
-      return reduceResultMessage(s, msg as ResultMessage);
+      return reduceResultMessage(s, msg);
 
     case "session/summary":
       return reduceSummary(s, msg);
@@ -943,12 +977,16 @@ export function reduceFileMessage(
       return s;
 
     // Pass-through system subtypes (not translated by backend)
-    case "system":
-      if ((msg as any).subtype === "stop_hook_summary") {
-        return reduceStopHookSummary(s, msg as any);
+    case "system": {
+      const sysMsg = msg as Record<string, unknown>;
+      if (sysMsg.subtype === "stop_hook_summary") {
+        return reduceStopHookSummary(
+          s,
+          sysMsg as unknown as Parameters<typeof reduceStopHookSummary>[1],
+        );
       } else if (
-        (msg as any).subtype === "api_error" ||
-        (msg as any).subtype === "turn_duration"
+        sysMsg.subtype === "api_error" ||
+        sysMsg.subtype === "turn_duration"
       ) {
         return s;
       } else {
@@ -956,10 +994,11 @@ export function reduceFileMessage(
           s,
           "file",
           "Unknown system subtype",
-          String((msg as any).subtype),
+          String(sysMsg.subtype),
           msg,
         );
       }
+    }
 
     // JSONL-only types — intentionally not rendered
     case "progress":
@@ -972,7 +1011,7 @@ export function reduceFileMessage(
         s,
         "file",
         "Unknown message type",
-        (msg as any).type,
+        (msg as Record<string, unknown>).type as string,
         msg,
       );
   }

@@ -19,12 +19,12 @@ interface Props {
   suggestions?: string[];
 }
 
-function debounce<T extends (...args: any[]) => void>(
-  fn: T,
+function debounce<A extends unknown[]>(
+  fn: (...args: A) => void,
   ms: number,
-): T & { cancel: () => void } {
+): ((...args: A) => void) & { cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<T>) => {
+  const debounced = (...args: A) => {
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -37,7 +37,7 @@ function debounce<T extends (...args: any[]) => void>(
       timer = null;
     }
   };
-  return debounced as T & { cancel: () => void };
+  return debounced;
 }
 
 export function InputBox({

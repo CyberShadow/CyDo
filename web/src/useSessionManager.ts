@@ -97,15 +97,13 @@ export interface TaskManager {
 
 /// Extract text content from a user message event (for unconfirmed display).
 function extractTextContent(msg: AgnosticEvent): string {
-  const raw = msg as any;
-  if (raw?.content) {
-    if (typeof raw.content === "string") return raw.content;
-    if (Array.isArray(raw.content)) {
-      return raw.content
-        .filter((b: any) => b.type === "text")
-        .map((b: any) => b.text)
-        .join("");
-    }
+  if (msg.type !== "message/user") return "";
+  if (typeof msg.content === "string") return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
   }
   return "";
 }
@@ -706,7 +704,7 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "undo_preview": {
-        const { tid, messages_removed } = msg as any;
+        const { tid, messages_removed } = msg;
         const t = liveStates.get(tid);
         if (!t) break;
         // Find the afterUuid from pending state — it was set optimistically
@@ -746,8 +744,8 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "error": {
-        const errMsg = (msg as any).message ?? "Unknown error";
-        const errTid = (msg as any).tid as number | undefined;
+        const errMsg = msg.message;
+        const errTid = msg.tid;
         console.error("Server error:", errMsg, "tid:", errTid);
         // Clear undoPending if this error is for a task with an active undo dialog
         if (errTid !== undefined) {

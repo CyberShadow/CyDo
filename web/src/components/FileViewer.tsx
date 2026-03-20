@@ -1,4 +1,5 @@
 import { Fragment } from "preact";
+import type { JSX } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { structuredPatch } from "diff";
@@ -33,11 +34,11 @@ function resolveEditContent(
     const m = messages[i]!;
     if (m.type !== "assistant") continue;
     const toolUse = m.content.find(
-      (c) => c.type === "tool_use" && (c as any).id === edit.toolUseId,
+      (c) => c.type === "tool_use" && c.id === edit.toolUseId,
     );
     if (!toolUse) continue;
 
-    const input = (toolUse as any).input as Record<string, unknown>;
+    const input = toolUse.input ?? {};
     const toolResult = m.toolResults?.get(edit.toolUseId);
     const tr = (toolResult?.toolResult ?? {}) as Record<string, unknown>;
 
@@ -258,7 +259,7 @@ function FileTreeNode({
     return (
       <div
         class={`file-tree-item${selectedFile === node.fullPath ? " selected" : ""}`}
-        style={{ "--depth": depth } as any}
+        style={{ "--depth": depth } as JSX.CSSProperties}
         onClick={() => onSelectFile(node.fullPath)}
         title={node.fullPath}
       >
@@ -271,7 +272,7 @@ function FileTreeNode({
     <Fragment>
       <div
         class="file-tree-item directory"
-        style={{ "--depth": depth } as any}
+        style={{ "--depth": depth } as JSX.CSSProperties}
         onClick={() => setExpanded(!expanded)}
       >
         {expanded ? "\u25BE" : "\u25B8"} {node.label}
@@ -603,7 +604,12 @@ export function FileViewer({
           </div>
         )}
       </div>
-      <div class="resize-handle" onPointerDown={handlePointerDown as any} />
+      <div
+        class="resize-handle"
+        onPointerDown={
+          handlePointerDown as JSX.PointerEventHandler<HTMLDivElement>
+        }
+      />
     </div>
   );
 }

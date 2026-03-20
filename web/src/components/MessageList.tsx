@@ -171,7 +171,7 @@ function InitDetailList({ label, items }: { label: string; items: unknown[] }) {
             {typeof item === "string"
               ? item
               : typeof item === "object" && item !== null && "name" in item
-                ? `${(item as any).name}${(item as any).status ? ` [${(item as any).status}]` : ""}`
+                ? `${(item as Record<string, unknown>).name}${(item as Record<string, unknown>).status ? ` [${(item as Record<string, unknown>).status}]` : ""}`
                 : JSON.stringify(item)}
           </li>
         ))}
@@ -182,7 +182,7 @@ function InitDetailList({ label, items }: { label: string; items: unknown[] }) {
 
 function SystemInitView({ message }: { message: DisplayMessage }) {
   const [expanded, setExpanded] = useState(false);
-  const raw = message.rawSource as any;
+  const raw = message.rawSource as Record<string, unknown>;
 
   if (!expanded) {
     return (
@@ -207,19 +207,19 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
         {raw?.agent_version && <span>v{raw.agent_version}</span>}
         {raw?.permission_mode && <span>{raw.permission_mode}</span>}
       </div>
-      {raw?.tools?.length > 0 && (
+      {Array.isArray(raw?.tools) && raw.tools.length > 0 && (
         <InitDetailList label="Tools" items={raw.tools} />
       )}
-      {raw?.mcp_servers?.length > 0 && (
+      {Array.isArray(raw?.mcp_servers) && raw.mcp_servers.length > 0 && (
         <InitDetailList label="MCP servers" items={raw.mcp_servers} />
       )}
-      {raw?.agents?.length > 0 && (
+      {Array.isArray(raw?.agents) && raw.agents.length > 0 && (
         <InitDetailList label="Agents" items={raw.agents} />
       )}
-      {raw?.skills?.length > 0 && (
+      {Array.isArray(raw?.skills) && raw.skills.length > 0 && (
         <InitDetailList label="Skills" items={raw.skills} />
       )}
-      {raw?.plugins?.length > 0 && (
+      {Array.isArray(raw?.plugins) && raw.plugins.length > 0 && (
         <InitDetailList label="Plugins" items={raw.plugins} />
       )}
     </div>
@@ -227,7 +227,7 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
 }
 
 function TaskLifecycleView({ message }: { message: DisplayMessage }) {
-  const raw = message.rawSource as any;
+  const raw = message.rawSource as Record<string, unknown>;
   const isStarted = raw?.subtype === "task_started";
   const taskType = raw?.task_type;
   const taskId = raw?.task_id;
@@ -236,10 +236,16 @@ function TaskLifecycleView({ message }: { message: DisplayMessage }) {
   let description: string;
   if (isStarted) {
     label = "Task started";
-    description = raw?.description || taskId || "";
+    description =
+      (raw?.description as string | undefined) ||
+      (taskId as string | undefined) ||
+      "";
   } else {
     label = `Task ${raw?.status || "updated"}`;
-    description = raw?.summary || taskId || "";
+    description =
+      (raw?.summary as string | undefined) ||
+      (taskId as string | undefined) ||
+      "";
   }
 
   return (
@@ -254,7 +260,9 @@ function TaskLifecycleView({ message }: { message: DisplayMessage }) {
 }
 
 function ControlResponseView({ message }: { message: DisplayMessage }) {
-  const raw = message.rawSource as any;
+  const raw = message.rawSource as
+    | { response?: { subtype?: string } }
+    | undefined;
   const subtype = raw?.response?.subtype ?? "unknown";
   return (
     <div class="message control-response-message">
@@ -320,7 +328,7 @@ const MessageView = memo(
     const raw = Array.isArray(msg.rawSource)
       ? msg.rawSource[msg.rawSource.length - 1]
       : msg.rawSource;
-    const uuid = (raw as any)?.uuid as string | undefined;
+    const uuid = (raw as Record<string, unknown>)?.uuid as string | undefined;
 
     const startEdit = useCallback(() => {
       const text = msg.content
@@ -549,7 +557,7 @@ export function MessageList({
               inner = <CompactBoundaryMessageView message={msg} />;
               break;
             case "system": {
-              const rawType = (msg.rawSource as any)?.type;
+              const rawType = (msg.rawSource as Record<string, unknown>)?.type;
               if (rawType === "session/init") {
                 inner = <SystemInitView message={msg} />;
               } else if (msg.statusText !== undefined) {
@@ -581,7 +589,7 @@ export function MessageList({
               inner = (
                 <div class="message system-message">
                   <pre>
-                    Unknown display type: {(msg as any).type}
+                    Unknown display type: {msg.type}
                     {"\n"}
                     {JSON.stringify(msg, null, 2)}
                   </pre>
@@ -591,7 +599,9 @@ export function MessageList({
           const rawSrc = Array.isArray(msg.rawSource)
             ? msg.rawSource[msg.rawSource.length - 1]
             : msg.rawSource;
-          const msgUuid = (rawSrc as any)?.uuid as string | undefined;
+          const msgUuid = (rawSrc as Record<string, unknown>)?.uuid as
+            | string
+            | undefined;
           const isForkable =
             !!msgUuid && !!forkableUuids && forkableUuids.has(msgUuid);
           return (

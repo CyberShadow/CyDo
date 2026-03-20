@@ -1,4 +1,8 @@
-import { createHighlighter, type ThemedToken } from "shiki";
+import {
+  createHighlighter,
+  type ThemedToken,
+  type BundledLanguage,
+} from "shiki";
 import type { Highlighter } from "shiki";
 import { h, Fragment } from "preact";
 import { useState, useEffect } from "preact/hooks";
@@ -123,7 +127,7 @@ export async function tokenize(
     }
   }
   const result = hl.codeToTokens(code, {
-    lang: lang as any,
+    lang: lang as BundledLanguage,
     theme,
   });
   return result.tokens;

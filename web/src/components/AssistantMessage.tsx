@@ -111,7 +111,7 @@ export function AssistantMessage({
         if (
           caller &&
           typeof caller === "object" &&
-          (caller as any).type === "direct"
+          (caller as Record<string, unknown>).type === "direct"
         ) {
           delete blockExtras.caller;
         }
@@ -187,7 +187,7 @@ export function AssistantMessage({
         return (
           <div key={i} class="unknown-block">
             <div class="unknown-block-label">
-              Unknown block type: {(block as any).type}
+              Unknown block type: {block.type}
             </div>
             <pre>{JSON.stringify(block, null, 2)}</pre>
             {blockExtraEl}
