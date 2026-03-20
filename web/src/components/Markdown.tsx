@@ -28,10 +28,7 @@ export const Markdown: FunctionComponent<Props> = memo(
 
     const ast = useMemo(() => {
       const parser = parserRef.current!;
-      if (
-        text.startsWith(prevTextRef.current) &&
-        prevTextRef.current.length > 0
-      ) {
+      if (text.startsWith(prevTextRef.current)) {
         // Incremental append — only parse the new delta
         const delta = text.slice(prevTextRef.current.length);
         if (delta) {
@@ -42,8 +39,9 @@ export const Markdown: FunctionComponent<Props> = memo(
         // No new content — return cached AST
         return parser.getAst();
       } else {
-        // Full re-render (text changed non-incrementally, or first render)
-        const update = parser.render(text);
+        // Full re-render (text changed non-incrementally)
+        parser.reset();
+        const update = parser.append(text);
         prevTextRef.current = text;
         return update.ast;
       }

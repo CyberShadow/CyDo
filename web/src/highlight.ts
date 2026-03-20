@@ -117,7 +117,8 @@ export async function tokenize(
     try {
       await hl.loadLanguage(lang as Parameters<Highlighter["loadLanguage"]>[0]);
       loadedLangs.add(lang);
-    } catch {
+    } catch (e) {
+      console.warn(`Shiki: failed to load language "${lang}"`, e);
       return null;
     }
   }
