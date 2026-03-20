@@ -1142,7 +1142,7 @@ class App : ToolsBackend
 
 		auto newTd = TaskData(result.tid);
 		newTd.workspace = td.workspace;
-		newTd.projectPath = td.projectPath;
+		newTd.projectPath = td.effectiveCwd;
 		newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
 		newTd.agentSessionId = result.agentSessionId;
 		newTd.parentTid = tid;
@@ -1152,7 +1152,7 @@ class App : ToolsBackend
 		newTd.taskType = td.taskType;
 		tasks[result.tid] = move(newTd);
 
-		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
+		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.effectiveCwd, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
 	}
 
