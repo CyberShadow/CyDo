@@ -299,8 +299,10 @@ class AppServerProcess
 	enum State { starting, initializing, authenticating, ready, failed, dead }
 	private State state_ = State.starting;
 
-	// Thread routing: threadId → session
+	// Thread routing: threadId → session (populated after thread/start response)
 	private CodexSession[string] sessions;
+	// Task ID → session (populated at session creation, before thread/start)
+	private CodexSession[int] sessionsByTid;
 
 	// Actions queued until server reaches ready state.
 	private void delegate()[] readyQueue;
@@ -319,17 +321,15 @@ class AppServerProcess
 		serverDispatcher = jsonRpcDispatcher!ICodexServer(router);
 		codec.handleRequest = &serverDispatcher.dispatch;
 
-		// Stderr handler remains unchanged.
 		process.onStderrLine = (string line) {
-			foreach (session; sessions)
+			foreach (session; sessionsByTid)
 				if (session.stderrHandler_)
 					session.stderrHandler_(line);
 		};
 
-		// Exit handler remains unchanged.
 		process.onExit = (int status) {
 			state_ = State.dead;
-			foreach (session; sessions)
+			foreach (session; sessionsByTid)
 				session.onServerExit(status);
 		};
 
@@ -347,6 +347,16 @@ class AppServerProcess
 	void unregisterSession(string threadId)
 	{
 		sessions.remove(threadId);
+	}
+
+	void registerSessionByTid(int tid, CodexSession session)
+	{
+		sessionsByTid[tid] = session;
+	}
+
+	void unregisterSessionByTid(int tid)
+	{
+		sessionsByTid.remove(tid);
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if
@@ -492,6 +502,7 @@ class CodexAgent : Agent
 		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
 		auto server = getOrCreateServer(workspace, bwrapPrefix);
 		auto session = new CodexSession(server, tid, config);
+		server.registerSessionByTid(tid, session);
 
 		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
 		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
@@ -1039,6 +1050,7 @@ class CodexSession : AgentSession
 				JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
 		}
+		server.unregisterSessionByTid(tid);
 		alive_ = false;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
@@ -1056,6 +1068,7 @@ class CodexSession : AgentSession
 				JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
 		}
+		server.unregisterSessionByTid(tid);
 		alive_ = false;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
