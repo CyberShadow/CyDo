@@ -214,3 +214,19 @@ struct ProcessExitEvent
 	string type = "process/exit";
 	int code;
 }
+
+/// Command input for Bash tool_use blocks (Codex agent).
+struct CommandInput
+{
+	string command;
+	string description;
+}
+
+/// Tool result content block for message/user events.
+struct ToolResultBlock
+{
+	string type = "tool_result";
+	string tool_use_id;
+	JSONFragment content;
+	@JSONOptional bool is_error;
+}

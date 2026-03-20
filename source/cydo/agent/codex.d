@@ -1,17 +1,289 @@
 module cydo.agent.codex;
 
 import std.conv : to;
-import std.format : format;
-import std.path : buildPath, dirName, expandTilde;
+import std.path : buildPath, dirName;
 import std.stdio : stderr;
 
-import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
-import ae.utils.promise : Promise;
+import ae.net.jsonrpc.binding : JsonRpcDispatcher,
+	jsonRpcDispatcher, RPCFlatten, RPCName, RPCNamedParams;
+import ae.net.jsonrpc.codec : JsonRpcCodec;
+import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial,
+	jsonParse, toJson;
+import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
+
+// ---------------------------------------------------------------------------
+// JSON-RPC param/result structs for the Codex app-server protocol.
+// ---------------------------------------------------------------------------
+
+// ---- Outgoing request params (CyDo → Codex) ----
+
+@RPCFlatten @JSONPartial
+struct InitializeParams
+{
+	static struct ClientInfo
+	{
+		string name;
+		@JSONName("version") string version_;
+	}
+	ClientInfo clientInfo;
+	JSONFragment capabilities;
+}
+
+@RPCFlatten @JSONPartial
+struct LoginStartParams
+{
+	string type;
+	string apiKey;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadStartParams
+{
+	string cwd;
+	string model;
+	string approvalPolicy;
+	string sandbox;
+	@JSONOptional string developerInstructions;
+	@JSONOptional JSONFragment config;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadResumeParams
+{
+	string threadId;
+}
+
+@RPCFlatten @JSONPartial
+struct TurnStartInput
+{
+	string type;
+	string text;
+}
+
+@RPCFlatten @JSONPartial
+struct SandboxPolicy
+{
+	string type;
+	string networkAccess;
+}
+
+@RPCFlatten @JSONPartial
+struct TurnStartParams
+{
+	string threadId;
+	TurnStartInput[] input;
+	SandboxPolicy sandboxPolicy;
+}
+
+@RPCFlatten @JSONPartial
+struct TurnSteerParams
+{
+	string threadId;
+	string instructions;
+}
+
+@RPCFlatten @JSONPartial
+struct TurnInterruptParams
+{
+	string threadId;
+}
+
+// ---- Incoming notification params (Codex → CyDo) ----
+
+@RPCFlatten @JSONPartial
+struct ItemStartedParams
+{
+	string threadId;
+	@JSONPartial
+	static struct Item
+	{
+		string type;
+		@JSONOptional string id;
+		@JSONOptional string name;
+		@JSONOptional string text;
+		@JSONOptional string command;
+		@JSONOptional JSONFragment action;
+	}
+	Item item;
+}
+
+@RPCFlatten @JSONPartial
+struct DeltaParams
+{
+	string threadId;
+	string delta;
+}
+
+@RPCFlatten @JSONPartial
+struct ThreadIdParams
+{
+	string threadId;
+}
+
+@RPCFlatten @JSONPartial
+struct ItemCompletedParams
+{
+	string threadId;
+	@JSONPartial
+	static struct Item
+	{
+		@JSONOptional bool is_error;
+	}
+	@JSONOptional Item item;
+}
+
+// ---- Response result types ----
+
+@JSONPartial
+struct ThreadStartResult
+{
+	@JSONPartial
+	static struct Thread { string id; }
+	Thread thread;
+}
+
+@JSONPartial
+struct ApprovalDecision
+{
+	string decision;
+}
+
+// ---- Config struct for MCP override ----
+
+struct McpServerConfig
+{
+	string command;
+	string[] args;
+	string[string] env;
+}
+
+// ---------------------------------------------------------------------------
+// ICodexServer — methods Codex app-server calls on CyDo.
+// ---------------------------------------------------------------------------
+
+@RPCNamedParams
+private interface ICodexServer
+{
+	@RPCName("item/started")
+	Promise!void itemStarted(ItemStartedParams params);
+
+	@RPCName("item/agentMessage/delta")
+	Promise!void itemAgentMessageDelta(DeltaParams params);
+
+	@RPCName("item/reasoning/textDelta")
+	Promise!void itemReasoningTextDelta(DeltaParams params);
+
+	@RPCName("item/commandExecution/outputDelta")
+	Promise!void itemCommandExecutionOutputDelta(DeltaParams params);
+
+	@RPCName("item/completed")
+	Promise!void itemCompleted(ItemCompletedParams params);
+
+	@RPCName("turn/completed")
+	Promise!void turnCompleted(ThreadIdParams params);
+
+	@RPCName("thread/compacted")
+	Promise!void threadCompacted(ThreadIdParams params);
+
+	@RPCName("account/login/completed")
+	Promise!void accountLoginCompleted();
+
+	@RPCName("item/commandExecution/requestApproval")
+	Promise!ApprovalDecision commandExecutionApproval(ItemStartedParams params);
+
+	@RPCName("item/fileChange/requestApproval")
+	Promise!ApprovalDecision fileChangeApproval(ItemStartedParams params);
+}
+
+// ---------------------------------------------------------------------------
+// CodexServerRouter — routes incoming Codex notifications to sessions.
+// ---------------------------------------------------------------------------
+
+private class CodexServerRouter : ICodexServer
+{
+	private AppServerProcess server;
+
+	this(AppServerProcess s) { server = s; }
+
+	private void routeToSession(string threadId,
+		scope void delegate(CodexSession) handler)
+	{
+		if (auto session = threadId in server.sessions)
+			handler(*session);
+	}
+
+	Promise!void itemStarted(ItemStartedParams params)
+	{
+		routeToSession(params.threadId, (s) => s.handleItemStarted(params));
+		return resolve();
+	}
+
+	Promise!void itemAgentMessageDelta(DeltaParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleDelta(params, "text_delta"));
+		return resolve();
+	}
+
+	Promise!void itemReasoningTextDelta(DeltaParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleDelta(params, "thinking_delta"));
+		return resolve();
+	}
+
+	Promise!void itemCommandExecutionOutputDelta(DeltaParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleDelta(params, "text_delta"));
+		return resolve();
+	}
+
+	Promise!void itemCompleted(ItemCompletedParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleItemCompleted(params));
+		return resolve();
+	}
+
+	Promise!void turnCompleted(ThreadIdParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleTurnCompleted());
+		return resolve();
+	}
+
+	Promise!void threadCompacted(ThreadIdParams params)
+	{
+		routeToSession(params.threadId, (s) {
+			if (s.outputHandler_)
+				s.outputHandler_(`{"type":"session/compacted"}`);
+		});
+		return resolve();
+	}
+
+	Promise!void accountLoginCompleted()
+	{
+		server.onLoginCompleted();
+		return resolve();
+	}
+
+	Promise!ApprovalDecision commandExecutionApproval(ItemStartedParams params)
+	{
+		return resolve(ApprovalDecision("acceptForSession"));
+	}
+
+	Promise!ApprovalDecision fileChangeApproval(ItemStartedParams params)
+	{
+		return resolve(ApprovalDecision("acceptForSession"));
+	}
+}
 
 // ---------------------------------------------------------------------------
 // AppServerProcess — manages a `codex app-server` process via JSON-RPC 2.0.
@@ -21,13 +293,11 @@ import cydo.config : PathMode;
 class AppServerProcess
 {
 	private AgentProcess process;
-	private int nextRequestId = 1;
+	private JsonRpcCodec codec;
+	private JsonRpcDispatcher!ICodexServer serverDispatcher;
 
 	enum State { starting, initializing, authenticating, ready, failed, dead }
 	private State state_ = State.starting;
-
-	// Pending JSON-RPC response callbacks, keyed by request id.
-	private void delegate(string result)[int] pendingCallbacks;
 
 	// Thread routing: threadId → session
 	private CodexSession[string] sessions;
@@ -39,16 +309,24 @@ class AppServerProcess
 	{
 		process = new AgentProcess(args, env, workDir);
 
-		process.onStdoutLine = (string line) {
-			handleLine(line);
-		};
+		// Set up bidirectional JSON-RPC codec on the process connection.
+		// The codec takes over handleReadData from stdoutLines; onStdoutLine
+		// is no longer called.
+		codec = new JsonRpcCodec(process.connection);
 
+		// Dispatcher for incoming notifications/requests from Codex.
+		auto router = new CodexServerRouter(this);
+		serverDispatcher = jsonRpcDispatcher!ICodexServer(router);
+		codec.handleRequest = &serverDispatcher.dispatch;
+
+		// Stderr handler remains unchanged.
 		process.onStderrLine = (string line) {
 			foreach (session; sessions)
 				if (session.stderrHandler_)
 					session.stderrHandler_(line);
 		};
 
+		// Exit handler remains unchanged.
 		process.onExit = (int status) {
 			state_ = State.dead;
 			foreach (session; sessions)
@@ -81,25 +359,6 @@ class AppServerProcess
 			readyQueue ~= dg;
 	}
 
-	/// Send a JSON-RPC request with a result callback.
-	void sendRequest(string method, string params,
-		void delegate(string result) onResult)
-	{
-		auto id = nextRequestId++;
-		pendingCallbacks[id] = onResult;
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ to!string(id)
-			~ `,"method":"` ~ method ~ `","params":` ~ params ~ `}`);
-	}
-
-	/// Respond to a server-initiated request.  rawId is the raw JSON
-	/// value of the id field (may be int or string).
-	void respondToRequest(string rawId, string result)
-	{
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ rawId ~ `,"result":` ~ result ~ `}`);
-	}
-
 	void terminate()
 	{
 		process.terminate();
@@ -107,14 +366,27 @@ class AppServerProcess
 
 	@property bool dead() { return process.dead; }
 
+	/// Send a JSON-RPC request to the Codex server.
+	/// Returns a promise for the response. For fire-and-forget, ignore the promise.
+	package Promise!JsonRpcResponse sendRequest(string method, JSONFragment params)
+	{
+		JsonRpcRequest req;
+		req.method = method;
+		req.params = params;
+		return codec.sendRequest(req);
+	}
+
 	// ---- Initialization handshake ----
 
 	private void sendInitialize()
 	{
 		state_ = State.initializing;
-		sendRequest("initialize",
-			`{"clientInfo":{"name":"cydo","version":"0.1.0"},"capabilities":{}}`,
-			(string result) { sendLogin(); });
+		sendRequest("initialize", JSONFragment(toJson(InitializeParams(
+			InitializeParams.ClientInfo("cydo", "0.1.0"),
+			JSONFragment("{}")
+		)))).then((JsonRpcResponse result) {
+			sendLogin();
+		});
 	}
 
 	private void sendLogin()
@@ -130,13 +402,13 @@ class AppServerProcess
 
 		state_ = State.authenticating;
 		sendRequest("account/login/start",
-			`{"type":"apiKey","apiKey":"` ~ escapeJsonString(apiKey) ~ `"}`,
-			(string result) {
-				import std.algorithm : canFind;
-				// API-key auth may complete synchronously.
-				if (result.canFind(`"success"`) || result.canFind(`"loggedIn"`))
-					onLoginCompleted();
-			});
+			JSONFragment(toJson(LoginStartParams("apiKey", apiKey)))
+		).then((JsonRpcResponse result) {
+			import std.algorithm : canFind;
+			// API-key auth may complete synchronously.
+			if (result.result.json.canFind(`"success"`) || result.result.json.canFind(`"loggedIn"`))
+				onLoginCompleted();
+		});
 	}
 
 	private void onLoginCompleted()
@@ -148,130 +420,6 @@ class AppServerProcess
 		readyQueue = null;
 		foreach (dg; queue)
 			dg();
-	}
-
-	// ---- JSON-RPC message dispatcher ----
-
-	private void handleLine(string line)
-	{
-		@JSONPartial
-		static struct RpcProbe
-		{
-			JSONFragment id;
-			string method;
-		}
-
-		RpcProbe probe;
-		try
-			probe = jsonParse!RpcProbe(line);
-		catch (Exception e)
-		{
-			stderr.writeln("Error parsing line from codex: ", e.msg);
-			return;
-		}
-
-		bool hasId = probe.id.json !is null && probe.id.json.length > 0;
-		bool hasMethod = probe.method.length > 0;
-
-		if (hasMethod && hasId)
-			handleServerRequest(probe.id.json, probe.method, line);
-		else if (hasMethod)
-			handleNotification(probe.method, line);
-		else if (hasId)
-		{
-			int numId;
-			try
-				numId = to!int(probe.id.json);
-			catch (Exception e)
-			{
-				stderr.writeln("Error parsing response id: ", e.msg);
-				return;
-			}
-			handleResponse(numId, line);
-		}
-	}
-
-	private void handleResponse(int id, string line)
-	{
-		auto cb = id in pendingCallbacks;
-		if (!cb)
-			return;
-
-		@JSONPartial
-		static struct ResponseData
-		{
-			JSONFragment result;
-		}
-
-		ResponseData data;
-		try
-			data = jsonParse!ResponseData(line);
-		catch (Exception e)
-		{
-			stderr.writeln("Error parsing response: ", e.msg);
-			return;
-		}
-
-		auto callback = *cb;
-		pendingCallbacks.remove(id);
-		callback(data.result.json !is null ? data.result.json : "{}");
-	}
-
-	private void handleNotification(string method, string line)
-	{
-		import std.algorithm : startsWith;
-
-		// Filter legacy v1 duplicates.
-		if (method.startsWith("codex/event/"))
-			return;
-
-		if (method == "account/login/completed")
-		{
-			onLoginCompleted();
-			return;
-		}
-
-		// Route to session by threadId.
-		@JSONPartial
-		static struct ThreadProbe
-		{
-			@JSONPartial
-			static struct Params
-			{
-				string threadId;
-			}
-			Params params;
-		}
-
-		ThreadProbe tp;
-		try
-			tp = jsonParse!ThreadProbe(line);
-		catch (Exception e)
-		{
-			stderr.writeln("Error parsing notification: ", e.msg);
-			return;
-		}
-
-		if (auto session = tp.params.threadId in sessions)
-			session.handleNotification(method, line);
-		else
-			stderr.writeln("Notification for unknown thread: ", tp.params.threadId);
-	}
-
-	private void handleServerRequest(string rawId, string method, string line)
-	{
-		// Auto-approve all approval gates (sandboxed by bwrap).
-		if (method == "item/commandExecution/requestApproval"
-			|| method == "item/fileChange/requestApproval")
-		{
-			respondToRequest(rawId, `{"decision":"acceptForSession"}`);
-			return;
-		}
-
-		// Unknown server request — respond with method-not-found.
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ rawId
-			~ `,"error":{"code":-32601,"message":"Method not supported"}}`);
 	}
 }
 
@@ -352,10 +500,15 @@ class CodexAgent : Agent
 			if (resumeSessionId.length > 0)
 			{
 				server.sendRequest("thread/resume",
-					`{"threadId":"` ~ escapeJsonString(resumeSessionId) ~ `"}`,
-					(string result) {
-						session.onThreadStarted(result, resumeSessionId, model, workDir);
-					});
+					JSONFragment(toJson(ThreadResumeParams(resumeSessionId)))
+				).then((JsonRpcResponse resp) {
+					ThreadStartResult result;
+					try
+						result = resp.getResult!ThreadStartResult();
+					catch (Exception e)
+					{ stderr.writeln("thread/resume error: ", e.msg); }
+					session.onThreadStarted(result, resumeSessionId, model, workDir);
+				});
 			}
 			else
 			{
@@ -371,21 +524,26 @@ class CodexAgent : Agent
 				auto mcpConfig = buildMcpConfigOverride(tid,
 					config.creatableTaskTypes, config.switchModes, config.handoffs, config.mcpSocketPath);
 
-				auto params = `{"cwd":"` ~ escapeJsonString(workDir)
-					~ `","model":"` ~ escapeJsonString(model)
-					~ `","approvalPolicy":"never"`
-					~ `,"sandbox":"danger-full-access"`
-					~ (devInstructions.length > 0
-						? `,"developerInstructions":"` ~ escapeJsonString(devInstructions) ~ `"`
-						: ``)
-					~ (mcpConfig.length > 0
-						? `,"config":` ~ mcpConfig
-						: ``)
-					~ `}`;
-				server.sendRequest("thread/start", params,
-					(string result) {
-						session.onThreadStarted(result, null, model, workDir);
-					});
+				ThreadStartParams tsp;
+				tsp.cwd = workDir;
+				tsp.model = model;
+				tsp.approvalPolicy = "never";
+				tsp.sandbox = "danger-full-access";
+				if (devInstructions.length > 0)
+					tsp.developerInstructions = devInstructions;
+				if (mcpConfig.length > 0)
+					tsp.config = JSONFragment(mcpConfig);
+
+				server.sendRequest("thread/start",
+					JSONFragment(toJson(tsp))
+				).then((JsonRpcResponse resp) {
+					ThreadStartResult result;
+					try
+						result = resp.getResult!ThreadStartResult();
+					catch (Exception e)
+					{ stderr.writeln("thread/start error: ", e.msg); }
+					session.onThreadStarted(result, null, model, workDir);
+				});
 			}
 		});
 
@@ -766,30 +924,14 @@ class CodexSession : AgentSession
 	}
 
 	/// Called when thread/start or thread/resume response arrives.
-	package void onThreadStarted(string result, string resumeId, string model, string workDir)
+	package void onThreadStarted(ThreadStartResult result, string resumeId,
+		string model, string workDir)
 	{
 		this.model = model;
 		this.workDir = workDir;
 
-		// Extract threadId from result.
-		@JSONPartial
-		static struct ThreadResult
-		{
-			@JSONPartial
-			static struct Thread
-			{
-				string id;
-			}
-			Thread thread;
-		}
-
-		try
-		{
-			auto parsed = jsonParse!ThreadResult(result);
-			if (parsed.thread.id.length > 0)
-				threadId = parsed.thread.id;
-		}
-		catch (Exception e) { stderr.writeln("extractThreadId: parse error: ", e.msg); }
+		if (result.thread.id.length > 0)
+			threadId = result.thread.id;
 
 		if (threadId.length == 0 && resumeId.length > 0)
 			threadId = resumeId;
@@ -852,14 +994,10 @@ class CodexSession : AgentSession
 			return;
 		}
 
-		auto escaped = escapeJsonString(content);
-
 		if (turnInProgress)
 		{
 			server.sendRequest("turn/steer",
-				`{"threadId":"` ~ escapeJsonString(threadId)
-				~ `","instructions":"` ~ escaped ~ `"}`,
-				(string result) {});
+				JSONFragment(toJson(TurnSteerParams(threadId, content))));
 		}
 		else
 		{
@@ -869,10 +1007,10 @@ class CodexSession : AgentSession
 			activeItem = CompletedItem.init;
 
 			server.sendRequest("turn/start",
-				`{"threadId":"` ~ escapeJsonString(threadId)
-				~ `","input":[{"type":"text","text":"` ~ escaped ~ `"}]`
-				~ `,"sandboxPolicy":{"type":"externalSandbox","networkAccess":"enabled"}}`,
-				(string result) {});
+				JSONFragment(toJson(TurnStartParams(
+					threadId,
+					[TurnStartInput("text", content)],
+					SandboxPolicy("externalSandbox", "enabled")))));
 		}
 	}
 
@@ -881,8 +1019,7 @@ class CodexSession : AgentSession
 		if (!alive_ || threadId.length == 0)
 			return;
 		server.sendRequest("turn/interrupt",
-			`{"threadId":"` ~ escapeJsonString(threadId) ~ `"}`,
-			(string result) {});
+			JSONFragment(toJson(TurnInterruptParams(threadId))));
 	}
 
 	void sigint()
@@ -899,8 +1036,7 @@ class CodexSession : AgentSession
 		if (threadId.length > 0)
 		{
 			server.sendRequest("turn/interrupt",
-				`{"threadId":"` ~ escapeJsonString(threadId) ~ `"}`,
-				(string result) {});
+				JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
 		}
 		alive_ = false;
@@ -917,8 +1053,7 @@ class CodexSession : AgentSession
 		if (threadId.length > 0)
 		{
 			server.sendRequest("turn/interrupt",
-				`{"threadId":"` ~ escapeJsonString(threadId) ~ `"}`,
-				(string result) {});
+				JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
 		}
 		alive_ = false;
@@ -933,172 +1068,112 @@ class CodexSession : AgentSession
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_ && !server.dead; }
 
-	// ----- Notification handling (routed by AppServerProcess) -----
+	// ----- Notification handling (routed by CodexServerRouter) -----
 
-	package void handleNotification(string method, string rawLine)
+	package void handleItemStarted(ItemStartedParams params)
 	{
-		switch (method)
-		{
-			case "item/started":
-				handleItemStarted(rawLine);
-				break;
-			case "item/agentMessage/delta":
-				handleDelta(rawLine, "text_delta", "text");
-				break;
-			case "item/reasoning/textDelta":
-				handleDelta(rawLine, "thinking_delta", "text");
-				break;
-			case "item/commandExecution/outputDelta":
-				handleDelta(rawLine, "text_delta", "text");
-				break;
-			case "item/completed":
-				handleItemCompleted(rawLine);
-				break;
-			case "turn/completed":
-				handleTurnCompleted(rawLine);
-				break;
-			case "thread/compacted":
-				if (outputHandler_)
-					outputHandler_(`{"type":"session/compacted"}`);
-				break;
-			default:
-				break;
-		}
-	}
-
-	private void handleItemStarted(string rawLine)
-	{
-		@JSONPartial
-		static struct Notification
-		{
-			@JSONPartial
-			static struct Params
-			{
-				@JSONPartial
-				static struct Item
-				{
-					string type;
-					string id;
-					string name; // mcpToolCall
-					string text; // agentMessage: may contain pre-populated text
-					string command; // commandExecution: display command string
-					JSONFragment action; // commandExecution: structured action
-				}
-				Item item;
-			}
-			Params params;
-		}
-
-		Notification n;
-		try
-			n = jsonParse!Notification(rawLine);
-		catch (Exception e)
-		{ stderr.writeln("handleNotification: parse error: ", e.msg); return; }
-
-		auto item = n.params.item;
+		auto item = params.item;
 
 		// Skip user messages (echoed back by server) — no streaming events needed.
 		if (item.type == "userMessage")
 			return;
 
 		auto idx = blockIndex++;
-
-		string blockType;
-		string extra = "";
-
 		activeItem = CompletedItem.init;
+
+		import cydo.agent.protocol : BlockDescriptor, StreamBlockStartEvent,
+			StreamBlockDeltaEvent, StreamDelta;
+
+		BlockDescriptor blockDesc;
 
 		switch (item.type)
 		{
 			case "agentMessage":
-				blockType = "text";
+				blockDesc.type = "text";
 				activeItem.type = "text";
 				break;
 			case "reasoning":
-				blockType = "thinking";
+				blockDesc.type = "thinking";
 				activeItem.type = "thinking";
 				break;
 			case "commandExecution":
-				blockType = "tool_use";
-				extra = `,"id":"` ~ escapeJsonString(item.id) ~ `","name":"Bash"`;
+				blockDesc.type = "tool_use";
+				blockDesc.id = item.id;
+				blockDesc.name = "Bash";
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
 				activeItem.name = "Bash";
 				// Prefer the structured action; fall back to the display command string.
 				auto cmdInput = extractCommandInput(item.action);
 				if (cmdInput == `{}` && item.command.length > 0)
-					cmdInput = `{"command":"` ~ escapeJsonString(item.command) ~ `","description":""}`;
+				{
+					import cydo.agent.protocol : CommandInput;
+					cmdInput = toJson(CommandInput(item.command, ""));
+				}
 				activeItem.input = cmdInput;
 				break;
 			case "fileChange":
-				blockType = "tool_use";
-				extra = `,"id":"` ~ escapeJsonString(item.id) ~ `","name":"Write"`;
+				blockDesc.type = "tool_use";
+				blockDesc.id = item.id;
+				blockDesc.name = "Write";
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
 				activeItem.name = "Write";
 				break;
 			case "mcpToolCall":
-				blockType = "tool_use";
 				auto name = item.name.length > 0 ? item.name : "unknown";
-				extra = `,"id":"` ~ escapeJsonString(item.id)
-					~ `","name":"` ~ escapeJsonString(name) ~ `"`;
+				blockDesc.type = "tool_use";
+				blockDesc.id = item.id;
+				blockDesc.name = name;
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
 				activeItem.name = name;
 				break;
 			default:
-				blockType = "text";
+				blockDesc.type = "text";
 				activeItem.type = "text";
 				break;
 		}
 
 		if (outputHandler_)
-			outputHandler_(
-				`{"type":"stream/block_start","index":` ~ to!string(idx)
-				~ `,"content_block":{"type":"` ~ blockType ~ `"` ~ extra ~ `}}`);
+		{
+			StreamBlockStartEvent ev;
+			ev.index = idx;
+			ev.content_block = blockDesc;
+			outputHandler_(toJson(ev));
+		}
 
 		// If item/started already contains text (agentMessage with pre-populated
 		// content), emit a synthetic delta so the frontend has content to display.
 		if (item.text.length > 0 && outputHandler_)
 		{
 			activeItem.text = item.text;
-			outputHandler_(
-				`{"type":"stream/block_delta","index":` ~ to!string(idx)
-				~ `,"delta":{"type":"text_delta","text":"` ~ escapeJsonString(item.text) ~ `"}}`);
+			StreamBlockDeltaEvent dev;
+			dev.index = idx;
+			dev.delta.type = "text_delta";
+			dev.delta.text = item.text;
+			outputHandler_(toJson(dev));
 		}
 	}
 
 	/// Handle any delta notification (text, thinking, or tool output).
-	private void handleDelta(string rawLine, string deltaType, string deltaKey)
+	package void handleDelta(DeltaParams params, string deltaType)
 	{
-		@JSONPartial
-		static struct Notification
-		{
-			@JSONPartial
-			static struct Params
-			{
-				string delta;
-			}
-			Params params;
-		}
-
-		Notification n;
-		try
-			n = jsonParse!Notification(rawLine);
-		catch (Exception e)
-		{ stderr.writeln("handleStreamNotification: parse error: ", e.msg); return; }
-
-		activeItem.text ~= n.params.delta;
+		activeItem.text ~= params.delta;
 
 		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 		if (outputHandler_)
-			outputHandler_(
-				`{"type":"stream/block_delta","index":` ~ to!string(idx)
-				~ `,"delta":{"type":"` ~ deltaType
-				~ `","` ~ deltaKey ~ `":"` ~ escapeJsonString(n.params.delta) ~ `"}}`);
+		{
+			import cydo.agent.protocol : StreamBlockDeltaEvent, StreamDelta;
+			StreamBlockDeltaEvent ev;
+			ev.index = idx;
+			ev.delta.type = deltaType;
+			ev.delta.text = params.delta;
+			outputHandler_(toJson(ev));
+		}
 	}
 
-	private void handleItemCompleted(string rawLine)
+	package void handleItemCompleted(ItemCompletedParams params)
 	{
 		// Skip if no active item (e.g., userMessage items are not tracked).
 		if (activeItem.type.length == 0)
@@ -1107,40 +1182,21 @@ class CodexSession : AgentSession
 		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 
 		if (outputHandler_)
-			outputHandler_(
-				`{"type":"stream/block_stop","index":` ~ to!string(idx) ~ `}`);
+		{
+			import cydo.agent.protocol : StreamBlockStopEvent;
+			StreamBlockStopEvent ev;
+			ev.index = idx;
+			outputHandler_(toJson(ev));
+		}
 
-		// Parse error status from the completed item notification.
-		@JSONPartial
-		static struct CompletedNotif
-		{
-			@JSONPartial
-			static struct Params
-			{
-				@JSONPartial
-				static struct Item
-				{
-					import ae.utils.json : JSONOptional;
-					@JSONOptional bool is_error;
-				}
-				Item item;
-			}
-			Params params;
-		}
-		try
-		{
-			auto cn = jsonParse!CompletedNotif(rawLine);
-			activeItem.isError = cn.params.item.is_error;
-		}
-		catch (Exception) {}
+		activeItem.isError = params.item.is_error;
 
 		completedItems ~= activeItem;
 		activeItem = CompletedItem.init;
 	}
 
-	private void handleTurnCompleted(string rawLine)
+	package void handleTurnCompleted()
 	{
-		import std.array : join;
 		import std.uuid : randomUUID;
 
 		turnInProgress = false;
@@ -1152,7 +1208,9 @@ class CodexSession : AgentSession
 		// 2. Synthetic message/assistant
 		if (completedItems.length > 0)
 		{
-			import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
+			import cydo.agent.protocol : AssistantMessageEvent, ContentBlock,
+				UsageInfo, UserMessageEvent, ToolResultBlock;
+
 			auto msgId = "msg_" ~ randomUUID().toString();
 
 			ContentBlock[] contentBlocks;
@@ -1160,15 +1218,12 @@ class CodexSession : AgentSession
 			{
 				ContentBlock cb;
 				cb.type = ci.type;
-				if (ci.type == "text")
+				if (ci.type == "text" || ci.type == "thinking")
 					cb.text = ci.text;
-				else if (ci.type == "thinking")
-					cb.text = ci.text; // normalized: text field, no signature
 				else if (ci.type == "tool_use")
 				{
 					cb.id   = ci.id;
 					cb.name = ci.name;
-					import ae.utils.json : JSONFragment;
 					cb.input = JSONFragment(ci.input.length > 0 ? ci.input : `{}`);
 				}
 				contentBlocks ~= cb;
@@ -1185,27 +1240,35 @@ class CodexSession : AgentSession
 				outputHandler_(toJson(aev));
 
 			// 3. Synthetic message/user with tool_result blocks
-			string[] toolResultParts;
+			ToolResultBlock[] toolResults;
 			foreach (ref ci; completedItems)
 				if (ci.type == "tool_use")
-					toolResultParts ~= `{"type":"tool_result","tool_use_id":"`
-						~ escapeJsonString(ci.id)
-						~ `","content":"` ~ escapeJsonString(ci.text) ~ `"`
-						~ (ci.isError ? `,"is_error":true` : ``)
-						~ `}`;
+				{
+					ToolResultBlock tr;
+					tr.tool_use_id = ci.id;
+					tr.content = JSONFragment(toJson(ci.text));
+					tr.is_error = ci.isError;
+					toolResults ~= tr;
+				}
 
-			if (toolResultParts.length > 0 && outputHandler_)
-				outputHandler_(
-					`{"type":"message/user","content":[`
-					~ toolResultParts.join(",") ~ `]}`);
+			if (toolResults.length > 0 && outputHandler_)
+			{
+				UserMessageEvent uev;
+				uev.content = JSONFragment(toJson(toolResults));
+				outputHandler_(toJson(uev));
+			}
 		}
 
 		// 4. turn/result
 		if (outputHandler_)
-			outputHandler_(
-				`{"type":"turn/result","subtype":"success"`
-				~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-				~ `,"usage":{"input_tokens":0,"output_tokens":0}}`);
+		{
+			import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+			TurnResultEvent tre;
+			tre.subtype = "success";
+			tre.num_turns = 1;
+			tre.usage = UsageInfo(0, 0);
+			outputHandler_(toJson(tre));
+		}
 
 		completedItems = null;
 	}
@@ -1227,14 +1290,19 @@ string buildMcpConfigOverride(int tid, string creatableTaskTypes,
 	if (cydoBin.length == 0)
 		return "";
 
-	return `{"mcp_servers.cydo":{"command":"`
-		~ escapeJsonString(cydoBin)
-		~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_SOCKET":"`
-		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
-		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
-		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ escapeJsonString(handoffs) ~ `"}}}`;
+	string[string] env;
+	env["CYDO_TID"] = to!string(tid);
+	env["CYDO_SOCKET"] = mcpSocketPath;
+	env["CYDO_CREATABLE_TYPES"] = creatableTaskTypes;
+	env["CYDO_SWITCHMODES"] = switchModes;
+	env["CYDO_HANDOFFS"] = handoffs;
+
+	auto serverConfig = McpServerConfig(cydoBin, ["--mcp-server"], env);
+
+	// Build {"mcp_servers.cydo": {...}} — dotted key is a normal string key.
+	JSONFragment[string] config;
+	config["mcp_servers.cydo"] = JSONFragment(toJson(serverConfig));
+	return toJson(config);
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,8 +1395,11 @@ string translateRolloutResponseItem(string line, string forkId = null)
 		return translateRolloutToolUse(probe.payload.call_id, "Bash",
 			extractCommandInput(probe.payload.action));
 	else if (ptype == "function_call")
+	{
+		static struct FuncCallInput { string arguments; }
 		return translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
-			`{"arguments":"` ~ escapeJsonString(probe.payload.arguments) ~ `"}`);
+			toJson(FuncCallInput(probe.payload.arguments)));
+	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")
 		return translateRolloutToolResult(probe.payload.call_id,
@@ -1355,7 +1426,6 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 	if (role == "assistant")
 	{
 		import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
-		import ae.utils.json : jsonParse, JSONFragment, JSONOptional, JSONPartial;
 
 		// Parse content blocks from the JSON array string
 		@JSONPartial
@@ -1393,27 +1463,18 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 		aev.model       = "";
 		aev.stop_reason = "end_turn";
 		aev.usage       = UsageInfo(0, 0);
-		// Embed forkId as uuid in rawSource for fork support via JSON passthrough
-		// The agnostic format doesn't carry uuid, so we encode it as a separate field
-		// by appending to the serialized JSON.
-		auto base = toJson(aev);
 		if (forkId !is null)
-		{
-			// Insert "uuid":"<forkId>" into the top-level object
-			// Remove trailing "}" and append the uuid field
-			if (base.length > 0 && base[$-1] == '}')
-				return base[0..$-1] ~ `,"uuid":"` ~ escapeJsonString(forkId) ~ `"}`;
-		}
-		return base;
+			aev.uuid = forkId;
+		return toJson(aev);
 	}
 	else // user, developer, system
 	{
-		// Inject uuid for fork support when available
-		auto uuidField = forkId !is null
-			? `,"uuid":"` ~ forkId ~ `"`
-			: ``;
-		return `{"type":"message/user"` ~ uuidField
-			~ `,"content":` ~ content ~ `}`;
+		import cydo.agent.protocol : UserMessageEvent;
+		UserMessageEvent ev;
+		ev.content = JSONFragment(content);
+		if (forkId !is null)
+			ev.uuid = forkId;
+		return toJson(ev);
 	}
 }
 
@@ -1445,6 +1506,8 @@ string translateRolloutToolUse(string callId, string toolName, string inputJson)
 /// Construct a message/user with a tool_result content block.
 string translateRolloutToolResult(string callId, string outputJson)
 {
+	import cydo.agent.protocol : ToolResultBlock, UserMessageEvent;
+
 	// outputJson might be a plain string or an object — extract text
 	string text;
 	if (outputJson.length > 0 && outputJson[0] == '"')
@@ -1458,9 +1521,13 @@ string translateRolloutToolResult(string callId, string outputJson)
 		text = `"(output)"`;
 	}
 
-	return `{"type":"message/user","content":[{"type":"tool_result","tool_use_id":"`
-		~ escapeJsonString(callId)
-		~ `","content":` ~ text ~ `}]}`;
+	ToolResultBlock tr;
+	tr.tool_use_id = callId;
+	tr.content = JSONFragment(text);
+
+	UserMessageEvent ev;
+	ev.content = JSONFragment(toJson([tr]));
+	return toJson(ev);
 }
 
 /// Construct a message/assistant with a thinking content block from reasoning.
@@ -1548,9 +1615,12 @@ string translateRolloutEventMsg(string line)
 
 	if (probe.payload.type == "task_complete")
 	{
-		return `{"type":"turn/result","subtype":"success"`
-			~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-			~ `,"usage":{"input_tokens":0,"output_tokens":0}}`;
+		import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+		TurnResultEvent ev;
+		ev.subtype = "success";
+		ev.num_turns = 1;
+		ev.usage = UsageInfo(0, 0);
+		return toJson(ev);
 	}
 
 	// Skip user_message, task_started, error, etc.
@@ -1580,22 +1650,11 @@ string extractCommandInput(JSONFragment action)
 			import std.array : join;
 			cmd = act.command.join(" ");
 		}
-		return `{"command":"` ~ escapeJsonString(cmd) ~ `","description":""}`;
+		import cydo.agent.protocol : CommandInput;
+		return toJson(CommandInput(cmd, ""));
 	}
 	catch (Exception e)
 	{ stderr.writeln("extractBashInput: parse error: ", e.msg); return `{}`; }
-}
-
-/// Escape a string for embedding in JSON.
-string escapeJsonString(string s)
-{
-	import std.array : replace;
-	return s
-		.replace(`\`, `\\`)
-		.replace(`"`, `\"`)
-		.replace("\n", `\n`)
-		.replace("\r", `\r`)
-		.replace("\t", `\t`);
 }
 
 /// Get the codex binary name/path.

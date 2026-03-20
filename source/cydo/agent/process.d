@@ -151,6 +151,11 @@ class AgentProcess
 	/// Whether the process pipes have been disconnected.
 	@property bool dead() { return disconnected || exited; }
 
+	/// The framed NDJSON connection (LineBufferedAdapter over Duplex).
+	/// When used with JsonRpcCodec, the codec takes over handleReadData
+	/// and onStdoutLine will no longer be called.
+	@property LineBufferedAdapter connection() { return stdoutLines; }
+
 	/// Send a signal to the child process.
 	void sendSignal(int sig)
 	{
