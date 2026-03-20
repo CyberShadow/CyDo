@@ -1,4 +1,3 @@
-import { h } from "preact";
 import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 
@@ -31,7 +30,9 @@ export function UserMessage({ message }: Props) {
           <span class="meta-badge steering">steering</span>
         </div>
       )}
-      {message.isSynthetic || message.parentToolUseId || message.isCompactSummary ? (
+      {message.isSynthetic ||
+      message.parentToolUseId ||
+      message.isCompactSummary ? (
         <Markdown text={text} />
       ) : (
         <div class="user-text">{text}</div>
@@ -41,7 +42,10 @@ export function UserMessage({ message }: Props) {
           {Object.entries(message.extraFields).map(([k, v]) => (
             <div key={k} class="tool-input-field">
               <span class="field-label">{k}:</span>
-              <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
+              <span class="field-value">
+                {" "}
+                {typeof v === "string" ? v : JSON.stringify(v)}
+              </span>
             </div>
           ))}
         </div>

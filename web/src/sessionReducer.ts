@@ -240,7 +240,7 @@ export function reduceAssistantMessage(
   // cleared them before the full assistant message is processed.
   if (idx < 0) {
     for (let i = s.messages.length - 1; i >= 0; i--) {
-      const m = s.messages[i];
+      const m = s.messages[i]!;
       if (m.type === "assistant" && m.id.startsWith("streaming-")) {
         idx = i;
         break;
@@ -250,10 +250,10 @@ export function reduceAssistantMessage(
 
   if (idx >= 0) {
     const updated = [...s.messages];
-    const existingMsg = { ...updated[idx] };
+    const existingMsg = { ...updated[idx]! };
     // Replace temp ID with real one when adopting a streaming placeholder
     if (existingMsg.id !== msgId) existingMsg.id = msgId;
-    existingMsg.content = [...existingMsg.content, ...msg.content];
+    existingMsg.content = [...existingMsg.content, ...(msg.content ?? [])];
     // Only keep streamingBlocks active if it was a streaming placeholder;
     // during JSONL replay there's no streaming so leave it undefined.
     if (existingMsg.streamingBlocks !== undefined) {
@@ -314,7 +314,7 @@ function trackFileEdits(
   for (const block of toolResults) {
     if (block.is_error) continue;
     for (let i = state.messages.length - 1; i >= 0; i--) {
-      const m = state.messages[i];
+      const m = state.messages[i]!;
       if (m.type !== "assistant") continue;
       const toolUse = m.content.find(
         (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id,
@@ -399,7 +399,7 @@ export function reduceUserEcho(
     const touchedIndices = new Set<number>();
     for (const block of toolResults) {
       for (let i = updated.length - 1; i >= 0; i--) {
-        const m = updated[i];
+        const m = updated[i]!;
         if (m.type === "assistant") {
           const hasToolUse = m.content.some(
             (c) => c.type === "tool_use" && (c as any).id === block.tool_use_id,
@@ -425,7 +425,7 @@ export function reduceUserEcho(
     // tool-result user message onto the parent assistant message so
     // they are visible in the UI.
     for (const i of touchedIndices) {
-      const msg = updated[i];
+      const msg = updated[i]!;
       const prev = msg.rawSource;
       msg.rawSource = prev
         ? Array.isArray(prev)
@@ -513,7 +513,7 @@ export function reduceResultMessage(
   // interrupted one.
   let messages = s.messages;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
+    const m = messages[i]!;
     if (m.type === "assistant" && m.streamingBlocks) {
       messages = messages.slice();
       // Promote any in-progress streaming blocks into content so the
@@ -576,8 +576,8 @@ function insertBeforeStreaming(
 ): DisplayMessage[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (
-      messages[i].type === "assistant" &&
-      messages[i].streamingBlocks !== undefined
+      messages[i]!.type === "assistant" &&
+      messages[i]!.streamingBlocks !== undefined
     ) {
       const result = [...messages];
       result.splice(i, 0, msg);
@@ -601,7 +601,7 @@ function bumpNestedVersion(
 ): void {
   if (!parentToolUseId) return;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
+    const m = messages[i]!;
     if (
       m.type === "assistant" &&
       m.content.some(
@@ -619,7 +619,7 @@ function bumpNestedVersion(
 /** Find the last assistant message with active streaming blocks. */
 function findStreamingMsg(messages: DisplayMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].streamingBlocks?.length) return i;
+    if (messages[i]!.streamingBlocks?.length) return i;
   }
   return -1;
 }
@@ -632,8 +632,8 @@ function getStreamingMessage(s: SessionState): {
   const messages = s.messages.slice();
   // Search backwards for an assistant message with active streaming
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].type === "assistant" && messages[i].streamingBlocks) {
-      messages[i] = { ...messages[i] };
+    if (messages[i]!.type === "assistant" && messages[i]!.streamingBlocks) {
+      messages[i] = { ...messages[i]! };
       return { messages, msgIdx: i };
     }
   }
@@ -654,7 +654,7 @@ export function reduceStreamBlockStart(
   event: any,
 ): SessionState {
   const { messages, msgIdx } = getStreamingMessage(s);
-  const msg = messages[msgIdx];
+  const msg = messages[msgIdx]!;
   msg.streamingBlocks = [
     ...(msg.streamingBlocks || []),
     {
@@ -677,7 +677,7 @@ export function reduceStreamBlockDelta(
   const targetIdx = findStreamingMsg(s.messages);
   if (targetIdx < 0) return s;
   const messages = s.messages.slice();
-  const msg = { ...messages[targetIdx] };
+  const msg = { ...messages[targetIdx]! };
   messages[targetIdx] = msg;
   msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
     if (b.index !== event.index) return b;
@@ -699,7 +699,7 @@ export function reduceStreamBlockStop(
   const targetIdx = findStreamingMsg(s.messages);
   if (targetIdx < 0) return s;
   const messages = s.messages.slice();
-  const msg = { ...messages[targetIdx] };
+  const msg = { ...messages[targetIdx]! };
   messages[targetIdx] = msg;
   msg.streamingBlocks = msg.streamingBlocks!.filter(
     (b) => b.index !== event.index,
@@ -712,10 +712,10 @@ export function reduceStreamTurnStop(s: SessionState): SessionState {
   // Mark the assistant message as no longer streaming so the next
   // response creates a fresh message instead of reusing this one.
   for (let i = s.messages.length - 1; i >= 0; i--) {
-    if (s.messages[i].type === "assistant" && s.messages[i].streamingBlocks) {
+    if (s.messages[i]!.type === "assistant" && s.messages[i]!.streamingBlocks) {
       const messages = s.messages.slice();
-      messages[i] = { ...messages[i], streamingBlocks: undefined };
-      bumpNestedVersion(messages, messages[i].parentToolUseId);
+      messages[i] = { ...messages[i]!, streamingBlocks: undefined };
+      bumpNestedVersion(messages, messages[i]!.parentToolUseId);
       return { ...s, messages };
     }
   }

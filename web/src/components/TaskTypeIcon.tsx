@@ -1,4 +1,3 @@
-import { h } from "preact";
 import type { TaskTypeInfo } from "../useSessionManager";
 
 import blankIcon from "../icons/blank.svg?raw";

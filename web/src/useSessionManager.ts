@@ -205,7 +205,7 @@ export function useTaskManager(): TaskManager {
     }
     const archiveMatch = id.match(/^archive:(\d+)$/);
     if (archiveMatch) {
-      const parentTid = parseInt(archiveMatch[1], 10);
+      const parentTid = parseInt(archiveMatch[1]!, 10);
       const [ws, proj] = taskContext(parentTid);
       routeRef.current(buildUrl(ws, proj, `/archive/${parentTid}`));
       return;
@@ -573,7 +573,8 @@ export function useTaskManager(): TaskManager {
             t.status,
           ),
           resumable: t.resumable,
-          preReloadDrafts: textsToRecover.length > 0 ? textsToRecover : undefined,
+          preReloadDrafts:
+            textsToRecover.length > 0 ? textsToRecover : undefined,
         };
         liveStates.set(tid, reset);
         setTasks((prev) => {
@@ -1056,7 +1057,9 @@ export function useTaskManager(): TaskManager {
   );
 
   // Build sidebar task list filtered by active workspace/project and sorted by tid
-  const prevSidebarTasksRef = useRef<import("./components/Sidebar").SidebarTask[]>([]);
+  const prevSidebarTasksRef = useRef<
+    import("./components/Sidebar").SidebarTask[]
+  >([]);
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values());
     if (activeWorkspace !== null && activeProject !== null) {
@@ -1090,7 +1093,7 @@ export function useTaskManager(): TaskManager {
     if (
       prev.length === result.length &&
       result.every((t, i) => {
-        const p = prev[i];
+        const p = prev[i]!;
         return (
           t.tid === p.tid &&
           t.alive === p.alive &&

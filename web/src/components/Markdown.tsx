@@ -1,4 +1,4 @@
-import { h, type FunctionComponent } from "preact";
+import { type FunctionComponent } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { createIncremarkParser } from "@incremark/core";

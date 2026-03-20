@@ -1,4 +1,3 @@
-import { h } from "preact";
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
 import { TaskTypeIcon } from "./TaskTypeIcon";

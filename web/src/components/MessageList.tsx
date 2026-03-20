@@ -1,4 +1,4 @@
-import { h, type ComponentChildren } from "preact";
+import { type ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import {
   useEffect,
@@ -90,7 +90,10 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
           {Object.entries(message.extraFields).map(([k, v]) => (
             <div key={k} class="tool-input-field">
               <span class="field-label">{k}:</span>
-              <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
+              <span class="field-value">
+                {" "}
+                {typeof v === "string" ? v : JSON.stringify(v)}
+              </span>
             </div>
           ))}
         </div>
@@ -426,7 +429,6 @@ const MessageView = memo(
 export function MessageList({
   sessionId,
   messages,
-  isProcessing,
   onFork,
   onUndo,
   onEditMessage,

@@ -29,7 +29,7 @@ const COLORS_16 = [
 ];
 
 function color256(n: number): string {
-  if (n < 16) return COLORS_16[n];
+  if (n < 16) return COLORS_16[n]!;
   if (n < 232) {
     // 6x6x6 color cube
     n -= 16;
@@ -55,7 +55,7 @@ interface AnsiStyle {
 function applyCodes(codes: number[], style: AnsiStyle): void {
   let i = 0;
   while (i < codes.length) {
-    const c = codes[i];
+    const c = codes[i]!;
     if (c === 0) {
       delete style.color;
       delete style.backgroundColor;

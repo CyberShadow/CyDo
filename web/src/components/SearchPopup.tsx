@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { TaskTypeInfo } from "../useSessionManager";
@@ -60,7 +59,7 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
       setSelectedIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter" && filtered.length > 0) {
       e.preventDefault();
-      onSelect(filtered[selectedIdx].tid);
+      onSelect(filtered[selectedIdx]!.tid);
       onClose();
     }
   };

@@ -1,4 +1,4 @@
-import { h, RefObject } from "preact";
+import { RefObject } from "preact";
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 
 const drafts = new Map<number, string>();

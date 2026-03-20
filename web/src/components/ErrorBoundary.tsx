@@ -1,4 +1,4 @@
-import { h, Component, ComponentChildren } from "preact";
+import { Component, ComponentChildren } from "preact";
 
 interface Props {
   children: ComponentChildren;
@@ -22,7 +22,10 @@ export class ErrorBoundary extends Component<Props, State> {
           <h2>Something went wrong</h2>
           <pre class="error-boundary-message">{this.state.error.message}</pre>
           <pre class="error-boundary-stack">{this.state.error.stack}</pre>
-          <button class="error-boundary-reset" onClick={() => this.setState({ error: null })}>
+          <button
+            class="error-boundary-reset"
+            onClick={() => this.setState({ error: null })}
+          >
             Try Again
           </button>
         </div>

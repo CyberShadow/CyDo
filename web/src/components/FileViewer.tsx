@@ -1,4 +1,4 @@
-import { h, Fragment } from "preact";
+import { Fragment } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { structuredPatch } from "diff";
@@ -30,7 +30,7 @@ function resolveEditContent(
 ): ResolvedEdit | null {
   // Find the assistant message containing the tool_use block
   for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
+    const m = messages[i]!;
     if (m.type !== "assistant") continue;
     const toolUse = m.content.find(
       (c) => c.type === "tool_use" && (c as any).id === edit.toolUseId,
@@ -103,7 +103,7 @@ function resolveFileContent(
   let originalContent: string | null = null;
 
   for (let i = 0; i < file.edits.length; i++) {
-    const r = resolveEditContent(file.edits[i], messages);
+    const r = resolveEditContent(file.edits[i]!, messages);
     if (r) {
       resolved.set(i, r);
       if (originalContent == null) originalContent = r.contentBefore ?? "";
@@ -187,7 +187,7 @@ function buildFileTree(paths: string[]): TreeNode[] {
     const parts = path.split("/").filter(Boolean);
     let node = root;
     for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
+      const part = parts[i]!;
       if (!node.children.has(part)) {
         node.children.set(part, { children: new Map() });
       }
@@ -222,7 +222,7 @@ function buildFileTree(paths: string[]): TreeNode[] {
     }
     // Single-child non-leaf: coalesce
     if (node.children.size === 1 && !node.filePath) {
-      const [childLabel, childNode] = [...node.children.entries()][0];
+      const [childLabel, childNode] = [...node.children.entries()][0]!;
       const merged = convertCoalescing(childNode, childLabel);
       return { ...merged, label: `${label}/${merged.label}` };
     }

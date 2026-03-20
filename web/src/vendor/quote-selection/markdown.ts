@@ -186,9 +186,9 @@ const filters: Filters = {
     return el;
   },
 };
-filters.UL = filters.OL;
+filters.UL = filters.OL!;
 for (let level = 2; level <= 6; ++level) {
-  filters[`H${level}`] = filters.H1;
+  filters[`H${level}`] = filters.H1!;
 }
 
 export function insertMarkdownSyntax(root: DocumentFragment): void {
@@ -223,7 +223,7 @@ export function insertMarkdownSyntax(root: DocumentFragment): void {
   results.reverse();
 
   for (const el of results) {
-    el.replaceWith(filters[el.nodeName](el));
+    el.replaceWith(filters[el.nodeName]!(el));
   }
 }
 

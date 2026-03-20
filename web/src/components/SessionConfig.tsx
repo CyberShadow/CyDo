@@ -1,4 +1,4 @@
-import { h, RefObject } from "preact";
+import { RefObject } from "preact";
 import type { TaskTypeInfo } from "../useSessionManager";
 import { ensureIconStyles } from "./TaskTypeIcon";
 
@@ -37,7 +37,7 @@ export function SessionConfig({
       const dir = e.key === "ArrowDown" ? 1 : -1;
       const next =
         (selectedIdx + dir + visibleTypes.length) % visibleTypes.length;
-      onTaskTypeChange(visibleTypes[next].name);
+      onTaskTypeChange(visibleTypes[next]!.name);
     } else if (e.key === "Enter") {
       e.preventDefault();
       onConfirm?.();

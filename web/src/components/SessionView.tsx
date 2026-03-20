@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { memo } from "preact/compat";
 import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
@@ -236,7 +235,11 @@ function SessionViewInner({
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
       {task.resumable ? (
         <div class="resume-bar">
-          {task.error && <span class="session-failed-label">Session failed: {task.error}</span>}
+          {task.error && (
+            <span class="session-failed-label">
+              Session failed: {task.error}
+            </span>
+          )}
           <button ref={resumeRef} class="btn btn-resume" onClick={onResume}>
             Resume Session
           </button>

@@ -1,5 +1,3 @@
-import { h } from "preact";
-
 interface ErrorEntry {
   id: number;
   message: string;
@@ -19,12 +17,16 @@ export function ErrorToast({ errors, onDismiss, onClearAll }: Props) {
     <div class="error-toast-container">
       <div class="error-toast-header">
         <span>Uncaught errors ({errors.length})</span>
-        <button class="error-toast-clear" onClick={onClearAll}>Clear all</button>
+        <button class="error-toast-clear" onClick={onClearAll}>
+          Clear all
+        </button>
       </div>
       {errors.map((err) => (
         <div key={err.id} class="error-toast-item">
           <pre class="error-toast-message">{err.message}</pre>
-          <button class="error-toast-dismiss" onClick={() => onDismiss(err.id)}>&times;</button>
+          <button class="error-toast-dismiss" onClick={() => onDismiss(err.id)}>
+            &times;
+          </button>
         </div>
       ))}
     </div>

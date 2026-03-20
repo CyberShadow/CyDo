@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { memo } from "preact/compat";
 import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import type { TaskTypeInfo } from "../useSessionManager";
@@ -283,7 +282,7 @@ function flattenTree(
         for (let i = 0; i < node.children.length; i++) {
           const isLast = i === node.children.length - 1;
           walk(
-            node.children[i],
+            node.children[i]!,
             depth + 1,
             isLast ? guides : guides | (1 << depth),
           );
@@ -309,7 +308,7 @@ function flattenTree(
     for (let i = 0; i < node.children.length; i++) {
       const isLast = i === node.children.length - 1;
       walk(
-        node.children[i],
+        node.children[i]!,
         depth + 1,
         isLast ? guides : guides | (1 << depth),
       );

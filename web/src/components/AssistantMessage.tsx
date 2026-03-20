@@ -1,4 +1,4 @@
-import { h, Fragment } from "preact";
+import { Fragment } from "preact";
 import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
@@ -69,7 +69,7 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
     return JSON.parse(s + closers);
   } catch {}
   for (let i = snapshots.length - 1; i >= 0; i--) {
-    const snap = snapshots[i];
+    const snap = snapshots[i]!;
     const c = [...snap.stack].reverse().join("");
     try {
       return JSON.parse(s.slice(0, snap.pos) + c);

@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { useState } from "preact/hooks";
 import type { AskUserQuestionItem } from "../protocol";
 import { Markdown } from "./Markdown";
@@ -46,7 +45,7 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
   const handleSubmit = () => {
     const answers: Record<string, string> = {};
     for (let qi = 0; qi < questions.length; qi++) {
-      const q = questions[qi];
+      const q = questions[qi]!;
       const selected = Array.from(selections.get(qi) ?? []);
       const custom = useCustom.get(qi) ? (customTexts.get(qi) ?? "") : "";
       const parts = [...selected];

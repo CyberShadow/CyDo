@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
@@ -106,7 +105,11 @@ function AppContent() {
             onNavigateToProject={navigateToProject}
           />
           {searchPopup}
-          <ErrorToast errors={errors} onDismiss={dismissError} onClearAll={clearErrors} />
+          <ErrorToast
+            errors={errors}
+            onDismiss={dismissError}
+            onClearAll={clearErrors}
+          />
         </div>
       </ThemeContext.Provider>
     );
@@ -144,7 +147,7 @@ function AppContent() {
         for (let i = 1; i <= len; i++) {
           const candidate =
             order[((idx === -1 ? 0 : idx) + dir * i + len) % len];
-          if (attention.has(parseInt(candidate, 10))) {
+          if (attention.has(parseInt(candidate!, 10))) {
             next = candidate;
             break;
           }
@@ -160,7 +163,7 @@ function AppContent() {
         const idx = visual.indexOf(activeTaskId);
         const dir = e.key === "ArrowUp" ? -1 : 1;
         const nextIdx = (idx + dir + visual.length) % visual.length;
-        const next = visual[nextIdx];
+        const next = visual[nextIdx]!;
         if (next !== null) {
           setActiveTaskId(next);
           document
@@ -323,7 +326,11 @@ function AppContent() {
             </div>
           ))}
         {searchPopup}
-        <ErrorToast errors={errors} onDismiss={dismissError} onClearAll={clearErrors} />
+        <ErrorToast
+          errors={errors}
+          onDismiss={dismissError}
+          onClearAll={clearErrors}
+        />
       </div>
     </ThemeContext.Provider>
   );
@@ -349,7 +356,10 @@ export function App() {
           component={AppContent}
         />
         <Route path="/:workspace/:project/archive" component={AppContent} />
-        <Route path="/:workspace/:project/session/:sid" component={AppContent} />
+        <Route
+          path="/:workspace/:project/session/:sid"
+          component={AppContent}
+        />
         <Route path="/:workspace/:project" component={AppContent} />
         <Route path="/archive/:parentTid" component={AppContent} />
         <Route path="/archive" component={AppContent} />

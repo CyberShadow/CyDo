@@ -82,7 +82,7 @@ function overlayDiff(
     const emphasized = side === "old" ? !!change.removed : !!change.added;
 
     while (remaining > 0 && tIdx < syntaxTokens.length) {
-      const token = syntaxTokens[tIdx];
+      const token = syntaxTokens[tIdx]!;
       const available = token.content.length - tOff;
       const take = Math.min(remaining, available);
 
@@ -171,7 +171,7 @@ export function DiffView({
   let newLineIdx = 0;
 
   for (let ci = 0; ci < changes.length; ci++) {
-    const change = changes[ci];
+    const change = changes[ci]!;
     const lines = splitChangeLines(change.value);
 
     if (!change.added && !change.removed) {
@@ -199,7 +199,7 @@ export function DiffView({
         // Pre-compute word diffs and similarity for each pair
         const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
         for (let i = 0; i < pairCount; i++) {
-          const wc = diffWordsWithSpace(lines[i], addedLines[i]);
+          const wc = diffWordsWithSpace(lines[i]!, addedLines[i]!);
           wordDiffs.push({
             changes: wc,
             similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
@@ -209,10 +209,10 @@ export function DiffView({
         // All removed lines (with word emphasis on similar pairs)
         for (let i = 0; i < lines.length; i++) {
           const idx = oldLineIdx + i;
-          if (i < pairCount && wordDiffs[i].similar) {
+          if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
               oldTokens?.[idx] ?? null,
-              wordDiffs[i].changes,
+              wordDiffs[i]!.changes,
               "old",
             );
             elements.push(
@@ -234,10 +234,10 @@ export function DiffView({
         // All added lines (with word emphasis on similar pairs)
         for (let i = 0; i < addedLines.length; i++) {
           const idx = newLineIdx + i;
-          if (i < pairCount && wordDiffs[i].similar) {
+          if (i < pairCount && wordDiffs[i]!.similar) {
             const spans = overlayDiff(
               newTokens?.[idx] ?? null,
-              wordDiffs[i].changes,
+              wordDiffs[i]!.changes,
               "new",
             );
             elements.push(
@@ -362,9 +362,9 @@ export function PatchView({
     let li = 0;
 
     while (li < lines.length) {
-      const prefix = lines[li][0];
+      const prefix = lines[li]![0];
       if (prefix === " ") {
-        const content = lines[li].slice(1);
+        const content = lines[li]!.slice(1);
         const oldIdx = oldTokenIdx++;
         newTokenIdx++;
         const oNum = oldLineNum++;
@@ -385,14 +385,14 @@ export function PatchView({
       } else if (prefix === "-") {
         // Collect consecutive removed lines
         const removeStart = li;
-        while (li < lines.length && lines[li][0] === "-") li++;
+        while (li < lines.length && lines[li]![0] === "-") li++;
         const removedContents = lines
           .slice(removeStart, li)
           .map((l) => l.slice(1));
 
         // Collect adjacent added lines
         const addStart = li;
-        while (li < lines.length && lines[li][0] === "+") li++;
+        while (li < lines.length && lines[li]![0] === "+") li++;
         const addedContents = lines.slice(addStart, li).map((l) => l.slice(1));
 
         const pairCount = Math.min(
@@ -401,7 +401,7 @@ export function PatchView({
         );
         const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
         for (let p = 0; p < pairCount; p++) {
-          const wc = diffWordsWithSpace(removedContents[p], addedContents[p]);
+          const wc = diffWordsWithSpace(removedContents[p]!, addedContents[p]!);
           wordDiffs.push({
             changes: wc,
             similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
@@ -411,10 +411,10 @@ export function PatchView({
         for (let p = 0; p < removedContents.length; p++) {
           const oldIdx = oldTokenIdx++;
           const oNum = oldLineNum++;
-          if (p < pairCount && wordDiffs[p].similar) {
+          if (p < pairCount && wordDiffs[p]!.similar) {
             const spans = overlayDiff(
               oldTokens?.[oldIdx] ?? null,
-              wordDiffs[p].changes,
+              wordDiffs[p]!.changes,
               "old",
             );
             elements.push(
@@ -452,10 +452,10 @@ export function PatchView({
         for (let p = 0; p < addedContents.length; p++) {
           const newIdx = newTokenIdx++;
           const nNum = newLineNum++;
-          if (p < pairCount && wordDiffs[p].similar) {
+          if (p < pairCount && wordDiffs[p]!.similar) {
             const spans = overlayDiff(
               newTokens?.[newIdx] ?? null,
-              wordDiffs[p].changes,
+              wordDiffs[p]!.changes,
               "new",
             );
             elements.push(
@@ -491,7 +491,7 @@ export function PatchView({
         }
       } else if (prefix === "+") {
         // Pure added line (no preceding removed block)
-        const content = lines[li].slice(1);
+        const content = lines[li]!.slice(1);
         const newIdx = newTokenIdx++;
         const nNum = newLineNum++;
         elements.push(
@@ -735,7 +735,7 @@ interface AskQuestion {
 }
 
 function getAskAnswers(
-  input: Record<string, unknown>,
+  _input: Record<string, unknown>,
   result?: ToolResult,
 ): Record<string, string> | null {
   // Built-in AskUserQuestion: answers in toolResult
@@ -754,7 +754,7 @@ function getAskAnswers(
       const re = /"([^"]*)"="([^"]*)"/g;
       let m;
       while ((m = re.exec(body)) !== null) {
-        answers[m[1]] = m[2];
+        answers[m[1]!] = m[2]!;
       }
       if (Object.keys(answers).length > 0) return answers;
     }
@@ -828,9 +828,9 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
   // Strip trailing REMINDER line
   let end = lines.length;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].startsWith("REMINDER:")) {
+    if (lines[i]!.startsWith("REMINDER:")) {
       end = i;
-      if (end > 0 && lines[end - 1].trim() === "") end--;
+      if (end > 0 && lines[end - 1]!.trim() === "") end--;
       break;
     }
   }
@@ -844,14 +844,14 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
     // Strip leading/trailing blank lines
     let s = 0,
       e = bodyLines.length;
-    while (s < e && bodyLines[s].trim() === "") s++;
-    while (e > s && bodyLines[e - 1].trim() === "") e--;
+    while (s < e && bodyLines[s]!.trim() === "") s++;
+    while (e > s && bodyLines[e - 1]!.trim() === "") e--;
     current.body = bodyLines.slice(s, e).join("\n");
     bodyLines.length = 0;
   };
 
   for (let i = 0; i < end; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
     if (line.startsWith("Web search results for query:")) {
       flushBody();
       if (current) iterations.push(current);
@@ -1187,7 +1187,7 @@ function getHeaderSubtitle(
   ) {
     const questions = input.questions as AskQuestion[];
     if (questions.length === 1) {
-      return <span class="tool-subtitle">{questions[0].header}</span>;
+      return <span class="tool-subtitle">{questions[0]!.header}</span>;
     }
     return <span class="tool-subtitle">{questions.length} questions</span>;
   }
@@ -1235,8 +1235,8 @@ function getHeaderSubtitle(
       | Array<{ task_type?: string; description?: string }>
       | undefined;
     if (Array.isArray(tasks)) {
-      if (tasks.length === 1 && tasks[0].description) {
-        return <span class="tool-subtitle">{tasks[0].description}</span>;
+      if (tasks.length === 1 && tasks[0]!.description) {
+        return <span class="tool-subtitle">{tasks[0]!.description}</span>;
       }
       return <span class="tool-subtitle">{tasks.length} tasks</span>;
     }
@@ -1260,8 +1260,8 @@ function getHeaderSubtitle(
   if (name === "TaskCreate") {
     const tasks = input.tasks as Array<{ description?: string }> | undefined;
     if (Array.isArray(tasks)) {
-      if (tasks.length === 1 && tasks[0].description) {
-        return <span class="tool-subtitle">{tasks[0].description}</span>;
+      if (tasks.length === 1 && tasks[0]!.description) {
+        return <span class="tool-subtitle">{tasks[0]!.description}</span>;
       }
       return <span class="tool-subtitle">{tasks.length} tasks</span>;
     }

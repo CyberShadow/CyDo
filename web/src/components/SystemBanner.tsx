@@ -1,4 +1,3 @@
-import { h } from "preact";
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
 import type { Theme } from "../useTheme";
