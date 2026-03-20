@@ -8,6 +8,7 @@
     "fmt:check": "prettier --check src/"
   },
   "dependencies": {
+    "@incremark/core": "^0.3.10",
     "diff": "^8.0.3",
     "dompurify": "^3.3.3",
     "htmldiff-js": "^1.0.5",

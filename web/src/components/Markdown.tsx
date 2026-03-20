@@ -1,14 +1,10 @@
 import { h, type FunctionComponent } from "preact";
 import { memo } from "preact/compat";
-import { useMemo, useState } from "preact/hooks";
-import { marked } from "marked";
+import { useMemo, useRef, useState } from "preact/hooks";
+import { createIncremarkParser } from "@incremark/core";
+import type { IncremarkParser, Root } from "@incremark/core";
 import { useHighlight, renderTokens } from "../highlight";
-import { sanitizeHtml } from "../sanitize";
-
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-});
+import { MdastRenderer } from "./MdastRenderer";
 
 interface Props {
   text: string;
@@ -19,10 +15,40 @@ export const Markdown: FunctionComponent<Props> = memo(
   ({ text, class: className }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
     if (!text) return null;
-    const html = useMemo(
-      () => sanitizeHtml(marked.parse(text, { async: false }) as string),
-      [text],
-    );
+
+    const parserRef = useRef<IncremarkParser | null>(null);
+    if (!parserRef.current) {
+      parserRef.current = createIncremarkParser({
+        gfm: true,
+        breaks: true,
+      } as any);
+    }
+
+    const prevTextRef = useRef("");
+
+    const ast = useMemo(() => {
+      const parser = parserRef.current!;
+      if (
+        text.startsWith(prevTextRef.current) &&
+        prevTextRef.current.length > 0
+      ) {
+        // Incremental append — only parse the new delta
+        const delta = text.slice(prevTextRef.current.length);
+        if (delta) {
+          const update = parser.append(delta);
+          prevTextRef.current = text;
+          return update.ast;
+        }
+        // No new content — return cached AST
+        return parser.getAst();
+      } else {
+        // Full re-render (text changed non-incrementally, or first render)
+        const update = parser.render(text);
+        prevTextRef.current = text;
+        return update.ast;
+      }
+    }, [text]);
+
     const tokens = useHighlight(showRaw ? text : null, "markdown");
 
     return (
@@ -48,10 +74,9 @@ export const Markdown: FunctionComponent<Props> = memo(
             </code>
           </pre>
         ) : (
-          <div
-            class={`markdown ${className ?? ""}`}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <div class={`markdown ${className ?? ""}`}>
+            <MdastRenderer ast={ast} />
+          </div>
         )}
       </div>
     );
