@@ -885,6 +885,21 @@ body,
   text-decoration: underline;
 }
 
+.web-search-iteration {
+  margin-bottom: 12px;
+}
+
+.web-search-iteration:last-child {
+  margin-bottom: 0;
+}
+
+.web-search-query {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  font-style: italic;
+}
+
 .tool-result-header {
   padding: 4px 12px;
   cursor: pointer;

@@ -816,21 +816,62 @@ interface WebSearchLink {
   url: string;
 }
 
-function parseWebSearchResult(content: string): {
+interface WebSearchIteration {
+  query?: string;
   links: WebSearchLink[];
   body: string;
-} | null {
-  const lines = content.split("\n");
-  let links: WebSearchLink[] = [];
-  let bodyStart = 0;
+}
 
-  // Find the "Links:" line (typically line index 2, but search flexibly)
-  for (let i = 0; i < Math.min(lines.length, 5); i++) {
-    if (lines[i].startsWith("Links: ")) {
+function parseWebSearchResult(content: string): WebSearchIteration[] | null {
+  const lines = content.split("\n");
+
+  // Strip trailing REMINDER line
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith("REMINDER:")) {
+      end = i;
+      if (end > 0 && lines[end - 1].trim() === "") end--;
+      break;
+    }
+  }
+
+  const iterations: WebSearchIteration[] = [];
+  let current: WebSearchIteration | null = null;
+  const bodyLines: string[] = [];
+
+  const flushBody = () => {
+    if (!current) return;
+    // Strip leading/trailing blank lines
+    let s = 0,
+      e = bodyLines.length;
+    while (s < e && bodyLines[s].trim() === "") s++;
+    while (e > s && bodyLines[e - 1].trim() === "") e--;
+    current.body = bodyLines.slice(s, e).join("\n");
+    bodyLines.length = 0;
+  };
+
+  for (let i = 0; i < end; i++) {
+    const line = lines[i];
+    if (line.startsWith("Web search results for query:")) {
+      flushBody();
+      if (current) iterations.push(current);
+      const m = line.match(/^Web search results for query:\s*"(.+)"$/);
+      current = { query: m ? m[1] : undefined, links: [], body: "" };
+    } else if (line.startsWith("Links: ")) {
+      // A bare Links: line also starts a new iteration if there's no current
+      if (!current) {
+        flushBody();
+        current = { links: [], body: "" };
+      } else if (current.links.length > 0) {
+        // Another Links: block — start a new iteration
+        flushBody();
+        iterations.push(current);
+        current = { links: [], body: "" };
+      }
       try {
-        const parsed = JSON.parse(lines[i].slice(7));
+        const parsed = JSON.parse(line.slice(7));
         if (Array.isArray(parsed)) {
-          links = parsed.filter(
+          current.links = parsed.filter(
             (l: unknown): l is WebSearchLink =>
               typeof l === "object" &&
               l !== null &&
@@ -841,60 +882,47 @@ function parseWebSearchResult(content: string): {
       } catch {
         // invalid JSON, skip
       }
-      bodyStart = i + 1;
-      break;
-    }
-    // Skip the header line ("Web search results for query: ...")
-    if (lines[i].startsWith("Web search results for query:")) {
-      bodyStart = i + 1;
-      continue;
+    } else {
+      if (current) bodyLines.push(line);
     }
   }
 
-  if (links.length === 0 && bodyStart === 0) return null;
+  flushBody();
+  if (current) iterations.push(current);
 
-  // Strip trailing REMINDER line
-  let bodyEnd = lines.length;
-  for (let i = lines.length - 1; i >= bodyStart; i--) {
-    if (lines[i].startsWith("REMINDER:")) {
-      bodyEnd = i;
-      // Also strip blank line before REMINDER
-      if (bodyEnd > bodyStart && lines[bodyEnd - 1].trim() === "") bodyEnd--;
-      break;
-    }
-  }
-
-  // Strip leading blank lines from body
-  while (bodyStart < bodyEnd && lines[bodyStart].trim() === "") bodyStart++;
-
-  const body = lines.slice(bodyStart, bodyEnd).join("\n");
-  return { links, body };
+  if (iterations.length === 0) return null;
+  return iterations;
 }
 
 function WebSearchResult({ content }: { content: string }) {
-  const parsed = parseWebSearchResult(content);
-  if (!parsed) {
+  const iterations = parseWebSearchResult(content);
+  if (!iterations) {
     return <pre class="tool-result">{content}</pre>;
   }
 
   return (
     <div class="tool-result-blocks">
-      {parsed.links.length > 0 && (
-        <div class="web-search-links">
-          {parsed.links.map((link, i) => (
-            <a
-              key={i}
-              class="web-search-link"
-              href={link.url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {link.title}
-            </a>
-          ))}
+      {iterations.map((iter, i) => (
+        <div class="web-search-iteration" key={i}>
+          {iter.query && <div class="web-search-query">"{iter.query}"</div>}
+          {iter.links.length > 0 && (
+            <div class="web-search-links">
+              {iter.links.map((link, j) => (
+                <a
+                  key={j}
+                  class="web-search-link"
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {link.title}
+                </a>
+              ))}
+            </div>
+          )}
+          {iter.body && <Markdown text={iter.body} class="text-content" />}
         </div>
-      )}
-      {parsed.body && <Markdown text={parsed.body} class="text-content" />}
+      ))}
     </div>
   );
 }
