@@ -1393,6 +1393,9 @@ function renderResultContent(
   content: ToolResultContent,
   isError?: boolean,
 ): h.JSX.Element {
+  if (content == null) {
+    return <pre class={`tool-result ${isError ? "error" : ""}`}>{""}</pre>;
+  }
   if (typeof content === "string") {
     return (
       <pre class={`tool-result ${isError ? "error" : ""}`}>
