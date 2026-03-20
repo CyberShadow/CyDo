@@ -210,6 +210,7 @@ export interface ControlResponseMessage {
 export interface ExitMessage {
   type: "process/exit";
   code: number;
+  is_continuation?: boolean;
   [key: string]: unknown;
 }
 

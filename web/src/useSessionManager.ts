@@ -270,6 +270,7 @@ export function useTaskManager(): TaskManager {
     // User-created children (forks) stay focused — user navigates manually.
     if (
       msg.type === "process/exit" &&
+      !msg.is_continuation &&
       prev.parentTid &&
       prev.relationType !== "fork" &&
       activeTaskIdRef.current === String(tid)

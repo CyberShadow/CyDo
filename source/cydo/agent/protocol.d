@@ -220,6 +220,7 @@ struct ProcessExitEvent
 {
 	string type = "process/exit";
 	int code;
+	@JSONOptional bool is_continuation;
 }
 
 /// Command input for Bash tool_use blocks (Codex agent).

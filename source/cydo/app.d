@@ -1569,6 +1569,8 @@ class App : ToolsBackend
 			import cydo.agent.protocol : ProcessExitEvent;
 			ProcessExitEvent ev;
 			ev.code = exitCode;
+			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
+				ev.is_continuation = true;
 			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
 				return;
