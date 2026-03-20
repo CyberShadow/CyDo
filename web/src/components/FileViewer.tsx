@@ -79,8 +79,6 @@ function resolveEditContent(
       contentAfter,
       structuredPatch,
     };
-
-    return null;
   }
   return null;
 }
