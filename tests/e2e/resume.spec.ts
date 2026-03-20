@@ -20,18 +20,43 @@ type RestartableBackend = {
   restart: () => Promise<void>;
 };
 
-async function waitForBackend(baseURL: string, timeoutMs = 30_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(baseURL);
-      if (res.ok || res.status < 500) return;
-    } catch {
-      // not ready yet
+async function waitForBackend(
+  baseURL: string,
+  proc?: ChildProcess,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const processExited = proc
+    ? new Promise<never>((_, reject) => {
+        if (proc.exitCode !== null) {
+          reject(new Error(`Backend process already exited with code ${proc.exitCode}`));
+          return;
+        }
+        proc.on("exit", (code, signal) => {
+          reject(
+            new Error(
+              `Backend process exited with code ${code}` +
+                `${signal ? ` (signal ${signal})` : ""} before becoming ready`,
+            ),
+          );
+        });
+      })
+    : new Promise<never>(() => {});
+
+  const polling = (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(baseURL);
+        if (res.ok || res.status < 500) return;
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 300));
     }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  throw new Error(`Backend at ${baseURL} did not start in time`);
+    throw new Error(`Backend at ${baseURL} did not start in time`);
+  })();
+
+  await Promise.race([polling, processExited]);
 }
 
 function spawnBackend(port: number, workDir: string, workerHome: string): ChildProcess {
@@ -72,13 +97,18 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     const baseURL = `http://localhost:${port}`;
     let proc = spawnBackend(port, workDir, workerHome);
-    await waitForBackend(baseURL);
+    try {
+      await waitForBackend(baseURL, proc);
+    } catch (e) {
+      try { process.kill(-proc.pid!, "SIGTERM"); } catch {}
+      throw e;
+    }
 
     const restart = async () => {
       process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", () => r()));
       proc = spawnBackend(port, workDir, workerHome);
-      await waitForBackend(baseURL);
+      await waitForBackend(baseURL, proc);
     };
 
     await use({ port, baseURL, workDir, restart });
