@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "preact/hooks";
 import { structuredPatch } from "diff";
 import type { DisplayMessage, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
+import type { ThemedToken } from "../highlight";
 import { DiffView, PatchView } from "./ToolCall";
 import type { PatchHunk } from "./ToolCall";
 import { Markdown } from "./Markdown";
@@ -311,7 +312,7 @@ function SourceView({
           <span class="source-gutter" style={{ minWidth: gutterWidth }}>
             {i + 1}
           </span>
-          {tokenLines ? renderTokens(line) : line}
+          {tokenLines ? renderTokens(line as ThemedToken[]) : line}
         </div>
       ))}
     </pre>

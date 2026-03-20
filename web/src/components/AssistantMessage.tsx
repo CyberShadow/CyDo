@@ -108,19 +108,27 @@ export function AssistantMessage({
         const blockExtras = { ...block._extras };
         // Hide direct callers (the common case) — only surface non-direct callers
         const caller = blockExtras.caller;
-        if (caller && typeof caller === 'object' && (caller as any).type === 'direct') {
+        if (
+          caller &&
+          typeof caller === "object" &&
+          (caller as any).type === "direct"
+        ) {
           delete blockExtras.caller;
         }
-        const blockExtraEl = Object.keys(blockExtras).length > 0 ? (
-          <div class="unknown-extra-fields">
-            {Object.entries(blockExtras).map(([k, v]) => (
-              <div key={k} class="tool-input-field">
-                <span class="field-label">{k}:</span>
-                <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
-              </div>
-            ))}
-          </div>
-        ) : null;
+        const blockExtraEl =
+          Object.keys(blockExtras).length > 0 ? (
+            <div class="unknown-extra-fields">
+              {Object.entries(blockExtras).map(([k, v]) => (
+                <div key={k} class="tool-input-field">
+                  <span class="field-label">{k}:</span>
+                  <span class="field-value">
+                    {" "}
+                    {typeof v === "string" ? v : JSON.stringify(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null;
 
         if (block.type === "thinking") {
           return (
@@ -131,14 +139,14 @@ export function AssistantMessage({
           );
         }
         if (block.type === "tool_use") {
-          const result = message.toolResults?.get(block.id);
-          const nested = childrenByParent?.get(block.id);
+          const result = message.toolResults?.get(block.id!);
+          const nested = childrenByParent?.get(block.id!);
           return (
             <Fragment key={i}>
               <ToolCall
-                name={block.name}
+                name={block.name!}
                 toolUseId={block.id}
-                input={block.input}
+                input={block.input!}
                 result={result}
                 onViewFile={onViewFile}
               >
@@ -191,7 +199,10 @@ export function AssistantMessage({
           {Object.entries(message.extraFields).map(([k, v]) => (
             <div key={k} class="tool-input-field">
               <span class="field-label">{k}:</span>
-              <span class="field-value"> {typeof v === 'string' ? v : JSON.stringify(v)}</span>
+              <span class="field-value">
+                {" "}
+                {typeof v === "string" ? v : JSON.stringify(v)}
+              </span>
             </div>
           ))}
         </div>

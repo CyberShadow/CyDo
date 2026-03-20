@@ -314,6 +314,7 @@ export interface TasksListMessage {
     task_type?: string;
     archived?: boolean;
     draft?: string;
+    error?: string;
   }[];
 }
 export interface TaskUpdatedMessage {
@@ -335,6 +336,7 @@ export interface TaskUpdatedMessage {
     task_type?: string;
     archived?: boolean;
     draft?: string;
+    error?: string;
   };
 }
 export interface TaskReloadMessage {

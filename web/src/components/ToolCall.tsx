@@ -738,8 +738,8 @@ function getAskAnswers(
   input: Record<string, unknown>,
   result?: ToolResult,
 ): Record<string, string> | null {
-  // Built-in AskUserQuestion: answers in toolUseResult
-  const tur = result?.toolUseResult as Record<string, unknown> | undefined;
+  // Built-in AskUserQuestion: answers in toolResult
+  const tur = result?.toolResult as Record<string, unknown> | undefined;
   if (tur?.answers && typeof tur.answers === "object") {
     return tur.answers as Record<string, string>;
   }

@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { useState } from "preact/hooks";
-import type { AskUserQuestionItem } from "../schemas";
+import type { AskUserQuestionItem } from "../protocol";
 import { Markdown } from "./Markdown";
 
 interface Props {

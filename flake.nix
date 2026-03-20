@@ -301,6 +301,23 @@
             agentType = "claude";
             claudeBin = "fail-claude";
           };
+          typecheck = pkgs.buildNpmPackage {
+            pname = "cydo-typecheck";
+            version = "0.1.0";
+            src = frontendSrc;
+            nodejs = pkgs.nodejs_22;
+            npmDepsHash = "sha256-IR466Wic52LQf2sPIM4xVMmqLiu4GlVRPItqFOzhRVY=";
+
+            buildPhase = ''
+              runHook preBuild
+              npx tsc --noEmit
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
         });
 
       apps = forAllSystems (system: {
