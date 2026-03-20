@@ -100,13 +100,33 @@
             dubBuildType = "release-debug";
             dontStrip = true;
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
             buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
 
             installPhase = ''
               runHook preInstall
+              mkdir -p $out/bin
+              install -Dm755 build/cydo $out/bin/
+              runHook postInstall
+            '';
+
+            meta = with pkgs.lib; {
+              description = "Multi-agent orchestration with Claude Code";
+              platforms = platforms.linux;
+            };
+          };
+
+          cydo = pkgs.stdenv.mkDerivation {
+            pname = "cydo";
+            version = "0.1.0";
+
+            dontUnpack = true;
+
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+
+            installPhase = ''
+              runHook preInstall
               mkdir -p $out/bin $out/share/cydo/web
-              install -Dm755 build/cydo $out/share/cydo/
+              install -Dm755 ${backend}/bin/cydo $out/share/cydo/
               cp -r ${frontend}/. $out/share/cydo/web/dist/
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo \
@@ -122,8 +142,8 @@
           };
         in
         {
-          inherit frontend backend codex-cli;
-          default = backend;
+          inherit frontend backend codex-cli cydo;
+          default = cydo;
         });
 
       checks = forAllSystems (system:
