@@ -63,6 +63,23 @@
   --scrollbar-hover: #999;
 }
 
+[data-theme="light"] .task-type-icon.processing {
+  background-color: #b8860b; /* dark goldenrod - visible on light bg */
+}
+
+[data-theme="light"] .task-type-icon.waiting {
+  background-color: #b8860b;
+  opacity: 0.6;
+}
+
+[data-theme="light"] .task-type-icon.asking {
+  background-color: #c47a10; /* darker amber - visible on light bg */
+}
+
+[data-theme="light"] .sidebar-item.asking {
+  background: rgba(180, 120, 0, 0.12);
+}
+
 * {
   margin: 0;
   padding: 0;
