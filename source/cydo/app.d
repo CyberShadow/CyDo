@@ -177,6 +177,11 @@ class App : ToolsBackend
 			tasks[row.tid] = move(td);
 		}
 
+		// Internal UNIX socket for MCP proxy calls (no auth required).
+		// Must run before resumeInFlightTasks so mcpSocketPath is set
+		// when generating MCP configs for auto-resumed sessions.
+		startMcpSocket();
+
 		resumeInFlightTasks();
 
 		import std.process : environment;
@@ -205,9 +210,6 @@ class App : ToolsBackend
 		auto proto = sslCert ? "https" : "http";
 		auto addrStr = listenAddr ? listenAddr : "0.0.0.0";
 		stderr.writefln("CyDo server listening on %s://%s:%d", proto, addrStr, port);
-
-		// Internal UNIX socket for MCP proxy calls (no auth required)
-		startMcpSocket();
 	}
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)

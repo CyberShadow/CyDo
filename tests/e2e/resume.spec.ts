@@ -176,6 +176,57 @@ test("idle task is not nudged after resume + restart", async ({
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
 });
 
+test("MCP tools work after backend restart", async ({
+  page,
+  restartableBackend,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "codex", "claude-only test");
+  // Create a task and let it become idle
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await input.fill('reply with "mcp-ready"');
+  const sendBtn = page.locator(".btn-send:visible").first();
+  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await sendBtn.click();
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "mcp-ready",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Restart — task is auto-resumed with the new MCP socket
+  await restartableBackend.restart();
+  await page.goto("/");
+  await waitForSidebarTask(page, "mcp-ready");
+  await page.locator(".sidebar-item .sidebar-label", { hasText: "mcp-ready" }).click();
+
+  // Resume if needed
+  const resumeBtn = page.locator(".btn-resume");
+  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
+  if (isResumeVisible) {
+    await resumeBtn.click();
+    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
+  }
+
+  // Send a message that triggers an MCP tool call (Task tool).
+  // If the MCP socket is broken, this will fail with "Backend connection failed".
+  const input2 = page.locator(".input-textarea:visible").first();
+  await expect(input2).toBeEnabled({ timeout: 15_000 });
+  await input2.fill('call task research reply with "sub-task-done"');
+  const sendBtn2 = page.locator(".btn-send:visible").first();
+  await expect(sendBtn2).toBeEnabled({ timeout: 5_000 });
+  await sendBtn2.click();
+
+  // The sub-task should be created and complete. Its result ("sub-task-done")
+  // appears in the tool result display, proving the MCP socket works.
+  await expect(
+    page.getByText("sub-task-done"),
+  ).toBeVisible({ timeout: 60_000 });
+});
+
 test("active task receives nudge and continues after restart", async ({
   page,
   restartableBackend,
