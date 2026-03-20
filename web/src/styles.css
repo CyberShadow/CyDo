@@ -364,6 +364,11 @@ body,
   background-color: #f0d050;
 }
 
+.task-type-icon.waiting {
+  background-color: #f0d050;
+  opacity: 0.5;
+}
+
 .task-type-icon.alive {
   background-color: var(--success);
 }

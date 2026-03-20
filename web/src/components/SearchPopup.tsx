@@ -80,7 +80,8 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
         <div class="search-results" ref={listRef}>
           {filtered.map((t, i) => {
             let statusClass = "";
-            if (t.isProcessing) statusClass = "processing";
+            if (t.isProcessing)
+              statusClass = t.status === "waiting" ? "waiting" : "processing";
             else if (t.alive) statusClass = "alive";
             else if (t.resumable) statusClass = "resumable";
             else if (t.status === "completed") statusClass = "completed";

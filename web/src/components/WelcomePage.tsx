@@ -36,7 +36,8 @@ export function WelcomePage({
 
   function renderTaskDot(t: TaskState) {
     let statusClass = "";
-    if (t.isProcessing) statusClass = "processing";
+    if (t.isProcessing)
+      statusClass = t.status === "waiting" ? "waiting" : "processing";
     else if (t.alive) statusClass = "alive";
     else if (t.status === "failed") statusClass = "failed";
     else if (t.resumable) statusClass = "resumable";
