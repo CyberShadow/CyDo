@@ -105,12 +105,12 @@ async function waitForSidebarTask(page: any, labelText: string, timeoutMs = 15_0
 // Tests
 // ---------------------------------------------------------------------------
 
-test("idle task resumes after backend restart without being nudged", async ({
+test("idle task is not nudged after resume + restart", async ({
   page,
   restartableBackend,
 }, testInfo) => {
   test.skip(testInfo.project.name === "codex", "claude-only test");
-  // Navigate to the backend and create a task
+  // Create a task and let it become idle (alive)
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
@@ -130,23 +130,38 @@ test("idle task resumes after backend restart without being nudged", async ({
   // Exactly one assistant message before restart
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
 
-  // Kill and restart the backend
+  // --- First restart ---
   await restartableBackend.restart();
-
-  // Reload the page to reconnect
   await page.goto("/");
-
-  // Task should still appear in sidebar with original title
   await waitForSidebarTask(page, "restart-alive");
-
-  // Click the task to open it
   await page.locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" }).click();
 
-  // History should be preserved — original user message and response visible
-  await expect(
-    page.locator(".message.user-message", { hasText: "restart-alive" }),
-  ).toBeVisible({ timeout: 10_000 });
+  // Click the Resume button (this is where the bug was: handleResumeMsg
+  // set status to "active" even though the session is idle).
+  const resumeBtn = page.locator(".btn-resume");
+  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
+  if (isResumeVisible) {
+    await resumeBtn.click();
+    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
+  }
 
+  // History preserved, still one assistant message
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "restart-alive",
+    }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".message.assistant-message")).toHaveCount(1);
+
+  // --- Second restart ---
+  // Before the fix, handleResumeMsg persisted status="active", so
+  // resumeInFlightTasks would send a [SYSTEM:] nudge here.
+  await restartableBackend.restart();
+  await page.goto("/");
+  await waitForSidebarTask(page, "restart-alive");
+  await page.locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" }).click();
+
+  // Wait for history to load
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "restart-alive",
@@ -154,8 +169,7 @@ test("idle task resumes after backend restart without being nudged", async ({
   ).toBeVisible({ timeout: 10_000 });
 
   // Wait to give any [SYSTEM:] nudge time to trigger a response.
-  // If the backend sent a nudge, the mock API would respond with "Done."
-  // which would appear as a second assistant message.
+  // If nudged, the mock API responds with "Done." — a second assistant message.
   await page.waitForTimeout(5_000);
 
   // Still exactly one assistant message — the idle task was NOT nudged

@@ -1015,8 +1015,8 @@ class App : ToolsBackend
 			ensureTaskAgent(tid);
 		td.needsAttention = false;
 		td.notificationBody = "";
-		td.status = "active";
-		persistence.setStatus(tid, "active");
+		td.status = "alive";
+		persistence.setStatus(tid, "alive");
 		broadcastTaskUpdate(tid);
 		// Resumed session is immediately idle — generate suggestions.
 		try
