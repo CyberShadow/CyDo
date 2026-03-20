@@ -102,6 +102,7 @@ task_types:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
       verify:
+        worktree: true
         prompt_template: prompts/verify.md
         result_note: "Read the output file for the full verification report."
       execute:
@@ -256,6 +257,7 @@ task_types:
         prompt_template: prompts/research.md
         result_note: "Read the output file for full findings."
       verify:
+        worktree: true
         prompt_template: prompts/verify.md
         result_note: "Read the output file for the full verification report."
     continuations:
@@ -470,6 +472,7 @@ task_types:
         prompt_template: prompts/test.md
         result_note: "Read the output file for test results."
       verify:
+        worktree: true
         prompt_template: prompts/verify.md
         result_note: "Read the output file for the full verification report."
       review:
@@ -486,7 +489,8 @@ task_types:
       probes to confirm the implementation works correctly. Tries to break the
       code rather than confirm it works. Issues a PASS/FAIL/PARTIAL verdict.
       Adapts strategy to the change type (frontend, backend, CLI, bug fix,
-      etc.). Writes ephemeral test scripts to /tmp when needed.
+      etc.). Runs in its own worktree and can write adversarial tests using
+      the project's test framework.
     model_class: medium
     output_type: report
     parallelizable: true

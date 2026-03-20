@@ -469,7 +469,7 @@ class App : ToolsBackend
 				childTd.resultNote = substituteVars(edge.result_note,
 					["output_dir": parentTd.taskDir]);
 				if (edge.worktree)
-					setupWorktree(childTid, true);
+					setupWorktree(childTid, true, "", parentTd.hasWorktree ? parentTd.worktreePath : "");
 				else if (parentTd.hasWorktree)
 					setupWorktree(childTid, false, parentTd.worktreePath);
 			}
@@ -1391,7 +1391,7 @@ class App : ToolsBackend
 
 	/// Set up a worktree for a task: either create a new git worktree or
 	/// inherit an existing one from a predecessor/parent via symlink.
-	private void setupWorktree(int tid, bool createNew, string inheritFrom = "")
+	private void setupWorktree(int tid, bool createNew, string inheritFrom = "", string baseFrom = "")
 	{
 		auto td = &tasks[tid];
 		if (td.hasWorktree || td.taskDir.length == 0)
@@ -1406,7 +1406,7 @@ class App : ToolsBackend
 		{
 			import std.process : execute;
 			auto wtPath = buildPath(td.taskDir, "worktree");
-			auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
+			auto workDir = baseFrom.length > 0 ? baseFrom : (td.projectPath.length > 0 ? td.projectPath : null);
 			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
 			if (gitResult.status == 0)
 			{
@@ -1782,7 +1782,7 @@ class App : ToolsBackend
 
 			// Set up worktree from edge config: create new or inherit from predecessor
 			if (contDef.worktree)
-				setupWorktree(childTid, true);
+				setupWorktree(childTid, true, "", td.hasWorktree ? td.worktreePath : "");
 			else if (td.hasWorktree)
 				setupWorktree(childTid, false, td.worktreePath);
 
