@@ -18,7 +18,8 @@ import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
 import ae.utils.json : JSONFragment, JSONPartial;
-import ae.utils.promise : Promise, resolve;
+import ae.utils.promise : Promise, resolve, reject;
+import ae.utils.statequeue : StateQueue;
 
 mixin SSLUseLib;
 
@@ -193,7 +194,12 @@ class App : ToolsBackend
 			td.draft = row.draft;
 			td.resultText = row.resultText;
 			td.titleGenDone = row.title.length > 0;
-			tasks[row.tid] = move(td);
+			auto rowTid = row.tid;
+			tasks[rowTid] = move(td);
+			tasks[rowTid].processQueue = new StateQueue!ProcessState(
+				makeProcessQueueSF(rowTid),
+				ProcessState.Dead,
+			);
 		}
 
 		// Internal UNIX socket for MCP proxy calls (no auth required).
@@ -603,18 +609,11 @@ class App : ToolsBackend
 		}
 
 		// Configure and spawn child agent
-		auto sessionConfig = SessionConfig(
-			agentForTask(childTid).resolveModelAlias(childTypeDef.model_class),
-		);
-		ensureTaskAgent(childTid, sessionConfig);
-
-		// Send rendered prompt template as first user message
-		if (childTd.session !is null)
-		{
-			auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
+		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
+		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 			sendTaskMessage(childTid, renderedPrompt);
-		}
+		}).ignoreResult();
 
 		if (description.length == 0)
 			generateTitle(childTid, prompt);
@@ -891,21 +890,14 @@ class App : ToolsBackend
 		{
 			auto td = &tasks[tid];
 			auto typeDef = getTaskTypes().byName(td.taskType);
-			if (typeDef !is null)
-			{
-				auto sc = SessionConfig(
-					agentForTask(tid).resolveModelAlias(typeDef.model_class),
-				);
-				ensureTaskAgent(tid, sc);
-			}
-			else
-				ensureTaskAgent(tid);
-
 			auto messageToSend = json.content;
 			if (typeDef !is null)
 				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
-			broadcastUnconfirmedUserMessage(tid, json.content);
-			sendTaskMessage(tid, messageToSend);
+			auto msgContent = json.content;
+			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
+				broadcastUnconfirmedUserMessage(tid, msgContent);
+				sendTaskMessage(tid, messageToSend);
+			}).ignoreResult();
 
 			td.description = json.content;
 			persistence.setDescription(tid, json.content);
@@ -1091,24 +1083,10 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		// Auto-spawn agent session if task has no session yet.
 		// Resumable tasks (completed with agentSessionId) require explicit "resume".
-		if (td.session is null || !td.session.alive)
-		{
-			if (td.agentSessionId.length > 0)
-				return; // resumable but not resumed — ignore
-			// Build session config from task type if available
-			auto typeDef = getTaskTypes().byName(td.taskType);
-			if (typeDef !is null)
-			{
-				auto sc = SessionConfig(
-					agentForTask(tid).resolveModelAlias(typeDef.model_class),
-				);
-				ensureTaskAgent(tid, sc);
-			}
-			else
-				ensureTaskAgent(tid);
-		}
+		if (td.agentSessionId.length > 0 && (td.session is null || !td.session.alive))
+			return; // resumable but not resumed — ignore
+
 		// Wrap first message in prompt template (e.g. conversation.md)
 		auto messageToSend = json.content;
 		if (td.description.length == 0)
@@ -1119,12 +1097,15 @@ class App : ToolsBackend
 		}
 		td.lastSuggestions = null;
 		broadcastUnconfirmedUserMessage(tid, json.content);
-		if (td.status == "alive")
-		{
-			td.status = "active";
-			persistence.setStatus(tid, "active");
-		}
-		sendTaskMessage(tid, messageToSend);
+		td.processQueue.setGoal(ProcessState.Alive).then(() {
+			auto td = &tasks[tid];
+			if (td.status == "alive")
+			{
+				td.status = "active";
+				persistence.setStatus(tid, "active");
+			}
+			sendTaskMessage(tid, messageToSend);
+		}).ignoreResult();
 
 		// Store first message as task description
 		if (td.description.length == 0)
@@ -1166,24 +1147,33 @@ class App : ToolsBackend
 			return;
 		if (td.session !is null && td.session.alive)
 			return;
-		auto typeDef = getTaskTypes().byName(td.taskType);
-		if (typeDef !is null)
-		{
-			auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-			ensureTaskAgent(tid, sc);
-		}
-		else
-			ensureTaskAgent(tid);
 		td.needsAttention = false;
 		td.notificationBody = "";
-		td.status = "alive";
-		persistence.setStatus(tid, "alive");
-		broadcastTaskUpdate(tid);
-		// Resumed session is immediately idle — generate suggestions.
-		try
-			generateSuggestions(tid);
-		catch (Exception e)
-			warningf("Error generating suggestions: %s", e.msg);
+		td.processQueue.setGoal(ProcessState.Alive).then(() {
+			auto td = &tasks[tid];
+			td.status = "alive";
+			persistence.setStatus(tid, "alive");
+			try
+				generateSuggestions(tid);
+			catch (Exception e)
+				warningf("Error generating suggestions: %s", e.msg);
+
+			// Deliver pending batch results if all children are done
+			auto children = childrenOf(tid);
+			if (children.length > 0)
+			{
+				bool allDone = true;
+				foreach (childTid; children)
+					if (childTid in tasks
+						&& tasks[childTid].status != "completed"
+						&& tasks[childTid].status != "failed")
+					{ allDone = false; break; }
+				if (allDone)
+					deliverBatchResults(tid);
+			}
+
+			broadcastTaskUpdate(tid);
+		}).ignoreResult();
 	}
 
 	private void handleInterruptMsg(WsMessage json)
@@ -1213,7 +1203,10 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 		if (td.session)
+		{
+			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 			td.session.closeStdin();
+		}
 	}
 
 	private void handleStopMsg(WsMessage json)
@@ -1223,7 +1216,10 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 		if (td.session)
+		{
+			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 			td.session.stop();
+		}
 	}
 
 	private void handleDismissAttention(WsMessage json)
@@ -1309,6 +1305,10 @@ class App : ToolsBackend
 		newTd.description = td.description;
 		newTd.taskType = td.taskType;
 		tasks[result.tid] = move(newTd);
+		tasks[result.tid].processQueue = new StateQueue!ProcessState(
+			(ProcessState goal) => processTransition(result.tid, goal),
+			ProcessState.Dead,
+		);
 
 		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.effectiveCwd, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
@@ -1396,6 +1396,10 @@ class App : ToolsBackend
 						persistence.setRelationType(backup.tid, "undo-backup");
 						persistence.setTitle(backup.tid, bTd.title);
 						tasks[backup.tid] = move(bTd);
+						tasks[backup.tid].processQueue = new StateQueue!ProcessState(
+							(ProcessState goal) => processTransition(backup.tid, goal),
+							ProcessState.Dead,
+						);
 						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.effectiveCwd, tid, "undo-backup")));
 						broadcastTaskUpdate(backup.tid);
 					}
@@ -1422,19 +1426,16 @@ class App : ToolsBackend
 			// (the user's undone message text is recovered via preReloadDrafts)
 			if (json.revert_conversation && td.agentSessionId.length > 0)
 			{
-				auto typeDef = getTaskTypes().byName(td.taskType);
-				if (typeDef !is null)
-				{
-					auto sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-					ensureTaskAgent(tid, sc);
-				}
-				else
-					ensureTaskAgent(tid);
-				td.status = "active";
-				try
-					generateSuggestions(tid);
-				catch (Exception e)
-					warningf("Error generating suggestions: %s", e.msg);
+				td.processQueue.setGoal(ProcessState.Alive).then(() {
+					auto td = &tasks[tid];
+					td.status = "active";
+					persistence.setStatus(tid, "active");
+					try
+						generateSuggestions(tid);
+					catch (Exception e)
+						warningf("Error generating suggestions: %s", e.msg);
+					broadcastTaskUpdate(tid);
+				}).ignoreResult();
 			}
 
 			broadcastTaskUpdate(tid);
@@ -1497,6 +1498,7 @@ class App : ToolsBackend
 	/// state stays consistent.
 	private void sendTaskMessage(int tid, string text)
 	{
+		import std.algorithm : min;
 		auto td = &tasks[tid];
 		td.session.sendMessage(text);
 		td.isProcessing = true;
@@ -1516,6 +1518,10 @@ class App : ToolsBackend
 		td.agentType = agentType;
 		td.historyLoaded = true; // New tasks have no JSONL to load
 		tasks[tid] = move(td);
+		tasks[tid].processQueue = new StateQueue!ProcessState(
+			(ProcessState goal) => processTransition(tid, goal),
+			ProcessState.Dead,
+		);
 		return tid;
 	}
 
@@ -1590,32 +1596,25 @@ class App : ToolsBackend
 		}
 	}
 
-	private void ensureTaskAgent(int tid, SessionConfig sessionConfig = SessionConfig.init)
+	private void spawnTaskSession(int tid)
 	{
 		auto td = &tasks[tid];
-		if (td.session && td.session.alive)
-			return;
 
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
 
-		// Populate creatable task types description if not already set
-		if (sessionConfig.creatableTaskTypes.length == 0)
-			sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
+		auto typeDef = getTaskTypes().byName(td.taskType);
 
-		// Populate SwitchMode and Handoff descriptions if not already set
-		if (sessionConfig.switchModes.length == 0)
-			sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
-		if (sessionConfig.handoffs.length == 0)
-			sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
-
-
-		// Pass UNIX socket path for MCP proxy communication
-		if (sessionConfig.mcpSocketPath.length == 0)
-			sessionConfig.mcpSocketPath = mcpSocketPath;
+		// Derive session config from task type definition
+		SessionConfig sessionConfig;
+		if (typeDef !is null)
+			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
+		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
+		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
+		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
+		sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
-		auto typeDef = getTaskTypes().byName(td.taskType);
 
 		// Ensure per-task directory exists
 		import std.path : buildPath;
@@ -1686,7 +1685,10 @@ class App : ToolsBackend
 				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
 					|| tid in taskDeps || hasOnYield)
+				{
+					td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 					td.session.closeStdin();
+				}
 				else
 				{
 					td.status = "alive";
@@ -1732,7 +1734,6 @@ class App : ToolsBackend
 			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
 				return;
-			tasks[tid].alive = false;
 			tasks[tid].isProcessing = false;
 			if (exitCode != 0)
 				tasks[tid].error = lastStderr;
@@ -1756,6 +1757,35 @@ class App : ToolsBackend
 			tasks[tid].history = DataVec();
 			tasks[tid].historyLoaded = false;
 			unsubscribeAll(tid);
+
+			// --- StateQueue notification ---
+			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive;
+
+			if (tasks[tid].killPromise !is null)
+			{
+				// Active Dead transition in progress — fulfill its promise
+				auto p = tasks[tid].killPromise;
+				tasks[tid].killPromise = null;
+				p.fulfill(ProcessState.Dead);
+			}
+			else
+			{
+				// No active Dead transition — unexpected external state change.
+				tasks[tid].processQueue.setCurrentState(ProcessState.Dead);
+				if (!intentionalExit)
+					tasks[tid].processQueue.setGoal(ProcessState.Dead).ignoreResult();
+			}
+
+			if (!intentionalExit)
+			{
+				// Crash — fail the task immediately, no retry
+				tasks[tid].status = "failed";
+				if (tasks[tid].error.length == 0)
+					tasks[tid].error = "Process exited unexpectedly";
+				persistence.setStatus(tid, "failed");
+				broadcastTaskUpdate(tid);
+				return;
+			}
 
 			// Continuation: transition to successor instead of completing
 			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
@@ -1842,10 +1872,50 @@ class App : ToolsBackend
 			broadcastTaskUpdate(tid);
 		};
 
-		td.alive = true;
 		td.status = "active";
 		persistence.setStatus(tid, "active");
 		td.error = null;
+	}
+
+	/// Returns a stateFunc delegate bound to a specific tid.
+	/// Using a helper function (rather than an inline lambda in a foreach) avoids
+	/// the D closure-capture bug where all loop iterations share the same `rowTid`.
+	private Promise!ProcessState delegate(ProcessState) makeProcessQueueSF(int tid)
+	{
+		return (ProcessState goal) => processTransition(tid, goal);
+	}
+
+	private Promise!ProcessState processTransition(int tid, ProcessState goal)
+	{
+		if (tid !in tasks)
+			return reject!ProcessState(new Exception("Task not found"));
+
+		auto td = &tasks[tid];
+
+		if (goal == ProcessState.Alive)
+		{
+			try
+				spawnTaskSession(tid);
+			catch (Exception e)
+			{
+				td.status = "failed";
+				td.error = e.msg;
+				persistence.setStatus(tid, "failed");
+				broadcastTaskUpdate(tid);
+				return reject!ProcessState(e);
+			}
+			return resolve(ProcessState.Alive);
+		}
+		else  // Dead
+		{
+			// If session is already gone, resolve immediately.
+			if (td.session is null || !td.session.alive)
+				return resolve(ProcessState.Dead);
+			// Don't actively kill — caller must initiate (closeStdin/stop).
+			// Just wait for onExit to fulfill this promise.
+			td.killPromise = new Promise!ProcessState;
+			return td.killPromise;
+		}
 	}
 
 	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
@@ -1883,21 +1953,15 @@ class App : ToolsBackend
 			td.status = "active";
 			persistence.setStatus(tid, "active");
 
-			// Spawn successor session — will --resume the existing agentSessionId
-			auto sessionConfig = SessionConfig(agentForTask(tid).resolveModelAlias(newTypeDef.model_class));
-			ensureTaskAgent(tid, sessionConfig);
-
 			// Send the continuation's prompt template as first message to successor.
-			if (td.session !is null)
-			{
-				auto renderedPrompt = renderContinuationPrompt(contDef,
-					"Continue from where you left off.", taskTypesDir,
-					["result_text": resultText]);
-				broadcastUnconfirmedUserMessage(tid, renderedPrompt);
-				sendTaskMessage(tid, renderedPrompt);
-			}
-
-			broadcastTaskUpdate(tid);
+			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
+				"Continue from where you left off.", taskTypesDir,
+				["result_text": resultText]);
+			td.processQueue.setGoal(ProcessState.Alive).then(() {
+				broadcastUnconfirmedUserMessage(tid, renderedContinuationPrompt);
+				sendTaskMessage(tid, renderedContinuationPrompt);
+				broadcastTaskUpdate(tid);
+			}).ignoreResult();
 		}
 		else
 		{
@@ -1949,17 +2013,13 @@ class App : ToolsBackend
 				setupWorktree(childTid, false, td.worktreePath);
 
 			// Spawn the successor agent
-			auto sessionConfig = SessionConfig(agentForTask(childTid).resolveModelAlias(newTypeDef.model_class));
-			ensureTaskAgent(childTid, sessionConfig);
-
-			if (childTd.session !is null)
-			{
-				auto renderedPrompt = renderPrompt(*newTypeDef, successorPrompt,
-					taskTypesDir, childTd.outputPath, contDef.prompt_template,
-					["result_text": resultText]);
-				broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
-				sendTaskMessage(childTid, renderedPrompt);
-			}
+			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
+				taskTypesDir, childTd.outputPath, contDef.prompt_template,
+				["result_text": resultText]);
+			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
+				broadcastUnconfirmedUserMessage(childTid, renderedSuccessorPrompt);
+				sendTaskMessage(childTid, renderedSuccessorPrompt);
+			}).ignoreResult();
 
 			broadcastTaskUpdate(tid);
 		}
@@ -2046,6 +2106,15 @@ class App : ToolsBackend
 
 	private void deliverBatchResults(int parentTid)
 	{
+		if (parentTid !in tasks)
+			return;
+		tasks[parentTid].processQueue.setGoal(ProcessState.Alive).then(() {
+			actuallyDeliverBatchResults(parentTid);
+		}).ignoreResult();
+	}
+
+	private void actuallyDeliverBatchResults(int parentTid)
+	{
 		import ae.utils.json : toJson;
 		import std.array : join;
 
@@ -2058,9 +2127,9 @@ class App : ToolsBackend
 		auto td = &tasks[parentTid];
 		if (td.session is null || !td.session.alive)
 		{
-			warningf("deliverBatchResults: parent tid=%d session %s, deferring to next restart",
+			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, deferring",
 				parentTid, td.session is null ? "is null" : "not alive");
-			return;  // Can't deliver — leave deps for next restart
+			return;
 		}
 
 		auto children = childrenOf(parentTid);
@@ -2168,55 +2237,53 @@ class App : ToolsBackend
 			}
 			else if (status == "active")
 			{
-				resumeTask(tid);
-				sendSystemNudge(tid);
+				resumeActiveTask(tid);
 			}
 			else if (status == "alive")
 			{
-				resumeTask(tid);
+				resumeTask(tid).ignoreResult();
 			}
 		}
 	}
 
-	private void resumeTask(int tid)
+	private Promise!void resumeTask(int tid)
 	{
 		if (tid !in tasks)
-			return;
+			return resolve();
 		auto td = &tasks[tid];
 		auto savedStatus = td.status;
-		auto typeDef = getTaskTypes().byName(td.taskType);
-		SessionConfig sc;
-		if (typeDef !is null)
-			sc = SessionConfig(agentForTask(tid).resolveModelAlias(typeDef.model_class));
-		ensureTaskAgent(tid, sc); // sets status to "active"
-		// Restore the original status — ensureTaskAgent unconditionally sets
-		// "active", but for "alive" (idle) or "waiting" tasks we need to preserve
-		// the correct state so a subsequent restart handles them properly.
-		if (savedStatus != "active")
-		{
-			td.status = savedStatus;
-			persistence.setStatus(tid, savedStatus);
-		}
-		broadcastTaskUpdate(tid);
+		return td.processQueue.setGoal(ProcessState.Alive).then(() {
+			auto td = &tasks[tid];
+			// spawnTaskSession sets status to "active"; restore the original status
+			// for "alive" (idle) or "waiting" tasks so a subsequent restart handles
+			// them properly.
+			if (savedStatus != "active")
+			{
+				td.status = savedStatus;
+				persistence.setStatus(tid, savedStatus);
+			}
+			broadcastTaskUpdate(tid);
+		});
 	}
 
 	private void sendSystemNudge(int tid)
 	{
 		if (tid !in tasks)
 			return;
-		auto td = &tasks[tid];
-		if (td.session !is null && td.session.alive)
-		{
-			// Defer to event loop — resumeInFlightTasks runs before
-			// socketManager.loop() so stdin writes would stall otherwise.
-			import ae.net.asockets : onNextTick;
-			socketManager.onNextTick(() {
-				sendTaskMessage(tid,
-					"[SYSTEM: Your session was interrupted by a backend restart. "
-					~ "Continue from where you left off. If you had a tool call in progress "
-					~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]");
-			});
-		}
+		// Defer to event loop — resumeInFlightTasks runs before
+		// socketManager.loop() so stdin writes would stall otherwise.
+		import ae.net.asockets : onNextTick;
+		socketManager.onNextTick(() {
+			if (tid !in tasks)
+				return;
+			auto td = &tasks[tid];
+			if (td.session is null || !td.session.alive)
+				return;
+			sendTaskMessage(tid,
+				"[SYSTEM: Your session was interrupted by a backend restart. "
+				~ "Continue from where you left off. If you had a tool call in progress "
+				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]");
+		});
 	}
 
 	/// Collect child tids for a given parent from the in-memory taskDeps map.
@@ -2231,14 +2298,24 @@ class App : ToolsBackend
 
 	private void resumeAndDeliverResults(int tid)
 	{
-		import ae.net.asockets : onNextTick;
-		resumeTask(tid);
-		socketManager.onNextTick(() { deliverBatchResults(tid); });
+		resumeTask(tid).then(() {
+			deliverBatchResults(tid);
+		}).ignoreResult();
 	}
 
 	private void resumeWaitingTask(int tid)
 	{
-		resumeTask(tid);
+		resumeTask(tid).ignoreResult();
+	}
+
+	/// Resume an "active" task and send it a system nudge once alive.
+	/// Using a helper function (rather than an inline lambda in a foreach) avoids
+	/// the D closure-capture bug where all loop iterations share the same `tid`.
+	private void resumeActiveTask(int tid)
+	{
+		resumeTask(tid).then(() {
+			sendSystemNudge(tid);
+		}).ignoreResult();
 	}
 
 	/// Send data to all clients subscribed to the given task.

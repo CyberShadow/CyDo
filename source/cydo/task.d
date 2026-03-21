@@ -5,9 +5,12 @@ import std.format : format;
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONPartial;
 import ae.utils.promise : Promise;
+import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.session : AgentSession;
 import cydo.sandbox : ResolvedSandbox;
+
+enum ProcessState : bool { Dead = false, Alive = true }
 
 struct TaskData
 {
@@ -74,7 +77,9 @@ struct TaskData
 	ResolvedSandbox sandbox;
 	DataVec history;          // unified: JSONL file events + live stdout events
 	bool historyLoaded;       // whether JSONL has been loaded into history
-	bool alive = false;
+	@property bool alive() { return session !is null && session.alive; }
+	StateQueue!ProcessState* processQueue;
+	Promise!ProcessState killPromise;  // non-null during active Dead transition
 	bool isProcessing = false;
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
