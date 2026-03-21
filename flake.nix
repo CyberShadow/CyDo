@@ -82,7 +82,7 @@
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
+            npmDepsHash = "sha256-6DmhgAKtFlehFJjKhHx3G8VWrGYFsASLu1aOZEbwMnM=";
 
             installPhase = ''
               runHook preInstall
@@ -327,7 +327,7 @@
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
+            npmDepsHash = "sha256-6DmhgAKtFlehFJjKhHx3G8VWrGYFsASLu1aOZEbwMnM=";
 
             buildPhase = ''
               runHook preBuild
@@ -344,7 +344,7 @@
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
+            npmDepsHash = "sha256-6DmhgAKtFlehFJjKhHx3G8VWrGYFsASLu1aOZEbwMnM=";
 
             buildPhase = ''
               runHook preBuild
