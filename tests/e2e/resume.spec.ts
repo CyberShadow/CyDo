@@ -105,8 +105,19 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     }
 
     const restart = async () => {
-      process.kill(-proc.pid!, "SIGTERM");
+      const oldPgid = proc.pid!;
+      process.kill(-oldPgid, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", () => r()));
+      // Drain child processes before spawning the new backend
+      const drainDeadline = Date.now() + 5000;
+      while (Date.now() < drainDeadline) {
+        try {
+          process.kill(-oldPgid, 0);
+          await new Promise((r) => setTimeout(r, 100));
+        } catch {
+          break;
+        }
+      }
       proc = spawnBackend(port, workDir, workerHome);
       await waitForBackend(baseURL, proc);
     };
@@ -115,6 +126,17 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     process.kill(-proc.pid!, "SIGTERM");
     await new Promise<void>((r) => proc.on("exit", () => r()));
+    // Wait for child processes in the group to drain
+    const pgid = proc.pid!;
+    const drainDeadline = Date.now() + 5000;
+    while (Date.now() < drainDeadline) {
+      try {
+        process.kill(-pgid, 0);
+        await new Promise((r) => setTimeout(r, 100));
+      } catch {
+        break;
+      }
+    }
     rmSync(workDir, { recursive: true, force: true });
   },
   baseURL: async ({ restartableBackend }, use) => {

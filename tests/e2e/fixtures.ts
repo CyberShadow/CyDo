@@ -112,6 +112,19 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
       // Teardown
       process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", r));
+      // Wait for child processes in the group to exit before removing the
+      // work directory — the leader exits first, but bwrap/agent children
+      // may still be writing JSONL files.
+      const pgid = proc.pid!;
+      const drainDeadline = Date.now() + 5000;
+      while (Date.now() < drainDeadline) {
+        try {
+          process.kill(-pgid, 0);
+          await new Promise((r) => setTimeout(r, 100));
+        } catch {
+          break;
+        }
+      }
       rmSync(workDir, { recursive: true, force: true });
     },
     { scope: "worker" },
