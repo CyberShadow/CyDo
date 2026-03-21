@@ -74,7 +74,7 @@ export function SystemBanner({
             <button
               class="btn-banner-end"
               onClick={onCloseStdin}
-              title="End session gracefully (close stdin)"
+              title="End session gracefully (Ctrl+Shift+E)"
             >
               End
             </button>

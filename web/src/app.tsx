@@ -145,6 +145,22 @@ function AppContent() {
     };
   }, [active, setArchived]);
 
+  // Ctrl+Shift+E: end session (close stdin)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "E") {
+        e.preventDefault();
+        if (active?.alive) {
+          closeStdin();
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
+  }, [active, closeStdin]);
+
   // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
   // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
   // Ctrl+Shift+O: new task
