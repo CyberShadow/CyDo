@@ -332,14 +332,20 @@ export function useTaskManager(): TaskManager {
         // - this client created it (top-level, correlation ID matches), or
         // - its parent is currently focused (sub-task visible in context)
         // Never auto-focus undo-backup tasks (they're invisible backups).
+        const correlationMatches =
+          pendingFocusId.current !== null &&
+          msg.correlation_id === pendingFocusId.current;
         const shouldFocus =
           relationType === "undo-backup"
             ? false
             : parentTid
               ? activeTaskIdRef.current === String(parentTid)
-              : pendingFocusId.current !== null &&
-                msg.correlation_id === pendingFocusId.current;
-        pendingFocusId.current = null;
+              : correlationMatches;
+        // Only consume the pending focus ID when the correlation actually
+        // matched.  Broadcast task_created messages (sub-tasks, forks,
+        // continuations) must not clear it — otherwise the unicast response
+        // to our own createTask would fail to navigate.
+        if (correlationMatches) pendingFocusId.current = null;
         if (shouldFocus) {
           activeTaskIdRef.current = String(tid);
           if (workspace && projectPath) {
