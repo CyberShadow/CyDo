@@ -80,10 +80,13 @@ let _testSeq = 0;
 
 const test = base.extend<{ restartableBackend: RestartableBackend }>({
   restartableBackend: async ({}, use, testInfo) => {
-    // Use ports starting at 5100. Combine worker index and per-test counter
+    // Use ports starting at 5050. Combine worker index and per-test counter
     // so tests in different workers also get distinct ports.
+    // Base must NOT be a multiple of 100 — port 6000 (= 5100 + 9*100) is in
+    // Node.js/Chromium's blocked-ports list (X11), causing fetch() to reject
+    // with "bad port" even though the D backend binds successfully.
     const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 5100 + seq;
+    const port = 5050 + seq;
     const workDir = `/tmp/cydo-restart-${seq}`;
     const workerHome = `${workDir}/home`;
 
