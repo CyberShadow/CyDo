@@ -269,9 +269,9 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	string projectPath, string workspace, string title, string delegate(string sessionId) historyPathFn,
 	string delegate(string line, string oldId, string newId) rewriteSessionIdFn,
 	bool delegate(string line, int lineNum, string forkId) matchFn,
-	string description = "", string taskType = "")
+	string description = "", string taskType = "", string agentType = "claude")
 {
-	import std.file : exists, readText, write;
+	import std.file : exists, mkdirRecurse, readText, write;
 	import std.string : lineSplitter;
 
 	auto sourcePath = historyPathFn(sourceSessionId);
@@ -316,12 +316,20 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	if (!found)
 		return ForkResult.init;
 
+	// Ensure the destination directory exists (e.g. copilot creates per-session
+	// subdirectories: COPILOT_HOME/session-state/{newSessionId}/events.jsonl).
+	{
+		import std.path : dirName;
+		auto destDir = dirName(destPath);
+		if (destDir.length > 0)
+			mkdirRecurse(destDir);
+	}
 	write(destPath, output);
 
 	// Create DB entry with the new agent session ID
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
-	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-		.exec(newSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation");
+	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		.exec(newSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation", agentType);
 	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newSessionId);
 }
 

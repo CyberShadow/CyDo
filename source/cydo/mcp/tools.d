@@ -40,6 +40,13 @@ struct AskQuestion
 /// Compile-time introspection generates metadata and dispatch.
 interface CydoTools
 {
+	@Description("Execute a shell command and return its output.")
+	@McpName("Bash")
+	McpResult bash(
+		@Description("The shell command to execute")
+		string command
+	);
+
 	/+
 	@Description("Read the contents of a file from the filesystem. Returns the file content as text.")
 	@McpName("Read")
@@ -153,6 +160,7 @@ interface ToolsBackend
 	McpResult handleSwitchMode(string callerTid, string continuation);
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
+	Promise!McpResult handleBash(string callerTid, string command);
 	void onSubTasksComplete(string callerTid);
 }
 
@@ -167,6 +175,12 @@ class CydoToolsImpl : CydoTools
 	{
 		this.app = app;
 		this.callerTid = callerTid;
+	}
+
+	McpResult bash(string command)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleBash(callerTid, command).await();
 	}
 
 	/+

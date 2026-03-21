@@ -66,6 +66,19 @@ void main(string[] args)
 
 	auto app = new App();
 	app.start();
+
+	// On SIGTERM, terminate all agent sessions so child processes flush their
+	// persistent state before the backend exits.  ae.net.shutdown delivers the
+	// callback inside the event loop thread, so we can use normal async stop().
+	// Once children exit, their pipe FileConnections close and the event loop
+	// drains naturally.  alarm() is a safety net in case a child hangs.
+	import ae.net.shutdown : addShutdownHandler;
+	addShutdownHandler((scope const(char)[]) {
+		app.shutdown();
+		import core.sys.posix.unistd : alarm;
+		alarm(2);
+	});
+
 	socketManager.loop();
 }
 
@@ -109,6 +122,9 @@ class App : ToolsBackend
 	// HTTP basic auth credentials (from environment)
 	private string authUser;
 	private string authPass;
+	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
+	// stay "alive" in the DB and can be resumed after restart.
+	private bool shuttingDown;
 
 	private TaskTypeDef[] getTaskTypes()
 	{
@@ -232,6 +248,33 @@ class App : ToolsBackend
 			auto proto = sslCert ? "https" : "http";
 			auto addrStr = listenAddr ? listenAddr : "0.0.0.0";
 			infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
+		}
+	}
+
+	/// Graceful shutdown: stop all agent sessions and close servers.
+	/// Called from the ae.net.shutdown handler (runs in the event loop thread).
+	void shutdown()
+	{
+		shuttingDown = true;
+		foreach (ref td; tasks)
+			if (td.session && td.session.alive)
+				td.session.stop();
+		foreach (ws; clients)
+			ws.disconnect("shutting down");
+		clients = null;
+		server.close();
+		if (mcpServer)
+			mcpServer.close();
+		// Remove inotify watches so the event loop can exit.
+		if (configFileWatchActive)
+		{
+			iNotify.remove(configFileWatch);
+			configFileWatchActive = false;
+		}
+		if (configDirWatchActive)
+		{
+			iNotify.remove(configDirWatch);
+			configDirWatchActive = false;
 		}
 	}
 
@@ -512,7 +555,7 @@ class App : ToolsBackend
 			return resolve(McpResult("Unknown task type: " ~ resolvedTaskType, true));
 
 		// Create child task
-		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, defaultAgentType(parentTd.workspace));
+		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, parentTd.agentType);
 		auto childTd = &tasks[childTid];
 		childTd.taskType = resolvedTaskType;
 		childTd.description = prompt;
@@ -708,6 +751,25 @@ class App : ToolsBackend
 		tdp.isProcessing = false;
 		broadcastTaskUpdate(tid);
 
+		return promise;
+	}
+
+	Promise!McpResult handleBash(string callerTid, string command)
+	{
+		import cydo.agent.terminal : TerminalProcess;
+
+		auto terminal = new TerminalProcess(
+			["/bin/sh", "-c", command],
+			null,   // inherit env
+			null,   // inherit working directory
+			1024 * 1024
+		);
+
+		auto promise = new Promise!McpResult;
+		terminal.onExit = () {
+			auto output = terminal.output();
+			promise.fulfill(McpResult(output, terminal.exitCode() != 0));
+		};
 		return promise;
 	}
 
@@ -1227,7 +1289,7 @@ class App : ToolsBackend
 			td.effectiveCwd, td.workspace, td.title,
 			(string sid) => ta.historyPath(sid, td.effectiveCwd),
 			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-			td.description, td.taskType);
+			td.description, td.taskType, td.agentType);
 		if (result.tid < 0)
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
@@ -1243,6 +1305,7 @@ class App : ToolsBackend
 		newTd.parentTid = tid;
 		newTd.relationType = "fork";
 		newTd.status = "completed";
+		newTd.agentType = td.agentType;
 		newTd.description = td.description;
 		newTd.taskType = td.taskType;
 		tasks[result.tid] = move(newTd);
@@ -1316,7 +1379,7 @@ class App : ToolsBackend
 						td.effectiveCwd, td.workspace, td.title,
 						(string sid) => ta.historyPath(sid, td.effectiveCwd),
 						&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-						td.description, td.taskType);
+						td.description, td.taskType, td.agentType);
 					if (backup.tid >= 0)
 					{
 						auto bTd = TaskData(backup.tid);
@@ -1327,6 +1390,7 @@ class App : ToolsBackend
 						bTd.parentTid = tid;
 						bTd.relationType = "undo-backup";
 						bTd.status = "completed";
+						bTd.agentType = td.agentType;
 						bTd.description = td.description;
 						bTd.taskType = td.taskType;
 						persistence.setRelationType(backup.tid, "undo-backup");
@@ -1479,6 +1543,9 @@ class App : ToolsBackend
 			case "codex":
 				import cydo.agent.codex : CodexAgent;
 				return new CodexAgent();
+			case "copilot":
+				import cydo.agent.copilot : CopilotAgent;
+				return new CopilotAgent();
 			default:
 				throw new Exception("Unknown agent type: " ~ agentType);
 		}
@@ -1644,6 +1711,10 @@ class App : ToolsBackend
 		};
 
 		td.session.onExit = (int exitCode) {
+			// During shutdown, skip all exit handling so task status stays
+			// "alive" in the DB and can be resumed after restart.
+			if (shuttingDown)
+				return;
 			import ae.utils.json : toJson;
 			import cydo.agent.protocol : ProcessExitEvent;
 			tracef("onExit: tid=%d exitCode=%d status=%s",
@@ -1852,7 +1923,7 @@ class App : ToolsBackend
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;
-			auto childTid = createTask(td.workspace, td.projectPath, defaultAgentType(td.workspace));
+			auto childTid = createTask(td.workspace, td.projectPath, td.agentType);
 			auto childTd = &tasks[childTid];
 			childTd.taskType = contDef.task_type;
 			childTd.description = successorPrompt;
