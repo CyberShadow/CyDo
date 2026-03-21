@@ -13,7 +13,6 @@ import type {
 } from "./types";
 import type {
   AgnosticEvent,
-  AgnosticFileEvent,
   AssistantMessage,
   ResultMessage,
   SystemInitMessage,
@@ -51,7 +50,6 @@ function getExtras(
 
 export function reduceParseError(
   s: SessionState,
-  source: "stdout" | "file",
   label: string,
   detail: string,
   raw: unknown,
@@ -67,7 +65,7 @@ export function reduceParseError(
         content: [
           {
             type: "text" as const,
-            text: `${label} (${source}): ${detail}\n${JSON.stringify(raw, null, 2)}`,
+            text: `${label}: ${detail}\n${JSON.stringify(raw, null, 2)}`,
           },
         ],
       },
@@ -491,48 +489,21 @@ export function reduceUserEcho(
       rawSource: rawMsg,
     };
     // Remove the pending placeholder (the user already sees their message
-    // via the placeholder in the correct chronological position).  Append
-    // the confirmed echo at the end — this preserves order for interrupt
-    // markers like "[Request interrupted by user]" which should appear
-    // after the assistant's partial response, not before it.
+    // via the placeholder in the correct chronological position).  Use
+    // insertBeforeStreaming to position the confirmed echo before any
+    // streaming assistant message.  Exception: interrupt markers (isMeta)
+    // should appear after the assistant's partial response.
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
     );
-    const messages = [...filtered, echoMsg];
+    const messages = isMeta
+      ? [...filtered, echoMsg]
+      : insertBeforeStreaming(filtered, echoMsg);
     bumpNestedVersion(messages, parentToolUseId);
     state = { ...state, messages };
   }
 
   return state;
-}
-
-export function reduceUserReplay(
-  s: SessionState,
-  contentBlocks: UserContentBlock[],
-  rawMsg: UserEchoMessage,
-): SessionState {
-  const text = contentBlocks
-    .filter((b) => b.type === "text")
-    .map((b) => b.text ?? "")
-    .join("");
-  const isCompactSummary = !!rawMsg.isCompactSummary;
-  const id = `user-${++s.msgIdCounter}`;
-  const echoMsg: DisplayMessage = {
-    id,
-    type: "user" as const,
-    content: [{ type: "text" as const, text }],
-    isCompactSummary: isCompactSummary || undefined,
-    extraFields: getExtras(rawMsg as Record<string, unknown>),
-    rawSource: rawMsg,
-  };
-  // Remove the pending placeholder, then insert the echo before any
-  // in-progress streaming message so user text always precedes the
-  // assistant's response.
-  const filtered = s.messages.filter((m) => !(m.pending && m.type === "user"));
-  return {
-    ...s,
-    messages: insertBeforeStreaming(filtered, echoMsg),
-  };
 }
 
 export function reduceResultMessage(
@@ -772,30 +743,11 @@ export function reduceExit(s: SessionState): SessionState {
   return s;
 }
 
-export function reducePendingUserMessage(
-  s: SessionState,
-  text: string,
-): SessionState {
-  const id = `pending-${++s.msgIdCounter}`;
-  return {
-    ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "user" as const,
-        content: [{ type: "text" as const, text }],
-        pending: true,
-      },
-    ],
-  };
-}
-
 // ---------------------------------------------------------------------------
-// Top-level dispatchers: route to individual reducers
+// Top-level dispatcher: routes to individual reducers
 // ---------------------------------------------------------------------------
 
-export function reduceStdoutMessage(
+export function reduceMessage(
   s: SessionState,
   msg: AgnosticEvent,
 ): SessionState {
@@ -823,20 +775,64 @@ export function reduceStdoutMessage(
           ? [{ type: "text", text: rawContent }]
           : rawContent;
 
+      // is_replay: dismiss any pending placeholder, then echo normally
+      let state = s;
       if (msg.is_replay) {
-        return reduceUserReplay(s, contentBlocks, msg);
-      } else {
-        return reduceUserEcho(
+        state = {
+          ...state,
+          messages: state.messages.filter(
+            (m) => !(m.pending && m.type === "user"),
+          ),
+        };
+      }
+
+      state = reduceUserEcho(
+        state,
+        contentBlocks,
+        msg.is_sidechain,
+        msg.parent_tool_use_id,
+        msg,
+        msg.is_synthetic,
+        msg.is_meta,
+        msg.is_steering,
+      );
+
+      // Draft recovery (safe for live — preReloadDrafts is undefined outside
+      // history loading, making this a no-op)
+      if (state.preReloadDrafts && state.preReloadDrafts.length > 0) {
+        const text = contentBlocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text ?? "")
+          .join("");
+        if (text && state.preReloadDrafts.includes(text)) {
+          state = {
+            ...state,
+            confirmedDuringReplay: [
+              ...(state.confirmedDuringReplay ?? []),
+              text,
+            ],
+          };
+        }
+      }
+      return state;
+    }
+
+    case "system": {
+      const sysMsg = msg as Record<string, unknown>;
+      if (sysMsg.subtype === "stop_hook_summary") {
+        return reduceStopHookSummary(
           s,
-          contentBlocks,
-          msg.is_sidechain,
-          msg.parent_tool_use_id,
-          msg,
-          msg.is_synthetic,
-          msg.is_meta,
-          msg.is_steering,
+          sysMsg as unknown as Parameters<typeof reduceStopHookSummary>[1],
         );
       }
+      if (sysMsg.subtype === "api_error" || sysMsg.subtype === "turn_duration")
+        return s;
+      return reduceParseError(
+        s,
+        "Unknown system subtype",
+        String(sysMsg.subtype),
+        msg,
+      );
     }
 
     case "stream/block_start":
@@ -891,120 +887,6 @@ export function reduceStdoutMessage(
     default:
       return reduceParseError(
         s,
-        "stdout",
-        "Unknown message type",
-        (msg as Record<string, unknown>).type as string,
-        msg,
-      );
-  }
-}
-
-export function reduceFileMessage(
-  s: SessionState,
-  msg: AgnosticFileEvent,
-): SessionState {
-  switch (msg.type) {
-    // Agnostic types (translated by backend)
-    case "session/init":
-      return reduceSystemInit(s, msg);
-
-    case "session/status":
-      return reduceSystemStatus(s, msg);
-
-    case "session/compacted":
-      return reduceCompactBoundary(s, msg);
-
-    case "task/started":
-    case "task/notification":
-      return reduceTaskLifecycle(s, msg);
-
-    case "message/assistant":
-      return reduceAssistantMessage(s, msg);
-
-    case "message/user": {
-      const rawContent = msg.content;
-      const content: UserContentBlock[] =
-        typeof rawContent === "string"
-          ? [{ type: "text", text: rawContent }]
-          : rawContent;
-
-      // Pending steering message during JSONL replay: create unconfirmed placeholder
-      if (msg.pending) {
-        const text = content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text ?? "")
-          .join("");
-        return text ? reducePendingUserMessage(s, text) : s;
-      }
-
-      s = reduceUserEcho(
-        s,
-        content,
-        msg.is_sidechain,
-        msg.parent_tool_use_id,
-        msg,
-        msg.is_synthetic,
-        msg.is_meta,
-        msg.is_steering,
-      );
-      if (s.preReloadDrafts && s.preReloadDrafts.length > 0) {
-        const text = content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text ?? "")
-          .join("");
-        if (text && s.preReloadDrafts.includes(text)) {
-          s = {
-            ...s,
-            confirmedDuringReplay: [...(s.confirmedDuringReplay ?? []), text],
-          };
-        }
-      }
-      return s;
-    }
-
-    case "turn/result":
-      return reduceResultMessage(s, msg);
-
-    case "session/summary":
-      return reduceSummary(s, msg);
-
-    case "session/rate_limit":
-      return s;
-
-    // Pass-through system subtypes (not translated by backend)
-    case "system": {
-      const sysMsg = msg as Record<string, unknown>;
-      if (sysMsg.subtype === "stop_hook_summary") {
-        return reduceStopHookSummary(
-          s,
-          sysMsg as unknown as Parameters<typeof reduceStopHookSummary>[1],
-        );
-      } else if (
-        sysMsg.subtype === "api_error" ||
-        sysMsg.subtype === "turn_duration"
-      ) {
-        return s;
-      } else {
-        return reduceParseError(
-          s,
-          "file",
-          "Unknown system subtype",
-          String(sysMsg.subtype),
-          msg,
-        );
-      }
-    }
-
-    // JSONL-only types — intentionally not rendered
-    case "progress":
-    case "queue-operation":
-    case "file-history-snapshot":
-      return s;
-
-    default:
-      return reduceParseError(
-        s,
-        "file",
         "Unknown message type",
         (msg as Record<string, unknown>).type as string,
         msg,

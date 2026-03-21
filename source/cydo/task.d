@@ -341,21 +341,3 @@ string extractEventFromEnvelope(string envelope)
 	return envelope[start .. $];
 }
 
-/// Extract the inner event from a fileEvent envelope (JSONL-loaded history).
-string extractFileEventFromEnvelope(string envelope)
-{
-	import std.string : indexOf;
-
-	auto key = `"fileEvent":`;
-	auto idx = envelope.indexOf(key);
-	if (idx < 0)
-		return "";
-
-	auto start = idx + key.length;
-	if (start >= envelope.length)
-		return "";
-
-	if (envelope[$ - 1] == '}')
-		return envelope[start .. $ - 1];
-	return envelope[start .. $];
-}

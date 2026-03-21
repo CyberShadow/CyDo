@@ -240,15 +240,33 @@ export interface SystemTurnDurationMessage {
   [key: string]: unknown;
 }
 
+export interface SystemStopHookSummaryMessage {
+  type: "system";
+  subtype: "stop_hook_summary";
+  hookCount: number;
+  hookInfos: Array<{
+    command: string;
+    durationMs: number;
+    [key: string]: unknown;
+  }>;
+  hookErrors: Array<unknown>;
+  preventedContinuation: boolean;
+  hasOutput: boolean;
+  [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Union event types
 // ---------------------------------------------------------------------------
 
-// Agent-agnostic event union (live stream)
+// Agent-agnostic event union (live stream + JSONL history)
 export type AgnosticEvent =
   | SystemInitMessage
   | SystemStatusMessage
   | SystemCompactBoundaryMessage
+  | SystemApiErrorMessage
+  | SystemTurnDurationMessage
+  | SystemStopHookSummaryMessage
   | SystemTaskStartedMessage
   | SystemTaskNotificationMessage
   | AssistantMessage
@@ -264,26 +282,7 @@ export type AgnosticEvent =
   | ExitMessage
   | StderrMessage;
 
-// File message union (translated + pass-through JSONL-only types)
-export type AgnosticFileEvent =
-  | SystemInitMessage
-  | SystemStatusMessage
-  | SystemCompactBoundaryMessage
-  | SystemApiErrorMessage
-  | SystemTurnDurationMessage
-  | SystemTaskStartedMessage
-  | SystemTaskNotificationMessage
-  | AssistantMessage
-  | UserEchoMessage
-  | ResultMessage
-  | SummaryMessage
-  | RateLimitEventMessage
-  | { type: "progress"; [key: string]: unknown }
-  | { type: "queue-operation"; [key: string]: unknown }
-  | { type: "file-history-snapshot"; [key: string]: unknown };
-
 export type TaskMessage = { tid: number; event: AgnosticEvent };
-export type FileMessage = { tid: number; fileEvent: AgnosticFileEvent };
 
 // Control messages from our backend (not Claude Code) — plain interfaces
 export interface TaskCreatedMessage {

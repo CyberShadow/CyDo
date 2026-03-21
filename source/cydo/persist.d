@@ -234,7 +234,7 @@ DataVec loadTaskHistory(int tid, string jsonlPath,
 		// Wrap each translated line with file-event envelope
 		foreach (t; translated)
 		{
-			string injected = format!`{"tid":%d,"fileEvent":`(tid) ~ t ~ `}`;
+			string injected = format!`{"tid":%d,"event":`(tid) ~ t ~ `}`;
 			history ~= Data(injected.representation);
 		}
 	}

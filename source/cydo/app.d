@@ -801,12 +801,7 @@ class App : ToolsBackend
 				{
 					steeringStash ~= op.content;
 					steeringEnqueueLineNums ~= lineNum;
-					// Emit pending synthetic with the enqueue UUID so the undo
-					// button is visible on the pending message immediately.
-					auto synthetic = buildSyntheticUserEvent(op.content, false, true);
-					synthetic = synthetic[0 .. $ - 1]
-						~ `,"uuid":"enqueue-` ~ format!"%d"(lineNum) ~ `"}`;
-					return [synthetic];
+					return []; // Dequeue+echo/compaction will emit the confirmed version
 				}
 				else if (op.operation == "dequeue" || op.operation == "remove")
 				{
@@ -2630,8 +2625,6 @@ Conversation:
 			auto envelope = cast(string) d.toGC();
 			auto event = extractEventFromEnvelope(envelope);
 			if (event.length == 0)
-				event = extractFileEventFromEnvelope(envelope);
-			if (event.length == 0)
 				continue;
 			import std.algorithm : canFind;
 			if (event.canFind(`"message/user"`))
@@ -2653,8 +2646,6 @@ Conversation:
 		{
 			auto envelope = cast(string) d.toGC();
 			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0)
-				event = extractFileEventFromEnvelope(envelope);
 			if (event.length == 0)
 				continue;
 

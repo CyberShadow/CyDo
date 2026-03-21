@@ -1,8 +1,4 @@
-import type {
-  AgnosticEvent,
-  AgnosticFileEvent,
-  ControlMessage,
-} from "./protocol";
+import type { AgnosticEvent, ControlMessage } from "./protocol";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.
@@ -16,7 +12,6 @@ export class Connection {
   onTaskMessage: ((tid: number, msg: AgnosticEvent) => void) | null = null;
   onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
     null;
-  onFileMessage: ((tid: number, msg: AgnosticFileEvent) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -69,10 +64,8 @@ export class Connection {
             );
           } else if ("event" in raw) {
             this.onTaskMessage?.(raw.tid, raw.event as AgnosticEvent);
-          } else if ("fileEvent" in raw) {
-            this.onFileMessage?.(raw.tid, raw.fileEvent as AgnosticFileEvent);
           } else {
-            console.warn("Unknown task envelope (no event or fileEvent):", raw);
+            console.warn("Unknown task envelope:", raw);
           }
         } else {
           console.warn("Unknown WebSocket message:", raw);

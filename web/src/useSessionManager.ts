@@ -13,18 +13,10 @@ import {
 } from "preact/hooks";
 import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
-import type {
-  AgnosticEvent,
-  AgnosticFileEvent,
-  ControlMessage,
-} from "./protocol";
+import type { AgnosticEvent, ControlMessage } from "./protocol";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
-import {
-  reduceStdoutMessage,
-  reduceFileMessage,
-  reducePendingUserMessage,
-} from "./sessionReducer";
+import { reduceMessage } from "./sessionReducer";
 
 export interface ProjectInfo {
   name: string;
@@ -235,10 +227,6 @@ export function useTaskManager(): TaskManager {
   // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
-  // Buffer for live messages that arrive before history is loaded.
-  // Keyed by tid; drained on task_history_end.
-  const pendingLiveRef = useRef(new Map<number, AgnosticEvent[]>());
-
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
@@ -246,7 +234,20 @@ export function useTaskManager(): TaskManager {
     (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const updated = reducePendingUserMessage(prev, extractTextContent(msg));
+      const text = extractTextContent(msg);
+      const id = `pending-${++prev.msgIdCounter}`;
+      const updated = {
+        ...prev,
+        messages: [
+          ...prev.messages,
+          {
+            id,
+            type: "user" as const,
+            content: [{ type: "text" as const, text }],
+            pending: true,
+          },
+        ],
+      };
       liveStates.set(tid, updated);
       setTasks((map) => {
         const next = new Map(map);
@@ -258,27 +259,9 @@ export function useTaskManager(): TaskManager {
   );
 
   const handleTaskMessage = useCallback((tid: number, msg: AgnosticEvent) => {
-    // If history has been requested but not yet loaded, buffer live
-    // messages so they are processed after history.
     const t = liveStates.get(tid);
-    if (t && !t.historyLoaded && !requestedHistoryRef.current.has(tid)) {
-      console.warn(
-        `[CyDo] Received event for task ${tid} before history was loaded — this shouldn't happen`,
-        msg.type,
-      );
-    }
-    if (t && !t.historyLoaded && requestedHistoryRef.current.has(tid)) {
-      let buf = pendingLiveRef.current.get(tid);
-      if (!buf) {
-        buf = [];
-        pendingLiveRef.current.set(tid, buf);
-      }
-      buf.push(msg);
-      return;
-    }
-
     const prev = t ?? makeTaskState(tid, true);
-    const updated = reduceStdoutMessage(prev, msg);
+    const updated = reduceMessage(prev, msg);
     liveStates.set(tid, updated);
 
     // When an agent sub-task exits and it's currently focused, switch to the
@@ -309,22 +292,6 @@ export function useTaskManager(): TaskManager {
       return next;
     });
   }, []);
-
-  // -- JSONL file message handler --
-  const handleFileMessage = useCallback(
-    (tid: number, msg: AgnosticFileEvent) => {
-      const prev = liveStates.get(tid) ?? makeTaskState(tid);
-      const updated = reduceFileMessage(prev, msg);
-      liveStates.set(tid, updated);
-
-      setTasks((map) => {
-        const next = new Map(map);
-        next.set(tid, updated);
-        return next;
-      });
-    },
-    [],
-  );
 
   const handleControlMessage = useCallback((msg: ControlMessage) => {
     switch (msg.type) {
@@ -590,6 +557,7 @@ export function useTaskManager(): TaskManager {
         let t = liveStates.get(tid);
         if (!t) break;
 
+        // Compute inputDraft from confirmed drafts
         let inputDraft: string | undefined;
         if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
           // Multiset subtraction: remove one confirmed occurrence per match
@@ -610,6 +578,7 @@ export function useTaskManager(): TaskManager {
             remaining.length > 0 ? remaining.join("\n\n") : undefined;
         }
 
+        // Finalize: mark loaded, clear transient state
         t = {
           ...t,
           historyLoaded: true,
@@ -618,20 +587,6 @@ export function useTaskManager(): TaskManager {
           inputDraft,
         };
         liveStates.set(tid, t);
-
-        // Drain any live messages that were buffered while history was loading.
-        // The backend uses a unified history model (JSONL + live events are
-        // disjoint), so no deduplication is needed here.
-        const buffered = pendingLiveRef.current.get(tid);
-        if (buffered) {
-          pendingLiveRef.current.delete(tid);
-          for (const liveMsg of buffered) {
-            const prev = liveStates.get(tid)!;
-            const next = reduceStdoutMessage(prev, liveMsg);
-            liveStates.set(tid, next);
-          }
-          t = liveStates.get(tid)!;
-        }
 
         setTasks((prev) => {
           if (!prev.has(tid)) return prev;
@@ -769,7 +724,6 @@ export function useTaskManager(): TaskManager {
     type BufferedMsg =
       | { kind: "task"; tid: number; msg: AgnosticEvent }
       | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
-      | { kind: "file"; tid: number; msg: AgnosticFileEvent }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
@@ -780,7 +734,6 @@ export function useTaskManager(): TaskManager {
       buffer = [];
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
-        else if (item.kind === "file") handleFileMessage(item.tid, item.msg);
         else if (item.kind === "unconfirmed")
           handleUnconfirmedUserMessage(item.tid, item.msg);
         else handleTaskMessage(item.tid, item.msg);
@@ -834,10 +787,6 @@ export function useTaskManager(): TaskManager {
       buffer.push({ kind: "unconfirmed", tid, msg });
       scheduleFlush();
     };
-    conn.onFileMessage = (tid, msg) => {
-      buffer.push({ kind: "file", tid, msg });
-      scheduleFlush();
-    };
     conn.onControlMessage = (msg) => {
       buffer.push({ kind: "control", msg });
       scheduleFlush();
@@ -848,7 +797,7 @@ export function useTaskManager(): TaskManager {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };
-  }, [handleTaskMessage, handleFileMessage, handleControlMessage]);
+  }, [handleTaskMessage, handleControlMessage]);
 
   // Request history when the active task changes and hasn't been loaded yet
   useEffect(() => {
