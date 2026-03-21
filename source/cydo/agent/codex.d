@@ -109,6 +109,7 @@ struct ItemStartedParams
 		@JSONOptional string text;
 		@JSONOptional string command;
 		@JSONOptional JSONFragment action;
+		@JSONOptional JSONFragment content; // userMessage items: Array<UserInput>
 	}
 	Item item;
 }
@@ -1083,9 +1084,18 @@ class CodexSession : AgentSession
 	{
 		auto item = params.item;
 
-		// Skip user messages (echoed back by server) — no streaming events needed.
+		// Emit a message/user echo so the frontend confirms the pending placeholder.
 		if (item.type == "userMessage")
+		{
+			if (item.content.json !is null && outputHandler_)
+			{
+				import cydo.agent.protocol : UserMessageEvent;
+				UserMessageEvent uev;
+				uev.content = item.content;
+				outputHandler_(toJson(uev));
+			}
 			return;
+		}
 
 		auto idx = blockIndex++;
 		activeItem = CompletedItem.init;
