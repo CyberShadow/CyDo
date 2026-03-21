@@ -238,3 +238,11 @@ struct ToolResultBlock
 	JSONFragment content;
 	@JSONOptional bool is_error;
 }
+
+/// Inject `,"_raw":<rawJson>` before the final `}` of a JSON object string.
+string injectRawField(string translated, string rawJson)
+{
+	auto idx = translated.length;
+	while (idx > 0 && translated[--idx] != '}') {}
+	return translated[0 .. idx] ~ `,"_raw":` ~ rawJson ~ translated[idx .. $];
+}

@@ -7,7 +7,7 @@ import std.stdio : stderr;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher,
 	jsonRpcDispatcher, RPCFlatten, RPCName, RPCNamedParams;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
-import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial,
+import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial,
 	jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
@@ -100,7 +100,6 @@ struct TurnInterruptParams
 struct ItemStartedParams
 {
 	string threadId;
-	@JSONPartial
 	static struct Item
 	{
 		string type;
@@ -110,6 +109,7 @@ struct ItemStartedParams
 		@JSONOptional string command;
 		@JSONOptional JSONFragment action;
 		@JSONOptional JSONFragment content; // userMessage items: Array<UserInput>
+		JSONExtras extras;
 	}
 	Item item;
 }
@@ -131,10 +131,10 @@ struct ThreadIdParams
 struct ItemCompletedParams
 {
 	string threadId;
-	@JSONPartial
 	static struct Item
 	{
 		@JSONOptional bool is_error;
+		JSONExtras extras;
 	}
 	@JSONOptional Item item;
 }
@@ -1089,10 +1089,10 @@ class CodexSession : AgentSession
 		{
 			if (item.content.json !is null && outputHandler_)
 			{
-				import cydo.agent.protocol : UserMessageEvent;
+				import cydo.agent.protocol : UserMessageEvent, injectRawField;
 				UserMessageEvent uev;
 				uev.content = item.content;
-				outputHandler_(toJson(uev));
+				outputHandler_(injectRawField(toJson(uev), toJson(item)));
 			}
 			return;
 		}
@@ -1156,22 +1156,24 @@ class CodexSession : AgentSession
 
 		if (outputHandler_)
 		{
+			import cydo.agent.protocol : injectRawField;
 			StreamBlockStartEvent ev;
 			ev.index = idx;
 			ev.content_block = blockDesc;
-			outputHandler_(toJson(ev));
+			outputHandler_(injectRawField(toJson(ev), toJson(item)));
 		}
 
 		// If item/started already contains text (agentMessage with pre-populated
 		// content), emit a synthetic delta so the frontend has content to display.
 		if (item.text.length > 0 && outputHandler_)
 		{
+			import cydo.agent.protocol : injectRawField;
 			activeItem.text = item.text;
 			StreamBlockDeltaEvent dev;
 			dev.index = idx;
 			dev.delta.type = "text_delta";
 			dev.delta.text = item.text;
-			outputHandler_(toJson(dev));
+			outputHandler_(injectRawField(toJson(dev), toJson(item)));
 		}
 	}
 
@@ -1202,10 +1204,10 @@ class CodexSession : AgentSession
 
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : StreamBlockStopEvent;
+			import cydo.agent.protocol : StreamBlockStopEvent, injectRawField;
 			StreamBlockStopEvent ev;
 			ev.index = idx;
-			outputHandler_(toJson(ev));
+			outputHandler_(injectRawField(toJson(ev), toJson(params.item)));
 		}
 
 		activeItem.isError = params.item.is_error;
@@ -1355,7 +1357,7 @@ string translateRolloutSessionMeta(string line)
 	if (probe.payload.id.length == 0)
 		return null;
 
-	import cydo.agent.protocol : SessionInitEvent;
+	import cydo.agent.protocol : SessionInitEvent, injectRawField;
 	SessionInitEvent ev;
 	ev.session_id      = probe.payload.id;
 	ev.model           = "";
@@ -1364,7 +1366,7 @@ string translateRolloutSessionMeta(string line)
 	ev.agent_version   = probe.payload.cli_version;
 	ev.permission_mode = "dangerously-skip-permissions";
 	ev.agent           = "codex";
-	return toJson(ev);
+	return injectRawField(toJson(ev), line);
 }
 
 /// Translate a response_item rollout line → message/assistant or message/user.
@@ -1406,29 +1408,33 @@ string translateRolloutResponseItem(string line, string forkId = null)
 
 	auto ptype = probe.payload.type;
 
+	string result;
 	if (ptype == "message")
-		return translateRolloutMessage(probe.payload.role,
+		result = translateRolloutMessage(probe.payload.role,
 			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
 			forkId);
 	else if (ptype == "local_shell_call")
-		return translateRolloutToolUse(probe.payload.call_id, "Bash",
+		result = translateRolloutToolUse(probe.payload.call_id, "Bash",
 			extractCommandInput(probe.payload.action));
 	else if (ptype == "function_call")
 	{
 		static struct FuncCallInput { string arguments; }
-		return translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
+		result = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
 			toJson(FuncCallInput(probe.payload.arguments)));
 	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")
-		return translateRolloutToolResult(probe.payload.call_id,
+		result = translateRolloutToolResult(probe.payload.call_id,
 			probe.payload.output.json !is null ? probe.payload.output.json : `""`);
 	else if (ptype == "reasoning")
-		return translateRolloutReasoning(
+		result = translateRolloutReasoning(
 			probe.payload.summary.json !is null ? probe.payload.summary.json : "[]",
 			probe.payload.content.json);
+	else
+		return null;
 
-	return null; // Unknown response_item type
+	import cydo.agent.protocol : injectRawField;
+	return result !is null ? injectRawField(result, line) : null;
 }
 
 /// Translate a message response_item payload.
@@ -1634,12 +1640,12 @@ string translateRolloutEventMsg(string line)
 
 	if (probe.payload.type == "task_complete")
 	{
-		import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+		import cydo.agent.protocol : TurnResultEvent, UsageInfo, injectRawField;
 		TurnResultEvent ev;
 		ev.subtype = "success";
 		ev.num_turns = 1;
 		ev.usage = UsageInfo(0, 0);
-		return toJson(ev);
+		return injectRawField(toJson(ev), line);
 	}
 
 	// Skip user_message, task_started, error, etc.

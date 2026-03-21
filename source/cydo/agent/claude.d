@@ -699,6 +699,15 @@ string resolveClaudeBinary()
 /// Returns null for events that should be consumed (not forwarded).
 private string translateClaudeEvent(string rawLine)
 {
+	auto translated = translateClaudeEventInner(rawLine);
+	if (translated is null || translated is rawLine)
+		return translated;
+	import cydo.agent.protocol : injectRawField;
+	return injectRawField(translated, rawLine);
+}
+
+private string translateClaudeEventInner(string rawLine)
+{
 	@JSONPartial
 	static struct TypeProbe
 	{
