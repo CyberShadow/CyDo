@@ -138,6 +138,7 @@ struct ItemCompletedParams
 	static struct Item
 	{
 		@JSONOptional bool is_error;
+		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr
 		JSONExtras extras;
 	}
 	@JSONOptional Item item;
@@ -953,6 +954,10 @@ class CodexSession : AgentSession
 	// Queued messages waiting for thread to be ready.
 	private string[] pendingMessages;
 
+	// Whether the active streaming item is a command execution.
+	// Used to suppress text_delta (command output goes to tool result, not streaming).
+	private bool activeItemIsCommand;
+
 	// Callbacks
 	package void delegate(string line) outputHandler_;
 	package void delegate(string line) stderrHandler_;
@@ -1156,12 +1161,18 @@ class CodexSession : AgentSession
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
 				activeItem.name = "Bash";
-				// Prefer the structured action; fall back to the display command string.
-				auto cmdInput = extractCommandInput(item.action);
-				if (cmdInput == `{}` && item.command.length > 0)
+				activeItemIsCommand = true;
+				// Build input JSON from the command string field.
+				string cmdInput;
+				if (item.command.length > 0)
 				{
 					import cydo.agent.protocol : CommandInput;
 					cmdInput = toJson(CommandInput(item.command, ""));
+				}
+				else
+				{
+					// Fall back to action fragment if present.
+					cmdInput = extractCommandInput(item.action);
 				}
 				activeItem.input = cmdInput;
 				break;
@@ -1207,6 +1218,18 @@ class CodexSession : AgentSession
 			outputHandler_(injectRawField(toJson(ev), toJson(item)));
 		}
 
+		// Emit the command input as input_json_delta so the frontend renders
+		// the command during streaming (tool_use blocks need input to display).
+		if (activeItemIsCommand && activeItem.input.length > 0
+			&& activeItem.input != `{}` && outputHandler_)
+		{
+			StreamBlockDeltaEvent dev;
+			dev.index = idx;
+			dev.delta.type = "input_json_delta";
+			dev.delta.partial_json = activeItem.input;
+			outputHandler_(toJson(dev));
+		}
+
 		// If item/started already contains text (agentMessage with pre-populated
 		// content), emit a synthetic delta so the frontend has content to display.
 		if (item.text.length > 0 && outputHandler_)
@@ -1225,6 +1248,11 @@ class CodexSession : AgentSession
 	package void handleDelta(DeltaParams params, string deltaType)
 	{
 		activeItem.text ~= params.delta;
+
+		// Don't stream command output as text deltas — the output will be
+		// included in the tool result synthesized from item/completed.
+		if (activeItemIsCommand)
+			return;
 
 		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 		if (outputHandler_)
@@ -1256,6 +1284,12 @@ class CodexSession : AgentSession
 
 		activeItem.isError = params.item.is_error;
 
+		// For commands, use aggregatedOutput from item/completed as the tool
+		// result text (deltas were suppressed during streaming).
+		if (activeItemIsCommand && params.item.aggregatedOutput.length > 0)
+			activeItem.text = params.item.aggregatedOutput;
+
+		activeItemIsCommand = false;
 		completedItems ~= activeItem;
 		activeItem = CompletedItem.init;
 	}
