@@ -2896,17 +2896,17 @@ Conversation:
 /// Defaults to info.
 private void initLogLevel()
 {
-	import std.logger : globalLogLevel, LogLevel;
+	import std.logger : sharedLog, LogLevel;
 	import std.process : environment;
 
 	auto level = environment.get("CYDO_LOG_LEVEL", "info");
 	switch (level)
 	{
-		case "trace":    globalLogLevel = LogLevel.trace; break;
-		case "info":     globalLogLevel = LogLevel.info; break;
-		case "warning":  globalLogLevel = LogLevel.warning; break;
-		case "error":    globalLogLevel = LogLevel.error; break;
-		default:         globalLogLevel = LogLevel.info; break;
+		case "trace":    (cast()sharedLog).logLevel = LogLevel.trace; break;
+		case "info":     (cast()sharedLog).logLevel = LogLevel.info; break;
+		case "warning":  (cast()sharedLog).logLevel = LogLevel.warning; break;
+		case "error":    (cast()sharedLog).logLevel = LogLevel.error; break;
+		default:         (cast()sharedLog).logLevel = LogLevel.info; break;
 	}
 }
 
