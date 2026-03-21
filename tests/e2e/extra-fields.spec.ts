@@ -105,7 +105,7 @@ test("extra fields in tool_result are surfaced", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "claude-only test");
+  test.skip(agentType === "codex" || agentType === "copilot", "claude-only test");
 
   await enterSession(page);
   await sendMessage(page, "run command echo test-extra-fields");
@@ -119,7 +119,7 @@ test("extra fields on assistant message are surfaced", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "claude-only test");
+  test.skip(agentType === "codex" || agentType === "copilot", "claude-only test");
 
   await enterSession(page);
   await sendMessage(page, 'reply with "hello"');
@@ -136,7 +136,7 @@ test("extra fields on content blocks are surfaced", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "claude-only test");
+  test.skip(agentType === "codex" || agentType === "copilot", "claude-only test");
 
   await enterSession(page);
   await sendMessage(page, 'reply with "hello"');
@@ -152,7 +152,7 @@ test("extra fields on result event are surfaced", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "claude-only test");
+  test.skip(agentType === "codex" || agentType === "copilot", "claude-only test");
 
   await enterSession(page);
   await sendMessage(page, 'reply with "hello"');

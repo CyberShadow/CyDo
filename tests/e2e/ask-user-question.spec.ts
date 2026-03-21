@@ -5,13 +5,16 @@ test("ask_user_question clears on all connected clients when one answers", async
   browser,
   agentType,
 }) => {
+  // Copilot spawns a fresh cydo --mcp-server for each MCP tool call which adds latency
+  if (agentType === "copilot") test.setTimeout(120_000);
+
   // Page 1: create session and trigger AskUserQuestion
   await enterSession(page);
   await sendMessage(page, "call askuserquestion Do you agree?");
 
   // Wait for the AskUserForm to appear on page 1
   const form1 = page.locator(".ask-user-form");
-  await expect(form1).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(form1).toBeVisible({ timeout: agentType === "copilot" ? 60_000 : responseTimeout(agentType) });
 
   // Extract the task ID from the URL so page 2 can navigate to the same task
   const url = page.url();

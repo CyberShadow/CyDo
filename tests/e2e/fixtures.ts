@@ -5,7 +5,7 @@ import type { ChildProcess } from "child_process";
 import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createInterface } from "readline";
 
-type AgentType = "claude" | "codex";
+type AgentType = "claude" | "codex" | "copilot";
 
 /** Navigate to the welcome page, click +, and wait for the InputBox to be ready. */
 export async function enterSession(page: Page) {
@@ -76,6 +76,11 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
         `${workerHome}/.config/cydo/config.yaml`,
       );
 
+      // Give each worker its own COPILOT_HOME to avoid MCP config file
+      // race conditions when multiple workers run concurrently.
+      const copilotHome = `${workDir}/copilot-home`;
+      mkdirSync(copilotHome, { recursive: true });
+
       // Per-worker CODEX_HOME to avoid contention between parallel workers
       const codexHome = `${workDir}/codex-home`;
       mkdirSync(codexHome, { recursive: true });
@@ -93,6 +98,7 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
           HOME: workerHome,
           CYDO_LISTEN_PORT: String(port),
           CYDO_LOG_LEVEL: "trace",
+          ...(process.env.COPILOT_HOME !== undefined ? { COPILOT_HOME: copilotHome } : {}),
           CODEX_HOME: codexHome,
         },
         stdio: ["ignore", "ignore", "pipe"],

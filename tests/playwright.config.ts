@@ -26,6 +26,11 @@ export default defineConfig({
       use: { agentType: "codex" } as any,
     },
     {
+      name: "copilot",
+      testIgnore: /process-failure/,
+      use: { agentType: "copilot" } as any,
+    },
+    {
       name: "failure",
       testMatch: /process-failure/,
       use: { agentType: "claude" } as any,

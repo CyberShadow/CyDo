@@ -77,6 +77,45 @@
             meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
           };
 
+          # Copilot CLI — pre-built binary from GitHub releases
+          copilotVersion = "1.0.9";
+          copilotSrc = {
+            x86_64-linux = {
+              url = "https://github.com/github/copilot-cli/releases/download/v${copilotVersion}/copilot-linux-x64.tar.gz";
+              hash = "sha256-FwRLHgibSeqOuq142SRIuPbIw8YVHgSgmwuH41kvWD0=";
+            };
+            aarch64-linux = {
+              url = "https://github.com/github/copilot-cli/releases/download/v${copilotVersion}/copilot-linux-arm64.tar.gz";
+              hash = "sha256-YFaVWsztnMBG3xo4DSAPzlEAMTPLRCYUt34G8M7/yls=";
+            };
+          }.${system} or (throw "Copilot CLI: unsupported system ${system}");
+
+          copilot-cli = pkgs.stdenv.mkDerivation {
+            pname = "copilot-cli";
+            version = copilotVersion;
+            src = pkgs.fetchurl { inherit (copilotSrc) url hash; };
+            dontStrip = true;
+            dontPatchELF = true;
+            dontFixup = true;
+            unpackPhase = ''tar xzf $src'';
+            installPhase = ''
+              mkdir -p $out/bin $out/lib
+              install -m755 copilot $out/lib/copilot
+              INTERP=$(cat $NIX_CC/nix-support/dynamic-linker)
+              LIB_PATH="${pkgs.lib.makeLibraryPath [
+                pkgs.stdenv.cc.cc.lib
+                pkgs.glibc
+              ]}"
+              cat > $out/bin/copilot <<EOF
+#!/bin/sh
+export COPILOT_RUN_APP=1
+exec $INTERP --library-path $LIB_PATH $out/lib/copilot "\$@"
+EOF
+              chmod +x $out/bin/copilot
+            '';
+            meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
+          };
+
           frontend = pkgs.buildNpmPackage {
             pname = "cydo-frontend";
             version = "0.1.0";
@@ -143,7 +182,7 @@
           };
         in
         {
-          inherit frontend backend codex-cli cydo;
+          inherit frontend backend codex-cli copilot-cli cydo;
           default = cydo;
         });
 
@@ -152,6 +191,7 @@
           pkgs = pkgsFor system;
           cydo = self.packages.${system}.default;
           codex = self.packages.${system}.codex-cli;
+          copilot = self.packages.${system}.copilot-cli;
 
           # Fake bwrap that strips sandbox flags and exec's the inner command.
           # Real bwrap can't run inside Nix's build sandbox.
@@ -175,9 +215,10 @@
             echo "Error: simulated process failure for testing" >&2
             exit 1
           '';
+
         in
         let
-          mkIntegrationTest = { name, testMatch, agentType, claudeBin ? null }: pkgs.stdenv.mkDerivation {
+          mkIntegrationTest = { name, testMatch, agentType, claudeBin ? null, extraNativeBuildInputs ? [] }: pkgs.stdenv.mkDerivation {
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
@@ -191,7 +232,7 @@
               codex
               git
               sqlite
-            ];
+            ] ++ extraNativeBuildInputs;
 
             FONTCONFIG_FILE = pkgs.makeFontsConf {
               fontDirectories = [ pkgs.liberation_ttf ];
@@ -246,11 +287,31 @@
               done
               echo "Mock API server ready"
 
+              ${lib.optionalString (agentType == "copilot") ''
+              mkdir -p /tmp/copilot-test-home
+              export COPILOT_HOME=/tmp/copilot-test-home
+
+              node $src/mock-api/copilot-proxy.mjs &
+              COPILOT_PROXY_PID=$!
+              for i in $(seq 1 30); do
+                if curl -s http://127.0.0.1:9001/ >/dev/null 2>&1; then break; fi
+                sleep 0.5
+              done
+
+              export HTTPS_PROXY=http://127.0.0.1:9001
+              export NODE_TLS_REJECT_UNAUTHORIZED=0
+              export COPILOT_GITHUB_TOKEN=gho_mock_oauth_token
+              ''}
+
               mkdir -p /tmp/fake-bin
               ln -sf ${fake-bwrap} /tmp/fake-bin/bwrap
               ln -sf ${fail-claude} /tmp/fake-bin/fail-claude
               export PATH="/tmp/fake-bin:$PATH"
               ${if claudeBin != null then "export CYDO_CLAUDE_BIN=\"${claudeBin}\"" else ""}
+
+              ${lib.optionalString (agentType == "copilot") ''
+              ln -sf ${copilot}/bin/copilot /tmp/fake-bin/copilot
+              ''}
 
               mkdir -p /tmp/playwright-home/.config/cydo
               cat > /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
@@ -270,6 +331,13 @@
 
               kill $MOCK_PID 2>/dev/null || true
               wait $MOCK_PID 2>/dev/null || true
+
+              ${lib.optionalString (agentType == "copilot") ''
+              if [ -n "''${COPILOT_PROXY_PID:-}" ]; then
+                kill $COPILOT_PROXY_PID 2>/dev/null || true
+                wait $COPILOT_PROXY_PID 2>/dev/null || true
+              fi
+              ''}
 
               if [ "''${TEST_RESULT:-0}" != "0" ]; then
                 echo "Tests failed with exit code ''${TEST_RESULT}"
@@ -321,6 +389,12 @@
             testMatch = "--project=failure";
             agentType = "claude";
             claudeBin = "fail-claude";
+          };
+          integration-copilot = mkIntegrationTest {
+            name = "copilot";
+            testMatch = "--project=copilot";
+            agentType = "copilot";
+            extraNativeBuildInputs = [ copilot ];
           };
           typecheck = pkgs.buildNpmPackage {
             pname = "cydo-typecheck";

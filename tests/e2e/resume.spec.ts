@@ -203,6 +203,12 @@ test("idle task is not nudged after resume + restart", async ({
   // Exactly one assistant message before restart
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
 
+  // Brief pause to let the agent binary finish writing its session log
+  // (events.jsonl) before killing the backend.  The binary may write
+  // asynchronously after sending the ACP turn-complete notification, so
+  // without this the file can be incomplete when the new backend reads it.
+  await page.waitForTimeout(1_000);
+
   // --- First restart ---
   await restartableBackend.restart();
   await page.goto("/");
@@ -295,8 +301,9 @@ test("MCP tools work after backend restart", async ({
 
   // The sub-task should be created and complete. Its result ("sub-task-done")
   // appears in the tool result display, proving the MCP socket works.
+  // Use exact: true to avoid matching the user message which also contains "sub-task-done".
   await expect(
-    page.getByText("sub-task-done"),
+    page.getByText("sub-task-done", { exact: true }),
   ).toBeVisible({ timeout: 60_000 });
 });
 
@@ -304,7 +311,7 @@ test("active task receives nudge and continues after restart", async ({
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
+  test.skip(testInfo.project.name !== "claude", "claude-only test");
   // Create a task and start a long-running command (will be mid-turn when we kill)
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
@@ -351,7 +358,7 @@ test("sub-task result delivered to parent after backend restart", async ({
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
+  test.skip(testInfo.project.name !== "claude", "claude-only test");
   // Create a parent task that spawns a sub-task running a slow command,
   // so the sub-task is guaranteed to be in-flight when we kill the backend.
   await page.goto("/");
@@ -400,7 +407,7 @@ test("waiting parent receives batch results after restart", async ({
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
+  test.skip(testInfo.project.name !== "claude", "claude-only test");
 
   // Create a parent that spawns 2 sub-tasks, both running slow commands.
   await page.goto("/");
@@ -468,7 +475,7 @@ test("waiting parent with completed children gets results after restart", async 
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
+  test.skip(testInfo.project.name !== "claude", "claude-only test");
   // This test exercises the resumeAndDeliverResults path: parent is "waiting",
   // all children are "completed", but task_deps rows still exist.
   //

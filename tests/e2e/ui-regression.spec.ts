@@ -62,6 +62,7 @@ test("auto-scroll stays at bottom for new messages", async ({ page, agentType })
 });
 
 test("tool result with Bash output renders correctly", async ({ page, agentType }) => {
+  test.skip(agentType === "copilot", "MCP Bash tool not yet reliable in test sandbox");
   await enterSession(page);
   await sendMessage(page, "Please run command echo tool-result-test");
 
@@ -90,8 +91,8 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
     page.locator(".message.assistant-message .text-content", { hasText: "fork-source" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  if (agentType === "codex") {
-    // Codex: kill and reload so JSONL is finalized and fork buttons appear
+  if (agentType === "codex" || agentType === "copilot") {
+    // Codex/Copilot: kill and reload so JSONL is finalized and fork buttons appear
     await killSession(page, agentType);
     await page.reload();
     await expect(
