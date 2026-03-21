@@ -42,12 +42,12 @@ test("forked worktree task history is accessible without restart", async ({ page
 
   // 7. The forked task appears in the sidebar.
   await expect(
-    page.locator(".sidebar-item .sidebar-label", { hasText: /fork/i }),
+    page.locator(".sidebar-item .sidebar-label", { hasText: / \(fork\)/i }),
   ).toBeVisible({ timeout: 15_000 });
 
   // 8. Navigate to the forked task.
   await page
-    .locator(".sidebar-item .sidebar-label", { hasText: /fork/i })
+    .locator(".sidebar-item .sidebar-label", { hasText: / \(fork\)/i })
     .click();
 
   // 9. KEY ASSERTION: the forked task must show history immediately,
