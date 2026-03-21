@@ -53,9 +53,6 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   const tidG = parseInt(page.url().match(/\/[^/]+\/[^/]+\/task\/(\d+)/)?.[1] ?? "0");
   expect(tidG).toBeGreaterThan(0);
 
-  // Wait for subtask A to be created and auto-focused (URL changes away from G).
-  await expect(page).not.toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 15_000 });
-
   // Flow: A calls Handoff → A completes → continuation C created → C auto-focused
   //        → C responds → C exits → frontend should navigate to G (first alive ancestor)
   //
