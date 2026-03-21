@@ -28,22 +28,32 @@ test("basic message and response", async ({ page, agentType }) => {
 test("tool call flow", async ({ page, agentType }) => {
   await enterSession(page);
 
+  // Use base64 so the output ("aGVsbG8tZnJvbS10ZXN0Cg==") is distinct from
+  // the input command — this lets us assert input and output independently.
   const input = page.locator(".input-textarea");
   await expect(input).toBeEnabled({ timeout: 15_000 });
-  await input.fill("Please run command echo hello-from-test");
+  await input.fill("Please run command echo hello-from-test | base64");
   await page.getByRole("button", { name: "Send" }).click();
+
+  const timeout = responseTimeout(agentType);
 
   await expect(
     page.locator(".tool-name", { hasText: "Bash" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  ).toBeVisible({ timeout });
 
+  // Verify the command text is rendered in the tool call block (not just "Bash").
   await expect(
-    page.locator(".tool-result", { hasText: "hello-from-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+    page.locator(".tool-call", { hasText: "Bash" }),
+  ).toContainText("echo hello-from-test", { timeout });
+
+  // Verify the command output appears in the tool result.
+  await expect(
+    page.locator(".tool-result", { hasText: "aGVsbG8tZnJvbS10ZXN0" }),
+  ).toBeVisible({ timeout });
 
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  ).toBeVisible({ timeout });
 });
 
 test("codex tool call renders output content", async ({
@@ -54,9 +64,9 @@ test("codex tool call renders output content", async ({
   // This test verifies that Codex tool results include structured content
   // that the frontend can render (not just the tool name).
   await enterSession(page);
-  await sendMessage(page, "run command echo hello-from-test");
+  await sendMessage(page, "run command echo hello-from-test | base64");
   await expect(
-    page.locator(".tool-result", { hasText: "hello-from-test" }),
+    page.locator(".tool-result", { hasText: "aGVsbG8tZnJvbS10ZXN0" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
