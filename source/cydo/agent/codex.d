@@ -4,9 +4,11 @@ import std.conv : to;
 import std.path : buildPath, dirName;
 import std.stdio : stderr;
 
+import ae.net.asockets : ConnectionAdapter, IConnection;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher,
 	jsonRpcDispatcher, RPCFlatten, RPCName, RPCNamedParams;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
+import ae.sys.data : Data;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial,
 	jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
@@ -286,6 +288,34 @@ private class CodexServerRouter : ICodexServer
 	}
 }
 
+class LoggingAdapter : ConnectionAdapter
+{
+	string name;
+
+	this(IConnection next, string name)
+	{
+		super(next);
+		this.name = name;
+	}
+
+	override void onReadData(Data data)
+	{
+		data.enter((scope contents) {
+			stderr.writeln("[", name, "] < ", cast(string)contents);
+		});
+		super.onReadData(data);
+	}
+
+	override void send(scope Data[] data, int priority)
+	{
+		foreach (ref datum; data)
+			datum.enter((scope contents) {
+				stderr.writeln("[", name, "] > ", cast(string)contents);
+			});
+		super.send(data, priority);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // AppServerProcess — manages a `codex app-server` process via JSON-RPC 2.0.
 // One instance per workspace, shared across multiple CodexSessions (threads).
@@ -316,7 +346,9 @@ class AppServerProcess
 		// Set up bidirectional JSON-RPC codec on the process connection.
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
 		// is no longer called.
-		codec = new JsonRpcCodec(process.connection);
+		IConnection connection = process.connection;
+		debug (codex) connection = new LoggingAdapter(connection, "codex");
+		codec = new JsonRpcCodec(connection);
 
 		// Dispatcher for incoming notifications/requests from Codex.
 		auto router = new CodexServerRouter(this);
