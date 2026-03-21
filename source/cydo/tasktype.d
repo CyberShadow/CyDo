@@ -62,6 +62,7 @@ struct TaskTypeDef
 	// Flow control
 	@Optional @Key("name") CreatableTaskDef[] creatable_tasks;
 	@Optional ContinuationDef[string] continuations;
+	@Optional ContinuationDef on_yield; // auto-continuation on clean exit
 
 	// Execution
 	bool parallelizable;
@@ -182,6 +183,22 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
 	}
 
+	/// Validate a single ContinuationDef, returning any errors found.
+	string[] validateContinuationDef(string context, ref ContinuationDef cont)
+	{
+		string[] errs;
+		if (types.byName(cont.task_type) is null)
+			errs ~= format("%s: references unknown type '%s'", context, cont.task_type);
+		if (cont.keep_context && cont.worktree)
+			errs ~= format("%s: has keep_context and worktree: true — these are incompatible",
+				context);
+		if (cont.keep_context && cont.prompt_template.length == 0)
+			errs ~= format("%s: has keep_context but no prompt_template"
+				~ " — mode switches need an entry prompt", context);
+		checkTemplateFile(context, cont.prompt_template);
+		return errs;
+	}
+
 	bool hasSteward = false;
 	foreach (ref def; types)
 	{
@@ -201,27 +218,12 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 
 		// Check continuation references
 		foreach (cname, ref cont; def.continuations)
-		{
-			if (types.byName(cont.task_type) is null)
-				errors ~= format("%s: continuation '%s' references unknown type '%s'",
-					def.name, cname, cont.task_type);
+			errors ~= validateContinuationDef(
+				format("%s: continuation '%s'", def.name, cname), cont);
 
-			// keep_context + worktree are incompatible: --resume needs the
-			// same cwd to find the JSONL, but worktree changes the cwd.
-			if (cont.keep_context && cont.worktree)
-				errors ~= format("%s: continuation '%s' has keep_context and worktree: true"
-					~ " — these are incompatible",
-					def.name, cname);
-
-			// keep_context continuations should have a prompt_template
-			// (the prompt injected when the mode switch happens).
-			if (cont.keep_context && cont.prompt_template.length == 0)
-				errors ~= format("%s: continuation '%s' has keep_context but no "
-					~ "prompt_template — mode switches need an entry prompt",
-					def.name, cname);
-
-			checkTemplateFile(format("%s: continuation '%s'", def.name, cname), cont.prompt_template);
-		}
+		// Check on_yield
+		if (def.on_yield.task_type.length > 0)
+			errors ~= validateContinuationDef(format("%s: on_yield", def.name), def.on_yield);
 
 		// Steward validation
 		if (def.steward)
@@ -287,6 +289,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 						~ "Handoff would orphan the interactive session",
 						def.name, cname, def.name);
 			}
+			if (def.on_yield.task_type.length > 0)
+				errors ~= format("%s: on_yield is not allowed on interactive types "
+					~ "(reachable from user_visible via keep_context)", def.name);
 		}
 	}
 
@@ -342,6 +347,16 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		}
 	}
 
+	// Check on_yield edges for cycles
+	foreach (ref def; types)
+	{
+		if (def.on_yield.task_type.length > 0)
+		{
+			if (auto cycle = detectCycle(types, def.on_yield.task_type, [def.name]))
+				errors ~= format("%s: on_yield creates cycle: %s", def.name, cycle);
+		}
+	}
+
 	return errors;
 }
 
@@ -371,6 +386,11 @@ private string detectCycle(TaskTypeDef[] types, string current, string[] visited
 	foreach (_, ref cont; def.continuations)
 	{
 		if (auto cycle = detectCycle(types, cont.task_type, visited ~ current))
+			return cycle;
+	}
+	if (def.on_yield.task_type.length > 0)
+	{
+		if (auto cycle = detectCycle(types, def.on_yield.task_type, visited ~ current))
 			return cycle;
 	}
 	return null;
@@ -580,12 +600,26 @@ void simulateWorkflow(TaskTypeDef[] types)
 
 		if (def.continuations.length == 0)
 		{
-			// No continuations — task completes
-			writefln("    (no continuations — task completes)");
-			tasks[taskIdx].status = "completed";
+			if (def.on_yield.task_type.length > 0)
+			{
+				// on_yield fires automatically on clean exit
+				writefln("    (on_yield → %s)", def.on_yield.task_type);
+				tasks[taskIdx].status = "completed";
+				createTask(def.on_yield.task_type, desc, id);
+			}
+			else
+			{
+				// No continuations — task completes
+				writefln("    (no continuations — task completes)");
+				tasks[taskIdx].status = "completed";
+			}
 			writeln();
 			return;
 		}
+
+		if (def.on_yield.task_type.length > 0)
+			writefln("    (on_yield: auto-continues to %s if no explicit continuation)",
+				def.on_yield.task_type);
 
 		// Pick a continuation (modeled as a tool call that can be retried on rejection)
 		auto contNames = def.continuations.keys.array.sort.release;
@@ -718,7 +752,7 @@ string substituteVars(string text, string[string] vars)
 /// Render a prompt template by reading the template file and substituting
 /// placeholders. Returns the raw description if no template is defined.
 string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
-	string outputFile = "", string edgeTemplate = "")
+	string outputFile = "", string edgeTemplate = "", string[string] extraVars = null)
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
@@ -737,12 +771,15 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 		vars["knowledge_base"] = def.knowledge_base;
 	if (outputFile.length > 0)
 		vars["output_file"] = outputFile;
+	foreach (k, v; extraVars)
+		vars[k] = v;
 	return substituteVars(readText(templatePath), vars);
 }
 
 /// Render a continuation's prompt template. The continuation must have a
 /// prompt_template set (enforced by validation for keep_context continuations).
-string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string typesDir)
+string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string typesDir,
+	string[string] extraVars = null)
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
@@ -753,7 +790,10 @@ string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, st
 	auto templatePath = buildPath(typesDir, contDef.prompt_template);
 	assert(exists(templatePath), "Continuation prompt template not found: " ~ templatePath);
 
-	return readText(templatePath);
+	auto text = readText(templatePath);
+	if (extraVars.length > 0)
+		text = substituteVars(text, extraVars);
+	return text;
 }
 
 /// Indent every line of a multi-line string with the given prefix.
@@ -899,6 +939,21 @@ void generateDot(TaskTypeDef[] types)
 			if (cont.requires_approval)
 				attrs ~= " style=bold color=\"#856404\"";
 			writefln("    %s -> %s [%s];", def.name, cont.task_type, attrs);
+		}
+	}
+
+	// on_yield edges (dashed with normal arrowhead)
+	foreach (ref def; types)
+	{
+		if (def.on_yield.task_type.length > 0)
+		{
+			string label = "on_yield";
+			if (def.on_yield.keep_context)
+				label ~= " ⟳";
+			if (def.on_yield.worktree)
+				label ~= " ⎘";
+			writefln("    %s -> %s [label=\"%s\" style=dashed arrowhead=normal color=\"#6c757d\"];",
+				def.name, def.on_yield.task_type, label);
 		}
 	}
 
@@ -1076,6 +1131,12 @@ void runDumpContext(string[] args)
 	}
 	if (def.max_turns > 0)
 		writefln("Max turns:      %d", def.max_turns);
+	if (def.on_yield.task_type.length > 0)
+		writefln("On-yield:       %s%s%s%s",
+			def.on_yield.task_type,
+			def.on_yield.keep_context ? " (keep-context)" : "",
+			def.on_yield.worktree ? " (worktree)" : "",
+			def.on_yield.requires_approval ? " (approval)" : "");
 	writefln("Disallowed:     (agent-specific)");
 	writeln();
 

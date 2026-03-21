@@ -32,7 +32,7 @@ import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
-import cydo.tasktype : TaskTypeDef, byName, loadTaskTypes, validateTaskTypes,
+import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
 import cydo.task;
 
@@ -1681,8 +1681,11 @@ class App : ToolsBackend
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
 				// Also check taskDeps for post-restart sub-tasks (no promise in pendingSubTasks).
+				// Also close stdin for tasks with on_yield (they auto-continue on exit).
+				auto onYieldTypeDef = getTaskTypes().byName(td.taskType);
+				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
-					|| tid in taskDeps)
+					|| tid in taskDeps || hasOnYield)
 					td.session.closeStdin();
 				else
 				{
@@ -1721,7 +1724,10 @@ class App : ToolsBackend
 				tid, exitCode, tid in tasks ? tasks[tid].status : "(gone)");
 			ProcessExitEvent ev;
 			ev.code = exitCode;
-			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
+			auto onYieldDef = (exitCode == 0 && tasks[tid].pendingContinuation.length == 0)
+				? getTaskTypes().byName(tasks[tid].taskType) : null;
+			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
+			if (exitCode == 0 && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
 				ev.is_continuation = true;
 			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
@@ -1755,6 +1761,15 @@ class App : ToolsBackend
 			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
 			{
 				spawnContinuation(tid);
+				return;
+			}
+
+			// on_yield: auto-continuation on clean exit without explicit SwitchMode/Handoff
+			if (hasOnYield)
+			{
+				infof("on_yield: tid=%d type=%s → %s",
+					tid, tasks[tid].taskType, onYieldDef.on_yield.task_type);
+				executeContinuation(tid, onYieldDef.on_yield, tasks[tid].resultText);
 				return;
 			}
 
@@ -1833,48 +1848,18 @@ class App : ToolsBackend
 		td.error = null;
 	}
 
-	/// Transition a task to its successor via continuation.
-	/// Called from onExit when pendingContinuation is set.
-	///
-	/// Two modes:
-	///   keep_context: mutate task type in-place, resume the same session
-	///   !keep_context: complete the current task normally, create a new child task
-	private void spawnContinuation(int tid)
+	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
+	/// and implicit (on_yield) paths.
+	private void executeContinuation(int tid, ContinuationDef contDef, string handoffPrompt)
 	{
 		import ae.utils.json : toJson;
 
 		auto td = &tasks[tid];
-		auto typeDef = getTaskTypes().byName(td.taskType);
-		auto contKey = td.pendingContinuation;
-		auto hPrompt = td.handoffPrompt;
-		td.pendingContinuation = null;
-		td.handoffPrompt = null;
-
-		if (typeDef is null)
-		{
-			errorf("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
-			td.status = "failed";
-			persistence.setStatus(tid, "failed");
-			broadcastTaskUpdate(tid);
-			return;
-		}
-
-		auto contDefP = contKey in typeDef.continuations;
-		if (contDefP is null)
-		{
-			errorf("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
-				contKey, td.taskType, tid);
-			td.status = "failed";
-			persistence.setStatus(tid, "failed");
-			broadcastTaskUpdate(tid);
-			return;
-		}
-		auto contDef = *contDefP;
 
 		auto newTypeDef = getTaskTypes().byName(contDef.task_type);
 		if (newTypeDef is null)
 		{
-			errorf("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
+			errorf("executeContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
 			broadcastTaskUpdate(tid);
@@ -1883,6 +1868,8 @@ class App : ToolsBackend
 
 		infof("Continuation: tid=%d %s → %s (keep_context=%s)",
 			tid, td.taskType, contDef.task_type, contDef.keep_context);
+
+		auto resultText = td.resultText;
 
 		if (contDef.keep_context)
 		{
@@ -1904,7 +1891,8 @@ class App : ToolsBackend
 			if (td.session !is null)
 			{
 				auto renderedPrompt = renderContinuationPrompt(contDef,
-					"Continue from where you left off.", taskTypesDir);
+					"Continue from where you left off.", taskTypesDir,
+					["result_text": resultText]);
 				broadcastUnconfirmedUserMessage(tid, renderedPrompt);
 				sendTaskMessage(tid, renderedPrompt);
 			}
@@ -1922,7 +1910,7 @@ class App : ToolsBackend
 			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 
 			// Create child task for the successor with the handoff prompt
-			auto successorPrompt = hPrompt.length > 0 ? hPrompt : td.description;
+			auto successorPrompt = handoffPrompt.length > 0 ? handoffPrompt : td.description;
 			auto childTid = createTask(td.workspace, td.projectPath, td.agentType);
 			auto childTd = &tasks[childTid];
 			childTd.taskType = contDef.task_type;
@@ -1967,13 +1955,48 @@ class App : ToolsBackend
 			if (childTd.session !is null)
 			{
 				auto renderedPrompt = renderPrompt(*newTypeDef, successorPrompt,
-					taskTypesDir, childTd.outputPath, contDef.prompt_template);
+					taskTypesDir, childTd.outputPath, contDef.prompt_template,
+					["result_text": resultText]);
 				broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
 				sendTaskMessage(childTid, renderedPrompt);
 			}
 
 			broadcastTaskUpdate(tid);
 		}
+	}
+
+	/// Transition a task to its successor via continuation.
+	/// Called from onExit when pendingContinuation is set.
+	private void spawnContinuation(int tid)
+	{
+		auto td = &tasks[tid];
+		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto contKey = td.pendingContinuation;
+		auto hPrompt = td.handoffPrompt;
+		td.pendingContinuation = null;
+		td.handoffPrompt = null;
+
+		if (typeDef is null)
+		{
+			errorf("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
+			td.status = "failed";
+			persistence.setStatus(tid, "failed");
+			broadcastTaskUpdate(tid);
+			return;
+		}
+
+		auto contDefP = contKey in typeDef.continuations;
+		if (contDefP is null)
+		{
+			errorf("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
+				contKey, td.taskType, tid);
+			td.status = "failed";
+			persistence.setStatus(tid, "failed");
+			broadcastTaskUpdate(tid);
+			return;
+		}
+
+		executeContinuation(tid, *contDefP, hPrompt);
 	}
 
 	private string defaultAgentType(string workspaceName)

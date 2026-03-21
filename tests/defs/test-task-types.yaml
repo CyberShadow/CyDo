@@ -12,3 +12,14 @@
       done:
         task_type: blank
     user_visible: false
+
+  # on_yield auto-continuation for e2e tests.
+  # Exits cleanly without calling SwitchMode/Handoff and on_yield fires automatically.
+  test_on_yield:
+    description: "Test type with on_yield continuation for e2e tests"
+    prompt_template: prompts/blank.md
+    model_class: small
+    output_type: report
+    on_yield:
+      task_type: blank
+    user_visible: false

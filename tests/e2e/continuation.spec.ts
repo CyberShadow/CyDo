@@ -101,6 +101,76 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
   }).toPass({ timeout: 30_000 });
 });
 
+test("on_yield continuation auto-fires on clean exit", async ({ page, agentType }) => {
+  // Listen for WebSocket frames to capture process/exit events.
+  const exitEvents: Array<{ tid: number; is_continuation?: boolean }> = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.event?.type === "process/exit") {
+          exitEvents.push({
+            tid: data.tid,
+            is_continuation: data.event.is_continuation,
+          });
+        }
+      } catch { /* ignore non-JSON frames */ }
+    });
+  });
+
+  await enterSession(page);
+
+  // Create a sub-task of type test_on_yield. The mock agent produces a text
+  // reply and exits cleanly (code 0) without calling SwitchMode/Handoff.
+  // The on_yield continuation should auto-fire, creating a blank successor.
+  await sendMessage(page, "call task test_on_yield hello");
+
+  // The on_yield exit should carry is_continuation: true.
+  await expect(async () => {
+    const onYieldExit = exitEvents.find((e) => e.is_continuation === true);
+    expect(onYieldExit).toBeTruthy();
+  }).toPass({ timeout: 30_000 });
+});
+
+test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
+  // Copilot ACP startup takes ~7s; Kill before the session registers leaves
+  // no exit handler, so the exit event is never broadcast.  The behavior is
+  // validated on Claude and Codex, where timing is more predictable.
+  test.skip(agentType === "copilot", "Copilot ACP startup delay makes Kill timing unreliable");
+
+  const exitEvents: Array<{ tid: number; code: number; is_continuation?: boolean }> = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.event?.type === "process/exit") {
+          exitEvents.push({
+            tid: data.tid,
+            code: data.event.code,
+            is_continuation: data.event.is_continuation,
+          });
+        }
+      } catch {}
+    });
+  });
+
+  await enterSession(page);
+
+  // Create a sub-task of type test_on_yield, then kill it via the Kill
+  // button to force a non-zero exit. on_yield should NOT fire.
+  await sendMessage(page, "call task test_on_yield hello");
+
+  // Wait for the sub-task to appear, then click Kill
+  await page.getByRole("button", { name: /kill/i }).first().click();
+
+  // Wait for the exit event — it should NOT have is_continuation.
+  await expect(async () => {
+    const failedExit = exitEvents.find((e) => e.code !== 0);
+    expect(failedExit).toBeTruthy();
+    expect(failedExit!.is_continuation).toBeFalsy();
+  }).toPass({ timeout: 30_000 });
+});
+
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
   await enterSession(page);
 
