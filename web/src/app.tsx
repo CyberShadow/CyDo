@@ -129,6 +129,22 @@ function AppContent() {
     requestAnimationFrame(() => taskTypePickerRef.current?.focus());
   }, [activeWorkspace, activeProject, navigateToProject, navigateHome]);
 
+  // Ctrl+Shift+A: archive/unarchive active task
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "A") {
+        e.preventDefault();
+        if (active) {
+          setArchived(active.tid, !active.archived);
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
+  }, [active, setArchived]);
+
   // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
   // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
   // Ctrl+Shift+O: new task
