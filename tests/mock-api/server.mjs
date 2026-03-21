@@ -297,6 +297,11 @@ function matchPattern(userText) {
   match = userText.match(/read file (\S+)/i);
   if (match) return { type: "tool_call", name: "read_file", input: { path: match[1] } };
 
+  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
+  // Checked before switchmode so "call task blank call switchmode plan" routes to Task, not SwitchMode.
+  match = userText.match(/call task (\S+) (.*)/is);
+  if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+
   // "call switchmode <continuation>" → MCP SwitchMode tool call
   match = userText.match(/call switchmode (\S+)/i);
   if (match) return { type: "tool_call", name: "mcp__cydo__SwitchMode", input: { continuation: match[1] } };

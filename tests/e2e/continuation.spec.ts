@@ -61,6 +61,40 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 30_000 });
 });
 
+test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agentType }) => {
+  // Listen for WebSocket frames BEFORE the page connects so we capture
+  // all messages including the process/exit with is_continuation.
+  const exitEvents: Array<{ tid: number; is_continuation?: boolean }> = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.event?.type === "process/exit") {
+          exitEvents.push({
+            tid: data.tid,
+            is_continuation: data.event.is_continuation,
+          });
+        }
+      } catch { /* ignore non-JSON frames */ }
+    });
+  });
+
+  // Create root task G and enter its session.
+  await enterSession(page);
+
+  // G creates child C of type blank. C's initial prompt is
+  // "call switchmode plan", triggering a keep_context continuation.
+  await sendMessage(page, "call task blank call switchmode plan");
+
+  // Wait for C's SwitchMode to produce a process/exit with is_continuation.
+  // This is the core assertion: the backend must annotate SwitchMode exits
+  // so the frontend's parent-navigation guard can skip them.
+  await expect(async () => {
+    const switchModeExit = exitEvents.find((e) => e.is_continuation === true);
+    expect(switchModeExit).toBeTruthy();
+  }).toPass({ timeout: 30_000 });
+});
+
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
   await enterSession(page);
 
