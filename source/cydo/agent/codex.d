@@ -1303,6 +1303,23 @@ class CodexSession : AgentSession
 
 		turnInProgress = false;
 
+		// Flush any in-progress item (e.g. a long-running command that didn't
+		// get item/completed before the turn ended) so it's included in the
+		// synthetic message/assistant.
+		if (activeItem.type.length > 0)
+		{
+			if (outputHandler_)
+			{
+				import cydo.agent.protocol : StreamBlockStopEvent;
+				StreamBlockStopEvent stopEv;
+				stopEv.index = blockIndex > 0 ? blockIndex - 1 : 0;
+				outputHandler_(toJson(stopEv));
+			}
+			activeItemIsCommand = false;
+			completedItems ~= activeItem;
+			activeItem = CompletedItem.init;
+		}
+
 		// 1. stream/turn_stop
 		if (outputHandler_)
 			outputHandler_(`{"type":"stream/turn_stop"}`);
