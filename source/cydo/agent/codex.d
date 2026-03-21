@@ -111,6 +111,8 @@ struct ItemStartedParams
 		@JSONOptional string command;
 		@JSONOptional JSONFragment action;
 		@JSONOptional JSONFragment content; // userMessage items: Array<UserInput>
+		@JSONOptional string tool;          // mcpToolCall: tool name (e.g. "AskUserQuestion")
+		@JSONOptional string server;        // mcpToolCall: server name (e.g. "cydo")
 		JSONExtras extras;
 	}
 	Item item;
@@ -1172,13 +1174,23 @@ class CodexSession : AgentSession
 				activeItem.name = "Write";
 				break;
 			case "mcpToolCall":
-				auto name = item.name.length > 0 ? item.name : "unknown";
+				// v2 protocol uses "tool" and "server" fields.
+				string toolDisplayName;
+				if (item.tool.length > 0)
+				{
+					if (item.server.length > 0)
+						toolDisplayName = item.server ~ "__" ~ item.tool;
+					else
+						toolDisplayName = item.tool;
+				}
+				else
+					toolDisplayName = item.name.length > 0 ? item.name : "unknown";
 				blockDesc.type = "tool_use";
 				blockDesc.id = item.id;
-				blockDesc.name = name;
+				blockDesc.name = toolDisplayName;
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
-				activeItem.name = name;
+				activeItem.name = toolDisplayName;
 				break;
 			default:
 				blockDesc.type = "text";
