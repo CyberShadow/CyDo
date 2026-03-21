@@ -12,7 +12,7 @@ discussion above) into smaller, self-contained sub-tasks.
 2. **Clarify unknowns** — Use **research** and **spike** sub-tasks to
    investigate anything that is unclear or ambiguous in the plan before
    committing to a decomposition. Include output file paths from any prior
-   research cited in the plan so new research can build on existing findings.
+   research cited in the plan so new tasks can build on existing findings.
    The goal is to turn a large, vague plan into small, clear chunks.
 3. **Identify boundaries** — Find natural seams in the work: separate
    features, separate layers, separate concerns. Units that must be

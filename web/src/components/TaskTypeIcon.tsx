@@ -6,6 +6,7 @@ import planModeIcon from "../icons/plan-mode.svg?raw";
 import bugModeIcon from "../icons/bug-mode.svg?raw";
 import writeModeIcon from "../icons/write-mode.svg?raw";
 import planIcon from "../icons/plan.svg?raw";
+import quickResearchIcon from "../icons/quick-research.svg?raw";
 import researchIcon from "../icons/research.svg?raw";
 import bugIcon from "../icons/bug.svg?raw";
 import reproduceIcon from "../icons/reproduce.svg?raw";
@@ -36,6 +37,7 @@ const rawIcons: Record<string, string> = {
   "bug-mode": bugModeIcon,
   "write-mode": writeModeIcon,
   plan: planIcon,
+  "quick-research": quickResearchIcon,
   research: researchIcon,
   bug: bugIcon,
   reproduce: reproduceIcon,

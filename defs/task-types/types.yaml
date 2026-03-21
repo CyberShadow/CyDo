@@ -91,8 +91,11 @@ task_types:
     read_only: true
     output_type: report
     creatable_tasks:
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
         worktree: true
@@ -146,7 +149,7 @@ task_types:
       Do NOT switch for:
       - Tasks where the direction is already clear — use direct dispatch
       - Tasks where the user gave specific, detailed instructions
-      - Pure research or exploration (use research sub-tasks instead)
+      - Pure research or exploration (use research sub-tasks directly)
     tool_guidance: >
       Switch when the task needs interactive exploration and design iteration
       — multiple valid approaches, unclear scope, or architectural decisions.
@@ -160,8 +163,11 @@ task_types:
       plan:
         prompt_template: prompts/plan.md
         result_note: "Read the output file for full findings. `cp` it to {{output_dir}} so you can edit it during iteration with the user."
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
         worktree: true
@@ -207,8 +213,11 @@ task_types:
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
         worktree: true
@@ -249,8 +258,11 @@ task_types:
     model_class: large
     output_type: report
     creatable_tasks:
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
     continuations:
       back:
@@ -286,8 +298,11 @@ task_types:
     read_only: true
     output_type: report
     creatable_tasks:
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
         worktree: true
@@ -296,29 +311,51 @@ task_types:
     parallelizable: true
     user_visible: false
 
-  research:
-    description: "Investigate a topic, gather information, produce findings"
-    icon: research
+  quick_research:
+    description: "Targeted codebase lookup — find a specific file, function, or pattern"
+    icon: quick-research
     agent_description: >
-      Fast read-only agent for exploring codebases and gathering information.
-      Use when: you need to understand how a subsystem works before modifying it,
-      you need to find all callers of a function across the codebase, you need to
-      read and synthesize information from multiple files, you're exploring
-      unfamiliar code, or answering questions like "how does authentication work?".
-      Returns a structured report with findings, file paths, and recommendations.
-      No code changes are made. When calling this agent, specify the desired
-      thoroughness level: "quick" for basic searches, "medium" for moderate
-      exploration, or "thorough" for comprehensive analysis across multiple
-      locations and naming conventions.
+      Fast read-only agent for targeted codebase lookups. Use when: you need
+      to find a specific file, function, or pattern, answer a scoped question
+      like "where is X defined?" or "what calls Y?", or do a quick lookup
+      before making a decision. Returns a structured report with findings,
+      file paths, and recommendations. No code changes are made.
     tool_guidance: >
-      Prefer this over doing your own exploration — it keeps your context clean
-      and runs fast. Use for broader codebase exploration, deep research, or any
-      open-ended search that may require multiple rounds of globbing and grepping.
-      Specify thoroughness in the prompt: "quick" for targeted lookups, "thorough"
-      for exhaustive exploration.
-    model_class: medium
+      Use for quick, targeted lookups — finding a file, tracing a function,
+      checking a pattern. Returns fast. For broader exploration that may
+      require multiple rounds, use deep_research instead.
+    model_class: small
     read_only: true
     output_type: report
+    parallelizable: true
+    user_visible: false
+
+  deep_research:
+    description: "Thorough investigation — explore broadly, spawn sub-tasks"
+    icon: research
+    agent_description: >
+      Thorough read-only agent for broad codebase exploration. Use when: you
+      need to understand how a subsystem works before modifying it, you need
+      to trace cross-cutting concerns across multiple files, the scope is
+      genuinely unclear, or you're answering broad questions like "how does
+      authentication work?". Can spawn quick_research sub-tasks for parallel
+      lookups and spike sub-tasks to test hypotheses. Returns a structured
+      report with findings, file paths, and recommendations.
+    tool_guidance: >
+      Use for broader exploration that requires multiple rounds of searching,
+      reading, and synthesizing. For quick, targeted lookups, use
+      quick_research instead.
+    model_class: large
+    read_only: true
+    output_type: report
+    creatable_tasks:
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      spike:
+        worktree: true
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     parallelizable: true
     user_visible: false
 
@@ -339,8 +376,11 @@ task_types:
     model_class: large
     output_type: report
     creatable_tasks:
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       reproduce:
         worktree: true
@@ -365,8 +405,11 @@ task_types:
     model_class: medium
     output_type: report
     creatable_tasks:
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
     parallelizable: true
     user_visible: true
@@ -393,8 +436,11 @@ task_types:
         worktree: true
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
-      research:
-        prompt_template: prompts/research.md
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
     parallelizable: true
     user_visible: false
@@ -467,6 +513,12 @@ task_types:
         worktree: true
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
+        result_note: "Read the output file for full findings."
     parallelizable: true
     user_visible: false
 

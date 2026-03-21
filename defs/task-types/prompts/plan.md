@@ -7,11 +7,11 @@ existing patterns, and produce a detailed implementation plan.
 
 1. **Understand context** — Read relevant source files, documentation, and any
    referenced issues or prior plans. Understand the existing architecture.
-   Delegate all exploration to **research** sub-tasks — do not research
-   inline. They keep your context focused and run in parallel. Spawn as many
-   research rounds as needed; each round can build on the previous one's
-   findings. If the task description includes prior research file paths, read
-   them first and pass them to new research tasks when relevant.
+   Delegate exploration to **research** sub-tasks — do not research inline.
+   They keep your context focused and run in parallel. Spawn as many rounds
+   as needed; each can build on the previous one's findings. If the task
+   description includes prior research file paths, read them first and pass
+   them to new research tasks.
 2. **Find reusable code** — Actively search for existing functions, utilities,
    and patterns that can be reused. Avoid proposing new code when suitable
    implementations already exist.
