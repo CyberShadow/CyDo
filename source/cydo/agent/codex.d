@@ -94,6 +94,7 @@ struct TurnSteerParams
 struct TurnInterruptParams
 {
 	string threadId;
+	string turnId;
 }
 
 // ---- Incoming notification params (Codex → CyDo) ----
@@ -1066,7 +1067,7 @@ class CodexSession : AgentSession
 
 	void interrupt()
 	{
-		if (!alive_ || threadId.length == 0)
+		if (!alive_ || threadId.length == 0 || !turnInProgress)
 			return;
 		server.sendRequest("turn/interrupt",
 			JSONFragment(toJson(TurnInterruptParams(threadId))));
@@ -1085,8 +1086,9 @@ class CodexSession : AgentSession
 		// only this session stops and other concurrent sessions are unaffected.
 		if (threadId.length > 0)
 		{
-			server.sendRequest("turn/interrupt",
-				JSONFragment(toJson(TurnInterruptParams(threadId))));
+			if (turnInProgress)
+				server.sendRequest("turn/interrupt",
+					JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
 		}
 		server.unregisterSessionByTid(tid);
@@ -1102,11 +1104,7 @@ class CodexSession : AgentSession
 		if (!alive_)
 			return;
 		if (threadId.length > 0)
-		{
-			server.sendRequest("turn/interrupt",
-				JSONFragment(toJson(TurnInterruptParams(threadId))));
 			server.unregisterSession(threadId);
-		}
 		server.unregisterSessionByTid(tid);
 		alive_ = false;
 		auto cb = exitHandler_;
