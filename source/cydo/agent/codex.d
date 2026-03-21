@@ -1156,10 +1156,10 @@ class CodexSession : AgentSession
 			case "commandExecution":
 				blockDesc.type = "tool_use";
 				blockDesc.id = item.id;
-				blockDesc.name = "Bash";
+				blockDesc.name = "commandExecution";
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
-				activeItem.name = "Bash";
+				activeItem.name = "commandExecution";
 				activeItemIsCommand = true;
 				// Build input JSON from the command string field.
 				string cmdInput;
@@ -1178,10 +1178,10 @@ class CodexSession : AgentSession
 			case "fileChange":
 				blockDesc.type = "tool_use";
 				blockDesc.id = item.id;
-				blockDesc.name = "Write";
+				blockDesc.name = "fileChange";
 				activeItem.type = "tool_use";
 				activeItem.id = item.id;
-				activeItem.name = "Write";
+				activeItem.name = "fileChange";
 				break;
 			case "mcpToolCall":
 				// v2 protocol uses "tool" and "server" fields.
@@ -1491,13 +1491,19 @@ string translateRolloutResponseItem(string line, string forkId = null)
 			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
 			forkId);
 	else if (ptype == "local_shell_call")
-		result = translateRolloutToolUse(probe.payload.call_id, "Bash",
+		result = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
 			extractCommandInput(probe.payload.action));
 	else if (ptype == "function_call")
 	{
-		static struct FuncCallInput { string arguments; }
+		// Pass parsed arguments object directly (not wrapped as {"arguments":"..."}).
+		string argsJson = probe.payload.arguments;
+		string inputJson;
+		if (argsJson.length > 0 && argsJson[0] == '{')
+			inputJson = argsJson;  // already a JSON object
+		else
+			inputJson = `{}`;
 		result = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
-			toJson(FuncCallInput(probe.payload.arguments)));
+			inputJson);
 	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")

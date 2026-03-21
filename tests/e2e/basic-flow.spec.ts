@@ -36,14 +36,15 @@ test("tool call flow", async ({ page, agentType }) => {
   await page.getByRole("button", { name: "Send" }).click();
 
   const timeout = responseTimeout(agentType);
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
 
   await expect(
-    page.locator(".tool-name", { hasText: "Bash" }),
+    page.locator(".tool-name", { hasText: toolName }),
   ).toBeVisible({ timeout });
 
-  // Verify the command text is rendered in the tool call block (not just "Bash").
+  // Verify the command text is rendered in the tool call block (not just the tool name).
   await expect(
-    page.locator(".tool-call", { hasText: "Bash" }),
+    page.locator(".tool-call", { hasText: toolName }),
   ).toContainText("echo hello-from-test", { timeout });
 
   // Verify the command output appears in the tool result.

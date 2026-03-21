@@ -65,8 +65,9 @@ test("tool result with Bash output renders correctly", async ({ page, agentType 
   await enterSession(page);
   await sendMessage(page, "Please run command echo tool-result-test");
 
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
   await expect(
-    page.locator(".tool-name", { hasText: "Bash" }),
+    page.locator(".tool-name", { hasText: toolName }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   await expect(

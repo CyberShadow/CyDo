@@ -12,6 +12,20 @@ import { Markdown } from "./Markdown";
 
 const CYDO_PREFIX = "mcp__cydo__";
 
+/** Tool names that represent shell command execution across agents/formats. */
+const shellToolNames = new Set([
+  "Bash",             // Claude Code
+  "commandExecution", // Codex live
+  "local_shell_call", // Codex rollout (OpenAI Responses API format)
+  "exec_command",     // Codex rollout (function_call format)
+]);
+
+/** Tool names that represent file write operations across agents/formats. */
+const fileWriteToolNames = new Set([
+  "Write",      // Claude Code
+  "fileChange", // Codex live
+]);
+
 function getDisplayName(name: string): string {
   return name.startsWith(CYDO_PREFIX) ? name.slice(CYDO_PREFIX.length) : name;
 }
@@ -620,19 +634,30 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
-function BashInput({ input }: { input: Record<string, unknown> }) {
-  const command = input.command as string;
-  const tokens = useHighlight(command, "bash");
+function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
+  // Different Codex formats use different field names for the command:
+  //   Bash/commandExecution/local_shell_call: "command"
+  //   exec_command: "cmd"
+  const command =
+    typeof input.command === "string"
+      ? input.command
+      : typeof input.cmd === "string"
+        ? input.cmd
+        : null;
+  const tokens = useHighlight(command ?? "", "bash");
+  const consumedKeys = new Set(["command", "cmd", "description"]);
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
-    if (k !== "command" && k !== "description") remaining[k] = v;
+    if (!consumedKeys.has(k)) remaining[k] = v;
   }
 
   return formatGenericInput(
     remaining,
-    <pre class="write-content">
-      {tokens ? renderTokenLines(tokens) : command}
-    </pre>,
+    command ? (
+      <pre class="write-content">
+        {tokens ? renderTokenLines(tokens) : command}
+      </pre>
+    ) : undefined,
   );
 }
 
@@ -1004,6 +1029,9 @@ const knownResultFields: Record<string, Set<string>> = {
     "persistedOutputPath",
     "persistedOutputSize",
   ]),
+  commandExecution: new Set([]),
+  local_shell_call: new Set([]),
+  exec_command: new Set([]),
   Read: new Set(["type", "file"]),
   Edit: new Set([
     "filePath",
@@ -1021,6 +1049,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "originalFile",
     "structuredPatch",
   ]),
+  fileChange: new Set([]),
   Glob: new Set(["filenames", "numFiles", "truncated", "durationMs"]),
   Grep: new Set([
     "mode",
@@ -1152,7 +1181,7 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (name === "Write" && filePath) {
+  if (fileWriteToolNames.has(name) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
   }
   if (name === "Read" && filePath) {
@@ -1215,7 +1244,7 @@ function getHeaderSubtitle(
       </a>
     );
   }
-  if (name === "Bash" && typeof input.description === "string") {
+  if (shellToolNames.has(name) && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
   if (name === "Task" && typeof input.description === "string") {
@@ -1312,7 +1341,7 @@ function formatInput(
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return <EditInput input={input} result={result} />;
   }
-  if (name === "Write" && "file_path" in input && "content" in input) {
+  if (fileWriteToolNames.has(name) && "file_path" in input && "content" in input) {
     return <WriteInput input={input} />;
   }
   if (
@@ -1346,8 +1375,8 @@ function formatInput(
       typeof prompt === "string" ? <Markdown text={prompt} /> : undefined,
     );
   }
-  if (name === "Bash" && typeof input.command === "string") {
-    return <BashInput input={input} />;
+  if (shellToolNames.has(name) && (typeof input.command === "string" || typeof input.cmd === "string")) {
+    return <ShellCommandInput input={input} />;
   }
   if (name === "Read" && typeof input.file_path === "string") {
     const { file_path, offset, limit, ...remaining } = input;
@@ -1401,6 +1430,26 @@ function formatInput(
   return formatGenericInput(input);
 }
 
+/**
+ * Parse Codex exec_command output format: key-value metadata lines followed
+ * by "Output:\n" and the actual command output. Returns just the output
+ * portion, or the original string if the marker is not found.
+ */
+function parseExecCommandOutput(text: string): string {
+  const outputMarker = text.indexOf("Output:\n");
+  if (outputMarker === -1) return text;
+  return text.slice(outputMarker + "Output:\n".length);
+}
+
+function ExecCommandResult({ content }: { content: string }) {
+  const output = parseExecCommandOutput(content);
+  return (
+    <pre class="tool-result">
+      {hasAnsi(output) ? renderAnsi(output) : output}
+    </pre>
+  );
+}
+
 function renderResultContent(
   content: ToolResultContent | null | undefined,
   isError?: boolean,
@@ -1430,7 +1479,11 @@ function renderResultContent(
 const defaultExpandedTools = new Set([
   "Edit",
   "Write",
+  "fileChange",
   "Bash",
+  "commandExecution",
+  "local_shell_call",
+  "exec_command",
   "ExitPlanMode",
   "TodoWrite",
   "AskUserQuestion",
@@ -1443,6 +1496,9 @@ const defaultExpandedTools = new Set([
 ]);
 const defaultExpandedResults = new Set([
   "Bash",
+  "commandExecution",
+  "local_shell_call",
+  "exec_command",
   "Task",
   "WebSearch",
   "WebFetch",
@@ -1487,6 +1543,11 @@ export function ToolCall({
     result &&
     !result.isError &&
     typeof result.content === "string";
+  const useExecCommandResult =
+    name === "exec_command" &&
+    result &&
+    !result.isError &&
+    typeof result.content === "string";
   const useWebSearchResult =
     name === "WebSearch" &&
     result &&
@@ -1515,7 +1576,7 @@ export function ToolCall({
         <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
-        {(name === "Edit" || name === "Write") && filePath && onViewFile && (
+        {(name === "Edit" || fileWriteToolNames.has(name)) && filePath && onViewFile && (
           <button
             class="tool-view-file"
             onClick={(e) => {
@@ -1587,6 +1648,8 @@ export function ToolCall({
                     );
                   })}
                 </div>
+              ) : useExecCommandResult ? (
+                <ExecCommandResult content={result.content as string} />
               ) : useReadHighlight ? (
                 <ReadResult
                   content={result.content as string}

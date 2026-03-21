@@ -371,7 +371,7 @@ function trackFileEdits(
       if (!toolUse) continue;
 
       const toolName = toolUse.name;
-      if (!toolName || (toolName !== "Edit" && toolName !== "Write")) break;
+      if (!toolName || (toolName !== "Edit" && toolName !== "Write" && toolName !== "fileChange")) break;
 
       const input = toolUse.input ?? {};
       const filePath =
