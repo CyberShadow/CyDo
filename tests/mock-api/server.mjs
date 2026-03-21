@@ -260,6 +260,31 @@ function matchPattern(userText) {
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
 
+  // Task-creation patterns must come before "run command" because a task prompt
+  // like "call 2 tasks research run command sleep 10" contains "run command" as
+  // a substring, which would otherwise match the shell pattern first.
+
+  // "call N tasks <type> <prompt>" → MCP Task tool call (create multiple sub-tasks)
+  match = userText.match(/call (\d+) tasks (\S+) (.*)/is);
+  if (match) {
+    const count = parseInt(match[1]);
+    const type = match[2].trim();
+    const prompt = match[3].trim();
+    const tasks = [];
+    for (let i = 0; i < count; i++) {
+      tasks.push({ task_type: type, prompt, description: `Test task ${i + 1}` });
+    }
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: { tasks },
+    };
+  }
+
+  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
+  match = userText.match(/call task (\S+) (.*)/is);
+  if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim() };
@@ -275,10 +300,6 @@ function matchPattern(userText) {
   // "call switchmode <continuation>" → MCP SwitchMode tool call
   match = userText.match(/call switchmode (\S+)/i);
   if (match) return { type: "tool_call", name: "mcp__cydo__SwitchMode", input: { continuation: match[1] } };
-
-  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
-  match = userText.match(/call task (\S+) (.*)/is);
-  if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
 
   // "call handoff <continuation> <prompt>" → MCP Handoff tool call
   match = userText.match(/call handoff (\S+) (.*)/is);

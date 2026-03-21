@@ -357,8 +357,9 @@ test("sub-task result delivered to parent after backend restart", async ({
 
   // Wait for the sub-task's shell tool call to appear — this confirms the sub-task
   // is actively running "sleep 10" and is in-flight at kill time.
+  // Use :visible to avoid strict-mode errors from hidden tool-calls in other tasks.
   await expect(
-    page.locator(".tool-call", { hasText: "sleep 10" }),
+    page.locator(".tool-call:visible", { hasText: "sleep 10" }),
   ).toBeVisible({ timeout: 30_000 });
 
   // Kill and restart the backend while the sub-task is still running
@@ -385,6 +386,74 @@ test("sub-task result delivered to parent after backend restart", async ({
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
   ).toBeVisible({ timeout: 60_000 });
+});
+
+test("waiting parent receives batch results after restart", async ({
+  page,
+  restartableBackend,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "codex", "claude-only test");
+
+  // Create a parent that spawns 2 sub-tasks, both running slow commands.
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await input.fill("call 2 tasks research run command sleep 10");
+  const sendBtn = page.locator(".btn-send:visible").first();
+  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await sendBtn.click();
+
+  // Wait for parent + 2 children to appear in the sidebar.
+  const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
+  await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
+
+  // Navigate to each child and verify it's in-flight (running sleep 10).
+  // Children have higher tids and appear first (newest-first sort).
+  // Use :visible to avoid strict-mode errors from hidden tool-calls in other tasks.
+  await allTaskItems.nth(0).click();
+  await expect(
+    page.locator(".tool-call:visible", { hasText: "sleep 10" }),
+  ).toBeVisible({ timeout: 15_000 });
+  await allTaskItems.nth(1).click();
+  await expect(
+    page.locator(".tool-call:visible", { hasText: "sleep 10" }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // Restart while both sub-tasks are still running.
+  await restartableBackend.restart();
+  await page.goto("/");
+
+  // Navigate to the parent task (lowest tid → last in desc-sorted sidebar).
+  const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
+  await expect(taskItems.last()).toBeVisible({ timeout: 15_000 });
+  await taskItems.last().click();
+
+  // Resume if needed.
+  const resumeBtn = page.locator(".btn-resume");
+  const isResumeVisible = await resumeBtn
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
+  if (isResumeVisible) {
+    await resumeBtn.click();
+    await expect(page.locator(".btn-banner-stop")).toBeVisible({
+      timeout: 15_000,
+    });
+  }
+
+  // Wait for the parent to respond to the batch delivery.
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "Done.",
+    }),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // Allow time for any spurious additional messages.
+  await page.waitForTimeout(3_000);
+
+  // With the fix: 2 assistant messages (pre-restart task call + batch "Done.").
+  // Without the fix: 4+ messages (task call + nudge "Done." + 2 per-child "Done.").
+  await expect(page.locator(".message.assistant-message")).toHaveCount(2);
 });
 
 test("waiting parent with completed children gets results after restart", async ({

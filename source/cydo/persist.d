@@ -73,6 +73,8 @@ struct Persistence
 			"    PRIMARY KEY (parent_tid, child_tid)" ~
 			");" ~
 			"UPDATE tasks SET status = 'alive' WHERE status = 'active';",
+			// Migration 12: persist sub-task result text for batch delivery after restart.
+			"ALTER TABLE tasks ADD COLUMN result_text TEXT DEFAULT '';",
 		]);
 	}
 
@@ -190,6 +192,7 @@ struct Persistence
 		string agentType;
 		bool archived;
 		string draft;
+		string resultText;
 	}
 
 	TaskRow[] loadTasks()
@@ -197,10 +200,11 @@ struct Persistence
 		TaskRow[] result;
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
-			int hasWorktree, string title, string status, string agentType, int archived, string draft;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,'') FROM tasks".iterate())
+			int hasWorktree, string title, string status, string agentType, int archived, string draft,
+			string resultText;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,'') FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0, draft);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0, draft, resultText);
 		}
 		return result;
 	}
@@ -208,6 +212,11 @@ struct Persistence
 	void setDraft(int tid, string draft)
 	{
 		db.stmt!"UPDATE tasks SET draft = ? WHERE tid = ?".exec(draft, tid);
+	}
+
+	void setResultText(int tid, string resultText)
+	{
+		db.stmt!"UPDATE tasks SET result_text = ? WHERE tid = ?".exec(resultText, tid);
 	}
 }
 

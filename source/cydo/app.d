@@ -173,6 +173,7 @@ class App : ToolsBackend
 			td.status = row.status;
 			td.archived = row.archived;
 			td.draft = row.draft;
+			td.resultText = row.resultText;
 			td.titleGenDone = row.title.length > 0;
 			tasks[row.tid] = move(td);
 		}
@@ -1605,6 +1606,7 @@ class App : ToolsBackend
 
 			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
 			persistence.setStatus(tid, tasks[tid].status);
+			persistence.setResultText(tid, tasks[tid].resultText);
 
 			// Read output file content (if any) — prefer it over stream result text.
 			// The stream result text (agent's final message) is kept as the summary.
@@ -1629,29 +1631,26 @@ class App : ToolsBackend
 			}
 			else if (auto parentTidPtr = tid in taskDeps)
 			{
-				// Fallback path: post-restart, no promise — deliver via system message
+				// Post-restart path: no promise — batch deliver when all children done
 				auto parentTid = *parentTidPtr;
 				if (parentTid in tasks)
 				{
-					auto taskResult = buildTaskResult(tid);
-					deliverFallbackResult(parentTid, tid, taskResult);
-					persistence.removeTaskDep(parentTid, tid);
-					taskDeps.remove(tid);
-
-					// Check if this was the last pending child
-					bool anyRemaining;
-					foreach (dep; taskDeps)
-						if (dep == parentTid)
+					// Check if ALL children of this parent are completed/failed
+					bool allDone = true;
+					foreach (childTid, depParent; taskDeps)
+					{
+						if (depParent == parentTid && childTid in tasks
+							&& tasks[childTid].status != "completed"
+							&& tasks[childTid].status != "failed")
 						{
-							anyRemaining = true;
+							allDone = false;
 							break;
 						}
-					if (!anyRemaining && tasks[parentTid].status == "waiting")
-					{
-						tasks[parentTid].status = "alive";
-						persistence.setStatus(parentTid, "alive");
-						broadcastTaskUpdate(parentTid);
 					}
+
+					if (allDone)
+						deliverBatchResults(parentTid);
+					// else: wait — remaining children will trigger this check
 				}
 			}
 
@@ -1862,24 +1861,59 @@ class App : ToolsBackend
 		);
 	}
 
-	private void deliverFallbackResult(int parentTid, int childTid, TaskResult result)
+	private void deliverBatchResults(int parentTid)
 	{
 		import ae.utils.json : toJson;
-		import std.conv : to;
+		import std.array : join;
 
 		if (parentTid !in tasks)
 			return;
+
 		auto td = &tasks[parentTid];
 		if (td.session is null || !td.session.alive)
+			return;  // Can't deliver — leave deps for next restart
+
+		auto children = childrenOf(parentTid);
+		if (children.length == 0)
 			return;
 
-		auto resultJson = toJson(result);
+		string[] resultJsons;
+		foreach (childTid; children)
+		{
+			if (childTid !in tasks)
+				continue;
+			resultJsons ~= toJson(buildTaskResult(childTid));
+		}
+
+		if (resultJsons.length == 0)
+			return;
+
+		// Deliver single batch message
+		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
 		auto msg =
-			"[SYSTEM: Sub-task " ~ to!string(childTid) ~ " completed]\n\n"
-			~ "Result delivered after session interruption:\n\n"
-			~ "<task_results>\n[" ~ resultJson ~ "]\n</task_results>\n\n"
-			~ "Process this result as if it was returned normally by the Task tool.";
+			"[SYSTEM: Sub-task results]\n\n"
+			~ "The following sub-task(s) completed while your session was interrupted. "
+			~ "Their results are provided below exactly as they would have been "
+			~ "returned by the Task tool.\n\n"
+			~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
+			~ "Continue from where you left off. Process these results as if they "
+			~ "were returned normally by the Task tool.";
 		sendTaskMessage(parentTid, msg);
+
+		// Clean up all deps
+		foreach (childTid; children)
+		{
+			persistence.removeTaskDep(parentTid, childTid);
+			taskDeps.remove(childTid);
+		}
+
+		// Transition parent
+		if (td.status == "waiting")
+		{
+			td.status = "alive";
+			persistence.setStatus(parentTid, "alive");
+			broadcastTaskUpdate(parentTid);
+		}
 	}
 
 	private void resumeInFlightTasks()
@@ -1993,97 +2027,14 @@ class App : ToolsBackend
 
 	private void resumeAndDeliverResults(int tid)
 	{
-		import ae.utils.json : toJson;
-		import std.array : join;
-
-		resumeTask(tid);
-
-		auto children = childrenOf(tid);
-		if (children.length == 0)
-			return;
-
-		string[] resultJsons;
-		foreach (childTid; children)
-		{
-			if (childTid !in tasks)
-				continue;
-			resultJsons ~= toJson(buildTaskResult(childTid));
-			persistence.removeTaskDep(tid, childTid);
-			taskDeps.remove(childTid);
-		}
-
-		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto msg =
-			"[SYSTEM: Session resumed after backend restart]\n\n"
-			~ "The following sub-task(s) completed while your session was interrupted. "
-			~ "Their results are provided below exactly as they would have been returned by the Task tool.\n\n"
-			~ "<task_results>\n"
-			~ resultsArray ~ "\n"
-			~ "</task_results>\n\n"
-			~ "Continue from where you left off. Process these results as if they were returned normally by the Task tool.";
-
-		// Defer message delivery to the event loop — resumeInFlightTasks runs
-		// during start() before socketManager.loop(), so stdin writes would
-		// be buffered but never flushed until the event loop starts processing I/O.
 		import ae.net.asockets : onNextTick;
-		socketManager.onNextTick(() { sendTaskMessage(tid, msg); });
+		resumeTask(tid);
+		socketManager.onNextTick(() { deliverBatchResults(tid); });
 	}
 
 	private void resumeWaitingTask(int tid)
 	{
-		import ae.utils.json : toJson;
-		import std.array : join;
-		import std.conv : to;
-
 		resumeTask(tid);
-
-		auto children = childrenOf(tid);
-		if (children.length == 0)
-			return;
-
-		string[] completedResultJsons;
-		int[] pendingChildTids;
-
-		foreach (childTid; children)
-		{
-			if (childTid !in tasks)
-				continue;
-			auto childStatus = tasks[childTid].status;
-			if (childStatus == "completed" || childStatus == "failed")
-			{
-				completedResultJsons ~= toJson(buildTaskResult(childTid));
-				persistence.removeTaskDep(tid, childTid);
-				taskDeps.remove(childTid);
-			}
-			else
-				pendingChildTids ~= childTid;
-		}
-
-		string msg = "[SYSTEM: Session resumed after backend restart]\n\n";
-
-		if (completedResultJsons.length > 0)
-		{
-			auto resultsArray = "[" ~ completedResultJsons.join(",") ~ "]";
-			msg ~= "The following sub-task(s) completed while your session was interrupted:\n\n"
-				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n";
-		}
-
-		if (pendingChildTids.length > 0)
-		{
-			msg ~= "Sub-task(s) still running: ";
-			foreach (i, cid; pendingChildTids)
-			{
-				if (i > 0) msg ~= ", ";
-				msg ~= to!string(cid);
-			}
-			msg ~= ". Results will be delivered when they complete.\n\n";
-		}
-
-		msg ~= "Continue from where you left off. Process completed results as if they were returned normally by the Task tool.";
-
-		// Defer to event loop (same reason as resumeAndDeliverResults).
-		import ae.net.asockets : onNextTick;
-		socketManager.onNextTick(() { sendTaskMessage(tid, msg); });
 	}
 
 	/// Send data to all clients subscribed to the given task.
