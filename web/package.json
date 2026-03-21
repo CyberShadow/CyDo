@@ -13,6 +13,7 @@
     "dompurify": "^3.3.3",
     "htmldiff-js": "^1.0.5",
     "marked": "^17.0.3",
+    "mermaid": "^11.13.0",
     "preact": "^10.25.4",
     "preact-iso": "^2.11.1",
     "shiki": "^4.0.1"

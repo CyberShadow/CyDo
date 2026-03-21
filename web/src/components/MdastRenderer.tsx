@@ -1,5 +1,7 @@
 import { h, Fragment, type VNode } from "preact";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useHighlight, renderTokens } from "../highlight";
+import { useCurrentTheme } from "../useTheme";
 
 import type {
   Root,
@@ -42,6 +44,9 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
         </p>
       );
     case "code":
+      if (node.lang === "mermaid") {
+        return <MermaidBlock code={node.value} />;
+      }
       return <CodeBlock lang={node.lang ?? null} code={node.value} />;
     case "blockquote":
       return (
@@ -237,6 +242,75 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
       }
       return null;
   }
+}
+
+// Mermaid diagram — lazy-loads the mermaid library on first use
+let mermaidPromise: Promise<typeof import("mermaid")> | null = null;
+let mermaidCurrentTheme: string | null = null;
+
+function getMermaid(theme: "default" | "dark") {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then((m) => {
+      m.default.initialize({ startOnLoad: false, theme });
+      mermaidCurrentTheme = theme;
+      return m;
+    });
+  } else if (mermaidCurrentTheme !== theme) {
+    mermaidPromise = mermaidPromise.then((m) => {
+      m.default.initialize({ startOnLoad: false, theme });
+      mermaidCurrentTheme = theme;
+      return m;
+    });
+  }
+  return mermaidPromise;
+}
+
+function MermaidBlock({ code }: { code: string }): VNode {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cancelledRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const appTheme = useCurrentTheme();
+  const mermaidTheme = appTheme === "light" ? "default" : "dark";
+
+  useEffect(() => {
+    if (!containerRef.current || !code.trim()) return;
+    cancelledRef.current = false;
+    const id = `mermaid-${Math.random().toString(36).slice(2, 9)}`;
+
+    void getMermaid(mermaidTheme).then(async (m) => {
+      if (cancelledRef.current) return;
+      try {
+        const { svg } = await m.default.render(id, code);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
+        if (!cancelledRef.current && containerRef.current) {
+          containerRef.current.innerHTML = svg;
+          setError(null);
+        }
+      } catch (e) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
+        if (!cancelledRef.current) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    });
+
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [code, mermaidTheme]);
+
+  if (error) {
+    return (
+      <div class="mermaid-error">
+        <pre class="language-mermaid">
+          <code>{code}</code>
+        </pre>
+        <div class="mermaid-error-msg">{error}</div>
+      </div>
+    );
+  }
+
+  return <div class="mermaid-diagram" ref={containerRef} />;
 }
 
 // Code block with Shiki syntax highlighting
