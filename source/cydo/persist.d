@@ -63,12 +63,16 @@ struct Persistence
 			"ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
 			// Migration 10: draft text for unsent input
 			"ALTER TABLE tasks ADD COLUMN draft TEXT NOT NULL DEFAULT '';",
-			// Migration 11: task dependency tracking for resumable sub-task awaits
+			// Migration 11: task dependency tracking for resumable sub-task awaits.
+			// Also fix legacy tasks left with status "active" from before status
+			// was persisted — they should be "alive" (idle) so they don't get
+			// nudged on restart.
 			"CREATE TABLE task_deps (" ~
 			"    parent_tid INTEGER NOT NULL," ~
 			"    child_tid INTEGER NOT NULL," ~
 			"    PRIMARY KEY (parent_tid, child_tid)" ~
-			");",
+			");" ~
+			"UPDATE tasks SET status = 'alive' WHERE status = 'active';",
 		]);
 	}
 
