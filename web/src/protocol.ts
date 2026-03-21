@@ -167,6 +167,66 @@ export interface RateLimitEventMessage {
   [key: string]: unknown;
 }
 
+export interface ItemStartedEvent {
+  type: "item/started";
+  item_id: string;
+  item_type: "text" | "thinking" | "tool_use" | "user_message";
+  name?: string;
+  input?: Record<string, unknown>;
+  text?: string;
+  is_replay?: boolean;
+  is_synthetic?: boolean;
+  is_meta?: boolean;
+  is_steering?: boolean;
+  pending?: boolean;
+  uuid?: string;
+  isCompactSummary?: boolean;
+  parent_tool_use_id?: string;
+  is_sidechain?: boolean;
+  _extras?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ItemDeltaEvent {
+  type: "item/delta";
+  item_id: string;
+  delta_type: "text_delta" | "thinking_delta" | "input_json_delta" | "output_delta";
+  content: string;
+  [key: string]: unknown;
+}
+
+export interface ItemCompletedEvent {
+  type: "item/completed";
+  item_id: string;
+  text?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  is_error?: boolean;
+  _extras?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ItemResultEvent {
+  type: "item/result";
+  item_id: string;
+  content: string | UserContentBlock[];
+  is_error?: boolean;
+  _extras?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface TurnStopEvent {
+  type: "turn/stop";
+  model?: string;
+  usage?: Usage;
+  parent_tool_use_id?: string;
+  is_sidechain?: boolean;
+  is_api_error?: boolean;
+  uuid?: string;
+  _extras?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface StreamBlockStart {
   type: "stream/block_start";
   index: number;
@@ -275,6 +335,11 @@ export type AgnosticEvent =
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
+  | ItemStartedEvent
+  | ItemDeltaEvent
+  | ItemCompletedEvent
+  | ItemResultEvent
+  | TurnStopEvent
   | StreamBlockStart
   | StreamBlockDelta
   | StreamBlockStop

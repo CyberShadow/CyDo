@@ -62,6 +62,8 @@ export interface DisplayMessage {
   };
   // System status
   statusText?: string;
+  // Monotonic counter for assigning creation order to streaming blocks
+  nextCreationOrder?: number;
   // Original wire-protocol message(s) for "view source"
   rawSource?: unknown;
   /** Backend history sequence number(s) for on-demand raw source fetching. */
@@ -99,10 +101,14 @@ export interface TrackedFile {
 }
 
 export interface StreamingBlock {
-  index: number;
-  type: string;
-  text: string;
-  name?: string;
+  index: number;      // kept for backward compat with stream/block_* protocol
+  itemId: string;     // ID-based lookup for item/* protocol
+  type: string;       // "text" | "tool_use" | "thinking"
+  text: string;       // accumulated text/input_json so far
+  name?: string;      // tool name for tool_use blocks
+  input?: unknown;    // initial input (from item/started, for tool_use)
+  output?: string;    // accumulated output (for output_delta)
+  creationOrder: number; // monotonic counter for preserving creation order
 }
 
 export interface SessionInfo {

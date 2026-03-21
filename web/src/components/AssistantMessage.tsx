@@ -3,6 +3,7 @@ import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
+import { hasAnsi, renderAnsi } from "../ansi";
 
 /** Best-effort parse of an incomplete JSON string by closing open delimiters.
  *
@@ -208,7 +209,7 @@ export function AssistantMessage({
         </div>
       )}
       {message.streamingBlocks?.map((block) => (
-        <div key={`s${block.index}`} class={`content-block ${block.type}`}>
+        <div key={block.itemId} class={`content-block ${block.type}`}>
           {block.type === "thinking" && (
             <Markdown text={block.text} class="thinking-text" />
           )}
@@ -219,11 +220,20 @@ export function AssistantMessage({
             </div>
           )}
           {block.type === "tool_use" && block.name && (
-            <ToolCall
-              name={block.name}
-              input={tryParsePartialJson(block.text)}
-              onViewFile={onViewFile}
-            />
+            <Fragment>
+              <ToolCall
+                name={block.name}
+                input={tryParsePartialJson(block.text)}
+                onViewFile={onViewFile}
+              />
+              {block.output && (
+                <pre class="tool-result streaming-output">
+                  {hasAnsi(block.output)
+                    ? renderAnsi(block.output)
+                    : block.output}
+                </pre>
+              )}
+            </Fragment>
           )}
           {block.type === "tool_use" && !block.name && (
             <div class="tool-streaming">

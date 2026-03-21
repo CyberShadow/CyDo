@@ -27,6 +27,11 @@ import type {
   StreamBlockStop,
   UserEchoMessage,
   UserContentBlock,
+  ItemStartedEvent,
+  ItemDeltaEvent,
+  ItemCompletedEvent,
+  ItemResultEvent,
+  TurnStopEvent,
 } from "./protocol";
 
 function getExtras(
@@ -678,6 +683,7 @@ function getStreamingMessage(s: SessionState): {
     content: [],
     toolResults: new Map(),
     streamingBlocks: [],
+    nextCreationOrder: 0,
   };
   messages.push(placeholder);
   return { messages, msgIdx: messages.length - 1 };
@@ -689,13 +695,17 @@ export function reduceStreamBlockStart(
 ): SessionState {
   const { messages, msgIdx } = getStreamingMessage(s);
   const msg = messages[msgIdx]!;
+  const creationOrder = msg.nextCreationOrder ?? msg.streamingBlocks?.length ?? 0;
+  msg.nextCreationOrder = creationOrder + 1;
   msg.streamingBlocks = [
     ...(msg.streamingBlocks || []),
     {
       index: event.index,
+      itemId: String(event.index),
       type: event.content_block.type,
       text: "",
       name: event.content_block.name,
+      creationOrder,
     },
   ];
   bumpNestedVersion(messages, msg.parentToolUseId);
@@ -749,6 +759,292 @@ export function reduceStreamTurnStop(s: SessionState): SessionState {
       const messages = s.messages.slice();
       messages[i] = { ...messages[i]!, streamingBlocks: undefined };
       bumpNestedVersion(messages, messages[i]!.parentToolUseId);
+      return { ...s, messages };
+    }
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Item-based protocol handlers (item/started, item/delta, item/completed,
+// item/result, turn/stop) — new event types that carry IDs instead of indices.
+// ---------------------------------------------------------------------------
+
+function tryParseJson(text: string): Record<string, unknown> {
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function reduceItemStartedUserMessage(
+  s: SessionState,
+  event: ItemStartedEvent,
+): SessionState {
+  const text = event.text ?? "";
+
+  let state = s;
+
+  if (event.is_replay) {
+    state = {
+      ...state,
+      messages: state.messages.filter(
+        (m) => !(m.pending && m.type === "user"),
+      ),
+    };
+  }
+
+  if (event.pending) {
+    const id = `user-echo-${++state.msgIdCounter}`;
+    const echoMsg: DisplayMessage = {
+      id,
+      type: "user" as const,
+      content: [{ type: "text" as const, text }],
+      pending: true,
+      isSidechain: event.is_sidechain,
+      isSynthetic: event.is_synthetic || undefined,
+      isMeta: event.is_meta || undefined,
+      isSteering: event.is_steering || undefined,
+      isCompactSummary: event.isCompactSummary || undefined,
+      parentToolUseId: event.parent_tool_use_id,
+      extraFields: getExtras(event as Record<string, unknown>),
+    };
+    const messages = event.is_meta
+      ? [...state.messages, echoMsg]
+      : insertBeforeStreaming(state.messages, echoMsg);
+    bumpNestedVersion(messages, event.parent_tool_use_id);
+    return { ...state, messages };
+  }
+
+  if (text.trim().length > 0) {
+    const id = `user-echo-${++state.msgIdCounter}`;
+    const echoMsg: DisplayMessage = {
+      id,
+      type: "user" as const,
+      content: [{ type: "text" as const, text }],
+      isSidechain: event.is_sidechain,
+      isSynthetic: event.is_synthetic || undefined,
+      isMeta: event.is_meta || undefined,
+      isSteering: event.is_steering || undefined,
+      isCompactSummary: event.isCompactSummary || undefined,
+      parentToolUseId: event.parent_tool_use_id,
+      extraFields: getExtras(event as Record<string, unknown>),
+    };
+    const filtered = state.messages.filter(
+      (m) => !(m.pending && m.type === "user"),
+    );
+    const messages = event.is_meta
+      ? [...filtered, echoMsg]
+      : insertBeforeStreaming(filtered, echoMsg);
+    bumpNestedVersion(messages, event.parent_tool_use_id);
+    state = { ...state, messages };
+  }
+
+  // Draft recovery (same as message/user handler)
+  if (state.preReloadDrafts && state.preReloadDrafts.length > 0 && text) {
+    if (state.preReloadDrafts.includes(text)) {
+      state = {
+        ...state,
+        confirmedDuringReplay: [
+          ...(state.confirmedDuringReplay ?? []),
+          text,
+        ],
+      };
+    }
+  }
+
+  return state;
+}
+
+export function reduceItemStarted(
+  s: SessionState,
+  event: ItemStartedEvent,
+): SessionState {
+  if (event.item_type === "user_message") {
+    return reduceItemStartedUserMessage(s, event);
+  }
+
+  const { messages, msgIdx } = getStreamingMessage(s);
+  const msg = messages[msgIdx]!;
+
+  const creationOrder = msg.nextCreationOrder ?? 0;
+  msg.nextCreationOrder = creationOrder + 1;
+  msg.streamingBlocks = [
+    ...(msg.streamingBlocks || []),
+    {
+      index: -1,
+      itemId: event.item_id,
+      type: event.item_type,
+      text: event.text ?? "",
+      name: event.name,
+      input: event.input,
+      creationOrder,
+    },
+  ];
+
+  if (event.parent_tool_use_id) {
+    msg.parentToolUseId = event.parent_tool_use_id;
+    bumpNestedVersion(messages, event.parent_tool_use_id);
+  }
+
+  return { ...s, messages };
+}
+
+export function reduceItemDelta(
+  s: SessionState,
+  event: ItemDeltaEvent,
+): SessionState {
+  const targetIdx = findStreamingMsg(s.messages);
+  if (targetIdx < 0) return s;
+  const messages = s.messages.slice();
+  const msg = { ...messages[targetIdx]! };
+  messages[targetIdx] = msg;
+  msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
+    if (b.itemId !== event.item_id) return b;
+    if (event.delta_type === "output_delta") {
+      return { ...b, output: (b.output ?? "") + event.content };
+    }
+    return { ...b, text: b.text + event.content };
+  });
+  bumpNestedVersion(messages, msg.parentToolUseId);
+  return { ...s, messages };
+}
+
+export function reduceItemCompleted(
+  s: SessionState,
+  event: ItemCompletedEvent,
+): SessionState {
+  const targetIdx = findStreamingMsg(s.messages);
+  if (targetIdx < 0) return s;
+
+  const messages = s.messages.slice();
+  const msg = { ...messages[targetIdx]! };
+  messages[targetIdx] = msg;
+
+  const blockIdx = msg.streamingBlocks!.findIndex(
+    (b) => b.itemId === event.item_id,
+  );
+  if (blockIdx < 0) return s;
+
+  const block = msg.streamingBlocks![blockIdx]!;
+  const { creationOrder } = block;
+
+  let contentBlock: import("./protocol").AssistantContentBlock;
+  if (block.type === "tool_use") {
+    contentBlock = {
+      type: "tool_use",
+      id: event.item_id,
+      name: block.name,
+      input: event.input ?? tryParseJson(block.text),
+      ...(event._extras ? { _extras: event._extras } : {}),
+    };
+  } else {
+    contentBlock = {
+      type: block.type,
+      text: event.text ?? block.text,
+      ...(event._extras ? { _extras: event._extras } : {}),
+    };
+  }
+
+  // Tag with creation order so future insertions maintain order
+  (contentBlock as Record<string, unknown>)._creationOrder = creationOrder;
+
+  // Find insertion position based on creationOrder
+  let insertIdx = msg.content.length;
+  for (let i = 0; i < msg.content.length; i++) {
+    const existingOrder = (msg.content[i] as Record<string, unknown>)
+      ._creationOrder as number | undefined;
+    if (existingOrder != null && existingOrder > creationOrder) {
+      insertIdx = i;
+      break;
+    }
+  }
+
+  msg.content = [
+    ...msg.content.slice(0, insertIdx),
+    contentBlock,
+    ...msg.content.slice(insertIdx),
+  ];
+
+  // Remove from streamingBlocks
+  msg.streamingBlocks = msg.streamingBlocks!.filter(
+    (b) => b.itemId !== event.item_id,
+  );
+
+  bumpNestedVersion(messages, msg.parentToolUseId);
+  return { ...s, messages };
+}
+
+export function reduceItemResult(
+  s: SessionState,
+  event: ItemResultEvent,
+): SessionState {
+  const messages = s.messages.slice();
+  let parentMsgIdx = -1;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.type !== "assistant") continue;
+    if (m.content.some((c) => c.type === "tool_use" && c.id === event.item_id)) {
+      parentMsgIdx = i;
+      break;
+    }
+  }
+
+  if (parentMsgIdx < 0) return s;
+
+  const parentMsg = {
+    ...messages[parentMsgIdx]!,
+    toolResults: new Map(messages[parentMsgIdx]!.toolResults),
+  };
+  parentMsg.toolResults.set(event.item_id, {
+    toolUseId: event.item_id,
+    content: event.content as import("./types").ToolResultContent,
+    isError: event.is_error,
+  });
+  messages[parentMsgIdx] = parentMsg;
+
+  bumpNestedVersion(messages, parentMsg.parentToolUseId);
+
+  let state = { ...s, messages };
+  state = trackFileEdits(state, [
+    {
+      tool_use_id: event.item_id,
+      content: event.content as import("./types").ToolResultContent,
+      is_error: event.is_error,
+    },
+  ]);
+  return state;
+}
+
+export function reduceTurnStop(
+  s: SessionState,
+  event: TurnStopEvent,
+): SessionState {
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i]!;
+    if (m.type === "assistant" && m.streamingBlocks !== undefined) {
+      const messages = s.messages.slice();
+      const updated = { ...m };
+      messages[i] = updated;
+
+      if (event.model) updated.model ??= event.model;
+      if (event.usage) updated.usage = event.usage;
+      if (event.parent_tool_use_id)
+        updated.parentToolUseId ??= event.parent_tool_use_id;
+      if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
+
+      // Only clear streamingBlocks if empty — preserves uncompleted items
+      if (updated.streamingBlocks!.length === 0) {
+        updated.streamingBlocks = undefined;
+      }
+
+      if (updated.parentToolUseId) {
+        bumpNestedVersion(messages, updated.parentToolUseId);
+      }
+
       return { ...s, messages };
     }
   }
@@ -867,6 +1163,21 @@ export function reduceMessage(
         msg,
       );
     }
+
+    case "item/started":
+      return reduceItemStarted(s, msg);
+
+    case "item/delta":
+      return reduceItemDelta(s, msg);
+
+    case "item/completed":
+      return reduceItemCompleted(s, msg);
+
+    case "item/result":
+      return reduceItemResult(s, msg);
+
+    case "turn/stop":
+      return reduceTurnStop(s, msg);
 
     case "stream/block_start":
       return reduceStreamBlockStart(s, msg);
