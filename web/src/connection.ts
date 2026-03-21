@@ -63,7 +63,11 @@ export class Connection {
               raw.unconfirmedUserEvent as AgnosticEvent,
             );
           } else if ("event" in raw) {
-            this.onTaskMessage?.(raw.tid, raw.event as AgnosticEvent);
+            const event = raw.event as AgnosticEvent;
+            if (typeof raw.seq === "number") {
+              (event as Record<string, unknown>)._seq = raw.seq;
+            }
+            this.onTaskMessage?.(raw.tid, event);
           } else {
             console.warn("Unknown task envelope:", raw);
           }

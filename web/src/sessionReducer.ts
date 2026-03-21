@@ -44,6 +44,11 @@ function getExtras(
   return undefined;
 }
 
+function getSeq(msg: unknown): number | undefined {
+  const seq = (msg as Record<string, unknown>)._seq;
+  return typeof seq === "number" ? seq : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Individual reducers
 // ---------------------------------------------------------------------------
@@ -82,6 +87,7 @@ export function reduceSystemInit(
     type: "system" as const,
     content: [],
     rawSource: msg,
+    seq: getSeq(msg),
   };
   return {
     ...s,
@@ -120,6 +126,7 @@ export function reduceSystemStatus(
         content: [],
         statusText: msg.status || "clear",
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -156,6 +163,7 @@ export function reduceStopHookSummary(
         type: "system" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -179,6 +187,7 @@ export function reduceCompactBoundary(
           ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
           : undefined,
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -206,6 +215,7 @@ export function reduceTaskLifecycle(
         type: "system" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -225,6 +235,7 @@ export function reduceSummary(
         type: "summary" as const,
         content: [{ type: "text" as const, text: msg.summary || "" }],
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -245,6 +256,7 @@ export function reduceRateLimit(
         content: [],
         rateLimitInfo: msg.rate_limit_info,
         rawSource: msg,
+        seq: getSeq(msg),
       },
     ],
   };
@@ -295,13 +307,22 @@ export function reduceAssistantMessage(
     existingMsg.isSidechain ??= msg.is_sidechain;
     existingMsg.parentToolUseId ??= msg.parent_tool_use_id;
     existingMsg.extraFields ??= getExtras(msg);
-    // Accumulate raw sources
+    // Accumulate raw sources and seq numbers
     const prev = existingMsg.rawSource;
     existingMsg.rawSource = prev
       ? Array.isArray(prev)
         ? [...(prev as unknown[]), msg]
         : [prev, msg]
       : msg;
+    const newSeq = getSeq(msg);
+    if (newSeq != null) {
+      const prevSeq = existingMsg.seq;
+      existingMsg.seq = prevSeq != null
+        ? Array.isArray(prevSeq)
+          ? [...prevSeq, newSeq]
+          : [prevSeq, newSeq]
+        : newSeq;
+    }
     updated[idx] = existingMsg;
     bumpNestedVersion(updated, existingMsg.parentToolUseId);
     return { ...s, messages: updated };
@@ -320,6 +341,7 @@ export function reduceAssistantMessage(
       usage: msg.usage,
       extraFields,
       rawSource: msg,
+      seq: getSeq(msg),
     },
   ];
   bumpNestedVersion(messages, msg.parent_tool_use_id);
@@ -462,6 +484,15 @@ export function reduceUserEcho(
           ? [...(prev as unknown[]), rawMsg]
           : [prev, rawMsg]
         : rawMsg;
+      const newSeq = getSeq(rawMsg);
+      if (newSeq != null) {
+        const prevSeq = msg.seq;
+        msg.seq = prevSeq != null
+          ? Array.isArray(prevSeq)
+            ? [...prevSeq, newSeq]
+            : [prevSeq, newSeq]
+          : newSeq;
+      }
     }
     state = { ...state, messages: updated };
     state = trackFileEdits(state, toolResults);
@@ -487,6 +518,7 @@ export function reduceUserEcho(
       parentToolUseId,
       extraFields: getExtras(rawMsg as Record<string, unknown>),
       rawSource: rawMsg,
+      seq: getSeq(rawMsg),
     };
     // Remove the pending placeholder (the user already sees their message
     // via the placeholder in the correct chronological position).  Use
@@ -550,6 +582,7 @@ export function reduceResultMessage(
         type: "result" as const,
         content: [],
         rawSource: msg,
+        seq: getSeq(msg),
         extraFields: resultExtraFields,
         resultData: {
           subtype: msg.subtype,
@@ -873,6 +906,7 @@ export function reduceMessage(
               },
             ],
             rawSource: msg,
+            seq: getSeq(msg),
           },
         ],
       };

@@ -44,6 +44,13 @@ export default defineConfig({
           proxy.on("proxyReqWs", addAuthHeader);
         },
       },
+      "/api": {
+        target: `${backendProto}://localhost:${backendPort}`,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on("proxyReq", addAuthHeader);
+        },
+      },
     },
   },
   optimizeDeps: {

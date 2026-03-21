@@ -257,6 +257,12 @@ class App : ToolsBackend
 			return;
 		}
 
+		if (request.path == "/api/raw-source")
+		{
+			handleRawSourceRequest(request, conn);
+			return;
+		}
+
 		// Serve static files from web/dist/, with SPA fallback
 		auto response = new HttpResponseEx();
 		auto path = request.resource[1 .. $]; // strip leading /
@@ -274,6 +280,61 @@ class App : ToolsBackend
 			"base-uri 'self'; " ~
 			"frame-ancestors 'none'";
 		conn.sendResponse(response);
+	}
+
+	private void handleRawSourceRequest(HttpRequest request, HttpServerConnection conn)
+	{
+		import cydo.agent.protocol : extractRawField;
+		import cydo.task : extractEventFromEnvelope;
+		import std.conv : to, ConvException;
+
+		auto response = new HttpResponseEx();
+		auto params = request.urlParameters;
+		auto tidStr = params.get("tid", "");
+		auto seqStr = params.get("seq", "");
+		if (tidStr.length == 0 || seqStr.length == 0)
+		{
+			response.setStatus(HttpStatusCode.BadRequest);
+			conn.sendResponse(response.serveData("Missing tid or seq"));
+			return;
+		}
+
+		int tid;
+		size_t seq;
+		try
+		{
+			tid = tidStr.to!int;
+			seq = seqStr.to!size_t;
+		}
+		catch (ConvException)
+		{
+			response.setStatus(HttpStatusCode.BadRequest);
+			conn.sendResponse(response.serveData("Invalid tid or seq"));
+			return;
+		}
+
+		if (tid !in tasks)
+		{
+			response.setStatus(HttpStatusCode.NotFound);
+			conn.sendResponse(response.serveData("Task not found"));
+			return;
+		}
+
+		auto td = &tasks[tid];
+		ensureHistoryLoaded(tid);
+		if (seq >= td.history.length)
+		{
+			response.setStatus(HttpStatusCode.NotFound);
+			conn.sendResponse(response.serveData("Seq out of range"));
+			return;
+		}
+
+		auto envelope = cast(string) td.history[seq].toGC();
+		auto event = extractEventFromEnvelope(envelope);
+		auto raw = event.length > 0 ? extractRawField(event) : null;
+
+		response.headers["Content-Type"] = "application/json";
+		conn.sendResponse(response.serveData(raw !is null ? raw : "null"));
 	}
 
 	private void handleWebSocket(HttpRequest request, HttpServerConnection conn)
@@ -918,9 +979,25 @@ class App : ToolsBackend
 
 		ensureHistoryLoaded(tid);
 
-		// Send unified history to requesting client
-		foreach (msg; td.history)
-			ws.send(msg);
+		// Send unified history to requesting client (strip _raw, add _seq)
+		import cydo.agent.protocol : stripRawField;
+		import cydo.task : extractEventFromEnvelope;
+		foreach (i, ref msg; td.history)
+		{
+			auto envelope = cast(string) msg.unsafeContents;
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length == 0)
+			{
+				// Non-event envelope (unconfirmedUserEvent, etc.) — pass through
+				ws.send(msg);
+				continue;
+			}
+			auto stripped = stripRawField(event);
+			string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
+				~ `,"seq":` ~ format!"%d"(i)
+				~ `,"event":` ~ stripped ~ `}`;
+			ws.send(Data(clientEnvelope.representation));
+		}
 
 		// Send forkable UUIDs extracted from JSONL
 		if (td.agentSessionId.length > 0)
@@ -2133,21 +2210,27 @@ class App : ToolsBackend
 		if (translated is null)
 			return; // consumed event, don't forward
 
-		// Wrap the event in a task envelope
-		string injected = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
-
-		auto data = Data(injected.representation);
+		import cydo.agent.protocol : stripRawField;
 
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
+			// Store full event (with _raw) in history
+			string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
+			auto historyData = Data(historyEnvelope.representation);
 			// Merge adjacent streaming deltas with matching type+index to keep
 			// history compact without reordering events.
-			if (!mergeStreamingDelta(tid, translated, data))
-				tasks[tid].history ~= data;
+			if (!mergeStreamingDelta(tid, translated, historyData))
+				tasks[tid].history ~= historyData;
 		}
 
-		sendToSubscribed(tid, data);
+		// Send to clients: strip _raw, add _seq
+		auto stripped = stripRawField(translated);
+		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
+		string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
+			~ `,"seq":` ~ format!"%d"(seq)
+			~ `,"event":` ~ stripped ~ `}`;
+		sendToSubscribed(tid, Data(clientEnvelope.representation));
 	}
 
 	/// Try to merge a streaming delta into the last history entry.
@@ -2184,7 +2267,15 @@ class App : ToolsBackend
 		if (merged is null)
 			return false;
 
-		(*history)[$ - 1] = Data(merged.representation);
+		// Reconstruct canonical envelope (field order preserved, _raw stripped).
+		// mergeDeltas uses std.json which reorders fields, breaking
+		// extractEventFromEnvelope; also, merged entries have no direct raw source.
+		import std.json : parseJSON;
+		auto mergedObj = parseJSON(merged);
+		if ("_raw" in mergedObj["event"].objectNoRef)
+			mergedObj["event"].objectNoRef.remove("_raw");
+		string canonical = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ mergedObj["event"].toString() ~ `}`;
+		(*history)[$ - 1] = Data(canonical.representation);
 		return true;
 	}
 

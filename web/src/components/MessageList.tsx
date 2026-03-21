@@ -310,24 +310,80 @@ function jsonReplacer(_key: string, value: unknown) {
     : value;
 }
 
-function SourceView({ msg }: { msg: DisplayMessage }) {
-  const jsonText = useMemo(
+function HighlightedJson({ text }: { text: string }) {
+  const tokens = useHighlight(text, "json");
+  return (
+    <pre>
+      {tokens
+        ? tokens.map((line, i) => (
+            <span key={i}>
+              {i > 0 && "\n"}
+              {renderTokens(line)}
+            </span>
+          ))
+        : text}
+    </pre>
+  );
+}
+
+function SourceView({ msg, tid }: { msg: DisplayMessage; tid: number }) {
+  const hasRaw = msg.seq != null;
+  const [tab, setTab] = useState<"raw" | "agnostic">(hasRaw ? "raw" : "agnostic");
+  const [rawSources, setRawSources] = useState<unknown[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (msg.seq == null) return;
+    const seqs = Array.isArray(msg.seq) ? msg.seq : [msg.seq];
+    setLoading(true);
+    Promise.all(
+      seqs.map((s) =>
+        fetch(`/api/raw-source?tid=${tid}&seq=${s}`).then((r) => r.json()),
+      ),
+    )
+      .then((results) => {
+        setRawSources(results);
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  }, [tid, msg.seq]);
+
+  const agnosticText = useMemo(
     () => JSON.stringify(msg.rawSource ?? msg, jsonReplacer, 2),
     [msg.rawSource ?? msg],
   );
-  const tokens = useHighlight(jsonText, "json");
+  const rawText = useMemo(() => {
+    if (!rawSources) return null;
+    return rawSources
+      .map((s) => JSON.stringify(s, jsonReplacer, 2))
+      .join("\n");
+  }, [rawSources]);
+
   return (
     <div class="message source-view">
-      <pre>
-        {tokens
-          ? tokens.map((line, i) => (
-              <span key={i}>
-                {i > 0 && "\n"}
-                {renderTokens(line)}
-              </span>
-            ))
-          : jsonText}
-      </pre>
+      {hasRaw && (
+        <div class="source-tabs">
+          <button
+            class={`source-tab${tab === "raw" ? " active" : ""}`}
+            onClick={() => { setTab("raw"); }}
+          >
+            Raw
+          </button>
+          <button
+            class={`source-tab${tab === "agnostic" ? " active" : ""}`}
+            onClick={() => { setTab("agnostic"); }}
+          >
+            Agnostic
+          </button>
+        </div>
+      )}
+      {tab === "raw" && loading && (
+        <div class="source-loading">Loading...</div>
+      )}
+      {tab === "raw" && rawText && <HighlightedJson text={rawText} />}
+      {tab === "agnostic" && <HighlightedJson text={agnosticText} />}
     </div>
   );
 }
@@ -335,6 +391,7 @@ function SourceView({ msg }: { msg: DisplayMessage }) {
 const MessageView = memo(
   function MessageView({
     msg,
+    tid,
     onFork,
     onUndo,
     onEdit,
@@ -342,6 +399,7 @@ const MessageView = memo(
     children,
   }: {
     msg: DisplayMessage;
+    tid: number;
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     onEdit?: (uuid: string, content: string) => void;
@@ -433,7 +491,7 @@ const MessageView = memo(
             </div>
           </div>
         ) : showSource ? (
-          <SourceView msg={msg} />
+          <SourceView msg={msg} tid={tid} />
         ) : (
           children
         )}
@@ -468,6 +526,7 @@ const MessageView = memo(
   },
   (prev, next) =>
     prev.msg === next.msg &&
+    prev.tid === next.tid &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
     prev.onEdit === next.onEdit &&
@@ -661,6 +720,7 @@ export function MessageList({
             <MessageView
               key={msg.id}
               msg={msg}
+              tid={sessionId}
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               onEdit={msg.type === "user" ? handleEditMessage : undefined}

@@ -246,3 +246,28 @@ string injectRawField(string translated, string rawJson)
 	while (idx > 0 && translated[--idx] != '}') {}
 	return translated[0 .. idx] ~ `,"_raw":` ~ rawJson ~ translated[idx .. $];
 }
+
+/// Strip the `,"_raw":...` suffix from a translated event.
+/// Assumes `_raw` was injected by `injectRawField` (always the last field).
+string stripRawField(string event)
+{
+	import std.string : indexOf;
+	enum marker = `,"_raw":`;
+	auto idx = event.indexOf(marker);
+	if (idx < 0)
+		return event;
+	return event[0 .. idx] ~ "}";
+}
+
+/// Extract the raw JSON value from a `_raw` field in an event string.
+/// Returns null if no `_raw` field is present.
+string extractRawField(string event)
+{
+	import std.string : indexOf;
+	enum marker = `,"_raw":`;
+	auto idx = event.indexOf(marker);
+	if (idx < 0)
+		return null;
+	// Value spans from after marker to before the closing }
+	return event[idx + marker.length .. $ - 1];
+}

@@ -623,6 +623,36 @@ body,
   border-left: 3px solid var(--text-dim);
 }
 
+.source-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.source-tab {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.source-tab.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-secondary);
+}
+
+.source-loading {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .source-view pre {
   font-family: var(--font-mono);
   font-size: 12px;

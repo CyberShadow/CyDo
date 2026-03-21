@@ -64,6 +64,8 @@ export interface DisplayMessage {
   statusText?: string;
   // Original wire-protocol message(s) for "view source"
   rawSource?: unknown;
+  /** Backend history sequence number(s) for on-demand raw source fetching. */
+  seq?: number | number[];
   /** Extra/unknown fields from the wire protocol, surfaced in the UI. */
   extraFields?: Record<string, unknown>;
 }
