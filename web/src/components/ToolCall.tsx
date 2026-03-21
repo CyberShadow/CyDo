@@ -1458,9 +1458,16 @@ function renderResultContent(
     return <pre class={`tool-result ${isError ? "error" : ""}`}>{""}</pre>;
   }
   if (typeof content === "string") {
+    // Pretty-print compact JSON strings (e.g. function_call_output from Codex rollout)
+    let display = content;
+    if (content.startsWith("{") || content.startsWith("[")) {
+      try {
+        display = JSON.stringify(JSON.parse(content), null, 2);
+      } catch { /* not JSON, use as-is */ }
+    }
     return (
       <pre class={`tool-result ${isError ? "error" : ""}`}>
-        {hasAnsi(content) ? renderAnsi(content) : content}
+        {hasAnsi(display) ? renderAnsi(display) : display}
       </pre>
     );
   }
