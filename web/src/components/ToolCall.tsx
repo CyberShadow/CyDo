@@ -1402,7 +1402,7 @@ function formatInput(
 }
 
 function renderResultContent(
-  content: ToolResultContent,
+  content: ToolResultContent | null | undefined,
   isError?: boolean,
 ): h.JSX.Element {
   if (content == null) {

@@ -1,7 +1,16 @@
 import { h, Fragment, type VNode } from "preact";
 import { useHighlight, renderTokens } from "../highlight";
 
-import type { Root, RootContent, PhrasingContent } from "mdast";
+import type {
+  Root,
+  RootContent,
+  PhrasingContent,
+  ListItem as MdastListItem,
+  Table,
+  TableRow,
+  TableCell,
+  Parent,
+} from "mdast";
 
 // Render the full AST root
 export function MdastRenderer({ ast }: { ast: Root }): VNode {
@@ -12,17 +21,24 @@ export function MdastRenderer({ ast }: { ast: Root }): VNode {
   );
 }
 
+// Type guard for nodes that have children
+function isParent(
+  node: RootContent | PhrasingContent,
+): node is Parent & (RootContent | PhrasingContent) {
+  return "children" in node;
+}
+
 // Render a block-level node
 function BlockNode({ node }: { node: RootContent }): VNode | null {
   switch (node.type) {
     case "heading": {
-      const tag = `h${node.depth}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
-      return h(tag, null, <InlineChildren nodes={(node as any).children} />);
+      const tag: `h${typeof node.depth}` = `h${node.depth}`;
+      return h(tag, null, <InlineChildren nodes={node.children} />);
     }
     case "paragraph":
       return (
         <p>
-          <InlineChildren nodes={(node as any).children} />
+          <InlineChildren nodes={node.children} />
         </p>
       );
     case "code":
@@ -30,22 +46,22 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
     case "blockquote":
       return (
         <blockquote>
-          {(node as any).children?.map((child: RootContent, i: number) => (
+          {node.children.map((child, i) => (
             <BlockNode key={i} node={child} />
           ))}
         </blockquote>
       );
     case "list": {
-      const items = (node as any).children ?? [];
-      const isTask = items.some((li: any) => li.checked != null);
+      const items = node.children;
+      const isTask = items.some((li) => li.checked != null);
       const Tag = node.ordered ? "ol" : "ul";
       return (
         <Tag
           class={isTask ? "task-list" : undefined}
           start={node.ordered && node.start != null ? node.start : undefined}
         >
-          {items.map((li: any, i: number) => (
-            <ListItem key={i} node={li} isTask={isTask} />
+          {items.map((li, i) => (
+            <ListItemNode key={i} node={li} isTask={isTask} />
           ))}
         </Tag>
       );
@@ -53,7 +69,7 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
     case "thematicBreak":
       return <hr />;
     case "table":
-      return <TableNode node={node as any} />;
+      return <TableNode node={node} />;
     case "html":
       // Render raw HTML as escaped text — do NOT inject as innerHTML
       return (
@@ -65,11 +81,11 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
       return null; // metadata, not rendered
     default:
       // Fallback: render children if present, otherwise skip
-      if ((node as any).children) {
+      if (isParent(node)) {
         return h(
           Fragment,
           null,
-          (node as any).children.map((child: any, i: number) => (
+          (node.children as RootContent[]).map((child, i) => (
             <BlockNode key={i} node={child} />
           )),
         );
@@ -79,16 +95,22 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
 }
 
 // Render a list item
-function ListItem({ node, isTask }: { node: any; isTask: boolean }): VNode {
+function ListItemNode({
+  node,
+  isTask,
+}: {
+  node: MdastListItem;
+  isTask: boolean;
+}): VNode {
   if (isTask && node.checked != null) {
     return (
       <li class="task-list-item">
         <label>
           <input type="checkbox" checked={node.checked} disabled />
-          {node.children?.map((child: RootContent, i: number) => {
+          {node.children.map((child, i) => {
             // For task items, paragraphs are rendered inline (unwrap the <p>)
             if (child.type === "paragraph") {
-              return <InlineChildren key={i} nodes={(child as any).children} />;
+              return <InlineChildren key={i} nodes={child.children} />;
             }
             return <BlockNode key={i} node={child} />;
           })}
@@ -98,7 +120,7 @@ function ListItem({ node, isTask }: { node: any; isTask: boolean }): VNode {
   }
   return (
     <li>
-      {node.children?.map((child: RootContent, i: number) => (
+      {node.children.map((child, i) => (
         <BlockNode key={i} node={child} />
       ))}
     </li>
@@ -106,10 +128,10 @@ function ListItem({ node, isTask }: { node: any; isTask: boolean }): VNode {
 }
 
 // Render a GFM table
-function TableNode({ node }: { node: any }): VNode {
-  const align: (string | null)[] = node.align ?? [];
-  const rows: any[] = node.children ?? [];
-  const headerRow = rows[0];
+function TableNode({ node }: { node: Table }): VNode {
+  const align: (string | null | undefined)[] = node.align ?? [];
+  const rows: TableRow[] = node.children;
+  const headerRow: TableRow | undefined = rows[0];
   const bodyRows = rows.slice(1);
 
   const alignStyle = (i: number) => {
@@ -122,7 +144,7 @@ function TableNode({ node }: { node: any }): VNode {
       {headerRow && (
         <thead>
           <tr>
-            {headerRow.children?.map((cell: any, i: number) => (
+            {headerRow.children.map((cell: TableCell, i: number) => (
               <th key={i} style={alignStyle(i)}>
                 <InlineChildren nodes={cell.children} />
               </th>
@@ -132,9 +154,9 @@ function TableNode({ node }: { node: any }): VNode {
       )}
       {bodyRows.length > 0 && (
         <tbody>
-          {bodyRows.map((row: any, ri: number) => (
+          {bodyRows.map((row: TableRow, ri: number) => (
             <tr key={ri}>
-              {row.children?.map((cell: any, ci: number) => (
+              {row.children.map((cell: TableCell, ci: number) => (
                 <td key={ci} style={alignStyle(ci)}>
                   <InlineChildren nodes={cell.children} />
                 </td>
@@ -149,7 +171,7 @@ function TableNode({ node }: { node: any }): VNode {
 
 // Render inline/phrasing content children
 function InlineChildren({ nodes }: { nodes: PhrasingContent[] }): VNode {
-  if (!nodes || nodes.length === 0) return h(Fragment, null);
+  if (nodes.length === 0) return h(Fragment, null);
   return h(
     Fragment,
     null,
@@ -165,19 +187,19 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
     case "strong":
       return (
         <strong>
-          <InlineChildren nodes={(node as any).children} />
+          <InlineChildren nodes={node.children} />
         </strong>
       );
     case "emphasis":
       return (
         <em>
-          <InlineChildren nodes={(node as any).children} />
+          <InlineChildren nodes={node.children} />
         </em>
       );
     case "delete":
       return (
         <del>
-          <InlineChildren nodes={(node as any).children} />
+          <InlineChildren nodes={node.children} />
         </del>
       );
     case "inlineCode":
@@ -190,7 +212,7 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
           target="_blank"
           rel="noopener noreferrer"
         >
-          <InlineChildren nodes={(node as any).children} />
+          <InlineChildren nodes={node.children} />
         </a>
       );
     case "image":
@@ -204,15 +226,14 @@ function InlineNode({ node }: { node: PhrasingContent }): VNode | null {
     case "break":
       return <br />;
     case "html":
-      // Inline HTML — render as escaped text
-      return h(Fragment, null, (node as any).value ?? "");
+      return h(Fragment, null, node.value);
     default:
       // Fallback for unknown inline types
-      if ((node as any).children) {
-        return <InlineChildren nodes={(node as any).children} />;
+      if (isParent(node)) {
+        return <InlineChildren nodes={node.children as PhrasingContent[]} />;
       }
-      if ((node as any).value != null) {
-        return h(Fragment, null, (node as any).value);
+      if ("value" in node && typeof node.value === "string") {
+        return h(Fragment, null, node.value);
       }
       return null;
   }

@@ -2,7 +2,7 @@ import { type FunctionComponent } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { createIncremarkParser } from "@incremark/core";
-import type { IncremarkParser, Root } from "@incremark/core";
+import type { IncremarkParser } from "@incremark/core";
 import { useHighlight, renderTokens } from "../highlight";
 import { MdastRenderer } from "./MdastRenderer";
 
@@ -18,11 +18,10 @@ export const Markdown: FunctionComponent<Props> = memo(
 
     const parserRef = useRef<IncremarkParser | null>(null);
     if (!parserRef.current) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- breaks is valid but not in @incremark/core types
       parserRef.current = createIncremarkParser({
         gfm: true,
         breaks: true,
-      } as any);
+      } as Parameters<typeof createIncremarkParser>[0]);
     }
 
     const prevTextRef = useRef("");

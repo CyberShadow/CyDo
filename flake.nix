@@ -36,6 +36,7 @@
           ./web/package-lock.json
           ./web/tsconfig.json
           ./web/vite.config.ts
+          ./web/eslint.config.mjs
         ];
       };
     in
@@ -81,7 +82,7 @@
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-WymXwbfj3gjLVQ9f8A0Q3BPZgN98bSgQHUFRd7yGtag=";
+            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
 
             installPhase = ''
               runHook preInstall
@@ -326,11 +327,28 @@
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-WymXwbfj3gjLVQ9f8A0Q3BPZgN98bSgQHUFRd7yGtag=";
+            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
 
             buildPhase = ''
               runHook preBuild
               npx tsc --noEmit
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
+          lint = pkgs.buildNpmPackage {
+            pname = "cydo-lint";
+            version = "0.1.0";
+            src = frontendSrc;
+            nodejs = pkgs.nodejs_22;
+            npmDepsHash = "sha256-JWQtkk+c40qZgLH4C3iylF1+27PMO2TPijp4z2OVIIs=";
+
+            buildPhase = ''
+              runHook preBuild
+              npx eslint src/
               runHook postBuild
             '';
 
