@@ -31,6 +31,8 @@ implemented changes.
 
 A patch adding or updating tests, plus a brief report of what was covered.
 
-## Task
+The task description follows, provided by the implementer.
+
+--------------------------------------------------------------------------------
 
 {{task_description}}

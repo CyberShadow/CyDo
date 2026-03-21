@@ -8,6 +8,7 @@ import writeModeIcon from "../icons/write-mode.svg?raw";
 import planIcon from "../icons/plan.svg?raw";
 import researchIcon from "../icons/research.svg?raw";
 import bugIcon from "../icons/bug.svg?raw";
+import reproduceIcon from "../icons/reproduce.svg?raw";
 import spikeIcon from "../icons/spike.svg?raw";
 import testIcon from "../icons/test.svg?raw";
 import triageIcon from "../icons/triage.svg?raw";
@@ -37,6 +38,7 @@ const rawIcons: Record<string, string> = {
   plan: planIcon,
   research: researchIcon,
   bug: bugIcon,
+  reproduce: reproduceIcon,
   spike: spikeIcon,
   test: testIcon,
   triage: triageIcon,

@@ -100,10 +100,11 @@ verified correctness. Go back and try to break something.
 
 ## Output
 
-Write your verification report to `{{output_file}}`. The output directory is
-pre-created — do not `mkdir` it. You can place additional files alongside the
-output file (e.g., test logs, captured output) to attach them to the task
-result.
+Your output directory is `{{output_dir}}` — it's pre-created and writable.
+Use it for any files you need to persist (test logs, captured output).
+
+Write your verification report to `{{output_file}}`. The file content is
+returned to the parent task as the result.
 
 Your report must include:
 - **Build** — pass/fail with output
@@ -124,6 +125,8 @@ to the implementation agent, which will rework the code if you found issues.
 
 **Remember: You are trying to BREAK the implementation, not confirm it works.**
 
-## Task
+The task description follows, provided by the implementer.
+
+--------------------------------------------------------------------------------
 
 {{task_description}}

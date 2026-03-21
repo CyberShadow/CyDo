@@ -71,7 +71,9 @@ When both pass, your task is complete.
 
 A commit containing the implementation.
 
-## Task
+The task description follows, provided by the triage agent.
+
+--------------------------------------------------------------------------------
 
 Read the plan from the file path below.
 

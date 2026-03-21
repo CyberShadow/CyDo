@@ -12,9 +12,10 @@ or prototype an approach.
 
 ## Output
 
-Write your report to `{{output_file}}`. The output directory is pre-created —
-do not `mkdir` it. You can place additional files alongside the output file.
-The file content is returned to the parent task as the result.
+Your output directory is `{{output_dir}}` — it's pre-created and writable.
+
+Write your report to `{{output_file}}`. The file content is returned to the
+parent task as the result.
 
 Your final message should be a meta-commentary on the experiment — what
 approaches you tried, what worked and didn't, what you didn't have time to
@@ -37,6 +38,8 @@ Your report must include:
 - Even in a spike, do not introduce security vulnerabilities (injection, XSS,
   etc.) — spike code may be adopted by the parent into the main tree.
 
-## Task
+The task description follows, provided by the parent task.
+
+--------------------------------------------------------------------------------
 
 {{task_description}}

@@ -37,13 +37,12 @@ Adapt your search depth to the caller's needs:
 
 ## Output
 
+Your output directory is `{{output_dir}}` — it's pre-created and writable.
+Use it for any files you need to persist (data, logs, scripts).
+
 Write your report to `{{output_file}}`. You can iterate — write a draft,
 continue investigating, then revise sections using the Edit tool.
 The file content is returned to the parent task as the result.
-
-The output directory is pre-created — do not `mkdir` it. You can place
-additional files alongside the output file (e.g., data, logs, scripts)
-to attach them to the task result.
 
 Your final message should be a meta-commentary on the investigation itself —
 what you searched for, what sources you consulted, what you couldn't find or
@@ -63,6 +62,8 @@ Your report must include:
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.
 
-## Task
+The task description follows, provided by the parent task.
+
+--------------------------------------------------------------------------------
 
 {{task_description}}

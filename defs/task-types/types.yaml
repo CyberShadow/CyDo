@@ -101,10 +101,6 @@ task_types:
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
-      verify:
-        worktree: true
-        prompt_template: prompts/verify.md
-        result_note: "Read the output file for the full verification report."
       execute:
         task_type: triage
         worktree: true
@@ -256,10 +252,6 @@ task_types:
       research:
         prompt_template: prompts/research.md
         result_note: "Read the output file for full findings."
-      verify:
-        worktree: true
-        prompt_template: prompts/verify.md
-        result_note: "Read the output file for the full verification report."
     continuations:
       back:
         task_type: conversation
@@ -336,7 +328,7 @@ task_types:
     agent_description: >
       Use for investigating bugs as a sub-task. The agent reproduces the issue,
       identifies the root cause, and reports findings back to the parent.
-      Creates spike sub-tasks for reproduction and research sub-tasks for
+      Creates reproduce sub-tasks for reproduction and research sub-tasks for
       context. Use when: a user reports unexpected behavior, a test is
       failing and you don't know why, you need to reproduce and diagnose an
       issue, or something works differently than the code suggests it should.
@@ -350,12 +342,34 @@ task_types:
       research:
         prompt_template: prompts/research.md
         result_note: "Read the output file for full findings."
-      spike:
+      reproduce:
         worktree: true
-        prompt_template: prompts/spike.md
-        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+        prompt_template: prompts/reproduce.md
+        result_note: "Read the output file for findings. The worktree path contains the failing test."
     parallelizable: true
     user_visible: false
+
+  reproduce:
+    description: "Build a minimal reproduction of a bug using the project's test framework"
+    icon: reproduce
+    agent_description: >
+      Use to reproduce a bug as a failing test case. Runs in its own worktree
+      and writes a test using the project's test runner that demonstrates the
+      bug. Returns the worktree path so the parent can inspect the reproducer.
+      The reproducer focuses on proving the bug exists — root cause analysis
+      is the parent's job.
+    tool_guidance: >
+      Use when investigating a bug. Provide the bug description and any
+      reproduction steps. The agent writes a failing test, not a standalone
+      script.
+    model_class: medium
+    output_type: report
+    creatable_tasks:
+      research:
+        prompt_template: prompts/research.md
+        result_note: "Read the output file for full findings."
+    parallelizable: true
+    user_visible: true
 
   spike:
     description: "Test a theory or prototype an approach in an isolated worktree"
@@ -367,14 +381,18 @@ task_types:
       tests, and try things freely. Results are reported back as a report
       that includes the worktree path, so the parent can adopt changes from
       it if the experiment was successful. Good for: "will this library work
-      for our use case?", "can I reproduce this with a minimal example?",
-      "what happens if I restructure this module?".
+      for our use case?", "what happens if I restructure this module?",
+      "does this approach actually perform well enough?".
     tool_guidance: >
       Use when you want to try something before committing to it. The worktree
       is disposable — experiment freely.
     model_class: large
     output_type: report
     creatable_tasks:
+      spike:
+        worktree: true
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       research:
         prompt_template: prompts/research.md
         result_note: "Read the output file for full findings."

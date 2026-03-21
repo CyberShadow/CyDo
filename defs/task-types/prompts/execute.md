@@ -29,7 +29,9 @@ Choose one:
   `prompt` containing the plan file path.
 - **decompose**: Call the `mcp__cydo__SwitchMode` tool with `continuation: "decompose"`.
 
-## Plan
+The task description follows, provided by the parent task.
+
+--------------------------------------------------------------------------------
 
 Read the plan from the file path below before making your decision.
 

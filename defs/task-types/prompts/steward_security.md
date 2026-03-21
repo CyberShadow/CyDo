@@ -117,7 +117,7 @@ handled by other reviewers.
 
 {{task_description}}
 
----
+--------------------------------------------------------------------------------
 
 ## Context: Upkeep
 

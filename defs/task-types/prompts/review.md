@@ -29,15 +29,18 @@ its plan and is ready to land.
 
 ## Output
 
-Write your review report to `{{output_file}}`. The output directory is
-pre-created — do not `mkdir` it. The file content is returned to the
-implementation agent as the result.
+Your output directory is `{{output_dir}}` — it's pre-created and writable.
+
+Write your review report to `{{output_file}}`. The file content is returned
+to the implementation agent as the result.
 
 The report must include:
 - **Verdict** — approve or reject
 - **Issues** — specific problems found, if any
 - **Summary** — brief assessment of the implementation quality
 
-## Task
+The task description follows, provided by the implementer.
+
+--------------------------------------------------------------------------------
 
 {{task_description}}

@@ -26,6 +26,15 @@ discussion above) into smaller, self-contained sub-tasks.
    them.
    Each unit will be executed — if it's small enough it gets implemented
    directly, otherwise it gets planned and decomposed further recursively.
+
+   Every sub-plan must include **acceptance criteria** — concrete, testable
+   conditions that define "done." State them as observable behavior, not
+   implementation details: "a test that sends a malformed message and
+   verifies the connection is dropped," not "add error handling." The
+   existing test suite passing is necessary but not sufficient — new
+   behavior needs new tests, and the sub-plan must say what those tests
+   should verify. An implement agent with no acceptance criteria has no way
+   to know if its work is correct.
 5. **Wait for results** — All sub-tasks must complete. If any fail, assess
    whether to retry or report failure.
 

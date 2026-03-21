@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
+  <!-- bomb body with highlight cutout -->
+  <path fill-rule="evenodd" d="M7 4a4 4 0 1 1 0 8 4 4 0 1 1 0-8ZM5.5 6.5a0.8 0.8 0 1 1 0 1.6 0.8 0.8 0 1 1 0-1.6Z"/>
+  <!-- collar at bomb/fuse junction -->
+  <rect x="-1.2" y="-0.5" width="2.4" height="1" transform="translate(9.83 5.17) rotate(45)"/>
+  <!-- fuse: 135° CW arc then 90° CCW arc -->
+  <path d="M10.2 4.8 A1.8 1.8 0 0 1 13.27 6.07 A1.2 1.2 0 0 0 14.47 7.27" stroke="currentColor" stroke-width="1.2" fill="none"/>
+</svg>

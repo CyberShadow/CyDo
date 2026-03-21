@@ -33,9 +33,16 @@ The user may want to iterate on changes:
 - Make follow-up edits as the user directs.
 - You have full tool access — read, write, execute.
 
-## Switching back
+## When to stay vs. leave
 
-**Do NOT switch back on your own.** Stay in write mode until the user
-explicitly says they are done editing. Call `mcp__cydo__SwitchMode` with `back`
-only when the user asks to switch back. Your context is preserved — you resume
-conversation where you left off.
+**Stay** for follow-up edits, testing, and iteration on the current change.
+
+**Leave** (`SwitchMode` with `back`) when the user's message is no longer
+about the current editing session. Exit if they:
+- Report a bug or unexpected behavior
+- Request a non-trivial change that needs planning or exploration
+- Ask a question unrelated to what you're currently editing
+- Start a new topic or change direction
+
+Don't try to handle these in write mode — exit and let the conversation
+routing take over.

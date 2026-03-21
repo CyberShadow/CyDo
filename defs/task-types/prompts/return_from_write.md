@@ -1,12 +1,12 @@
 # Back from Write Mode
 
-You are back in conversation mode (read-only) after making changes to the main
-checkout. The editing session is in your context above.
+You are back in conversation mode (read-only). The editing session is above.
 
-Continue the conversation normally. If there are pending worktree results from
-other sub-tasks, present them to the user. If the user wants more edits,
-switch to write mode again.
+**Look at the user's most recent message** — that triggered the exit. Address
+it now using the decision tree:
 
-You are the long-lived conversation session. The user stays with you
-throughout. Refer to the Delegation section in your original prompt for
-guidance on sub-tasks and modes.
+1. Bug report → **bug mode**
+2. Quick direct edit → **write mode**
+3. Clear implementation task → **direct dispatch** (write instructions, spawn execute)
+4. Needs exploration → **plan mode**
+5. Discussion / unclear → stay in conversation
