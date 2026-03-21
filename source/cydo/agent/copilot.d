@@ -4,9 +4,12 @@ import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
-import ae.utils.promise : Promise;
+import ae.utils.jsonrpc : JsonRpcResponse;
+import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.acp : AcpProcess, AcpSessionHandler;
+import cydo.agent.acp : AcpProcess, AcpSessionHandler,
+	EmptyResult, TerminalCreateParams, TerminalCreateResult,
+	TerminalIdParams, TerminalOutputResult, TerminalExitResult;
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
@@ -114,18 +117,22 @@ class CopilotAgent : Agent
 				// session/load replays history; set replayMode to suppress events.
 				session.startReplay();
 				server.sendRequest("session/load",
-					`{"sessionId":"` ~ cpEscape(resumeSessionId) ~ `","cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`,
-					(string result) {
-						session.onSessionStarted(result, resumeSessionId, model, workDir);
-					});
+					`{"sessionId":"` ~ cpEscape(resumeSessionId) ~ `","cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`)
+				.then((JsonRpcResponse resp) {
+					session.onSessionStarted(
+						resp.result.json !is null ? resp.result.json : "{}",
+						resumeSessionId, model, workDir);
+				});
 			}
 			else
 			{
 				server.sendRequest("session/new",
-					`{"cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`,
-					(string result) {
-						session.onSessionStarted(result, null, model, workDir);
-					});
+					`{"cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`)
+				.then((JsonRpcResponse resp) {
+					session.onSessionStarted(
+						resp.result.json !is null ? resp.result.json : "{}",
+						null, model, workDir);
+				});
 			}
 		});
 
@@ -500,30 +507,30 @@ class CopilotAgent : Agent
 		auto cwd = sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".";
 		srv.onReady(() {
 			srv.sendRequest("session/new",
-				`{"cwd":"` ~ cpEscape(cwd) ~ `","mcpServers":[]}`,
-				(string newResult) {
-					@JSONPartial
-					static struct SR { string sessionId; }
-					string sid;
-					try sid = jsonParse!SR(newResult).sessionId;
-					catch (Exception) {}
+				`{"cwd":"` ~ cpEscape(cwd) ~ `","mcpServers":[]}`)
+			.then((JsonRpcResponse newResp) {
+				@JSONPartial
+				static struct SR { string sessionId; }
+				string sid;
+				try sid = jsonParse!SR(newResp.result.json).sessionId;
+				catch (Exception) {}
 
-					if (sid.length == 0)
-					{
-						session.fail(new Exception("completeOneShot: session/new failed"));
-						srv.shutdown();
-						return;
-					}
+				if (sid.length == 0)
+				{
+					session.fail(new Exception("completeOneShot: session/new failed"));
+					srv.shutdown();
+					return;
+				}
 
-					srv.registerSession(sid, session);
-					srv.sendRequest("session/prompt",
-						`{"sessionId":"` ~ cpEscape(sid) ~ `","prompt":[{"type":"text","text":"` ~ cpEscape(prompt) ~ `"}]}`,
-						(string r) {
-							srv.unregisterSession(sid);
-							session.succeed();
-							srv.shutdown();
-						});
+				srv.registerSession(sid, session);
+				srv.sendRequest("session/prompt",
+					`{"sessionId":"` ~ cpEscape(sid) ~ `","prompt":[{"type":"text","text":"` ~ cpEscape(prompt) ~ `"}]}`)
+				.then((JsonRpcResponse r) {
+					srv.unregisterSession(sid);
+					session.succeed();
+					srv.shutdown();
 				});
+			});
 		});
 
 		return p;
@@ -551,7 +558,7 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	// Terminal registry for ACP terminal capability.
 	private TerminalProcess[string] terminals;
 	private int nextTerminalId_ = 1;
-	private string[string] pendingWaitIds_; // terminalId → rawId deferred for wait_for_exit
+	private Promise!TerminalExitResult[string] pendingWaitIds_; // terminalId → promise for wait_for_exit
 
 	// Streaming state: block index counter (reset per turn).
 	private int blockIndex;
@@ -683,10 +690,10 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			// ACP session/prompt uses "prompt" key for the message content array.
 			server.sendRequest("session/prompt",
 				`{"sessionId":"` ~ cpEscape(sessionId)
-				~ `","prompt":[{"type":"text","text":"` ~ escaped ~ `"}]}`,
-				(string result) {
-					onPromptCompleted(result);
-				});
+				~ `","prompt":[{"type":"text","text":"` ~ escaped ~ `"}]}`)
+			.then((JsonRpcResponse resp) {
+				onPromptCompleted(resp.result.json !is null ? resp.result.json : "{}");
+			});
 		}
 	}
 
@@ -751,67 +758,158 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 	// ----- AcpSessionHandler interface -----
 
-	void handleServerRequest(string rawId, string method, string rawLine)
+	Promise!TerminalCreateResult handleTerminalCreate(TerminalCreateParams params)
 	{
-		switch (method)
+		string[] cmdArgs = [params.command] ~ params.args;
+
+		string[] finalArgs;
+		string procWorkDir = null;
+
+		if (bwrapPrefix_ !is null)
 		{
-			case "terminal/create":       handleTerminalCreate(rawId, rawLine);      break;
-			case "terminal/output":       handleTerminalOutput(rawId, rawLine);      break;
-			case "terminal/wait_for_exit": handleTerminalWaitForExit(rawId, rawLine); break;
-			case "terminal/kill":         handleTerminalKill(rawId, rawLine);        break;
-			case "terminal/release":      handleTerminalRelease(rawId, rawLine);     break;
-			default: break;
+			auto prefix = bwrapPrefix_.dup;
+			if (params.cwd.length > 0)
+			{
+				for (size_t i = 0; i + 1 < prefix.length; i++)
+				{
+					if (prefix[i] == "--chdir")
+					{
+						prefix[i + 1] = params.cwd;
+						break;
+					}
+				}
+			}
+			finalArgs = prefix ~ cmdArgs;
 		}
+		else
+		{
+			finalArgs = cmdArgs;
+			procWorkDir = params.cwd.length > 0 ? params.cwd : workDir;
+		}
+
+		string[string] procEnv = null;
+		if (params.env.length > 0)
+		{
+			import std.process : environment;
+			procEnv = environment.toAA();
+			foreach (ref ev; params.env)
+				procEnv[ev.name] = ev.value;
+		}
+
+		size_t byteLimit = params.outputByteLimit > 0
+			? cast(size_t) params.outputByteLimit : 1024 * 1024;
+
+		auto terminalId = "term_" ~ to!string(nextTerminalId_++);
+		terminals[terminalId] = new TerminalProcess(finalArgs, procEnv, procWorkDir, byteLimit);
+
+		return resolve(TerminalCreateResult(terminalId));
 	}
 
-	void handleNotification(string method, string rawLine)
+	Promise!TerminalOutputResult handleTerminalOutput(TerminalIdParams params)
+	{
+		auto tp = params.terminalId in terminals;
+		if (!tp)
+			return resolve(TerminalOutputResult("", false));
+
+		auto term = *tp;
+		JSONFragment exitStatus;
+		if (term.done)
+		{
+			auto sig = term.exitSignal();
+			if (sig !is null)
+				exitStatus = JSONFragment(`{"signal":"` ~ cpEscape(sig) ~ `"}`);
+			else
+				exitStatus = JSONFragment(`{"exitCode":` ~ to!string(term.exitCode()) ~ `}`);
+		}
+		return resolve(TerminalOutputResult(term.output(), term.truncated, exitStatus));
+	}
+
+	Promise!TerminalExitResult handleTerminalWaitForExit(TerminalIdParams params)
+	{
+		auto tid = params.terminalId;
+		auto tp = tid in terminals;
+		if (!tp)
+			return resolve(TerminalExitResult());
+
+		auto term = *tp;
+		if (term.done)
+		{
+			auto sig = term.exitSignal();
+			if (sig !is null)
+				return resolve(TerminalExitResult(0, sig));
+			else
+				return resolve(TerminalExitResult(term.exitCode()));
+		}
+
+		auto p = new Promise!TerminalExitResult;
+		pendingWaitIds_[tid] = p;
+		term.onExit = () {
+			auto pp = tid in pendingWaitIds_;
+			if (pp)
+			{
+				auto sig = term.exitSignal();
+				if (sig !is null)
+					(*pp).fulfill(TerminalExitResult(0, sig));
+				else
+					(*pp).fulfill(TerminalExitResult(term.exitCode()));
+				pendingWaitIds_.remove(tid);
+			}
+		};
+		return p;
+	}
+
+	Promise!EmptyResult handleTerminalKill(TerminalIdParams params)
+	{
+		auto tp = params.terminalId in terminals;
+		if (tp)
+			(*tp).kill();
+		return resolve(EmptyResult());
+	}
+
+	Promise!EmptyResult handleTerminalRelease(TerminalIdParams params)
+	{
+		auto tid = params.terminalId;
+		auto tp = tid in terminals;
+		if (tp)
+		{
+			(*tp).forceKill();
+			terminals.remove(tid);
+		}
+		return resolve(EmptyResult());
+	}
+
+	void handleSessionUpdate(JSONFragment update)
 	{
 		if (!alive_)
-			return;
-		if (method != "session/update")
 			return;
 		if (replayMode)
 			return;
 
-		// ACP session/update params: { sessionId, update: { sessionUpdate, ...fields } }
 		@JSONPartial
-		static struct UpdateProbe
-		{
-			@JSONPartial
-			static struct Update
-			{
-				string sessionUpdate;
-			}
-			@JSONPartial
-			static struct Params
-			{
-				Update update;
-			}
-			Params params;
-		}
+		static struct UpdateType { string sessionUpdate; }
 
-		UpdateProbe up;
+		UpdateType ut;
 		try
-			up = jsonParse!UpdateProbe(rawLine);
+			ut = jsonParse!UpdateType(update.json);
 		catch (Exception)
 			return;
 
-		switch (up.params.update.sessionUpdate)
+		switch (ut.sessionUpdate)
 		{
 			case "agent_message_chunk":
-				handleAgentMessageChunk(rawLine);
+				handleAgentMessageChunk(update);
 				break;
 			case "agent_thought_chunk":
-				handleAgentThoughtChunk(rawLine);
+				handleAgentThoughtChunk(update);
 				break;
 			case "tool_call":
-				handleToolCall(rawLine);
+				handleToolCall(update);
 				break;
 			case "tool_call_update":
-				handleToolCallUpdate(rawLine);
+				handleToolCallUpdate(update);
 				break;
 			case "user_message_chunk":
-				handleUserMessageChunk(rawLine);
+				handleUserMessageChunk(update);
 				break;
 			// Drop: plan, available_commands_update, config_option_update,
 			//       current_mode_update, session_info_update, usage_update
@@ -851,37 +949,21 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 	// ----- Notification handlers -----
 
-	private void handleAgentMessageChunk(string rawLine)
+	private void handleAgentMessageChunk(JSONFragment update)
 	{
-		// params.update.content.text
+		// update.content.text
 		@JSONPartial
-		static struct Content
-		{
-			string text;
-		}
+		static struct Content { string text; }
 		@JSONPartial
-		static struct Update
-		{
-			Content content;
-		}
-		@JSONPartial
-		static struct Params
-		{
-			Update update;
-		}
-		@JSONPartial
-		static struct Notification
-		{
-			Params params;
-		}
+		static struct Update { Content content; }
 
-		Notification n;
+		Update u;
 		try
-			n = jsonParse!Notification(rawLine);
+			u = jsonParse!Update(update.json);
 		catch (Exception)
 			return;
 
-		auto text = n.params.update.content.text;
+		auto text = u.content.text;
 
 		// Start a new text block if we don't have an active one.
 		if (activeItem.type != "text")
@@ -905,37 +987,21 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `,"delta":{"type":"text_delta","text":"` ~ cpEscape(text) ~ `"}}`);
 	}
 
-	private void handleAgentThoughtChunk(string rawLine)
+	private void handleAgentThoughtChunk(JSONFragment update)
 	{
-		// params.update.content.text
+		// update.content.text
 		@JSONPartial
-		static struct Content
-		{
-			string text;
-		}
+		static struct Content { string text; }
 		@JSONPartial
-		static struct Update
-		{
-			Content content;
-		}
-		@JSONPartial
-		static struct Params
-		{
-			Update update;
-		}
-		@JSONPartial
-		static struct Notification
-		{
-			Params params;
-		}
+		static struct Update { Content content; }
 
-		Notification n;
+		Update u;
 		try
-			n = jsonParse!Notification(rawLine);
+			u = jsonParse!Update(update.json);
 		catch (Exception)
 			return;
 
-		auto text = n.params.update.content.text;
+		auto text = u.content.text;
 
 		// Start a new thinking block if we don't have an active one.
 		if (activeItem.type != "thinking")
@@ -958,34 +1024,30 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `,"delta":{"type":"thinking_delta","text":"` ~ cpEscape(text) ~ `"}}`);
 	}
 
-	private void handleUserMessageChunk(string rawLine)
+	private void handleUserMessageChunk(JSONFragment update)
 	{
 		// Emit message/user echo so the frontend confirms the pending placeholder.
-		// params.update.content.text contains the user's message text.
+		// update.content.text contains the user's message text.
 		@JSONPartial
 		static struct Content { string text; }
 		@JSONPartial
 		static struct Update { Content content; }
-		@JSONPartial
-		static struct Params { Update update; }
-		@JSONPartial
-		static struct Notification { Params params; }
 
-		Notification n;
+		Update u;
 		try
-			n = jsonParse!Notification(rawLine);
+			u = jsonParse!Update(update.json);
 		catch (Exception)
 			return;
 
-		auto text = n.params.update.content.text;
+		auto text = u.content.text;
 		if (text.length > 0 && outputHandler_)
 			outputHandler_(
 				`{"type":"message/user","content":"` ~ cpEscape(text) ~ `"}`);
 	}
 
-	private void handleToolCall(string rawLine)
+	private void handleToolCall(JSONFragment update)
 	{
-		// params.update.{toolCallId, title, kind, rawInput}
+		// update.{toolCallId, title, kind, rawInput}
 		@JSONPartial
 		static struct Update
 		{
@@ -994,31 +1056,20 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			string kind;
 			JSONFragment rawInput;
 		}
-		@JSONPartial
-		static struct Params
-		{
-			Update update;
-		}
-		@JSONPartial
-		static struct Notification
-		{
-			Params params;
-		}
 
-		Notification n;
+		Update u;
 		try
-			n = jsonParse!Notification(rawLine);
+			u = jsonParse!Update(update.json);
 		catch (Exception)
 			return;
 
 		// Finalize any active text/thinking block.
 		finalizeActiveItem();
 
-		auto id = n.params.update.toolCallId;
-		auto name = mapKindToName(n.params.update.kind, n.params.update.title);
-		string inputJson = n.params.update.rawInput.json !is null
-			&& n.params.update.rawInput.json.length > 0
-			? n.params.update.rawInput.json : "{}";
+		auto id = u.toolCallId;
+		auto name = mapKindToName(u.kind, u.title);
+		string inputJson = u.rawInput.json !is null && u.rawInput.json.length > 0
+			? u.rawInput.json : "{}";
 
 		auto idx = blockIndex++;
 		activeItem = CompletedItem("tool_use", id, name, "", inputJson);
@@ -1037,15 +1088,12 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `,"delta":{"type":"input_json_delta","partial_json":"` ~ cpEscape(inputJson) ~ `"}}`);
 	}
 
-	private void handleToolCallUpdate(string rawLine)
+	private void handleToolCallUpdate(JSONFragment update)
 	{
-		// params.update.{status, content[]}
+		// update.{status, content[]}
 		// content items: {type:"content", content:{type:"text", text:"..."}}
 		@JSONPartial
-		static struct InnerContent
-		{
-			string text;
-		}
+		static struct InnerContent { string text; }
 		@JSONPartial
 		static struct ContentItem
 		{
@@ -1059,27 +1107,17 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			string status;
 			ContentItem[] content;
 		}
-		@JSONPartial
-		static struct Params
-		{
-			Update update;
-		}
-		@JSONPartial
-		static struct Notification
-		{
-			Params params;
-		}
 
-		Notification n;
+		Update u;
 		try
-			n = jsonParse!Notification(rawLine);
+			u = jsonParse!Update(update.json);
 		catch (Exception)
 			return;
 
 		// Accumulate text from "content" and "terminal" type content items.
 		// Bash output arrives as "terminal" type with a terminalId reference.
 		string text;
-		foreach (ref ci; n.params.update.content)
+		foreach (ref ci; u.content)
 		{
 			if (ci.type == "content")
 				text ~= ci.content.text;
@@ -1101,7 +1139,7 @@ class CopilotSession : AgentSession, AcpSessionHandler
 					~ `,"delta":{"type":"text_delta","text":"` ~ cpEscape(text) ~ `"}}`);
 		}
 
-		auto status = n.params.update.status;
+		auto status = u.status;
 		if (status == "completed" || status == "failed")
 		{
 			if (outputHandler_)
@@ -1110,190 +1148,6 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			completedItems ~= activeItem;
 			activeItem = CompletedItem.init;
 		}
-	}
-
-	// ----- Terminal capability handlers -----
-
-	private void handleTerminalCreate(string rawId, string rawLine)
-	{
-		@JSONPartial static struct EnvVar { string name; string value; }
-		@JSONPartial static struct CreateParams
-		{
-			string command;
-			string[] args;
-			string cwd;
-			EnvVar[] env;
-			long outputByteLimit;
-		}
-		@JSONPartial static struct CreateRequest { CreateParams params; }
-
-		CreateRequest req;
-		try req = jsonParse!CreateRequest(rawLine);
-		catch (Exception)
-		{
-			server.respondToRequest(rawId, `{"terminalId":""}`);
-			return;
-		}
-
-		auto p = req.params;
-		string[] cmdArgs = [p.command] ~ p.args;
-
-		string[] finalArgs;
-		string procWorkDir = null;
-
-		if (bwrapPrefix_ !is null)
-		{
-			auto prefix = bwrapPrefix_.dup;
-			if (p.cwd.length > 0)
-			{
-				for (size_t i = 0; i + 1 < prefix.length; i++)
-				{
-					if (prefix[i] == "--chdir")
-					{
-						prefix[i + 1] = p.cwd;
-						break;
-					}
-				}
-			}
-			finalArgs = prefix ~ cmdArgs;
-		}
-		else
-		{
-			finalArgs = cmdArgs;
-			procWorkDir = p.cwd.length > 0 ? p.cwd : workDir;
-		}
-
-		string[string] procEnv = null;
-		if (p.env.length > 0)
-		{
-			import std.process : environment;
-			procEnv = environment.toAA();
-			foreach (ref ev; p.env)
-				procEnv[ev.name] = ev.value;
-		}
-
-		size_t byteLimit = p.outputByteLimit > 0 ? cast(size_t) p.outputByteLimit : 1024 * 1024;
-
-		auto terminalId = "term_" ~ to!string(nextTerminalId_++);
-		terminals[terminalId] = new TerminalProcess(finalArgs, procEnv, procWorkDir, byteLimit);
-
-		server.respondToRequest(rawId, `{"terminalId":"` ~ cpEscape(terminalId) ~ `"}`);
-	}
-
-	private void handleTerminalOutput(string rawId, string rawLine)
-	{
-		@JSONPartial static struct OutParams { string terminalId; }
-		@JSONPartial static struct OutReq { OutParams params; }
-
-		OutReq req;
-		try req = jsonParse!OutReq(rawLine);
-		catch (Exception)
-		{
-			server.respondToRequest(rawId, `{"output":"","truncated":false}`);
-			return;
-		}
-
-		auto tp = req.params.terminalId in terminals;
-		if (!tp)
-		{
-			server.respondToRequest(rawId, `{"output":"","truncated":false}`);
-			return;
-		}
-
-		auto term = *tp;
-		auto trunc = term.truncated ? "true" : "false";
-		string resp = `{"output":"` ~ cpEscape(term.output()) ~ `","truncated":` ~ trunc;
-		if (term.done)
-		{
-			auto sig = term.exitSignal();
-			if (sig !is null)
-				resp ~= `,"exitStatus":{"signal":"` ~ cpEscape(sig) ~ `"}`;
-			else
-				resp ~= `,"exitStatus":{"exitCode":` ~ to!string(term.exitCode()) ~ `}`;
-		}
-		resp ~= `}`;
-		server.respondToRequest(rawId, resp);
-	}
-
-	private void handleTerminalWaitForExit(string rawId, string rawLine)
-	{
-		@JSONPartial static struct WaitParams { string terminalId; }
-		@JSONPartial static struct WaitReq { WaitParams params; }
-
-		WaitReq req;
-		try req = jsonParse!WaitReq(rawLine);
-		catch (Exception)
-		{
-			server.respondToRequest(rawId, `{"exitCode":0}`);
-			return;
-		}
-
-		auto tid = req.params.terminalId;
-		auto tp = tid in terminals;
-		if (!tp)
-		{
-			server.respondToRequest(rawId, `{"exitCode":0}`);
-			return;
-		}
-
-		auto term = *tp;
-		if (term.done)
-		{
-			auto sig = term.exitSignal();
-			if (sig !is null)
-				server.respondToRequest(rawId, `{"signal":"` ~ cpEscape(sig) ~ `"}`);
-			else
-				server.respondToRequest(rawId, `{"exitCode":` ~ to!string(term.exitCode()) ~ `}`);
-			return;
-		}
-
-		pendingWaitIds_[tid] = rawId;
-		term.onExit = () {
-			auto waitId = tid in pendingWaitIds_;
-			if (waitId)
-			{
-				auto sig = term.exitSignal();
-				if (sig !is null)
-					server.respondToRequest(*waitId, `{"signal":"` ~ cpEscape(sig) ~ `"}`);
-				else
-					server.respondToRequest(*waitId, `{"exitCode":` ~ to!string(term.exitCode()) ~ `}`);
-				pendingWaitIds_.remove(tid);
-			}
-		};
-	}
-
-	private void handleTerminalKill(string rawId, string rawLine)
-	{
-		@JSONPartial static struct KillParams { string terminalId; }
-		@JSONPartial static struct KillReq { KillParams params; }
-
-		KillReq req;
-		try req = jsonParse!KillReq(rawLine);
-		catch (Exception) {}
-
-		auto tp = req.params.terminalId in terminals;
-		if (tp)
-			(*tp).kill();
-		server.respondToRequest(rawId, `{}`);
-	}
-
-	private void handleTerminalRelease(string rawId, string rawLine)
-	{
-		@JSONPartial static struct RelParams { string terminalId; }
-		@JSONPartial static struct RelReq { RelParams params; }
-
-		RelReq req;
-		try req = jsonParse!RelReq(rawLine);
-		catch (Exception) {}
-
-		auto tid = req.params.terminalId;
-		auto tp = tid in terminals;
-		if (tp)
-		{
-			(*tp).forceKill();
-			terminals.remove(tid);
-		}
-		server.respondToRequest(rawId, `{}`);
 	}
 
 	// ----- Turn completion -----
@@ -1433,42 +1287,39 @@ private final class OneShotCopilotSession : AcpSessionHandler
 
 	this(Promise!string p) { promise_ = p; }
 
-	void handleServerRequest(string rawId, string method, string rawLine) {}
+	Promise!TerminalCreateResult handleTerminalCreate(TerminalCreateParams params)
+		{ return resolve(TerminalCreateResult("")); }
+	Promise!TerminalOutputResult handleTerminalOutput(TerminalIdParams params)
+		{ return resolve(TerminalOutputResult("", false)); }
+	Promise!TerminalExitResult handleTerminalWaitForExit(TerminalIdParams params)
+		{ return resolve(TerminalExitResult()); }
+	Promise!EmptyResult handleTerminalKill(TerminalIdParams params)
+		{ return resolve(EmptyResult()); }
+	Promise!EmptyResult handleTerminalRelease(TerminalIdParams params)
+		{ return resolve(EmptyResult()); }
 
-	void handleNotification(string method, string rawLine)
+	void handleSessionUpdate(JSONFragment update)
 	{
-		if (method != "session/update")
-			return;
-
 		@JSONPartial
-		static struct UpProbe
-		{
-			@JSONPartial static struct Update { string sessionUpdate; }
-			@JSONPartial static struct Params { Update update; }
-			Params params;
-		}
+		static struct UpProbe { string sessionUpdate; }
 
 		UpProbe up;
-		try up = jsonParse!UpProbe(rawLine);
+		try up = jsonParse!UpProbe(update.json);
 		catch (Exception) return;
 
-		if (up.params.update.sessionUpdate != "agent_message_chunk")
+		if (up.sessionUpdate != "agent_message_chunk")
 			return;
 
 		@JSONPartial
-		static struct ChunkProbe
-		{
-			@JSONPartial static struct Content { string text; }
-			@JSONPartial static struct Update { Content content; }
-			@JSONPartial static struct Params { Update update; }
-			Params params;
-		}
+		static struct Content { string text; }
+		@JSONPartial
+		static struct Chunk { Content content; }
 
-		ChunkProbe c;
-		try c = jsonParse!ChunkProbe(rawLine);
+		Chunk c;
+		try c = jsonParse!Chunk(update.json);
 		catch (Exception) return;
 
-		text_ ~= c.params.update.content.text;
+		text_ ~= c.content.text;
 	}
 
 	void handleStderr(string) {}

@@ -1,10 +1,73 @@
 module cydo.agent.acp;
 
-import std.conv : to;
-
-import ae.utils.json : JSONFragment, JSONPartial, jsonParse;
+import ae.net.asockets : IConnection;
+import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher,
+	RPCFlatten, RPCName, RPCNamedParams;
+import ae.net.jsonrpc.codec : JsonRpcCodec;
+import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial;
+import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.process : AgentProcess;
+
+// ---------------------------------------------------------------------------
+// Param/result structs for ACP server-initiated methods.
+// ---------------------------------------------------------------------------
+
+// ---- Permission ----
+
+@RPCFlatten @JSONPartial
+struct PermissionParams
+{
+	@JSONPartial static struct Option { string optionId; string kind; }
+	Option[] options;
+}
+
+struct PermissionOutcome { string outcome; @JSONOptional string optionId; }
+struct PermissionResult { PermissionOutcome outcome; }
+
+// ---- Terminal requests ----
+
+@RPCFlatten @JSONPartial
+struct TerminalCreateParams
+{
+	string sessionId;
+	string command;
+	string[] args;
+	@JSONOptional string cwd;
+	@JSONPartial static struct EnvVar { string name; string value; }
+	@JSONOptional EnvVar[] env;
+	@JSONOptional long outputByteLimit;
+}
+
+struct TerminalCreateResult { string terminalId; }
+
+@RPCFlatten @JSONPartial
+struct TerminalIdParams { string sessionId; string terminalId; }
+
+struct TerminalOutputResult
+{
+	string output;
+	bool truncated;
+	@JSONOptional JSONFragment exitStatus;
+}
+
+struct TerminalExitResult
+{
+	@JSONOptional @JSONName("exitCode") int exitCode;
+	@JSONOptional string signal;
+}
+
+struct EmptyResult {}
+
+// ---- Session update ----
+
+@RPCFlatten @JSONPartial
+struct SessionUpdateParams
+{
+	string sessionId;
+	JSONFragment update;
+}
 
 // ---------------------------------------------------------------------------
 // AcpSessionHandler — per-session event sink wired up by CopilotSession.
@@ -12,10 +75,118 @@ import cydo.agent.process : AgentProcess;
 
 package interface AcpSessionHandler
 {
-	void handleNotification(string method, string rawLine);
-	void handleServerRequest(string rawId, string method, string rawLine);
+	// Terminal server-initiated requests.
+	Promise!TerminalCreateResult handleTerminalCreate(TerminalCreateParams params);
+	Promise!TerminalOutputResult handleTerminalOutput(TerminalIdParams params);
+	Promise!TerminalExitResult handleTerminalWaitForExit(TerminalIdParams params);
+	Promise!EmptyResult handleTerminalKill(TerminalIdParams params);
+	Promise!EmptyResult handleTerminalRelease(TerminalIdParams params);
+
+	// Session update notification (receives the `update` field, not the full line).
+	void handleSessionUpdate(JSONFragment update);
+
+	// Unchanged.
 	void handleStderr(string line);
 	void handleExit(int status);
+}
+
+// ---------------------------------------------------------------------------
+// IAcpServer — methods the ACP server calls on us.
+// ---------------------------------------------------------------------------
+
+@RPCNamedParams
+private interface IAcpServer
+{
+	@RPCName("session/request_permission")
+	Promise!PermissionResult requestPermission(PermissionParams params);
+
+	@RPCName("terminal/create")
+	Promise!TerminalCreateResult terminalCreate(TerminalCreateParams params);
+
+	@RPCName("terminal/output")
+	Promise!TerminalOutputResult terminalOutput(TerminalIdParams params);
+
+	@RPCName("terminal/wait_for_exit")
+	Promise!TerminalExitResult terminalWaitForExit(TerminalIdParams params);
+
+	@RPCName("terminal/kill")
+	Promise!EmptyResult terminalKill(TerminalIdParams params);
+
+	@RPCName("terminal/release")
+	Promise!EmptyResult terminalRelease(TerminalIdParams params);
+
+	@RPCName("session/update")
+	Promise!void sessionUpdate(SessionUpdateParams params);
+}
+
+// ---------------------------------------------------------------------------
+// AcpServerRouter — routes incoming requests/notifications to sessions.
+// ---------------------------------------------------------------------------
+
+private class AcpServerRouter : IAcpServer
+{
+	private AcpProcess server;
+
+	this(AcpProcess s) { server = s; }
+
+	Promise!PermissionResult requestPermission(PermissionParams params)
+	{
+		string optionId = "";
+		foreach (ref opt; params.options)
+		{
+			if (opt.kind == "allow_once")
+			{
+				optionId = opt.optionId;
+				break;
+			}
+		}
+		if (optionId.length > 0)
+			return resolve(PermissionResult(PermissionOutcome("selected", optionId)));
+		else
+			return resolve(PermissionResult(PermissionOutcome("allow")));
+	}
+
+	Promise!TerminalCreateResult terminalCreate(TerminalCreateParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			return (*session).handleTerminalCreate(params);
+		return resolve(TerminalCreateResult(""));
+	}
+
+	Promise!TerminalOutputResult terminalOutput(TerminalIdParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			return (*session).handleTerminalOutput(params);
+		return resolve(TerminalOutputResult("", false));
+	}
+
+	Promise!TerminalExitResult terminalWaitForExit(TerminalIdParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			return (*session).handleTerminalWaitForExit(params);
+		return resolve(TerminalExitResult());
+	}
+
+	Promise!EmptyResult terminalKill(TerminalIdParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			return (*session).handleTerminalKill(params);
+		return resolve(EmptyResult());
+	}
+
+	Promise!EmptyResult terminalRelease(TerminalIdParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			return (*session).handleTerminalRelease(params);
+		return resolve(EmptyResult());
+	}
+
+	Promise!void sessionUpdate(SessionUpdateParams params)
+	{
+		if (auto session = params.sessionId in server.sessions)
+			(*session).handleSessionUpdate(params.update);
+		return resolve();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -27,13 +198,11 @@ package interface AcpSessionHandler
 class AcpProcess
 {
 	private AgentProcess process;
-	private int nextRequestId = 1;
+	private JsonRpcCodec codec;
+	private JsonRpcDispatcher!IAcpServer serverDispatcher;
 
 	enum State { starting, initializing, ready, failed, dead }
 	private State state_ = State.starting;
-
-	// Pending JSON-RPC response callbacks, keyed by request id.
-	private void delegate(string result)[int] pendingCallbacks;
 
 	// Session routing: sessionId → handler
 	private AcpSessionHandler[string] sessions;
@@ -45,9 +214,11 @@ class AcpProcess
 	{
 		process = new AgentProcess(args, env, workDir);
 
-		process.onStdoutLine = (string line) {
-			handleLine(line);
-		};
+		IConnection connection = process.connection;
+		codec = new JsonRpcCodec(connection);
+		auto router = new AcpServerRouter(this);
+		serverDispatcher = jsonRpcDispatcher!IAcpServer(router);
+		codec.handleRequest = &serverDispatcher.dispatch;
 
 		process.onStderrLine = (string line) {
 			bool routed = false;
@@ -102,30 +273,22 @@ class AcpProcess
 			readyQueue ~= dg;
 	}
 
-	/// Send a JSON-RPC request with a result callback.
-	void sendRequest(string method, string params,
-		void delegate(string result) onResult)
+	/// Send a JSON-RPC request, returning a promise for the response.
+	Promise!JsonRpcResponse sendRequest(string method, string params)
 	{
-		auto id = nextRequestId++;
-		pendingCallbacks[id] = onResult;
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ to!string(id)
-			~ `,"method":"` ~ method ~ `","params":` ~ params ~ `}`);
+		JsonRpcRequest req;
+		req.method = method;
+		req.params = JSONFragment(params);
+		return codec.sendRequest(req);
 	}
 
 	/// Send a JSON-RPC notification (no id, no response expected).
 	void sendNotification(string method, string params)
 	{
-		process.writeLine(
-			`{"jsonrpc":"2.0","method":"` ~ method ~ `","params":` ~ params ~ `}`);
-	}
-
-	/// Respond to a server-initiated request. rawId is the raw JSON value of
-	/// the id field (may be int or string).
-	void respondToRequest(string rawId, string result)
-	{
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ rawId ~ `,"result":` ~ result ~ `}`);
+		JsonRpcRequest req;
+		req.method = method;
+		req.params = JSONFragment(params);
+		codec.sendNotification(req);
 	}
 
 	// ---- Initialization handshake ----
@@ -134,199 +297,18 @@ class AcpProcess
 	{
 		state_ = State.initializing;
 		sendRequest("initialize",
-			`{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"cydo","version":"0.1.0"}}`,
-			(string result) {
-				state_ = State.ready;
-				auto queue = readyQueue;
-				readyQueue = null;
-				foreach (dg; queue)
-					dg();
-			});
-	}
-
-	// ---- JSON-RPC message dispatcher ----
-
-	private void handleLine(string line)
-	{
-		@JSONPartial
-		static struct RpcProbe
-		{
-			JSONFragment id;
-			string method;
-		}
-
-		RpcProbe probe;
-		try
-			probe = jsonParse!RpcProbe(line);
-		catch (Exception)
-			return;
-
-		bool hasId = probe.id.json !is null && probe.id.json.length > 0;
-		bool hasMethod = probe.method.length > 0;
-
-		if (hasMethod && hasId)
-			handleServerRequest(probe.id.json, probe.method, line);
-		else if (hasMethod)
-			handleNotification(probe.method, line);
-		else if (hasId)
-		{
-			int numId;
-			try
-				numId = to!int(probe.id.json);
-			catch (Exception)
-				return;
-			handleResponse(numId, line);
-		}
-	}
-
-	private void handleResponse(int id, string line)
-	{
-		auto cb = id in pendingCallbacks;
-		if (!cb)
-			return;
-
-		@JSONPartial
-		static struct ResponseData
-		{
-			JSONFragment result;
-		}
-
-		ResponseData data;
-		try
-			data = jsonParse!ResponseData(line);
-		catch (Exception)
-			return;
-
-		// Check for JSON-RPC error response
-		@JSONPartial
-		static struct ErrorCheck { JSONFragment error; }
-		ErrorCheck ec;
-		try ec = jsonParse!ErrorCheck(line);
-		catch (Exception) {}
-		if (ec.error.json !is null && ec.error.json.length > 0)
-		{
-			import std.stdio : stderr;
-			stderr.writeln("[acp/error-response] id=" ~ to!string(id) ~ " error=" ~ ec.error.json);
-		}
-
-		auto callback = *cb;
-		pendingCallbacks.remove(id);
-		callback(data.result.json !is null ? data.result.json : "{}");
-	}
-
-	private void handleNotification(string method, string line)
-	{
-		// Route to session by sessionId in params.
-		@JSONPartial
-		static struct SessionProbe
-		{
-			@JSONPartial
-			static struct Params
+			`{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"cydo","version":"0.1.0"}}`)
+		.then((JsonRpcResponse resp) {
+			if (resp.isError)
 			{
-				string sessionId;
-			}
-			Params params;
-		}
-
-		SessionProbe sp;
-		try
-			sp = jsonParse!SessionProbe(line);
-		catch (Exception)
-			return;
-
-		if (auto session = sp.params.sessionId in sessions)
-			(*session).handleNotification(method, line);
-	}
-
-	private void handleServerRequest(string rawId, string method, string line)
-	{
-		if (method == "session/request_permission")
-		{
-			// Auto-approve by selecting the first allow_once option.
-			@JSONPartial
-			static struct PermOption
-			{
-				string optionId;
-				string kind;
-			}
-
-			@JSONPartial
-			static struct PermProbe
-			{
-				@JSONPartial
-				static struct Params
-				{
-					PermOption[] options;
-				}
-				Params params;
-			}
-
-			PermProbe pp;
-			try
-				pp = jsonParse!PermProbe(line);
-			catch (Exception) {}
-
-			string optionId = "";
-			foreach (ref opt; pp.params.options)
-			{
-				if (opt.kind == "allow_once")
-				{
-					optionId = opt.optionId;
-					break;
-				}
-			}
-
-			if (optionId.length > 0)
-				respondToRequest(rawId,
-					`{"outcome":{"outcome":"selected","optionId":"` ~ acpEscape(optionId) ~ `"}}`);
-			else
-				respondToRequest(rawId, `{"outcome":{"outcome":"allow"}}`);
-			return;
-		}
-
-		// Route terminal/* methods to the session handler.
-		if (method.length > 9 && method[0 .. 9] == "terminal/")
-		{
-			@JSONPartial
-			static struct SessionProbe
-			{
-				@JSONPartial
-				static struct Params { string sessionId; }
-				Params params;
-			}
-
-			SessionProbe sp;
-			try
-				sp = jsonParse!SessionProbe(line);
-			catch (Exception) {}
-
-			if (auto session = sp.params.sessionId in sessions)
-			{
-				(*session).handleServerRequest(rawId, method, line);
+				state_ = State.failed;
 				return;
 			}
-		}
-
-		// Unknown / unroutable — method-not-found.
-		process.writeLine(
-			`{"jsonrpc":"2.0","id":` ~ rawId
-			~ `,"error":{"code":-32601,"message":"Method not supported"}}`);
+			state_ = State.ready;
+			auto queue = readyQueue;
+			readyQueue = null;
+			foreach (dg; queue)
+				dg();
+		});
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-private:
-
-string acpEscape(string s)
-{
-	import std.array : replace;
-	return s
-		.replace(`\`, `\\`)
-		.replace(`"`, `\"`)
-		.replace("\n", `\n`)
-		.replace("\r", `\r`)
-		.replace("\t", `\t`);
 }
