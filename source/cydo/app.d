@@ -2110,7 +2110,9 @@ class App : ToolsBackend
 			return;
 		tasks[parentTid].processQueue.setGoal(ProcessState.Alive).then(() {
 			actuallyDeliverBatchResults(parentTid);
-		}).ignoreResult();
+		}).except((Exception e) {
+			errorf("deliverBatchResults: failed for parent %d: %s", parentTid, e.msg);
+		});
 	}
 
 	private void actuallyDeliverBatchResults(int parentTid)
