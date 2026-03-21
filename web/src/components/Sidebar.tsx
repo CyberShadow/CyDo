@@ -300,7 +300,7 @@ function flattenTree(
       relationType: t.relationType,
       statusClass: computeStatusClass(t),
       title: t.title || `Task ${t.tid}`,
-      iconName: typeInfo?.icon,
+      iconName: typeInfo?.icon ?? t.taskType,
       isArchive: false,
       hasPendingQuestion: !!t.hasPendingQuestion,
     });

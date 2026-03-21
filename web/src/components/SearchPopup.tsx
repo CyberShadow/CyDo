@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { TaskTypeInfo } from "../useSessionManager";
-import { TaskTypeIcon } from "./TaskTypeIcon";
+import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
   tasks: Map<number, TaskState>;
@@ -94,8 +94,7 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
             else if (t.resumable) statusClass = "resumable";
             else if (t.status === "completed") statusClass = "completed";
             else if (t.status === "failed") statusClass = "failed";
-            const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
-            const hasIcon = typeInfo?.icon != null;
+            const hasIcon = hasTaskTypeIcon(t.taskType, taskTypes);
             return (
               <div
                 key={t.tid}

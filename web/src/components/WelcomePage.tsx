@@ -1,6 +1,6 @@
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
-import { TaskTypeIcon } from "./TaskTypeIcon";
+import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -41,8 +41,7 @@ export function WelcomePage({
     else if (t.status === "failed") statusClass = "failed";
     else if (t.resumable) statusClass = "resumable";
     else if (t.status === "completed") statusClass = "completed";
-    const typeInfo = taskTypes.find((tt) => tt.name === t.taskType);
-    if (typeInfo?.icon) {
+    if (hasTaskTypeIcon(t.taskType, taskTypes)) {
       return (
         <TaskTypeIcon
           taskType={t.taskType}

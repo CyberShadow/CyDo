@@ -75,6 +75,17 @@ export function ensureIconStyles() {
   document.head.appendChild(style);
 }
 
+/** Check whether a task type has a known icon (matches TaskTypeIcon's fallback logic). */
+export function hasTaskTypeIcon(
+  taskType: string | undefined,
+  taskTypes: TaskTypeInfo[],
+): boolean {
+  if (!taskType) return false;
+  const typeInfo = taskTypes.find((tt) => tt.name === taskType);
+  const iconName = typeInfo?.icon ?? taskType;
+  return iconName in rawIcons;
+}
+
 interface TaskTypeIconProps {
   taskType?: string;
   taskTypes: TaskTypeInfo[];
@@ -87,7 +98,7 @@ export function TaskTypeIcon({
   class: className,
 }: TaskTypeIconProps) {
   const typeInfo = taskTypes.find((tt) => tt.name === taskType);
-  const iconName = typeInfo?.icon;
+  const iconName = typeInfo?.icon ?? taskType;
 
   if (!iconName || !rawIcons[iconName]) return null;
 
