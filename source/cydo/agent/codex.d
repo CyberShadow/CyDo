@@ -744,12 +744,8 @@ class CodexAgent : Agent
 
 	string translateLiveEvent(string rawLine)
 	{
-		// Codex emits agnostic format natively, but internally-generated
-		// stderr/exit events (type:"stderr", type:"exit") still need renaming
-		// to process/stderr and process/exit.  translateClaudeEvent handles
-		// those; all agnostic-format Codex events pass through unchanged.
-		import cydo.agent.claude : translateClaudeEvent;
-		return translateClaudeEvent(rawLine);
+		// Codex emits agnostic-format events natively; no translation needed.
+		return rawLine;
 	}
 
 	bool isTurnResult(string rawLine)

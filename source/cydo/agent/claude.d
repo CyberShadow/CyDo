@@ -697,7 +697,7 @@ string resolveClaudeBinary()
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.
 /// Returns null for events that should be consumed (not forwarded).
-package string translateClaudeEvent(string rawLine)
+private string translateClaudeEvent(string rawLine)
 {
 	@JSONPartial
 	static struct TypeProbe
