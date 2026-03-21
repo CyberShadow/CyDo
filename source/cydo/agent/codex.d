@@ -555,7 +555,8 @@ class CodexAgent : Agent
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
 					{ warningf("thread/resume error: %s", e.msg); }
-					session.onThreadStarted(result, resumeSessionId, model, workDir);
+					session.onThreadStarted(result, resumeSessionId, model, workDir,
+						resp.result.json);
 				});
 			}
 			else
@@ -590,7 +591,8 @@ class CodexAgent : Agent
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
 					{ warningf("thread/start error: %s", e.msg); }
-					session.onThreadStarted(result, null, model, workDir);
+					session.onThreadStarted(result, null, model, workDir,
+						resp.result.json);
 				});
 			}
 		});
@@ -971,7 +973,7 @@ class CodexSession : AgentSession
 
 	/// Called when thread/start or thread/resume response arrives.
 	package void onThreadStarted(ThreadStartResult result, string resumeId,
-		string model, string workDir)
+		string model, string workDir, string rawResultJson)
 	{
 		this.model = model;
 		this.workDir = workDir;
@@ -992,8 +994,8 @@ class CodexSession : AgentSession
 		sessionId = threadId;
 		server.registerSession(threadId, this);
 
-		// Emit synthetic session/init.
-		import cydo.agent.protocol : SessionInitEvent;
+		// Emit synthetic session/init with raw RPC response as _raw.
+		import cydo.agent.protocol : SessionInitEvent, injectRawField;
 		SessionInitEvent initEv;
 		initEv.session_id      = threadId;
 		initEv.model           = model;
@@ -1003,6 +1005,8 @@ class CodexSession : AgentSession
 		initEv.permission_mode = "dangerously-skip-permissions";
 		initEv.agent           = "codex";
 		auto initEvent = toJson(initEv);
+		if (rawResultJson.length > 0)
+			initEvent = injectRawField(initEvent, rawResultJson);
 
 		if (outputHandler_)
 			outputHandler_(initEvent);
