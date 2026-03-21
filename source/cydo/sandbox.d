@@ -3,7 +3,7 @@ module cydo.sandbox;
 import std.file : exists, isSymlink, readLink, readText;
 import std.path : buildPath, dirName, expandTilde;
 import std.process : environment;
-import std.stdio : stderr;
+import std.logger : tracef, warningf;
 
 import cydo.agent.agent : Agent;
 import cydo.config : GitIdentityConfig, PathMode, SandboxConfig;
@@ -57,7 +57,7 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 		if (exists(resolved))
 			expanded[resolved] = mode;
 		else
-			stderr.writefln("sandbox: skipping non-existent path: %s", resolved);
+			warningf("sandbox: skipping non-existent path: %s", resolved);
 	}
 	result.paths = expanded;
 
@@ -240,7 +240,7 @@ void cleanup(ref ResolvedSandbox sandbox)
 		try
 			remove(path);
 		catch (Exception e)
-			stderr.writefln("sandbox: failed to remove temp file %s: %s", path, e.msg);
+			warningf("sandbox: failed to remove temp file %s: %s", path, e.msg);
 	}
 	sandbox.tempFiles = null;
 }
@@ -339,7 +339,7 @@ string resolveNixCurrentSystem()
 		try
 			return readLink(path);
 		catch (Exception e)
-		{ stderr.writeln("nixCurrentSystem: readLink failed: ", e.msg); return ""; }
+		{ tracef("nixCurrentSystem: readLink failed: %s", e.msg); return ""; }
 	}
 	return "";
 }

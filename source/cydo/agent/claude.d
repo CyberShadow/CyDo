@@ -3,7 +3,7 @@ module cydo.agent.claude;
 import std.conv : to;
 import std.format : format;
 import std.path : dirName, expandTilde;
-import std.stdio : stderr;
+import std.logger : errorf, tracef, warningf;
 
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
@@ -105,7 +105,7 @@ class ClaudeCodeAgent : Agent
 				return probe.session_id;
 		}
 		catch (Exception e)
-		{ stderr.writeln("extractSessionId: parse error: ", e.msg); }
+		{ tracef("extractSessionId: parse error: %s", e.msg); }
 		return null;
 	}
 
@@ -128,7 +128,7 @@ class ClaudeCodeAgent : Agent
 			return "";
 		}
 		catch (Exception e)
-		{ stderr.writeln("extractResultText: parse error: ", e.msg); return ""; }
+		{ tracef("extractResultText: parse error: %s", e.msg); return ""; }
 	}
 
 	string extractAssistantText(string line)
@@ -185,7 +185,7 @@ class ClaudeCodeAgent : Agent
 			return result;
 		}
 		catch (Exception e)
-		{ stderr.writeln("extractAssistantText: parse error: ", e.msg); return ""; }
+		{ tracef("extractAssistantText: parse error: %s", e.msg); return ""; }
 	}
 
 	string extractUserText(string line)
@@ -230,7 +230,7 @@ class ClaudeCodeAgent : Agent
 			return result;
 		}
 		catch (Exception e)
-		{ stderr.writeln("extractUserContent: all parse attempts failed: ", e.msg); return ""; }
+		{ tracef("extractUserContent: all parse attempts failed: %s", e.msg); return ""; }
 	}
 
 	void setModelAliases(string[string] aliases)
@@ -334,7 +334,7 @@ class ClaudeCodeAgent : Agent
 					if (qop.operation == "enqueue")
 						ids ~= format!"enqueue-%d"(lineNum);
 				}
-				catch (Exception e) { stderr.writeln("history scan: queue op parse error: ", e.msg); }
+				catch (Exception e) { tracef("history scan: queue op parse error: %s", e.msg); }
 				continue;
 			}
 			if (!line.canFind(`"type":"user"`) && !line.canFind(`"type":"assistant"`))
@@ -371,10 +371,10 @@ class ClaudeCodeAgent : Agent
 				import ae.utils.json : jsonParse, JSONPartial;
 				@JSONPartial static struct QueueOpProbe { string operation; }
 				try { return jsonParse!QueueOpProbe(line).operation == "enqueue"; }
-				catch (Exception e) { stderr.writeln("matchesForkId: queue op parse error: ", e.msg); return false; }
+				catch (Exception e) { tracef("matchesForkId: queue op parse error: %s", e.msg); return false; }
 			}
 			catch (Exception e)
-			{ stderr.writeln("matchesForkId: error: ", e.msg); return false; }
+			{ tracef("matchesForkId: error: %s", e.msg); return false; }
 		}
 		return line.canFind(`"uuid":"` ~ forkId ~ `"`);
 	}
@@ -448,7 +448,7 @@ class ClaudeCodeAgent : Agent
 			], env, null, true); // noStdin
 		catch (Exception e)
 		{
-			stderr.writeln("completeOneShot: failed to spawn claude: ", e.msg);
+			errorf("completeOneShot: failed to spawn claude: %s", e.msg);
 			promise.reject(new Exception("failed to spawn claude: " ~ e.msg));
 			return promise;
 		}
@@ -719,7 +719,7 @@ private string translateClaudeEventInner(string rawLine)
 	try
 		probe = jsonParse!TypeProbe(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateEvent: type probe parse error: ", e.msg); return rawLine; }
+	{ tracef("translateEvent: type probe parse error: %s", e.msg); return rawLine; }
 
 	switch (probe.type)
 	{
@@ -812,7 +812,7 @@ private string translateSessionInit(string rawLine)
 	try
 		raw = jsonParse!ClaudeInit(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateSystemInit: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "session/init"); }
+	{ tracef("translateSystemInit: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "session/init"); }
 
 	SessionInitEvent ev;
 	ev.session_id    = raw.session_id;
@@ -894,7 +894,7 @@ private string translateAssistantMessage(string rawLine)
 	try
 		raw = jsonParse!ClaudeAssistant(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateAssistant: parse error: ", e.msg); return renameType(rawLine, "message/assistant"); }
+	{ tracef("translateAssistant: parse error: %s", e.msg); return renameType(rawLine, "message/assistant"); }
 
 	// Build normalized content blocks
 	ContentBlock[] content;
@@ -933,7 +933,7 @@ private string translateAssistantMessage(string rawLine)
 			usage.input_tokens  = u.input_tokens;
 			usage.output_tokens = u.output_tokens;
 		}
-		catch (Exception e) { stderr.writeln("translateAssistant: usage parse error: ", e.msg); }
+		catch (Exception e) { tracef("translateAssistant: usage parse error: %s", e.msg); }
 	}
 
 	AssistantMessageEvent ev;
@@ -997,7 +997,7 @@ private string normalizeUserMessage(string rawLine)
 	try
 		raw = jsonParse!ClaudeUser(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateUser: parse error: ", e.msg); return renameType(rawLine, "message/user"); }
+	{ tracef("translateUser: parse error: %s", e.msg); return renameType(rawLine, "message/user"); }
 
 	UserMessageEvent ev;
 	ev.content            = raw.message.content;
@@ -1066,7 +1066,7 @@ private string normalizeTurnResult(string rawLine)
 	try
 		raw = jsonParse!ClaudeResult(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateResult: parse error: ", e.msg); return renameType(rawLine, "turn/result"); }
+	{ tracef("translateResult: parse error: %s", e.msg); return renameType(rawLine, "turn/result"); }
 
 	TurnResultEvent ev;
 	ev.subtype            = raw.subtype;
@@ -1125,7 +1125,7 @@ private string translateStreamEvent(string rawLine)
 	try
 		inner = jsonParse!InnerProbe(innerEvent);
 	catch (Exception e)
-	{ stderr.writeln("translateStreamEvent: inner probe parse error: ", e.msg); return rawLine; }
+	{ tracef("translateStreamEvent: inner probe parse error: %s", e.msg); return rawLine; }
 
 	string newType;
 	switch (inner.type)
@@ -1162,7 +1162,7 @@ private string translateStreamEvent(string rawLine)
 					return toJson(ev);
 				}
 			}
-			catch (Exception e) { stderr.writeln("translateStreamEvent: thinking delta parse error: ", e.msg); }
+			catch (Exception e) { tracef("translateStreamEvent: thinking delta parse error: %s", e.msg); }
 			newType = "stream/block_delta";
 			break;
 		}
@@ -1347,7 +1347,7 @@ private string normalizeTaskStarted(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskStarted(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateTaskStarted: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/started"); }
+	{ tracef("translateTaskStarted: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/started"); }
 
 	TaskStartedEvent ev;
 	ev.task_id      = raw.task_id;
@@ -1391,7 +1391,7 @@ private string normalizeTaskNotification(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskNotification(rawLine);
 	catch (Exception e)
-	{ stderr.writeln("translateTaskNotification: parse error: ", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/notification"); }
+	{ tracef("translateTaskNotification: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/notification"); }
 
 	TaskNotificationEvent ev;
 	ev.task_id     = raw.task_id;

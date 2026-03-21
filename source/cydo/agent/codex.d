@@ -1,8 +1,8 @@
 module cydo.agent.codex;
 
 import std.conv : to;
+import std.logger : errorf, tracef, warningf;
 import std.path : buildPath, dirName;
-import std.stdio : stderr;
 
 import ae.net.asockets : ConnectionAdapter, IConnection;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher,
@@ -304,7 +304,7 @@ class LoggingAdapter : ConnectionAdapter
 	override void onReadData(Data data)
 	{
 		data.enter((scope contents) {
-			stderr.writeln("[", name, "] < ", cast(string)contents);
+			tracef("[%s] < %s", name, cast(string)contents);
 		});
 		super.onReadData(data);
 	}
@@ -313,7 +313,7 @@ class LoggingAdapter : ConnectionAdapter
 	{
 		foreach (ref datum; data)
 			datum.enter((scope contents) {
-				stderr.writeln("[", name, "] > ", cast(string)contents);
+				tracef("[%s] > %s", name, cast(string)contents);
 			});
 		super.send(data, priority);
 	}
@@ -554,7 +554,7 @@ class CodexAgent : Agent
 					try
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
-					{ stderr.writeln("thread/resume error: ", e.msg); }
+					{ warningf("thread/resume error: %s", e.msg); }
 					session.onThreadStarted(result, resumeSessionId, model, workDir);
 				});
 			}
@@ -589,7 +589,7 @@ class CodexAgent : Agent
 					try
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
-					{ stderr.writeln("thread/start error: ", e.msg); }
+					{ warningf("thread/start error: %s", e.msg); }
 					session.onThreadStarted(result, null, model, workDir);
 				});
 			}
@@ -636,12 +636,12 @@ class CodexAgent : Agent
 			if (probe.type == "session/init" && probe.session_id.length > 0)
 				return probe.session_id;
 
-			stderr.writeln("Unexpected session/init event: ", line);
+			warningf("Unexpected session/init event: %s", line);
 			return null;
 		}
 		catch (Exception e)
 		{
-			stderr.writeln("Error parsing session id: ", e.msg);
+			warningf("Error parsing session id: %s", e.msg);
 			return null;
 		}
 	}
@@ -665,12 +665,12 @@ class CodexAgent : Agent
 			if (probe.type == "turn/result")
 				return probe.result;
 
-			stderr.writeln("Unexpected turn/result event: ", line);
+			warningf("Unexpected turn/result event: %s", line);
 			return "";
 		}
 		catch (Exception e)
 		{
-			stderr.writeln("Error parsing result: ", e.msg);
+			warningf("Error parsing result: %s", e.msg);
 			return "";
 		}
 	}
@@ -708,7 +708,7 @@ class CodexAgent : Agent
 		}
 		catch (Exception e)
 		{
-			stderr.writeln("Error parsing assistant message: ", e.msg);
+			tracef("Error parsing assistant message: %s", e.msg);
 			return "";
 		}
 	}
@@ -750,7 +750,7 @@ class CodexAgent : Agent
 		}
 		catch (Exception e)
 		{
-			stderr.writeln("Error reading Codex session history: ", e.msg);
+			warningf("Error reading Codex session history: %s", e.msg);
 			return null;
 		}
 	}
@@ -866,7 +866,6 @@ class CodexAgent : Agent
 
 	Promise!string completeOneShot(string prompt, string modelClass)
 	{
-		import std.stdio : stderr;
 		import std.string : strip;
 
 		auto promise = new Promise!string;
@@ -886,7 +885,7 @@ class CodexAgent : Agent
 			], null, null, true); // noStdin
 		catch (Exception e)
 		{
-			stderr.writeln("completeOneShot: failed to spawn codex: ", e.msg);
+			errorf("completeOneShot: failed to spawn codex: %s", e.msg);
 			promise.reject(new Exception("failed to spawn codex: " ~ e.msg));
 			return promise;
 		}
@@ -909,7 +908,7 @@ class CodexAgent : Agent
 			{
 				auto msg = "codex exited with status " ~ status.to!string;
 				if (stderrText.length > 0)
-					stderr.writeln("completeOneShot: ", msg, "\n", stderrText);
+					errorf("completeOneShot: %s\n%s", msg, stderrText);
 				promise.reject(new Exception(msg));
 			}
 			else
@@ -1430,7 +1429,7 @@ string translateRolloutSessionMeta(string line)
 	try
 		probe = jsonParse!Probe(line);
 	catch (Exception e)
-	{ stderr.writeln("translateHistoryEvent: probe parse error: ", e.msg); return null; }
+	{ tracef("translateHistoryEvent: probe parse error: %s", e.msg); return null; }
 
 	if (probe.payload.id.length == 0)
 		return null;
@@ -1482,7 +1481,7 @@ string translateRolloutResponseItem(string line, string forkId = null)
 	try
 		probe = jsonParse!Probe(line);
 	catch (Exception e)
-	{ stderr.writeln("translateHistoryStreamEvent: probe parse error: ", e.msg); return null; }
+	{ tracef("translateHistoryStreamEvent: probe parse error: %s", e.msg); return null; }
 
 	auto ptype = probe.payload.type;
 
@@ -1557,7 +1556,7 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 			}
 		}
 		catch (Exception e)
-		{ stderr.writeln("translateHistoryEvent: content parse error: ", e.msg); }
+		{ tracef("translateHistoryEvent: content parse error: %s", e.msg); }
 
 		auto msgId = "msg_" ~ randomUUID().toString();
 		AssistantMessageEvent aev;
@@ -1675,7 +1674,7 @@ string translateRolloutReasoning(string summaryJson, string contentJson)
 				if (item.text.length > 0)
 					thinkingText ~= item.text;
 		}
-		catch (Exception e) { stderr.writeln("extractThinkingBlock: parse error: ", e.msg); }
+		catch (Exception e) { tracef("extractThinkingBlock: parse error: %s", e.msg); }
 	}
 
 	if (thinkingText.length == 0)
@@ -1714,7 +1713,7 @@ string translateRolloutEventMsg(string line)
 	try
 		probe = jsonParse!Probe(line);
 	catch (Exception e)
-	{ stderr.writeln("translateStreamEvent: probe parse error: ", e.msg); return null; }
+	{ tracef("translateStreamEvent: probe parse error: %s", e.msg); return null; }
 
 	if (probe.payload.type == "task_complete")
 	{
@@ -1757,7 +1756,7 @@ string extractCommandInput(JSONFragment action)
 		return toJson(CommandInput(cmd, ""));
 	}
 	catch (Exception e)
-	{ stderr.writeln("extractBashInput: parse error: ", e.msg); return `{}`; }
+	{ tracef("extractBashInput: parse error: %s", e.msg); return `{}`; }
 }
 
 /// Get the codex binary name/path.

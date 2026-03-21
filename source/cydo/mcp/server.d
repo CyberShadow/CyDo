@@ -8,7 +8,7 @@ version (Posix):
 
 import std.conv : to;
 import std.process : environment;
-import std.stdio : stderr;
+import std.logger : infof, tracef, warningf;
 
 import ae.net.asockets : socketManager;
 import ae.net.http.client : HttpClient, UnixConnector;
@@ -29,7 +29,7 @@ void runMcpServer()
 	auto tid = environment.get("CYDO_TID", "0");
 	auto socketPath = environment.get("CYDO_SOCKET", "");
 
-	stderr.writefln("CyDo MCP proxy starting (tid=%s, socket=%s)", tid, socketPath);
+	infof("CyDo MCP proxy starting (tid=%s, socket=%s)", tid, socketPath);
 
 	auto conn = stdioLDJsonRpcConnection();
 	auto codec = new JsonRpcCodec(conn);
@@ -39,7 +39,7 @@ void runMcpServer()
 	};
 
 	socketManager.loop();
-	stderr.writefln("CyDo MCP proxy exiting");
+	infof("CyDo MCP proxy exiting");
 }
 
 private:
@@ -103,7 +103,7 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string socketPat
 	auto backendRequest = BackendToolCall(tid, params.name, params.arguments);
 	auto bodyJson = toJson(backendRequest);
 
-	stderr.writefln("MCP proxy: tools/call %s → backend", params.name);
+	tracef("MCP proxy: tools/call %s → backend", params.name);
 
 	// Connect to backend via UNIX socket — no timeout (sub-tasks can run for minutes/hours)
 	import ae.net.http.common : HttpRequest, HttpResponse;
@@ -131,7 +131,7 @@ Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string socketPat
 			auto responseText = cast(string) response.data[].joinData().toGC();
 			if (response.status / 100 != 2)
 			{
-				stderr.writefln("MCP proxy: backend returned HTTP %d", response.status);
+				warningf("MCP proxy: backend returned HTTP %d", response.status);
 				promise.fulfill(JsonRpcResponse.failure(request.id,
 					JsonRpcErrorCode.internalError, "Backend returned HTTP " ~ to!string(response.status)));
 				return;
