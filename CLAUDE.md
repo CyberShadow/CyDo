@@ -22,7 +22,7 @@ make clean        # Remove build/, web/dist/, web/node_modules/
 ```bash
 nix flake check   # Run all tests — the single "all tests pass" command
 ```
-Run `nix flake check` after every unit of work and before committing.
+Always run `nix flake check` after every unit of work and before committing. Do not skip or substitute with partial checks.
 
 Tests are Playwright e2e specs (`tests/e2e/`) that run against a mock LLM API server (`tests/mock-api/server.mjs`).
 
