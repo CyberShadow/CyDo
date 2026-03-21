@@ -7,7 +7,7 @@
 import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
-import { mkdirSync, rmSync, symlinkSync, cpSync } from "fs";
+import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -59,7 +59,7 @@ async function waitForBackend(
   await Promise.race([polling, processExited]);
 }
 
-function spawnBackend(port: number, workDir: string, workerHome: string): ChildProcess {
+function spawnBackend(port: number, workDir: string, workerHome: string, codexHome?: string): ChildProcess {
   return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
@@ -67,6 +67,7 @@ function spawnBackend(port: number, workDir: string, workerHome: string): ChildP
       ...process.env,
       HOME: workerHome,
       CYDO_LISTEN_PORT: String(port),
+      ...(codexHome ? { CODEX_HOME: codexHome } : {}),
     },
     stdio: ["ignore", "ignore", "inherit"],
   });
@@ -95,8 +96,16 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       `${workerHome}/.config/cydo/config.yaml`,
     );
 
+    // Per-test CODEX_HOME to avoid contention between parallel tests
+    const codexHome = `${workDir}/codex-home`;
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      `${codexHome}/config.toml`,
+      'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
+    );
+
     const baseURL = `http://localhost:${port}`;
-    let proc = spawnBackend(port, workDir, workerHome);
+    let proc = spawnBackend(port, workDir, workerHome, codexHome);
     try {
       await waitForBackend(baseURL, proc);
     } catch (e) {
@@ -118,7 +127,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
           break;
         }
       }
-      proc = spawnBackend(port, workDir, workerHome);
+      proc = spawnBackend(port, workDir, workerHome, codexHome);
       await waitForBackend(baseURL, proc);
     };
 

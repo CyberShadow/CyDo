@@ -2,7 +2,7 @@ import { test as base, expect } from "@playwright/test";
 import type { Page, WorkerInfo } from "@playwright/test";
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
-import { mkdirSync, cpSync, rmSync, symlinkSync } from "fs";
+import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "fs";
 
 type AgentType = "claude" | "codex";
 
@@ -75,6 +75,14 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
         `${workerHome}/.config/cydo/config.yaml`,
       );
 
+      // Per-worker CODEX_HOME to avoid contention between parallel workers
+      const codexHome = `${workDir}/codex-home`;
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(
+        `${codexHome}/config.toml`,
+        'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
+      );
+
       // Start backend
       const proc = spawn(process.env.CYDO_BIN!, [], {
         detached: true,
@@ -83,6 +91,7 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
           ...process.env,
           HOME: workerHome,
           CYDO_LISTEN_PORT: String(port),
+          CODEX_HOME: codexHome,
         },
         stdio: ["ignore", "ignore", "inherit"],
       });
