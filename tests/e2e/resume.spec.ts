@@ -8,6 +8,7 @@ import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
+import { createInterface } from "readline";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -60,17 +61,23 @@ async function waitForBackend(
 }
 
 function spawnBackend(port: number, workDir: string, workerHome: string, codexHome?: string): ChildProcess {
-  return spawn(process.env.CYDO_BIN!, [], {
+  const proc = spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
     env: {
       ...process.env,
       HOME: workerHome,
       CYDO_LISTEN_PORT: String(port),
+      CYDO_LOG_LEVEL: "trace",
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
     },
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "ignore", "pipe"],
   });
+  if (proc.stderr) {
+    const rl = createInterface({ input: proc.stderr });
+    rl.on("line", (line) => console.error(`[backend:${port}] ${line}`));
+  }
+  return proc;
 }
 
 // Per-test unique sequence number. Each test in a worker gets a different
@@ -149,6 +156,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
         break;
       }
     }
+
     rmSync(workDir, { recursive: true, force: true });
   },
   baseURL: async ({ restartableBackend }, use) => {

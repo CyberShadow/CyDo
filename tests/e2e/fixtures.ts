@@ -3,6 +3,7 @@ import type { Page, WorkerInfo } from "@playwright/test";
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { createInterface } from "readline";
 
 type AgentType = "claude" | "codex";
 
@@ -91,10 +92,15 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
           ...process.env,
           HOME: workerHome,
           CYDO_LISTEN_PORT: String(port),
+          CYDO_LOG_LEVEL: "trace",
           CODEX_HOME: codexHome,
         },
-        stdio: ["ignore", "ignore", "inherit"],
+        stdio: ["ignore", "ignore", "pipe"],
       });
+      if (proc.stderr) {
+        const rl = createInterface({ input: proc.stderr });
+        rl.on("line", (line) => console.error(`[backend:${port}] ${line}`));
+      }
 
       // Wait for ready (poll up to 30s)
       const baseURL = `http://localhost:${port}`;

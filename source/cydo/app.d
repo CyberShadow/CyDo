@@ -4,7 +4,8 @@ import core.lifetime : move;
 
 import std.file : exists, isFile;
 import std.format : format;
-import std.stdio : File, stderr;
+import std.logger : tracef, infof, warningf, errorf;
+import std.stdio : File;
 import std.string : representation;
 
 import ae.net.asockets : socketManager, DisconnectType;
@@ -118,19 +119,20 @@ class App : ToolsBackend
 			auto types = loadTaskTypes(taskTypesPath, userTypesPath);
 			auto errors = validateTaskTypes(types, taskTypesDir);
 			foreach (e; errors)
-				stderr.writefln("  WARN: task type: %s", e);
+				warningf("task type: %s", e);
 			taskTypesCache = types;
 			return taskTypesCache;
 		}
 		catch (Exception e)
 		{
-			stderr.writefln("Warning: task types file changed but failed to parse, keeping previous version: %s", e.msg);
+			warningf("task types file changed but failed to parse, keeping previous version: %s", e.msg);
 			return taskTypesCache;
 		}
 	}
 
 	void start()
 	{
+		initLogLevel();
 		persistence = Persistence("data/cydo.db");
 		createPidFile("cydo.pid", "data/");
 		config = loadConfig();
@@ -146,9 +148,9 @@ class App : ToolsBackend
 		// Load task type definitions
 		auto types = getTaskTypes();
 		if (types.length == 0)
-			stderr.writefln("Warning: no task types loaded");
+			warningf("no task types loaded");
 		else
-			stderr.writefln("Loaded %d task types", types.length);
+			infof("Loaded %d task types", types.length);
 
 		// Discover projects in all workspaces
 		discoverAllWorkspaces();
@@ -218,7 +220,7 @@ class App : ToolsBackend
 
 			auto addr = new UnixAddress(listenSocket);
 			server.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM, cast(ProtocolType) 0, addr, listenSocket)]);
-			stderr.writefln("CyDo server listening on unix:%s", listenSocket);
+			infof("CyDo server listening on unix:%s", listenSocket);
 		}
 		else
 		{
@@ -229,7 +231,7 @@ class App : ToolsBackend
 			auto port = server.listen(listenPort, listenAddr);
 			auto proto = sslCert ? "https" : "http";
 			auto addrStr = listenAddr ? listenAddr : "0.0.0.0";
-			stderr.writefln("CyDo server listening on %s://%s:%d", proto, addrStr, port);
+			infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
 		}
 	}
 
@@ -395,7 +397,7 @@ class App : ToolsBackend
 		};
 		auto addr = new UnixAddress(mcpSocketPath);
 		mcpServer.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM, cast(ProtocolType) 0, addr, mcpSocketPath)]);
-		stderr.writefln("MCP socket listening on %s", mcpSocketPath);
+		infof("MCP socket listening on %s", mcpSocketPath);
 	}
 
 	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
@@ -573,7 +575,7 @@ class App : ToolsBackend
 
 		if (description.length == 0)
 			generateTitle(childTid, prompt);
-		stderr.writefln("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
+		infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
 		return promise;
 	}
@@ -607,7 +609,7 @@ class App : ToolsBackend
 		}
 
 		td.pendingContinuation = continuation;
-		stderr.writefln("SwitchMode: tid=%d continuation=%s (type %s → %s)",
+		infof("SwitchMode: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
 		return McpResult(
@@ -649,7 +651,7 @@ class App : ToolsBackend
 
 		td.pendingContinuation = continuation;
 		td.handoffPrompt = prompt;
-		stderr.writefln("Handoff: tid=%d continuation=%s (type %s → %s)",
+		infof("Handoff: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
 		return McpResult(
@@ -767,7 +769,7 @@ class App : ToolsBackend
 				resultText = "User has answered your questions: " ~ parts.join(". ") ~ ".";
 			}
 		}
-		catch (Exception e) { stderr.writeln("AskUserQuestion response parse error: ", e.msg); } // use raw JSON as fallback
+		catch (Exception e) { warningf("AskUserQuestion response parse error: %s", e.msg); } // use raw JSON as fallback
 
 		pending.fulfill(McpResult(resultText, isError));
 		pendingAskUserQuestions.remove(tid);
@@ -1119,7 +1121,7 @@ class App : ToolsBackend
 		try
 			generateSuggestions(tid);
 		catch (Exception e)
-			stderr.writeln("Error generating suggestions: ", e);
+			warningf("Error generating suggestions: %s", e.msg);
 	}
 
 	private void handleInterruptMsg(WsMessage json)
@@ -1368,7 +1370,7 @@ class App : ToolsBackend
 				try
 					generateSuggestions(tid);
 				catch (Exception e)
-					stderr.writeln("Error generating suggestions: ", e);
+					warningf("Error generating suggestions: %s", e.msg);
 			}
 
 			broadcastTaskUpdate(tid);
@@ -1505,10 +1507,10 @@ class App : ToolsBackend
 			{
 				td.hasWorktree = true;
 				persistence.setHasWorktree(td.tid, true);
-				stderr.writefln("Created worktree for task %d: %s", td.tid, wtPath);
+				infof("Created worktree for task %d: %s", td.tid, wtPath);
 			}
 			else
-				stderr.writefln("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
+				errorf("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
 		}
 		else if (inheritFrom.length > 0)
 		{
@@ -1517,7 +1519,7 @@ class App : ToolsBackend
 			symlink(inheritFrom, wtPath);
 			td.hasWorktree = true;
 			persistence.setHasWorktree(td.tid, true);
-			stderr.writefln("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
+			infof("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
 		}
 	}
 
@@ -1624,7 +1626,7 @@ class App : ToolsBackend
 					try
 						generateSuggestions(tid);
 					catch (Exception e)
-						stderr.writeln("Error generating suggestions: ", e);
+						warningf("Error generating suggestions: %s", e.msg);
 				}
 				broadcastTaskUpdate(tid);
 			}
@@ -1644,6 +1646,8 @@ class App : ToolsBackend
 		td.session.onExit = (int exitCode) {
 			import ae.utils.json : toJson;
 			import cydo.agent.protocol : ProcessExitEvent;
+			tracef("onExit: tid=%d exitCode=%d status=%s",
+				tid, exitCode, tid in tasks ? tasks[tid].status : "(gone)");
 			ProcessExitEvent ev;
 			ev.code = exitCode;
 			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
@@ -1712,6 +1716,8 @@ class App : ToolsBackend
 			{
 				// Post-restart path: no promise — batch deliver when all children done
 				auto parentTid = *parentTidPtr;
+				tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
+					tid, tasks[tid].status, parentTid);
 				if (parentTid in tasks)
 				{
 					// Check if ALL children of this parent are completed/failed
@@ -1722,6 +1728,8 @@ class App : ToolsBackend
 							&& tasks[childTid].status != "completed"
 							&& tasks[childTid].status != "failed")
 						{
+							tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
+								childTid, tasks[childTid].status);
 							allDone = false;
 							break;
 						}
@@ -1731,6 +1739,8 @@ class App : ToolsBackend
 						deliverBatchResults(parentTid);
 					// else: wait — remaining children will trigger this check
 				}
+				else
+					tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
 			}
 
 			// Store the best result text for UI display
@@ -1771,7 +1781,7 @@ class App : ToolsBackend
 
 		if (typeDef is null)
 		{
-			stderr.writefln("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
+			errorf("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
 			broadcastTaskUpdate(tid);
@@ -1781,7 +1791,7 @@ class App : ToolsBackend
 		auto contDefP = contKey in typeDef.continuations;
 		if (contDefP is null)
 		{
-			stderr.writefln("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
+			errorf("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
 				contKey, td.taskType, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
@@ -1793,14 +1803,14 @@ class App : ToolsBackend
 		auto newTypeDef = getTaskTypes().byName(contDef.task_type);
 		if (newTypeDef is null)
 		{
-			stderr.writefln("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
+			errorf("spawnContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
 			td.status = "failed";
 			persistence.setStatus(tid, "failed");
 			broadcastTaskUpdate(tid);
 			return;
 		}
 
-		stderr.writefln("Continuation: tid=%d %s → %s (keep_context=%s)",
+		infof("Continuation: tid=%d %s → %s (keep_context=%s)",
 			tid, td.taskType, contDef.task_type, contDef.keep_context);
 
 		if (contDef.keep_context)
@@ -1946,15 +1956,25 @@ class App : ToolsBackend
 		import std.array : join;
 
 		if (parentTid !in tasks)
+		{
+			tracef("deliverBatchResults: parent tid=%d not in tasks, skipping", parentTid);
 			return;
+		}
 
 		auto td = &tasks[parentTid];
 		if (td.session is null || !td.session.alive)
+		{
+			warningf("deliverBatchResults: parent tid=%d session %s, deferring to next restart",
+				parentTid, td.session is null ? "is null" : "not alive");
 			return;  // Can't deliver — leave deps for next restart
+		}
 
 		auto children = childrenOf(parentTid);
 		if (children.length == 0)
+		{
+			tracef("deliverBatchResults: parent tid=%d has no children in taskDeps", parentTid);
 			return;
+		}
 
 		string[] resultJsons;
 		foreach (childTid; children)
@@ -1966,6 +1986,9 @@ class App : ToolsBackend
 
 		if (resultJsons.length == 0)
 			return;
+
+		infof("deliverBatchResults: delivering %d result(s) to parent tid=%d",
+			resultJsons.length, parentTid);
 
 		// Deliver single batch message
 		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
@@ -2013,7 +2036,7 @@ class App : ToolsBackend
 		if (toResume.length == 0)
 			return;
 
-		stderr.writefln("Resuming %d in-flight task(s) after restart", toResume.length);
+		infof("Resuming %d in-flight task(s) after restart", toResume.length);
 
 		// Resume order doesn't matter: children that already completed have
 		// their results in the DB; children still in-flight will deliver
@@ -2032,14 +2055,22 @@ class App : ToolsBackend
 					if (parentTid == tid && childTid in tasks
 						&& tasks[childTid].status != "completed" && tasks[childTid].status != "failed")
 					{
+						tracef("resumeInFlightTasks: tid=%d waiting, child tid=%d still %s",
+							tid, childTid, tasks[childTid].status);
 						allChildrenDone = false;
 						break;
 					}
 
 				if (allChildrenDone)
+				{
+					tracef("resumeInFlightTasks: tid=%d waiting, all children done — resuming with batch delivery", tid);
 					resumeAndDeliverResults(tid);
+				}
 				else
+				{
+					tracef("resumeInFlightTasks: tid=%d waiting, children still running — resuming without message", tid);
 					resumeWaitingTask(tid);
+				}
 			}
 			else if (status == "active")
 			{
@@ -2319,7 +2350,7 @@ class App : ToolsBackend
 			newEventJson = parseJSON(newTranslated);
 		}
 		catch (Exception e)
-		{ stderr.writeln("tryMergeStreamDeltas: JSON parse error: ", e.msg); return null; }
+		{ tracef("tryMergeStreamDeltas: JSON parse error: %s", e.msg); return null; }
 
 		// Navigate to delta objects
 		auto lastEvent = lastJson["event"];
@@ -2383,9 +2414,9 @@ class App : ToolsBackend
 				projInfos ~= ProjectInfo(p.name, p.path);
 			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
 
-			stderr.writefln("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
+			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
 			foreach (ref p; projects)
-				stderr.writefln("  - %s (%s)", p.name, p.path);
+				infof("  - %s (%s)", p.name, p.path);
 		}
 	}
 
@@ -2404,7 +2435,7 @@ class App : ToolsBackend
 
 		if (!exists(cfgDir))
 		{
-			stderr.writefln("Config directory %s does not exist, skipping config watch", cfgDir);
+			warningf("Config directory %s does not exist, skipping config watch", cfgDir);
 			return;
 		}
 
@@ -2445,11 +2476,11 @@ class App : ToolsBackend
 
 	private void onConfigChanged()
 	{
-		stderr.writefln("Config file changed, reloading...");
+		infof("Config file changed, reloading...");
 		auto result = reloadConfig();
 		if (result.isNull())
 		{
-			stderr.writefln("  Config reload failed (parse error), keeping current config");
+			warningf("Config reload failed (parse error), keeping current config");
 			return;
 		}
 		config = result.get();
@@ -2462,7 +2493,7 @@ class App : ToolsBackend
 		}
 		discoverAllWorkspaces();
 		broadcast(buildWorkspacesList());
-		stderr.writefln("  Config reloaded successfully");
+		infof("Config reloaded successfully");
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title
@@ -2660,7 +2691,7 @@ Conversation:
 			try
 				suggestionList = jsonParse!(string[])(result);
 			catch (Exception e)
-			{ stderr.writeln("generateSuggestions: failed to parse result: ", e.msg); return; }
+			{ warningf("generateSuggestions: failed to parse result: %s", e.msg); return; }
 
 			if (suggestionList.length > 0)
 			{
@@ -2845,7 +2876,7 @@ Conversation:
 			return result;
 		}
 		catch (Exception e)
-		{ stderr.writeln("extractAssistantText: all parse attempts failed: ", e.msg); return ""; }
+		{ tracef("extractAssistantText: all parse attempts failed: %s", e.msg); return ""; }
 	}
 
 	private static string abbreviateText(string text, size_t threshold)
@@ -2858,6 +2889,24 @@ Conversation:
 			return text;
 		auto keepEach = threshold / 2 - 3;
 		return text[0 .. keepEach] ~ " [...] " ~ text[$ - keepEach .. $];
+	}
+}
+
+/// Set globalLogLevel from CYDO_LOG_LEVEL env var (trace/info/warning/error).
+/// Defaults to info.
+private void initLogLevel()
+{
+	import std.logger : globalLogLevel, LogLevel;
+	import std.process : environment;
+
+	auto level = environment.get("CYDO_LOG_LEVEL", "info");
+	switch (level)
+	{
+		case "trace":    globalLogLevel = LogLevel.trace; break;
+		case "info":     globalLogLevel = LogLevel.info; break;
+		case "warning":  globalLogLevel = LogLevel.warning; break;
+		case "error":    globalLogLevel = LogLevel.error; break;
+		default:         globalLogLevel = LogLevel.info; break;
 	}
 }
 
