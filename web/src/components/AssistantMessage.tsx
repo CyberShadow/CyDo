@@ -223,7 +223,7 @@ export function AssistantMessage({
             <Fragment>
               <ToolCall
                 name={block.name}
-                input={tryParsePartialJson(block.text)}
+                input={(block.input as Record<string, unknown> | undefined) ?? tryParsePartialJson(block.text)}
                 onViewFile={onViewFile}
               />
               {block.output && (

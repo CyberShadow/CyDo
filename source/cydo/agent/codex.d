@@ -248,7 +248,7 @@ private class CodexServerRouter : ICodexServer
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params)
 	{
 		routeToSession(params.threadId,
-			(s) => s.handleDelta(params, "text_delta"));
+			(s) => s.handleDelta(params, "output_delta"));
 		return resolve();
 	}
 
@@ -681,39 +681,21 @@ class CodexAgent : Agent
 	string extractAssistantText(string line)
 	{
 		import std.algorithm : canFind;
-		if (!line.canFind(`"message/assistant"`))
-			return "";
 
-		@JSONPartial
-		static struct ContentBlock
+		// New format: item/started with item_type=text
+		if (line.canFind(`"item/started"`))
 		{
-			string type;
-			string text;
-		}
-
-		@JSONPartial
-		static struct AssistantProbe
-		{
-			string type;
-			ContentBlock[] content;
+			@JSONPartial static struct ItemStartedProbe { string type; string item_type; string text; }
+			try
+			{
+				auto probe = jsonParse!ItemStartedProbe(line);
+				if (probe.type == "item/started" && probe.item_type == "text" && probe.text.length > 0)
+					return probe.text;
+			}
+			catch (Exception) {}
 		}
 
-		try
-		{
-			auto probe = jsonParse!AssistantProbe(line);
-			if (probe.type != "message/assistant")
-				return "";
-			string result;
-			foreach (ref block; probe.content)
-				if (block.type == "text")
-					result ~= block.text;
-			return result;
-		}
-		catch (Exception e)
-		{
-			tracef("Error parsing assistant message: %s", e.msg);
-			return "";
-		}
+		return "";
 	}
 
 	void setModelAliases(string[string] aliases)
@@ -758,7 +740,7 @@ class CodexAgent : Agent
 		}
 	}
 
-	string translateHistoryLine(string line, int lineNum)
+	string[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
 		import std.conv : to;
@@ -766,7 +748,10 @@ class CodexAgent : Agent
 		// Codex JSONL lines: { timestamp, type, payload }
 		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
 		if (line.canFind(`"type":"session_meta"`))
-			return translateRolloutSessionMeta(line);
+		{
+			auto t = translateRolloutSessionMeta(line);
+			return t !is null ? [t] : [];
+		}
 		else if (line.canFind(`"type":"response_item"`))
 		{
 			// Pass line-number fork ID for user/assistant messages
@@ -776,15 +761,18 @@ class CodexAgent : Agent
 			return translateRolloutResponseItem(line, forkId);
 		}
 		else if (line.canFind(`"type":"event_msg"`))
-			return translateRolloutEventMsg(line);
+		{
+			auto t = translateRolloutEventMsg(line);
+			return t !is null ? [t] : [];
+		}
 		// Skip turn_context, compacted, unknown
-		return null;
+		return [];
 	}
 
-	string translateLiveEvent(string rawLine)
+	string[] translateLiveEvent(string rawLine)
 	{
-		// Codex emits agnostic-format events natively; no translation needed.
-		return rawLine;
+		// CodexSession emits new-format events natively; pass through unchanged.
+		return [rawLine];
 	}
 
 	bool isTurnResult(string rawLine)
@@ -796,13 +784,15 @@ class CodexAgent : Agent
 	bool isUserMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/user"`);
+		// Codex JSONL: response_item with role=user
+		return rawLine.canFind(`"type":"response_item"`) && rawLine.canFind(`"role":"user"`);
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/assistant"`);
+		// Codex JSONL: response_item with role=assistant
+		return rawLine.canFind(`"type":"response_item"`) && rawLine.canFind(`"role":"assistant"`);
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -937,29 +927,15 @@ class CodexSession : AgentSession
 	private bool alive_;
 	private bool turnInProgress;
 
-	// Streaming state: block index counter (reset per turn).
-	private int blockIndex;
-	private string sessionId;
+	// Active item tracking for item/delta routing.
+	private string activeItemId_;
+	private string activeItemType_; // "text", "thinking", "tool_use", "user_message"
+	private int itemCounter_;       // monotonic counter for generating item IDs
 
-	// Turn accumulation for synthetic message/assistant at turn completion.
-	private struct CompletedItem
-	{
-		string type; // "text", "thinking", "tool_use"
-		string id;   // tool_use id
-		string name; // tool_use name
-		string text; // accumulated delta text (content for text/thinking, output for tools)
-		string input; // tool_use input JSON
-		bool isError; // whether tool execution reported an error
-	}
-	private CompletedItem activeItem;
-	private CompletedItem[] completedItems;
+	private string sessionId;
 
 	// Queued messages waiting for thread to be ready.
 	private string[] pendingMessages;
-
-	// Whether the active streaming item is a command execution.
-	// Used to suppress text_delta (command output goes to tool result, not streaming).
-	private bool activeItemIsCommand;
 
 	// Callbacks
 	package void delegate(string line) outputHandler_;
@@ -1054,9 +1030,8 @@ class CodexSession : AgentSession
 		else
 		{
 			turnInProgress = true;
-			blockIndex = 0;
-			completedItems = null;
-			activeItem = CompletedItem.init;
+			activeItemId_ = null;
+			activeItemType_ = null;
 
 			server.sendRequest("turn/start",
 				JSONFragment(toJson(TurnStartParams(
@@ -1123,47 +1098,58 @@ class CodexSession : AgentSession
 
 	package void handleItemStarted(ItemStartedParams params)
 	{
-		auto item = params.item;
+		import cydo.agent.protocol : ItemStartedEvent, injectRawField;
 
-		// Emit a message/user echo so the frontend confirms the pending placeholder.
+		auto item = params.item;
+		activeItemId_ = null;
+		activeItemType_ = null;
+
+		ItemStartedEvent ev;
+
 		if (item.type == "userMessage")
 		{
+			// Echo user message as item/started type=user_message.
 			if (item.content.json !is null && outputHandler_)
 			{
-				import cydo.agent.protocol : UserMessageEvent, injectRawField;
-				UserMessageEvent uev;
-				uev.content = item.content;
-				outputHandler_(injectRawField(toJson(uev), toJson(item)));
+				ev.item_type = "user_message";
+				// Extract text from content array: [{type:"input_text",text:"..."}]
+				@JSONPartial
+				static struct InputTextItem { @JSONOptional string text; }
+				string userText;
+				try
+				{
+					auto items = jsonParse!(InputTextItem[])(item.content.json);
+					foreach (ref i; items)
+						userText ~= i.text;
+				}
+				catch (Exception) {}
+				if (userText.length == 0)
+					userText = item.text;
+				ev.item_id = "codex-user-" ~ to!string(itemCounter_++);
+				ev.text = userText;
+				outputHandler_(injectRawField(toJson(ev), toJson(item)));
 			}
 			return;
 		}
 
-		auto idx = blockIndex++;
-		activeItem = CompletedItem.init;
-
-		import cydo.agent.protocol : BlockDescriptor, StreamBlockStartEvent,
-			StreamBlockDeltaEvent, StreamDelta;
-
-		BlockDescriptor blockDesc;
+		// Assign item ID: use native id if available, else generate one.
+		auto itemId = item.id.length > 0 ? item.id : "codex-item-" ~ to!string(itemCounter_++);
+		activeItemId_ = itemId;
 
 		switch (item.type)
 		{
 			case "agentMessage":
-				blockDesc.type = "text";
-				activeItem.type = "text";
+				activeItemType_ = "text";
+				ev.item_type = "text";
 				break;
 			case "reasoning":
-				blockDesc.type = "thinking";
-				activeItem.type = "thinking";
+				activeItemType_ = "thinking";
+				ev.item_type = "thinking";
 				break;
 			case "commandExecution":
-				blockDesc.type = "tool_use";
-				blockDesc.id = item.id;
-				blockDesc.name = "commandExecution";
-				activeItem.type = "tool_use";
-				activeItem.id = item.id;
-				activeItem.name = "commandExecution";
-				activeItemIsCommand = true;
+				activeItemType_ = "tool_use";
+				ev.item_type = "tool_use";
+				ev.name = "commandExecution";
 				// Build input JSON from the command string field.
 				string cmdInput;
 				if (item.command.length > 0)
@@ -1172,212 +1158,114 @@ class CodexSession : AgentSession
 					cmdInput = toJson(CommandInput(item.command, ""));
 				}
 				else
-				{
-					// Fall back to action fragment if present.
 					cmdInput = extractCommandInput(item.action);
-				}
-				activeItem.input = cmdInput;
+				if (cmdInput.length > 0 && cmdInput != `{}`)
+					ev.input = JSONFragment(cmdInput);
 				break;
 			case "fileChange":
-				blockDesc.type = "tool_use";
-				blockDesc.id = item.id;
-				blockDesc.name = "fileChange";
-				activeItem.type = "tool_use";
-				activeItem.id = item.id;
-				activeItem.name = "fileChange";
+				activeItemType_ = "tool_use";
+				ev.item_type = "tool_use";
+				ev.name = "fileChange";
 				break;
 			case "mcpToolCall":
-				// v2 protocol uses "tool" and "server" fields.
-				string toolDisplayName;
+				activeItemType_ = "tool_use";
+				ev.item_type = "tool_use";
 				if (item.tool.length > 0)
-				{
-					if (item.server.length > 0)
-						toolDisplayName = item.server ~ "__" ~ item.tool;
-					else
-						toolDisplayName = item.tool;
-				}
+					ev.name = item.server.length > 0 ? item.server ~ "__" ~ item.tool : item.tool;
 				else
-					toolDisplayName = item.name.length > 0 ? item.name : "unknown";
-				blockDesc.type = "tool_use";
-				blockDesc.id = item.id;
-				blockDesc.name = toolDisplayName;
-				activeItem.type = "tool_use";
-				activeItem.id = item.id;
-				activeItem.name = toolDisplayName;
+					ev.name = item.name.length > 0 ? item.name : "unknown";
 				break;
 			default:
-				blockDesc.type = "text";
-				activeItem.type = "text";
+				activeItemType_ = "text";
+				ev.item_type = "text";
 				break;
 		}
 
+		ev.item_id = itemId;
+
+		// If item/started already contains text (e.g. during history replay),
+		// include it directly in the event.
+		if (item.text.length > 0)
+			ev.text = item.text;
+
 		if (outputHandler_)
-		{
-			import cydo.agent.protocol : injectRawField;
-			StreamBlockStartEvent ev;
-			ev.index = idx;
-			ev.content_block = blockDesc;
 			outputHandler_(injectRawField(toJson(ev), toJson(item)));
-		}
-
-		// Emit the command input as input_json_delta so the frontend renders
-		// the command during streaming (tool_use blocks need input to display).
-		if (activeItemIsCommand && activeItem.input.length > 0
-			&& activeItem.input != `{}` && outputHandler_)
-		{
-			StreamBlockDeltaEvent dev;
-			dev.index = idx;
-			dev.delta.type = "input_json_delta";
-			dev.delta.partial_json = activeItem.input;
-			outputHandler_(toJson(dev));
-		}
-
-		// If item/started already contains text (agentMessage with pre-populated
-		// content), emit a synthetic delta so the frontend has content to display.
-		if (item.text.length > 0 && outputHandler_)
-		{
-			import cydo.agent.protocol : injectRawField;
-			activeItem.text = item.text;
-			StreamBlockDeltaEvent dev;
-			dev.index = idx;
-			dev.delta.type = "text_delta";
-			dev.delta.text = item.text;
-			outputHandler_(injectRawField(toJson(dev), toJson(item)));
-		}
 	}
 
-	/// Handle any delta notification (text, thinking, or tool output).
+	/// Handle any delta notification (text, thinking, or command output).
 	package void handleDelta(DeltaParams params, string deltaType)
 	{
-		activeItem.text ~= params.delta;
-
-		// Don't stream command output as text deltas — the output will be
-		// included in the tool result synthesized from item/completed.
-		if (activeItemIsCommand)
+		if (activeItemId_.length == 0 || outputHandler_ is null)
 			return;
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
-		if (outputHandler_)
-		{
-			import cydo.agent.protocol : StreamBlockDeltaEvent, StreamDelta;
-			StreamBlockDeltaEvent ev;
-			ev.index = idx;
-			ev.delta.type = deltaType;
-			ev.delta.text = params.delta;
-			outputHandler_(toJson(ev));
-		}
+		import cydo.agent.protocol : ItemDeltaEvent;
+		ItemDeltaEvent ev;
+		ev.item_id = activeItemId_;
+		ev.delta_type = deltaType;
+		ev.content = params.delta;
+		outputHandler_(toJson(ev));
 	}
 
 	package void handleItemCompleted(ItemCompletedParams params)
 	{
 		// Skip if no active item (e.g., userMessage items are not tracked).
-		if (activeItem.type.length == 0)
+		if (activeItemId_.length == 0)
 			return;
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
+		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent, injectRawField;
+		ItemCompletedEvent ev;
+		ev.item_id = activeItemId_;
+		ev.is_error = params.item.is_error;
+
+		auto itemId = activeItemId_;
+		auto itemType = activeItemType_;
+
+		if (itemType == "tool_use" && params.item.aggregatedOutput.length > 0)
+			ev.output = params.item.aggregatedOutput;
 
 		if (outputHandler_)
-		{
-			import cydo.agent.protocol : StreamBlockStopEvent, injectRawField;
-			StreamBlockStopEvent ev;
-			ev.index = idx;
 			outputHandler_(injectRawField(toJson(ev), toJson(params.item)));
+
+		// Emit item/result for tool_use items so the frontend can display the output.
+		// item/result must come AFTER item/completed so the tool_use block is
+		// already in content[] when reduceItemResult searches for it.
+		if (itemType == "tool_use" && outputHandler_)
+		{
+			ItemResultEvent resEv;
+			resEv.item_id = itemId;
+			if (params.item.aggregatedOutput.length > 0)
+				resEv.content = JSONFragment(toJson(params.item.aggregatedOutput));
+			else
+				resEv.content = JSONFragment(`""`);
+			outputHandler_(toJson(resEv));
 		}
 
-		activeItem.isError = params.item.is_error;
-
-		// For commands, use aggregatedOutput from item/completed as the tool
-		// result text (deltas were suppressed during streaming).
-		if (activeItemIsCommand && params.item.aggregatedOutput.length > 0)
-			activeItem.text = params.item.aggregatedOutput;
-
-		activeItemIsCommand = false;
-		completedItems ~= activeItem;
-		activeItem = CompletedItem.init;
+		activeItemId_ = null;
+		activeItemType_ = null;
 	}
 
 	package void handleTurnCompleted()
 	{
-		import std.uuid : randomUUID;
-
 		turnInProgress = false;
 
-		// Flush any in-progress item (e.g. a long-running command that didn't
-		// get item/completed before the turn ended) so it's included in the
-		// synthetic message/assistant.
-		if (activeItem.type.length > 0)
-		{
-			if (outputHandler_)
-			{
-				import cydo.agent.protocol : StreamBlockStopEvent;
-				StreamBlockStopEvent stopEv;
-				stopEv.index = blockIndex > 0 ? blockIndex - 1 : 0;
-				outputHandler_(toJson(stopEv));
-			}
-			activeItemIsCommand = false;
-			completedItems ~= activeItem;
-			activeItem = CompletedItem.init;
-		}
+		// If an item is still active (e.g. a background command that hasn't
+		// completed), leave it uncompleted — do NOT flush with item/completed.
+		// This is the key fix for background commands: the turn ends while the
+		// command is still running.
+		activeItemId_ = null;
+		activeItemType_ = null;
 
-		// 1. stream/turn_stop
+		// 1. turn/stop
 		if (outputHandler_)
-			outputHandler_(`{"type":"stream/turn_stop"}`);
-
-		// 2. Synthetic message/assistant
-		if (completedItems.length > 0)
 		{
-			import cydo.agent.protocol : AssistantMessageEvent, ContentBlock,
-				UsageInfo, UserMessageEvent, ToolResultBlock;
-
-			auto msgId = "msg_" ~ randomUUID().toString();
-
-			ContentBlock[] contentBlocks;
-			foreach (ref ci; completedItems)
-			{
-				ContentBlock cb;
-				cb.type = ci.type;
-				if (ci.type == "text" || ci.type == "thinking")
-					cb.text = ci.text;
-				else if (ci.type == "tool_use")
-				{
-					cb.id   = ci.id;
-					cb.name = ci.name;
-					cb.input = JSONFragment(ci.input.length > 0 ? ci.input : `{}`);
-				}
-				contentBlocks ~= cb;
-			}
-
-			AssistantMessageEvent aev;
-			aev.id          = msgId;
-			aev.content     = contentBlocks;
-			aev.model       = model;
-			aev.stop_reason = "end_turn";
-			aev.usage       = UsageInfo(0, 0);
-
-			if (outputHandler_)
-				outputHandler_(toJson(aev));
-
-			// 3. Synthetic message/user with tool_result blocks
-			ToolResultBlock[] toolResults;
-			foreach (ref ci; completedItems)
-				if (ci.type == "tool_use")
-				{
-					ToolResultBlock tr;
-					tr.tool_use_id = ci.id;
-					tr.content = JSONFragment(toJson(ci.text));
-					tr.is_error = ci.isError;
-					toolResults ~= tr;
-				}
-
-			if (toolResults.length > 0 && outputHandler_)
-			{
-				UserMessageEvent uev;
-				uev.content = JSONFragment(toJson(toolResults));
-				outputHandler_(toJson(uev));
-			}
+			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
+			TurnStopEvent tsev;
+			tsev.model = model;
+			tsev.usage = UsageInfo(0, 0);
+			outputHandler_(toJson(tsev));
 		}
 
-		// 4. turn/result
+		// 2. turn/result
 		if (outputHandler_)
 		{
 			import cydo.agent.protocol : TurnResultEvent, UsageInfo;
@@ -1387,8 +1275,6 @@ class CodexSession : AgentSession
 			tre.usage = UsageInfo(0, 0);
 			outputHandler_(toJson(tre));
 		}
-
-		completedItems = null;
 	}
 }
 
@@ -1469,8 +1355,8 @@ string translateRolloutSessionMeta(string line)
 	return injectRawField(toJson(ev), line);
 }
 
-/// Translate a response_item rollout line → message/assistant or message/user.
-string translateRolloutResponseItem(string line, string forkId = null)
+/// Translate a response_item rollout line → item-based protocol events.
+string[] translateRolloutResponseItem(string line, string forkId = null)
 {
 	@JSONPartial
 	static struct Probe
@@ -1504,17 +1390,17 @@ string translateRolloutResponseItem(string line, string forkId = null)
 	try
 		probe = jsonParse!Probe(line);
 	catch (Exception e)
-	{ tracef("translateHistoryStreamEvent: probe parse error: %s", e.msg); return null; }
+	{ tracef("translateHistoryStreamEvent: probe parse error: %s", e.msg); return []; }
 
 	auto ptype = probe.payload.type;
 
-	string result;
+	string[] results;
 	if (ptype == "message")
-		result = translateRolloutMessage(probe.payload.role,
+		results = translateRolloutMessage(probe.payload.role,
 			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
 			forkId);
 	else if (ptype == "local_shell_call")
-		result = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
+		results = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
 			extractCommandInput(probe.payload.action));
 	else if (ptype == "function_call")
 	{
@@ -1525,29 +1411,37 @@ string translateRolloutResponseItem(string line, string forkId = null)
 			inputJson = argsJson;  // already a JSON object
 		else
 			inputJson = `{}`;
-		result = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
+		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
 			inputJson);
 	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")
-		result = translateRolloutToolResult(probe.payload.call_id,
+	{
+		auto r = translateRolloutToolResult(probe.payload.call_id,
 			probe.payload.output.json !is null ? probe.payload.output.json : `""`);
+		if (r !is null) results = [r];
+	}
 	else if (ptype == "reasoning")
-		result = translateRolloutReasoning(
+		results = translateRolloutReasoning(
 			probe.payload.summary.json !is null ? probe.payload.summary.json : "[]",
 			probe.payload.content.json);
 	else
-		return null;
+		return [];
+
+	if (results.length == 0)
+		return [];
 
 	import cydo.agent.protocol : injectRawField;
-	return result !is null ? injectRawField(result, line) : null;
+	string[] injected;
+	foreach (r; results)
+		injected ~= injectRawField(r, line);
+	return injected;
 }
 
-/// Translate a message response_item payload.
-string translateRolloutMessage(string role, string contentJson, string forkId = null)
+/// Translate a message response_item payload → item/started [+ item/completed].
+string[] translateRolloutMessage(string role, string contentJson, string forkId = null)
 {
 	import std.array : replace;
-	import std.uuid : randomUUID;
 
 	// Remap Codex content types (input_text/output_text) → agnostic "text"
 	auto content = contentJson
@@ -1556,7 +1450,7 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 
 	if (role == "assistant")
 	{
-		import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
+		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo;
 
 		// Parse content blocks from the JSON array string
 		@JSONPartial
@@ -1564,119 +1458,117 @@ string translateRolloutMessage(string role, string contentJson, string forkId = 
 		{
 			string type;
 			@JSONOptional string text;
-			@JSONOptional string id;
-			@JSONOptional string name;
-			@JSONOptional JSONFragment input;
 		}
 
-		ContentBlock[] blocks;
+		string[] events;
 		try
 		{
 			auto rawBlocks = jsonParse!(RawBlock[])(content);
-			foreach (ref rb; rawBlocks)
+			foreach (i, ref rb; rawBlocks)
 			{
-				ContentBlock cb;
-				cb.type = rb.type;
-				cb.text = rb.text;
-				cb.id   = rb.id;
-				cb.name = rb.name;
-				cb.input = rb.input;
-				blocks ~= cb;
+				auto itemId = "codex-hist-" ~ to!string(i);
+				ItemStartedEvent startEv;
+				startEv.item_id = itemId;
+				startEv.item_type = rb.type == "thinking" ? "thinking" : "text";
+				if (rb.text.length > 0)
+					startEv.text = rb.text;
+				events ~= toJson(startEv);
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = itemId;
+				if (rb.text.length > 0)
+					compEv.text = rb.text;
+				events ~= toJson(compEv);
 			}
 		}
 		catch (Exception e)
-		{ tracef("translateHistoryEvent: content parse error: %s", e.msg); }
+		{ tracef("translateRolloutMessage: content parse error: %s", e.msg); }
 
-		auto msgId = "msg_" ~ randomUUID().toString();
-		AssistantMessageEvent aev;
-		aev.id          = msgId;
-		aev.content     = blocks;
-		aev.model       = "";
-		aev.stop_reason = "end_turn";
-		aev.usage       = UsageInfo(0, 0);
+		TurnStopEvent tsev;
+		tsev.model = "";
+		tsev.usage = UsageInfo(0, 0);
 		if (forkId !is null)
-			aev.uuid = forkId;
-		return toJson(aev);
+			tsev.uuid = forkId;
+		events ~= toJson(tsev);
+		return events;
 	}
 	else // user, developer, system
 	{
-		import cydo.agent.protocol : UserMessageEvent;
-		UserMessageEvent ev;
-		ev.content = JSONFragment(content);
+		import cydo.agent.protocol : ItemStartedEvent;
+
+		// Extract text from the content array
+		@JSONPartial
+		static struct TextBlock { string type; @JSONOptional string text; }
+		string userText;
+		try
+		{
+			auto blocks = jsonParse!(TextBlock[])(content);
+			foreach (ref b; blocks)
+				if (b.type == "text")
+					userText ~= b.text;
+		}
+		catch (Exception) {}
+
+		ItemStartedEvent ev;
+		ev.item_id = "codex-user-hist";
+		ev.item_type = "user_message";
+		ev.text = userText;
 		if (forkId !is null)
 			ev.uuid = forkId;
-		return toJson(ev);
+		return [toJson(ev)];
 	}
 }
 
-/// Construct a message/assistant with a single tool_use content block.
-string translateRolloutToolUse(string callId, string toolName, string inputJson)
+/// Translate a tool_use response_item → item/started + item/completed.
+string[] translateRolloutToolUse(string callId, string toolName, string inputJson)
 {
 	import std.uuid : randomUUID;
-	import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
+	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent;
 
 	if (callId.length == 0)
 		callId = randomUUID().toString();
 
-	ContentBlock cb;
-	cb.type  = "tool_use";
-	cb.id    = callId;
-	cb.name  = toolName;
-	cb.input = JSONFragment(inputJson);
+	ItemStartedEvent startEv;
+	startEv.item_id = callId;
+	startEv.item_type = "tool_use";
+	startEv.name = toolName;
+	if (inputJson.length > 0 && inputJson != `{}`)
+		startEv.input = JSONFragment(inputJson);
 
-	auto msgId = "msg_" ~ randomUUID().toString();
-	AssistantMessageEvent aev;
-	aev.id          = msgId;
-	aev.content     = [cb];
-	aev.model       = "";
-	aev.stop_reason = "end_turn";
-	aev.usage       = UsageInfo(0, 0);
-	return toJson(aev);
+	ItemCompletedEvent compEv;
+	compEv.item_id = callId;
+	if (inputJson.length > 0 && inputJson != `{}`)
+		compEv.input = JSONFragment(inputJson);
+
+	return [toJson(startEv), toJson(compEv)];
 }
 
-/// Construct a message/user with a tool_result content block.
+/// Translate a tool_result response_item → item/result.
 string translateRolloutToolResult(string callId, string outputJson)
 {
-	import cydo.agent.protocol : ToolResultBlock, UserMessageEvent;
+	import cydo.agent.protocol : ItemResultEvent;
 
-	// outputJson might be a plain string or an object — extract text
-	string text;
+	// Wrap content in a JSON fragment — use as-is if it's a string value
+	string contentJson;
 	if (outputJson.length > 0 && outputJson[0] == '"')
-	{
-		// Plain string value — use as-is (already JSON-encoded)
-		text = outputJson;
-	}
+		contentJson = outputJson;
 	else
-	{
-		// Object or other — just stringify
-		text = `"(output)"`;
-	}
+		contentJson = `"(output)"`;
 
-	ToolResultBlock tr;
-	tr.tool_use_id = callId;
-	tr.content = JSONFragment(text);
-
-	UserMessageEvent ev;
-	ev.content = JSONFragment(toJson([tr]));
+	ItemResultEvent ev;
+	ev.item_id = callId;
+	ev.content = JSONFragment(contentJson);
 	return toJson(ev);
 }
 
-/// Construct a message/assistant with a thinking content block from reasoning.
-string translateRolloutReasoning(string summaryJson, string contentJson)
+/// Translate a reasoning response_item → item/started (thinking) + item/completed.
+string[] translateRolloutReasoning(string summaryJson, string contentJson)
 {
-	import std.uuid : randomUUID;
-
 	// Extract text from summary array: [{ text: "..." }, ...]
 	string thinkingText;
 	if (contentJson !is null && contentJson.length > 2)
 	{
-		// Try to extract reasoning text from content array
-		@JSONPartial
-		static struct ReasoningContent
-		{
-			string text;
-		}
-
+		@JSONPartial static struct ReasoningContent { string text; }
 		try
 		{
 			auto items = jsonParse!(ReasoningContent[])(contentJson);
@@ -1689,13 +1581,7 @@ string translateRolloutReasoning(string summaryJson, string contentJson)
 
 	if (thinkingText.length == 0 && summaryJson.length > 2)
 	{
-		// Fallback to summary
-		@JSONPartial
-		static struct SummaryItem
-		{
-			string text;
-		}
-
+		@JSONPartial static struct SummaryItem { string text; }
 		try
 		{
 			auto items = jsonParse!(SummaryItem[])(summaryJson);
@@ -1703,25 +1589,24 @@ string translateRolloutReasoning(string summaryJson, string contentJson)
 				if (item.text.length > 0)
 					thinkingText ~= item.text;
 		}
-		catch (Exception e) { tracef("extractThinkingBlock: parse error: %s", e.msg); }
+		catch (Exception e) { tracef("translateRolloutReasoning: parse error: %s", e.msg); }
 	}
 
 	if (thinkingText.length == 0)
-		return null;
+		return [];
 
-	import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
-	ContentBlock cb;
-	cb.type = "thinking";
-	cb.text = thinkingText; // normalized: text field, no signature
+	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent;
 
-	auto msgId = "msg_" ~ randomUUID().toString();
-	AssistantMessageEvent aev;
-	aev.id          = msgId;
-	aev.content     = [cb];
-	aev.model       = "";
-	aev.stop_reason = "end_turn";
-	aev.usage       = UsageInfo(0, 0);
-	return toJson(aev);
+	ItemStartedEvent startEv;
+	startEv.item_id = "codex-reasoning";
+	startEv.item_type = "thinking";
+	startEv.text = thinkingText;
+
+	ItemCompletedEvent compEv;
+	compEv.item_id = "codex-reasoning";
+	compEv.text = thinkingText;
+
+	return [toJson(startEv), toJson(compEv)];
 }
 
 /// Translate an event_msg rollout line → turn/result (for task_complete).

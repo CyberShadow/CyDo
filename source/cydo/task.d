@@ -122,16 +122,17 @@ struct QueueOperationProbe
 	string content;
 }
 
-/// Build a synthetic message/user JSON string with optional flags.
+/// Build a synthetic item/started (type=user_message) JSON string with optional flags.
 string buildSyntheticUserEvent(string text,
 	bool isSteering = false, bool pending = false)
 {
 	import ae.utils.json : toJson;
-	auto contentJson = toJson(text);
+	auto textJson = toJson(text);
+	// item_id for synthetic user messages — uses a fixed prefix so they're recognizable
 	string extra;
 	if (isSteering) extra ~= `,"is_steering":true`;
 	if (pending) extra ~= `,"pending":true`;
-	return `{"type":"message/user","content":` ~ contentJson ~ extra ~ `}`;
+	return `{"type":"item/started","item_id":"synthetic-user","item_type":"user_message","text":` ~ textJson ~ extra ~ `}`;
 }
 
 struct WsMessage

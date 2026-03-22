@@ -810,6 +810,8 @@ function reduceItemStartedUserMessage(
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
       extraFields: getExtras(event as Record<string, unknown>),
+      rawSource: event,
+      seq: getSeq(event),
     };
     const messages = event.is_meta
       ? [...state.messages, echoMsg]
@@ -831,6 +833,8 @@ function reduceItemStartedUserMessage(
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
       extraFields: getExtras(event as Record<string, unknown>),
+      rawSource: event,
+      seq: getSeq(event),
     };
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
@@ -937,7 +941,9 @@ export function reduceItemCompleted(
       type: "tool_use",
       id: event.item_id,
       name: block.name,
-      input: event.input ?? tryParseJson(block.text),
+      // event.input is only set via rollout path; live path carries the
+      // initial input in block.input (from item/started).
+      input: event.input ?? (block.input as Record<string, unknown> | undefined) ?? tryParseJson(block.text),
       ...(event._extras ? { _extras: event._extras } : {}),
     };
   } else {
@@ -1003,6 +1009,7 @@ export function reduceItemResult(
     toolUseId: event.item_id,
     content: event.content as import("./types").ToolResultContent,
     isError: event.is_error,
+    toolResult: event.tool_result,
   });
   messages[parentMsgIdx] = parentMsg;
 
@@ -1035,6 +1042,25 @@ export function reduceTurnStop(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
+      if (event._extras) updated.extraFields = event._extras;
+
+      // Attach turn/stop as rawSource so rawSource.uuid is available for
+      // fork/undo button visibility (uuid is the assistant message uuid).
+      const prevRaw = updated.rawSource;
+      updated.rawSource = prevRaw
+        ? Array.isArray(prevRaw)
+          ? [...(prevRaw as unknown[]), event]
+          : [prevRaw, event]
+        : event;
+      if (event.uuid) {
+        const prevSeq = updated.seq;
+        const newSeq = getSeq(event);
+        if (newSeq != null) {
+          updated.seq = prevSeq != null
+            ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
+            : newSeq;
+        }
+      }
 
       // Only clear streamingBlocks if empty — preserves uncompleted items
       if (updated.streamingBlocks!.length === 0) {

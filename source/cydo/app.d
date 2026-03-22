@@ -982,13 +982,15 @@ class App : ToolsBackend
 					auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
-					auto t = ta.translateHistoryLine(line, lineNum);
-					if (t !is null)
+					auto ts = ta.translateHistoryLine(line, lineNum);
+					if (ts.length > 0)
 					{
 						import std.string : indexOf;
 						import std.format : format;
 						auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
 						enum uuidPrefix = `"uuid":"`;
+						// Inject UUID into the first event (item/started type=user_message).
+						auto t = ts[0];
 						auto uIdx = t.indexOf(uuidPrefix);
 						if (uIdx >= 0)
 						{
@@ -998,7 +1000,7 @@ class App : ToolsBackend
 						}
 						else
 							t = t[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-						return [t];
+						return [t] ~ ts[1 .. $];
 					}
 					return [];
 				}
@@ -1012,16 +1014,14 @@ class App : ToolsBackend
 					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
-					auto t = ta.translateHistoryLine(line, lineNum);
-					return t !is null ? [synthetic, t] : [synthetic];
+					auto ts = ta.translateHistoryLine(line, lineNum);
+					return [synthetic] ~ ts;
 				}
 				// Other lines (file-history-snapshot, progress, etc.) are translated/dropped;
 				// stay in deferred mode waiting for type:"user" or type:"assistant".
-				auto t = ta.translateHistoryLine(line, lineNum);
-				return t !is null ? [t] : [];
+				return ta.translateHistoryLine(line, lineNum);
 			}
-			auto t = ta.translateHistoryLine(line, lineNum);
-			return t !is null ? [t] : [];
+			return ta.translateHistoryLine(line, lineNum);
 		});
 		td.historyLoaded = true;
 	}
@@ -2426,42 +2426,43 @@ class App : ToolsBackend
 			return; // unknown queue operation — consume silently
 		}
 
-		// Translate to agent-agnostic protocol
-		auto translated = agentForTask(tid).translateLiveEvent(rawLine);
-		if (translated is null)
-			return; // consumed event, don't forward
+		// Translate to agent-agnostic protocol (returns zero or more events).
+		auto translatedEvents = agentForTask(tid).translateLiveEvent(rawLine);
 
 		import cydo.agent.protocol : stripRawField;
 
-		if (tid in tasks)
+		foreach (translated; translatedEvents)
 		{
-			ensureHistoryLoaded(tid);
-			// Store full event (with _raw) in history
-			string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
-			auto historyData = Data(historyEnvelope.representation);
-			// Merge adjacent streaming deltas with matching type+index to keep
-			// history compact without reordering events.
-			if (!mergeStreamingDelta(tid, translated, historyData))
-				tasks[tid].history ~= historyData;
-		}
+			if (tid in tasks)
+			{
+				ensureHistoryLoaded(tid);
+				// Store full event (with _raw) in history.
+				string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
+				auto historyData = Data(historyEnvelope.representation);
+				// Merge adjacent item/delta events with matching item_id to keep
+				// history compact without reordering events.
+				if (!mergeStreamingDelta(tid, translated, historyData))
+					tasks[tid].history ~= historyData;
+			}
 
-		// Send to clients: strip _raw, add _seq
-		auto stripped = stripRawField(translated);
-		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-		string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
-			~ `,"seq":` ~ format!"%d"(seq)
-			~ `,"event":` ~ stripped ~ `}`;
-		sendToSubscribed(tid, Data(clientEnvelope.representation));
+			// Send to clients: strip _raw, add _seq.
+			auto stripped = stripRawField(translated);
+			auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
+			string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
+				~ `,"seq":` ~ format!"%d"(seq)
+				~ `,"event":` ~ stripped ~ `}`;
+			sendToSubscribed(tid, Data(clientEnvelope.representation));
+		}
 	}
 
-	/// Try to merge a streaming delta into the last history entry.
+	/// Try to merge an item/delta into the last history entry.
 	/// Returns true if merged (caller should NOT append), false otherwise.
 	private bool mergeStreamingDelta(int tid, string translated, Data data)
 	{
 		import std.algorithm : canFind;
 
-		// Only merge stream/block_delta events
-		if (!translated.canFind(`"type":"stream/block_delta"`))
+		// Only merge item/delta events.
+		if (!translated.canFind(`"type":"item/delta"`))
 			return false;
 
 		auto history = &tasks[tid].history;
@@ -2469,28 +2470,22 @@ class App : ToolsBackend
 			return false;
 
 		auto lastEntry = cast(const(char)[])(*history)[$ - 1].unsafeContents;
-		// std.json.toString() escapes '/' as '\/', so merged entries use the
-		// escaped form; accept both.
-		if (!lastEntry.canFind(`"type":"stream/block_delta"`) &&
-		    !lastEntry.canFind(`"type":"stream\/block_delta"`))
+		if (!lastEntry.canFind(`"type":"item/delta"`) &&
+		    !lastEntry.canFind(`"type":"item\/delta"`))
 			return false;
 
-		// Both are stream/block_delta — parse index from both to ensure they
-		// match (same content block). Use simple string scanning for speed.
-		auto lastIndex = extractStreamIndex(lastEntry);
-		auto newIndex = extractStreamIndex(translated);
-		if (lastIndex < 0 || newIndex < 0 || lastIndex != newIndex)
+		// Both are item/delta — check that item_id matches.
+		auto lastId = extractItemId(lastEntry);
+		auto newId = extractItemId(translated);
+		if (lastId is null || newId is null || lastId != newId)
 			return false;
 
-		// Merge: concatenate the text/partial_json content.
-		// Parse the delta from both, combine, and replace last entry.
-		auto merged = mergeDeltas(lastEntry, translated);
+		// Merge: concatenate the `content` fields.
+		auto merged = mergeItemDeltas(lastEntry, translated);
 		if (merged is null)
 			return false;
 
-		// Reconstruct canonical envelope (field order preserved, _raw stripped).
-		// mergeDeltas uses std.json which reorders fields, breaking
-		// extractEventFromEnvelope; also, merged entries have no direct raw source.
+		// Reconstruct canonical envelope (_raw stripped).
 		import std.json : parseJSON;
 		auto mergedObj = parseJSON(merged);
 		if ("_raw" in mergedObj["event"].objectNoRef)
@@ -2500,39 +2495,28 @@ class App : ToolsBackend
 		return true;
 	}
 
-	/// Extract the "index" value from a stream/block_delta event string.
-	/// Returns -1 if not found.
-	private static int extractStreamIndex(const(char)[] s)
+	/// Extract the "item_id" string value from an item/delta event string.
+	/// Returns null if not found.
+	private static string extractItemId(const(char)[] s)
 	{
 		import std.string : indexOf;
-		import std.conv : to;
-
-		auto idx = s.indexOf(`"index":`);
+		enum key = `"item_id":"`;
+		auto idx = s.indexOf(key);
 		if (idx < 0)
-			return -1;
-		auto start = idx + `"index":`.length;
-		// Skip whitespace
-		while (start < s.length && s[start] == ' ')
-			start++;
-		// Parse integer
-		auto end = start;
-		while (end < s.length && s[end] >= '0' && s[end] <= '9')
-			end++;
-		if (end == start)
-			return -1;
-		try
-			return s[start .. end].to!int;
-		catch (Exception)
-			return -1;
+			return null;
+		auto start = idx + key.length;
+		auto end = s.indexOf('"', start);
+		if (end < 0 || end <= start)
+			return null;
+		return cast(string) s[start .. end];
 	}
 
-	/// Merge two stream/block_delta envelope strings by concatenating delta text.
+	/// Merge two item/delta envelope strings by concatenating content.
 	/// Returns the merged envelope string, or null if merging failed.
-	private string mergeDeltas(const(char)[] lastEnvelope, string newTranslated)
+	private string mergeItemDeltas(const(char)[] lastEnvelope, string newTranslated)
 	{
 		import std.json : parseJSON, JSONValue, JSONType;
 
-		// Parse the last envelope to get its event
 		JSONValue lastJson, newEventJson;
 		try
 		{
@@ -2540,32 +2524,20 @@ class App : ToolsBackend
 			newEventJson = parseJSON(newTranslated);
 		}
 		catch (Exception e)
-		{ tracef("tryMergeStreamDeltas: JSON parse error: %s", e.msg); return null; }
+		{ tracef("mergeItemDeltas: JSON parse error: %s", e.msg); return null; }
 
-		// Navigate to delta objects
 		auto lastEvent = lastJson["event"];
-		auto lastDelta = lastEvent["delta"];
-		auto newDelta = newEventJson["delta"];
-
-		// Concatenate the appropriate text field based on delta type
-		if (auto lastText = "text" in lastDelta.objectNoRef)
+		// Concatenate the `content` field.
+		if (auto lastContent = "content" in lastEvent.objectNoRef)
 		{
-			if (auto newText = "text" in newDelta.objectNoRef)
+			if (auto newContent = "content" in newEventJson.objectNoRef)
 			{
-				(*lastText).str = (*lastText).str ~ (*newText).str;
-				return lastJson.toString();
-			}
-		}
-		else if (auto lastPJ = "partial_json" in lastDelta.objectNoRef)
-		{
-			if (auto newPJ = "partial_json" in newDelta.objectNoRef)
-			{
-				(*lastPJ).str = (*lastPJ).str ~ (*newPJ).str;
+				(*lastContent).str = (*lastContent).str ~ (*newContent).str;
 				return lastJson.toString();
 			}
 		}
 
-		return null; // delta types don't match or unknown field
+		return null;
 	}
 
 	/// Try to extract agent session ID from an output line using the Agent interface.

@@ -87,21 +87,21 @@ class ClaudeCodeAgent : Agent
 		import ae.utils.json : jsonParse, JSONPartial;
 		import std.algorithm : canFind;
 
-		if (!line.canFind(`"subtype":"init"`))
+		// ClaudeCodeSession emits translated session/init events.
+		if (!line.canFind(`"session/init"`) && !line.canFind(`"subtype":"init"`))
 			return null;
 
 		@JSONPartial
 		static struct InitProbe
 		{
 			string type;
-			string subtype;
-			string session_id;
+			@JSONOptional string session_id;
 		}
 
 		try
 		{
 			auto probe = jsonParse!InitProbe(line);
-			if (probe.type == "system" && probe.subtype == "init" && probe.session_id.length > 0)
+			if (probe.type == "session/init" && probe.session_id.length > 0)
 				return probe.session_id;
 		}
 		catch (Exception e)
@@ -123,7 +123,8 @@ class ClaudeCodeAgent : Agent
 		try
 		{
 			auto probe = jsonParse!ResultProbe(line);
-			if (probe.type == "result")
+			// ClaudeCodeSession emits translated turn/result events.
+			if (probe.type == "turn/result" || probe.type == "result")
 				return probe.result;
 			return "";
 		}
@@ -136,56 +137,21 @@ class ClaudeCodeAgent : Agent
 		import ae.utils.json : jsonParse, JSONPartial;
 		import std.algorithm : canFind;
 
-		if (!line.canFind(`"type":"assistant"`) && !line.canFind(`"type":"message/assistant"`))
-			return "";
-
-		@JSONPartial
-		static struct ContentBlock
+		// New format: item/started with item_type=text carries the full text
+		// (present in history-translated events from translateAssistantHistory).
+		if (line.canFind(`"item/started"`))
 		{
-			string type;
-			string text;
-		}
-
-		// Agnostic format (post-translation): flat, content at top level.
-		@JSONPartial
-		static struct AssistantProbe
-		{
-			string type;
-			ContentBlock[] content;
-		}
-
-		// Raw Claude format (pre-translation): nested message wrapper.
-		@JSONPartial
-		static struct WrappedMessage { ContentBlock[] content; }
-		@JSONPartial
-		static struct WrappedProbe { string type; WrappedMessage message; }
-
-		try
-		{
-			auto probe = jsonParse!AssistantProbe(line);
-			if (probe.type != "assistant" && probe.type != "message/assistant")
-				return "";
-
-			// Flat format (agnostic)
-			if (probe.content.length > 0)
+			@JSONPartial static struct ItemStartedProbe { string type; string item_type; string text; }
+			try
 			{
-				string result;
-				foreach (ref block; probe.content)
-					if (block.type == "text")
-						result ~= block.text;
-				return result;
+				auto probe = jsonParse!ItemStartedProbe(line);
+				if (probe.type == "item/started" && probe.item_type == "text" && probe.text.length > 0)
+					return probe.text;
 			}
-
-			// Wrapped format (raw Claude, before translation)
-			auto wrapped = jsonParse!WrappedProbe(line);
-			string result;
-			foreach (ref block; wrapped.message.content)
-				if (block.type == "text")
-					result ~= block.text;
-			return result;
+			catch (Exception) {}
 		}
-		catch (Exception e)
-		{ tracef("extractAssistantText: parse error: %s", e.msg); return ""; }
+
+		return "";
 	}
 
 	string extractUserText(string line)
@@ -271,20 +237,23 @@ class ClaudeCodeAgent : Agent
 		return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
 	}
 
-	string translateHistoryLine(string line, int lineNum)
+	string[] translateHistoryLine(string line, int lineNum)
 	{
-		return translateClaudeEvent(line);
+		return translateClaudeHistoryEvent(line);
 	}
 
-	string translateLiveEvent(string rawLine)
+	string[] translateLiveEvent(string rawLine)
 	{
-		return translateClaudeEvent(rawLine);
+		// ClaudeCodeSession handles translation statefully inline.
+		// This is an identity pass-through for pre-translated events.
+		return [rawLine];
 	}
 
 	bool isTurnResult(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"result"`);
+		// ClaudeCodeSession emits translated turn/result events.
+		return rawLine.canFind(`"type":"turn/result"`);
 	}
 
 	bool isUserMessageLine(string rawLine)
@@ -479,6 +448,11 @@ class ClaudeCodeSession : AgentSession
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 
+	// Stateful translation: track active content blocks per index.
+	private string[] activeItemIds_;   // index → item_id for current turn
+	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
+	private bool[] pendingToolUseCompletions_; // index → awaiting message/assistant
+
 	this(string resumeSessionId = null, string[] bwrapPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
@@ -518,8 +492,7 @@ class ClaudeCodeSession : AgentSession
 		process = new AgentProcess(args);
 
 		process.onStdoutLine = (string line) {
-			if (outputHandler)
-				outputHandler(line);
+			translateLiveLine(line);
 		};
 
 		process.onStderrLine = (string line) {
@@ -589,6 +562,410 @@ class ClaudeCodeSession : AgentSession
 	@property bool alive()
 	{
 		return !process.dead;
+	}
+
+	// ── Stateful per-line translation ──────────────────────────────────────
+
+	private void emitEvent(string event)
+	{
+		if (outputHandler && event.length > 0)
+			outputHandler(event);
+	}
+
+	private void translateLiveLine(string rawLine)
+	{
+		import std.algorithm : canFind;
+
+		// Queue operations must pass through raw so broadcastTask can intercept them.
+		if (rawLine.canFind(`"queue-operation"`))
+		{
+			emitEvent(rawLine);
+			return;
+		}
+
+		@JSONPartial static struct TypeProbe { string type; string subtype; }
+		TypeProbe probe;
+		try
+			probe = jsonParse!TypeProbe(rawLine);
+		catch (Exception)
+		{
+			emitEvent(rawLine);
+			return;
+		}
+
+		switch (probe.type)
+		{
+			case "stream_event":
+				translateStreamEventLive(rawLine);
+				return;
+			case "assistant":
+				translateAssistantLive(rawLine);
+				return;
+			case "user":
+				normalizeUserLive(rawLine);
+				return;
+			default:
+				// Stateless translation for system, result, summary, control, etc.
+				auto t = translateClaudeEvent(rawLine);
+				if (t !is null)
+					emitEvent(t);
+				return;
+		}
+	}
+
+	private void translateStreamEventLive(string rawLine)
+	{
+		import std.string : indexOf;
+
+		// Extract the inner event object from {type:"stream_event", event:{...}}
+		auto eventStart = rawLine.indexOf(`"event":`);
+		if (eventStart < 0) return;
+		auto valueStart = cast(size_t)(eventStart + `"event":`.length);
+		while (valueStart < rawLine.length && rawLine[valueStart] == ' ')
+			valueStart++;
+		if (valueStart >= rawLine.length || rawLine[valueStart] != '{') return;
+		auto innerEnd = findMatchingBrace(rawLine, valueStart);
+		if (innerEnd < 0) return;
+		auto innerEvent = rawLine[valueStart .. innerEnd + 1];
+
+		@JSONPartial static struct InnerProbe { string type; }
+		InnerProbe inner;
+		try
+			inner = jsonParse!InnerProbe(innerEvent);
+		catch (Exception e)
+		{ tracef("translateStreamEventLive: inner probe error: %s", e.msg); return; }
+
+		switch (inner.type)
+		{
+			case "content_block_start":
+			{
+				@JSONPartial
+				static struct BlockStartProbe
+				{
+					int index;
+					@JSONPartial
+					static struct BD { string type; @JSONOptional string id; @JSONOptional string name; }
+					BD content_block;
+				}
+				try
+				{
+					auto probe = jsonParse!BlockStartProbe(innerEvent);
+					auto idx = probe.index;
+					auto blockType = probe.content_block.type;
+
+					// Assign item_id: use block.id for tool_use, generate for text/thinking.
+					string itemId = blockType == "tool_use" && probe.content_block.id.length > 0
+						? probe.content_block.id
+						: "cc-block-" ~ to!string(idx);
+
+					// Grow tracking arrays.
+					while (activeItemIds_.length <= idx) activeItemIds_ ~= null;
+					while (activeItemTypes_.length <= idx) activeItemTypes_ ~= null;
+					while (pendingToolUseCompletions_.length <= idx) pendingToolUseCompletions_ ~= false;
+					activeItemIds_[idx] = itemId;
+					activeItemTypes_[idx] = blockType;
+					pendingToolUseCompletions_[idx] = false;
+
+					import cydo.agent.protocol : ItemStartedEvent, injectRawField;
+					ItemStartedEvent ev;
+					ev.item_id = itemId;
+					ev.item_type = blockType;
+					if (blockType == "tool_use")
+						ev.name = probe.content_block.name;
+					emitEvent(injectRawField(toJson(ev), rawLine));
+				}
+				catch (Exception e)
+				{ tracef("translateStreamEventLive: block_start error: %s", e.msg); }
+				return;
+			}
+
+			case "content_block_delta":
+			{
+				@JSONPartial
+				static struct BlockDeltaProbe
+				{
+					int index;
+					@JSONPartial
+					static struct DP
+					{
+						string type;
+						@JSONOptional string text;
+						@JSONOptional string partial_json;
+						@JSONOptional string thinking;
+					}
+					DP delta;
+				}
+				try
+				{
+					auto probe = jsonParse!BlockDeltaProbe(innerEvent);
+					auto idx = probe.index;
+					if (probe.delta.type == "signature_delta")
+						return; // drop
+					if (idx >= activeItemIds_.length || activeItemIds_[idx] is null)
+						return;
+
+					import cydo.agent.protocol : ItemDeltaEvent;
+					ItemDeltaEvent ev;
+					ev.item_id = activeItemIds_[idx];
+					if (probe.delta.type == "thinking_delta")
+					{
+						ev.delta_type = "thinking_delta";
+						ev.content = probe.delta.thinking;
+					}
+					else if (probe.delta.type == "input_json_delta")
+					{
+						ev.delta_type = "input_json_delta";
+						ev.content = probe.delta.partial_json;
+					}
+					else
+					{
+						ev.delta_type = "text_delta";
+						ev.content = probe.delta.text;
+					}
+					emitEvent(toJson(ev));
+				}
+				catch (Exception e)
+				{ tracef("translateStreamEventLive: block_delta error: %s", e.msg); }
+				return;
+			}
+
+			case "content_block_stop":
+			{
+				@JSONPartial static struct BlockStopProbe { int index; }
+				try
+				{
+					auto probe = jsonParse!BlockStopProbe(innerEvent);
+					auto idx = probe.index;
+					if (idx >= activeItemIds_.length || activeItemIds_[idx] is null) return;
+					auto blockType = idx < activeItemTypes_.length ? activeItemTypes_[idx] : null;
+					// Mark all blocks as pending — item/completed with text/extras is
+				// emitted when message/assistant arrives, for all block types.
+				pendingToolUseCompletions_[idx] = true;
+				}
+				catch (Exception e)
+				{ tracef("translateStreamEventLive: block_stop error: %s", e.msg); }
+				return;
+			}
+
+			case "message_stop":
+			case "message_start":
+			case "message_delta":
+				return; // drop — turn/stop comes from message/assistant
+
+			default:
+				return; // unknown inner events — drop
+		}
+	}
+
+	private void translateAssistantLive(string rawLine)
+	{
+		import cydo.agent.protocol : ItemCompletedEvent, TurnStopEvent,
+			UsageInfo, injectRawField;
+
+		static struct ClaudeThinkingBlock
+		{
+			string type;
+			@JSONOptional string thinking;
+			@JSONOptional string text;
+			@JSONOptional string id;
+			@JSONOptional string name;
+			@JSONOptional JSONFragment input;
+			@JSONOptional string signature;
+			JSONExtras _extras;
+		}
+		static struct ClaudeMessage
+		{
+			string id;
+			ClaudeThinkingBlock[] content;
+			@JSONOptional string model;
+			@JSONOptional JSONFragment usage;
+			@JSONOptional string stop_reason;
+			@JSONOptional string stop_sequence;
+			@JSONOptional string type;   // always "message", not forwarded
+			@JSONOptional string role;   // always "assistant", not forwarded
+			@JSONOptional JSONFragment context_management;
+			JSONExtras _extras;
+		}
+		static struct ClaudeAssistant
+		{
+			@JSONOptional string parent_tool_use_id;
+			@JSONOptional bool isSidechain;
+			@JSONOptional bool isApiErrorMessage;
+			@JSONOptional string uuid;
+			ClaudeMessage message;
+			@JSONOptional string type;
+			@JSONOptional string session_id;
+			@JSONOptional string sessionId;
+			@JSONOptional string agentId;
+			@JSONOptional string parentUuid;
+			@JSONOptional string requestId;
+			@JSONOptional string cwd;
+			@JSONOptional string gitBranch;
+			@JSONName("version") @JSONOptional string version_;
+			@JSONOptional string userType;
+			@JSONOptional string timestamp;
+			@JSONOptional string slug;
+			@JSONOptional string permissionMode;
+			JSONExtras _extras;
+		}
+
+		ClaudeAssistant raw;
+		try
+			raw = jsonParse!ClaudeAssistant(rawLine);
+		catch (Exception e)
+		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
+
+		// Emit item/completed for each content block, with authoritative content and extras.
+		foreach (idx, ref b; raw.message.content)
+		{
+			// Compute item_id matching what was used in item/started.
+			string itemId;
+			if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
+				itemId = activeItemIds_[idx];
+			else if (b.type == "tool_use" && b.id.length > 0)
+				itemId = b.id;
+			else
+				itemId = "cc-block-" ~ to!string(idx);
+
+			ItemCompletedEvent ev;
+			ev.item_id = itemId;
+			if (b.type == "tool_use")
+				ev.input = b.input;
+			else
+			{
+				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+				ev.text = text;
+			}
+			ev._extras = extrasToFragment(b._extras);
+			emitEvent(injectRawField(toJson(ev), rawLine));
+		}
+
+		// Extract usage.
+		UsageInfo usage;
+		if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
+		{
+			@JSONPartial static struct UP { @JSONOptional int input_tokens; @JSONOptional int output_tokens; }
+			try
+			{
+				auto u = jsonParse!UP(raw.message.usage.json);
+				usage.input_tokens  = u.input_tokens;
+				usage.output_tokens = u.output_tokens;
+			}
+			catch (Exception) {}
+		}
+
+		// Emit turn/stop.
+		TurnStopEvent tsev;
+		tsev.model             = raw.message.model;
+		tsev.usage             = usage;
+		tsev.parent_tool_use_id = raw.parent_tool_use_id;
+		tsev.is_sidechain      = raw.isSidechain;
+		tsev.is_api_error      = raw.isApiErrorMessage;
+		tsev.uuid              = raw.uuid;
+		tsev._extras = extrasToFragment(collectAllExtras(raw));
+		emitEvent(injectRawField(toJson(tsev), rawLine));
+
+		// Reset stateful tracking for the next turn.
+		activeItemIds_ = null;
+		activeItemTypes_ = null;
+		pendingToolUseCompletions_ = null;
+	}
+
+	private void normalizeUserLive(string rawLine)
+	{
+		import cydo.agent.protocol : ItemStartedEvent, ItemResultEvent, injectRawField;
+
+		@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
+		@JSONPartial static struct ClaudeUser
+		{
+			ClaudeUserMsg message;
+			@JSONOptional bool isReplay;
+			@JSONOptional bool isSynthetic;
+			@JSONOptional bool isMeta;
+			@JSONOptional bool isSteering;
+			@JSONOptional bool pending;
+			@JSONOptional string uuid;
+			@JSONOptional string parent_tool_use_id;
+			@JSONOptional bool isSidechain;
+			@JSONOptional JSONFragment toolUseResult;
+			@JSONOptional JSONFragment tool_use_result;
+		}
+
+		ClaudeUser raw;
+		try
+			raw = jsonParse!ClaudeUser(rawLine);
+		catch (Exception e)
+		{ tracef("normalizeUserLive: parse error: %s", e.msg); return; }
+
+		auto contentJson = raw.message.content.json;
+		if (contentJson is null || contentJson.length == 0)
+			return;
+
+		if (contentJson[0] == '"')
+		{
+			// String content → user_message item.
+			string text;
+			try text = jsonParse!string(contentJson);
+			catch (Exception) {}
+
+			ItemStartedEvent ev;
+			ev.item_id   = "cc-user-msg";
+			ev.item_type = "user_message";
+			ev.text      = text;
+			ev.is_replay   = raw.isReplay;
+			ev.is_synthetic = raw.isSynthetic;
+			ev.is_meta     = raw.isMeta;
+			ev.is_steering = raw.isSteering;
+			ev.pending     = raw.pending;
+			ev.uuid        = raw.uuid;
+			emitEvent(injectRawField(toJson(ev), rawLine));
+		}
+		else if (contentJson[0] == '[')
+		{
+			// Array content — tool_results and/or text blocks.
+			@JSONPartial
+			static struct ContentItem
+			{
+				string type;
+				@JSONOptional string tool_use_id;
+				@JSONOptional JSONFragment content;
+				@JSONOptional bool is_error;
+				@JSONOptional string text;
+			}
+			ContentItem[] items;
+			try items = jsonParse!(ContentItem[])(contentJson);
+			catch (Exception e) { tracef("normalizeUserLive: content parse error: %s", e.msg); return; }
+
+			foreach (ref item; items)
+			{
+				if (item.type == "tool_result")
+				{
+					ItemResultEvent ev;
+					ev.item_id  = item.tool_use_id;
+					ev.content  = item.content;
+					ev.is_error = item.is_error;
+					if (raw.toolUseResult.json !is null && raw.toolUseResult.json.length > 0)
+						ev.tool_result = raw.toolUseResult;
+					else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
+						ev.tool_result = raw.tool_use_result;
+					emitEvent(injectRawField(toJson(ev), rawLine));
+				}
+				else if (item.type == "text" && item.text.length > 0)
+				{
+					ItemStartedEvent ev;
+					ev.item_id   = "cc-user-msg";
+					ev.item_type = "user_message";
+					ev.text      = item.text;
+					ev.is_replay   = raw.isReplay;
+					ev.is_synthetic = raw.isSynthetic;
+					ev.is_meta     = raw.isMeta;
+					ev.is_steering = raw.isSteering;
+					ev.pending     = raw.pending;
+					ev.uuid        = raw.uuid;
+					emitEvent(injectRawField(toJson(ev), rawLine));
+				}
+			}
+		}
 	}
 }
 
@@ -697,6 +1074,255 @@ string resolveClaudeBinary()
 }
 
 // ─── Protocol translation (moved from protocol.d) ────────────────────────
+
+// ─── History translation (stateless — complete JSONL messages) ────────────
+
+/// Route a raw Claude JSONL history line to the appropriate translator.
+/// Returns zero or more agnostic event strings.
+private string[] translateClaudeHistoryEvent(string rawLine)
+{
+	@JSONPartial static struct TypeProbe { string type; string subtype; }
+	TypeProbe probe;
+	try
+		probe = jsonParse!TypeProbe(rawLine);
+	catch (Exception)
+	{ return [rawLine]; }
+
+	switch (probe.type)
+	{
+		case "assistant":
+			return translateAssistantHistory(rawLine);
+		case "user":
+			return normalizeUserHistory(rawLine);
+		case "stream_event":
+			return []; // not stored in JSONL history
+		default:
+			auto t = translateClaudeEvent(rawLine);
+			return t !is null ? [t] : [];
+	}
+}
+
+/// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
+private string[] translateAssistantHistory(string rawLine)
+{
+	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
+		UsageInfo, injectRawField;
+
+	static struct ClaudeThinkingBlock
+	{
+		string type;
+		@JSONOptional string thinking;
+		@JSONOptional string text;
+		@JSONOptional string id;
+		@JSONOptional string name;
+		@JSONOptional JSONFragment input;
+		@JSONOptional string signature;
+		JSONExtras _extras;
+	}
+	static struct ClaudeMessage
+	{
+		string id;
+		ClaudeThinkingBlock[] content;
+		@JSONOptional string model;
+		@JSONOptional JSONFragment usage;
+		@JSONOptional string stop_reason;
+		@JSONOptional string stop_sequence;
+		@JSONOptional string type;   // always "message", not forwarded
+		@JSONOptional string role;   // always "assistant", not forwarded
+		@JSONOptional JSONFragment context_management;
+		JSONExtras _extras;
+	}
+	static struct ClaudeAssistant
+	{
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+		@JSONOptional bool isApiErrorMessage;
+		@JSONOptional string uuid;
+		ClaudeMessage message;
+		@JSONOptional string type;
+		@JSONOptional string session_id;
+		@JSONOptional string sessionId;
+		@JSONOptional string agentId;
+		@JSONOptional string parentUuid;
+		@JSONOptional string requestId;
+		@JSONOptional string cwd;
+		@JSONOptional string gitBranch;
+		@JSONName("version") @JSONOptional string version_;
+		@JSONOptional string userType;
+		@JSONOptional string timestamp;
+		@JSONOptional string slug;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
+	}
+
+	ClaudeAssistant raw;
+	try
+		raw = jsonParse!ClaudeAssistant(rawLine);
+	catch (Exception e)
+	{ tracef("translateAssistantHistory: parse error: %s", e.msg); return []; }
+
+	string[] events;
+
+	foreach (idx, ref b; raw.message.content)
+	{
+		auto itemId = b.type == "tool_use" && b.id.length > 0
+			? b.id : "cc-hist-" ~ to!string(idx);
+
+		ItemStartedEvent startEv;
+		startEv.item_id   = itemId;
+		startEv.item_type = b.type;
+		if (b.type == "tool_use")
+		{
+			startEv.name  = b.name;
+			startEv.input = b.input;
+		}
+		else
+		{
+			auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+			startEv.text = text;
+		}
+		events ~= injectRawField(toJson(startEv), rawLine);
+
+		ItemCompletedEvent compEv;
+		compEv.item_id = itemId;
+		if (b.type == "tool_use")
+			compEv.input = b.input;
+		else
+		{
+			auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+			compEv.text = text;
+		}
+		compEv._extras = extrasToFragment(b._extras);
+		events ~= injectRawField(toJson(compEv), rawLine);
+	}
+
+	// Extract usage.
+	UsageInfo usage;
+	if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
+	{
+		@JSONPartial static struct UP { @JSONOptional int input_tokens; @JSONOptional int output_tokens; }
+		try
+		{
+			auto u = jsonParse!UP(raw.message.usage.json);
+			usage.input_tokens  = u.input_tokens;
+			usage.output_tokens = u.output_tokens;
+		}
+		catch (Exception) {}
+	}
+
+	TurnStopEvent tsev;
+	tsev.model             = raw.message.model;
+	tsev.usage             = usage;
+	tsev.parent_tool_use_id = raw.parent_tool_use_id;
+	tsev.is_sidechain      = raw.isSidechain;
+	tsev.is_api_error      = raw.isApiErrorMessage;
+	tsev.uuid              = raw.uuid;
+	tsev._extras = extrasToFragment(collectAllExtras(raw));
+	events ~= injectRawField(toJson(tsev), rawLine);
+
+	return events;
+}
+
+/// Translate a Claude history user message to item/result + item/started events.
+private string[] normalizeUserHistory(string rawLine)
+{
+	import cydo.agent.protocol : ItemStartedEvent, ItemResultEvent, injectRawField;
+
+	@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
+	@JSONPartial static struct ClaudeUser
+	{
+		ClaudeUserMsg message;
+		@JSONOptional bool isReplay;
+		@JSONOptional bool isSynthetic;
+		@JSONOptional bool isMeta;
+		@JSONOptional bool isSteering;
+		@JSONOptional bool pending;
+		@JSONOptional string uuid;
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+		@JSONOptional JSONFragment toolUseResult;
+		@JSONOptional JSONFragment tool_use_result;
+	}
+
+	ClaudeUser raw;
+	try
+		raw = jsonParse!ClaudeUser(rawLine);
+	catch (Exception e)
+	{ tracef("normalizeUserHistory: parse error: %s", e.msg); return []; }
+
+	auto contentJson = raw.message.content.json;
+	if (contentJson is null || contentJson.length == 0)
+		return [];
+
+	string[] events;
+
+	if (contentJson[0] == '"')
+	{
+		// String content → user_message item.
+		string text;
+		try text = jsonParse!string(contentJson);
+		catch (Exception) {}
+
+		ItemStartedEvent ev;
+		ev.item_id     = "cc-user-msg";
+		ev.item_type   = "user_message";
+		ev.text        = text;
+		ev.is_replay   = raw.isReplay;
+		ev.is_synthetic = raw.isSynthetic;
+		ev.is_meta     = raw.isMeta;
+		ev.is_steering = raw.isSteering;
+		ev.pending     = raw.pending;
+		ev.uuid        = raw.uuid;
+		events ~= injectRawField(toJson(ev), rawLine);
+	}
+	else if (contentJson[0] == '[')
+	{
+		@JSONPartial
+		static struct ContentItem
+		{
+			string type;
+			@JSONOptional string tool_use_id;
+			@JSONOptional JSONFragment content;
+			@JSONOptional bool is_error;
+			@JSONOptional string text;
+		}
+		ContentItem[] items;
+		try items = jsonParse!(ContentItem[])(contentJson);
+		catch (Exception e) { tracef("normalizeUserHistory: content parse error: %s", e.msg); return events; }
+
+		foreach (ref item; items)
+		{
+			if (item.type == "tool_result")
+			{
+				ItemResultEvent ev;
+				ev.item_id  = item.tool_use_id;
+				ev.content  = item.content;
+				ev.is_error = item.is_error;
+				if (raw.toolUseResult.json !is null && raw.toolUseResult.json.length > 0)
+					ev.tool_result = raw.toolUseResult;
+				else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
+					ev.tool_result = raw.tool_use_result;
+				events ~= injectRawField(toJson(ev), rawLine);
+			}
+			else if (item.type == "text" && item.text.length > 0)
+			{
+				ItemStartedEvent ev;
+				ev.item_id     = "cc-user-msg";
+				ev.item_type   = "user_message";
+				ev.text        = item.text;
+				ev.is_replay   = raw.isReplay;
+				ev.is_synthetic = raw.isSynthetic;
+				ev.is_meta     = raw.isMeta;
+				ev.is_steering = raw.isSteering;
+				ev.pending     = raw.pending;
+				ev.uuid        = raw.uuid;
+				events ~= injectRawField(toJson(ev), rawLine);
+			}
+		}
+	}
+
+	return events;
+}
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.
 /// Returns null for events that should be consumed (not forwarded).

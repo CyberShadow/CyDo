@@ -223,6 +223,72 @@ struct ProcessExitEvent
 	@JSONOptional bool is_continuation;
 }
 
+/// item/started — a new content item begins streaming.
+struct ItemStartedEvent
+{
+	string type = "item/started";
+	string item_id;
+	string item_type;            // "text", "thinking", "tool_use", "user_message"
+	@JSONOptional string name;           // tool name for tool_use
+	@JSONOptional JSONFragment input;    // initial input for tool_use
+	@JSONOptional string text;           // initial text for text/thinking or user_message
+	@JSONOptional bool is_replay;
+	@JSONOptional bool is_synthetic;
+	@JSONOptional bool is_meta;
+	@JSONOptional bool is_steering;
+	@JSONOptional bool pending;
+	@JSONOptional string uuid;
+	@JSONOptional bool isCompactSummary;
+	@JSONOptional string parent_tool_use_id;
+	@JSONOptional bool is_sidechain;
+	@JSONOptional JSONFragment _extras;
+}
+
+/// item/delta — incremental content for the active item.
+struct ItemDeltaEvent
+{
+	string type = "item/delta";
+	string item_id;
+	string delta_type;  // "text_delta", "thinking_delta", "input_json_delta", "output_delta"
+	string content;
+}
+
+/// item/completed — the active item has finished streaming.
+struct ItemCompletedEvent
+{
+	string type = "item/completed";
+	string item_id;
+	@JSONOptional string text;
+	@JSONOptional JSONFragment input;
+	@JSONOptional string output;
+	@JSONOptional bool is_error;
+	@JSONOptional JSONFragment _extras;
+}
+
+/// item/result — tool result returned for a previously started tool_use item.
+struct ItemResultEvent
+{
+	string type = "item/result";
+	string item_id;
+	JSONFragment content;  // string or content block array
+	@JSONOptional bool is_error;
+	@JSONOptional JSONFragment tool_result;  // opaque payload (toolUseResult/tool_use_result)
+	@JSONOptional JSONFragment _extras;
+}
+
+/// turn/stop — the assistant turn has finished (replaces stream/turn_stop + message/assistant).
+struct TurnStopEvent
+{
+	string type = "turn/stop";
+	@JSONOptional string model;
+	@JSONOptional UsageInfo usage;
+	@JSONOptional string parent_tool_use_id;
+	@JSONOptional bool is_sidechain;
+	@JSONOptional bool is_api_error;
+	@JSONOptional string uuid;
+	@JSONOptional JSONFragment _extras;
+}
+
 /// Command input for Bash tool_use blocks (Codex agent).
 struct CommandInput
 {

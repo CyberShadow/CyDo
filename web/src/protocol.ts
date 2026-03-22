@@ -211,6 +211,7 @@ export interface ItemResultEvent {
   item_id: string;
   content: string | UserContentBlock[];
   is_error?: boolean;
+  tool_result?: unknown;
   _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
