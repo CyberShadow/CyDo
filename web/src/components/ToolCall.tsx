@@ -1331,14 +1331,20 @@ function getHeaderSubtitle(
       return (
         <Fragment>
           <span class="tool-subtitle">{taskId}</span>
-          {input.block === false && <span class="tool-subtitle-tag">non-blocking</span>}
+          {input.block === false && (
+            <span class="tool-subtitle-tag">non-blocking</span>
+          )}
         </Fragment>
       );
     }
   }
   if (name === "TaskStop") {
-    const taskId = typeof input.task_id === "string" ? input.task_id
-      : typeof input.shell_id === "string" ? input.shell_id : null;
+    const taskId =
+      typeof input.task_id === "string"
+        ? input.task_id
+        : typeof input.shell_id === "string"
+          ? input.shell_id
+          : null;
     if (taskId) {
       return <span class="tool-subtitle">{taskId}</span>;
     }
@@ -1525,6 +1531,75 @@ function renderResultContent(
   );
 }
 
+function TaskOutputResult({
+  toolResult,
+}: {
+  toolResult: Record<string, unknown>;
+}) {
+  const retrievalStatus =
+    typeof toolResult.retrieval_status === "string"
+      ? toolResult.retrieval_status
+      : null;
+  const task = toolResult.task as Record<string, unknown> | undefined;
+
+  return (
+    <div class="tool-input-formatted">
+      {retrievalStatus && (
+        <div class="tool-input-field">
+          <span class="tool-subtitle-tag">{retrievalStatus}</span>
+        </div>
+      )}
+      {task && typeof task === "object" && (
+        <>
+          <div class="tool-input-field">
+            {typeof task.task_type === "string" && (
+              <span class="tool-subtitle-tag">{task.task_type}</span>
+            )}
+            {typeof task.status === "string" && (
+              <span class="tool-subtitle-tag">{task.status}</span>
+            )}
+            {typeof task.description === "string" && (
+              <span class="field-value"> {task.description}</span>
+            )}
+          </div>
+          {typeof task.exitCode === "number" && (
+            <div class="tool-input-field">
+              <span class="field-label">exit code:</span>
+              <span class="field-value"> {task.exitCode}</span>
+            </div>
+          )}
+          {typeof task.output === "string" && task.output.trim() && (
+            <pre class="tool-result">{task.output}</pre>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TaskStopResult({
+  toolResult,
+}: {
+  toolResult: Record<string, unknown>;
+}) {
+  const taskType =
+    typeof toolResult.task_type === "string" ? toolResult.task_type : null;
+  const command =
+    typeof toolResult.command === "string" ? toolResult.command : null;
+
+  return (
+    <div class="tool-input-formatted">
+      {taskType && (
+        <div class="tool-input-field">
+          <span class="tool-subtitle-tag">{taskType}</span>
+          <span class="field-value"> stopped</span>
+        </div>
+      )}
+      {command && <pre class="tool-result">{command}</pre>}
+    </div>
+  );
+}
+
 const defaultExpandedTools = new Set([
   "Edit",
   "Write",
@@ -1608,6 +1683,18 @@ export function ToolCall({
     result &&
     !result.isError &&
     typeof result.content === "string";
+  const useTaskOutputResult =
+    name === "TaskOutput" &&
+    result &&
+    !result.isError &&
+    result.toolResult != null &&
+    typeof result.toolResult === "object";
+  const useTaskStopResult =
+    name === "TaskStop" &&
+    result &&
+    !result.isError &&
+    result.toolResult != null &&
+    typeof result.toolResult === "object";
 
   return (
     <div
@@ -1736,11 +1823,21 @@ export function ToolCall({
                     class="text-content"
                   />
                 </div>
+              ) : useTaskOutputResult ? (
+                <TaskOutputResult
+                  toolResult={result.toolResult as Record<string, unknown>}
+                />
+              ) : useTaskStopResult ? (
+                <TaskStopResult
+                  toolResult={result.toolResult as Record<string, unknown>}
+                />
               ) : (
                 renderResultContent(result.content, result.isError)
               )}
               {result.toolResult != null &&
                 typeof result.toolResult === "object" &&
+                !useTaskOutputResult &&
+                !useTaskStopResult &&
                 formatToolUseResult(
                   name,
                   result.toolResult as Record<string, unknown> | unknown[],
