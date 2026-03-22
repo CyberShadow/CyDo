@@ -1,5 +1,47 @@
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
+// Regression guard: AskUserQuestion works from plan_mode.
+// plan_mode has user_visible: false but is in the interactive cluster —
+// it is reachable from conversation (user_visible: true) via keep_context.
+// Bug: the gate in handleAskUserQuestion() checks typeDef.user_visible, so
+// it incorrectly rejects AskUserQuestion calls from plan_mode with:
+//   "AskUserQuestion is only available for interactive tasks.
+//    This task type (plan_mode) is not user-visible."
+test("AskUserQuestion works from plan_mode after keep_context mode switch", async ({
+  page,
+  agentType,
+}) => {
+  // The codex mock's hasToolOutput() scans the entire input history for any
+  // prior function_call_output and returns "Done." — after SwitchMode, it finds
+  // that output and cannot distinguish the subsequent AskUserQuestion call.
+  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion after a keep_context mode switch");
+
+  await enterSession(page); // creates a conversation task (user_visible: true)
+
+  // Switch to plan_mode via a keep_context continuation.
+  await sendMessage(page, "call switchmode plan");
+
+  // Wait for the mode switch to complete: plan_mode injects its prompt
+  // template as a user message starting with "Planning Mode".
+  await expect(
+    page.locator(".message.user-message", { hasText: "Planning Mode" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  // Wait for the agent to finish processing so the input is active.
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: responseTimeout(agentType) });
+
+  // From plan_mode, call AskUserQuestion.
+  // This should succeed — plan_mode is interactive (reachable from conversation
+  // via keep_context), even though its user_visible flag is false.
+  await sendMessage(page, "call askuserquestion Do you agree?");
+
+  // The AskUserForm must appear. Currently fails because handleAskUserQuestion()
+  // gates on typeDef.user_visible which is false for plan_mode.
+  const form = page.locator(".ask-user-form");
+  await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
+});
+
 test("ask_user_question clears on all connected clients when one answers", async ({
   page,
   browser,

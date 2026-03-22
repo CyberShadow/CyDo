@@ -100,6 +100,30 @@ inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
 	return null;
 }
 
+/// Returns true if the given type name is in the "interactive cluster":
+/// the set of types reachable from any user_visible type via keep_context
+/// continuations. These types are all permitted to call AskUserQuestion.
+bool isInteractive(TaskTypeDef[] types, string typeName)
+{
+	bool[string] visited;
+	void walk(string name)
+	{
+		if (name in visited)
+			return;
+		visited[name] = true;
+		auto d = types.byName(name);
+		if (d is null)
+			return;
+		foreach (_, ref c; d.continuations)
+			if (c.keep_context)
+				walk(c.task_type);
+	}
+	foreach (ref def; types)
+		if (def.user_visible)
+			walk(def.name);
+	return (typeName in visited) !is null;
+}
+
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------

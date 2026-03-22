@@ -33,7 +33,7 @@ import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, loadTaskTypes, validateTaskTypes,
+import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
 import cydo.task;
 
@@ -719,12 +719,14 @@ class App : ToolsBackend
 		if (tdp is null)
 			return resolve(McpResult("Task not found", true));
 
-		// Gate: only interactive (user_visible) task types
-		auto typeDef = getTaskTypes().byName(tdp.taskType);
-		if (typeDef is null || !typeDef.user_visible)
+		// Gate: only types in the interactive cluster (user_visible or reachable
+		// from user_visible via keep_context continuations).
+		auto taskTypes = getTaskTypes();
+		auto typeDef = taskTypes.byName(tdp.taskType);
+		if (typeDef is null || !taskTypes.isInteractive(tdp.taskType))
 			return resolve(McpResult(
 				"AskUserQuestion is only available for interactive tasks. "
-				~ "This task type (" ~ tdp.taskType ~ ") is not user-visible.", true));
+				~ "This task type (" ~ tdp.taskType ~ ") is not interactive.", true));
 
 		// Only one pending AskUserQuestion per task
 		if (tid in pendingAskUserQuestions)
