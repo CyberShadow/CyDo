@@ -36,7 +36,6 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
   await sendMessage(page, "call task spike worktree-fork-content");
 
   // 2. Wait for the spike subtask to be created (relation_type = "subtask").
-  //    The mock API responds instantly, so the spike will also exit quickly.
   await expect(async () => {
     const spike = taskCreatedEvents.find((e) => e.relation_type === "subtask");
     expect(spike).toBeTruthy();
@@ -44,14 +43,23 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
 
   const spikeTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
 
-  // 3. Wait for the spike to complete (alive: false).
+  // 3. Wait for the spike to actually complete (alive: true → alive: false).
+  //    The first task_updated broadcast has alive: false (initial state before
+  //    the process starts), so we must wait for alive: true followed by
+  //    alive: false to confirm the process has actually run and exited.
   //    The JSONL file is only fully written after the process exits, so we must
   //    wait for completion before navigating — otherwise forkable UUIDs may not
   //    be available yet.
   await expect(async () => {
-    const completed = taskUpdatedEvents.find((e) => e.tid === spikeTid && !e.alive);
+    const spikeEvents = taskUpdatedEvents.filter((e) => e.tid === spikeTid);
+    let seenAlive = false;
+    let completed = false;
+    for (const e of spikeEvents) {
+      if (e.alive) seenAlive = true;
+      else if (seenAlive) { completed = true; break; }
+    }
     expect(completed).toBeTruthy();
-  }).toPass({ timeout: 30_000 });
+  }).toPass({ timeout: 60_000 });
 
   // 4. Navigate to the spike task in the sidebar using its task ID.
   //    Auto-navigation after spike exit moved back to the parent conversation task.
