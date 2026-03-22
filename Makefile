@@ -14,7 +14,7 @@ setup:
 	git config core.hooksPath .githooks
 
 dot: backend
-	./build/cydo --dot docs/task-types/types.yaml | dot -Tsvg -o docs/task-types/types.svg
+	./build/cydo --dot defs/task-types.yaml | dot -Tsvg -o defs/task-types.svg
 
 clean:
 	rm -rf build web/dist web/node_modules
