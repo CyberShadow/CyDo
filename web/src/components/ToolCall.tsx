@@ -1350,12 +1350,20 @@ function getHeaderSubtitle(
   if (name === "TaskOutput") {
     const taskId = typeof input.task_id === "string" ? input.task_id : null;
     if (taskId) {
+      const timeout = typeof input.timeout === "number" ? input.timeout : null;
+      const timeoutStr =
+        timeout != null
+          ? timeout >= 1000
+            ? `${timeout / 1000}s`
+            : `${timeout}ms`
+          : null;
       return (
         <Fragment>
           <span class="tool-subtitle">{taskId}</span>
           {input.block === false && (
             <span class="tool-subtitle-tag">non-blocking</span>
           )}
+          {timeoutStr && <span class="tool-subtitle-tag">{timeoutStr}</span>}
         </Fragment>
       );
     }
@@ -1492,7 +1500,7 @@ function formatInput(
     return formatGenericInput(remaining);
   }
   if (name === "TaskStop") {
-    const { task_id, shell_id, ...remaining } = input;
+    const { task_id, ...remaining } = input;
     return formatGenericInput(remaining);
   }
   return formatGenericInput(input);
@@ -1553,11 +1561,14 @@ function renderResultContent(
   );
 }
 
-function TaskOutputResult({
-  toolResult,
-}: {
-  toolResult: Record<string, unknown>;
-}) {
+/**
+ * Render TaskOutput result using the same label: value pattern as
+ * formatGenericInput. Flattens the nested `task` object into top-level
+ * fields so they display like any other tool result.
+ */
+function formatTaskOutputResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
   const retrievalStatus =
     typeof toolResult.retrieval_status === "string"
       ? toolResult.retrieval_status
@@ -1570,65 +1581,50 @@ function TaskOutputResult({
   // Principle 1: fall back to raw rendering if nothing meaningful to show
   if (!retrievalStatus && !task) return null;
 
-  return (
-    <div class="tool-input-formatted">
-      {retrievalStatus && (
-        <div class="tool-input-field">
-          <span class="tool-subtitle-tag">{retrievalStatus}</span>
-        </div>
-      )}
-      {task && (
-        <>
-          <div class="tool-input-field">
-            {typeof task.task_type === "string" && (
-              <span class="tool-subtitle-tag">{task.task_type}</span>
-            )}
-            {typeof task.status === "string" && (
-              <span class="tool-subtitle-tag">{task.status}</span>
-            )}
-            {typeof task.description === "string" && (
-              <span class="field-value"> {task.description}</span>
-            )}
-          </div>
-          {typeof task.exitCode === "number" && (
-            <div class="tool-input-field">
-              <span class="field-label">exit code:</span>
-              <span class="field-value"> {task.exitCode}</span>
-            </div>
-          )}
-          {typeof task.output === "string" && task.output.trim() && (
-            <pre class="tool-result">{task.output}</pre>
-          )}
-        </>
-      )}
-    </div>
+  // Flatten: pull task fields to top level, skip task_id (already in subtitle)
+  const fields: Record<string, unknown> = {};
+  if (task) {
+    if (typeof task.task_type === "string") fields.task_type = task.task_type;
+    if (typeof task.status === "string") fields.status = task.status;
+    // Principle 4: hide retrieval_status when "complete" (expected value)
+    if (retrievalStatus && retrievalStatus !== "complete")
+      fields.retrieval = retrievalStatus;
+    if (typeof task.description === "string")
+      fields.description = task.description;
+    if (typeof task.exitCode === "number") fields.exit_code = task.exitCode;
+  } else if (retrievalStatus) {
+    fields.retrieval = retrievalStatus;
+  }
+
+  const output =
+    task && typeof task.output === "string" && task.output.trim()
+      ? task.output
+      : null;
+
+  return formatGenericInput(
+    fields,
+    output ? <pre class="field-value-block">{output}</pre> : undefined,
   );
 }
 
-function TaskStopResult({
-  toolResult,
-}: {
-  toolResult: Record<string, unknown>;
-}) {
-  const taskType =
-    typeof toolResult.task_type === "string" ? toolResult.task_type : null;
-  const command =
-    typeof toolResult.command === "string" ? toolResult.command : null;
+/**
+ * Render TaskStop result: show task_type and command using standard field layout.
+ */
+function formatTaskStopResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
+  const fields: Record<string, unknown> = {};
+  if (typeof toolResult.task_type === "string")
+    fields.task_type = toolResult.task_type;
+  if (typeof toolResult.message === "string")
+    fields.message = toolResult.message;
+  if (typeof toolResult.command === "string")
+    fields.command = toolResult.command;
 
   // Principle 1: fall back to raw rendering if nothing meaningful to show
-  if (!taskType && !command) return null;
+  if (Object.keys(fields).length === 0) return null;
 
-  return (
-    <div class="tool-input-formatted">
-      {taskType && (
-        <div class="tool-input-field">
-          <span class="tool-subtitle-tag">{taskType}</span>
-          <span class="field-value"> stopped</span>
-        </div>
-      )}
-      {command && <pre class="tool-result">{command}</pre>}
-    </div>
-  );
+  return formatGenericInput(fields);
 }
 
 const defaultExpandedTools = new Set([
@@ -1659,6 +1655,7 @@ const defaultExpandedResults = new Set([
   "WebFetch",
   "mcp__cydo__Task",
   "TaskOutput",
+  "TaskStop",
 ]);
 
 const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
@@ -1727,14 +1724,10 @@ export function ToolCall({
     result.toolResult != null &&
     typeof result.toolResult === "object";
   const taskOutputElement = useTaskOutputResult
-    ? TaskOutputResult({
-        toolResult: result.toolResult as Record<string, unknown>,
-      })
+    ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
     : null;
   const taskStopElement = useTaskStopResult
-    ? TaskStopResult({
-        toolResult: result.toolResult as Record<string, unknown>,
-      })
+    ? formatTaskStopResult(result.toolResult as Record<string, unknown>)
     : null;
 
   return (
