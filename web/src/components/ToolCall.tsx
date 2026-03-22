@@ -14,15 +14,15 @@ const CYDO_PREFIX = "mcp__cydo__";
 
 /** Tool names that represent shell command execution across agents/formats. */
 const shellToolNames = new Set([
-  "Bash",             // Claude Code
+  "Bash", // Claude Code
   "commandExecution", // Codex live
   "local_shell_call", // Codex rollout (OpenAI Responses API format)
-  "exec_command",     // Codex rollout (function_call format)
+  "exec_command", // Codex rollout (function_call format)
 ]);
 
 /** Tool names that represent file write operations across agents/formats. */
 const fileWriteToolNames = new Set([
-  "Write",      // Claude Code
+  "Write", // Claude Code
   "fileChange", // Codex live
 ]);
 
@@ -1348,7 +1348,11 @@ function formatInput(
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return <EditInput input={input} result={result} />;
   }
-  if (fileWriteToolNames.has(name) && "file_path" in input && "content" in input) {
+  if (
+    fileWriteToolNames.has(name) &&
+    "file_path" in input &&
+    "content" in input
+  ) {
     return <WriteInput input={input} />;
   }
   if (
@@ -1382,7 +1386,10 @@ function formatInput(
       typeof prompt === "string" ? <Markdown text={prompt} /> : undefined,
     );
   }
-  if (shellToolNames.has(name) && (typeof input.command === "string" || typeof input.cmd === "string")) {
+  if (
+    shellToolNames.has(name) &&
+    (typeof input.command === "string" || typeof input.cmd === "string")
+  ) {
     return <ShellCommandInput input={input} />;
   }
   if (name === "Read" && typeof input.file_path === "string") {
@@ -1470,7 +1477,9 @@ function renderResultContent(
     if (content.startsWith("{") || content.startsWith("[")) {
       try {
         display = JSON.stringify(JSON.parse(content), null, 2);
-      } catch { /* not JSON, use as-is */ }
+      } catch {
+        /* not JSON, use as-is */
+      }
     }
     return (
       <pre class={`tool-result ${isError ? "error" : ""}`}>
@@ -1587,33 +1596,55 @@ export function ToolCall({
         <span class="tool-icon">
           {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
         </span>
+        {name.startsWith(CYDO_PREFIX) && (
+          <svg
+            class="cydo-tool-logo"
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke-width="2"
+            stroke-linecap="round"
+          >
+            <path
+              style={{ stroke: "var(--success)" }}
+              d="M5.5 12L10.5 4L13 8l-2.5 4"
+            />
+            <path
+              style={{ stroke: "var(--processing)" }}
+              d="M5.5 4L3 8l2.5 4"
+            />
+          </svg>
+        )}
         <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
-        {(name === "Edit" || fileWriteToolNames.has(name)) && filePath && onViewFile && (
-          <button
-            class="tool-view-file"
-            onClick={(e) => {
-              e.stopPropagation();
-              onViewFile(filePath);
-            }}
-            title="View file"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+        {(name === "Edit" || fileWriteToolNames.has(name)) &&
+          filePath &&
+          onViewFile && (
+            <button
+              class="tool-view-file"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewFile(filePath);
+              }}
+              title="View file"
             >
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
-        )}
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
+          )}
       </div>
       {inputOpen && formatInput(name, input, result)}
       {children}

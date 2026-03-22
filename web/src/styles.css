@@ -16,6 +16,7 @@
   --assistant-bg: #1a1a1a;
   --tool-bg: #141414;
   --border: #333;
+  --processing: #f0d050;
   --success: hsl(122, 40%, 50%);
   --error: #f44336;
   --user-border: #aaa;
@@ -50,6 +51,7 @@
   --assistant-bg: #ebebeb;
   --tool-bg: #f0f0f0;
   --border: #ccc;
+  --processing: #b8860b;
   --success: hsl(122, 40%, 40%);
   --error: #d32f2f;
   --user-border: #888;
@@ -814,6 +816,10 @@ body,
   font-weight: bold;
   font-size: 13px;
   color: var(--info);
+  flex-shrink: 0;
+}
+
+.cydo-tool-logo {
   flex-shrink: 0;
 }
 
