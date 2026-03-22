@@ -253,12 +253,13 @@ class App : ToolsBackend
 		else
 		{
 			import std.conv : to;
-			auto listenAddr = environment.get("CYDO_LISTEN_ADDRESS", null);
+			auto listenAddrEnv = environment.get("CYDO_LISTEN_ADDRESS", "localhost");
 			auto listenPort = to!ushort(environment.get("CYDO_LISTEN_PORT", "3940"));
+			auto listenAddr = listenAddrEnv == "*" ? null : listenAddrEnv;
 
 			auto port = server.listen(listenPort, listenAddr);
 			auto proto = sslCert ? "https" : "http";
-			auto addrStr = listenAddr ? listenAddr : "0.0.0.0";
+			auto addrStr = listenAddr ? listenAddr : "*";
 			infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
 		}
 	}
