@@ -276,11 +276,29 @@ body,
 }
 
 .sidebar-title {
+  display: flex;
   font-weight: bold;
   font-size: 14px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sidebar-title-prefix {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 10000;
+  min-width: 1.5em;
+  opacity: 0.6;
+}
+
+.sidebar-title-leaf {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
 }
 
 .sidebar-new-btn {

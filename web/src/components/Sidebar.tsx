@@ -519,7 +519,14 @@ export const Sidebar = memo(function Sidebar({
             </button>
           )}
         </div>
-        <span class="sidebar-title">{projectName || "Tasks"}</span>
+        <span class="sidebar-title" title={projectName || "Tasks"}>
+          {(() => {
+            const name = projectName || "Tasks";
+            const slash = name.lastIndexOf("/");
+            if (slash === -1) return name;
+            return <><span class="sidebar-title-prefix">{name.slice(0, slash)}</span><span class="sidebar-title-leaf">/{name.slice(slash + 1)}</span></>;
+          })()}
+        </span>
         <div class="sidebar-header-right">
           {onOpenSearch && (
             <button
