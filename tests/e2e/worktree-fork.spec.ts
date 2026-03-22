@@ -61,22 +61,33 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     expect(completed).toBeTruthy();
   }).toPass({ timeout: 60_000 });
 
-  // 4. Navigate to the spike task in the sidebar using its task ID.
-  //    Auto-navigation after spike exit moved back to the parent conversation task.
-  await page.locator(`.sidebar-item[data-tid="${spikeTid}"]`).click();
-
-  // 5. Wait for the spike's history to load.
-  //    History events and forkable UUIDs are sent together when the client
-  //    subscribes. Once the content is visible, forkable UUIDs have been received.
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "worktree-fork-content",
-    }),
-  ).toBeVisible({ timeout: 15_000 });
+  // 4+5. Navigate to the spike task and wait for its history to load.
+  //    The process/exit event is sent before task_updated, so React may process
+  //    it after our sidebar click, auto-navigating away to the parent task.
+  //    We retry the click until the spike is confirmed active and its content
+  //    is visible (which also guarantees forkable UUIDs have been received).
+  await expect(async () => {
+    await page.locator(`.sidebar-item[data-tid="${spikeTid}"]`).click();
+    // Confirm spike is the active task (not navigated away by process/exit).
+    await expect(
+      page.locator(`.sidebar-item[data-tid="${spikeTid}"].active`),
+    ).toBeVisible({ timeout: 3_000 });
+    // Confirm spike's history loaded (scoped to active session to avoid
+    // matching the conversation task's tool-call result, which also
+    // contains "worktree-fork-content" in its text-content block).
+    await expect(
+      page.locator(
+        "[style*='display: contents'] .message.assistant-message .text-content",
+        { hasText: "worktree-fork-content" },
+      ),
+    ).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 30_000 });
 
   // 6. Hover over the assistant message to reveal the fork button.
+  //    Scope to the active session to avoid matching the conversation task's
+  //    messages (which also contain "worktree-fork-content" in a tool result).
   const assistantWrapper = page
-    .locator(".message-wrapper", {
+    .locator("[style*='display: contents'] .message-wrapper", {
       has: page.locator(".assistant-message", {
         hasText: "worktree-fork-content",
       }),
