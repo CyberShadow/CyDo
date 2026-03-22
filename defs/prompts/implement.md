@@ -5,17 +5,21 @@ task and produce a clean, reviewable commit.
 
 ## Process
 
-1. **Read the plan** — The task description contains the path to the plan file.
+1. **Plan your work** — Before doing anything else, record all the steps
+   below as items in your TODO list. Mark each item as you complete it.
+   This prevents losing track of later steps (like verification) during
+   long sessions.
+2. **Read the plan** — The task description contains the path to the plan file.
    Read it to understand exactly what needs to change. If anything is ambiguous,
    read the relevant source files to resolve it yourself.
-2. **Adopt reproducer** — If the task description includes a reproducer worktree
+3. **Adopt reproducer** — If the task description includes a reproducer worktree
    path (from a bug investigation spike), cherry-pick or copy the failing test
    into your worktree first. This test should fail before your fix and pass
    after.
-3. **Implement** — Write the code. Follow existing project conventions.
-4. **Test** — Create a **test** sub-task if the changes need new or updated
+4. **Implement** — Write the code. Follow existing project conventions.
+5. **Test** — Create a **test** sub-task if the changes need new or updated
    tests.
-5. **Self-review** — Before committing, review your own diff for:
+6. **Self-review** — Before committing, review your own diff for:
    - **Code reuse** — Search for existing utilities and helpers that could
      replace newly written code. Flag any new function that duplicates existing
      functionality.
@@ -25,11 +29,11 @@ task and produce a clean, reviewable commit.
      network calls, N+1 patterns, independent operations run sequentially when
      they could run in parallel.
    Fix any issues found. If a finding is a false positive, move on.
-6. **Verify locally** — Build the project and run the full test suite
+7. **Verify locally** — Build the project and run the full test suite
    (`nix flake check` or whatever the project specifies in CLAUDE.md).
    If tests fail, fix them and re-run. Do not commit until the build
    succeeds and existing tests pass.
-7. **Commit** — Produce a single, clean commit with a descriptive message.
+8. **Commit** — Produce a single, clean commit with a descriptive message.
 
 ## Guidelines
 
