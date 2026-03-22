@@ -761,10 +761,35 @@ export function reduceTurnStop(
         }
       }
 
-      // Only clear streamingBlocks if empty — preserves uncompleted items
-      if (updated.streamingBlocks!.length === 0) {
-        updated.streamingBlocks = undefined;
+      // Promote any remaining streaming blocks to content (safety net —
+      // prevents orphaned blocks from persisting past the turn boundary).
+      if (updated.streamingBlocks!.length > 0) {
+        for (const block of updated.streamingBlocks!) {
+          let contentBlock: import("./protocol").AssistantContentBlock;
+          if (block.type === "tool_use") {
+            contentBlock = {
+              type: "tool_use",
+              id: block.itemId,
+              name: block.name,
+              input: (block.input as Record<string, unknown> | undefined) ?? tryParseJson(block.text),
+            };
+          } else {
+            contentBlock = { type: block.type, text: block.text };
+          }
+          (contentBlock as Record<string, unknown>)._creationOrder = block.creationOrder;
+          let insertIdx = updated.content.length;
+          for (let j = 0; j < updated.content.length; j++) {
+            const o = (updated.content[j] as Record<string, unknown>)._creationOrder as number | undefined;
+            if (o != null && o > block.creationOrder) { insertIdx = j; break; }
+          }
+          updated.content = [
+            ...updated.content.slice(0, insertIdx),
+            contentBlock,
+            ...updated.content.slice(insertIdx),
+          ];
+        }
       }
+      updated.streamingBlocks = undefined;
 
       if (updated.parentToolUseId) {
         bumpNestedVersion(messages, updated.parentToolUseId);
