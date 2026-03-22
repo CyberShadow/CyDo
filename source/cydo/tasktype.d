@@ -100,17 +100,16 @@ inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
 	return null;
 }
 
-/// Returns true if the given type name is in the "interactive cluster":
-/// the set of types reachable from any user_visible type via keep_context
-/// continuations. These types are all permitted to call AskUserQuestion.
-bool isInteractive(TaskTypeDef[] types, string typeName)
+/// Returns the "interactive cluster": the set of types reachable from any
+/// user_visible type via keep_context continuations.
+bool[string] interactiveTypeSet(TaskTypeDef[] types)
 {
-	bool[string] visited;
+	bool[string] result;
 	void walk(string name)
 	{
-		if (name in visited)
+		if (name in result)
 			return;
-		visited[name] = true;
+		result[name] = true;
 		auto d = types.byName(name);
 		if (d is null)
 			return;
@@ -121,7 +120,14 @@ bool isInteractive(TaskTypeDef[] types, string typeName)
 	foreach (ref def; types)
 		if (def.user_visible)
 			walk(def.name);
-	return (typeName in visited) !is null;
+	return result;
+}
+
+/// Returns true if the given type name is in the interactive cluster.
+/// These types are all permitted to call AskUserQuestion.
+bool isInteractive(TaskTypeDef[] types, string typeName)
+{
+	return (typeName in types.interactiveTypeSet) !is null;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,23 +288,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 	// because a Handoff would complete the interactive task and orphan
 	// the user's session.
 	{
-		// Collect all types reachable via keep_context from user_visible roots
-		bool[string] interactive;
-		void walkKeepContext(string name)
-		{
-			if (name in interactive)
-				return;
-			interactive[name] = true;
-			auto d = types.byName(name);
-			if (d is null)
-				return;
-			foreach (_, ref c; d.continuations)
-				if (c.keep_context)
-					walkKeepContext(c.task_type);
-		}
-		foreach (ref def; types)
-			if (def.user_visible)
-				walkKeepContext(def.name);
+		auto interactive = types.interactiveTypeSet;
 
 		// Check that interactive types only have keep_context continuations
 		foreach (ref def; types)
