@@ -10,6 +10,28 @@ import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
 
+/**
+ * Tool Result Rendering Principles
+ *
+ * 1. Best-effort rendering. If the structured toolResult is missing or not the
+ *    shape we expect, fall through to the generic raw renderer. Never show an
+ *    empty box when raw data is available.
+ *
+ * 2. Never discard unknown information. Always let formatToolUseResult() run —
+ *    it surfaces unexpected fields as warnings. Custom renderers consume known
+ *    fields visually; the knownResultFields mechanism handles the rest.
+ *
+ * 3. Progressive enhancement. Extract and display recognized fields with nice
+ *    formatting (badges, labels, pre blocks). Unrecognized fields render in the
+ *    generic key-value style. The two layers compose — custom renderer plus
+ *    formatToolUseResult together cover everything.
+ *
+ * 4. Hide-if-expected, collapse-if-rarely-useful. Fields that always have the
+ *    same observed value can be hidden when they match. Fields that are rarely
+ *    useful go in a collapsed section. Routinely informative fields display
+ *    prominently.
+ */
+
 const CYDO_PREFIX = "mcp__cydo__";
 
 /** Tool names that represent shell command execution across agents/formats. */
@@ -1540,7 +1562,13 @@ function TaskOutputResult({
     typeof toolResult.retrieval_status === "string"
       ? toolResult.retrieval_status
       : null;
-  const task = toolResult.task as Record<string, unknown> | undefined;
+  const task =
+    toolResult.task != null && typeof toolResult.task === "object"
+      ? (toolResult.task as Record<string, unknown>)
+      : null;
+
+  // Principle 1: fall back to raw rendering if nothing meaningful to show
+  if (!retrievalStatus && !task) return null;
 
   return (
     <div class="tool-input-formatted">
@@ -1549,7 +1577,7 @@ function TaskOutputResult({
           <span class="tool-subtitle-tag">{retrievalStatus}</span>
         </div>
       )}
-      {task && typeof task === "object" && (
+      {task && (
         <>
           <div class="tool-input-field">
             {typeof task.task_type === "string" && (
@@ -1586,6 +1614,9 @@ function TaskStopResult({
     typeof toolResult.task_type === "string" ? toolResult.task_type : null;
   const command =
     typeof toolResult.command === "string" ? toolResult.command : null;
+
+  // Principle 1: fall back to raw rendering if nothing meaningful to show
+  if (!taskType && !command) return null;
 
   return (
     <div class="tool-input-formatted">
@@ -1695,6 +1726,16 @@ export function ToolCall({
     !result.isError &&
     result.toolResult != null &&
     typeof result.toolResult === "object";
+  const taskOutputElement = useTaskOutputResult
+    ? TaskOutputResult({
+        toolResult: result.toolResult as Record<string, unknown>,
+      })
+    : null;
+  const taskStopElement = useTaskStopResult
+    ? TaskStopResult({
+        toolResult: result.toolResult as Record<string, unknown>,
+      })
+    : null;
 
   return (
     <div
@@ -1823,21 +1864,15 @@ export function ToolCall({
                     class="text-content"
                   />
                 </div>
-              ) : useTaskOutputResult ? (
-                <TaskOutputResult
-                  toolResult={result.toolResult as Record<string, unknown>}
-                />
-              ) : useTaskStopResult ? (
-                <TaskStopResult
-                  toolResult={result.toolResult as Record<string, unknown>}
-                />
+              ) : taskOutputElement ? (
+                taskOutputElement
+              ) : taskStopElement ? (
+                taskStopElement
               ) : (
                 renderResultContent(result.content, result.isError)
               )}
               {result.toolResult != null &&
                 typeof result.toolResult === "object" &&
-                !useTaskOutputResult &&
-                !useTaskStopResult &&
                 formatToolUseResult(
                   name,
                   result.toolResult as Record<string, unknown> | unknown[],
