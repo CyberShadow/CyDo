@@ -225,52 +225,67 @@ private class CodexServerRouter : ICodexServer
 			handler(*session);
 	}
 
+	/// Build a JSON-RPC notification string for use as _raw provenance.
+	/// Reconstructs the notification from the method name and serialized params.
+	private static string buildRawNotification(string method, string paramsJson)
+	{
+		return `{"jsonrpc":"2.0","method":"` ~ method ~ `","params":` ~ paramsJson ~ `}`;
+	}
+
 	Promise!void itemStarted(ItemStartedParams params)
 	{
-		routeToSession(params.threadId, (s) => s.handleItemStarted(params));
+		auto raw = buildRawNotification("item/started", toJson(params));
+		routeToSession(params.threadId, (s) => s.handleItemStarted(params, raw));
 		return resolve();
 	}
 
 	Promise!void itemAgentMessageDelta(DeltaParams params)
 	{
+		auto raw = buildRawNotification("item/agentMessage/delta", toJson(params));
 		routeToSession(params.threadId,
-			(s) => s.handleDelta(params, "text_delta"));
+			(s) => s.handleDelta(params, "text_delta", raw));
 		return resolve();
 	}
 
 	Promise!void itemReasoningTextDelta(DeltaParams params)
 	{
+		auto raw = buildRawNotification("item/reasoning/textDelta", toJson(params));
 		routeToSession(params.threadId,
-			(s) => s.handleDelta(params, "thinking_delta"));
+			(s) => s.handleDelta(params, "thinking_delta", raw));
 		return resolve();
 	}
 
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params)
 	{
+		auto raw = buildRawNotification("item/commandExecution/outputDelta", toJson(params));
 		routeToSession(params.threadId,
-			(s) => s.handleDelta(params, "output_delta"));
+			(s) => s.handleDelta(params, "output_delta", raw));
 		return resolve();
 	}
 
 	Promise!void itemCompleted(ItemCompletedParams params)
 	{
+		auto raw = buildRawNotification("item/completed", toJson(params));
 		routeToSession(params.threadId,
-			(s) => s.handleItemCompleted(params));
+			(s) => s.handleItemCompleted(params, raw));
 		return resolve();
 	}
 
 	Promise!void turnCompleted(ThreadIdParams params)
 	{
+		auto raw = buildRawNotification("turn/completed", toJson(params));
 		routeToSession(params.threadId,
-			(s) => s.handleTurnCompleted());
+			(s) => s.handleTurnCompleted(raw));
 		return resolve();
 	}
 
 	Promise!void threadCompacted(ThreadIdParams params)
 	{
+		auto raw = buildRawNotification("thread/compacted", toJson(params));
 		routeToSession(params.threadId, (s) {
+			import cydo.agent.protocol : injectRawField;
 			if (s.outputHandler_)
-				s.outputHandler_(`{"type":"session/compacted"}`);
+				s.outputHandler_(injectRawField(`{"type":"session/compacted"}`, raw));
 		});
 		return resolve();
 	}
@@ -1096,7 +1111,7 @@ class CodexSession : AgentSession
 
 	// ----- Notification handling (routed by CodexServerRouter) -----
 
-	package void handleItemStarted(ItemStartedParams params)
+	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
 		import cydo.agent.protocol : ItemStartedEvent, injectRawField;
 
@@ -1127,7 +1142,7 @@ class CodexSession : AgentSession
 					userText = item.text;
 				ev.item_id = "codex-user-" ~ to!string(itemCounter_++);
 				ev.text = userText;
-				outputHandler_(injectRawField(toJson(ev), toJson(item)));
+				outputHandler_(injectRawField(toJson(ev), rawNotification));
 			}
 			return;
 		}
@@ -1189,24 +1204,24 @@ class CodexSession : AgentSession
 			ev.text = item.text;
 
 		if (outputHandler_)
-			outputHandler_(injectRawField(toJson(ev), toJson(item)));
+			outputHandler_(injectRawField(toJson(ev), rawNotification));
 	}
 
 	/// Handle any delta notification (text, thinking, or command output).
-	package void handleDelta(DeltaParams params, string deltaType)
+	package void handleDelta(DeltaParams params, string deltaType, string rawNotification)
 	{
 		if (activeItemId_.length == 0 || outputHandler_ is null)
 			return;
 
-		import cydo.agent.protocol : ItemDeltaEvent;
+		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
 		ItemDeltaEvent ev;
 		ev.item_id = activeItemId_;
 		ev.delta_type = deltaType;
 		ev.content = params.delta;
-		outputHandler_(toJson(ev));
+		outputHandler_(injectRawField(toJson(ev), rawNotification));
 	}
 
-	package void handleItemCompleted(ItemCompletedParams params)
+	package void handleItemCompleted(ItemCompletedParams params, string rawNotification)
 	{
 		// Skip if no active item (e.g., userMessage items are not tracked).
 		if (activeItemId_.length == 0)
@@ -1224,7 +1239,7 @@ class CodexSession : AgentSession
 			ev.output = params.item.aggregatedOutput;
 
 		if (outputHandler_)
-			outputHandler_(injectRawField(toJson(ev), toJson(params.item)));
+			outputHandler_(injectRawField(toJson(ev), rawNotification));
 
 		// Emit item/result for tool_use items so the frontend can display the output.
 		// item/result must come AFTER item/completed so the tool_use block is
@@ -1237,14 +1252,14 @@ class CodexSession : AgentSession
 				resEv.content = JSONFragment(toJson(params.item.aggregatedOutput));
 			else
 				resEv.content = JSONFragment(`""`);
-			outputHandler_(toJson(resEv));
+			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
 
 		activeItemId_ = null;
 		activeItemType_ = null;
 	}
 
-	package void handleTurnCompleted()
+	package void handleTurnCompleted(string rawNotification)
 	{
 		turnInProgress = false;
 
@@ -1258,22 +1273,22 @@ class CodexSession : AgentSession
 		// 1. turn/stop
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
+			import cydo.agent.protocol : TurnStopEvent, UsageInfo, injectRawField;
 			TurnStopEvent tsev;
 			tsev.model = model;
 			tsev.usage = UsageInfo(0, 0);
-			outputHandler_(toJson(tsev));
+			outputHandler_(injectRawField(toJson(tsev), rawNotification));
 		}
 
 		// 2. turn/result
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+			import cydo.agent.protocol : TurnResultEvent, UsageInfo, injectRawField;
 			TurnResultEvent tre;
 			tre.subtype = "success";
 			tre.num_turns = 1;
 			tre.usage = UsageInfo(0, 0);
-			outputHandler_(toJson(tre));
+			outputHandler_(injectRawField(toJson(tre), rawNotification));
 		}
 	}
 }
