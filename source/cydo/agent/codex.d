@@ -351,7 +351,7 @@ class AppServerProcess
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
 		// is no longer called.
 		IConnection connection = process.connection;
-		debug (codex) connection = new LoggingAdapter(connection, "codex");
+		connection = new LoggingAdapter(connection, "codex");
 		codec = new JsonRpcCodec(connection);
 
 		// Dispatcher for incoming notifications/requests from Codex.
