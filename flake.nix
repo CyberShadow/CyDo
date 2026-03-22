@@ -325,7 +325,7 @@ EOF
               chmod -R u+w /tmp/tests
               chmod +x /tmp/tests/extra-fields-wrapper.sh
               cd /tmp/tests
-              playwright test --reporter=list ${testMatch} || TEST_RESULT=$?
+              playwright test ${testMatch} || TEST_RESULT=$?
 
               kill $MOCK_PID 2>/dev/null || true
               wait $MOCK_PID 2>/dev/null || true
@@ -339,7 +339,6 @@ EOF
 
               if [ "''${TEST_RESULT:-0}" != "0" ]; then
                 echo "Tests failed with exit code ''${TEST_RESULT}"
-                find /tmp/tests/test-results -name '*.md' -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
                 exit 1
               fi
             '';

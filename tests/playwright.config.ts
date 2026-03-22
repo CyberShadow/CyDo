@@ -6,6 +6,7 @@ export default defineConfig({
   // Nix provides effective reproducibility. As such, flaky tests are bugs.
   retries: 0, // Agents: you MAY NOT increase this value.
   fullyParallel: true,
+  reporter: [['list'], ['./log-reporter.ts']],
   use: {
     headless: true,
     screenshot: "on",

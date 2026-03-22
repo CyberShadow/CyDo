@@ -1,8 +1,8 @@
 import { test as base, expect } from "@playwright/test";
 import type { Page, WorkerInfo } from "@playwright/test";
 import { spawn } from "child_process";
-import type { ChildProcess } from "child_process";
 import { mkdirSync, cpSync, symlinkSync } from "fs";
+import { createInterface } from "readline";
 import * as path from "path";
 import { enterSession, sendMessage, responseTimeout } from "./fixtures";
 
@@ -42,6 +42,30 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
 
       const wrapperPath = path.join(__dirname, "..", "extra-fields-wrapper.sh");
 
+      // Start per-worker mock API
+      const mockApiPort = 9200 + workerInfo.workerIndex;
+      const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
+      const mockApiServerPath = path.join(__dirname, "../mock-api/server.mjs");
+      const mockProc = spawn(process.execPath, [mockApiServerPath], {
+        env: { ...process.env, MOCK_API_PORT: String(mockApiPort) },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      if (mockProc.stdout) {
+        const rl = createInterface({ input: mockProc.stdout });
+        rl.on("line", () => {});
+      }
+      if (mockProc.stderr) {
+        const rl = createInterface({ input: mockProc.stderr });
+        rl.on("line", () => {});
+      }
+      for (let i = 0; i < 30; i++) {
+        try {
+          const res = await fetch(`${mockApiBaseURL}/api/hello`);
+          if (res.ok) break;
+        } catch { /* not ready yet */ }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       const proc = spawn(process.env.CYDO_BIN!, [], {
         detached: true,
         cwd: workDir,
@@ -51,6 +75,8 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
           CYDO_LISTEN_PORT: String(port),
           CYDO_CLAUDE_BIN: wrapperPath,
           CYDO_REAL_CLAUDE_BIN: "claude",
+          ANTHROPIC_BASE_URL: mockApiBaseURL,
+          OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
         },
         stdio: ["ignore", "ignore", "inherit"],
       });
@@ -80,6 +106,8 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
 
       process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", r));
+      mockProc.kill();
+      await new Promise<void>((r) => mockProc.on("exit", r));
       const { rmSync } = await import("fs");
       rmSync(workDir, { recursive: true, force: true });
     },

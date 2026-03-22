@@ -62,7 +62,7 @@ export function matchPattern(userText) {
   if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
 
   // "stall session" → keep LLM connection open without completing
-  if (/^stall session$/i.test(userText)) return { type: "stall" };
+  if (/^stall session\s*$/i.test(userText)) return { type: "stall" };
 
   // "run two background commands" — two sequential exec_command with yield_time_ms
   // (must come before single "run background command" to avoid substring match)
