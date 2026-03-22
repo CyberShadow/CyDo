@@ -4,7 +4,7 @@ Task types define agent behavior, capabilities, and flow control. Each task
 type is a template that determines how an agent approaches work, what tools it
 has, and what happens when it finishes.
 
-Concrete definitions are in [types.yaml](types.yaml).
+Concrete definitions are in [task-types.yaml](../defs/task-types.yaml).
 
 ## Schema
 

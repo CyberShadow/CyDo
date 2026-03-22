@@ -222,7 +222,7 @@ EOF
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
-            taskTypeDocs = ./defs/task-types;
+            taskTypeDocs = ./defs;
 
             nativeBuildInputs = with pkgs; [
               playwright-test
@@ -272,10 +272,9 @@ EOF
               echo "test" > README.md
               ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
 
-              mkdir -p /tmp/cydo-test-workspace/defs
-              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs/task-types
-              chmod -R u+w /tmp/cydo-test-workspace/defs/task-types
-              cp $src/defs/types.yaml /tmp/cydo-test-workspace/defs/task-types/types.yaml
+              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs
+              chmod -R u+w /tmp/cydo-test-workspace/defs
+              cp $src/defs/task-types.yaml /tmp/cydo-test-workspace/defs/task-types.yaml
 
               ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
               MOCK_PID=$!

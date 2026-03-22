@@ -105,8 +105,8 @@ class App : ToolsBackend
 	private Agent[string] agentsByType;
 	// Task type definitions loaded from YAML
 	private TaskTypeDef[] taskTypesCache;
-	private enum taskTypesDir = "defs/task-types";
-	private enum taskTypesPath = "defs/task-types/types.yaml";
+	private enum taskTypesDir = "defs";
+	private enum taskTypesPath = "defs/task-types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
 	// In-memory mirror of task_deps table (childTid → parentTid)
