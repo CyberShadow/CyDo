@@ -74,7 +74,7 @@ class TerminalProcess
 	}
 
 	/// Buffered output as UTF-8 string.
-	string output() { return cast(string) outputBuf; }
+	string output() { return outputBuf.length > 0 ? cast(string) outputBuf : ""; }
 
 	/// Whether the output byte limit was reached.
 	@property bool truncated() { return truncated_; }

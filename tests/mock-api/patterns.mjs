@@ -6,6 +6,7 @@
 //   { type: "text", text: string }
 //   { type: "shell", command: string }
 //   { type: "tool_call", name: string, input: object }
+//   { type: "stall" }  — keep the LLM connection open indefinitely (for kill tests)
 export function matchPattern(userText) {
   // Suggestion generation — must be checked before other patterns
   // because the prompt contains abbreviated history that may match them.
@@ -58,6 +59,9 @@ export function matchPattern(userText) {
   // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
   match = userText.match(/call task (\S+) (.*)/is);
   if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+
+  // "stall session" → keep LLM connection open without completing
+  if (/^stall session$/i.test(userText)) return { type: "stall" };
 
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);

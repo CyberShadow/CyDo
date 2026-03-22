@@ -1649,6 +1649,7 @@ class App : ToolsBackend
 		// Pass workspace and working directory for agents that need them (Codex).
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
+		sessionConfig.needsBash = taskAgent.needsBash();
 
 		td.session = taskAgent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 

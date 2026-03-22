@@ -386,7 +386,24 @@ function handleMessages(req, res) {
 
     const intent = matchPattern(userText);
 
-    if (intent.type === "text") {
+    if (intent.type === "stall") {
+      // Send message_start to begin the stream, then stall indefinitely.
+      // The session stays alive (waiting for LLM) so tests can Kill it.
+      sseEvent(res, "message_start", {
+        type: "message_start",
+        message: {
+          id: nextMsgId(),
+          type: "message",
+          role: "assistant",
+          content: [],
+          model,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 0 },
+        },
+      });
+      // Do NOT call res.end() — connection stays open until the process is killed.
+    } else if (intent.type === "text") {
       streamTextResponse(res, intent.text, model);
     } else if (intent.type === "shell") {
       streamToolUseResponse(res, "Bash", { command: intent.command, description: "Running command" }, model);

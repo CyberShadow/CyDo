@@ -17,6 +17,7 @@ struct SessionConfig
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
+	bool needsBash;            /// Whether the Bash MCP tool should be available for this session
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,
@@ -109,6 +110,10 @@ interface Agent
 
 	/// Whether a raw JSONL line is an assistant message (for compaction detection).
 	bool isAssistantMessageLine(string rawLine);
+
+	/// Whether this agent requires the Bash MCP tool.
+	/// When false, the Bash tool is excluded from the MCP tools/list.
+	@property bool needsBash();
 
 	/// Whether this agent supports reverting file changes.
 	/// When false, the UI should hide/disable the file revert option.

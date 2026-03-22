@@ -172,9 +172,9 @@ test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
 
   await enterSession(page);
 
-  // Create a sub-task of type test_on_yield with a long-running command so
+  // Create a sub-task of type test_on_yield with a stalling LLM response so
   // the sub-task stays alive long enough for us to kill it.
-  await sendMessage(page, "call task test_on_yield run command sleep 60");
+  await sendMessage(page, "call task test_on_yield stall session");
 
   // Wait for the sub-task to be created (task_created is broadcast to all clients).
   await expect(async () => {

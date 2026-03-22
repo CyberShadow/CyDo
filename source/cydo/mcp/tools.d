@@ -40,7 +40,7 @@ struct AskQuestion
 /// Compile-time introspection generates metadata and dispatch.
 interface CydoTools
 {
-	@Description("Execute a shell command and return its output.")
+	@Description("{{bash_available}}Execute a shell command and return its output.")
 	@McpName("Bash")
 	McpResult bash(
 		@Description("The shell command to execute")
