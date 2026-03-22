@@ -18,7 +18,8 @@ import ae.net.jsonrpc.stdio : stdioLDJsonRpcConnection;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.array : asBytes;
-import ae.utils.json : JSONFragment, jsonParse, toJson, JSONPartial;
+import ae.utils.json : JSONFragment, toJson, JSONPartial;
+import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.mcp.tools : CydoTools;
