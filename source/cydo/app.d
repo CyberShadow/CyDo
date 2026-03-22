@@ -1602,6 +1602,7 @@ class App : ToolsBackend
 	private void spawnTaskSession(int tid)
 	{
 		auto td = &tasks[tid];
+		td.wasKilledByUser = false;
 
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
