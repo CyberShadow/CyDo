@@ -4,7 +4,7 @@ import std.conv : to;
 import std.logger : errorf, tracef, warningf;
 import std.path : buildPath, dirName;
 
-import ae.net.asockets : ConnectionAdapter, IConnection;
+import ae.net.asockets : IConnection;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher,
 	jsonRpcDispatcher, RPCFlatten, RPCName, RPCNamedParams;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
@@ -15,7 +15,7 @@ import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, SessionConfig;
-import cydo.agent.process : AgentProcess;
+import cydo.agent.process : AgentProcess, LoggingAdapter;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -305,34 +305,6 @@ private class CodexServerRouter : ICodexServer
 	Promise!ApprovalDecision fileChangeApproval(ItemStartedParams params)
 	{
 		return resolve(ApprovalDecision("acceptForSession"));
-	}
-}
-
-class LoggingAdapter : ConnectionAdapter
-{
-	string name;
-
-	this(IConnection next, string name)
-	{
-		super(next);
-		this.name = name;
-	}
-
-	override void onReadData(Data data)
-	{
-		data.enter((scope contents) {
-			tracef("[%s] < %s", name, cast(string)contents);
-		});
-		super.onReadData(data);
-	}
-
-	override void send(scope Data[] data, int priority)
-	{
-		foreach (ref datum; data)
-			datum.enter((scope contents) {
-				tracef("[%s] > %s", name, cast(string)contents);
-			});
-		super.send(data, priority);
 	}
 }
 

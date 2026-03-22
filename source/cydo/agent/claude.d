@@ -490,7 +490,7 @@ class ClaudeCodeSession : AgentSession
 		else
 			args = claudeArgs;
 
-		process = new AgentProcess(args);
+		process = new AgentProcess(args, null, null, false, "claude");
 
 		process.onStdoutLine = (string line) {
 			translateLiveLine(line);

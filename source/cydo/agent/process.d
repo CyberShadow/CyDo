@@ -3,10 +3,11 @@ module cydo.agent.process;
 import core.sys.posix.signal : SIGINT, SIGTERM;
 import core.sys.posix.unistd : dup;
 
+import std.logger : tracef;
 import std.process : Pid, Pipe, Redirect, Config, spawnProcess, pipe, kill;
 import std.stdio : File;
 
-import ae.net.asockets : ConnectionState, DisconnectType, Duplex, FileConnection, LineBufferedAdapter;
+import ae.net.asockets : ConnectionAdapter, ConnectionState, DisconnectType, Duplex, FileConnection, IConnection, LineBufferedAdapter;
 import ae.sys.data : Data;
 import ae.sys.process : asyncWait;
 import ae.utils.array : asBytes;
@@ -33,7 +34,10 @@ class AgentProcess
 
 	/// Spawn a child process with the given arguments and optional environment/workdir.
 	/// If noStdin is true, stdin is redirected from /dev/null (no Duplex needed).
-	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false)
+	/// If logName is non-empty, a LoggingAdapter is inserted below the LineBufferedAdapter
+	/// to trace-log raw I/O at the trace level.
+	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false,
+		string logName = null)
 	{
 		Pipe stdinPipe;
 		if (!noStdin)
@@ -78,8 +82,11 @@ class AgentProcess
 			// Duplex for stdin (write) / stdout (read)
 			duplex = new Duplex(stdoutConn, stdinConn);
 
-			// Line-buffered adapter reads from duplex
-			stdoutLines = new LineBufferedAdapter(duplex, "\n");
+			// Optionally log raw bytes below the line framer
+			IConnection rawConn = logName.length ? new LoggingAdapter(duplex, logName) : cast(IConnection) duplex;
+
+			// Line-buffered adapter reads from duplex (or logger)
+			stdoutLines = new LineBufferedAdapter(rawConn, "\n");
 		}
 		else
 		{
@@ -91,8 +98,11 @@ class AgentProcess
 
 			auto stdoutConn = new FileConnection(stdoutFd);
 
+			// Optionally log raw bytes below the line framer
+			IConnection rawConn = logName.length ? new LoggingAdapter(stdoutConn, logName) : cast(IConnection) stdoutConn;
+
 			// No Duplex — read stdout directly
-			stdoutLines = new LineBufferedAdapter(stdoutConn, "\n");
+			stdoutLines = new LineBufferedAdapter(rawConn, "\n");
 		}
 
 		auto stderrConn = new FileConnection(stderrFd);
@@ -185,4 +195,34 @@ class AgentProcess
 		sendSignal(SIGTERM);
 	}
 
+}
+
+/// Wraps an IConnection to trace-log all data passing through it.
+/// Use `<` prefix for inbound data and `>` for outbound data.
+class LoggingAdapter : ConnectionAdapter
+{
+	string name;
+
+	this(IConnection next, string name)
+	{
+		super(next);
+		this.name = name;
+	}
+
+	override void onReadData(Data data)
+	{
+		data.enter((scope contents) {
+			tracef("[%s] < %s", name, cast(string)contents);
+		});
+		super.onReadData(data);
+	}
+
+	override void send(scope Data[] data, int priority)
+	{
+		foreach (ref datum; data)
+			datum.enter((scope contents) {
+				tracef("[%s] > %s", name, cast(string)contents);
+			});
+		super.send(data, priority);
+	}
 }

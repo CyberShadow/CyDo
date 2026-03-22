@@ -212,7 +212,7 @@ class AcpProcess
 
 	this(string[] args, string[string] env, string workDir)
 	{
-		process = new AgentProcess(args, env, workDir);
+		process = new AgentProcess(args, env, workDir, false, "acp");
 
 		IConnection connection = process.connection;
 		codec = new JsonRpcCodec(connection);
