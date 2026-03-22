@@ -1948,7 +1948,7 @@ class App : ToolsBackend
 			persistence.setTaskType(tid, contDef.task_type);
 
 			// Notify frontends to re-request history
-			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			broadcast(toJson(TaskReloadMessage("task_reload", tid, "continuation")));
 
 			td.status = "active";
 			persistence.setStatus(tid, "active");
@@ -1971,7 +1971,7 @@ class App : ToolsBackend
 			persistence.setStatus(tid, "completed");
 
 			// Notify frontends to re-request history
-			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			broadcast(toJson(TaskReloadMessage("task_reload", tid, "continuation")));
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = handoffPrompt.length > 0 ? handoffPrompt : td.description;

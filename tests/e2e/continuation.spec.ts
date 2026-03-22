@@ -68,17 +68,20 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
 });
 
 test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agentType }) => {
-  // Listen for WebSocket frames BEFORE the page connects so we capture
-  // all messages including the process/exit with is_continuation.
-  const exitEvents: Array<{ tid: number; is_continuation?: boolean }> = [];
+  // Listen for task_reload broadcast frames — sent to ALL clients regardless
+  // of subscription. The process/exit event with is_continuation is only sent
+  // to subscribers of the child's tid, which is racy (the child can exit
+  // before any client subscribes). task_reload with reason "continuation" is
+  // the reliable broadcast equivalent.
+  const reloadEvents: Array<{ tid: number; reason?: string }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
         const data = JSON.parse(event.payload.toString());
-        if (data.event?.type === "process/exit") {
-          exitEvents.push({
+        if (data.type === "task_reload") {
+          reloadEvents.push({
             tid: data.tid,
-            is_continuation: data.event.is_continuation,
+            reason: data.reason,
           });
         }
       } catch { /* ignore non-JSON frames */ }
@@ -92,12 +95,11 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
   // "call switchmode plan", triggering a keep_context continuation.
   await sendMessage(page, "call task blank call switchmode plan");
 
-  // Wait for C's SwitchMode to produce a process/exit with is_continuation.
-  // This is the core assertion: the backend must annotate SwitchMode exits
-  // so the frontend's parent-navigation guard can skip them.
+  // Wait for a task_reload with reason "continuation" — this confirms the
+  // backend processed the SwitchMode and transitioned the task in-place.
   await expect(async () => {
-    const switchModeExit = exitEvents.find((e) => e.is_continuation === true);
-    expect(switchModeExit).toBeTruthy();
+    const continuationReload = reloadEvents.find((e) => e.reason === "continuation");
+    expect(continuationReload).toBeTruthy();
   }).toPass({ timeout: 30_000 });
 });
 
