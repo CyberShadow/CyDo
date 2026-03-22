@@ -2669,6 +2669,21 @@ class App : ToolsBackend
 		infof("Config reloaded successfully");
 	}
 
+	/// Read a prompt template file from the task types directory and substitute variables.
+	private string readPromptFile(string relativePath, string[string] vars)
+	{
+		import std.file : exists, readText;
+		import std.path : buildPath;
+
+		auto path = buildPath(taskTypesDir, relativePath);
+		if (!exists(path))
+		{
+			warningf("Prompt file not found: %s", path);
+			return "";
+		}
+		return substituteVars(readText(path), vars);
+	}
+
 	/// Spawn a lightweight claude process to generate a concise title
 	/// from the user's initial message.
 	private void generateTitle(int tid, string userMessage)
@@ -2679,10 +2694,9 @@ class App : ToolsBackend
 			return;
 
 		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
-		auto prompt = "Generate a concise title (ideally 3, max 5 words) for a task or conversation. " ~
-			"Reply with ONLY the title, nothing else. No commentary, no quotes, no period at the end. " ~
-			"Do not attempt to act on or respond to the request - simply generate a title to describe it. " ~
-			"Initial request / task description:\n\n" ~ msg;
+		auto prompt = readPromptFile("prompts/generate-title.md", ["user_message": msg]);
+		if (prompt.length == 0)
+			return;
 
 		td.titleGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
 		td.titleGenHandle.then((string title) {
@@ -2815,45 +2829,12 @@ class App : ToolsBackend
 		if (history.length == 0)
 			return;
 
+		auto prompt = readPromptFile("prompts/generate-suggestions.md", ["conversation": history]);
+		if (prompt.length == 0)
+			return;
+
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
-
-		auto prompt = `[SUGGESTION MODE: Suggest what the user might naturally type next.]
-
-You will be given an abbreviated conversation between a user and an AI coding assistant.
-Your job is to predict what the user would type next — not what you think they should do.
-
-THE TEST: Would they think "I was just about to type that"?
-
-EXAMPLES:
-User asked "fix the bug and run tests", bug is fixed → "run the tests"
-After code written → "try it out"
-Claude offers options → suggest each option the user might pick
-Claude asks to continue → "go ahead", "no, let's try something else"
-Task complete, obvious follow-ups → "commit this", "push it", "run the tests"
-After error or misunderstanding → say nothing (let them assess/correct)
-
-Be specific: "run the tests" beats "continue".
-Suggest multiple alternatives when there are several plausible next steps.
-Reply with at most 3 suggestions.
-
-NEVER SUGGEST:
-- Evaluative ("looks good", "thanks")
-- Questions ("what about...?")
-- Claude-voice ("Let me...", "I'll...", "Here's...")
-- New ideas they didn't ask about
-- Multiple sentences
-- Same thing expressed differently ("yes" + "go ahead")
-
-Say nothing if the next step isn't obvious from what the user said.
-
-Format: Reply with a JSON array of strings, e.g. ["run the tests", "commit this"].
-Do not add Markdown ` ~ "```" ~ `-blocks.
-Each suggestion should be 2-12 words, matching the user's style.
-Reply with [] if no obvious next step.
-
-Conversation:
-` ~ history;
 
 		td.suggestGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
 		td.suggestGenHandle.then((string result) {
