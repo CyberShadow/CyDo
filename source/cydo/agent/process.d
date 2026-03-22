@@ -12,14 +12,19 @@ import ae.sys.data : Data;
 import ae.sys.process : asyncWait;
 import ae.utils.array : asBytes;
 
+import cydo.agent.contentlength : ContentLengthAdapter;
+
+/// Selects the framing mode for stdout of an AgentProcess.
+enum FramingMode { ndjson, contentLength }
+
 /// Manages a child process with event-loop-integrated I/O.
 /// Uses FileConnection to wrap pipe fds, Duplex to combine stdin/stdout,
-/// and LineBufferedAdapter for NDJSON line splitting.
+/// and a framing adapter (LineBufferedAdapter or ContentLengthAdapter) for message splitting.
 class AgentProcess
 {
 	private Pid pid;
 	private FileConnection stdinConn;
-	private LineBufferedAdapter stdoutLines;
+	private ConnectionAdapter stdoutLines;
 	private LineBufferedAdapter stderrLines;
 	private Duplex duplex;
 	private bool exited;
@@ -34,10 +39,10 @@ class AgentProcess
 
 	/// Spawn a child process with the given arguments and optional environment/workdir.
 	/// If noStdin is true, stdin is redirected from /dev/null (no Duplex needed).
-	/// If logName is non-empty, a LoggingAdapter is inserted below the LineBufferedAdapter
+	/// If logName is non-empty, a LoggingAdapter is inserted below the framing adapter
 	/// to trace-log raw I/O at the trace level.
 	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false,
-		string logName = null)
+		FramingMode mode = FramingMode.ndjson, string logName = null)
 	{
 		Pipe stdinPipe;
 		if (!noStdin)
@@ -82,11 +87,13 @@ class AgentProcess
 			// Duplex for stdin (write) / stdout (read)
 			duplex = new Duplex(stdoutConn, stdinConn);
 
-			// Optionally log raw bytes below the line framer
+			// Optionally log raw bytes below the framing adapter
 			IConnection rawConn = logName.length ? new LoggingAdapter(duplex, logName) : cast(IConnection) duplex;
 
-			// Line-buffered adapter reads from duplex (or logger)
-			stdoutLines = new LineBufferedAdapter(rawConn, "\n");
+			if (mode == FramingMode.contentLength)
+				stdoutLines = new ContentLengthAdapter(rawConn);
+			else
+				stdoutLines = new LineBufferedAdapter(rawConn, "\n");
 		}
 		else
 		{
@@ -98,11 +105,13 @@ class AgentProcess
 
 			auto stdoutConn = new FileConnection(stdoutFd);
 
-			// Optionally log raw bytes below the line framer
+			// Optionally log raw bytes below the framing adapter
 			IConnection rawConn = logName.length ? new LoggingAdapter(stdoutConn, logName) : cast(IConnection) stdoutConn;
 
-			// No Duplex — read stdout directly
-			stdoutLines = new LineBufferedAdapter(rawConn, "\n");
+			if (mode == FramingMode.contentLength)
+				stdoutLines = new ContentLengthAdapter(rawConn);
+			else
+				stdoutLines = new LineBufferedAdapter(rawConn, "\n");
 		}
 
 		auto stderrConn = new FileConnection(stderrFd);
@@ -150,8 +159,8 @@ class AgentProcess
 				onExit(exitStatus);
 	}
 
-	/// Write a line to the process stdin (appends newline via LineBufferedAdapter).
-	void writeLine(string line)
+	/// Send a message to the process stdin. The framing adapter handles encoding.
+	void sendMessage(string line)
 	{
 		if (disconnected)
 			return;
@@ -161,10 +170,10 @@ class AgentProcess
 	/// Whether the process pipes have been disconnected.
 	@property bool dead() { return disconnected || exited; }
 
-	/// The framed NDJSON connection (LineBufferedAdapter over Duplex).
+	/// The framed connection (LineBufferedAdapter or ContentLengthAdapter over Duplex).
 	/// When used with JsonRpcCodec, the codec takes over handleReadData
 	/// and onStdoutLine will no longer be called.
-	@property LineBufferedAdapter connection() { return stdoutLines; }
+	@property ConnectionAdapter connection() { return stdoutLines; }
 
 	/// Send a signal to the child process.
 	void sendSignal(int sig)

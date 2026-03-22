@@ -8,7 +8,7 @@ import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial;
 import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.process : AgentProcess;
+import cydo.agent.process : AgentProcess, FramingMode;
 
 // ---------------------------------------------------------------------------
 // Param/result structs for ACP server-initiated methods.
@@ -212,7 +212,7 @@ class AcpProcess
 
 	this(string[] args, string[string] env, string workDir)
 	{
-		process = new AgentProcess(args, env, workDir, false, "acp");
+		process = new AgentProcess(args, env, workDir, false, FramingMode.ndjson, "acp");
 
 		IConnection connection = process.connection;
 		codec = new JsonRpcCodec(connection);

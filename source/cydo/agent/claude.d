@@ -10,7 +10,7 @@ import ae.utils.promise : Promise;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.protocol;
-import cydo.agent.process : AgentProcess;
+import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : cydoBinaryDir, cydoBinaryPath;
@@ -490,7 +490,7 @@ class ClaudeCodeSession : AgentSession
 		else
 			args = claudeArgs;
 
-		process = new AgentProcess(args, null, null, false, "claude");
+		process = new AgentProcess(args, null, null, false, FramingMode.ndjson, "claude");
 
 		process.onStdoutLine = (string line) {
 			translateLiveLine(line);
@@ -516,7 +516,7 @@ class ClaudeCodeSession : AgentSession
 			"default",
 			null,
 		);
-		process.writeLine(toJson(input));
+		process.sendMessage(toJson(input));
 	}
 
 	/// Send a protocol-level interrupt via stdin (control_request with subtype "interrupt").
@@ -527,7 +527,7 @@ class ClaudeCodeSession : AgentSession
 		auto requestId = randomUUID().toString();
 		auto msg = `{"type":"control_request","request_id":"` ~ requestId
 			~ `","request":{"subtype":"interrupt"}}`;
-		process.writeLine(msg);
+		process.sendMessage(msg);
 	}
 
 	void sigint()
