@@ -1098,7 +1098,6 @@ body,
   opacity: 1;
 }
 
-
 /* Copy-to-clipboard button on code/pre blocks */
 .code-pre-wrap {
   position: relative;
@@ -1114,10 +1113,6 @@ body,
 }
 
 .code-pre-wrap:hover > .btn-copy {
-  opacity: 0.7;
-}
-
-.btn-copy:hover {
   opacity: 1;
 }
 
@@ -1131,13 +1126,13 @@ body,
 .markdown-wrap > .code-pre-wrap > .btn-copy,
 .markdown-diff-wrap > .code-pre-wrap > .btn-copy {
   top: 0;
-  right: 28px;
+  right: 23px;
 }
 
 .markdown-wrap:hover > .code-pre-wrap > .btn-copy,
 .markdown-raw > .code-pre-wrap > .btn-copy,
 .markdown-diff-wrap:hover > .code-pre-wrap > .btn-copy {
-  opacity: 0.7;
+  opacity: 1;
 }
 
 .markdown-source {
@@ -1626,7 +1621,6 @@ body,
   opacity: 0.4;
   cursor: not-allowed;
 }
-
 
 .edit-textarea {
   width: 100%;
