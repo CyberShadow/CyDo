@@ -173,7 +173,7 @@ private class SdkServerRouter : ISdkServer
 // ---------------------------------------------------------------------------
 // SdkProcess — manages a JSON-RPC 2.0 SDK subprocess.
 // One instance per CopilotAgent (shared across sessions).
-// Structural mirror of AcpProcess.
+// One instance per CopilotAgent (shared across sessions).
 // ---------------------------------------------------------------------------
 
 class SdkProcess

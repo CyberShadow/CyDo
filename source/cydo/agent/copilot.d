@@ -30,7 +30,7 @@ class CopilotAgent : Agent
 	package SdkProcess sharedSdkServer_;
 	package string sharedWorkDir_;
 	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
-	package ToolDispatchFn toolDispatch_;
+	package(cydo) ToolDispatchFn toolDispatch_;
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{

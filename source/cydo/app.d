@@ -1558,6 +1558,12 @@ class App : ToolsBackend
 		auto a = createAgent(td.agentType);
 		if (auto ac = td.agentType in config.agents)
 			a.setModelAliases(ac.model_aliases);
+		{
+			import cydo.agent.copilot : CopilotAgent;
+			if (auto ca = cast(CopilotAgent) a)
+				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
+					dispatchTool(tool, callerTid, args);
+		}
 		agentsByType[td.agentType] = a;
 		return a;
 	}
