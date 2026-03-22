@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks"
+import { useEffect, useRef, useState } from "preact/hooks"
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
@@ -21,10 +21,31 @@ export function WelcomePage({
   taskTypes,
 }: Props) {
   const [filter, setFilter] = useState("")
+  const filterRef = useRef<HTMLInputElement>(null)
 
-  // Group tasks by workspace+projectPath
+  // Type anywhere to focus the filter input
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      )
+        return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length !== 1) return;
+      filterRef.current?.focus();
+    };
+    document.addEventListener("keydown", handler);
+    return () => {
+      document.removeEventListener("keydown", handler);
+    };
+  }, []);
+
+  // Group top-level tasks by workspace+projectPath
   const tasksByProject = new Map<string, TaskState[]>();
   for (const t of tasks.values()) {
+    if (t.parentTid) continue;
     const key = `${t.workspace || ""}:${t.projectPath || ""}`;
     const list = tasksByProject.get(key) || [];
     list.push(t);
@@ -41,6 +62,20 @@ export function WelcomePage({
   const filteredUngrouped = filterLower
     ? ungrouped.filter(t => (t.title || `Task ${t.tid}`).toLowerCase().includes(filterLower))
     : ungrouped
+
+  function handleFilterKeyDown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      for (const ws of workspaces) {
+        const projs = filterLower
+          ? ws.projects.filter(p => p.name.toLowerCase().includes(filterLower))
+          : ws.projects
+        if (projs.length > 0) {
+          onNavigateToProject(ws.name, projs[0].name);
+          return;
+        }
+      }
+    }
+  }
 
   function renderTaskDot(t: TaskState) {
     let statusClass = "";
@@ -69,15 +104,21 @@ export function WelcomePage({
   return (
     <div class="welcome-page">
       <header class="welcome-page-header">
+        <svg class="welcome-logo" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round">
+          <path style={{ stroke: "var(--success)" }} d="M5.5 12L10.5 4L13 8l-2.5 4" />
+          <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
+        </svg>
         <h1>CyDo</h1>
       </header>
       <div class="welcome-filter-row">
         <input
+          ref={filterRef}
           class="welcome-filter-input"
           type="text"
           placeholder="Filter projects..."
           value={filter}
           onInput={(e) => { setFilter((e.target as HTMLInputElement).value) }}
+          onKeyDown={handleFilterKeyDown}
         />
         {filter && (
           <button class="welcome-filter-clear" onClick={() => { setFilter("") }}>
