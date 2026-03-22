@@ -332,7 +332,9 @@ function HighlightedJson({ text }: { text: string }) {
 
 function SourceView({ msg, tid }: { msg: DisplayMessage; tid: number }) {
   const hasRaw = msg.seq != null;
-  const [tab, setTab] = useState<"raw" | "agnostic">(hasRaw ? "raw" : "agnostic");
+  const [tab, setTab] = useState<"raw" | "agnostic">(
+    hasRaw ? "raw" : "agnostic",
+  );
   const [rawSources, setRawSources] = useState<unknown[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -360,9 +362,7 @@ function SourceView({ msg, tid }: { msg: DisplayMessage; tid: number }) {
   );
   const rawText = useMemo(() => {
     if (!rawSources) return null;
-    return rawSources
-      .map((s) => JSON.stringify(s, jsonReplacer, 2))
-      .join("\n");
+    return rawSources.map((s) => JSON.stringify(s, jsonReplacer, 2)).join("\n");
   }, [rawSources]);
 
   return (
@@ -371,21 +371,23 @@ function SourceView({ msg, tid }: { msg: DisplayMessage; tid: number }) {
         <div class="source-tabs">
           <button
             class={`source-tab${tab === "raw" ? " active" : ""}`}
-            onClick={() => { setTab("raw"); }}
+            onClick={() => {
+              setTab("raw");
+            }}
           >
             Raw
           </button>
           <button
             class={`source-tab${tab === "agnostic" ? " active" : ""}`}
-            onClick={() => { setTab("agnostic"); }}
+            onClick={() => {
+              setTab("agnostic");
+            }}
           >
             Agnostic
           </button>
         </div>
       )}
-      {tab === "raw" && loading && (
-        <div class="source-loading">Loading...</div>
-      )}
+      {tab === "raw" && loading && <div class="source-loading">Loading...</div>}
       {tab === "raw" && rawText && <HighlightedJson text={rawText} />}
       {tab === "agnostic" && <HighlightedJson text={agnosticText} />}
     </div>
@@ -447,7 +449,10 @@ const MessageView = memo(
               onClick={startEdit}
               title="Edit message"
             >
-              <span class="action-icon" dangerouslySetInnerHTML={{ __html: editIcon }} />
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: editIcon }}
+              />
             </button>
           )}
           {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
@@ -458,7 +463,10 @@ const MessageView = memo(
               }}
               title="View source"
             >
-              <span class="action-icon" dangerouslySetInnerHTML={{ __html: viewSourceIcon }} />
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: viewSourceIcon }}
+              />
             </button>
           )}
         </div>
@@ -509,18 +517,24 @@ const MessageView = memo(
                 }}
                 title="Fork session after this point"
               >
-                <span class="action-icon" dangerouslySetInnerHTML={{ __html: forkIcon }} />
+                <span
+                  class="action-icon"
+                  dangerouslySetInnerHTML={{ __html: forkIcon }}
+                />
               </button>
             )}
             {onUndo && (
               <button
-                class="msg-action-btn"
+                class="msg-action-btn undo-btn"
                 onClick={() => {
                   onUndo(uuid);
                 }}
                 title="Undo: rewind to this point"
               >
-                <span class="action-icon" dangerouslySetInnerHTML={{ __html: undoIcon }} />
+                <span
+                  class="action-icon"
+                  dangerouslySetInnerHTML={{ __html: undoIcon }}
+                />
               </button>
             )}
           </div>
