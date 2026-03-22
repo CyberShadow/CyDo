@@ -81,6 +81,7 @@ struct TaskData
 	StateQueue!ProcessState* processQueue;
 	Promise!ProcessState killPromise;  // non-null during active Dead transition
 	bool isProcessing = false;
+	bool wasKilledByUser = false;  // set when user explicitly kills via stop button
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
 	string notificationBody;

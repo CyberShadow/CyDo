@@ -1219,6 +1219,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		if (td.session)
 		{
+			td.wasKilledByUser = true;
 			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 			td.session.stop();
 		}
@@ -1614,7 +1615,6 @@ class App : ToolsBackend
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
 		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
 		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
-		sessionConfig.askUser = getTaskTypes().isInteractive(td.taskType) ? "enabled" : "";
 		sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
@@ -1649,7 +1649,16 @@ class App : ToolsBackend
 		// Pass workspace and working directory for agents that need them (Codex).
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
-		sessionConfig.needsBash = taskAgent.needsBash();
+		if (taskAgent.needsBash())
+			sessionConfig.includeTools ~= "Bash";
+		if (sessionConfig.creatableTaskTypes.length > 0)
+			sessionConfig.includeTools ~= "Task";
+		if (sessionConfig.switchModes.length > 0)
+			sessionConfig.includeTools ~= "SwitchMode";
+		if (sessionConfig.handoffs.length > 0)
+			sessionConfig.includeTools ~= "Handoff";
+		if (getTaskTypes().isInteractive(td.taskType))
+			sessionConfig.includeTools ~= "AskUserQuestion";
 
 		td.session = taskAgent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
@@ -1730,10 +1739,13 @@ class App : ToolsBackend
 				tid, exitCode, tid in tasks ? tasks[tid].status : "(gone)");
 			ProcessExitEvent ev;
 			ev.code = exitCode;
-			auto onYieldDef = (exitCode == 0 && tasks[tid].pendingContinuation.length == 0)
+			// Treat explicit user kill as non-clean exit for on_yield purposes.
+			// Claude Code may exit with code 0 on SIGTERM, but killing should never trigger on_yield.
+			auto cleanExit = exitCode == 0 && !tasks[tid].wasKilledByUser;
+			auto onYieldDef = (cleanExit && tasks[tid].pendingContinuation.length == 0)
 				? getTaskTypes().byName(tasks[tid].taskType) : null;
 			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
-			if (exitCode == 0 && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
+			if (cleanExit && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
 				ev.is_continuation = true;
 			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
@@ -1792,7 +1804,7 @@ class App : ToolsBackend
 			}
 
 			// Continuation: transition to successor instead of completing
-			if (exitCode == 0 && tasks[tid].pendingContinuation.length > 0)
+			if (cleanExit && tasks[tid].pendingContinuation.length > 0)
 			{
 				spawnContinuation(tid);
 				return;

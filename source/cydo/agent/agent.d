@@ -13,11 +13,10 @@ struct SessionConfig
 	string creatableTaskTypes; /// Pre-formatted description of available task types for MCP tool
 	string switchModes;        /// Pre-formatted description of available SwitchMode continuations
 	string handoffs;           /// Pre-formatted description of available Handoff continuations
-	string askUser;            /// Non-empty for interactive task types (enables AskUserQuestion tool)
+	string[] includeTools;     /// MCP tool names visible to this session (only these appear in tools/list)
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
-	bool needsBash;            /// Whether the Bash MCP tool should be available for this session
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,

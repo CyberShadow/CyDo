@@ -1204,12 +1204,22 @@ void runDumpContext(string[] args)
 	import cydo.mcp.tools : CydoTools;
 	import ae.utils.json : jsonParse;
 
+	auto ct = formatCreatableTaskTypes(types, typeName);
+	auto sm = formatSwitchModes(types, typeName);
+	auto ho = formatHandoffs(types, typeName);
+
+	string[] includeTools;
+	includeTools ~= "Bash";  // dump-context always shows Bash for completeness
+	if (ct.length > 0) includeTools ~= "Task";
+	if (sm.length > 0) includeTools ~= "SwitchMode";
+	if (ho.length > 0) includeTools ~= "Handoff";
+	if (types.isInteractive(typeName)) includeTools ~= "AskUserQuestion";
+
 	auto toolsJson = buildToolsListJson!CydoTools([
-		"creatable_task_types": formatCreatableTaskTypes(types, typeName),
-		"switchmodes": formatSwitchModes(types, typeName),
-		"handoffs": formatHandoffs(types, typeName),
-		"ask_user": types.isInteractive(typeName) ? "enabled" : "",
-	]);
+		"creatable_task_types": ct,
+		"switchmodes": sm,
+		"handoffs": ho,
+	], includeTools);
 
 	auto toolsList = jsonParse!ToolsList(toolsJson);
 	foreach (ref tool; toolsList.tools)

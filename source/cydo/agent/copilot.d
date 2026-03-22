@@ -89,7 +89,7 @@ class CopilotAgent : Agent
 		if (config.mcpSocketPath.length > 0)
 		{
 			mcpConfigPath = generateCopilotMcpConfig(tid, config.creatableTaskTypes,
-				config.switchModes, config.handoffs, config.askUser, config.mcpSocketPath);
+				config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
 			lastMcpConfigPath_ = mcpConfigPath;
 		}
 
@@ -494,6 +494,7 @@ class CopilotAgent : Agent
 		return line.canFind(`"type":"user.message"`) || line.canFind(`"type":"assistant.message"`);
 	}
 
+	@property bool needsBash() { return true; }
 	@property bool supportsFileRevert() { return false; }
 
 	string rewindFiles(string sessionId, string afterUuid, string cwd)
@@ -1430,8 +1431,9 @@ string cydoBinaryDir()
 
 /// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
 string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
-	string switchModes, string handoffs, string askUser, string mcpSocketPath)
+	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
 {
+	import std.array : join;
 	import std.file : exists, mkdirRecurse, write;
 
 	auto cydoBin = cydoBinaryPath;
@@ -1453,8 +1455,8 @@ string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 		~ cpEscape(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ cpEscape(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
 		~ cpEscape(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ cpEscape(handoffs) ~ `","CYDO_ASK_USER":"`
-		~ cpEscape(askUser) ~ `"}}}}`;
+		~ cpEscape(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
+		~ cpEscape(includeTools is null ? "" : includeTools.join(",")) ~ `"}}}}`;
 
 	write(configPath, config);
 	return configPath;

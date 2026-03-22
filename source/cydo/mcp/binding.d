@@ -265,9 +265,9 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 // ---- Utilities ----
 
 /// Build the final tools/list JSON by substituting {{placeholders}} in tool
-/// descriptions. Tools whose placeholder values are empty are excluded entirely.
+/// descriptions. Only tools whose names are in includeTools appear in the result.
 /// Shared by the MCP server and --dump-context.
-string buildToolsListJson(I)(string[string] vars)
+string buildToolsListJson(I)(string[string] vars, string[] includeTools)
 {
 	import std.algorithm : canFind;
 	import std.array : replace;
@@ -277,15 +277,11 @@ string buildToolsListJson(I)(string[string] vars)
 	if (templateTools is null)
 		templateTools = mcpToolDefs!I();
 
-	// Filter out tools with empty placeholder values, substitute the rest
 	ToolDef[] result;
-	outer: foreach (ref tool; templateTools)
+	foreach (ref tool; templateTools)
 	{
-		foreach (key, value; vars)
-		{
-			if (value.length == 0 && tool.description.canFind("{{" ~ key ~ "}}"))
-				continue outer;
-		}
+		if (!includeTools.canFind(tool.name))
+			continue;
 		// Shallow copy — only description is modified; schema references are safe to share
 		ToolDef copy = tool;
 		foreach (key, value; vars)

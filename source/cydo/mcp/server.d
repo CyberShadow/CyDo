@@ -50,14 +50,17 @@ enum MCP_PROTOCOL_VERSION = "2024-11-05";
 /// Build the final tools/list JSON by substituting placeholders.
 string buildToolsListJson()
 {
+	import std.array : split;
 	import cydo.mcp.binding : buildToolsListJson;
+
+	auto includeStr = environment.get("CYDO_INCLUDE_TOOLS", "");
+	string[] includeTools = includeStr.length > 0 ? includeStr.split(",") : null;
 
 	return buildToolsListJson!CydoTools([
 		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", ""),
 		"switchmodes": environment.get("CYDO_SWITCHMODES", ""),
 		"handoffs": environment.get("CYDO_HANDOFFS", ""),
-		"ask_user": environment.get("CYDO_ASK_USER", ""),
-	]);
+	], includeTools);
 }
 
 Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string socketPath, string tid)

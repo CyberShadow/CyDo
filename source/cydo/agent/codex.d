@@ -572,7 +572,7 @@ class CodexAgent : Agent
 
 				// Build MCP config override for CyDo tools
 				auto mcpConfig = buildMcpConfigOverride(tid,
-					config.creatableTaskTypes, config.switchModes, config.handoffs, config.askUser, config.mcpSocketPath);
+					config.creatableTaskTypes, config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
 
 				ThreadStartParams tsp;
 				tsp.cwd = workDir;
@@ -857,6 +857,7 @@ class CodexAgent : Agent
 			&& (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`));
 	}
 
+	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
 
 	string rewindFiles(string sessionId, string afterUuid, string cwd)
@@ -1401,8 +1402,10 @@ private:
 /// Returns empty string if CyDo binary is not available.
 /// The JSON value is passed as the "config" field in thread/start params.
 string buildMcpConfigOverride(int tid, string creatableTaskTypes,
-	string switchModes, string handoffs, string askUser, string mcpSocketPath)
+	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
 {
+	import std.array : join;
+
 	auto cydoBin = cydoBinaryPath;
 	if (cydoBin.length == 0)
 		return "";
@@ -1413,7 +1416,7 @@ string buildMcpConfigOverride(int tid, string creatableTaskTypes,
 	env["CYDO_CREATABLE_TYPES"] = creatableTaskTypes;
 	env["CYDO_SWITCHMODES"] = switchModes;
 	env["CYDO_HANDOFFS"] = handoffs;
-	env["CYDO_ASK_USER"] = askUser;
+	env["CYDO_INCLUDE_TOOLS"] = includeTools is null ? "" : includeTools.join(",");
 
 	auto serverConfig = McpServerConfig(cydoBin, ["--mcp-server"], env);
 
