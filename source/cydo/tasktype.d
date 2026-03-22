@@ -1218,6 +1218,7 @@ void runDumpContext(string[] args)
 		"creatable_task_types": formatCreatableTaskTypes(types, typeName),
 		"switchmodes": formatSwitchModes(types, typeName),
 		"handoffs": formatHandoffs(types, typeName),
+		"ask_user": types.isInteractive(typeName) ? "enabled" : "",
 	]);
 
 	auto toolsList = jsonParse!ToolsList(toolsJson);

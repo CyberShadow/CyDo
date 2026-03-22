@@ -13,6 +13,7 @@ struct SessionConfig
 	string creatableTaskTypes; /// Pre-formatted description of available task types for MCP tool
 	string switchModes;        /// Pre-formatted description of available SwitchMode continuations
 	string handoffs;           /// Pre-formatted description of available Handoff continuations
+	string askUser;            /// Non-empty for interactive task types (enables AskUserQuestion tool)
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy

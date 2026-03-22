@@ -141,6 +141,7 @@ interface CydoTools
 	    ~ "Users can always choose \"Other\" to provide custom text input.\n"
 	    ~ "Use multiSelect: true to allow multiple answers per question.\n"
 	    ~ "If you recommend a specific option, make it the first option with \"(Recommended)\" in the label."
+	    ~ "{{ask_user}}"
 	)
 	@McpName("AskUserQuestion")
 	McpResult askUserQuestion(

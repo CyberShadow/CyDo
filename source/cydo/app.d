@@ -1614,6 +1614,7 @@ class App : ToolsBackend
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
 		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
 		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
+		sessionConfig.askUser = getTaskTypes().isInteractive(td.taskType) ? "enabled" : "";
 		sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;

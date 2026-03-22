@@ -78,7 +78,7 @@ class ClaudeCodeAgent : Agent
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
-			config.switchModes, config.handoffs, config.mcpSocketPath);
+			config.switchModes, config.handoffs, config.askUser, config.mcpSocketPath);
 		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath_, config);
 	}
 
@@ -613,7 +613,7 @@ struct ClaudeInputMessage
 /// handoffs is pre-formatted text describing available Handoff continuations.
 /// mcpSocketPath is the absolute path to the backend's UNIX socket for MCP calls.
 string generateMcpConfig(int tid, string creatableTaskTypes = "",
-	string switchModes = "", string handoffs = "", string mcpSocketPath = "")
+	string switchModes = "", string handoffs = "", string askUser = "", string mcpSocketPath = "")
 {
 	import std.file : exists, mkdirRecurse, write;
 	import std.path : buildPath;
@@ -633,7 +633,8 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
 		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ escapeJsonString(handoffs) ~ `"}}}}`;
+		~ escapeJsonString(handoffs) ~ `","CYDO_ASK_USER":"`
+		~ escapeJsonString(askUser) ~ `"}}}}`;
 
 	write(configPath, config);
 	return configPath;

@@ -56,6 +56,7 @@ string buildToolsListJson()
 		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", ""),
 		"switchmodes": environment.get("CYDO_SWITCHMODES", ""),
 		"handoffs": environment.get("CYDO_HANDOFFS", ""),
+		"ask_user": environment.get("CYDO_ASK_USER", ""),
 	]);
 }
 

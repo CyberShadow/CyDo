@@ -572,7 +572,7 @@ class CodexAgent : Agent
 
 				// Build MCP config override for CyDo tools
 				auto mcpConfig = buildMcpConfigOverride(tid,
-					config.creatableTaskTypes, config.switchModes, config.handoffs, config.mcpSocketPath);
+					config.creatableTaskTypes, config.switchModes, config.handoffs, config.askUser, config.mcpSocketPath);
 
 				ThreadStartParams tsp;
 				tsp.cwd = workDir;
@@ -1401,7 +1401,7 @@ private:
 /// Returns empty string if CyDo binary is not available.
 /// The JSON value is passed as the "config" field in thread/start params.
 string buildMcpConfigOverride(int tid, string creatableTaskTypes,
-	string switchModes, string handoffs, string mcpSocketPath)
+	string switchModes, string handoffs, string askUser, string mcpSocketPath)
 {
 	auto cydoBin = cydoBinaryPath;
 	if (cydoBin.length == 0)
@@ -1413,6 +1413,7 @@ string buildMcpConfigOverride(int tid, string creatableTaskTypes,
 	env["CYDO_CREATABLE_TYPES"] = creatableTaskTypes;
 	env["CYDO_SWITCHMODES"] = switchModes;
 	env["CYDO_HANDOFFS"] = handoffs;
+	env["CYDO_ASK_USER"] = askUser;
 
 	auto serverConfig = McpServerConfig(cydoBin, ["--mcp-server"], env);
 
