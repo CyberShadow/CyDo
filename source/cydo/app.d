@@ -949,7 +949,6 @@ class App : ToolsBackend
 				else if (op.operation == "dequeue" || op.operation == "remove")
 				{
 					import cydo.agent.protocol : injectRawField;
-					import ae.utils.json : toJson;
 					string[] result;
 					// Flush any deferred synthetic from a prior dequeue/remove
 					// (handles compacted back-to-back dequeues)
@@ -957,7 +956,7 @@ class App : ToolsBackend
 					{
 						auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
 						if (lastDequeuedRawLine.length > 0)
-							synthetic = injectRawField(synthetic, toJson(lastDequeuedRawLine));
+							synthetic = injectRawField(synthetic, lastDequeuedRawLine);
 						result ~= synthetic;
 						lastDequeuedText = null;
 						lastDequeuedRawLine = null;
@@ -1021,12 +1020,11 @@ class App : ToolsBackend
 					// emit synthetic with enqueue UUID before the assistant line.
 					import std.format : format;
 					import cydo.agent.protocol : injectRawField;
-					import ae.utils.json : toJson;
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
 					auto synthetic = buildSyntheticUserEvent(lastDequeuedText, true);
 					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
 					if (lastDequeuedRawLine.length > 0)
-						synthetic = injectRawField(synthetic, toJson(lastDequeuedRawLine));
+						synthetic = injectRawField(synthetic, lastDequeuedRawLine);
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
 					lastDequeuedRawLine = null;
@@ -2437,10 +2435,9 @@ class App : ToolsBackend
 						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
 						import cydo.agent.protocol : injectRawField;
-						import ae.utils.json : toJson;
 						auto steeringEvent = buildSyntheticUserEvent(text, true);
 						if (enqueueRaw.length > 0)
-							steeringEvent = injectRawField(steeringEvent, toJson(enqueueRaw));
+							steeringEvent = injectRawField(steeringEvent, enqueueRaw);
 						string injected = `{"tid":` ~ format!"%d"(tid)
 							~ `,"event":` ~ steeringEvent ~ `}`;
 						auto data = Data(injected.representation);

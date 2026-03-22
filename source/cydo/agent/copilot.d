@@ -388,9 +388,8 @@ class CopilotAgent : Agent
 		}
 
 		// Attach original JSONL line as _raw on all translated events.
-		auto rawJson = toJson(line);
 		foreach (ref e; events)
-			e = injectRawField(e, rawJson);
+			e = injectRawField(e, line);
 		return events;
 	}
 
