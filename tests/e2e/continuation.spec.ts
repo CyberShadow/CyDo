@@ -102,16 +102,17 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
 });
 
 test("on_yield continuation auto-fires on clean exit", async ({ page, agentType }) => {
-  // Listen for WebSocket frames to capture process/exit events.
-  const exitEvents: Array<{ tid: number; is_continuation?: boolean }> = [];
+  // Listen for task_created broadcast frames — sent to ALL clients regardless of subscription.
+  const taskCreatedEvents: Array<{ tid: number; parent_tid: number; relation_type: string }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
         const data = JSON.parse(event.payload.toString());
-        if (data.event?.type === "process/exit") {
-          exitEvents.push({
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
             tid: data.tid,
-            is_continuation: data.event.is_continuation,
+            parent_tid: data.parent_tid,
+            relation_type: data.relation_type,
           });
         }
       } catch { /* ignore non-JSON frames */ }
@@ -125,30 +126,35 @@ test("on_yield continuation auto-fires on clean exit", async ({ page, agentType 
   // The on_yield continuation should auto-fire, creating a blank successor.
   await sendMessage(page, "call task test_on_yield hello");
 
-  // The on_yield exit should carry is_continuation: true.
+  // A task_created with relation_type "continuation" must appear.
   await expect(async () => {
-    const onYieldExit = exitEvents.find((e) => e.is_continuation === true);
-    expect(onYieldExit).toBeTruthy();
+    const continuationCreated = taskCreatedEvents.find((e) => e.relation_type === "continuation");
+    expect(continuationCreated).toBeTruthy();
   }).toPass({ timeout: 30_000 });
 });
 
 test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
   // Copilot ACP startup takes ~7s; Kill before the session registers leaves
-  // no exit handler, so the exit event is never broadcast.  The behavior is
-  // validated on Claude and Codex, where timing is more predictable.
+  // no exit handler, so the exit event is never broadcast.
   test.skip(agentType === "copilot", "Copilot ACP startup delay makes Kill timing unreliable");
+  // Codex exits with code 0 on "OutputTextDelta without active item" errors,
+  // triggering on_yield before the Kill button can be clicked.
+  test.skip(agentType === "codex", "Codex exits with code 0 on internal errors, triggering on_yield before kill");
 
-  const exitEvents: Array<{ tid: number; code: number; is_continuation?: boolean }> = [];
+  const taskCreatedEvents: Array<{ tid: number; parent_tid: number; relation_type: string }> = [];
+  const taskUpdatedEvents: Array<{ tid: number; alive: boolean }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
         const data = JSON.parse(event.payload.toString());
-        if (data.event?.type === "process/exit") {
-          exitEvents.push({
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
             tid: data.tid,
-            code: data.event.code,
-            is_continuation: data.event.is_continuation,
+            parent_tid: data.parent_tid,
+            relation_type: data.relation_type,
           });
+        } else if (data.type === "task_updated") {
+          taskUpdatedEvents.push({ tid: data.task.tid, alive: data.task.alive });
         }
       } catch {}
     });
@@ -156,19 +162,30 @@ test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
 
   await enterSession(page);
 
-  // Create a sub-task of type test_on_yield, then kill it via the Kill
-  // button to force a non-zero exit. on_yield should NOT fire.
-  await sendMessage(page, "call task test_on_yield hello");
+  // Create a sub-task of type test_on_yield with a long-running command so
+  // the sub-task stays alive long enough for us to kill it.
+  await sendMessage(page, "call task test_on_yield run command sleep 60");
 
-  // Wait for the sub-task to appear, then click Kill
-  await page.getByRole("button", { name: /kill/i }).first().click();
-
-  // Wait for the exit event — it should NOT have is_continuation.
+  // Wait for the sub-task to be created (task_created is broadcast to all clients).
   await expect(async () => {
-    const failedExit = exitEvents.find((e) => e.code !== 0);
-    expect(failedExit).toBeTruthy();
-    expect(failedExit!.is_continuation).toBeFalsy();
+    const subTask = taskCreatedEvents.find((e) => e.relation_type === "subtask");
+    expect(subTask).toBeTruthy();
   }).toPass({ timeout: 30_000 });
+  const subTaskTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
+
+  // Kill the sub-task. getByRole targets only accessible elements, so it
+  // finds the sub-task's Kill button and ignores hidden buttons from other tasks.
+  await page.getByRole("button", { name: "Kill" }).click({ timeout: 30_000 });
+
+  // Wait for the sub-task to show as dead via broadcast task_updated.
+  await expect(async () => {
+    const deadUpdate = taskUpdatedEvents.find((e) => e.tid === subTaskTid && !e.alive);
+    expect(deadUpdate).toBeTruthy();
+  }).toPass({ timeout: 10_000 });
+
+  // No task_created with relation_type "continuation" should have appeared.
+  const continuationCreated = taskCreatedEvents.find((e) => e.relation_type === "continuation");
+  expect(continuationCreated).toBeFalsy();
 });
 
 test("input box stays empty after mode switch", async ({ page, agentType }) => {
