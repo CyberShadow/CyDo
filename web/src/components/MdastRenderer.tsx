@@ -2,7 +2,7 @@ import { h, Fragment, type VNode } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useHighlight, renderTokens } from "../highlight";
 import { useCurrentTheme } from "../useTheme";
-import { CopyButton } from "./CopyButton";
+import { CopyButton, CodePre } from "./CopyButton";
 
 import type {
   Root,
@@ -79,9 +79,9 @@ function BlockNode({ node }: { node: RootContent }): VNode | null {
     case "html":
       // Render raw HTML as escaped text — do NOT inject as innerHTML
       return (
-        <pre class="html-raw">
+        <CodePre class="html-raw" copyText={node.value}>
           <code>{node.value}</code>
-        </pre>
+        </CodePre>
       );
     case "definition":
       return null; // metadata, not rendered
