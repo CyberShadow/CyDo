@@ -138,6 +138,7 @@ struct ItemCompletedParams
 	string threadId;
 	static struct Item
 	{
+		@JSONOptional string id;
 		@JSONOptional bool is_error;
 		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr
 		JSONExtras extras;
@@ -943,9 +944,9 @@ class CodexSession : AgentSession
 	private bool turnInProgress;
 
 	// Active item tracking for item/delta routing.
-	private string activeItemId_;
-	private string activeItemType_; // "text", "thinking", "tool_use", "user_message"
-	private int itemCounter_;       // monotonic counter for generating item IDs
+	private string activeItemId_;              // most recently started item (for delta routing)
+	private string[string] activeItemTypes_;   // itemId → itemType for all active items
+	private int itemCounter_;                  // monotonic counter for generating item IDs
 
 	private string sessionId;
 
@@ -1046,7 +1047,7 @@ class CodexSession : AgentSession
 		{
 			turnInProgress = true;
 			activeItemId_ = null;
-			activeItemType_ = null;
+			activeItemTypes_ = null;
 
 			server.sendRequest("turn/start",
 				JSONFragment(toJson(TurnStartParams(
@@ -1116,8 +1117,6 @@ class CodexSession : AgentSession
 		import cydo.agent.protocol : ItemStartedEvent, injectRawField;
 
 		auto item = params.item;
-		activeItemId_ = null;
-		activeItemType_ = null;
 
 		ItemStartedEvent ev;
 
@@ -1154,15 +1153,15 @@ class CodexSession : AgentSession
 		switch (item.type)
 		{
 			case "agentMessage":
-				activeItemType_ = "text";
+				activeItemTypes_[itemId] = "text";
 				ev.item_type = "text";
 				break;
 			case "reasoning":
-				activeItemType_ = "thinking";
+				activeItemTypes_[itemId] = "thinking";
 				ev.item_type = "thinking";
 				break;
 			case "commandExecution":
-				activeItemType_ = "tool_use";
+				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "commandExecution";
 				// Build input JSON from the command string field.
@@ -1178,12 +1177,12 @@ class CodexSession : AgentSession
 					ev.input = JSONFragment(cmdInput);
 				break;
 			case "fileChange":
-				activeItemType_ = "tool_use";
+				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "fileChange";
 				break;
 			case "mcpToolCall":
-				activeItemType_ = "tool_use";
+				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				if (item.tool.length > 0)
 					ev.name = item.server.length > 0 ? item.server ~ "__" ~ item.tool : item.tool;
@@ -1191,7 +1190,7 @@ class CodexSession : AgentSession
 					ev.name = item.name.length > 0 ? item.name : "unknown";
 				break;
 			default:
-				activeItemType_ = "text";
+				activeItemTypes_[itemId] = "text";
 				ev.item_type = "text";
 				break;
 		}
@@ -1223,17 +1222,21 @@ class CodexSession : AgentSession
 
 	package void handleItemCompleted(ItemCompletedParams params, string rawNotification)
 	{
-		// Skip if no active item (e.g., userMessage items are not tracked).
-		if (activeItemId_.length == 0)
+		// Determine which item completed: prefer explicit ID from params.
+		string itemId = (params.item.id.length > 0) ? params.item.id : activeItemId_;
+		if (itemId.length == 0)
 			return;
+
+		// Look up item type from map.
+		auto pType = itemId in activeItemTypes_;
+		if (pType is null)
+			return; // unknown item, skip
+		string itemType = *pType;
 
 		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent, injectRawField;
 		ItemCompletedEvent ev;
-		ev.item_id = activeItemId_;
+		ev.item_id = itemId;
 		ev.is_error = params.item.is_error;
-
-		auto itemId = activeItemId_;
-		auto itemType = activeItemType_;
 
 		if (itemType == "tool_use" && params.item.aggregatedOutput.length > 0)
 			ev.output = params.item.aggregatedOutput;
@@ -1255,20 +1258,18 @@ class CodexSession : AgentSession
 			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
 
-		activeItemId_ = null;
-		activeItemType_ = null;
+		// Remove from tracking.
+		activeItemTypes_.remove(itemId);
+		if (activeItemId_ == itemId)
+			activeItemId_ = null;
 	}
 
 	package void handleTurnCompleted(string rawNotification)
 	{
 		turnInProgress = false;
 
-		// If an item is still active (e.g. a background command that hasn't
-		// completed), leave it uncompleted — do NOT flush with item/completed.
-		// This is the key fix for background commands: the turn ends while the
-		// command is still running.
-		activeItemId_ = null;
-		activeItemType_ = null;
+		// Do NOT clear activeItemId_ or activeItemTypes_ here — background items
+		// may still complete after the turn ends.
 
 		// 1. turn/stop
 		if (outputHandler_)
