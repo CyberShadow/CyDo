@@ -5,6 +5,7 @@
 // Returns one of:
 //   { type: "text", text: string }
 //   { type: "shell", command: string }
+//   { type: "background_shell", command: string }
 //   { type: "tool_call", name: string, input: object }
 //   { type: "stall" }  — keep the LLM connection open indefinitely (for kill tests)
 export function matchPattern(userText) {
@@ -62,6 +63,15 @@ export function matchPattern(userText) {
 
   // "stall session" → keep LLM connection open without completing
   if (/^stall session$/i.test(userText)) return { type: "stall" };
+
+  // "run two background commands" — two sequential exec_command with yield_time_ms
+  // (must come before single "run background command" to avoid substring match)
+  match = userText.match(/run two background commands/i);
+  if (match) return { type: "background_shell", command: "sleep 2" };
+
+  // "run background command <cmd>" — exec_command with short yield_time_ms
+  match = userText.match(/run background command (.+)/i);
+  if (match) return { type: "background_shell", command: match[1].trim() };
 
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);

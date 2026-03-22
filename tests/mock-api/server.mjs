@@ -276,8 +276,22 @@ function handleResponses(req, res) {
       Connection: "keep-alive",
     });
 
-    // If input contains tool output, respond with "Done."
+    // If input contains tool output, check for multi-command flow before
+    // defaulting to "Done."
     if (isToolOutput) {
+      // Multi-background-command: if original message was "run two background
+      // commands" and we've only sent one exec_command so far, send the second.
+      const origText = extractLastUserTextFromInput(input);
+      if (origText && /run two background commands/i.test(origText)) {
+        const fcOutputCount = input.filter((i) => i.type === "function_call_output").length;
+        if (fcOutputCount < 2) {
+          oaiStreamFunctionCallResponse(res, "exec_command", {
+            cmd: "sleep 3",
+            yield_time_ms: 500,
+          });
+          return;
+        }
+      }
       oaiStreamTextResponse(res, "Done.");
       return;
     }
@@ -291,6 +305,12 @@ function handleResponses(req, res) {
 
     if (intent.type === "text") {
       oaiStreamTextResponse(res, intent.text);
+    } else if (intent.type === "background_shell") {
+      // exec_command with short yield_time_ms — command keeps running after yield
+      oaiStreamFunctionCallResponse(res, "exec_command", {
+        cmd: intent.command,
+        yield_time_ms: 500,
+      });
     } else if (intent.type === "shell") {
       if (intent.command.match(/sleep\s+\d+/)) {
         // Simulate blocking execution: send output_item.done immediately but
@@ -405,7 +425,7 @@ function handleMessages(req, res) {
       // Do NOT call res.end() — connection stays open until the process is killed.
     } else if (intent.type === "text") {
       streamTextResponse(res, intent.text, model);
-    } else if (intent.type === "shell") {
+    } else if (intent.type === "shell" || intent.type === "background_shell") {
       streamToolUseResponse(res, "Bash", { command: intent.command, description: "Running command" }, model);
     } else {
       // tool_call — map generic names to Anthropic tool names
