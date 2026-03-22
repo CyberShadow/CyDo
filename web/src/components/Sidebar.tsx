@@ -334,6 +334,7 @@ const SidebarItem = memo(function SidebarItem({
   hasAttention,
   hasPendingQuestion,
   onSelect,
+  onArchive,
 }: {
   id: string;
   depth: number;
@@ -347,6 +348,7 @@ const SidebarItem = memo(function SidebarItem({
   hasAttention: boolean;
   hasPendingQuestion: boolean;
   onSelect: (id: string) => void;
+  onArchive?: (tid: number) => void;
 }) {
   const treeConnectors =
     depth > 0 ? (
@@ -381,8 +383,13 @@ const SidebarItem = memo(function SidebarItem({
     <div
       class={`sidebar-item${isActive ? " active" : ""}${hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
-      onClick={() => {
-        onSelect(id);
+      onClick={(e: MouseEvent) => {
+        if (e.altKey && onArchive) {
+          e.preventDefault();
+          onArchive(parseInt(id, 10));
+        } else {
+          onSelect(id);
+        }
       }}
     >
       {treeConnectors}
@@ -420,6 +427,7 @@ interface Props {
   taskTypes: TaskTypeInfo[];
   visible?: boolean;
   onOpenSearch?: () => void;
+  onArchive?: (tid: number) => void;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -434,6 +442,7 @@ export const Sidebar = memo(function Sidebar({
   taskTypes,
   visible,
   onOpenSearch,
+  onArchive,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const flatItems = useMemo(
@@ -447,6 +456,12 @@ export const Sidebar = memo(function Sidebar({
   onSelectRef.current = onSelectTask;
   const handleSelect = useCallback((id: string) => {
     onSelectRef.current(id);
+  }, []);
+
+  const onArchiveRef = useRef(onArchive);
+  onArchiveRef.current = onArchive;
+  const handleArchive = useCallback((tid: number) => {
+    onArchiveRef.current?.(tid);
   }, []);
 
   // Ensure icon styles are injected once
@@ -553,6 +568,7 @@ export const Sidebar = memo(function Sidebar({
               hasAttention={attention.has(item.tid)}
               hasPendingQuestion={item.hasPendingQuestion}
               onSelect={handleSelect}
+              onArchive={handleArchive}
             />
           ))
           .reverse()}

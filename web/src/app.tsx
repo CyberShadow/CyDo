@@ -290,6 +290,12 @@ function AppContent() {
           onOpenSearch={() => {
             setShowSearch(true);
           }}
+          onArchive={(tid) => {
+            const task = tasks.get(tid);
+            if (task) {
+              setArchived(tid, !task.archived);
+            }
+          }}
         />
         {Array.from(tasks.values())
           .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
