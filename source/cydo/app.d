@@ -29,10 +29,10 @@ import cydo.mcp.tools : AskQuestion, ToolsBackend;
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
-import cydo.discover : DiscoveredProject, discoverProjects;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
-import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, resolveSandbox;
+import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, cydoBinaryDir, cydoBinaryPath,
+	resolveSandbox, resolveSandboxForDiscovery;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
 import cydo.task;
@@ -62,6 +62,12 @@ void main(string[] args)
 	{
 		import cydo.tasktype : runDumpContext;
 		runDumpContext(args);
+		return;
+	}
+	if (args.canFind("--discover"))
+	{
+		import cydo.discover : runDiscover;
+		runDiscover(args);
 		return;
 	}
 
@@ -2592,17 +2598,44 @@ class App : ToolsBackend
 	/// Discover projects in all configured workspaces and populate workspacesInfo.
 	private void discoverAllWorkspaces()
 	{
+		import std.conv : to;
+		import std.json : parseJSON;
+		import std.process : execute;
+
 		workspacesInfo = null;
 		foreach (ref ws; config.workspaces)
 		{
-			auto projects = discoverProjects(ws);
+			auto sandbox = resolveSandboxForDiscovery(
+				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
+			auto bwrapArgs = buildBwrapArgs(sandbox, "/");
+			auto cmd = bwrapArgs ~ cydoBinaryPath
+				~ ["--discover", ws.root, ws.name, to!string(ws.max_depth)]
+				~ ws.exclude;
+
+			auto result = execute(cmd);
+			sandbox.cleanup();
+
+			if (result.status != 0)
+			{
+				warningf("Discovery failed for workspace '%s': exit %d", ws.name, result.status);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null);
+				continue;
+			}
+
 			ProjectInfo[] projInfos;
-			foreach (ref p; projects)
-				projInfos ~= ProjectInfo(p.name, p.path);
+			try
+			{
+				auto json = parseJSON(result.output);
+				foreach (entry; json.array)
+					projInfos ~= ProjectInfo(entry["name"].str, entry["path"].str);
+			}
+			catch (Exception e)
+				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
+
 			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
 
-			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projects.length);
-			foreach (ref p; projects)
+			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
+			foreach (ref p; projInfos)
 				infof("  - %s (%s)", p.name, p.path);
 		}
 	}

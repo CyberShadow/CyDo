@@ -13,6 +13,7 @@ import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
+import cydo.sandbox : cydoBinaryDir, cydoBinaryPath;
 
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent
@@ -1017,23 +1018,6 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 
 	write(configPath, config);
 	return configPath;
-}
-
-/// Absolute path to the currently running cydo binary, resolved at
-/// module init to avoid /proc/self/exe returning a "(deleted)" suffix
-/// after the binary is replaced by a rebuild.
-immutable string cydoBinaryPath;
-shared static this()
-{
-	import std.file : thisExePath;
-	cydoBinaryPath = thisExePath();
-}
-
-/// Get the directory containing the cydo binary.
-string cydoBinaryDir()
-{
-	auto path = cydoBinaryPath;
-	return path.length > 0 ? dirName(path) : "";
 }
 
 /// Escape a string for embedding in JSON.

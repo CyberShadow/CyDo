@@ -6,6 +6,42 @@ import std.logger : warningf;
 
 import cydo.config : WorkspaceConfig;
 
+/// Handle the --discover subcommand.
+/// Args format: cydo --discover <root> <name> <max_depth> [<exclude>...]
+/// Writes a JSON array of {path, name} objects to stdout and exits.
+void runDiscover(string[] args)
+{
+	import std.algorithm : countUntil;
+	import std.conv : to;
+	import std.json : JSONValue;
+	import std.stdio : stderr, writeln;
+
+	auto idx = args.countUntil("--discover");
+	auto discoverArgs = args[idx + 1 .. $];
+
+	if (discoverArgs.length < 3)
+	{
+		stderr.writeln("Usage: cydo --discover <root> <name> <max_depth> [<exclude>...]");
+		import core.stdc.stdlib : exit;
+		exit(1);
+	}
+
+	auto ws = WorkspaceConfig(
+		discoverArgs[1],           // name
+		discoverArgs[0],           // root
+		discoverArgs[2].to!uint,   // max_depth
+		discoverArgs.length > 3 ? discoverArgs[3 .. $] : null, // exclude
+	);
+
+	auto projects = discoverProjects(ws);
+
+	JSONValue[] arr;
+	foreach (ref p; projects)
+		arr ~= JSONValue(["path": JSONValue(p.path), "name": JSONValue(p.name)]);
+
+	writeln(JSONValue(arr).toString());
+}
+
 struct DiscoveredProject
 {
 	string workspace;   // workspace name

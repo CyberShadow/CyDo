@@ -8,6 +8,23 @@ import std.logger : tracef, warningf;
 import cydo.agent.agent : Agent;
 import cydo.config : GitIdentityConfig, PathMode, SandboxConfig;
 
+/// Absolute path to the currently running cydo binary, resolved at
+/// module init to avoid /proc/self/exe returning a "(deleted)" suffix
+/// after the binary is replaced by a rebuild.
+immutable string cydoBinaryPath;
+shared static this()
+{
+	import std.file : thisExePath;
+	cydoBinaryPath = thisExePath();
+}
+
+/// Get the directory containing the cydo binary.
+string cydoBinaryDir()
+{
+	auto path = cydoBinaryPath;
+	return path.length > 0 ? dirName(path) : "";
+}
+
 /// Resolved sandbox configuration after merging all layers.
 struct ResolvedSandbox
 {
@@ -88,6 +105,58 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 		result.gitName = workspace.git.name;
 	if (workspace.git.email.length > 0)
 		result.gitEmail = workspace.git.email;
+
+	return result;
+}
+
+/// Resolve sandbox for project discovery (no agent layer).
+/// Merges global + workspace sandbox layers; all paths are downgraded to ro.
+ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig workspace,
+	string wsRoot, string cydoBinDir)
+{
+	ResolvedSandbox result;
+
+	// Layer 1: global config paths
+	mergePaths(result.paths, global.paths);
+
+	// Layer 2: workspace config paths (overrides global)
+	mergePaths(result.paths, workspace.paths);
+
+	// Add workspace root as ro
+	if (wsRoot.length > 0)
+		result.paths[expandTilde(wsRoot)] = PathMode.ro;
+
+	// Add cydo binary directory as ro
+	if (cydoBinDir.length > 0)
+		result.paths[cydoBinDir] = PathMode.ro;
+
+	// Downgrade all rw paths to ro (discovery is read-only)
+	foreach (ref mode; result.paths)
+		if (mode == PathMode.rw || mode == PathMode.always_rw)
+			mode = PathMode.ro;
+
+	// Expand ~ in all path keys and filter non-existent
+	PathMode[string] expanded;
+	foreach (path, mode; result.paths)
+	{
+		auto resolved = expandTilde(path);
+		if (exists(resolved))
+			expanded[resolved] = mode;
+		else
+			warningf("sandbox: skipping non-existent path: %s", resolved);
+	}
+	result.paths = expanded;
+
+	// Merge env: global, then workspace overrides
+	mergeEnv(result.env, global.env);
+	mergeEnv(result.env, workspace.env);
+
+	// Expand ~ in env values
+	auto home = environment.get("HOME", "");
+	string[string] expandedEnv;
+	foreach (k, v; result.env)
+		expandedEnv[k] = expandAllTildes(v, home);
+	result.env = expandedEnv;
 
 	return result;
 }
