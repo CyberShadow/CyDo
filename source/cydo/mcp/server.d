@@ -81,6 +81,18 @@ Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string socketPath,
 		case "tools/call":
 			return handleToolsCall(request, socketPath, tid);
 
+		case "resources/list":
+			return resolve(JsonRpcResponse.success(request.id,
+				JSONFragment(`{"resources":[]}`)));
+
+		case "resources/templates/list":
+			return resolve(JsonRpcResponse.success(request.id,
+				JSONFragment(`{"resourceTemplates":[]}`)));
+
+		case "prompts/list":
+			return resolve(JsonRpcResponse.success(request.id,
+				JSONFragment(`{"prompts":[]}`)));
+
 		default:
 			return resolve(JsonRpcResponse.failure(request.id,
 				JsonRpcErrorCode.methodNotFound, "Method not found: " ~ request.method));
