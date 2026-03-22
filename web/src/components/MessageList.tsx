@@ -514,7 +514,7 @@ const MessageView = memo(
             )}
             {onUndo && (
               <button
-                class="msg-action-btn undo-btn"
+                class="msg-action-btn"
                 onClick={() => {
                   onUndo(uuid);
                 }}
