@@ -1325,6 +1325,24 @@ function getHeaderSubtitle(
       );
     }
   }
+  if (name === "TaskOutput") {
+    const taskId = typeof input.task_id === "string" ? input.task_id : null;
+    if (taskId) {
+      return (
+        <Fragment>
+          <span class="tool-subtitle">{taskId}</span>
+          {input.block === false && <span class="tool-subtitle-tag">non-blocking</span>}
+        </Fragment>
+      );
+    }
+  }
+  if (name === "TaskStop") {
+    const taskId = typeof input.task_id === "string" ? input.task_id
+      : typeof input.shell_id === "string" ? input.shell_id : null;
+    if (taskId) {
+      return <span class="tool-subtitle">{taskId}</span>;
+    }
+  }
   if (name === "Skill" && typeof input.skill === "string") {
     return <span class="tool-subtitle">{input.skill}</span>;
   }
@@ -1441,6 +1459,14 @@ function formatInput(
     const { task_id, taskId, status, ...remaining } = input;
     return formatGenericInput(remaining);
   }
+  if (name === "TaskOutput") {
+    const { task_id, block, timeout, ...remaining } = input;
+    return formatGenericInput(remaining);
+  }
+  if (name === "TaskStop") {
+    const { task_id, shell_id, ...remaining } = input;
+    return formatGenericInput(remaining);
+  }
   return formatGenericInput(input);
 }
 
@@ -1526,6 +1552,7 @@ const defaultExpandedResults = new Set([
   "WebSearch",
   "WebFetch",
   "mcp__cydo__Task",
+  "TaskOutput",
 ]);
 
 const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
