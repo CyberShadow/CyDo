@@ -33,13 +33,6 @@ export interface UserContentBlock {
   [key: string]: unknown;
 }
 
-export interface ContentDelta {
-  type: string;
-  text?: string;
-  partial_json?: string;
-  [key: string]: unknown;
-}
-
 // ---------------------------------------------------------------------------
 // Live stream (stdout) event types
 // ---------------------------------------------------------------------------
@@ -94,39 +87,6 @@ export interface SystemTaskNotificationMessage {
   status: string;
   output_file?: string;
   summary?: string;
-  [key: string]: unknown;
-}
-
-export interface AssistantMessage {
-  type: "message/assistant";
-  id: string;
-  content: AssistantContentBlock[];
-  model: string;
-  stop_reason: string | null;
-  usage?: Usage;
-  parent_tool_use_id?: string | null;
-  is_sidechain?: boolean;
-  is_api_error?: boolean;
-  uuid?: string;
-  _extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface UserEchoMessage {
-  type: "message/user";
-  content: string | UserContentBlock[];
-  parent_tool_use_id?: string | null;
-  is_sidechain?: boolean;
-  tool_result?: unknown;
-  is_replay?: boolean;
-  is_synthetic?: boolean;
-  is_meta?: boolean;
-  is_steering?: boolean;
-  pending?: boolean;
-  uuid?: string;
-  isCompactSummary?: boolean;
-  isVisibleInTranscriptOnly?: boolean;
-  _extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -228,36 +188,6 @@ export interface TurnStopEvent {
   [key: string]: unknown;
 }
 
-export interface StreamBlockStart {
-  type: "stream/block_start";
-  index: number;
-  content_block: {
-    type: string;
-    id?: string;
-    name?: string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface StreamBlockDelta {
-  type: "stream/block_delta";
-  index: number;
-  delta: ContentDelta;
-  [key: string]: unknown;
-}
-
-export interface StreamBlockStop {
-  type: "stream/block_stop";
-  index: number;
-  [key: string]: unknown;
-}
-
-export interface StreamTurnStop {
-  type: "stream/turn_stop";
-  [key: string]: unknown;
-}
-
 export interface ControlResponseMessage {
   type: "control/response";
   response: {
@@ -331,8 +261,6 @@ export type AgnosticEvent =
   | SystemStopHookSummaryMessage
   | SystemTaskStartedMessage
   | SystemTaskNotificationMessage
-  | AssistantMessage
-  | UserEchoMessage
   | ResultMessage
   | SummaryMessage
   | RateLimitEventMessage
@@ -341,10 +269,6 @@ export type AgnosticEvent =
   | ItemCompletedEvent
   | ItemResultEvent
   | TurnStopEvent
-  | StreamBlockStart
-  | StreamBlockDelta
-  | StreamBlockStop
-  | StreamTurnStop
   | ControlResponseMessage
   | ExitMessage
   | StderrMessage;

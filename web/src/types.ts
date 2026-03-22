@@ -101,7 +101,6 @@ export interface TrackedFile {
 }
 
 export interface StreamingBlock {
-  index: number;      // kept for backward compat with stream/block_* protocol
   itemId: string;     // ID-based lookup for item/* protocol
   type: string;       // "text" | "tool_use" | "thinking"
   text: string;       // accumulated text/input_json so far

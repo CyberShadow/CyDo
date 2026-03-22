@@ -2361,11 +2361,13 @@ class App : ToolsBackend
 	private void broadcastUnconfirmedUserMessage(int tid, string content)
 	{
 		import ae.utils.json : toJson;
-		import cydo.agent.protocol : UserMessageEvent;
+		import cydo.agent.protocol : ItemStartedEvent;
 
-		UserMessageEvent ev;
-		ev.content = JSONFragment(toJson(content));
-		ev.pending = true;
+		ItemStartedEvent ev;
+		ev.item_id   = "cc-user-msg";
+		ev.item_type = "user_message";
+		ev.text      = content;
+		ev.pending   = true;
 		auto userEvent = toJson(ev);
 		string injected = `{"tid":` ~ format!"%d"(tid)
 			~ `,"unconfirmedUserEvent":` ~ userEvent ~ `}`;

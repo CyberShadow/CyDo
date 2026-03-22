@@ -84,15 +84,8 @@ export interface TaskManager {
 
 /// Extract text content from a user message event (for unconfirmed display).
 function extractTextContent(msg: AgnosticEvent): string {
-  if (msg.type !== "message/user") return "";
-  if (typeof msg.content === "string") return msg.content;
-  if (Array.isArray(msg.content)) {
-    return msg.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text ?? "")
-      .join("");
-  }
-  return "";
+  if (msg.type !== "item/started" || msg.item_type !== "user_message") return "";
+  return msg.text ?? "";
 }
 
 // Mutable mirror of task states, updated synchronously outside Preact's

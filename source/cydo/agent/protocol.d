@@ -31,22 +31,6 @@ struct CompactMetadata
 	@JSONOptional int pre_tokens;
 }
 
-/// Block descriptor in stream/block_start.
-struct BlockDescriptor
-{
-	string type;                     // "text", "tool_use", "thinking"
-	@JSONOptional string id;         // tool_use
-	@JSONOptional string name;       // tool_use
-}
-
-/// Stream delta.
-struct StreamDelta
-{
-	string type;                          // "text_delta", "thinking_delta", "input_json_delta"
-	@JSONOptional string text;            // text_delta and thinking_delta
-	@JSONOptional string partial_json;    // input_json_delta
-}
-
 // ── Event types ────────────────────────────────────────────────
 
 /// session/init
@@ -82,39 +66,6 @@ struct SessionCompactedEvent
 {
 	string type = "session/compacted";
 	@JSONOptional CompactMetadata compact_metadata;
-}
-
-/// message/assistant (flat — no message wrapper)
-struct AssistantMessageEvent
-{
-	string type = "message/assistant";
-	string id;
-	ContentBlock[] content;
-	string model;
-	string stop_reason;
-	@JSONOptional UsageInfo usage;
-	@JSONOptional string parent_tool_use_id;
-	@JSONOptional bool is_sidechain;       // was isSidechain
-	@JSONOptional bool is_api_error;       // was isApiErrorMessage
-	@JSONOptional string uuid;             // for fork support
-	@JSONOptional JSONFragment _extras;
-}
-
-/// message/user (flat — no message wrapper)
-struct UserMessageEvent
-{
-	string type = "message/user";
-	JSONFragment content;                  // string or ContentBlock[]
-	@JSONOptional string parent_tool_use_id;
-	@JSONOptional bool is_sidechain;
-	@JSONOptional JSONFragment tool_result; // unified from toolUseResult/tool_use_result
-	@JSONOptional bool is_replay;          // was isReplay
-	@JSONOptional bool is_synthetic;       // was isSynthetic
-	@JSONOptional bool is_meta;            // was isMeta
-	@JSONOptional bool is_steering;        // was isSteering
-	@JSONOptional bool pending;
-	@JSONOptional string uuid;             // for fork support
-	@JSONOptional JSONFragment _extras;
 }
 
 /// turn/result
@@ -170,35 +121,6 @@ struct TaskNotificationEvent
 	@JSONOptional string output_file;
 	@JSONOptional string summary;
 	@JSONOptional JSONFragment _extras;
-}
-
-/// stream/block_start
-struct StreamBlockStartEvent
-{
-	string type = "stream/block_start";
-	int index;
-	BlockDescriptor content_block;
-}
-
-/// stream/block_delta
-struct StreamBlockDeltaEvent
-{
-	string type = "stream/block_delta";
-	int index;
-	StreamDelta delta;
-}
-
-/// stream/block_stop
-struct StreamBlockStopEvent
-{
-	string type = "stream/block_stop";
-	int index;
-}
-
-/// stream/turn_stop
-struct StreamTurnStopEvent
-{
-	string type = "stream/turn_stop";
 }
 
 /// control/response
@@ -294,15 +216,6 @@ struct CommandInput
 {
 	string command;
 	string description;
-}
-
-/// Tool result content block for message/user events.
-struct ToolResultBlock
-{
-	string type = "tool_result";
-	string tool_use_id;
-	JSONFragment content;
-	@JSONOptional bool is_error;
 }
 
 /// Inject `,"_raw":<rawJson>` before the final `}` of a JSON object string.
