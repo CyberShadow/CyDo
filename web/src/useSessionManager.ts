@@ -845,8 +845,16 @@ export function useTaskManager(): TaskManager {
       const tid = parseTaskId(activeTaskId);
       if (tid === null) return;
       connRef.current?.sendMessage(tid, text);
+      // Optimistically mark as processing so suggestions disappear immediately.
+      setTasks((prev) => {
+        const t = prev.get(tid);
+        if (!t) return prev;
+        const next = new Map(prev);
+        next.set(tid, { ...t, isProcessing: true, suggestions: undefined });
+        return next;
+      });
     },
-    [activeTaskId],
+    [activeTaskId, setTasks],
   );
 
   const interrupt = useCallback(() => {

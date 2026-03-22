@@ -57,6 +57,10 @@ test("clicking suggestion sends it immediately", async ({ page, agentType }) => 
   // Click sends immediately
   await suggBtn.click();
 
+  // Suggestions should be gone immediately after click (isProcessing = true clears them).
+  // Check before any network round-trips so we see the state right after the click handler ran.
+  await expect(page.locator(".btn-suggestion").first()).not.toBeVisible();
+
   // Should appear as a user message
   await expect(
     page.locator(".message.user-message", { hasText: suggText }),
@@ -65,9 +69,6 @@ test("clicking suggestion sends it immediately", async ({ page, agentType }) => 
   // Input should be empty
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toHaveValue("");
-
-  // Suggestions should be gone (isProcessing = true clears them)
-  await expect(page.locator(".btn-suggestion").first()).not.toBeVisible();
 });
 
 test("shift+click suggestion pre-fills input without sending", async ({ page, agentType }) => {

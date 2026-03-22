@@ -560,6 +560,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		string text;  // accumulated text/output
 	}
 	private ActiveItem activeItem;
+	private string lastResultText;  // last completed text content, for turn/result
 
 	// Queued messages waiting for the current turn to finish.
 	private string[] pendingMessages;
@@ -805,6 +806,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		turnInProgress = true;
 		nextItemIndex = 0;
 		activeItem = ActiveItem.init;
+		lastResultText = null;
 	}
 
 	private void handleMessageDelta(JSONFragment data)
@@ -985,11 +987,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "cancelled": subtype = "cancelled"; break;
 			default:          subtype = "unknown";   break;
 		}
+		// Include the last text item as "result" so extractResultText can retrieve it.
 		if (outputHandler_)
 			outputHandler_(
 				`{"type":"turn/result","subtype":"` ~ subtype ~ `"`
 				~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
+				~ (lastResultText.length > 0 ? `,"result":"` ~ cpEscape(lastResultText) ~ `"` : "")
 				~ `,"usage":{"input_tokens":0,"output_tokens":0}}`);
+		lastResultText = null;
 
 		// Drain pending messages (steering).
 		if (pendingMessages.length > 0)
@@ -1022,6 +1027,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			else
 			{
 				// Text/thinking: emit completed with accumulated text.
+				if (activeItem.type == "text")
+					lastResultText = activeItem.text;
 				outputHandler_(
 					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
 					~ `","text":"` ~ cpEscape(activeItem.text) ~ `"}`);
@@ -1082,12 +1089,18 @@ private final class OneShotCopilotSession : SdkSessionHandler
 			"Tool calls not supported in one-shot mode", "failure")));
 	}
 
-	void handleStderr(string) {}
+	void handleStderr(string line)
+	{
+		import std.stdio : stderr;
+		stderr.writeln("[one-shot-sdk/stderr] " ~ line);
+	}
 
 	void handleExit(int status)
 	{
 		if (!fulfilled_)
 		{
+			import std.stdio : stderr;
+			stderr.writeln("[one-shot-sdk] process exited status=" ~ to!string(status) ~ " before session.idle");
 			fulfilled_ = true;
 			promise_.reject(new Exception(
 				"completeOneShot: process exited with status " ~ to!string(status)));

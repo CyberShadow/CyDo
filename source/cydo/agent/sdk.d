@@ -302,6 +302,9 @@ class SdkProcess
 			readyQueue = null;
 			foreach (dg; queue)
 				dg();
+		})
+		.except((Exception e) {
+			state_ = State.failed;
 		});
 	}
 }

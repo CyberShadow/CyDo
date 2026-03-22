@@ -162,6 +162,12 @@ class App : ToolsBackend
 		agent = createAgent(config.default_agent_type);
 		if (auto ac = config.default_agent_type in config.agents)
 			agent.setModelAliases(ac.model_aliases);
+		{
+			import cydo.agent.copilot : CopilotAgent;
+			if (auto ca = cast(CopilotAgent) agent)
+				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
+					dispatchTool(tool, callerTid, args);
+		}
 		agentsByType[config.default_agent_type] = agent;
 
 		jsonlTracker.getAgent = &agentForTask;
@@ -1098,6 +1104,17 @@ class App : ToolsBackend
 
 		// Subscribe client to live events for this task
 		clientSubscriptions.require(ws)[tid] = true;
+
+		// If a turn already completed but suggestions were skipped because no client was
+		// subscribed at the time (race: turn completed before request_history processed),
+		// trigger suggestion generation now that a subscriber is present.
+		if (td.suggestGenHandle is null && td.lastSuggestions.length == 0 && td.status == "alive")
+		{
+			try
+				generateSuggestions(tid);
+			catch (Exception e)
+				warningf("Error generating suggestions on subscribe: %s", e.msg);
+		}
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -2877,15 +2894,25 @@ class App : ToolsBackend
 
 		// Only generate when someone is actually viewing this task
 		if (!hasSubscribers(tid))
+		{
+			tracef("generateSuggestions[%d]: no subscribers, skipping", tid);
 			return;
+		}
 
 		auto history = buildAbbreviatedHistory(tid);
 		if (history.length == 0)
+		{
+			tracef("generateSuggestions[%d]: empty history, skipping", tid);
 			return;
+		}
 
 		auto prompt = readPromptFile("prompts/generate-suggestions.md", ["conversation": history]);
 		if (prompt.length == 0)
+		{
+			warningf("generateSuggestions[%d]: prompt file not found or empty", tid);
 			return;
+		}
+		tracef("generateSuggestions[%d]: spawning one-shot (history.length=%d)", tid, history.length);
 
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
@@ -2912,6 +2939,7 @@ class App : ToolsBackend
 			}
 		});
 		td.suggestGenHandle.except((Exception e) {
+			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
 			if (tid !in tasks)
 				return;
 			tasks[tid].suggestGenHandle = null;
