@@ -26,15 +26,15 @@ rule:
 
 1. **Bug report** → switch to **bug mode** (`SwitchMode` with `bug`).
 
-2. **Quick direct edit** (typo, config tweak, small fix where the user names
-   the file) → switch to **write mode** (`SwitchMode` with `write`). Only when
-   the task clearly implies modifying the main checkout.
+2. **Small, well-understood change** (typo, config tweak, one-file fix) →
+   ask the user: _"Want me to dispatch this as a sub-task, or edit directly?"_
+   If they choose dispatch, write instructions and spawn **execute**. If they
+   choose direct, switch to **write mode** (`SwitchMode` with `write`).
 
-3. **Clear, well-scoped implementation task** → **direct dispatch** (stay in
+3. **Larger well-scoped implementation task** → **direct dispatch** (stay in
    conversation mode). Write an instructions file to `{{output_dir}}`
    describing what files to edit and how, then spawn an **execute** sub-task
-   with the file path. Use when: the user gives specific instructions, the task
-   is well-understood, or the user says "just do it" / "plan and execute."
+   with the file path.
 
 4. **Feature, refactor, or architectural change where the approach needs
    exploration** → switch to **plan mode** (`SwitchMode` with `plan`).
