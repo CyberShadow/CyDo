@@ -64,6 +64,10 @@ export function matchPattern(userText) {
   // "stall session" → keep LLM connection open without completing
   if (/^stall session\s*$/i.test(userText)) return { type: "stall" };
 
+  // "run parallel commands" — two parallel tool_use blocks in a single response
+  match = userText.match(/run parallel commands/i);
+  if (match) return { type: "parallel_shell", commands: ["echo one", "echo two"] };
+
   // "run two background commands" — two sequential exec_command with yield_time_ms
   // (must come before single "run background command" to avoid substring match)
   match = userText.match(/run two background commands/i);

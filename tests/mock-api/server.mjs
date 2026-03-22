@@ -110,6 +110,47 @@ function streamToolUseResponse(res, toolName, input, model = "claude-sonnet-4-20
   res.end();
 }
 
+function streamMultiToolUseResponse(res, toolNames, inputs, model = "claude-sonnet-4-20250514") {
+  const msgId = nextMsgId();
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId,
+      type: "message",
+      role: "assistant",
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  });
+  for (let i = 0; i < toolNames.length; i++) {
+    const toolId = nextToolId();
+    sseEvent(res, "content_block_start", {
+      type: "content_block_start",
+      index: i,
+      content_block: { type: "tool_use", id: toolId, name: toolNames[i], input: {}, caller: { type: "direct" } },
+    });
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: i,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify(inputs[i]) },
+    });
+    sseEvent(res, "content_block_stop", {
+      type: "content_block_stop",
+      index: i,
+    });
+  }
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "tool_use", stop_sequence: null },
+    usage: { output_tokens: 20 },
+  });
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI Responses API helpers (Codex CLI)
 // ---------------------------------------------------------------------------
@@ -425,6 +466,10 @@ function handleMessages(req, res) {
       // Do NOT call res.end() — connection stays open until the process is killed.
     } else if (intent.type === "text") {
       streamTextResponse(res, intent.text, model);
+    } else if (intent.type === "parallel_shell") {
+      const toolNames = intent.commands.map(() => "Bash");
+      const inputs = intent.commands.map((cmd) => ({ command: cmd, description: "Running command" }));
+      streamMultiToolUseResponse(res, toolNames, inputs, model);
     } else if (intent.type === "shell" || intent.type === "background_shell") {
       streamToolUseResponse(res, "Bash", { command: intent.command, description: "Running command" }, model);
     } else {

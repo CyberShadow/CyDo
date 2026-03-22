@@ -453,6 +453,8 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private bool[] pendingToolUseCompletions_; // index → awaiting message/assistant
+	private bool turnMessageComplete_;         // set by message_stop, gates translateAssistantLive
+	private string pendingAssistantLine_;     // buffered assistant line awaiting message_stop
 
 	this(string resumeSessionId = null, string[] bwrapPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
@@ -749,6 +751,14 @@ class ClaudeCodeSession : AgentSession
 			}
 
 			case "message_stop":
+				turnMessageComplete_ = true;
+				if (pendingAssistantLine_.length > 0)
+				{
+					auto line = pendingAssistantLine_;
+					pendingAssistantLine_ = null;
+					translateAssistantLive(line);
+				}
+				return;
 			case "message_start":
 			case "message_delta":
 				return; // drop — turn/stop comes from message/assistant
@@ -808,6 +818,16 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional string slug;
 			@JSONOptional string permissionMode;
 			JSONExtras _extras;
+		}
+
+		// With --include-partial-messages, Claude Code emits intermediate
+		// assistant events as each content block completes. Buffer them
+		// until message_stop confirms the message is complete. The last
+		// buffered line (with all blocks) is processed by message_stop.
+		if (!turnMessageComplete_)
+		{
+			pendingAssistantLine_ = rawLine;
+			return;
 		}
 
 		ClaudeAssistant raw;
@@ -870,6 +890,8 @@ class ClaudeCodeSession : AgentSession
 		activeItemIds_ = null;
 		activeItemTypes_ = null;
 		pendingToolUseCompletions_ = null;
+		turnMessageComplete_ = false;
+		pendingAssistantLine_ = null;
 	}
 
 	private void normalizeUserLive(string rawLine)
