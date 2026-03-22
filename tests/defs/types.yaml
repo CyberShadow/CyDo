@@ -1,0 +1,118 @@
+# Test-only task type definitions.
+#
+# Independent from the production types.yaml so that production renames,
+# splits, or restructuring don't break the e2e test suite. Only the types
+# and references actually exercised by tests are included.
+
+task_types:
+  blank:
+    description: "Raw agent session"
+    prompt_template: prompts/blank.md
+    model_class: large
+    output_type: report
+    continuations:
+      plan:
+        task_type: plan_mode
+        keep_context: true
+        prompt_template: prompts/enter_plan_mode.md
+    parallelizable: true
+    user_visible: true
+
+  conversation:
+    display_name: agentic
+    description: "Orchestrated session"
+    icon: conversation
+    prompt_template: prompts/conversation.md
+    model_class: large
+    read_only: true
+    output_type: report
+    creatable_tasks:
+      research:
+        prompt_template: prompts/deep_research.md
+        result_note: "Read the output file for findings."
+      spike:
+        worktree: true
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings."
+      blank:
+        prompt_template: prompts/blank.md
+      test_handoff:
+        prompt_template: prompts/blank.md
+      test_on_yield:
+        prompt_template: prompts/blank.md
+    continuations:
+      plan:
+        task_type: plan_mode
+        keep_context: true
+        prompt_template: prompts/enter_plan_mode.md
+      write:
+        task_type: write_mode
+        keep_context: true
+        prompt_template: prompts/enter_write_mode.md
+    parallelizable: true
+    user_visible: true
+
+  plan_mode:
+    description: "Interactive planning mode"
+    icon: plan-mode
+    model_class: large
+    read_only: true
+    output_type: report
+    continuations:
+      back:
+        task_type: conversation
+        keep_context: true
+        prompt_template: prompts/return_from_plan.md
+    parallelizable: true
+    user_visible: false
+
+  write_mode:
+    display_name: direct
+    description: "Hands-on session with read-write access"
+    icon: write-mode
+    prompt_template: prompts/write_mode.md
+    model_class: large
+    output_type: report
+    continuations:
+      back:
+        task_type: conversation
+        keep_context: true
+        prompt_template: prompts/return_from_write.md
+    parallelizable: true
+    user_visible: true
+
+  research:
+    description: "Investigate a topic, gather information"
+    icon: research
+    model_class: small
+    read_only: true
+    output_type: report
+    parallelizable: true
+    user_visible: false
+
+  spike:
+    description: "Test a theory or prototype in an isolated worktree"
+    icon: spike
+    model_class: large
+    output_type: report
+    parallelizable: true
+    user_visible: false
+
+  test_handoff:
+    description: "Test type with non-keep_context continuation"
+    prompt_template: prompts/blank.md
+    model_class: small
+    output_type: report
+    continuations:
+      done:
+        task_type: blank
+    user_visible: false
+
+  test_on_yield:
+    description: "Test type with on_yield continuation"
+    prompt_template: prompts/blank.md
+    model_class: small
+    output_type: report
+    on_yield:
+      task_type: blank
+    user_visible: false
