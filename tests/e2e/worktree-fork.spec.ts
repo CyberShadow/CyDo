@@ -86,19 +86,30 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
   // 6. Hover over the assistant message to reveal the fork button.
   //    Scope to the active session to avoid matching the conversation task's
   //    messages (which also contain "worktree-fork-content" in a tool result).
-  const assistantWrapper = page
-    .locator("[style*='display: contents'] .message-wrapper", {
-      has: page.locator(".assistant-message", {
-        hasText: "worktree-fork-content",
-      }),
-    })
-    .last();
-  await assistantWrapper.hover();
-  const forkBtn = assistantWrapper.locator(".fork-btn");
-  await expect(forkBtn).toBeVisible({ timeout: 10_000 });
+  //    Copilot emits a verbose event stream that causes React re-renders while
+  //    the history loads; retry the hover+check until the DOM stabilises.
+  await expect(async () => {
+    const assistantWrapper = page
+      .locator("[style*='display: contents'] .message-wrapper", {
+        has: page.locator(".assistant-message", {
+          hasText: "worktree-fork-content",
+        }),
+      })
+      .last();
+    await assistantWrapper.hover();
+    await expect(assistantWrapper.locator(".fork-btn")).toBeVisible({
+      timeout: 5_000,
+    });
+  }).toPass({ timeout: 15_000 });
 
-  // 7. Fork the spike task.
-  await forkBtn.click();
+  // 7. Fork the spike task (re-resolve the locator fresh after the hover).
+  await page
+    .locator("[style*='display: contents'] .message-wrapper", {
+      has: page.locator(".assistant-message", { hasText: "worktree-fork-content" }),
+    })
+    .last()
+    .locator(".fork-btn")
+    .click();
 
   // 8. Wait for the fork's task_created broadcast event to capture its TID.
   await expect(async () => {
