@@ -2803,6 +2803,10 @@ class App : ToolsBackend
 		if (td.parentTid != 0)
 			return;
 
+		// Don't spawn if a suggestion generation is already in-flight
+		if (td.suggestGenHandle !is null)
+			return;
+
 		// Only generate when someone is actually viewing this task
 		if (!hasSubscribers(tid))
 			return;
