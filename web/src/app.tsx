@@ -354,8 +354,13 @@ function AppContent() {
                 &#9776;
               </button>
               <div class="session-empty-inner">
-                <h1 class="welcome-title">CyDo</h1>
-                <p class="welcome-subtitle">Multi-agent orchestration system</p>
+                <div class="welcome-page-header">
+                  <svg class="welcome-logo" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round">
+                    <path style={{ stroke: "var(--success)" }} d="M5.5 12L10.5 4L13 8l-2.5 4" />
+                    <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
+                  </svg>
+                  <h1>CyDo</h1>
+                </div>
                 <SessionConfig
                   taskTypes={taskTypes}
                   selected={selectedTaskType}
