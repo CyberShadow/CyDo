@@ -19,14 +19,10 @@ class LogCollector {
     this.testStartIdx = this.lines.length;
   }
 
-  flush(): string {
+  flushRaw(): { ts: number; source: string; text: string }[] {
     const slice = this.lines.slice(this.testStartIdx);
     this.testStartIdx = this.lines.length;
-    if (slice.length === 0) return '';
-    const t0 = slice[0].ts;
-    return slice.map(l =>
-      `+${String(l.ts - t0).padStart(6)}ms [${l.source.padEnd(8)}] ${l.text}`
-    ).join('\n');
+    return slice;
   }
 }
 
@@ -255,9 +251,12 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
     await use(page);
 
     currentLogs = null;
-    const logBody = logs.flush();
-    if (logBody && (testInfo.status === 'failed' || testInfo.status === 'timedOut')) {
-      await testInfo.attach('server-log', { body: logBody, contentType: 'text/plain' });
+    const rawLogs = logs.flushRaw();
+    if (rawLogs.length > 0 && (testInfo.status === 'failed' || testInfo.status === 'timedOut')) {
+      await testInfo.attach('server-log', {
+        body: JSON.stringify(rawLogs),
+        contentType: 'application/json',
+      });
     }
 
     // After the test body: assert no unknown message type errors in the DOM.
