@@ -232,6 +232,10 @@ task_types:
         worktree: true
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+      reproduce:
+        worktree: true
+        prompt_template: prompts/reproduce.md
+        result_note: "Read the output file for findings. The worktree path contains the failing test."
     continuations:
       needs_plan:
         task_type: plan_mode
