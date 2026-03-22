@@ -70,7 +70,7 @@ export function WelcomePage({
           ? ws.projects.filter(p => p.name.toLowerCase().includes(filterLower))
           : ws.projects
         if (projs.length > 0) {
-          onNavigateToProject(ws.name, projs[0].name);
+          onNavigateToProject(ws.name, projs[0]!.name);
           return;
         }
       }
