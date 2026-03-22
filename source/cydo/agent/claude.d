@@ -453,8 +453,7 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private bool[] pendingToolUseCompletions_; // index → awaiting message/assistant
-	private bool turnMessageComplete_;         // set by message_stop, gates translateAssistantLive
-	private string pendingAssistantLine_;     // buffered assistant line awaiting message_stop
+	private string pendingAssistantLine_;     // buffered raw assistant line (stop_reason was null)
 
 	this(string resumeSessionId = null, string[] bwrapPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
@@ -751,24 +750,30 @@ class ClaudeCodeSession : AgentSession
 			}
 
 			case "message_stop":
-				turnMessageComplete_ = true;
+				// Flush buffered assistant line whose stop_reason was null.
 				if (pendingAssistantLine_.length > 0)
 				{
 					auto line = pendingAssistantLine_;
 					pendingAssistantLine_ = null;
-					translateAssistantLive(line);
+					translateAssistantLive(line, true);
 				}
 				return;
 			case "message_start":
 			case "message_delta":
-				return; // drop — turn/stop comes from message/assistant
+				return; // drop
 
 			default:
 				return; // unknown inner events — drop
 		}
 	}
 
-	private void translateAssistantLive(string rawLine)
+	/// Translate an assistant NDJSON event to item/completed + turn/stop.
+	/// With --include-partial-messages, Claude Code emits intermediate
+	/// assistant events as each content block completes. Partial messages
+	/// have stop_reason=null; only the final message has a real stop_reason.
+	/// Buffer partial messages and only process when the message is final
+	/// (stop_reason set) or when message_stop confirms it (force=true).
+	private void translateAssistantLive(string rawLine, bool force = false)
 	{
 		import cydo.agent.protocol : ItemCompletedEvent, TurnStopEvent,
 			UsageInfo, injectRawField;
@@ -820,23 +825,21 @@ class ClaudeCodeSession : AgentSession
 			JSONExtras _extras;
 		}
 
-		// With --include-partial-messages, Claude Code emits intermediate
-		// assistant events as each content block completes. Buffer them
-		// until message_stop confirms the message is complete. The last
-		// buffered line (with all blocks) is processed by message_stop.
-		if (!turnMessageComplete_)
-		{
-			pendingAssistantLine_ = rawLine;
-			return;
-		}
-
 		ClaudeAssistant raw;
 		try
 			raw = jsonParse!ClaudeAssistant(rawLine);
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
 
-		// Emit item/completed for each content block, with authoritative content and extras.
+		// Partial message (stop_reason not yet set) — buffer and wait for
+		// either the final assistant event or message_stop to confirm.
+		if (!force && raw.message.stop_reason.length == 0)
+		{
+			pendingAssistantLine_ = rawLine;
+			return;
+		}
+
+		// Emit item/completed for each content block.
 		foreach (idx, ref b; raw.message.content)
 		{
 			// Compute item_id matching what was used in item/started.
@@ -861,7 +864,7 @@ class ClaudeCodeSession : AgentSession
 			emitEvent(injectRawField(toJson(ev), rawLine));
 		}
 
-		// Extract usage.
+		// Build and emit turn/stop.
 		UsageInfo usage;
 		if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
 		{
@@ -875,7 +878,6 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		// Emit turn/stop.
 		TurnStopEvent tsev;
 		tsev.model             = raw.message.model;
 		tsev.usage             = usage;
@@ -890,7 +892,6 @@ class ClaudeCodeSession : AgentSession
 		activeItemIds_ = null;
 		activeItemTypes_ = null;
 		pendingToolUseCompletions_ = null;
-		turnMessageComplete_ = false;
 		pendingAssistantLine_ = null;
 	}
 
