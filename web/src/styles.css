@@ -1095,6 +1095,56 @@ body,
   background: var(--bg-hover);
 }
 
+/* Copy-to-clipboard button on code/pre blocks */
+.code-pre-wrap {
+  position: relative;
+}
+
+.btn-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  z-index: 1;
+  line-height: 1;
+}
+
+.code-pre-wrap:hover > .btn-copy {
+  opacity: 0.7;
+}
+
+.btn-copy:hover {
+  opacity: 1;
+}
+
+.btn-copy.copied {
+  color: var(--success);
+  border-color: var(--success);
+  opacity: 1;
+}
+
+/* Reposition copy button when it coexists with a markdown-toggle-btn */
+.markdown-wrap .btn-copy,
+.markdown-diff-wrap .btn-copy {
+  top: 0;
+  right: 28px;
+}
+
+.markdown-wrap:hover .btn-copy,
+.markdown-raw .btn-copy,
+.markdown-diff-wrap:hover .btn-copy {
+  opacity: 0.7;
+}
+
 .markdown-source {
   background: var(--overlay-dark);
   padding: 12px;

@@ -9,6 +9,7 @@ import type { ThemedToken } from "../highlight";
 import { DiffView, PatchView } from "./ToolCall";
 import type { PatchHunk } from "./ToolCall";
 import { Markdown } from "./Markdown";
+import { CopyButton } from "./CopyButton";
 
 // ---------------------------------------------------------------------------
 // On-demand content resolution
@@ -307,16 +308,19 @@ function SourceView({
   const renderLines = tokenLines ?? content.split("\n");
   const gutterWidth = `${String(renderLines.length).length}ch`;
   return (
-    <pre class="file-viewer-source">
-      {renderLines.map((line, i) => (
-        <div key={i} class="source-line">
-          <span class="source-gutter" style={{ minWidth: gutterWidth }}>
-            {i + 1}
-          </span>
-          {tokenLines ? renderTokens(line as ThemedToken[]) : line}
-        </div>
-      ))}
-    </pre>
+    <div class="code-pre-wrap">
+      <CopyButton text={content} />
+      <pre class="file-viewer-source">
+        {renderLines.map((line, i) => (
+          <div key={i} class="source-line">
+            <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+              {i + 1}
+            </span>
+            {tokenLines ? renderTokens(line as ThemedToken[]) : line}
+          </div>
+        ))}
+      </pre>
+    </div>
   );
 }
 

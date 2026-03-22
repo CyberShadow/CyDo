@@ -2,6 +2,7 @@ import { h, Fragment, type VNode } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useHighlight, renderTokens } from "../highlight";
 import { useCurrentTheme } from "../useTheme";
+import { CopyButton } from "./CopyButton";
 
 import type {
   Root,
@@ -323,17 +324,20 @@ function CodeBlock({
 }): VNode {
   const tokens = useHighlight(code, lang);
   return (
-    <pre class={lang ? `language-${lang}` : undefined}>
-      <code>
-        {tokens
-          ? tokens.map((line, i) => (
-              <span key={i}>
-                {renderTokens(line)}
-                {"\n"}
-              </span>
-            ))
-          : code}
-      </code>
-    </pre>
+    <div class="code-pre-wrap">
+      <CopyButton text={code} />
+      <pre class={lang ? `language-${lang}` : undefined}>
+        <code>
+          {tokens
+            ? tokens.map((line, i) => (
+                <span key={i}>
+                  {renderTokens(line)}
+                  {"\n"}
+                </span>
+              ))
+            : code}
+        </code>
+      </pre>
+    </div>
   );
 }

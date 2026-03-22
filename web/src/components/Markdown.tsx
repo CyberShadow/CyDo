@@ -5,6 +5,7 @@ import { createIncremarkParser } from "@incremark/core";
 import type { IncremarkParser } from "@incremark/core";
 import { useHighlight, renderTokens } from "../highlight";
 import { MdastRenderer } from "./MdastRenderer";
+import { CodePre } from "./CopyButton";
 
 interface Props {
   text: string;
@@ -60,7 +61,7 @@ export const Markdown: FunctionComponent<Props> = memo(
           {showRaw ? "◉" : "◎"}
         </button>
         {showRaw ? (
-          <pre class="markdown-source">
+          <CodePre class="markdown-source" copyText={text}>
             <code>
               {tokens
                 ? tokens.map((line, i) => (
@@ -71,7 +72,7 @@ export const Markdown: FunctionComponent<Props> = memo(
                   ))
                 : text}
             </code>
-          </pre>
+          </CodePre>
         ) : (
           <div class={`markdown ${className ?? ""}`}>
             <MdastRenderer ast={ast} />

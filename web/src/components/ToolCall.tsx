@@ -9,6 +9,7 @@ import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
+import { CodePre } from "./CopyButton";
 
 /**
  * Tool Result Rendering Principles
@@ -33,6 +34,25 @@ import { Markdown } from "./Markdown";
  */
 
 const CYDO_PREFIX = "mcp__cydo__";
+
+function ResultPre({
+  content,
+  class: className,
+  isError,
+  children,
+}: {
+  content: string;
+  class?: string;
+  isError?: boolean;
+  children?: ComponentChildren;
+}) {
+  const cls = `tool-result${isError ? " error" : ""}${className ? ` ${className}` : ""}`;
+  return (
+    <CodePre class={cls} copyText={content}>
+      {children ?? (hasAnsi(content) ? renderAnsi(content) : content)}
+    </CodePre>
+  );
+}
 
 /** Tool names that represent shell command execution across agents/formats. */
 const shellToolNames = new Set([
@@ -648,9 +668,9 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
       {isMarkdown ? (
         <Markdown text={content} class="write-content-markdown" />
       ) : (
-        <pre class="write-content">
+        <CodePre class="write-content" copyText={content}>
           {tokens ? renderTokenLines(tokens) : content}
-        </pre>
+        </CodePre>
       )}
     </div>
   );
@@ -676,9 +696,9 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
   return formatGenericInput(
     remaining,
     command ? (
-      <pre class="write-content">
+      <CodePre class="write-content" copyText={command}>
         {tokens ? renderTokenLines(tokens) : command}
-      </pre>
+      </CodePre>
     ) : undefined,
   );
 }
@@ -703,7 +723,7 @@ function ReadResult({
   const tokens = useHighlight(codeOnly, lang);
 
   return (
-    <pre class="tool-result">
+    <CodePre class="tool-result" copyText={codeOnly}>
       {parsed.map((p, i) => (
         <Fragment key={i}>
           {i > 0 && "\n"}
@@ -711,7 +731,7 @@ function ReadResult({
           {tokens?.[i] ? renderTokens(tokens[i]) : p.code}
         </Fragment>
       ))}
-    </pre>
+    </CodePre>
   );
 }
 
@@ -946,7 +966,7 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
 function WebSearchResult({ content }: { content: string }) {
   const iterations = parseWebSearchResult(content);
   if (!iterations) {
-    return <pre class="tool-result">{content}</pre>;
+    return <CodePre class="tool-result" copyText={content}>{content}</CodePre>;
   }
 
   return (
@@ -1164,7 +1184,7 @@ function formatToolUseResult(
       )
     )
       return null;
-    return <pre class="tool-result">{JSON.stringify(toolResult, null, 2)}</pre>;
+    return <CodePre class="tool-result" copyText={JSON.stringify(toolResult, null, 2)}>{JSON.stringify(toolResult, null, 2)}</CodePre>;
   }
 
   if (Object.keys(toolResult).length === 0) return null;
@@ -1519,11 +1539,7 @@ function parseExecCommandOutput(text: string): string {
 
 function ExecCommandResult({ content }: { content: string }) {
   const output = parseExecCommandOutput(content);
-  return (
-    <pre class="tool-result">
-      {hasAnsi(output) ? renderAnsi(output) : output}
-    </pre>
-  );
+  return <ResultPre content={output} />;
 }
 
 function renderResultContent(
@@ -1543,11 +1559,7 @@ function renderResultContent(
         /* not JSON, use as-is */
       }
     }
-    return (
-      <pre class={`tool-result ${isError ? "error" : ""}`}>
-        {hasAnsi(display) ? renderAnsi(display) : display}
-      </pre>
-    );
+    return <ResultPre content={display} isError={isError} />;
   }
   return (
     <div class={`tool-result-blocks ${isError ? "error" : ""}`}>
@@ -1555,7 +1567,7 @@ function renderResultContent(
         if (block.type === "text" && block.text) {
           return <Markdown key={i} text={block.text} class="text-content" />;
         }
-        return <pre key={i}>{JSON.stringify(block, null, 2)}</pre>;
+        return <CodePre key={i} copyText={JSON.stringify(block, null, 2)}>{JSON.stringify(block, null, 2)}</CodePre>;
       })}
     </div>
   );
