@@ -57,8 +57,13 @@ function AppContent() {
   const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
 
   useEffect(() => {
-    document.title = active?.title ? `${active.title} — CyDo` : "CyDo";
-  }, [active?.title]);
+    const count = attention.size;
+    const prefix = count > 0 ? `(${count}) ` : "";
+    document.title = active?.title
+      ? `${prefix}${active.title} — CyDo`
+      : `${prefix}CyDo`;
+    if ("setAppBadge" in navigator) void navigator.setAppBadge(count);
+  }, [active?.title, attention.size]);
 
   // Ctrl+K: open search popup
   useEffect(() => {
@@ -355,9 +360,21 @@ function AppContent() {
               </button>
               <div class="session-empty-inner">
                 <div class="welcome-page-header">
-                  <svg class="welcome-logo" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round">
-                    <path style={{ stroke: "var(--success)" }} d="M5.5 12L10.5 4L13 8l-2.5 4" />
-                    <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
+                  <svg
+                    class="welcome-logo"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  >
+                    <path
+                      style={{ stroke: "var(--success)" }}
+                      d="M5.5 12L10.5 4L13 8l-2.5 4"
+                    />
+                    <path
+                      style={{ stroke: "var(--processing)" }}
+                      d="M5.5 4L3 8l2.5 4"
+                    />
                   </svg>
                   <h1>CyDo</h1>
                 </div>
