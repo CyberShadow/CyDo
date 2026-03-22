@@ -7,25 +7,30 @@ import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.acp : AcpProcess, AcpSessionHandler,
-	EmptyResult, TerminalCreateParams, TerminalCreateResult,
-	TerminalIdParams, TerminalOutputResult, TerminalExitResult;
+import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
+	SdkPermissionRequest, SdkPermissionResult,
+	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
+	SdkEvent, EmptyResult;
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
-import cydo.agent.terminal : TerminalProcess;
 import cydo.config : PathMode;
+import cydo.mcp : McpResult;
+
+// Callback type for dispatching custom tool calls.
+alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args);
 
 // ---------------------------------------------------------------------------
-// CopilotAgent — Agent descriptor for GitHub Copilot CLI via ACP.
+// CopilotAgent — Agent descriptor for GitHub Copilot CLI via SDK protocol.
 // ---------------------------------------------------------------------------
 
 class CopilotAgent : Agent
 {
-	private string lastMcpConfigPath_;
 	private string[string] modelAliasOverrides;
-	// Shared ACP process for one-shot requests (reuses the main session's process).
-	package AcpProcess sharedAcpServer_;
+	// Shared SDK process for one-shot requests.
+	package SdkProcess sharedSdkServer_;
 	package string sharedWorkDir_;
+	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
+	package ToolDispatchFn toolDispatch_;
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
@@ -76,7 +81,7 @@ class CopilotAgent : Agent
 
 	@property string gitName() { return "GitHub Copilot"; }
 	@property string gitEmail() { return "noreply@github.com"; }
-	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
+	@property string lastMcpConfigPath() { return ""; }
 
 	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
 		SessionConfig config = SessionConfig.init)
@@ -84,21 +89,8 @@ class CopilotAgent : Agent
 		auto model = config.model.length > 0 ? resolveModelAlias(config.model) : "";
 		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
 
-		// Generate MCP config file if a socket path was provided.
-		string mcpConfigPath = null;
-		if (config.mcpSocketPath.length > 0)
-		{
-			mcpConfigPath = generateCopilotMcpConfig(tid, config.creatableTaskTypes,
-				config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
-			lastMcpConfigPath_ = mcpConfigPath;
-		}
-
-		// Build CLI args: copilot --acp --yolo [--model <model>] [--additional-mcp-config @<path>]
-		string[] copilotArgs = [getCopilotBinName(), "--acp", "--yolo"];
-		if (model.length > 0)
-			copilotArgs ~= ["--model", model];
-		if (mcpConfigPath !is null)
-			copilotArgs ~= ["--additional-mcp-config", "@" ~ mcpConfigPath];
+		// Build CLI args: copilot --headless --no-auto-update --stdio
+		string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
 
 		string[] args;
 		if (bwrapPrefix !is null)
@@ -106,32 +98,35 @@ class CopilotAgent : Agent
 		else
 			args = copilotArgs;
 
-		auto server = new AcpProcess(args, null, null);
-		sharedAcpServer_ = server;
+		// Session ID is client-generated for new sessions; for resume use the resume ID.
+		import std.uuid : randomUUID;
+		auto sessionId = resumeSessionId.length > 0 ? resumeSessionId : randomUUID().toString();
+
+		auto server = new SdkProcess(args, null, null);
+		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
-		auto session = new CopilotSession(server, tid, model, workDir, bwrapPrefix);
+		auto session = new CopilotSession(server, tid, sessionId, model, workDir, bwrapPrefix, toolDispatch_);
+
+		// Register before sending create/resume so events can be routed immediately.
+		server.registerSession(sessionId, session);
 
 		server.onReady(() {
 			if (resumeSessionId.length > 0)
 			{
-				// session/load replays history; set replayMode to suppress events.
+				// session.resume replays history; set replayMode to suppress events.
 				session.startReplay();
-				server.sendRequest("session/load",
-					`{"sessionId":"` ~ cpEscape(resumeSessionId) ~ `","cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`)
+				server.sendRequest("session.resume",
+					buildSessionResumeParams(sessionId, model, config))
 				.then((JsonRpcResponse resp) {
-					session.onSessionStarted(
-						resp.result.json !is null ? resp.result.json : "{}",
-						resumeSessionId, model, workDir);
+					session.onSessionStarted(model, workDir);
 				});
 			}
 			else
 			{
-				server.sendRequest("session/new",
-					`{"cwd":"` ~ cpEscape(workDir) ~ `","mcpServers":[]}`)
+				server.sendRequest("session.create",
+					buildSessionCreateParams(sessionId, model, workDir, config))
 				.then((JsonRpcResponse resp) {
-					session.onSessionStarted(
-						resp.result.json !is null ? resp.result.json : "{}",
-						null, model, workDir);
+					session.onSessionStarted(model, workDir);
 				});
 			}
 		});
@@ -224,7 +219,7 @@ class CopilotAgent : Agent
 		}
 	}
 
-	// ---- History / fork — stubs (implemented in a later sub-task) ----
+	// ---- History / fork ----
 
 	string historyPath(string sessionId, string projectPath)
 	{
@@ -317,30 +312,21 @@ class CopilotAgent : Agent
 			}
 			case "tool.execution_start":
 			{
-				// JSONL format uses toolName/mcpToolName/arguments,
-				// NOT the ACP live fields (title/kind/rawInput).
 				@JSONPartial static struct CpToolStart
 				{
 					string toolCallId;
 					string toolName;
 					string mcpToolName;
-					string kind;
-					string title;
 					JSONFragment arguments;
-					JSONFragment rawInput;
 				}
 				@JSONPartial static struct CpToolStartEvent { CpToolStart data; }
 				CpToolStartEvent ev;
 				try ev = jsonParse!CpToolStartEvent(line);
 				catch (Exception) {}
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
-				// Prefer mcpToolName, then toolName, then ACP fallback.
 				auto toolName = ev.data.mcpToolName.length > 0 ? ev.data.mcpToolName
-					: ev.data.toolName.length > 0 ? ev.data.toolName
-					: mapKindToName(ev.data.kind, ev.data.title);
-				// JSONL uses "arguments", ACP uses "rawInput".
-				auto inputFrag = ev.data.arguments.json !is null && ev.data.arguments.json.length > 0
-					? ev.data.arguments : ev.data.rawInput;
+					: ev.data.toolName.length > 0 ? ev.data.toolName : "unknown";
+				auto inputFrag = ev.data.arguments;
 				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
 					? inputFrag.json : `{}`;
 
@@ -409,7 +395,6 @@ class CopilotAgent : Agent
 	private static string replaceTypeField(string rawLine, string newType)
 	{
 		import std.string : indexOf;
-		// Fast string-level replacement: find "type":"…" and swap the value.
 		auto idx = rawLine.indexOf(`"type":"`);
 		if (idx < 0) return rawLine;
 		auto valStart = idx + `"type":"`.length;
@@ -427,13 +412,13 @@ class CopilotAgent : Agent
 	bool isUserMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"user.message"`);
+		return rawLine.canFind(`"type":"message/user"`);
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"assistant.message"`);
+		return rawLine.canFind(`"type":"message/assistant"`);
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -495,7 +480,7 @@ class CopilotAgent : Agent
 		return line.canFind(`"type":"user.message"`) || line.canFind(`"type":"assistant.message"`);
 	}
 
-	@property bool needsBash() { return true; }
+	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
 
 	string rewindFiles(string sessionId, string afterUuid, string cwd)
@@ -508,40 +493,33 @@ class CopilotAgent : Agent
 		auto p = new Promise!string;
 		auto session = new OneShotCopilotSession(p);
 
-		import std.process : environment;
 		auto model = modelClass.length > 0 ? resolveModelAlias(modelClass) : "";
-		string[] copilotArgs = [getCopilotBinName(), "--acp", "--yolo"];
-		if (model.length > 0)
-			copilotArgs ~= ["--model", model];
-		auto srv = new AcpProcess(copilotArgs, null, null);
+		string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
+		auto srv = new SdkProcess(copilotArgs, null, null);
 
-		// Use the same working directory as the main session so session/new
-		// receives a valid git-repository path (copilot requires this).
 		auto cwd = sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".";
+
+		import std.uuid : randomUUID;
+		auto sessionId = randomUUID().toString();
+
+		// Set cleanup callback before registering
+		session.onFulfill_ = () {
+			srv.unregisterSession(sessionId);
+			srv.sendRequest("session.destroy",
+				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+			.then((JsonRpcResponse r) { srv.shutdown(); });
+		};
+
+		srv.registerSession(sessionId, session);
+
 		srv.onReady(() {
-			srv.sendRequest("session/new",
-				`{"cwd":"` ~ cpEscape(cwd) ~ `","mcpServers":[]}`)
-			.then((JsonRpcResponse newResp) {
-				@JSONPartial
-				static struct SR { string sessionId; }
-				string sid;
-				try sid = jsonParse!SR(newResp.result.json).sessionId;
-				catch (Exception) {}
-
-				if (sid.length == 0)
-				{
-					session.fail(new Exception("completeOneShot: session/new failed"));
-					srv.shutdown();
-					return;
-				}
-
-				srv.registerSession(sid, session);
-				srv.sendRequest("session/prompt",
-					`{"sessionId":"` ~ cpEscape(sid) ~ `","prompt":[{"type":"text","text":"` ~ cpEscape(prompt) ~ `"}]}`)
-				.then((JsonRpcResponse r) {
-					srv.unregisterSession(sid);
-					session.succeed();
-					srv.shutdown();
+			srv.sendRequest("session.create",
+				buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
+			.then((JsonRpcResponse createResp) {
+				srv.sendRequest("session.send",
+					`{"sessionId":"` ~ cpEscape(sessionId) ~ `","prompt":"` ~ cpEscape(prompt) ~ `"}`)
+				.then((JsonRpcResponse sendResp) {
+					// Turn completion via session.idle event → handleEvent → promise fulfilled
 				});
 			});
 		});
@@ -551,12 +529,12 @@ class CopilotAgent : Agent
 }
 
 // ---------------------------------------------------------------------------
-// CopilotSession — one Copilot session, implementing AgentSession.
+// CopilotSession — one Copilot session, implementing AgentSession + SdkSessionHandler.
 // ---------------------------------------------------------------------------
 
-class CopilotSession : AgentSession, AcpSessionHandler
+class CopilotSession : AgentSession, SdkSessionHandler
 {
-	private AcpProcess server;
+	private SdkProcess server;
 	private int tid;
 	private string sessionId;
 	private string model;
@@ -564,14 +542,10 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	private string[] bwrapPrefix_;
 	private bool alive_;
 	private bool turnInProgress;
-	private bool replayMode; // true during session/load replay
+	private bool replayMode; // true during session.resume replay
 	private bool gracefulShutdown_; // true after closeStdin() — handleExit reports 0
 	private bool forcedStop_;       // true after stop() — handleExit always reports 1
-
-	// Terminal registry for ACP terminal capability.
-	private TerminalProcess[string] terminals;
-	private int nextTerminalId_ = 1;
-	private Promise!TerminalExitResult[string] pendingWaitIds_; // terminalId → promise for wait_for_exit
+	private ToolDispatchFn toolDispatch_;
 
 	// Streaming state: item tracking for item-based protocol.
 	private int nextItemIndex;
@@ -595,55 +569,31 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
 
-	this(AcpProcess server, int tid, string model, string workDir, string[] bwrapPrefix = null)
+	this(SdkProcess server, int tid, string sessionId, string model, string workDir,
+		string[] bwrapPrefix = null, ToolDispatchFn toolDispatch = null)
 	{
 		this.server = server;
 		this.tid = tid;
+		this.sessionId = sessionId;
 		this.model = model;
 		this.workDir = workDir;
 		this.bwrapPrefix_ = bwrapPrefix;
+		this.toolDispatch_ = toolDispatch;
 		this.alive_ = true;
 	}
 
-	/// Called to suppress events during session/load history replay.
+	/// Called to suppress events during session.resume history replay.
 	package void startReplay()
 	{
 		replayMode = true;
 	}
 
-	/// Called when session/new or session/load response arrives.
-	package void onSessionStarted(string result, string resumeId, string m, string wd)
+	/// Called when session.create or session.resume response arrives.
+	package void onSessionStarted(string m, string wd)
 	{
 		this.model = m;
 		this.workDir = wd;
-
-		// Extract sessionId from result.
-		@JSONPartial
-		static struct SessionResult
-		{
-			string sessionId;
-		}
-
-		try
-		{
-			auto parsed = jsonParse!SessionResult(result);
-			if (parsed.sessionId.length > 0)
-				sessionId = parsed.sessionId;
-		}
-		catch (Exception) {}
-
-		if (sessionId.length == 0 && resumeId.length > 0)
-			sessionId = resumeId;
-
-		if (sessionId.length == 0)
-		{
-			if (outputHandler_)
-				outputHandler_(`{"type":"process/stderr","text":"Failed to start Copilot session"}`);
-			return;
-		}
-
 		replayMode = false; // Done with replay (or was never in it)
-		server.registerSession(sessionId, this);
 
 		// Emit synthetic session/init.
 		import cydo.agent.protocol : SessionInitEvent;
@@ -698,12 +648,13 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				outputHandler_(
 					`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ escaped ~ `"}`);
 
-			// ACP session/prompt uses "prompt" key for the message content array.
-			server.sendRequest("session/prompt",
+			// SDK session.send returns immediately with messageId.
+			// Turn completion comes via session.idle event.
+			server.sendRequest("session.send",
 				`{"sessionId":"` ~ cpEscape(sessionId)
-				~ `","prompt":[{"type":"text","text":"` ~ escaped ~ `"}]}`)
+				~ `","prompt":"` ~ escaped ~ `"}`)
 			.then((JsonRpcResponse resp) {
-				onPromptCompleted(resp.result.json !is null ? resp.result.json : "{}");
+				// ACK received — turn is in progress
 			});
 		}
 	}
@@ -712,8 +663,9 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	{
 		if (!alive_ || sessionId.length == 0)
 			return;
-		server.sendNotification("session/cancel",
-			`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`);
+		server.sendRequest("session.abort",
+			`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+		.then((JsonRpcResponse resp) {});
 	}
 
 	void sigint()
@@ -727,18 +679,13 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			return;
 		if (sessionId.length > 0)
 		{
-			server.sendNotification("session/cancel",
-				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`);
-			// Do NOT unregisterSession here — keep the session registered so
-			// handleExit fires once the process actually exits.  This ensures
-			// events.jsonl is fully flushed before any subsequent session/load
-			// (e.g. undo) reads from it.
+			server.sendRequest("session.abort",
+				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+			.then((JsonRpcResponse resp) {});
 		}
 		alive_ = false;
 		forcedStop_ = true;
 		server.shutdown();
-		// Don't call exitHandler_ here; handleExit will call it once the
-		// process has actually exited (after SIGTERM).
 	}
 
 	void closeStdin()
@@ -747,19 +694,13 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			return;
 		if (sessionId.length > 0)
 		{
-			server.sendNotification("session/cancel",
-				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`);
-			// Do NOT unregisterSession here — keep the session registered so
-			// handleExit fires once the process actually exits.  This ensures
-			// the old process has fully flushed its session state (events.jsonl)
-			// before a continuation or undo-resume calls session/load on the
-			// same session ID.
+			server.sendRequest("session.abort",
+				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+			.then((JsonRpcResponse resp) {});
 		}
 		alive_ = false;
 		gracefulShutdown_ = true;
 		server.shutdown();
-		// Don't call exitHandler_ here; handleExit will call it once the
-		// process has actually exited (after SIGTERM).
 	}
 
 	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
@@ -767,166 +708,77 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_ && !server.dead; }
 
-	// ----- AcpSessionHandler interface -----
+	// ----- SdkSessionHandler interface -----
 
-	Promise!TerminalCreateResult handleTerminalCreate(TerminalCreateParams params)
-	{
-		string[] cmdArgs = [params.command] ~ params.args;
-
-		string[] finalArgs;
-		string procWorkDir = null;
-
-		if (bwrapPrefix_ !is null)
-		{
-			auto prefix = bwrapPrefix_.dup;
-			if (params.cwd.length > 0)
-			{
-				for (size_t i = 0; i + 1 < prefix.length; i++)
-				{
-					if (prefix[i] == "--chdir")
-					{
-						prefix[i + 1] = params.cwd;
-						break;
-					}
-				}
-			}
-			finalArgs = prefix ~ cmdArgs;
-		}
-		else
-		{
-			finalArgs = cmdArgs;
-			procWorkDir = params.cwd.length > 0 ? params.cwd : workDir;
-		}
-
-		string[string] procEnv = null;
-		if (params.env.length > 0)
-		{
-			import std.process : environment;
-			procEnv = environment.toAA();
-			foreach (ref ev; params.env)
-				procEnv[ev.name] = ev.value;
-		}
-
-		size_t byteLimit = params.outputByteLimit > 0
-			? cast(size_t) params.outputByteLimit : 1024 * 1024;
-
-		auto terminalId = "term_" ~ to!string(nextTerminalId_++);
-		terminals[terminalId] = new TerminalProcess(finalArgs, procEnv, procWorkDir, byteLimit);
-
-		return resolve(TerminalCreateResult(terminalId));
-	}
-
-	Promise!TerminalOutputResult handleTerminalOutput(TerminalIdParams params)
-	{
-		auto tp = params.terminalId in terminals;
-		if (!tp)
-			return resolve(TerminalOutputResult("", false));
-
-		auto term = *tp;
-		JSONFragment exitStatus;
-		if (term.done)
-		{
-			auto sig = term.exitSignal();
-			if (sig !is null)
-				exitStatus = JSONFragment(`{"signal":"` ~ cpEscape(sig) ~ `"}`);
-			else
-				exitStatus = JSONFragment(`{"exitCode":` ~ to!string(term.exitCode()) ~ `}`);
-		}
-		return resolve(TerminalOutputResult(term.output(), term.truncated, exitStatus));
-	}
-
-	Promise!TerminalExitResult handleTerminalWaitForExit(TerminalIdParams params)
-	{
-		auto tid = params.terminalId;
-		auto tp = tid in terminals;
-		if (!tp)
-			return resolve(TerminalExitResult());
-
-		auto term = *tp;
-		if (term.done)
-		{
-			auto sig = term.exitSignal();
-			if (sig !is null)
-				return resolve(TerminalExitResult(0, sig));
-			else
-				return resolve(TerminalExitResult(term.exitCode()));
-		}
-
-		auto p = new Promise!TerminalExitResult;
-		pendingWaitIds_[tid] = p;
-		term.onExit = () {
-			auto pp = tid in pendingWaitIds_;
-			if (pp)
-			{
-				auto sig = term.exitSignal();
-				if (sig !is null)
-					(*pp).fulfill(TerminalExitResult(0, sig));
-				else
-					(*pp).fulfill(TerminalExitResult(term.exitCode()));
-				pendingWaitIds_.remove(tid);
-			}
-		};
-		return p;
-	}
-
-	Promise!EmptyResult handleTerminalKill(TerminalIdParams params)
-	{
-		auto tp = params.terminalId in terminals;
-		if (tp)
-			(*tp).kill();
-		return resolve(EmptyResult());
-	}
-
-	Promise!EmptyResult handleTerminalRelease(TerminalIdParams params)
-	{
-		auto tid = params.terminalId;
-		auto tp = tid in terminals;
-		if (tp)
-		{
-			(*tp).forceKill();
-			terminals.remove(tid);
-		}
-		return resolve(EmptyResult());
-	}
-
-	void handleSessionUpdate(JSONFragment update)
+	void handleEvent(SdkEvent event)
 	{
 		if (!alive_)
 			return;
 		if (replayMode)
 			return;
 
-		@JSONPartial
-		static struct UpdateType { string sessionUpdate; }
-
-		UpdateType ut;
-		try
-			ut = jsonParse!UpdateType(update.json);
-		catch (Exception)
-			return;
-
-		switch (ut.sessionUpdate)
+		switch (event.type)
 		{
-			case "agent_message_chunk":
-				handleAgentMessageChunk(update);
+			case "assistant.turn_start":
+				handleTurnStart(event.data);
 				break;
-			case "agent_thought_chunk":
-				handleAgentThoughtChunk(update);
+			case "assistant.message_delta":
+				handleMessageDelta(event.data);
 				break;
-			case "tool_call":
-				handleToolCall(update);
+			case "assistant.message":
+				handleAssistantMessage(event.data);
 				break;
-			case "tool_call_update":
-				handleToolCallUpdate(update);
+			case "assistant.reasoning_delta":
+				handleReasoningDelta(event.data);
 				break;
-			case "user_message_chunk":
-				handleUserMessageChunk(update);
+			case "tool.execution_start":
+				handleToolExecutionStart(event.data);
 				break;
-			// Drop: plan, available_commands_update, config_option_update,
-			//       current_mode_update, session_info_update, usage_update
+			case "tool.execution_complete":
+				handleToolExecutionComplete(event.data);
+				break;
+			case "user.message":
+				handleUserMessage(event.data);
+				break;
+			case "session.idle":
+				handleTurnCompleted("end_turn");
+				break;
+			case "session.start":
+				handleSessionStart(event.data);
+				break;
+			case "session.resume":
+				handleSessionResume(event.data);
+				break;
+			case "session.error":
+				handleSessionError(event.data);
+				break;
 			default:
 				break;
 		}
+	}
+
+	Promise!SdkPermissionResult handlePermissionRequest(SdkPermissionRequest params)
+	{
+		// Auto-approve all permissions (same policy as prior ACP implementation).
+		return resolve(SdkPermissionResult("approved"));
+	}
+
+	Promise!SdkToolCallResult handleToolCall(SdkToolCallRequest params)
+	{
+		if (toolDispatch_ is null)
+			return resolve(SdkToolCallResult(SdkToolResult(
+				"Tool dispatch not configured", "failure")));
+
+		auto result = new Promise!SdkToolCallResult;
+		toolDispatch_(params.toolName, to!string(tid), params.arguments)
+		.then((McpResult mcpResult) {
+			result.fulfill(SdkToolCallResult(SdkToolResult(
+				mcpResult.text,
+				mcpResult.isError ? "failure" : "success")));
+		}, (Exception e) {
+			result.fulfill(SdkToolCallResult(SdkToolResult(e.msg, "failure")));
+		});
+		return result;
 	}
 
 	void handleStderr(string line)
@@ -937,44 +789,32 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 	void handleExit(int status)
 	{
-		// Kill any still-running terminal processes.
-		foreach (term; terminals)
-			term.forceKill();
-		terminals = null;
-		pendingWaitIds_ = null;
-
-		// Fire exitHandler_ if set, regardless of alive_.  Both closeStdin() and
-		// stop() defer the callback here so the process has fully exited before
-		// continuations or undo/fork sessions start.
 		if (exitHandler_ is null)
 			return;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
 		alive_ = false;
-		// gracefulShutdown_ (closeStdin) → report 0 (task completed normally)
-		// forcedStop_ (stop) → always report 1 (task killed by user = failed)
-		// otherwise → use the actual exit code
 		int code = gracefulShutdown_ ? 0 : (forcedStop_ ? 1 : status);
 		cb(code);
 	}
 
-	// ----- Notification handlers -----
+	// ----- Event handlers -----
 
-	private void handleAgentMessageChunk(JSONFragment update)
+	private void handleTurnStart(JSONFragment data)
 	{
-		// update.content.text
-		@JSONPartial
-		static struct Content { string text; }
-		@JSONPartial
-		static struct Update { Content content; }
+		turnInProgress = true;
+		nextItemIndex = 0;
+		activeItem = ActiveItem.init;
+	}
 
-		Update u;
-		try
-			u = jsonParse!Update(update.json);
-		catch (Exception)
-			return;
+	private void handleMessageDelta(JSONFragment data)
+	{
+		@JSONPartial static struct MsgDelta { string content; }
+		MsgDelta d;
+		try d = jsonParse!MsgDelta(data.json);
+		catch (Exception) return;
 
-		auto text = u.content.text;
+		auto text = d.content;
 
 		// Start a new text item if we don't have an active one.
 		if (activeItem.type != "text")
@@ -996,21 +836,14 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`);
 	}
 
-	private void handleAgentThoughtChunk(JSONFragment update)
+	private void handleReasoningDelta(JSONFragment data)
 	{
-		// update.content.text
-		@JSONPartial
-		static struct Content { string text; }
-		@JSONPartial
-		static struct Update { Content content; }
+		@JSONPartial static struct ReasoningDelta { string content; }
+		ReasoningDelta d;
+		try d = jsonParse!ReasoningDelta(data.json);
+		catch (Exception) return;
 
-		Update u;
-		try
-			u = jsonParse!Update(update.json);
-		catch (Exception)
-			return;
-
-		auto text = u.content.text;
+		auto text = d.content;
 
 		// Start a new thinking item if we don't have an active one.
 		if (activeItem.type != "thinking")
@@ -1032,52 +865,25 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`);
 	}
 
-	private void handleUserMessageChunk(JSONFragment update)
+	private void handleToolExecutionStart(JSONFragment data)
 	{
-		// Emit user message item so the frontend confirms the pending placeholder.
-		// update.content.text contains the user's message text.
-		@JSONPartial
-		static struct Content { string text; }
-		@JSONPartial
-		static struct Update { Content content; }
-
-		Update u;
-		try
-			u = jsonParse!Update(update.json);
-		catch (Exception)
-			return;
-
-		auto text = u.content.text;
-		if (text.length > 0 && outputHandler_)
-			outputHandler_(
-				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ cpEscape(text) ~ `"}`);
-	}
-
-	private void handleToolCall(JSONFragment update)
-	{
-		// update.{toolCallId, title, kind, rawInput}
-		@JSONPartial
-		static struct Update
+		@JSONPartial static struct ToolStart
 		{
 			string toolCallId;
-			string title;
-			string kind;
-			JSONFragment rawInput;
+			string toolName;
+			JSONFragment arguments;
 		}
-
-		Update u;
-		try
-			u = jsonParse!Update(update.json);
-		catch (Exception)
-			return;
+		ToolStart ts;
+		try ts = jsonParse!ToolStart(data.json);
+		catch (Exception) return;
 
 		// Finalize any active text/thinking item.
 		finalizeActiveItem();
 
-		auto id = u.toolCallId;
-		auto name = mapKindToName(u.kind, u.title);
-		string inputJson = u.rawInput.json !is null && u.rawInput.json.length > 0
-			? u.rawInput.json : "{}";
+		auto id = ts.toolCallId;
+		auto name = ts.toolName;
+		string inputJson = ts.arguments.json !is null && ts.arguments.json.length > 0
+			? ts.arguments.json : "{}";
 
 		activeItem = ActiveItem(id, "tool_use", name, inputJson, "");
 
@@ -1088,101 +894,77 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `","input":` ~ inputJson ~ `}`);
 
 		// Emit the full input as a single input_json_delta so the UI can
-		// display it during streaming (ACP provides the full rawInput upfront).
+		// display it during streaming.
 		if (outputHandler_ && inputJson.length > 0 && inputJson != "{}")
 			outputHandler_(
 				`{"type":"item/delta","item_id":"` ~ cpEscape(id)
 				~ `","delta_type":"input_json_delta","content":"` ~ cpEscape(inputJson) ~ `"}`);
 	}
 
-	private void handleToolCallUpdate(JSONFragment update)
+	private void handleToolExecutionComplete(JSONFragment data)
 	{
-		// update.{status, content[]}
-		// content items: {type:"content", content:{type:"text", text:"..."}}
-		@JSONPartial
-		static struct InnerContent { string text; }
-		@JSONPartial
-		static struct ContentItem
-		{
-			string type;       // "content", "diff", "terminal"
-			InnerContent content; // for type=="content"
-			string terminalId; // for type=="terminal"
-		}
-		@JSONPartial
-		static struct Update
-		{
-			string status;
-			ContentItem[] content;
-		}
+		@JSONPartial static struct ToolComplete { string toolCallId; bool success; string result; }
+		ToolComplete tc;
+		try tc = jsonParse!ToolComplete(data.json);
+		catch (Exception) return;
 
-		Update u;
-		try
-			u = jsonParse!Update(update.json);
-		catch (Exception)
-			return;
+		if (tc.result.length > 0)
+			activeItem.text = tc.result;
 
-		// Accumulate text from "content" and "terminal" type content items.
-		// Bash output arrives as "terminal" type with a terminalId reference.
-		string text;
-		foreach (ref ci; u.content)
-		{
-			if (ci.type == "content")
-				text ~= ci.content.text;
-			else if (ci.type == "terminal")
-			{
-				if (auto term = ci.terminalId in terminals)
-					text ~= (*term).output();
-			}
-		}
+		// Emit item/completed with final input.
+		if (outputHandler_)
+			outputHandler_(
+				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
+		// Emit item/result with accumulated output.
+		if (outputHandler_)
+			outputHandler_(
+				`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
+		activeItem = ActiveItem.init;
+	}
 
-		if (text.length > 0)
-		{
-			activeItem.text ~= text;
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","delta_type":"output_delta","content":"` ~ cpEscape(text) ~ `"}`);
-		}
+	private void handleAssistantMessage(JSONFragment data)
+	{
+		// Option B: synthesize message/assistant from completedItems in handleTurnCompleted.
+		// The SDK assistant.message event is not used directly.
+	}
 
-		auto status = u.status;
-		if (status == "completed" || status == "failed")
-		{
-			// Emit item/completed with final input.
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
-			// Emit item/result with accumulated output.
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
-			activeItem = ActiveItem.init;
-		}
+	private void handleUserMessage(JSONFragment data)
+	{
+		@JSONPartial static struct UserMsg { string content; }
+		UserMsg um;
+		try um = jsonParse!UserMsg(data.json);
+		catch (Exception) return;
+
+		if (um.content.length > 0 && outputHandler_)
+			outputHandler_(
+				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ cpEscape(um.content) ~ `"}`);
+	}
+
+	private void handleSessionStart(JSONFragment data)
+	{
+		// session/init already emitted by onSessionStarted; nothing to do here.
+	}
+
+	private void handleSessionResume(JSONFragment data)
+	{
+		// Replay complete — re-enable live event processing.
+		replayMode = false;
+	}
+
+	private void handleSessionError(JSONFragment data)
+	{
+		@JSONPartial static struct SessErr { string message; }
+		SessErr se;
+		try se = jsonParse!SessErr(data.json);
+		catch (Exception) {}
+		if (outputHandler_)
+			outputHandler_(
+				`{"type":"process/stderr","text":"Copilot error: ` ~ cpEscape(se.message) ~ `"}`);
 	}
 
 	// ----- Turn completion -----
-
-	private void onPromptCompleted(string result)
-	{
-		// Extract stopReason from the response.
-		@JSONPartial
-		static struct PromptResult
-		{
-			string stopReason;
-		}
-
-		string stopReason = "end_turn";
-		try
-		{
-			auto pr = jsonParse!PromptResult(result);
-			if (pr.stopReason.length > 0)
-				stopReason = pr.stopReason;
-		}
-		catch (Exception) {}
-
-		handleTurnCompleted(stopReason);
-	}
 
 	private void handleTurnCompleted(string stopReason)
 	{
@@ -1251,50 +1033,53 @@ class CopilotSession : AgentSession, AcpSessionHandler
 }
 
 // ---------------------------------------------------------------------------
-// OneShotCopilotSession — minimal AcpSessionHandler for completeOneShot.
+// OneShotCopilotSession — minimal SdkSessionHandler for completeOneShot.
 // ---------------------------------------------------------------------------
 
-private final class OneShotCopilotSession : AcpSessionHandler
+private final class OneShotCopilotSession : SdkSessionHandler
 {
 	private string text_;
 	private bool fulfilled_;
 	private Promise!string promise_;
+	package void delegate() onFulfill_;
 
 	this(Promise!string p) { promise_ = p; }
 
-	Promise!TerminalCreateResult handleTerminalCreate(TerminalCreateParams params)
-		{ return resolve(TerminalCreateResult("")); }
-	Promise!TerminalOutputResult handleTerminalOutput(TerminalIdParams params)
-		{ return resolve(TerminalOutputResult("", false)); }
-	Promise!TerminalExitResult handleTerminalWaitForExit(TerminalIdParams params)
-		{ return resolve(TerminalExitResult()); }
-	Promise!EmptyResult handleTerminalKill(TerminalIdParams params)
-		{ return resolve(EmptyResult()); }
-	Promise!EmptyResult handleTerminalRelease(TerminalIdParams params)
-		{ return resolve(EmptyResult()); }
-
-	void handleSessionUpdate(JSONFragment update)
+	void handleEvent(SdkEvent event)
 	{
-		@JSONPartial
-		static struct UpProbe { string sessionUpdate; }
+		switch (event.type)
+		{
+			case "assistant.message_delta":
+			{
+				@JSONPartial static struct OneShotDelta { string content; }
+				OneShotDelta d;
+				try d = jsonParse!OneShotDelta(event.data.json);
+				catch (Exception) return;
+				text_ ~= d.content;
+				break;
+			}
+			case "session.idle":
+				if (!fulfilled_)
+				{
+					fulfilled_ = true;
+					if (onFulfill_) onFulfill_();
+					promise_.fulfill(text_);
+				}
+				break;
+			default:
+				break;
+		}
+	}
 
-		UpProbe up;
-		try up = jsonParse!UpProbe(update.json);
-		catch (Exception) return;
+	Promise!SdkPermissionResult handlePermissionRequest(SdkPermissionRequest params)
+	{
+		return resolve(SdkPermissionResult("approved"));
+	}
 
-		if (up.sessionUpdate != "agent_message_chunk")
-			return;
-
-		@JSONPartial
-		static struct Content { string text; }
-		@JSONPartial
-		static struct Chunk { Content content; }
-
-		Chunk c;
-		try c = jsonParse!Chunk(update.json);
-		catch (Exception) return;
-
-		text_ ~= c.content.text;
+	Promise!SdkToolCallResult handleToolCall(SdkToolCallRequest params)
+	{
+		return resolve(SdkToolCallResult(SdkToolResult(
+			"Tool calls not supported in one-shot mode", "failure")));
 	}
 
 	void handleStderr(string) {}
@@ -1304,25 +1089,8 @@ private final class OneShotCopilotSession : AcpSessionHandler
 		if (!fulfilled_)
 		{
 			fulfilled_ = true;
-			promise_.reject(new Exception("completeOneShot: process exited with status " ~ to!string(status)));
-		}
-	}
-
-	void succeed()
-	{
-		if (!fulfilled_)
-		{
-			fulfilled_ = true;
-			promise_.fulfill(text_);
-		}
-	}
-
-	void fail(Exception e)
-	{
-		if (!fulfilled_)
-		{
-			fulfilled_ = true;
-			promise_.reject(e);
+			promise_.reject(new Exception(
+				"completeOneShot: process exited with status " ~ to!string(status)));
 		}
 	}
 }
@@ -1333,24 +1101,7 @@ private final class OneShotCopilotSession : AcpSessionHandler
 
 private:
 
-/// Map ACP tool kind to agnostic tool name.
-string mapKindToName(string kind, string title)
-{
-	switch (kind)
-	{
-		case "read":    return "Read";
-		case "edit":    return "Edit";
-		case "execute": return "Bash";
-		case "search":  return "Grep";
-		case "other":
-			return title.length > 0 ? title : "unknown";
-		default:
-			return title.length > 0 ? title : "unknown";
-	}
-}
-
 /// Get the copilot binary name/path.
-/// If CYDO_COPILOT_BIN is set, use it (can be absolute path); else "copilot".
 string getCopilotBinName()
 {
 	import std.process : environment;
@@ -1392,37 +1143,57 @@ string cydoBinaryDir()
 	return cydoBinaryPath.length > 0 ? dirName(cydoBinaryPath) : "";
 }
 
-/// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
-string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
-	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
+/// Build tool definitions JSON array for session.create params.
+/// Only includes tools if an MCP socket is configured (tools backend is available).
+string buildToolDefinitions(SessionConfig config)
 {
-	import std.array : join;
-	import std.file : exists, mkdirRecurse, write;
+	if (config.mcpSocketPath.length == 0)
+		return "[]";
 
-	auto cydoBin = cydoBinaryPath;
-	if (cydoBin.length == 0)
-		return null;
+	// Provide CyDo's native tools via SDK tool registration.
+	// These are dispatched via the tool.call RPC to App.dispatchTool.
+	return `[`
+		~ `{"name":"Task","description":"Create sub-tasks that run autonomously","parameters":`
+		~ `{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}}`
+		~ `,"required":["tasks"]},"skipPermission":true}`
+		~ `,{"name":"Bash","description":"Execute a shell command and return its output","parameters":`
+		~ `{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`
+		~ `,"skipPermission":true}`
+		~ `]`;
+}
 
-	import std.process : environment;
-	auto home = environment.get("HOME", "/tmp");
-	auto copilotHome = environment.get("COPILOT_HOME", buildPath(home, ".copilot"));
-	auto configDir = buildPath(copilotHome, "mcp-configs");
-	if (!exists(configDir))
-		mkdirRecurse(configDir);
+/// Build JSON params string for session.create.
+string buildSessionCreateParams(string sessionId, string model, string workDir, SessionConfig config)
+{
+	auto tools = buildToolDefinitions(config);
+	auto modelPart = model.length > 0 ? `,"model":"` ~ cpEscape(model) ~ `"` : "";
+	auto systemMsg = config.appendSystemPrompt.length > 0
+		? `,"systemMessage":{"mode":"append","content":"` ~ cpEscape(config.appendSystemPrompt) ~ `"}`
+		: "";
+	return `{"sessionId":"` ~ cpEscape(sessionId) ~ `"`
+		~ modelPart
+		~ `,"clientName":"cydo"`
+		~ `,"workingDirectory":"` ~ cpEscape(workDir) ~ `"`
+		~ `,"streaming":true`
+		~ `,"requestPermission":true`
+		~ `,"tools":` ~ tools
+		~ systemMsg
+		~ `}`;
+}
 
-	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
-
-	auto config = `{"mcpServers":{"cydo":{"command":"`
-		~ cpEscape(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_SOCKET":"`
-		~ cpEscape(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
-		~ cpEscape(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
-		~ cpEscape(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ cpEscape(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
-		~ cpEscape(includeTools is null ? "" : includeTools.join(",")) ~ `"}}}}`;
-
-	write(configPath, config);
-	return configPath;
+/// Build JSON params string for session.resume.
+string buildSessionResumeParams(string sessionId, string model, SessionConfig config)
+{
+	auto modelPart = model.length > 0 ? `,"model":"` ~ cpEscape(model) ~ `"` : "";
+	auto systemMsg = config.appendSystemPrompt.length > 0
+		? `,"systemMessage":{"mode":"append","content":"` ~ cpEscape(config.appendSystemPrompt) ~ `"}`
+		: "";
+	return `{"sessionId":"` ~ cpEscape(sessionId) ~ `"`
+		~ modelPart
+		~ `,"streaming":true`
+		~ `,"requestPermission":true`
+		~ systemMsg
+		~ `}`;
 }
 
 /// Escape a string for embedding in JSON.
