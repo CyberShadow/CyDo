@@ -12,13 +12,13 @@ import std.logger : infof, tracef, warningf;
 
 import ae.net.asockets : socketManager;
 import ae.net.http.client : HttpClient, UnixConnector;
+import ae.net.jsonrpc.binding : jsonRpcDispatcher, RPCFlatten, RPCName, RPCNotification;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.net.jsonrpc.stdio : stdioLDJsonRpcConnection;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.array : asBytes;
 import ae.utils.json : JSONFragment, jsonParse, toJson, JSONPartial;
-import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.mcp.tools : CydoTools;
@@ -34,9 +34,9 @@ void runMcpServer()
 	auto conn = stdioLDJsonRpcConnection();
 	auto codec = new JsonRpcCodec(conn);
 
-	codec.handleRequest = (JsonRpcRequest request) {
-		return handleRequest(request, socketPath, tid);
-	};
+	auto impl = new McpServerImpl(socketPath, tid);
+	auto dispatcher = jsonRpcDispatcher!McpProtocol(impl);
+	codec.handleRequest = &dispatcher.dispatch;
 
 	socketManager.loop();
 	infof("CyDo MCP proxy exiting");
@@ -63,109 +63,123 @@ string buildToolsListJson()
 	], includeTools);
 }
 
-Promise!JsonRpcResponse handleRequest(JsonRpcRequest request, string socketPath, string tid)
+interface McpProtocol
 {
-	switch (request.method)
-	{
-		case "initialize":
-			return resolve(JsonRpcResponse.success(request.id,
-				InitializeResult(MCP_PROTOCOL_VERSION, ServerInfo("cydo", "0.1.0"))));
+	@RPCName("initialize")
+	Promise!InitializeResult initialize();
 
-		case "notifications/initialized":
-			// Notification — codec will filter the response (no id)
-			return resolve(JsonRpcResponse.success(request.id));
+	@RPCNotification
+	@RPCName("notifications/initialized")
+	Promise!void notificationsInitialized();
 
-		case "tools/list":
-			return resolve(JsonRpcResponse.success(request.id, JSONFragment(buildToolsListJson())));
+	@RPCName("tools/list")
+	Promise!JSONFragment toolsList();
 
-		case "tools/call":
-			return handleToolsCall(request, socketPath, tid);
+	@RPCName("tools/call")
+	Promise!JSONFragment toolsCall(ToolsCallParams params);
 
-		case "resources/list":
-			return resolve(JsonRpcResponse.success(request.id,
-				JSONFragment(`{"resources":[]}`)));
+	@RPCName("resources/list")
+	Promise!JSONFragment resourcesList();
 
-		case "resources/templates/list":
-			return resolve(JsonRpcResponse.success(request.id,
-				JSONFragment(`{"resourceTemplates":[]}`)));
+	@RPCName("resources/templates/list")
+	Promise!JSONFragment resourcesTemplatesList();
 
-		case "prompts/list":
-			return resolve(JsonRpcResponse.success(request.id,
-				JSONFragment(`{"prompts":[]}`)));
-
-		default:
-			return resolve(JsonRpcResponse.failure(request.id,
-				JsonRpcErrorCode.methodNotFound, "Method not found: " ~ request.method));
-	}
+	@RPCName("prompts/list")
+	Promise!JSONFragment promptsList();
 }
 
-/// Forward tools/call to the backend via UNIX socket HTTP POST.
-Promise!JsonRpcResponse handleToolsCall(JsonRpcRequest request, string socketPath, string tid)
+class McpServerImpl : McpProtocol
 {
-	auto promise = new Promise!JsonRpcResponse;
+	private string socketPath;
+	private string tid;
 
-	// Parse the MCP tools/call params: {name: string, arguments: object}
-	ToolsCallParams params;
-	try
-		params = request.params.json.jsonParse!ToolsCallParams;
-	catch (Exception e)
+	this(string socketPath, string tid)
 	{
-		promise.fulfill(JsonRpcResponse.failure(request.id,
-			JsonRpcErrorCode.invalidParams, "Invalid tools/call params: " ~ e.msg));
+		this.socketPath = socketPath;
+		this.tid = tid;
+	}
+
+	Promise!InitializeResult initialize()
+	{
+		return resolve(InitializeResult(MCP_PROTOCOL_VERSION, ServerInfo("cydo", "0.1.0")));
+	}
+
+	Promise!void notificationsInitialized()
+	{
+		return resolve();
+	}
+
+	Promise!JSONFragment toolsList()
+	{
+		return resolve(JSONFragment(buildToolsListJson()));
+	}
+
+	Promise!JSONFragment toolsCall(ToolsCallParams params)
+	{
+		auto promise = new Promise!JSONFragment;
+
+		auto backendRequest = BackendToolCall(tid, params.name, params.arguments);
+		auto bodyJson = toJson(backendRequest);
+
+		tracef("MCP proxy: tools/call %s → backend", params.name);
+
+		import ae.net.http.common : HttpRequest, HttpResponse;
+		import core.time : Duration;
+
+		auto httpReq = new HttpRequest;
+		httpReq.resource = "/mcp/call";
+		httpReq.method = "POST";
+		httpReq.headers["Content-Type"] = "application/json";
+		httpReq.headers["Host"] = "localhost";
+		httpReq.headers["Accept-Encoding"] = "identity"; // prevent server from compressing; client doesn't decompress
+		httpReq.data = DataVec(Data(bodyJson.asBytes));
+
+		auto client = new HttpClient(Duration.zero, new UnixConnector(socketPath));
+		client.handleResponse = (HttpResponse response, string disconnectReason) {
+			if (response is null)
+			{
+				promise.reject(new Exception("Backend connection failed: " ~ disconnectReason));
+				return;
+			}
+			try
+			{
+				import ae.sys.dataset : joinData;
+				auto responseText = cast(string) response.data[].joinData().toGC();
+				if (response.status / 100 != 2)
+				{
+					warningf("MCP proxy: backend returned HTTP %d", response.status);
+					promise.reject(new Exception("Backend returned HTTP " ~ to!string(response.status)));
+					return;
+				}
+				promise.fulfill(JSONFragment(responseText));
+			}
+			catch (Exception e)
+				promise.reject(new Exception("Failed to parse backend response: " ~ e.msg));
+		};
+		client.request(httpReq);
+
 		return promise;
 	}
 
-	// Build backend request
-	auto backendRequest = BackendToolCall(tid, params.name, params.arguments);
-	auto bodyJson = toJson(backendRequest);
+	Promise!JSONFragment resourcesList()
+	{
+		return resolve(JSONFragment(`{"resources":[]}`));
+	}
 
-	tracef("MCP proxy: tools/call %s → backend", params.name);
+	Promise!JSONFragment resourcesTemplatesList()
+	{
+		return resolve(JSONFragment(`{"resourceTemplates":[]}`));
+	}
 
-	// Connect to backend via UNIX socket — no timeout (sub-tasks can run for minutes/hours)
-	import ae.net.http.common : HttpRequest, HttpResponse;
-	import core.time : Duration;
-
-	auto httpReq = new HttpRequest;
-	httpReq.resource = "/mcp/call";
-	httpReq.method = "POST";
-	httpReq.headers["Content-Type"] = "application/json";
-	httpReq.headers["Host"] = "localhost";
-	httpReq.headers["Accept-Encoding"] = "identity"; // prevent server from compressing; client doesn't decompress
-	httpReq.data = DataVec(Data(bodyJson.asBytes));
-
-	auto client = new HttpClient(Duration.zero, new UnixConnector(socketPath));
-	client.handleResponse = (HttpResponse response, string disconnectReason) {
-		if (response is null)
-		{
-			promise.fulfill(JsonRpcResponse.failure(request.id,
-				JsonRpcErrorCode.internalError, "Backend connection failed: " ~ disconnectReason));
-			return;
-		}
-		try
-		{
-			import ae.sys.dataset : joinData;
-			auto responseText = cast(string) response.data[].joinData().toGC();
-			if (response.status / 100 != 2)
-			{
-				warningf("MCP proxy: backend returned HTTP %d", response.status);
-				promise.fulfill(JsonRpcResponse.failure(request.id,
-					JsonRpcErrorCode.internalError, "Backend returned HTTP " ~ to!string(response.status)));
-				return;
-			}
-			promise.fulfill(JsonRpcResponse.success(request.id, JSONFragment(responseText)));
-		}
-		catch (Exception e)
-			promise.fulfill(JsonRpcResponse.failure(request.id,
-				JsonRpcErrorCode.internalError, "Failed to parse backend response: " ~ e.msg));
-	};
-	client.request(httpReq);
-
-	return promise;
+	Promise!JSONFragment promptsList()
+	{
+		return resolve(JSONFragment(`{"prompts":[]}`));
+	}
 }
 
 // ---- JSON structures ----
 
-@JSONPartial
+@RPCFlatten @JSONPartial
 struct ToolsCallParams
 {
 	string name;
