@@ -326,11 +326,16 @@ class CopilotAgent : Agent
 			}
 			case "tool.execution_start":
 			{
+				// JSONL format uses toolName/mcpToolName/arguments,
+				// NOT the ACP live fields (title/kind/rawInput).
 				@JSONPartial static struct CpToolStart
 				{
 					string toolCallId;
+					string toolName;
+					string mcpToolName;
 					string kind;
 					string title;
+					JSONFragment arguments;
 					JSONFragment rawInput;
 				}
 				@JSONPartial static struct CpToolStartEvent { CpToolStart data; }
@@ -338,9 +343,15 @@ class CopilotAgent : Agent
 				try ev = jsonParse!CpToolStartEvent(line);
 				catch (Exception) {}
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
-				auto toolName = mapKindToName(ev.data.kind, ev.data.title);
-				auto inputJson = ev.data.rawInput.json !is null && ev.data.rawInput.json.length > 0
-					? ev.data.rawInput.json : `{}`;
+				// Prefer mcpToolName, then toolName, then ACP fallback.
+				auto toolName = ev.data.mcpToolName.length > 0 ? ev.data.mcpToolName
+					: ev.data.toolName.length > 0 ? ev.data.toolName
+					: mapKindToName(ev.data.kind, ev.data.title);
+				// JSONL uses "arguments", ACP uses "rawInput".
+				auto inputFrag = ev.data.arguments.json !is null && ev.data.arguments.json.length > 0
+					? ev.data.arguments : ev.data.rawInput;
+				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
+					? inputFrag.json : `{}`;
 				ContentBlock cb;
 				cb.type  = "tool_use";
 				cb.id    = toolId;
