@@ -1203,10 +1203,17 @@ function getHeaderSubtitle(
     );
   }
   if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
+    const glob = typeof input.glob === "string" ? input.glob : null;
     const path = typeof input.path === "string" ? input.path : null;
     return (
       <Fragment>
         <code class="tool-subtitle-pattern">{input.pattern}</code>
+        {glob && (
+          <Fragment>
+            {" in "}
+            <code class="tool-subtitle-pattern">{glob}</code>
+          </Fragment>
+        )}
         {path && (
           <Fragment>
             {" in "}
@@ -1383,7 +1390,7 @@ function formatInput(
     return formatGenericInput(remaining);
   }
   if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
-    const { pattern, path, ...remaining } = input;
+    const { pattern, glob, path, ...remaining } = input;
     return formatGenericInput(remaining);
   }
   // --- CyDo MCP tools ---
