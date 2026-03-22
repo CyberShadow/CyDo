@@ -17,11 +17,12 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
 });
 
 test("unsent steer is either recovered into input box or shown in history after kill", async ({ page, agentType }) => {
-  // Codex writes turn/steer messages to its JSONL immediately upon receipt (before the
-  // LLM responds), so the preReloadDrafts confirmation logic incorrectly marks the steer
-  // as "confirmed" even though the LLM never processed it.  The first message also fails
-  // to match because codex stores the full rendered prompt template, not the raw text.
-  test.skip(agentType === "codex", "codex writes steers to JSONL eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers");
+  // Codex and Copilot write turn/steer messages to their session files immediately upon
+  // receipt (before the LLM responds), so the preReloadDrafts confirmation logic
+  // incorrectly marks the steer as "confirmed" even though the LLM never processed it.
+  // The first message also fails to match because codex/copilot store the full rendered
+  // prompt template, not the raw text.
+  test.skip(agentType === "codex" || agentType === "copilot", "codex/copilot write steers eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers");
 
   await enterSession(page);
 

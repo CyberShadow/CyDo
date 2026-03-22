@@ -188,36 +188,20 @@ class CopilotAgent : Agent
 	string extractAssistantText(string line)
 	{
 		import std.algorithm : canFind;
-		if (!line.canFind(`"message/assistant"`))
+		if (!line.canFind(`"item/started"`))
 			return "";
 
 		@JSONPartial
-		static struct ContentBlock
-		{
-			string type;
-			string text;
-		}
-
-		@JSONPartial
-		static struct AssistantProbe
-		{
-			string type;
-			ContentBlock[] content;
-		}
+		static struct ItemStartedProbe { string type; string item_type; string text; }
 
 		try
 		{
-			auto probe = jsonParse!AssistantProbe(line);
-			if (probe.type != "message/assistant")
-				return "";
-			string result;
-			foreach (ref block; probe.content)
-				if (block.type == "text")
-					result ~= block.text;
-			return result;
+			auto probe = jsonParse!ItemStartedProbe(line);
+			if (probe.type == "item/started" && probe.item_type == "text" && probe.text.length > 0)
+				return probe.text;
 		}
-		catch (Exception)
-			return "";
+		catch (Exception) {}
+		return "";
 	}
 
 	string extractUserText(string line) { return ""; }
@@ -252,11 +236,12 @@ class CopilotAgent : Agent
 		return buildPath(copilotHome, "session-state", sessionId, "events.jsonl");
 	}
 
-	string translateHistoryLine(string line, int lineNum)
+	string[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
 		import std.uuid : randomUUID;
-		import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, SessionInitEvent, UsageInfo;
+		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent,
+			TurnStopEvent, SessionInitEvent;
 
 		if (!line.canFind(`"type":"`))
 			return null;
@@ -287,7 +272,7 @@ class CopilotAgent : Agent
 				initEv.permission_mode = "dangerously-skip-permissions";
 				initEv.agent           = "copilot";
 				initEv.supports_file_revert = false;
-				return toJson(initEv);
+				return [toJson(initEv)];
 			}
 			case "user.message":
 			{
@@ -296,8 +281,12 @@ class CopilotAgent : Agent
 				CpUserMsgEvent ev;
 				try ev = jsonParse!CpUserMsgEvent(line);
 				catch (Exception) {}
-				return `{"type":"message/user","content":"` ~ cpEscape(ev.data.content)
-					~ `","uuid":"` ~ cpEscape(base.id) ~ `"}`;
+				ItemStartedEvent startEv;
+				startEv.item_id   = "cp-user-" ~ (base.id.length > 0 ? base.id : randomUUID().toString());
+				startEv.item_type = "user_message";
+				startEv.text      = ev.data.content;
+				startEv.uuid      = base.id;
+				return [toJson(startEv)];
 			}
 			case "assistant.message":
 			{
@@ -306,23 +295,21 @@ class CopilotAgent : Agent
 				CpAsstEvent ev;
 				try ev = jsonParse!CpAsstEvent(line);
 				catch (Exception) {}
-				ContentBlock[] blocks;
-				if (ev.data.content.length > 0)
-				{
-					ContentBlock cb;
-					cb.type = "text";
-					cb.text = ev.data.content;
-					blocks ~= cb;
-				}
-				auto msgId = "msg_" ~ randomUUID().toString();
-				AssistantMessageEvent aev;
-				aev.id          = msgId;
-				aev.content     = blocks;
-				aev.model       = "";
-				aev.stop_reason = "end_turn";
-				aev.usage       = UsageInfo(0, 0);
-				aev.uuid        = base.id;
-				return toJson(aev);
+				if (ev.data.content.length == 0)
+					return null;
+				auto itemId = "cp-text-" ~ randomUUID().toString();
+				ItemStartedEvent startEv;
+				startEv.item_id   = itemId;
+				startEv.item_type = "text";
+				startEv.text      = ev.data.content;
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = itemId;
+				compEv.text    = ev.data.content;
+
+				TurnStopEvent tsEv;
+				tsEv.uuid = base.id;
+				return [toJson(startEv), toJson(compEv), toJson(tsEv)];
 			}
 			case "tool.execution_start":
 			{
@@ -352,19 +339,19 @@ class CopilotAgent : Agent
 					? ev.data.arguments : ev.data.rawInput;
 				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
 					? inputFrag.json : `{}`;
-				ContentBlock cb;
-				cb.type  = "tool_use";
-				cb.id    = toolId;
-				cb.name  = toolName;
-				cb.input = JSONFragment(inputJson);
-				auto msgId = "msg_" ~ randomUUID().toString();
-				AssistantMessageEvent aev;
-				aev.id          = msgId;
-				aev.content     = [cb];
-				aev.model       = "";
-				aev.stop_reason = "end_turn";
-				aev.usage       = UsageInfo(0, 0);
-				return toJson(aev);
+
+				ItemStartedEvent startEv;
+				startEv.item_id   = toolId;
+				startEv.item_type = "tool_use";
+				startEv.name      = toolName;
+				startEv.input     = JSONFragment(inputJson);
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = toolId;
+				compEv.input   = JSONFragment(inputJson);
+
+				events = [toJson(startEv), toJson(compEv)];
+				break;
 			}
 			case "tool.execution_complete":
 			{
@@ -380,28 +367,31 @@ class CopilotAgent : Agent
 				foreach (ref ci; ev.data.content)
 					if (ci.type == "content")
 						outputText ~= ci.content.text;
-				return `{"type":"message/user","content":[{"type":"tool_result","tool_use_id":"`
-					~ cpEscape(toolId) ~ `","content":"` ~ cpEscape(outputText) ~ `"}]}`;
+
+				ItemResultEvent resEv;
+				resEv.item_id = toolId;
+				resEv.content = JSONFragment(`"` ~ cpEscape(outputText) ~ `"`);
+				return [toJson(resEv)];
 			}
 			case "assistant.turn_end":
-				return `{"type":"turn/result","subtype":"success","is_error":false`
+				return [`{"type":"turn/result","subtype":"success","is_error":false`
 					~ `,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`;
+					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`];
 			default:
 				return null;
 		}
 	}
 
-	string translateLiveEvent(string rawLine)
+	string[] translateLiveEvent(string rawLine)
 	{
 		// Copilot emits agnostic-format events natively (via CopilotSession);
 		// only stderr/exit need renaming.  Everything else passes through.
 		import std.algorithm : canFind;
 		if (rawLine.canFind(`"type":"stderr"`))
-			return replaceTypeField(rawLine, "process/stderr");
+			return [replaceTypeField(rawLine, "process/stderr")];
 		if (rawLine.canFind(`"type":"exit"`))
-			return replaceTypeField(rawLine, "process/exit");
-		return rawLine;
+			return [replaceTypeField(rawLine, "process/exit")];
+		return [rawLine];
 	}
 
 	/// Replace the "type" field value in a JSON line.
@@ -426,13 +416,13 @@ class CopilotAgent : Agent
 	bool isUserMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/user"`);
+		return rawLine.canFind(`"type":"user.message"`);
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/assistant"`);
+		return rawLine.canFind(`"type":"assistant.message"`);
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -572,20 +562,19 @@ class CopilotSession : AgentSession, AcpSessionHandler
 	private int nextTerminalId_ = 1;
 	private Promise!TerminalExitResult[string] pendingWaitIds_; // terminalId → promise for wait_for_exit
 
-	// Streaming state: block index counter (reset per turn).
-	private int blockIndex;
+	// Streaming state: item tracking for item-based protocol.
+	private int nextItemIndex;
 
-	// Turn accumulation for synthetic message/assistant at turn completion.
-	private struct CompletedItem
+	// Active item being streamed (text, thinking, or tool_use).
+	private struct ActiveItem
 	{
+		string id;    // item_id
 		string type;  // "text", "thinking", "tool_use"
-		string id;    // tool_use id
-		string name;  // tool_use name
-		string text;  // accumulated delta text (content for text/thinking, output for tools)
-		string input; // tool_use input JSON
+		string name;  // tool name (tool_use only)
+		string input; // tool input JSON (tool_use only)
+		string text;  // accumulated text/output
 	}
-	private CompletedItem activeItem;
-	private CompletedItem[] completedItems;
+	private ActiveItem activeItem;
 
 	// Queued messages waiting for the current turn to finish.
 	private string[] pendingMessages;
@@ -690,14 +679,13 @@ class CopilotSession : AgentSession, AcpSessionHandler
 		else
 		{
 			turnInProgress = true;
-			blockIndex = 0;
-			completedItems = null;
-			activeItem = CompletedItem.init;
+			nextItemIndex = 0;
+			activeItem = ActiveItem.init;
 
-			// Emit message/user echo so the frontend confirms the pending placeholder.
+			// Emit user message item so the frontend confirms the pending placeholder.
 			if (outputHandler_)
 				outputHandler_(
-					`{"type":"message/user","content":"` ~ escaped ~ `"}`);
+					`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ escaped ~ `"}`);
 
 			// ACP session/prompt uses "prompt" key for the message content array.
 			server.sendRequest("session/prompt",
@@ -977,26 +965,24 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 		auto text = u.content.text;
 
-		// Start a new text block if we don't have an active one.
+		// Start a new text item if we don't have an active one.
 		if (activeItem.type != "text")
 		{
-			// Finalize any active block of a different type.
 			finalizeActiveItem();
-			auto idx = blockIndex++;
-			activeItem = CompletedItem("text", "", "", "", "");
+			auto id = "cp-text-" ~ to!string(nextItemIndex++);
+			activeItem = ActiveItem(id, "text", "", "", "");
 			if (outputHandler_)
 				outputHandler_(
-					`{"type":"stream/block_start","index":` ~ to!string(idx)
-					~ `,"content_block":{"type":"text"}}`);
+					`{"type":"item/started","item_id":"` ~ cpEscape(id)
+					~ `","item_type":"text"}`);
 		}
 
 		activeItem.text ~= text;
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 		if (outputHandler_ && text.length > 0)
 			outputHandler_(
-				`{"type":"stream/block_delta","index":` ~ to!string(idx)
-				~ `,"delta":{"type":"text_delta","text":"` ~ cpEscape(text) ~ `"}}`);
+				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`);
 	}
 
 	private void handleAgentThoughtChunk(JSONFragment update)
@@ -1015,30 +1001,29 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 		auto text = u.content.text;
 
-		// Start a new thinking block if we don't have an active one.
+		// Start a new thinking item if we don't have an active one.
 		if (activeItem.type != "thinking")
 		{
 			finalizeActiveItem();
-			auto idx = blockIndex++;
-			activeItem = CompletedItem("thinking", "", "", "", "");
+			auto id = "cp-think-" ~ to!string(nextItemIndex++);
+			activeItem = ActiveItem(id, "thinking", "", "", "");
 			if (outputHandler_)
 				outputHandler_(
-					`{"type":"stream/block_start","index":` ~ to!string(idx)
-					~ `,"content_block":{"type":"thinking"}}`);
+					`{"type":"item/started","item_id":"` ~ cpEscape(id)
+					~ `","item_type":"thinking"}`);
 		}
 
 		activeItem.text ~= text;
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 		if (outputHandler_ && text.length > 0)
 			outputHandler_(
-				`{"type":"stream/block_delta","index":` ~ to!string(idx)
-				~ `,"delta":{"type":"thinking_delta","text":"` ~ cpEscape(text) ~ `"}}`);
+				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`);
 	}
 
 	private void handleUserMessageChunk(JSONFragment update)
 	{
-		// Emit message/user echo so the frontend confirms the pending placeholder.
+		// Emit user message item so the frontend confirms the pending placeholder.
 		// update.content.text contains the user's message text.
 		@JSONPartial
 		static struct Content { string text; }
@@ -1054,7 +1039,7 @@ class CopilotSession : AgentSession, AcpSessionHandler
 		auto text = u.content.text;
 		if (text.length > 0 && outputHandler_)
 			outputHandler_(
-				`{"type":"message/user","content":"` ~ cpEscape(text) ~ `"}`);
+				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ cpEscape(text) ~ `"}`);
 	}
 
 	private void handleToolCall(JSONFragment update)
@@ -1075,7 +1060,7 @@ class CopilotSession : AgentSession, AcpSessionHandler
 		catch (Exception)
 			return;
 
-		// Finalize any active text/thinking block.
+		// Finalize any active text/thinking item.
 		finalizeActiveItem();
 
 		auto id = u.toolCallId;
@@ -1083,21 +1068,20 @@ class CopilotSession : AgentSession, AcpSessionHandler
 		string inputJson = u.rawInput.json !is null && u.rawInput.json.length > 0
 			? u.rawInput.json : "{}";
 
-		auto idx = blockIndex++;
-		activeItem = CompletedItem("tool_use", id, name, "", inputJson);
+		activeItem = ActiveItem(id, "tool_use", name, inputJson, "");
 
 		if (outputHandler_)
 			outputHandler_(
-				`{"type":"stream/block_start","index":` ~ to!string(idx)
-				~ `,"content_block":{"type":"tool_use","id":"` ~ cpEscape(id)
-				~ `","name":"` ~ cpEscape(name) ~ `"}}`);
+				`{"type":"item/started","item_id":"` ~ cpEscape(id)
+				~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
+				~ `","input":` ~ inputJson ~ `}`);
 
 		// Emit the full input as a single input_json_delta so the UI can
 		// display it during streaming (ACP provides the full rawInput upfront).
 		if (outputHandler_ && inputJson.length > 0 && inputJson != "{}")
 			outputHandler_(
-				`{"type":"stream/block_delta","index":` ~ to!string(idx)
-				~ `,"delta":{"type":"input_json_delta","partial_json":"` ~ cpEscape(inputJson) ~ `"}}`);
+				`{"type":"item/delta","item_id":"` ~ cpEscape(id)
+				~ `","delta_type":"input_json_delta","content":"` ~ cpEscape(inputJson) ~ `"}`);
 	}
 
 	private void handleToolCallUpdate(JSONFragment update)
@@ -1140,25 +1124,29 @@ class CopilotSession : AgentSession, AcpSessionHandler
 			}
 		}
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
-
 		if (text.length > 0)
 		{
 			activeItem.text ~= text;
 			if (outputHandler_)
 				outputHandler_(
-					`{"type":"stream/block_delta","index":` ~ to!string(idx)
-					~ `,"delta":{"type":"text_delta","text":"` ~ cpEscape(text) ~ `"}}`);
+					`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","delta_type":"output_delta","content":"` ~ cpEscape(text) ~ `"}`);
 		}
 
 		auto status = u.status;
 		if (status == "completed" || status == "failed")
 		{
+			// Emit item/completed with final input.
 			if (outputHandler_)
 				outputHandler_(
-					`{"type":"stream/block_stop","index":` ~ to!string(idx) ~ `}`);
-			completedItems ~= activeItem;
-			activeItem = CompletedItem.init;
+					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
+			// Emit item/result with accumulated output.
+			if (outputHandler_)
+				outputHandler_(
+					`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
+			activeItem = ActiveItem.init;
 		}
 	}
 
@@ -1187,65 +1175,16 @@ class CopilotSession : AgentSession, AcpSessionHandler
 
 	private void handleTurnCompleted(string stopReason)
 	{
-		import std.array : join;
-		import std.uuid : randomUUID;
-
-		// Finalize any still-active block.
+		// Finalize any still-active item.
 		finalizeActiveItem();
 
 		turnInProgress = false;
 
-		// 1. stream/turn_stop
+		// 1. turn/stop
 		if (outputHandler_)
-			outputHandler_(`{"type":"stream/turn_stop"}`);
+			outputHandler_(`{"type":"turn/stop","model":"` ~ cpEscape(model) ~ `"}`);
 
-		// 2. Synthetic message/assistant
-		if (completedItems.length > 0)
-		{
-			import cydo.agent.protocol : AssistantMessageEvent, ContentBlock, UsageInfo;
-			auto msgId = "msg_" ~ randomUUID().toString();
-
-			ContentBlock[] contentBlocks;
-			foreach (ref ci; completedItems)
-			{
-				ContentBlock cb;
-				cb.type = ci.type;
-				if (ci.type == "text" || ci.type == "thinking")
-					cb.text = ci.text;
-				else if (ci.type == "tool_use")
-				{
-					cb.id   = ci.id;
-					cb.name = ci.name;
-					cb.input = JSONFragment(ci.input.length > 0 ? ci.input : `{}`);
-				}
-				contentBlocks ~= cb;
-			}
-
-			AssistantMessageEvent aev;
-			aev.id          = msgId;
-			aev.content     = contentBlocks;
-			aev.model       = model;
-			aev.stop_reason = stopReason == "cancelled" ? "cancelled" : "end_turn";
-			aev.usage       = UsageInfo(0, 0);
-
-			if (outputHandler_)
-				outputHandler_(toJson(aev));
-
-			// 3. Synthetic message/user with tool_result blocks
-			string[] toolResultParts;
-			foreach (ref ci; completedItems)
-				if (ci.type == "tool_use")
-					toolResultParts ~= `{"type":"tool_result","tool_use_id":"`
-						~ cpEscape(ci.id)
-						~ `","content":"` ~ cpEscape(ci.text) ~ `"}`;
-
-			if (toolResultParts.length > 0 && outputHandler_)
-				outputHandler_(
-					`{"type":"message/user","content":[`
-					~ toolResultParts.join(",") ~ `]}`);
-		}
-
-		// 4. turn/result
+		// 2. turn/result
 		string subtype;
 		switch (stopReason)
 		{
@@ -1259,8 +1198,6 @@ class CopilotSession : AgentSession, AcpSessionHandler
 				~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 				~ `,"usage":{"input_tokens":0,"output_tokens":0}}`);
 
-		completedItems = null;
-
 		// Drain pending messages (steering).
 		if (pendingMessages.length > 0)
 		{
@@ -1270,20 +1207,35 @@ class CopilotSession : AgentSession, AcpSessionHandler
 		}
 	}
 
-	/// Finalize activeItem: emit block_stop and push to completedItems.
+	/// Finalize activeItem: emit item/completed (and item/result for tools).
 	/// No-op if there is no active item.
 	private void finalizeActiveItem()
 	{
 		if (activeItem.type.length == 0)
 			return;
 
-		auto idx = blockIndex > 0 ? blockIndex - 1 : 0;
 		if (outputHandler_)
-			outputHandler_(
-				`{"type":"stream/block_stop","index":` ~ to!string(idx) ~ `}`);
+		{
+			if (activeItem.type == "tool_use")
+			{
+				// Tool: emit completed with input, and result with accumulated output.
+				outputHandler_(
+					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
+				outputHandler_(
+					`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
+			}
+			else
+			{
+				// Text/thinking: emit completed with accumulated text.
+				outputHandler_(
+					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","text":"` ~ cpEscape(activeItem.text) ~ `"}`);
+			}
+		}
 
-		completedItems ~= activeItem;
-		activeItem = CompletedItem.init;
+		activeItem = ActiveItem.init;
 	}
 }
 
