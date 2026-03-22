@@ -1133,15 +1133,15 @@ body,
 }
 
 /* Reposition copy button when it coexists with a markdown-toggle-btn */
-.markdown-wrap .btn-copy,
-.markdown-diff-wrap .btn-copy {
+.markdown-wrap > .code-pre-wrap > .btn-copy,
+.markdown-diff-wrap > .code-pre-wrap > .btn-copy {
   top: 0;
   right: 28px;
 }
 
-.markdown-wrap:hover .btn-copy,
-.markdown-raw .btn-copy,
-.markdown-diff-wrap:hover .btn-copy {
+.markdown-wrap:hover > .code-pre-wrap > .btn-copy,
+.markdown-raw > .code-pre-wrap > .btn-copy,
+.markdown-diff-wrap:hover > .code-pre-wrap > .btn-copy {
   opacity: 0.7;
 }
 
