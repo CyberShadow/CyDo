@@ -13,6 +13,10 @@ import { useHighlight, renderTokens } from "../highlight";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
+import editIcon from "../icons/edit.svg?raw";
+import viewSourceIcon from "../icons/view-source.svg?raw";
+import forkIcon from "../icons/fork.svg?raw";
+import undoIcon from "../icons/undo.svg?raw";
 
 interface Props {
   sessionId: number;
@@ -443,7 +447,7 @@ const MessageView = memo(
               onClick={startEdit}
               title="Edit message"
             >
-              {"✎"}
+              <span class="action-icon" dangerouslySetInnerHTML={{ __html: editIcon }} />
             </button>
           )}
           {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
@@ -454,7 +458,7 @@ const MessageView = memo(
               }}
               title="View source"
             >
-              {"{}"}
+              <span class="action-icon" dangerouslySetInnerHTML={{ __html: viewSourceIcon }} />
             </button>
           )}
         </div>
@@ -505,7 +509,7 @@ const MessageView = memo(
                 }}
                 title="Fork session after this point"
               >
-                {"\u2442"}
+                <span class="action-icon" dangerouslySetInnerHTML={{ __html: forkIcon }} />
               </button>
             )}
             {onUndo && (
@@ -516,7 +520,7 @@ const MessageView = memo(
                 }}
                 title="Undo: rewind to this point"
               >
-                {"\u21B6"}
+                <span class="action-icon" dangerouslySetInnerHTML={{ __html: undoIcon }} />
               </button>
             )}
           </div>

@@ -1,5 +1,7 @@
 import { useState, useCallback } from "preact/hooks";
 import type { ComponentChildren } from "preact";
+import copyIcon from "../icons/copy.svg?raw";
+import checkIcon from "../icons/check.svg?raw";
 
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -19,7 +21,7 @@ export function CopyButton({ text }: { text: string }) {
       onClick={onClick}
       title={copied ? "Copied!" : "Copy to clipboard"}
     >
-      {copied ? "✓" : "⧉"}
+      <span class="action-icon" dangerouslySetInnerHTML={{ __html: copied ? checkIcon : copyIcon }} />
     </button>
   );
 }

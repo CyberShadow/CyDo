@@ -6,6 +6,8 @@ import type { IncremarkParser } from "@incremark/core";
 import { useHighlight, renderTokens } from "../highlight";
 import { MdastRenderer } from "./MdastRenderer";
 import { CodePre } from "./CopyButton";
+import sourceOnIcon from "../icons/source-on.svg?raw";
+import sourceOffIcon from "../icons/source-off.svg?raw";
 
 interface Props {
   text: string;
@@ -58,7 +60,7 @@ export const Markdown: FunctionComponent<Props> = memo(
           }}
           title={showRaw ? "Show rendered" : "Show source"}
         >
-          {showRaw ? "◉" : "◎"}
+          <span class="action-icon" dangerouslySetInnerHTML={{ __html: showRaw ? sourceOnIcon : sourceOffIcon }} />
         </button>
         {showRaw ? (
           <CodePre class="markdown-source" copyText={text}>

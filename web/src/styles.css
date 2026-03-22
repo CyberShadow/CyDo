@@ -600,7 +600,9 @@ body,
   opacity: 1;
 }
 
-.msg-action-btn {
+.msg-action-btn,
+.btn-copy,
+.markdown-toggle-btn {
   width: 22px;
   height: 22px;
   padding: 0;
@@ -615,8 +617,23 @@ body,
   justify-content: center;
 }
 
-.msg-action-btn:hover {
+.msg-action-btn:hover,
+.btn-copy:hover,
+.markdown-toggle-btn:hover {
   border-color: var(--warn);
+}
+
+/* SVG icon sizing inside action buttons */
+.action-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .source-view {
@@ -1069,15 +1086,6 @@ body,
   position: absolute;
   top: 0;
   right: 0;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 12px;
-  background: var(--bg-tertiary);
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  cursor: pointer;
   opacity: 0;
   transition: none;
   z-index: 1;
@@ -1090,10 +1098,6 @@ body,
   opacity: 1;
 }
 
-.markdown-toggle-btn:hover {
-  color: var(--text);
-  background: var(--bg-hover);
-}
 
 /* Copy-to-clipboard button on code/pre blocks */
 .code-pre-wrap {
@@ -1104,15 +1108,6 @@ body,
   position: absolute;
   top: 4px;
   right: 4px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 12px;
-  background: var(--bg-tertiary);
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  cursor: pointer;
   opacity: 0;
   z-index: 1;
   line-height: 1;
@@ -1632,9 +1627,6 @@ body,
   cursor: not-allowed;
 }
 
-.undo-btn {
-  color: var(--warn);
-}
 
 .edit-textarea {
   width: 100%;
