@@ -241,7 +241,7 @@ class CopilotAgent : Agent
 		import std.algorithm : canFind;
 		import std.uuid : randomUUID;
 		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent,
-			TurnStopEvent, SessionInitEvent;
+			TurnStopEvent, SessionInitEvent, injectRawField;
 
 		if (!line.canFind(`"type":"`))
 			return null;
@@ -254,6 +254,7 @@ class CopilotAgent : Agent
 		catch (Exception)
 			return null;
 
+		string[] events;
 		switch (base.type)
 		{
 			case "session.start":
@@ -272,7 +273,8 @@ class CopilotAgent : Agent
 				initEv.permission_mode = "dangerously-skip-permissions";
 				initEv.agent           = "copilot";
 				initEv.supports_file_revert = false;
-				return [toJson(initEv)];
+				events = [toJson(initEv)];
+				break;
 			}
 			case "user.message":
 			{
@@ -286,7 +288,8 @@ class CopilotAgent : Agent
 				startEv.item_type = "user_message";
 				startEv.text      = ev.data.content;
 				startEv.uuid      = base.id;
-				return [toJson(startEv)];
+				events = [toJson(startEv)];
+				break;
 			}
 			case "assistant.message":
 			{
@@ -309,7 +312,8 @@ class CopilotAgent : Agent
 
 				TurnStopEvent tsEv;
 				tsEv.uuid = base.id;
-				return [toJson(startEv), toJson(compEv), toJson(tsEv)];
+				events = [toJson(startEv), toJson(compEv), toJson(tsEv)];
+				break;
 			}
 			case "tool.execution_start":
 			{
@@ -371,15 +375,23 @@ class CopilotAgent : Agent
 				ItemResultEvent resEv;
 				resEv.item_id = toolId;
 				resEv.content = JSONFragment(`"` ~ cpEscape(outputText) ~ `"`);
-				return [toJson(resEv)];
+				events = [toJson(resEv)];
+				break;
 			}
 			case "assistant.turn_end":
-				return [`{"type":"turn/result","subtype":"success","is_error":false`
+				events = [`{"type":"turn/result","subtype":"success","is_error":false`
 					~ `,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`];
+				break;
 			default:
 				return null;
 		}
+
+		// Attach original JSONL line as _raw on all translated events.
+		auto rawJson = toJson(line);
+		foreach (ref e; events)
+			e = injectRawField(e, rawJson);
+		return events;
 	}
 
 	string[] translateLiveEvent(string rawLine)

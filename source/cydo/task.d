@@ -95,6 +95,7 @@ struct TaskData
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] lastSuggestions; // most recent suggestions, sent on subscribe
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
+	string[] enqueuedSteeringRawLines; // parallel: raw JSONL lines for _raw
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
 	string error;  // last stderr text on non-zero exit; cleared on restart

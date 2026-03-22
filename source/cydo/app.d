@@ -925,12 +925,14 @@ class App : ToolsBackend
 
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-		// steeringStash holds (text, enqueueLineNum) for queued steering messages.
+		// steeringStash holds (text, enqueueLineNum, rawLine) for queued steering messages.
 		// Using parallel arrays to avoid struct allocation in a delegate closure.
 		string[] steeringStash;
 		int[] steeringEnqueueLineNums;
+		string[] steeringEnqueueRawLines;
 		string lastDequeuedText;
 		int lastDequeuedEnqueueLineNum;
+		string lastDequeuedRawLine;
 		td.history = loadTaskHistory(tid, jsonlPath, delegate string[](string line, int lineNum) {
 			if (isQueueOperation(line))
 			{
@@ -941,24 +943,33 @@ class App : ToolsBackend
 				{
 					steeringStash ~= op.content;
 					steeringEnqueueLineNums ~= lineNum;
+					steeringEnqueueRawLines ~= line;
 					return []; // Dequeue+echo/compaction will emit the confirmed version
 				}
 				else if (op.operation == "dequeue" || op.operation == "remove")
 				{
+					import cydo.agent.protocol : injectRawField;
+					import ae.utils.json : toJson;
 					string[] result;
 					// Flush any deferred synthetic from a prior dequeue/remove
 					// (handles compacted back-to-back dequeues)
 					if (lastDequeuedText.length > 0)
 					{
-						result ~= buildSyntheticUserEvent(lastDequeuedText);
+						auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
+						if (lastDequeuedRawLine.length > 0)
+							synthetic = injectRawField(synthetic, toJson(lastDequeuedRawLine));
+						result ~= synthetic;
 						lastDequeuedText = null;
+						lastDequeuedRawLine = null;
 					}
 					if (steeringStash.length > 0)
 					{
 						lastDequeuedText = steeringStash[0];
 						lastDequeuedEnqueueLineNum = steeringEnqueueLineNums[0];
+						lastDequeuedRawLine = steeringEnqueueRawLines[0];
 						steeringStash = steeringStash[1 .. $];
 						steeringEnqueueLineNums = steeringEnqueueLineNums[1 .. $];
+						steeringEnqueueRawLines = steeringEnqueueRawLines[1 .. $];
 						// Defer: wait to see if type:"user" echo follows
 					}
 					return result;
@@ -1009,11 +1020,16 @@ class App : ToolsBackend
 					// Compacted: assistant response appeared without preceding user echo —
 					// emit synthetic with enqueue UUID before the assistant line.
 					import std.format : format;
+					import cydo.agent.protocol : injectRawField;
+					import ae.utils.json : toJson;
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
 					auto synthetic = buildSyntheticUserEvent(lastDequeuedText, true);
 					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
+					if (lastDequeuedRawLine.length > 0)
+						synthetic = injectRawField(synthetic, toJson(lastDequeuedRawLine));
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
+					lastDequeuedRawLine = null;
 					auto ts = ta.translateHistoryLine(line, lineNum);
 					return [synthetic] ~ ts;
 				}
@@ -2399,12 +2415,16 @@ class App : ToolsBackend
 				if (op.operation == "enqueue")
 				{
 					td.enqueuedSteeringTexts ~= op.content;
+					td.enqueuedSteeringRawLines ~= rawLine;
 					return; // already displayed via unconfirmedUserEvent
 				}
 				else if (op.operation == "dequeue")
 				{
 					if (td.enqueuedSteeringTexts.length > 0)
+					{
 						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
+						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
+					}
 					return; // the real message/user follows
 				}
 				else if (op.operation == "remove")
@@ -2412,9 +2432,15 @@ class App : ToolsBackend
 					if (td.enqueuedSteeringTexts.length > 0)
 					{
 						auto text = td.enqueuedSteeringTexts[0];
+						auto enqueueRaw = td.enqueuedSteeringRawLines[0];
 						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
+						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
+						import cydo.agent.protocol : injectRawField;
+						import ae.utils.json : toJson;
 						auto steeringEvent = buildSyntheticUserEvent(text, true);
+						if (enqueueRaw.length > 0)
+							steeringEvent = injectRawField(steeringEvent, toJson(enqueueRaw));
 						string injected = `{"tid":` ~ format!"%d"(tid)
 							~ `,"event":` ~ steeringEvent ~ `}`;
 						auto data = Data(injected.representation);
