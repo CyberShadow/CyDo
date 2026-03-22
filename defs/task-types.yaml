@@ -216,6 +216,7 @@ task_types:
       so the bug sub-task has full context. Switch back to conversation when
       the investigation is complete and the user is ready to act on findings.
     model_class: large
+    read_only: true
     output_type: report
     creatable_tasks:
       bug:
