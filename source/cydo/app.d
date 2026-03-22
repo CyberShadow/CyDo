@@ -1323,8 +1323,12 @@ class App : ToolsBackend
 
 		auto ta = agentForTask(tid);
 		auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
-			td.effectiveCwd, td.workspace, td.title,
-			(string sid) => ta.historyPath(sid, td.effectiveCwd),
+			td.projectPath, td.workspace, td.title,
+			// Source JSONL lives under the worktree path (effectiveCwd);
+			// destination should live under the real project path so the
+			// fork task (which has projectPath, not a worktree) can find it.
+			(string sid) => ta.historyPath(sid,
+				sid == td.agentSessionId ? td.effectiveCwd : td.projectPath),
 			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 			td.description, td.taskType, td.agentType);
 		if (result.tid < 0)
@@ -1336,7 +1340,7 @@ class App : ToolsBackend
 
 		auto newTd = TaskData(result.tid);
 		newTd.workspace = td.workspace;
-		newTd.projectPath = td.effectiveCwd;
+		newTd.projectPath = td.projectPath;
 		newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
 		newTd.agentSessionId = result.agentSessionId;
 		newTd.parentTid = tid;
@@ -1351,7 +1355,7 @@ class App : ToolsBackend
 			ProcessState.Dead,
 		);
 
-		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.effectiveCwd, tid, "fork")));
+		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
 	}
 
@@ -1417,15 +1421,16 @@ class App : ToolsBackend
 				if (lastForkId.length > 0)
 				{
 					auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
-						td.effectiveCwd, td.workspace, td.title,
-						(string sid) => ta.historyPath(sid, td.effectiveCwd),
+						td.projectPath, td.workspace, td.title,
+						(string sid) => ta.historyPath(sid,
+							sid == td.agentSessionId ? td.effectiveCwd : td.projectPath),
 						&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 						td.description, td.taskType, td.agentType);
 					if (backup.tid >= 0)
 					{
 						auto bTd = TaskData(backup.tid);
 						bTd.workspace = td.workspace;
-						bTd.projectPath = td.effectiveCwd;
+						bTd.projectPath = td.projectPath;
 						bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
 						bTd.agentSessionId = backup.agentSessionId;
 						bTd.parentTid = tid;
@@ -1441,7 +1446,7 @@ class App : ToolsBackend
 							(ProcessState goal) => processTransition(backup.tid, goal),
 							ProcessState.Dead,
 						);
-						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.effectiveCwd, tid, "undo-backup")));
+						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
 						broadcastTaskUpdate(backup.tid);
 					}
 				}
