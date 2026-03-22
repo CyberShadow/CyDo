@@ -50,6 +50,13 @@
 #    be used to verify that at every decision point the agent sees the right
 #    guidance in its context.
 #
+# 10. Task types and agent types are orthogonal.
+#     Task types define what work is done and how it flows. Agent types define
+#     which software executes the session (Claude Code, Copilot, etc.). Every
+#     task type should be executable by any supported agent. Agent-specific
+#     capabilities (e.g. built-in tools, terminal access) belong on the Agent
+#     interface, not in task type definitions.
+#
 # Flow control:
 #   - creatable_tasks: modal sub-tasks (agent stays alive, gets results back)
 #   - continuations: exec-style successors (agent is done, next task takes over)
