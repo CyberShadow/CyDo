@@ -412,7 +412,7 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
     parallelizable: true
-    user_visible: true
+    user_visible: false
 
   spike:
     description: "Test a theory or prototype an approach in an isolated worktree"
