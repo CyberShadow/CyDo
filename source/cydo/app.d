@@ -1956,7 +1956,7 @@ class App : ToolsBackend
 			// Send the continuation's prompt template as first message to successor.
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", taskTypesDir,
-				["result_text": resultText]);
+				["result_text": resultText, "output_dir": td.taskDir]);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				broadcastUnconfirmedUserMessage(tid, renderedContinuationPrompt);
 				sendTaskMessage(tid, renderedContinuationPrompt);

@@ -755,7 +755,7 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 	string outputFile = "", string edgeTemplate = "", string[string] extraVars = null)
 {
 	import std.file : exists, readText;
-	import std.path : buildPath;
+	import std.path : buildPath, dirName;
 
 	auto templateName = edgeTemplate.length > 0 ? edgeTemplate : def.prompt_template;
 	if (templateName.length == 0)
@@ -770,7 +770,10 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 	if (def.knowledge_base.length > 0)
 		vars["knowledge_base"] = def.knowledge_base;
 	if (outputFile.length > 0)
+	{
 		vars["output_file"] = outputFile;
+		vars["output_dir"] = dirName(outputFile);
+	}
 	foreach (k, v; extraVars)
 		vars[k] = v;
 	return substituteVars(readText(templatePath), vars);
