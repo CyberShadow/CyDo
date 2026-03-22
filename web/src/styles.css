@@ -2517,25 +2517,44 @@ pre.extra-field-value {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
 }
 
 .project-card-title {
+  display: flex;
   font-weight: bold;
   font-size: 14px;
   color: var(--text);
   cursor: pointer;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.project-card-prefix {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 10000;
+  min-width: 1.5em;
+  color: var(--text-dim);
+}
+
+.project-card-leaf {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
 }
 
 .project-card-title:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.project-card-title:hover .project-card-prefix {
+  color: var(--accent);
 }
 
 .project-card-sessions {

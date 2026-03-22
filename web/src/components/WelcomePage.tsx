@@ -166,7 +166,11 @@ export function WelcomePage({
                           onNavigateToProject(ws.name, proj.name);
                         }}
                       >
-                        {proj.name}
+                        {(() => {
+                          const slash = proj.name.lastIndexOf("/");
+                          if (slash === -1) return proj.name;
+                          return <><span class="project-card-prefix">{proj.name.slice(0, slash)}</span><span class="project-card-leaf">/{proj.name.slice(slash + 1)}</span></>;
+                        })()}
                       </span>
                       <button
                         class="sidebar-new-btn"
