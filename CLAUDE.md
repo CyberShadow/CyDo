@@ -28,7 +28,7 @@ Tests are Playwright e2e specs (`tests/e2e/`) that run against a mock LLM API se
 
 ## Architecture
 
-CyDo wraps Claude Code CLI (`claude --input-format stream-json --output-format stream-json`) in a web UI with WebSocket-based real-time streaming, multi-session management, and SQLite persistence.
+CyDo wraps Claude Code CLI (`claude --input-format stream-json --output-format stream-json`) and other agentic coding software (Codex, Copilot) in a web UI with WebSocket-based real-time streaming, multi-session management, and SQLite persistence.
 
 ### Backend (D + ae library)
 
