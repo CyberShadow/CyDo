@@ -1,5 +1,5 @@
 /**
- * Tests for the sandboxed project discovery feature (cydo --discover).
+ * Tests for the sandboxed project discovery feature (cydo discover).
  *
  * Tests 2-4 spin up their own per-test backend instances so each test can
  * exercise a specific workspace/sandbox configuration without interfering
@@ -126,10 +126,10 @@ function initGitRepo(dir: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: cydo --discover works as a standalone subcommand
+// Test 1: cydo discover works as a standalone subcommand
 // ---------------------------------------------------------------------------
 
-test("cydo --discover subcommand works standalone", ({}, testInfo) => {
+test("cydo discover subcommand works standalone", ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== "claude",
     "agent-agnostic, runs in claude project only",
@@ -137,7 +137,7 @@ test("cydo --discover subcommand works standalone", ({}, testInfo) => {
 
   const result = spawnSync(
     process.env.CYDO_BIN!,
-    ["--discover", "/tmp/cydo-test-workspace", "local", "3"],
+    ["discover", "/tmp/cydo-test-workspace", "local", "3"],
     { encoding: "utf8" },
   );
 

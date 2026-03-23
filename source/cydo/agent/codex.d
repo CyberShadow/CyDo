@@ -1292,7 +1292,7 @@ string buildMcpConfigOverride(int tid, string creatableTaskTypes,
 	env["CYDO_HANDOFFS"] = handoffs;
 	env["CYDO_INCLUDE_TOOLS"] = includeTools is null ? "" : includeTools.join(",");
 
-	auto serverConfig = McpServerConfig(cydoBin, ["--mcp-server"], env);
+	auto serverConfig = McpServerConfig(cydoBin, ["mcp-server"], env);
 
 	// Build {"mcp_servers.cydo": {...}} — dotted key is a normal string key.
 	JSONFragment[string] config;

@@ -1026,21 +1026,8 @@ void generateDot(TaskTypeDef[] types)
 // ---------------------------------------------------------------------------
 
 /// Load and validate task types from a YAML file, returning null on error.
-private TaskTypeDef[] loadAndValidate(string flag, string[] args)
+private TaskTypeDef[] loadAndValidate(string path)
 {
-	import std.algorithm : find;
-
-	string path;
-	auto rest = args.find(flag);
-	if (rest.length > 1)
-		path = rest[1];
-
-	if (path.length == 0)
-	{
-		stderr.writefln("Usage: cydo %s <types.yaml>", flag);
-		return null;
-	}
-
 	TaskTypeDef[] types;
 	try
 		types = loadTaskTypes(path);
@@ -1063,9 +1050,9 @@ private TaskTypeDef[] loadAndValidate(string flag, string[] args)
 	return types;
 }
 
-void runSimulator(string[] args)
+void runSimulator(string path)
 {
-	auto types = loadAndValidate("--simulate", args);
+	auto types = loadAndValidate(path);
 	if (types is null)
 		return;
 
@@ -1074,9 +1061,9 @@ void runSimulator(string[] args)
 	simulateWorkflow(types);
 }
 
-void runDot(string[] args)
+void runDot(string path)
 {
-	auto types = loadAndValidate("--dot", args);
+	auto types = loadAndValidate(path);
 	if (types is null)
 		return;
 
@@ -1087,21 +1074,10 @@ void runDot(string[] args)
 // Context Dump — show what an agent would see for a given task type
 // ---------------------------------------------------------------------------
 
-void runDumpContext(string[] args)
+void runDumpContext(string path, string typeName)
 {
-	import std.algorithm : find;
 	import std.path : dirName;
 
-	// Parse: --dump-context <types.yaml> <type-name>
-	auto rest = args.find("--dump-context");
-	if (rest.length < 3)
-	{
-		stderr.writefln("Usage: cydo --dump-context <types.yaml> <type-name>");
-		return;
-	}
-
-	auto path = rest[1];
-	auto typeName = rest[2];
 	auto typesDir = dirName(path);
 
 	TaskTypeDef[] types;

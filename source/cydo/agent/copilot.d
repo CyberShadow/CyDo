@@ -1368,7 +1368,7 @@ string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
 	auto config = `{"mcpServers":{"cydo":{"command":"`
-		~ cpEscape(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
+		~ cpEscape(cydoBin) ~ `","args":["mcp-server"],"env":{"CYDO_TID":"`
 		~ to!string(tid) ~ `","CYDO_SOCKET":"`
 		~ cpEscape(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ cpEscape(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`

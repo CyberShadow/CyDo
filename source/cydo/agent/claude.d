@@ -1008,7 +1008,7 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	// MCP config pointing to our binary in MCP server mode.
 	// CYDO_SOCKET tells the proxy to connect via UNIX socket (no auth needed).
 	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
-		~ escapeJsonString(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
+		~ escapeJsonString(cydoBin) ~ `","args":["mcp-server"],"env":{"CYDO_TID":"`
 		~ to!string(tid) ~ `","CYDO_SOCKET":"`
 		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
 		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`

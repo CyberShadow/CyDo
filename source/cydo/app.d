@@ -2,11 +2,14 @@ module cydo.app;
 
 import core.lifetime : move;
 
-import std.file : exists, isFile;
+import std.file : exists, isFile, thisExePath;
 import std.format : format;
 import std.logger : tracef, infof, warningf, errorf;
-import std.stdio : File;
+import std.stdio : File, stderr;
 import std.string : representation;
+
+import ae.utils.funopt : funopt, funoptDispatch, funoptDispatchUsage, FunOptConfig, Parameter;
+import ae.utils.main : main;
 
 import ae.net.asockets : socketManager, DisconnectType;
 import ae.net.http.common : HttpRequest, HttpStatusCode;
@@ -37,57 +40,94 @@ import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, load
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
 import cydo.task;
 
-void main(string[] args)
+@(`CyDo backend and tooling.`)
+struct Program
 {
-	import std.algorithm : canFind;
-	if (args.canFind("--mcp-server"))
+static:
+	@(`Start the CyDo backend.`)
+	void server()
+	{
+		auto app = new App();
+		app.start();
+
+		// On SIGTERM, terminate all agent sessions so child processes flush their
+		// persistent state before the backend exits.  ae.net.shutdown delivers the
+		// callback inside the event loop thread, so we can use normal async stop().
+		// Once children exit, their pipe FileConnections close and the event loop
+		// drains naturally.  alarm() is a safety net in case a child hangs.
+		import ae.net.shutdown : addShutdownHandler;
+		addShutdownHandler((scope const(char)[]) {
+			app.shutdown();
+			import core.sys.posix.unistd : alarm;
+			alarm(2);
+		});
+
+		socketManager.loop();
+	}
+
+	@(`Run the MCP server.`)
+	void mcpServer()
 	{
 		import cydo.mcp.server : runMcpServer;
 		runMcpServer();
-		return;
 	}
-	if (args.canFind("--simulate"))
+
+	@(`Simulate task type workflow.`)
+	void simulate(Parameter!(string, "Path to task-types YAML file.") typesYaml)
 	{
 		import cydo.tasktype : runSimulator;
-		runSimulator(args);
-		return;
+		runSimulator(typesYaml);
 	}
-	if (args.canFind("--dot"))
+
+	@(`Generate Graphviz dot output for task types.`)
+	void dot(Parameter!(string, "Path to task-types YAML file.") typesYaml)
 	{
 		import cydo.tasktype : runDot;
-		runDot(args);
-		return;
+		runDot(typesYaml);
 	}
-	if (args.canFind("--dump-context"))
+
+	@(`Dump agent context for a task type.`)
+	void dumpContext(
+		Parameter!(string, "Path to task-types YAML file.") typesYaml,
+		Parameter!(string, "Task type name.") typeName,
+	)
 	{
 		import cydo.tasktype : runDumpContext;
-		runDumpContext(args);
-		return;
+		runDumpContext(typesYaml, typeName);
 	}
-	if (args.canFind("--discover"))
+
+	@(`Discover projects in a workspace.`)
+	void discover(
+		Parameter!(string, "Workspace root path.") root,
+		Parameter!(string, "Workspace name.") name,
+		Parameter!(uint, "Maximum scan depth.") maxDepth,
+		Parameter!(immutable(string)[], "Patterns to exclude.") exclude = null,
+	)
 	{
 		import cydo.discover : runDiscover;
-		runDiscover(args);
-		return;
+		runDiscover(root, name, maxDepth, cast(string[]) exclude);
 	}
-
-	auto app = new App();
-	app.start();
-
-	// On SIGTERM, terminate all agent sessions so child processes flush their
-	// persistent state before the backend exits.  ae.net.shutdown delivers the
-	// callback inside the event loop thread, so we can use normal async stop().
-	// Once children exit, their pipe FileConnections close and the event loop
-	// drains naturally.  alarm() is a safety net in case a child hangs.
-	import ae.net.shutdown : addShutdownHandler;
-	addShutdownHandler((scope const(char)[]) {
-		app.shutdown();
-		import core.sys.posix.unistd : alarm;
-		alarm(2);
-	});
-
-	socketManager.loop();
 }
+
+void usageFun(string usage)
+{
+	stderr.writeln(usage, funoptDispatchUsage!Program);
+}
+
+void dispatch(
+	Parameter!(string, "Action to perform (see list below)") action = "server",
+	immutable(string)[] actionArguments = null,
+)
+{
+	funoptDispatch!Program([thisExePath, action] ~ actionArguments);
+}
+
+void run(string[] args)
+{
+	funopt!(dispatch, FunOptConfig.init, usageFun)(args);
+}
+
+mixin main!run;
 
 class App : ToolsBackend
 {
@@ -2638,7 +2678,7 @@ class App : ToolsBackend
 				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
 			auto bwrapArgs = buildBwrapArgs(sandbox, "/");
 			auto cmd = bwrapArgs ~ cydoBinaryPath
-				~ ["--discover", ws.root, ws.name, to!string(ws.max_depth)]
+				~ ["discover", ws.root, ws.name, to!string(ws.max_depth)]
 				~ ws.exclude;
 
 			auto result = execute(cmd);
