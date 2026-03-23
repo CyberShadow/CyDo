@@ -11,7 +11,7 @@ import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.sys.data : Data;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial,
 	jsonParse, toJson;
-import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, SessionConfig;
@@ -345,7 +345,50 @@ class AppServerProcess
 		// Dispatcher for incoming notifications/requests from Codex.
 		auto router = new CodexServerRouter(this);
 		serverDispatcher = jsonRpcDispatcher!ICodexServer(router);
-		codec.handleRequest = &serverDispatcher.dispatch;
+		codec.handleRequest = (JsonRpcRequest request) {
+			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
+				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
+				{
+					// Forward unknown notifications to sessions as raw pass-through.
+					auto raw = `{"jsonrpc":"2.0","method":"` ~ request.method ~ `","params":`
+						~ (request.params.json !is null ? request.params.json : "null") ~ `}`;
+					// Try to route to a specific session by threadId/conversationId.
+					string routedId;
+					if (request.params.json !is null)
+					{
+						import std.string : indexOf;
+						foreach (key; ["threadId", "conversationId"])
+						{
+							auto needle = `"` ~ key ~ `":"`;
+							auto idx = request.params.json.indexOf(needle);
+							if (idx >= 0)
+							{
+								idx += needle.length;
+								auto end = request.params.json.indexOf(`"`, idx);
+								if (end > idx)
+								{
+									routedId = request.params.json[idx .. end];
+									break;
+								}
+							}
+						}
+					}
+					if (routedId.length > 0)
+					{
+						if (auto session = routedId in sessions)
+							if (session.outputHandler_)
+								session.outputHandler_(raw);
+					}
+					else
+					{
+						foreach (session; sessionsByTid)
+							if (session.outputHandler_)
+								session.outputHandler_(raw);
+					}
+				}
+				return resp;
+			});
+		};
 
 		process.onStderrLine = (string line) {
 			foreach (session; sessionsByTid)
