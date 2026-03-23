@@ -5,10 +5,9 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
 
   await sendMessage(page, "call switchmode plan");
 
-  // Verify MCP tool call shows correct tool name (not "unknown").
-  // Claude renders "mcp__cydo__SwitchMode", Codex renders "cydo__SwitchMode".
+  // Verify MCP tool call shows correct tool name (not "cydo__SwitchMode" or "unknown").
   await expect(
-    page.locator(".tool-name", { hasText: /SwitchMode/ }),
+    page.locator(".tool-name", { hasText: "SwitchMode" }),
   ).toBeVisible({ timeout: 30_000 });
 
   await expect(

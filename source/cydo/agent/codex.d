@@ -1200,7 +1200,7 @@ class CodexSession : AgentSession
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				if (item.tool.length > 0)
-					ev.name = item.server.length > 0 ? item.server ~ "__" ~ item.tool : item.tool;
+					ev.name = item.server.length > 0 ? "mcp__" ~ item.server ~ "__" ~ item.tool : item.tool;
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
 				break;
