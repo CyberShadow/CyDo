@@ -415,7 +415,7 @@ task_types:
       Use when investigating a bug. Provide the bug description and any
       reproduction steps. The agent writes a failing test, not a standalone
       script.
-    model_class: medium
+    model_class: large
     output_type: report
     creatable_tasks:
       quick_research:
