@@ -61,6 +61,14 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     expect(completed).toBeTruthy();
   }).toPass({ timeout: 60_000 });
 
+  // 3b. Wait for auto-navigation away from spike (process/exit handler).
+  //     This fires ~100ms after the spike exits. If we don't wait, our
+  //     subsequent hover+fork-click may land on the conversation task
+  //     instead of the spike (race with the auto-navigation).
+  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`), {
+    timeout: 10_000,
+  });
+
   // 4+5. Navigate to the spike task and wait for its history to load.
   //    The process/exit event is sent before task_updated, so React may process
   //    it after our sidebar click, auto-navigating away to the parent task.
