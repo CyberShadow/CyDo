@@ -679,6 +679,8 @@ class App : ToolsBackend
 	/// The actual transition happens in onExit after the session ends.
 	McpResult handleSwitchMode(string callerTid, string continuation)
 	{
+		import std.algorithm : filter, map;
+		import std.array : array, join;
 		import std.conv : to;
 
 		int tid;
@@ -698,9 +700,13 @@ class App : ToolsBackend
 		auto contDef = continuation in typeDef.continuations;
 		if (contDef is null || !contDef.keep_context)
 		{
+			auto validModes = typeDef.continuations.byKeyValue
+				.filter!(kv => kv.value.keep_context)
+				.map!(kv => "'" ~ kv.key ~ "'")
+				.array.join(", ");
 			return McpResult(
 				"Unknown SwitchMode continuation '" ~ continuation ~ "' for task type '" ~
-				td.taskType ~ "'. Check the available modes in the tool description.", true);
+				td.taskType ~ "'. Available modes: " ~ (validModes.length > 0 ? validModes : "(none)") ~ ".", true);
 		}
 
 		td.pendingContinuation = continuation;
