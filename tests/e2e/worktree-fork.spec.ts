@@ -148,6 +148,14 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     .locator(".sidebar-list .sidebar-label", { hasText: / \(fork\)/i })
     .click();
 
+  // Wait for the router to commit navigation to the fork's URL before asserting
+  // content. The sidebar click calls setActiveTaskId which schedules a route()
+  // call; Preact processes the URL change asynchronously, so display:contents
+  // may not be set yet when the assertion runs without this wait.
+  await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
+    timeout: 15_000,
+  });
+
   // Scope to the active session container to avoid matching content from
   // other tasks rendered (but hidden) in the DOM simultaneously.
   await expect(
