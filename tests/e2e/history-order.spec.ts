@@ -19,34 +19,6 @@
  */
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
-/**
- * Collect [type, textSnippet] pairs for every visible user/assistant
- * message in the message list.
- */
-async function collectMessageOrder(page: import("@playwright/test").Page) {
-  const allMessages = page.locator(".message-list .message");
-  const count = await allMessages.count();
-  const entries: Array<{ type: string; text: string; pending: boolean }> = [];
-  for (let i = 0; i < count; i++) {
-    const el = allMessages.nth(i);
-    const classes = (await el.getAttribute("class")) ?? "";
-    if (classes.includes("user-message")) {
-      entries.push({
-        type: "user",
-        text: (await el.innerText()).slice(0, 80),
-        pending: classes.includes("pending"),
-      });
-    } else if (classes.includes("assistant-message")) {
-      entries.push({
-        type: "assistant",
-        text: (await el.innerText()).slice(0, 80),
-        pending: false,
-      });
-    }
-  }
-  return entries;
-}
-
 test("user message appears above assistant response during live session", async ({
   page,
   agentType,
@@ -56,7 +28,7 @@ test("user message appears above assistant response during live session", async 
   // Send a simple message that triggers a text reply
   await sendMessage(page, 'reply with "hello-order-test"');
 
-  // Wait for the assistant response
+  // Wait for the assistant response to appear in the DOM
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "hello-order-test",
@@ -68,27 +40,26 @@ test("user message appears above assistant response during live session", async 
     page.locator(".message.user-message:not(.pending)"),
   ).toBeVisible({ timeout: 15_000 });
 
-  // Collect message order and verify: user must come BEFORE assistant
-  const entries = await collectMessageOrder(page);
-  const userIdx = entries.findIndex(
-    (e) => e.type === "user" && !e.pending,
-  );
-  const assistantIdx = entries.findIndex(
-    (e) => e.type === "assistant" && e.text.includes("hello-order-test"),
-  );
+  // Check DOM order: user message must come BEFORE assistant in the same
+  // message list.  Use compareDocumentPosition to avoid relying on
+  // innerText (which returns "" for elements inside display:none containers
+  // from other cached sessions rendered in the background).
+  const userBefore = await page
+    .locator(".message.user-message:not(.pending)")
+    .evaluate((userEl) => {
+      const msgList = userEl.closest(".message-list");
+      if (!msgList) return { ok: false, reason: "no .message-list ancestor" };
+      const assistantEl = msgList.querySelector(".message.assistant-message");
+      if (!assistantEl) return { ok: false, reason: "no .message.assistant-message in list" };
+      // DOCUMENT_POSITION_FOLLOWING (4): assistantEl comes after userEl in DOM
+      const pos = userEl.compareDocumentPosition(assistantEl);
+      const ok = (pos & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      return { ok, reason: ok ? "" : "assistant appears before user in DOM" };
+    });
 
   expect(
-    userIdx,
-    "User message should be found in DOM",
-  ).toBeGreaterThanOrEqual(0);
-  expect(
-    assistantIdx,
-    "Assistant message should be found in DOM",
-  ).toBeGreaterThanOrEqual(0);
-  expect(
-    userIdx,
-    `User message (index ${userIdx}) must appear BEFORE assistant ` +
-      `(index ${assistantIdx}) in DOM.\n` +
-      `Messages: ${entries.map((e) => `${e.type}${e.pending ? "(pending)" : ""}`).join(", ")}`,
-  ).toBeLessThan(assistantIdx);
+    userBefore.ok,
+    `User message must appear before (above) assistant response in DOM order.\n` +
+      `Reason: ${userBefore.reason}`,
+  ).toBe(true);
 });
