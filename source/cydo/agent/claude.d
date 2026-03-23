@@ -452,8 +452,7 @@ class ClaudeCodeSession : AgentSession
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
-	private bool[] pendingToolUseCompletions_; // index → awaiting message/assistant
-	private string pendingAssistantLine_;     // buffered raw assistant line (stop_reason was null)
+	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 
 	this(string resumeSessionId = null, string[] bwrapPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
@@ -664,10 +663,8 @@ class ClaudeCodeSession : AgentSession
 					// Grow tracking arrays.
 					while (activeItemIds_.length <= idx) activeItemIds_ ~= null;
 					while (activeItemTypes_.length <= idx) activeItemTypes_ ~= null;
-					while (pendingToolUseCompletions_.length <= idx) pendingToolUseCompletions_ ~= false;
 					activeItemIds_[idx] = itemId;
 					activeItemTypes_[idx] = blockType;
-					pendingToolUseCompletions_[idx] = false;
 
 					import cydo.agent.protocol : ItemStartedEvent, injectRawField;
 					ItemStartedEvent ev;
@@ -734,31 +731,36 @@ class ClaudeCodeSession : AgentSession
 
 			case "content_block_stop":
 			{
-				@JSONPartial static struct BlockStopProbe { int index; }
+				@JSONPartial static struct StopProbe { int index; }
 				try
 				{
-					auto probe = jsonParse!BlockStopProbe(innerEvent);
+					auto probe = jsonParse!StopProbe(innerEvent);
 					auto idx = probe.index;
-					if (idx >= activeItemIds_.length || activeItemIds_[idx] is null) return;
-					auto blockType = idx < activeItemTypes_.length ? activeItemTypes_[idx] : null;
-					// Mark all blocks as pending — item/completed with text/extras is
-				// emitted when message/assistant arrives, for all block types.
-				pendingToolUseCompletions_[idx] = true;
+					if (idx < activeItemIds_.length && activeItemIds_[idx] !is null)
+					{
+						import cydo.agent.protocol : ItemCompletedEvent, injectRawField;
+						ItemCompletedEvent ev;
+						ev.item_id = activeItemIds_[idx];
+						if (auto extras = activeItemIds_[idx] in blockExtras_)
+							ev._extras = *extras;
+						emitEvent(injectRawField(toJson(ev), rawLine));
+					}
 				}
 				catch (Exception e)
-				{ tracef("translateStreamEventLive: block_stop error: %s", e.msg); }
+				{ tracef("content_block_stop: parse error: %s", e.msg); }
 				return;
 			}
 
 			case "message_stop":
-				// Flush buffered assistant line whose stop_reason was null.
-				if (pendingAssistantLine_.length > 0)
-				{
-					auto line = pendingAssistantLine_;
-					pendingAssistantLine_ = null;
-					translateAssistantLive(line, true);
-				}
+			{
+				import cydo.agent.protocol : TurnStopEvent, injectRawField;
+				TurnStopEvent tsev;
+				emitEvent(injectRawField(toJson(tsev), rawLine));
+				activeItemIds_ = null;
+				activeItemTypes_ = null;
+				blockExtras_ = null;
 				return;
+			}
 			case "message_start":
 			case "message_delta":
 				return; // drop
@@ -768,41 +770,31 @@ class ClaudeCodeSession : AgentSession
 		}
 	}
 
-	/// Translate an assistant NDJSON event to item/completed + turn/stop.
-	/// With --include-partial-messages, Claude Code emits intermediate
-	/// assistant events as each content block completes. Partial messages
-	/// have stop_reason=null; only the final message has a real stop_reason.
-	/// Buffer partial messages and only process when the message is final
-	/// (stop_reason set) or when message_stop confirms it (force=true).
-	private void translateAssistantLive(string rawLine, bool force = false)
+	/// Translate an assistant NDJSON event to a turn/delta metadata event.
+	/// Content promotion is handled by content_block_stop → item/completed.
+	private void translateAssistantLive(string rawLine)
 	{
-		import cydo.agent.protocol : ItemCompletedEvent, TurnStopEvent,
-			UsageInfo, injectRawField;
+		import cydo.agent.protocol : TurnDeltaEvent, UsageInfo, injectRawField;
 
-		static struct ClaudeThinkingBlock
+		@JSONPartial static struct ClaudeBlock
 		{
 			string type;
-			@JSONOptional string thinking;
-			@JSONOptional string text;
 			@JSONOptional string id;
 			@JSONOptional string name;
 			@JSONOptional JSONFragment input;
+			@JSONOptional string text;
+			@JSONOptional string thinking;
 			@JSONOptional string signature;
 			JSONExtras _extras;
 		}
-		static struct ClaudeMessage
+		@JSONPartial static struct ClaudeMessage
 		{
-			string id;
-			ClaudeThinkingBlock[] content;
 			@JSONOptional string model;
 			@JSONOptional JSONFragment usage;
-			@JSONOptional string stop_reason;
-			@JSONOptional string stop_sequence;
-			@JSONOptional string type;   // always "message", not forwarded
-			@JSONOptional string role;   // always "assistant", not forwarded
-			@JSONOptional JSONFragment context_management;
-			JSONExtras _extras;
+			@JSONOptional ClaudeBlock[] content;
 		}
+		// Full struct with JSONExtras to capture unknown top-level fields.
+		// All known Claude Code fields are listed so they are not captured as extras.
 		static struct ClaudeAssistant
 		{
 			@JSONOptional string parent_tool_use_id;
@@ -832,40 +824,6 @@ class ClaudeCodeSession : AgentSession
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
 
-		// Partial message (stop_reason not yet set) — buffer and wait for
-		// either the final assistant event or message_stop to confirm.
-		if (!force && raw.message.stop_reason.length == 0)
-		{
-			pendingAssistantLine_ = rawLine;
-			return;
-		}
-
-		// Emit item/completed for each content block.
-		foreach (idx, ref b; raw.message.content)
-		{
-			// Compute item_id matching what was used in item/started.
-			string itemId;
-			if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
-				itemId = activeItemIds_[idx];
-			else if (b.type == "tool_use" && b.id.length > 0)
-				itemId = b.id;
-			else
-				itemId = "cc-block-" ~ to!string(idx);
-
-			ItemCompletedEvent ev;
-			ev.item_id = itemId;
-			if (b.type == "tool_use")
-				ev.input = b.input;
-			else
-			{
-				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
-				ev.text = text;
-			}
-			ev._extras = extrasToFragment(b._extras);
-			emitEvent(injectRawField(toJson(ev), rawLine));
-		}
-
-		// Build and emit turn/stop.
 		UsageInfo usage;
 		if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
 		{
@@ -879,21 +837,32 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		TurnStopEvent tsev;
-		tsev.model             = raw.message.model;
-		tsev.usage             = usage;
-		tsev.parent_tool_use_id = raw.parent_tool_use_id;
-		tsev.is_sidechain      = raw.isSidechain;
-		tsev.is_api_error      = raw.isApiErrorMessage;
-		tsev.uuid              = raw.uuid;
-		tsev._extras = extrasToFragment(collectAllExtras(raw));
-		emitEvent(injectRawField(toJson(tsev), rawLine));
+		// Cache per-block extras so content_block_stop can attach them.
+		foreach (idx, ref b; raw.message.content)
+		{
+			auto frag = extrasToFragment(b._extras);
+			if (frag.json !is null && frag.json.length > 0)
+			{
+				string itemId;
+				if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
+					itemId = activeItemIds_[idx];
+				else if (b.type == "tool_use" && b.id.length > 0)
+					itemId = b.id;
+				else
+					itemId = "cc-block-" ~ to!string(idx);
+				blockExtras_[itemId] = frag;
+			}
+		}
 
-		// Reset stateful tracking for the next turn.
-		activeItemIds_ = null;
-		activeItemTypes_ = null;
-		pendingToolUseCompletions_ = null;
-		pendingAssistantLine_ = null;
+		TurnDeltaEvent ev;
+		ev.model              = raw.message.model;
+		ev.usage              = usage;
+		ev.parent_tool_use_id = raw.parent_tool_use_id;
+		ev.is_sidechain       = raw.isSidechain;
+		ev.is_api_error       = raw.isApiErrorMessage;
+		ev.uuid               = raw.uuid;
+		ev._extras            = extrasToFragment(raw._extras);
+		emitEvent(injectRawField(toJson(ev), rawLine));
 	}
 
 	private void normalizeUserLive(string rawLine)

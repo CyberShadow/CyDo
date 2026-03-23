@@ -26,6 +26,7 @@ import type {
   ItemCompletedEvent,
   ItemResultEvent,
   TurnStopEvent,
+  TurnDeltaEvent,
 } from "./protocol";
 
 function getExtras(
@@ -66,6 +67,7 @@ export function reduceParseError(
       {
         id,
         type: "system" as const,
+        subtype: "parse_error" as const,
         content: [
           {
             type: "text" as const,
@@ -84,6 +86,7 @@ export function reduceSystemInit(
   const initMsg: DisplayMessage = {
     id: `init-${++s.msgIdCounter}`,
     type: "system" as const,
+    subtype: "init" as const,
     content: [],
     rawSource: msg,
     seq: getSeq(msg),
@@ -122,6 +125,7 @@ export function reduceSystemStatus(
       {
         id,
         type: "system" as const,
+        subtype: "status" as const,
         content: [],
         statusText: msg.status || "clear",
         rawSource: msg,
@@ -160,6 +164,7 @@ export function reduceStopHookSummary(
       {
         id,
         type: "system" as const,
+        subtype: "stop_hook_summary" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
         seq: getSeq(msg),
@@ -212,6 +217,7 @@ export function reduceTaskLifecycle(
       {
         id,
         type: "system" as const,
+        subtype: "task_lifecycle" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
         seq: getSeq(msg),
@@ -512,6 +518,7 @@ function reduceItemStartedUserMessage(
       extraFields: getExtras(event as Record<string, unknown>),
       rawSource: event,
       seq: getSeq(event),
+      uuid: event.uuid,
     };
     const messages = event.is_meta
       ? [...state.messages, echoMsg]
@@ -535,6 +542,7 @@ function reduceItemStartedUserMessage(
       extraFields: getExtras(event as Record<string, unknown>),
       rawSource: event,
       seq: getSeq(event),
+      uuid: event.uuid,
     };
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
@@ -725,6 +733,54 @@ export function reduceItemResult(
   return state;
 }
 
+export function reduceTurnDelta(
+  s: SessionState,
+  event: TurnDeltaEvent,
+): SessionState {
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i]!;
+    if (m.type === "assistant" && m.streamingBlocks !== undefined) {
+      const messages = s.messages.slice();
+      const updated = { ...m };
+      messages[i] = updated;
+
+      // Apply turn-level metadata eagerly.
+      if (event.model) updated.model ??= event.model;
+      if (event.usage) updated.usage = event.usage;
+      if (event.parent_tool_use_id)
+        updated.parentToolUseId ??= event.parent_tool_use_id;
+      if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
+      if (event._extras) updated.extraFields = event._extras;
+      if (event.uuid) updated.uuid = event.uuid;
+
+      // Attach to rawSource for "View source" → "Raw".
+      const prevRaw = updated.rawSource;
+      updated.rawSource = prevRaw
+        ? Array.isArray(prevRaw)
+          ? [...(prevRaw as unknown[]), event]
+          : [prevRaw, event]
+        : event;
+
+      if (event.uuid) {
+        const newSeq = getSeq(event);
+        if (newSeq != null) {
+          const prevSeq = updated.seq;
+          updated.seq = prevSeq != null
+            ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
+            : newSeq;
+        }
+      }
+
+      if (updated.parentToolUseId) {
+        bumpNestedVersion(messages, updated.parentToolUseId);
+      }
+
+      return { ...s, messages };
+    }
+  }
+  return s;
+}
+
 export function reduceTurnStop(
   s: SessionState,
   event: TurnStopEvent,
@@ -736,25 +792,28 @@ export function reduceTurnStop(
       const updated = { ...m };
       messages[i] = updated;
 
+      // Apply metadata if present (history path where no turn/delta preceded).
+      // ??= guards prevent overwriting values already set by turn/delta.
       if (event.model) updated.model ??= event.model;
-      if (event.usage) updated.usage = event.usage;
+      if (event.usage) updated.usage ??= event.usage;
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
-      if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
-      if (event._extras) updated.extraFields = event._extras;
+      if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
+      if (event._extras) updated.extraFields ??= event._extras;
+      if (event.uuid) updated.uuid ??= event.uuid;
 
-      // Attach turn/stop as rawSource so rawSource.uuid is available for
-      // fork/undo button visibility (uuid is the assistant message uuid).
+      // Always append to rawSource — every raw Claude Code event that
+      // contributes to the message should be visible via "View source" → "Raw".
       const prevRaw = updated.rawSource;
       updated.rawSource = prevRaw
         ? Array.isArray(prevRaw)
           ? [...(prevRaw as unknown[]), event]
           : [prevRaw, event]
         : event;
-      if (event.uuid) {
-        const prevSeq = updated.seq;
+      {
         const newSeq = getSeq(event);
         if (newSeq != null) {
+          const prevSeq = updated.seq;
           updated.seq = prevSeq != null
             ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
             : newSeq;
@@ -810,6 +869,7 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
       {
         id,
         type: "system" as const,
+        subtype: "stderr" as const,
         content: [{ type: "text" as const, text }],
         rawSource: text,
       },
@@ -874,6 +934,9 @@ export function reduceMessage(
     case "item/result":
       return reduceItemResult(s, msg);
 
+    case "turn/delta":
+      return reduceTurnDelta(s, msg);
+
     case "turn/stop":
       return reduceTurnStop(s, msg);
 
@@ -896,6 +959,7 @@ export function reduceMessage(
           {
             id,
             type: "system" as const,
+            subtype: "control_response" as const,
             content: [
               {
                 type: "text" as const,

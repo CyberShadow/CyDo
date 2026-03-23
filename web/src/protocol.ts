@@ -188,6 +188,18 @@ export interface TurnStopEvent {
   [key: string]: unknown;
 }
 
+export interface TurnDeltaEvent {
+  type: "turn/delta";
+  model?: string;
+  usage?: Usage;
+  parent_tool_use_id?: string;
+  is_sidechain?: boolean;
+  is_api_error?: boolean;
+  uuid?: string;
+  _extras?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface ControlResponseMessage {
   type: "control/response";
   response: {
@@ -274,6 +286,7 @@ export type AgnosticEvent =
   | ItemDeltaEvent
   | ItemCompletedEvent
   | ItemResultEvent
+  | TurnDeltaEvent
   | TurnStopEvent
   | ControlResponseMessage
   | ExitMessage

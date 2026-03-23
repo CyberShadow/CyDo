@@ -415,13 +415,7 @@ const MessageView = memo(
     const [showSource, setShowSource] = useState(false);
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState("");
-    const rawArr = msg.rawSource as unknown[];
-    const raw = Array.isArray(msg.rawSource)
-      ? rawArr[rawArr.length - 1]
-      : msg.rawSource;
-    const uuid = (raw as Record<string, unknown> | undefined)?.uuid as
-      | string
-      | undefined;
+    const uuid = msg.uuid;
 
     const startEdit = useCallback(() => {
       const text = msg.content
@@ -685,19 +679,13 @@ export function MessageList({
               inner = <CompactBoundaryMessageView message={msg} />;
               break;
             case "system": {
-              const rawType = (
-                msg.rawSource as Record<string, unknown> | undefined
-              )?.type;
-              if (rawType === "session/init") {
+              if (msg.subtype === "init") {
                 inner = <SystemInitView message={msg} />;
-              } else if (msg.statusText !== undefined) {
+              } else if (msg.subtype === "status") {
                 inner = <SystemStatusMessageView message={msg} />;
-              } else if (
-                rawType === "task/started" ||
-                rawType === "task/notification"
-              ) {
+              } else if (msg.subtype === "task_lifecycle") {
                 inner = <TaskLifecycleView message={msg} />;
-              } else if (rawType === "control/response") {
+              } else if (msg.subtype === "control_response") {
                 inner = <ControlResponseView message={msg} />;
               } else {
                 const text = msg.content
@@ -726,12 +714,7 @@ export function MessageList({
                 </div>
               );
           }
-          const rawSrcArr = msg.rawSource as unknown[];
-          const rawSrc = Array.isArray(msg.rawSource)
-            ? rawSrcArr[rawSrcArr.length - 1]
-            : msg.rawSource;
-          const msgUuid = (rawSrc as Record<string, unknown> | undefined)
-            ?.uuid as string | undefined;
+          const msgUuid = msg.uuid;
           const isForkable =
             !!msgUuid && !!forkableUuids && forkableUuids.has(msgUuid);
           return (

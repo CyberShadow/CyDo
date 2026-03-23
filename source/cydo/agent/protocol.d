@@ -211,6 +211,19 @@ struct TurnStopEvent
 	@JSONOptional JSONFragment _extras;
 }
 
+/// turn/delta — turn-level metadata update from assistant events.
+struct TurnDeltaEvent
+{
+	string type = "turn/delta";
+	@JSONOptional string model;
+	@JSONOptional UsageInfo usage;
+	@JSONOptional string parent_tool_use_id;
+	@JSONOptional bool is_sidechain;
+	@JSONOptional bool is_api_error;
+	@JSONOptional string uuid;
+	@JSONOptional JSONFragment _extras;
+}
+
 /// Command input for Bash tool_use blocks (Codex agent).
 struct CommandInput
 {

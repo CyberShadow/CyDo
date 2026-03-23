@@ -16,6 +16,8 @@ export interface DisplayMessage {
     | "summary"
     | "rate_limit"
     | "compact_boundary";
+  /** System message subtype — routes to the correct view component. */
+  subtype?: "init" | "status" | "compact_boundary" | "task_lifecycle" | "control_response" | "stop_hook_summary" | "stderr" | "parse_error";
   content: AssistantContentBlock[];
   toolResults?: Map<string, ToolResult>;
   model?: string;
@@ -70,6 +72,8 @@ export interface DisplayMessage {
   seq?: number | number[];
   /** Extra/unknown fields from the wire protocol, surfaced in the UI. */
   extraFields?: Record<string, unknown>;
+  /** Claude Code message UUID — drives fork/undo/edit buttons. */
+  uuid?: string;
 }
 
 export type ToolResultContent =
