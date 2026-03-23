@@ -95,10 +95,6 @@ test("multiple background command spinners all disappear after completion", asyn
   await expect(spinners).toHaveCount(2);
 
   // Wait for both commands to finish.
-  // sleep 2 finishes ~2s after start, sleep 3 ~3s after start (offset by ~0.5s).
-  //
-  // BUG: Only the last-started command's spinner disappears (or neither does)
-  // because activeItemId_ only tracks the most recent item — earlier items'
-  // item/completed notifications are dropped or use the wrong id.
-  await expect(spinners).toHaveCount(0, { timeout: 15_000 });
+  // sleep 8 finishes ~8s after start, sleep 10 ~10s after start (offset by ~0.5s).
+  await expect(spinners).toHaveCount(0, { timeout: 20_000 });
 });

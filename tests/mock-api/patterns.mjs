@@ -71,7 +71,7 @@ export function matchPattern(userText) {
   // "run two background commands" — two sequential exec_command with yield_time_ms
   // (must come before single "run background command" to avoid substring match)
   match = userText.match(/run two background commands/i);
-  if (match) return { type: "background_shell", command: "sleep 2" };
+  if (match) return { type: "background_shell", command: "sleep 8" };
 
   // "run background command <cmd>" — exec_command with short yield_time_ms
   match = userText.match(/run background command (.+)/i);

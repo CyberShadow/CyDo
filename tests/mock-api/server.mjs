@@ -327,7 +327,7 @@ function handleResponses(req, res) {
         const fcOutputCount = input.filter((i) => i.type === "function_call_output").length;
         if (fcOutputCount < 2) {
           oaiStreamFunctionCallResponse(res, "exec_command", {
-            cmd: "sleep 3",
+            cmd: "sleep 10",
             yield_time_ms: 500,
           });
           return;
