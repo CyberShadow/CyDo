@@ -1161,6 +1161,13 @@ class CodexSession : AgentSession
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
 				break;
+			case "webSearch":
+				activeItemTypes_[itemId] = "tool_use";
+				ev.item_type = "tool_use";
+				ev.name = "WebSearch";
+				if (auto pQuery = "query" in item.extras)
+					ev.input = JSONFragment(`{"query":` ~ pQuery.json ~ `}`);
+				break;
 			default:
 				activeItemTypes_[itemId] = "text";
 				ev.item_type = "text";
@@ -1226,7 +1233,20 @@ class CodexSession : AgentSession
 			if (params.item.aggregatedOutput.length > 0)
 				resEv.content = JSONFragment(toJson(params.item.aggregatedOutput));
 			else
-				resEv.content = JSONFragment(`""`);
+			{
+				// For webSearch items, serialize the full item as result content.
+				// For all other tool_use items (commandExecution, mcpToolCall, etc.),
+				// use an empty string — the frontend expects a string or array, not an object.
+				auto pItemType = "type" in params.item.extras;
+				bool isWebSearch = pItemType !is null && pItemType.json == `"webSearch"`;
+				if (isWebSearch)
+				{
+					auto itemJson = toJson(params.item);
+					resEv.content = JSONFragment(itemJson.length > 2 ? itemJson : `""`);
+				}
+				else
+					resEv.content = JSONFragment(`""`);
+			}
 			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
 
