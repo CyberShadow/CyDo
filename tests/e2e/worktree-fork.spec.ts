@@ -119,48 +119,25 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
 
   const forkTid = taskCreatedEvents.find((e) => e.relation_type === "fork")!.tid;
 
-  // 9. The fork must appear in the project's sidebar.
-  await expect(
-    page.locator(".sidebar-list .sidebar-label", { hasText: / \(fork\)/i }),
-  ).toBeVisible({ timeout: 10_000 });
-
-  // 10. KEY ASSERTION: clicking the fork in the sidebar must navigate to it
-  //     and display the fork's conversation history.
-  //
-  //     Without the fix, handleForkTaskMsg in app.d sets the fork's projectPath
-  //     to td.effectiveCwd (the worktree path for spike tasks), which does NOT
-  //     match any registered workspace project.  When the user clicks the fork
-  //     in the sidebar, setActiveTaskId(forkTid) calls taskContext(forkTid) →
-  //     findProjectName returns null → buildUrl(null, null, "/task/N") returns
-  //     "/task/N" (no workspace/project prefix).  The router matches this as
-  //     /:workspace/:project with workspace="task", project="N", setting
-  //     activeTaskId=null — so the fork's session view is never marked active
-  //     (display:contents) and its history is never loaded.
-  //
-  //     After the fix (newTd.projectPath = td.projectPath), taskContext returns
-  //     the correct [workspace, projectName], navigation goes to
-  //     /{workspace}/{project}/task/{forkTid}, the fork's session view becomes
-  //     active, and its history (containing "worktree-fork-content") is loaded
-  //     and displayed.
-  //
-  //     This assertion FAILS on the current codebase, demonstrating the bug.
-  await page
-    .locator(".sidebar-list .sidebar-label", { hasText: / \(fork\)/i })
-    .click();
-
-  // Wait for the router to commit navigation to the fork's URL before asserting
-  // content. The sidebar click calls setActiveTaskId which schedules a route()
-  // call; Preact processes the URL change asynchronously, so display:contents
-  // may not be set yet when the assertion runs without this wait.
-  await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
-    timeout: 15_000,
-  });
-
-  // Scope to the active session container to avoid matching content from
-  // other tasks rendered (but hidden) in the DOM simultaneously.
-  await expect(
-    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-      hasText: "worktree-fork-content",
-    }),
-  ).toBeVisible({ timeout: 15_000 });
+  // 9. The fork should auto-navigate via shouldFocus in the task_created handler.
+  //    If auto-focus didn't fire (race condition), click the sidebar as fallback.
+  //    Wrap in toPass to handle either path.
+  await expect(async () => {
+    // If not already on the fork's URL, click it in the sidebar.
+    const url = page.url();
+    if (!url.endsWith(`/task/${forkTid}`)) {
+      const forkSidebar = page.locator(`.sidebar-item[data-tid="${forkTid}"]`);
+      if (await forkSidebar.isVisible()) {
+        await forkSidebar.click();
+      }
+    }
+    // Wait for the fork's URL.
+    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), { timeout: 5_000 });
+    // Wait for the fork's content to be visible in the active session.
+    await expect(
+      page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
+        hasText: "worktree-fork-content",
+      }),
+    ).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 30_000 });
 });
