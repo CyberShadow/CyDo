@@ -3,6 +3,7 @@ import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
+import type { ImageAttachment } from "../useSessionManager";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
@@ -13,7 +14,7 @@ interface Props {
   task: TaskState;
   connected: boolean;
   isActive: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, images?: ImageAttachment[]) => void;
   onInterrupt: () => void;
   onStop: () => void;
   onCloseStdin: () => void;

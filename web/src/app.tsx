@@ -447,9 +447,10 @@ function AppContent() {
                 <InputBox
                   inputRef={newTaskInputRef}
                   pasteTextRef={newTaskPasteTextRef}
-                  onSend={(text: string) => {
+                  onSend={(text, images) => {
                     send(
                       text,
+                      images,
                       selectedTaskType || taskTypes[0]?.name,
                       selectedAgent || effectiveDefaultAgent,
                     );

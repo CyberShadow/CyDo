@@ -16,6 +16,7 @@ import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
+import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -1092,7 +1093,7 @@ class CodexSession : AgentSession
 	private string sessionId;
 
 	// Queued messages waiting for thread to be ready.
-	private string[] pendingMessages;
+	private ContentBlock[][] pendingMessages;
 
 	// Callbacks
 	package void delegate(string line) outputHandler_;
@@ -1167,22 +1168,30 @@ class CodexSession : AgentSession
 
 	// ----- AgentSession interface -----
 
-	void sendMessage(string content)
+	void sendMessage(const(ContentBlock)[] content)
 	{
+		// Extract text (only text blocks supported; throw on others).
+		string text;
+		foreach (ref b; content)
+		{
+			if (b.type == "text") text ~= b.text;
+			else throw new Exception("Unsupported content block type for Codex: " ~ b.type);
+		}
+
 		if (!alive_)
 			return;
 
 		// Queue message if thread hasn't been created yet.
 		if (threadId.length == 0)
 		{
-			pendingMessages ~= content;
+			pendingMessages ~= content.dup;
 			return;
 		}
 
 		if (turnInProgress)
 		{
 			server.sendRequest("turn/steer",
-				JSONFragment(toJson(TurnSteerParams(threadId, content))));
+				JSONFragment(toJson(TurnSteerParams(threadId, text))));
 		}
 		else
 		{
@@ -1194,10 +1203,12 @@ class CodexSession : AgentSession
 			server.sendRequest("turn/start",
 				JSONFragment(toJson(TurnStartParams(
 					threadId,
-					[TurnStartInput("text", content)],
+					[TurnStartInput("text", text)],
 					SandboxPolicy("externalSandbox", "enabled")))));
 		}
 	}
+
+	@property bool supportsImages() const { return false; }
 
 	void interrupt()
 	{

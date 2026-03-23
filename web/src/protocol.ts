@@ -13,6 +13,10 @@ export interface Usage {
   [key: string]: unknown;
 }
 
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; media_type: string };
+
 export interface AssistantContentBlock {
   type: string;
   text?: string;
@@ -134,6 +138,7 @@ export interface ItemStartedEvent {
   name?: string;
   input?: Record<string, unknown>;
   text?: string;
+  content?: ContentBlock[];
   is_replay?: boolean;
   is_synthetic?: boolean;
   is_meta?: boolean;

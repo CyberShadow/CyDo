@@ -1,4 +1,4 @@
-import type { AgnosticEvent, ControlMessage } from "./protocol";
+import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.
@@ -89,7 +89,7 @@ export class Connection {
     return false;
   }
 
-  sendMessage(tid: number, content: string) {
+  sendMessage(tid: number, content: ContentBlock[]) {
     this.send(JSON.stringify({ type: "message", tid, content }));
   }
 
@@ -113,7 +113,7 @@ export class Connection {
     workspace?: string,
     projectPath?: string,
     taskType?: string,
-    content?: string,
+    content?: ContentBlock[],
     agentType?: string,
     correlationId?: string,
   ) {
@@ -123,7 +123,7 @@ export class Connection {
         workspace: workspace ?? "",
         project_path: projectPath ?? "",
         task_type: taskType ?? "",
-        content: content ?? "",
+        content: content ?? [],
         agent_type: agentType ?? "",
         correlation_id: correlationId ?? "",
       }),

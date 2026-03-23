@@ -3,7 +3,7 @@ module cydo.task;
 import std.format : format;
 
 import ae.sys.dataset : DataVec;
-import ae.utils.json : JSONFragment, JSONPartial;
+import ae.utils.json : JSONFragment, JSONOptional, JSONPartial;
 import ae.utils.promise : Promise;
 import ae.utils.statequeue : StateQueue;
 
@@ -141,7 +141,7 @@ string buildSyntheticUserEvent(string text,
 struct WsMessage
 {
 	string type;
-	string content;
+	@JSONOptional JSONFragment content;  // string (for legacy fields) or ContentBlock[] (for messages)
 	int tid = -1;
 	string workspace;
 	string project_path;

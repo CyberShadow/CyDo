@@ -520,6 +520,7 @@ function reduceItemStartedUserMessage(
   event: ItemStartedEvent,
 ): SessionState {
   const text = event.text ?? "";
+  const content = event.content ?? [{ type: "text" as const, text }];
 
   let state = s;
 
@@ -535,7 +536,7 @@ function reduceItemStartedUserMessage(
     const echoMsg: DisplayMessage = {
       id,
       type: "user" as const,
-      content: [{ type: "text" as const, text }],
+      content,
       pending: true,
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,
@@ -555,12 +556,12 @@ function reduceItemStartedUserMessage(
     return { ...state, messages };
   }
 
-  if (text.trim().length > 0) {
+  if (content.length > 0) {
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
       type: "user" as const,
-      content: [{ type: "text" as const, text }],
+      content,
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,
       isMeta: event.is_meta || undefined,

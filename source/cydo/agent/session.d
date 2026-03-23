@@ -1,11 +1,16 @@
 module cydo.agent.session;
 
+import cydo.agent.protocol : ContentBlock;
+
 /// Abstract agent session interface.
 /// Decouples the transport (WebSocket) from the agent implementation.
 interface AgentSession
 {
 	/// Send a user message to the agent.
-	void sendMessage(string content);
+	void sendMessage(const(ContentBlock)[] content);
+
+	/// Whether this agent supports image content blocks.
+	@property bool supportsImages() const;
 
 	/// Send a protocol-level interrupt (cancel current turn gracefully).
 	void interrupt();

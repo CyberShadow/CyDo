@@ -6,10 +6,23 @@ interface Props {
 }
 
 export function UserMessage({ message }: Props) {
-  const text = message.content
-    .filter((b): b is { type: "text"; text: string } => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  const textParts: string[] = [];
+  const imageBlocks: Array<{ data: string; media_type: string }> = [];
+
+  for (const block of message.content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      textParts.push(block.text);
+    } else if (
+      block.type === "image" &&
+      typeof (block as Record<string, unknown>).data === "string"
+    ) {
+      imageBlocks.push(
+        block as unknown as { data: string; media_type: string },
+      );
+    }
+  }
+
+  const text = textParts.join("\n");
 
   return (
     <div
@@ -30,13 +43,26 @@ export function UserMessage({ message }: Props) {
           <span class="meta-badge steering">steering</span>
         </div>
       )}
-      {message.isSynthetic ||
-      message.parentToolUseId ||
-      message.isCompactSummary ? (
-        <Markdown text={text} />
-      ) : (
-        <div class="user-text">{text}</div>
+      {imageBlocks.length > 0 && (
+        <div class="user-images">
+          {imageBlocks.map((img, i) => (
+            <img
+              key={i}
+              src={`data:${img.media_type};base64,${img.data}`}
+              alt="User attached image"
+              class="user-image"
+            />
+          ))}
+        </div>
       )}
+      {text &&
+        (message.isSynthetic ||
+        message.parentToolUseId ||
+        message.isCompactSummary ? (
+          <Markdown text={text} />
+        ) : (
+          <div class="user-text">{text}</div>
+        ))}
       {message.extraFields && Object.keys(message.extraFields).length > 0 && (
         <div class="unknown-extra-fields">
           {Object.entries(message.extraFields).map(([k, v]) => (

@@ -12,6 +12,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.mcp : McpResult;
@@ -605,7 +606,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private bool sessionReady_; // true after session.create/resume response
 
 	// Queued messages waiting for the current turn to finish.
-	private string[] pendingMessages;
+	private ContentBlock[][] pendingMessages;
 
 	// Callbacks
 	package void delegate(string line) outputHandler_;
@@ -662,24 +663,32 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	// ----- AgentSession interface -----
 
-	void sendMessage(string content)
+	void sendMessage(const(ContentBlock)[] content)
 	{
+		// Extract text (only text blocks supported; throw on others).
+		string text;
+		foreach (ref b; content)
+		{
+			if (b.type == "text") text ~= b.text;
+			else throw new Exception("Unsupported content block type for Copilot: " ~ b.type);
+		}
+
 		if (!alive_)
 			return;
 
 		// Queue message if session hasn't been created yet.
 		if (!sessionReady_)
 		{
-			pendingMessages ~= content;
+			pendingMessages ~= content.dup;
 			return;
 		}
 
-		auto escaped = cpEscape(content);
+		auto escaped = cpEscape(text);
 
 		if (turnInProgress)
 		{
 			// Steering: buffer message; send after current turn completes.
-			pendingMessages ~= content;
+			pendingMessages ~= content.dup;
 		}
 		else
 		{
@@ -702,6 +711,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			});
 		}
 	}
+
+	@property bool supportsImages() const { return false; }
 
 	void interrupt()
 	{

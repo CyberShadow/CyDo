@@ -13,10 +13,35 @@ import {
 } from "preact/hooks";
 import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
-import type { AgnosticEvent, ControlMessage } from "./protocol";
+import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
+
+export interface ImageAttachment {
+  id: string;
+  dataURL: string;
+  base64: string;
+  mediaType: string;
+}
+
+function buildContentBlocks(
+  text: string,
+  images?: ImageAttachment[],
+): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  if (text) blocks.push({ type: "text", text });
+  if (images) {
+    for (const img of images) {
+      blocks.push({
+        type: "image",
+        data: img.base64,
+        media_type: img.mediaType,
+      });
+    }
+  }
+  return blocks;
+}
 
 export interface ProjectInfo {
   name: string;
@@ -50,7 +75,7 @@ export interface TaskManager {
   activeTaskId: string | null;
   setActiveTaskId: (id: string) => void;
   connected: boolean;
-  send: (text: string, taskType?: string, agentType?: string) => void;
+  send: (text: string, images?: ImageAttachment[], taskType?: string, agentType?: string) => void;
   interrupt: () => void;
   stop: () => void;
   closeStdin: () => void;
@@ -240,7 +265,11 @@ export function useTaskManager(): TaskManager {
     (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const text = extractTextContent(msg);
+      const content = ((msg as Record<string, unknown>).content as
+        | ContentBlock[]
+        | undefined) ?? [
+        { type: "text" as const, text: extractTextContent(msg) },
+      ];
       const id = `pending-${++prev.msgIdCounter}`;
       const updated = {
         ...prev,
@@ -249,7 +278,7 @@ export function useTaskManager(): TaskManager {
           {
             id,
             type: "user" as const,
-            content: [{ type: "text" as const, text }],
+            content,
             pending: true,
           },
         ],
@@ -840,7 +869,8 @@ export function useTaskManager(): TaskManager {
   }, [connected, activeTaskId]);
 
   const send = useCallback(
-    (text: string, taskType?: string, agentType?: string) => {
+    (text: string, images?: ImageAttachment[], taskType?: string, agentType?: string) => {
+      const content = buildContentBlocks(text, images);
       if (activeTaskId === null) {
         // No active task — create one with the message atomically
         const correlationId = crypto.randomUUID();
@@ -853,7 +883,7 @@ export function useTaskManager(): TaskManager {
             ws,
             projPath || "",
             taskType,
-            text,
+            content,
             agentType,
             correlationId,
           );
@@ -862,7 +892,7 @@ export function useTaskManager(): TaskManager {
             undefined,
             undefined,
             taskType,
-            text,
+            content,
             agentType,
             correlationId,
           );
@@ -871,7 +901,7 @@ export function useTaskManager(): TaskManager {
       }
       const tid = parseTaskId(activeTaskId);
       if (tid === null) return;
-      connRef.current?.sendMessage(tid, text);
+      connRef.current?.sendMessage(tid, content);
       // Optimistically mark as processing so suggestions disappear immediately.
       setTasks((prev) => {
         const t = prev.get(tid);

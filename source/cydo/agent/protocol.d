@@ -6,15 +6,33 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONExtras, jsonParse, toJson
 
 // ── Content types ──────────────────────────────────────────────
 
-/// Content block in an assistant message.
+/// Content block in a message (assistant or user).
 struct ContentBlock
 {
-	string type;                     // "text", "tool_use", "thinking"
+	string type;                     // "text", "tool_use", "thinking", "image"
 	@JSONOptional string text;       // text and thinking blocks
 	@JSONOptional string id;         // tool_use blocks
 	@JSONOptional string name;       // tool_use blocks
 	@JSONOptional JSONFragment input; // tool_use blocks (opaque)
+	@JSONOptional string data;       // image blocks: base64-encoded image data
+	@JSONOptional string media_type; // image blocks: MIME type (e.g., "image/png")
 	@JSONOptional JSONFragment _extras;
+}
+
+/// Extract plain text from a ContentBlock[].
+/// Concatenates all text blocks. Used for descriptions, titles, etc.
+string extractContentText(const(ContentBlock)[] blocks)
+{
+	string result;
+	foreach (ref block; blocks)
+	{
+		if (block.type == "text" && block.text.length > 0)
+		{
+			if (result.length > 0) result ~= "\n";
+			result ~= block.text;
+		}
+	}
+	return result;
 }
 
 /// Usage info (token counts).
@@ -154,6 +172,7 @@ struct ItemStartedEvent
 	@JSONOptional string name;           // tool name for tool_use
 	@JSONOptional JSONFragment input;    // initial input for tool_use
 	@JSONOptional string text;           // initial text for text/thinking or user_message
+	@JSONOptional ContentBlock[] content; // structured content blocks (for user messages with images)
 	@JSONOptional bool is_replay;
 	@JSONOptional bool is_synthetic;
 	@JSONOptional bool is_meta;

@@ -522,16 +522,19 @@ class ClaudeCodeSession : AgentSession
 	}
 
 	/// Send a user message formatted as Claude stream-json input.
-	void sendMessage(string content)
+	void sendMessage(const(ContentBlock)[] content)
 	{
+		auto claudeContent = buildClaudeContentBlocks(content);
 		auto input = ClaudeInput(
 			"user",
-			ClaudeInputMessage("user", content),
+			ClaudeInputMessage("user", claudeContent),
 			"default",
 			null,
 		);
 		process.sendMessage(toJson(input));
 	}
+
+	@property bool supportsImages() const { return true; }
 
 	/// Send a protocol-level interrupt via stdin (control_request with subtype "interrupt").
 	/// This tells Claude Code to cancel the current turn gracefully without killing the process.
@@ -881,7 +884,7 @@ class ClaudeCodeSession : AgentSession
 
 	private void normalizeUserLive(string rawLine)
 	{
-		import cydo.agent.protocol : ItemStartedEvent, ItemResultEvent, injectRawField;
+		import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent, injectRawField;
 
 		@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 		@JSONPartial static struct ClaudeUser
@@ -916,10 +919,15 @@ class ClaudeCodeSession : AgentSession
 			try text = jsonParse!string(contentJson);
 			catch (Exception) {}
 
+			ContentBlock cb;
+			cb.type = "text";
+			cb.text = text;
+
 			ItemStartedEvent ev;
 			ev.item_id   = "cc-user-msg";
 			ev.item_type = "user_message";
 			ev.text      = text;
+			ev.content   = [cb];
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
 			ev.is_meta     = raw.isMeta;
@@ -930,7 +938,13 @@ class ClaudeCodeSession : AgentSession
 		}
 		else if (contentJson[0] == '[')
 		{
-			// Array content — tool_results and/or text blocks.
+			// Array content — tool_results and/or text/image blocks.
+			@JSONPartial
+			static struct ImageSource
+			{
+				@JSONOptional string data;
+				@JSONOptional string media_type;
+			}
 			@JSONPartial
 			static struct ContentItem
 			{
@@ -939,11 +953,14 @@ class ClaudeCodeSession : AgentSession
 				@JSONOptional JSONFragment content;
 				@JSONOptional bool is_error;
 				@JSONOptional string text;
+				@JSONOptional ImageSource source;
 			}
 			ContentItem[] items;
 			try items = jsonParse!(ContentItem[])(contentJson);
 			catch (Exception e) { tracef("normalizeUserLive: content parse error: %s", e.msg); return; }
 
+			// Collect user content blocks (text + image); emit tool_results separately.
+			ContentBlock[] userBlocks;
 			foreach (ref item; items)
 			{
 				if (item.type == "tool_result")
@@ -964,20 +981,38 @@ class ClaudeCodeSession : AgentSession
 						ev.tool_result = raw.tool_use_result;
 					emitEvent(injectRawField(toJson(ev), rawLine));
 				}
-				else if (item.type == "text" && item.text.length > 0)
+				else if (item.type == "text")
 				{
-					ItemStartedEvent ev;
-					ev.item_id   = "cc-user-msg";
-					ev.item_type = "user_message";
-					ev.text      = item.text;
-					ev.is_replay   = raw.isReplay;
-					ev.is_synthetic = raw.isSynthetic;
-					ev.is_meta     = raw.isMeta;
-					ev.is_steering = raw.isSteering;
-					ev.pending     = raw.pending;
-					ev.uuid        = raw.uuid;
-					emitEvent(injectRawField(toJson(ev), rawLine));
+					ContentBlock cb;
+					cb.type = "text";
+					cb.text = item.text;
+					userBlocks ~= cb;
 				}
+				else if (item.type == "image")
+				{
+					ContentBlock cb;
+					cb.type       = "image";
+					cb.data       = item.source.data;
+					cb.media_type = item.source.media_type;
+					userBlocks ~= cb;
+				}
+			}
+
+			if (userBlocks.length > 0)
+			{
+				import cydo.agent.protocol : extractContentText;
+				ItemStartedEvent ev;
+				ev.item_id   = "cc-user-msg";
+				ev.item_type = "user_message";
+				ev.text      = extractContentText(userBlocks);
+				ev.content   = userBlocks;
+				ev.is_replay   = raw.isReplay;
+				ev.is_synthetic = raw.isSynthetic;
+				ev.is_meta     = raw.isMeta;
+				ev.is_steering = raw.isSteering;
+				ev.pending     = raw.pending;
+				ev.uuid        = raw.uuid;
+				emitEvent(injectRawField(toJson(ev), rawLine));
 			}
 		}
 	}
@@ -996,7 +1031,7 @@ struct ClaudeInput
 struct ClaudeInputMessage
 {
 	string role;
-	string content;
+	JSONFragment content;  // string or content block array (JSONFragment serializes as-is)
 }
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
@@ -1068,6 +1103,34 @@ package string resolveClaudeBinary()
 			return dir; // return the directory, not the binary itself
 	}
 	return "";
+}
+
+/// Build a Claude-wire-format content array from agnostic ContentBlock[].
+/// Returns a JSONFragment suitable for embedding in ClaudeInputMessage.content.
+private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
+{
+	import cydo.agent.protocol : ContentBlock;
+
+	string json = "[";
+	foreach (i, ref b; blocks)
+	{
+		if (i > 0) json ~= ",";
+		if (b.type == "text")
+		{
+			json ~= `{"type":"text","text":` ~ toJson(b.text) ~ `}`;
+		}
+		else if (b.type == "image")
+		{
+			json ~= `{"type":"image","source":{"type":"base64","data":` ~ toJson(b.data)
+				~ `,"media_type":` ~ toJson(b.media_type) ~ `}}`;
+		}
+		else
+		{
+			throw new Exception("Unsupported content block type for Claude: " ~ b.type);
+		}
+	}
+	json ~= "]";
+	return JSONFragment(json);
 }
 
 // ─── Protocol translation (moved from protocol.d) ────────────────────────
@@ -1223,7 +1286,7 @@ private string[] translateAssistantHistory(string rawLine)
 /// Translate a Claude history user message to item/result + item/started events.
 private string[] normalizeUserHistory(string rawLine)
 {
-	import cydo.agent.protocol : ItemStartedEvent, ItemResultEvent, injectRawField;
+	import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent, injectRawField;
 
 	@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 	@JSONPartial static struct ClaudeUser
@@ -1260,10 +1323,15 @@ private string[] normalizeUserHistory(string rawLine)
 		try text = jsonParse!string(contentJson);
 		catch (Exception) {}
 
+		ContentBlock cb;
+		cb.type = "text";
+		cb.text = text;
+
 		ItemStartedEvent ev;
 		ev.item_id     = "cc-user-msg";
 		ev.item_type   = "user_message";
 		ev.text        = text;
+		ev.content     = [cb];
 		ev.is_replay   = raw.isReplay;
 		ev.is_synthetic = raw.isSynthetic;
 		ev.is_meta     = raw.isMeta;
@@ -1275,6 +1343,12 @@ private string[] normalizeUserHistory(string rawLine)
 	else if (contentJson[0] == '[')
 	{
 		@JSONPartial
+		static struct ImageSource
+		{
+			@JSONOptional string data;
+			@JSONOptional string media_type;
+		}
+		@JSONPartial
 		static struct ContentItem
 		{
 			string type;
@@ -1282,11 +1356,14 @@ private string[] normalizeUserHistory(string rawLine)
 			@JSONOptional JSONFragment content;
 			@JSONOptional bool is_error;
 			@JSONOptional string text;
+			@JSONOptional ImageSource source;
 		}
 		ContentItem[] items;
 		try items = jsonParse!(ContentItem[])(contentJson);
 		catch (Exception e) { tracef("normalizeUserHistory: content parse error: %s", e.msg); return events; }
 
+		// Collect user content blocks (text + image); emit tool_results separately.
+		ContentBlock[] userBlocks;
 		foreach (ref item; items)
 		{
 			if (item.type == "tool_result")
@@ -1307,20 +1384,38 @@ private string[] normalizeUserHistory(string rawLine)
 					ev.tool_result = raw.tool_use_result;
 				events ~= injectRawField(toJson(ev), rawLine);
 			}
-			else if (item.type == "text" && item.text.length > 0)
+			else if (item.type == "text")
 			{
-				ItemStartedEvent ev;
-				ev.item_id     = "cc-user-msg";
-				ev.item_type   = "user_message";
-				ev.text        = item.text;
-				ev.is_replay   = raw.isReplay;
-				ev.is_synthetic = raw.isSynthetic;
-				ev.is_meta     = raw.isMeta;
-				ev.is_steering = raw.isSteering;
-				ev.pending     = raw.pending;
-				ev.uuid        = raw.uuid;
-				events ~= injectRawField(toJson(ev), rawLine);
+				ContentBlock cb;
+				cb.type = "text";
+				cb.text = item.text;
+				userBlocks ~= cb;
 			}
+			else if (item.type == "image")
+			{
+				ContentBlock cb;
+				cb.type       = "image";
+				cb.data       = item.source.data;
+				cb.media_type = item.source.media_type;
+				userBlocks ~= cb;
+			}
+		}
+
+		if (userBlocks.length > 0)
+		{
+			import cydo.agent.protocol : extractContentText;
+			ItemStartedEvent ev;
+			ev.item_id     = "cc-user-msg";
+			ev.item_type   = "user_message";
+			ev.text        = extractContentText(userBlocks);
+			ev.content     = userBlocks;
+			ev.is_replay   = raw.isReplay;
+			ev.is_synthetic = raw.isSynthetic;
+			ev.is_meta     = raw.isMeta;
+			ev.is_steering = raw.isSteering;
+			ev.pending     = raw.pending;
+			ev.uuid        = raw.uuid;
+			events ~= injectRawField(toJson(ev), rawLine);
 		}
 	}
 

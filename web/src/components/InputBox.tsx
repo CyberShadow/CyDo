@@ -1,10 +1,11 @@
 import { RefObject } from "preact";
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
+import type { ImageAttachment } from "../useSessionManager";
 
 const drafts = new Map<number, string>();
 
 interface Props {
-  onSend: (text: string) => void;
+  onSend: (text: string, images?: ImageAttachment[]) => void;
   onInterrupt: () => void;
   isProcessing: boolean;
   disabled: boolean;
@@ -62,6 +63,8 @@ export function InputBox({
     if (memDraft !== undefined) return memDraft;
     return serverDraft ?? "";
   });
+  const [images, setImages] = useState<ImageAttachment[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
   const textRef = useRef(text);
@@ -151,11 +154,61 @@ export function InputBox({
     }
   };
 
+  const processFile = (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const dataURL = e.target!.result as string;
+      const base64 = dataURL.split(",")[1] ?? "";
+      setImages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), dataURL, base64, mediaType: file.type },
+      ]);
+    };
+  };
+
+  const handlePaste = (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item) continue;
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) processFile(file);
+      }
+    }
+  };
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "copy";
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: DragEvent) => {
+    if (e.currentTarget === e.target) setIsDragging(false);
+  };
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer?.files;
+    if (!files) return;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file) processFile(file);
+    }
+  };
+
   const send = () => {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSend(trimmed);
+    if (!trimmed && images.length === 0) return;
+    onSend(trimmed, images.length > 0 ? images : undefined);
     setText("");
+    setImages([]);
     drafts.set(sessionId, "");
     saveDraftDebounced.cancel();
     onSaveDraft?.("");
@@ -163,7 +216,12 @@ export function InputBox({
   };
 
   return (
-    <div class="input-box">
+    <div
+      class={`input-box${isDragging ? " input-box-dragging" : ""}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {!isProcessing &&
         !text.trim() &&
         suggestions &&
@@ -193,6 +251,24 @@ export function InputBox({
             ))}
           </div>
         )}
+      {images.length > 0 && (
+        <div class="image-previews">
+          {images.map((img) => (
+            <div key={img.id} class="image-preview">
+              <img src={img.dataURL} alt="Attached" />
+              <button
+                class="image-preview-remove"
+                onClick={() => {
+                  setImages((prev) => prev.filter((i) => i.id !== img.id));
+                }}
+                aria-label="Remove image"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         class="input-textarea"
@@ -204,6 +280,7 @@ export function InputBox({
           onSaveDraft?.(textRef.current);
         }}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         placeholder={disabled ? "Connecting..." : "Type a message..."}
         disabled={disabled}
         rows={1}
@@ -216,7 +293,7 @@ export function InputBox({
       <button
         class="btn btn-send"
         onClick={send}
-        disabled={disabled || !text.trim()}
+        disabled={disabled || (!text.trim() && images.length === 0)}
       >
         Send
       </button>

@@ -392,6 +392,18 @@ function extractLastUserText(messages) {
   return null;
 }
 
+function hasImageContent(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "user") continue;
+    if (Array.isArray(msg.content)) {
+      if (msg.content.some((b) => b.type === "image")) return true;
+    }
+    break;
+  }
+  return false;
+}
+
 function hasToolResult(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -426,6 +438,10 @@ function handleMessages(req, res) {
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserText(messages);
     const isToolResult = hasToolResult(messages);
+    const hasImages = hasImageContent(messages);
+    if (hasImages) {
+      console.log(`[mock-api] image content detected`);
+    }
     console.log(`[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`);
     const model = requestedModel;
     res.writeHead(200, {
@@ -446,6 +462,9 @@ function handleMessages(req, res) {
     }
 
     const intent = matchPattern(userText);
+    if (hasImages && intent.type === "text") {
+      intent.text = `[image received] ${intent.text}`;
+    }
 
     if (intent.type === "stall") {
       // Send message_start to begin the stream, then stall indefinitely.

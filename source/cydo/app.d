@@ -20,7 +20,7 @@ import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
-import ae.utils.json : JSONFragment, JSONPartial;
+import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, resolve, reject;
 import ae.utils.statequeue : StateQueue;
 
@@ -30,6 +30,7 @@ import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, ToolsBackend;
 
 import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.protocol : ContentBlock, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
@@ -708,8 +709,8 @@ class App : ToolsBackend
 		// Configure and spawn child agent
 		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
 		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-			broadcastUnconfirmedUserMessage(childTid, renderedPrompt);
-			sendTaskMessage(childTid, renderedPrompt);
+			broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedPrompt)]);
+			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)]);
 		}).ignoreResult();
 
 		if (description.length == 0)
@@ -922,12 +923,13 @@ class App : ToolsBackend
 		// json.content is the JSON from the frontend:
 		//   {"answers": {"q": "a", ...}} — normal response
 		//   {"error": "..."} — user aborted
-		string resultText = json.content; // fallback: raw JSON
+		string rawContent = json.content.json !is null ? jsonParse!string(json.content.json) : "{}";
+		string resultText = rawContent; // fallback: raw JSON
 		bool isError = false;
 		try
 		{
 			import std.json : parseJSON;
-			auto parsed = parseJSON(json.content);
+			auto parsed = parseJSON(rawContent);
 			if (auto errorMsg = "error" in parsed)
 			{
 				resultText = errorMsg.str;
@@ -983,8 +985,6 @@ class App : ToolsBackend
 
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		import ae.utils.json : toJson;
-
 		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
 		auto tid = createTask(json.workspace, json.project_path, at);
 		if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
@@ -999,27 +999,34 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 
 		// If content is provided, send it as the first message atomically
-		if (json.content.length > 0)
+		ContentBlock[] blocks;
+		if (json.content.json !is null)
+			blocks = jsonParse!(ContentBlock[])(json.content.json);
+		if (blocks.length > 0)
 		{
 			auto td = &tasks[tid];
 			auto typeDef = getTaskTypes().byName(td.taskType);
-			auto messageToSend = json.content;
+			auto textContent = extractContentText(blocks);
+			auto messageToSend = blocks;
 			if (typeDef !is null)
-				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
-			auto msgContent = json.content;
+			{
+				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
+				messageToSend = [ContentBlock("text", rendered)];
+			}
+			auto msgContent = blocks;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 				broadcastUnconfirmedUserMessage(tid, msgContent);
 				sendTaskMessage(tid, messageToSend);
 			}).ignoreResult();
 
-			td.description = json.content;
-			persistence.setDescription(tid, json.content);
+			td.description = textContent;
+			persistence.setDescription(tid, textContent);
 
-			td.title = truncateTitle(json.content, 80);
+			td.title = truncateTitle(textContent, 80);
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-				generateTitle(tid, msgContent);
+				generateTitle(tid, textContent);
 			}).ignoreResult();
 		}
 	}
@@ -1227,16 +1234,24 @@ class App : ToolsBackend
 		if (td.agentSessionId.length > 0 && (td.session is null || !td.session.alive))
 			return; // resumable but not resumed — ignore
 
+		ContentBlock[] blocks;
+		if (json.content.json !is null)
+			blocks = jsonParse!(ContentBlock[])(json.content.json);
+		auto textContent = extractContentText(blocks);
+
 		// Wrap first message in prompt template (e.g. conversation.md)
-		auto messageToSend = json.content;
+		auto messageToSend = blocks;
 		if (td.description.length == 0)
 		{
 			auto typeDef = getTaskTypes().byName(td.taskType);
 			if (typeDef !is null)
-				messageToSend = renderPrompt(*typeDef, json.content, taskTypesDir, td.outputPath);
+			{
+				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
+				messageToSend = [ContentBlock("text", rendered)];
+			}
 		}
 		td.lastSuggestions = null;
-		broadcastUnconfirmedUserMessage(tid, json.content);
+		broadcastUnconfirmedUserMessage(tid, blocks);
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
 			if (td.status == "alive")
@@ -1250,26 +1265,24 @@ class App : ToolsBackend
 		// Store first message as task description
 		if (td.description.length == 0)
 		{
-			td.description = json.content;
-			persistence.setDescription(tid, json.content);
+			td.description = textContent;
+			persistence.setDescription(tid, textContent);
 		}
 
 		// Set initial title from first user message (truncated)
 		if (td.title.length == 0)
 		{
-			td.title = truncateTitle(json.content, 80);
+			td.title = truncateTitle(textContent, 80);
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
-			auto userContent = json.content;
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				generateTitle(tid, userContent);
+				generateTitle(tid, textContent);
 			}).ignoreResult();
 		}
 
 		// Clear draft when message is sent
 		if (td.draft.length > 0)
 		{
-			import ae.utils.json : toJson;
 			td.draft = "";
 			persistence.setDraft(tid, "");
 			auto draftData = Data(toJson(DraftUpdatedMessage("draft_updated", tid, "")).representation);
@@ -1386,7 +1399,7 @@ class App : ToolsBackend
 		// Only allow archiving inactive (not alive) tasks
 		if (td.alive)
 			return;
-		bool archived = json.content == "true";
+		bool archived = json.content.json == `"true"`;
 		td.archived = archived;
 		persistence.setArchived(tid, archived);
 		broadcastTaskUpdate(tid);
@@ -1394,15 +1407,15 @@ class App : ToolsBackend
 
 	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)
 	{
-		import ae.utils.json : toJson;
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		td.draft = json.content;
-		persistence.setDraft(tid, json.content);
+		string draft = json.content.json !is null ? jsonParse!string(json.content.json) : "";
+		td.draft = draft;
+		persistence.setDraft(tid, draft);
 		// Broadcast to other subscribed clients (not the sender)
-		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, json.content)).representation);
+		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, draft)).representation);
 		foreach (ws; clients)
 			if (ws !is senderWs)
 				if (auto subs = ws in clientSubscriptions)
@@ -1613,7 +1626,7 @@ class App : ToolsBackend
 
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-		auto newContent = json.content;
+		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 		auto targetUuid = json.after_uuid;
 
 		auto edited = editJsonlMessage(jsonlPath, targetUuid,
@@ -1645,11 +1658,11 @@ class App : ToolsBackend
 	/// WebSocket `message`, and MCP sub-task creation — must use this method
 	/// instead of calling `session.sendMessage` directly, so that processing
 	/// state stays consistent.
-	private void sendTaskMessage(int tid, string text)
+	private void sendTaskMessage(int tid, const(ContentBlock)[] content)
 	{
 		import std.algorithm : min;
 		auto td = &tasks[tid];
-		td.session.sendMessage(text);
+		td.session.sendMessage(content);
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
@@ -2130,8 +2143,8 @@ class App : ToolsBackend
 				"Continue from where you left off.", taskTypesDir,
 				["result_text": resultText, "output_dir": td.taskDir]);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(tid, renderedContinuationPrompt);
-				sendTaskMessage(tid, renderedContinuationPrompt);
+				broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
+				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
 				broadcastTaskUpdate(tid);
 			}).ignoreResult();
 		}
@@ -2189,8 +2202,8 @@ class App : ToolsBackend
 				taskTypesDir, childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(childTid, renderedSuccessorPrompt);
-				sendTaskMessage(childTid, renderedSuccessorPrompt);
+				broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)]);
+				sendTaskMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)]);
 			}).ignoreResult();
 
 			broadcastTaskUpdate(tid);
@@ -2339,7 +2352,7 @@ class App : ToolsBackend
 			~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
 			~ "Continue from where you left off. Process these results as if they "
 			~ "were returned normally by the Task tool.";
-		sendTaskMessage(parentTid, msg);
+		sendTaskMessage(parentTid, [ContentBlock("text", msg)]);
 
 		// Clean up all deps
 		foreach (childTid; children)
@@ -2455,10 +2468,10 @@ class App : ToolsBackend
 			auto td = &tasks[tid];
 			if (td.session is null || !td.session.alive)
 				return;
-			sendTaskMessage(tid,
+			sendTaskMessage(tid, [ContentBlock("text",
 				"[SYSTEM: Your session was interrupted by a backend restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
-				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]");
+				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]")]);
 		});
 	}
 
@@ -2515,7 +2528,7 @@ class App : ToolsBackend
 
 	/// Broadcast an unconfirmed user message to all clients.
 	/// This is shown as pending until Claude echoes it back with is_replay.
-	private void broadcastUnconfirmedUserMessage(int tid, string content)
+	private void broadcastUnconfirmedUserMessage(int tid, const(ContentBlock)[] content)
 	{
 		import ae.utils.json : toJson;
 		import cydo.agent.protocol : ItemStartedEvent;
@@ -2523,7 +2536,8 @@ class App : ToolsBackend
 		ItemStartedEvent ev;
 		ev.item_id   = "cc-user-msg";
 		ev.item_type = "user_message";
-		ev.text      = content;
+		ev.text      = extractContentText(content);
+		ev.content   = content.dup;
 		ev.pending   = true;
 		auto userEvent = toJson(ev);
 		string injected = `{"tid":` ~ format!"%d"(tid)
