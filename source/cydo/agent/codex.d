@@ -132,6 +132,14 @@ struct ThreadIdParams
 	string threadId;
 }
 
+/// Catch-all params struct for no-op handlers that receive notifications
+/// we don't process (may or may not have a threadId).
+@RPCFlatten @JSONPartial
+struct IgnoredParams
+{
+	@JSONOptional string threadId;
+}
+
 @RPCFlatten @JSONPartial
 struct ItemCompletedParams
 {
@@ -198,6 +206,24 @@ private interface ICodexServer
 
 	@RPCName("thread/compacted")
 	Promise!void threadCompacted(ThreadIdParams params);
+
+	@RPCName("thread/started")
+	Promise!void threadStarted(IgnoredParams params);
+
+	@RPCName("thread/status/changed")
+	Promise!void threadStatusChanged(IgnoredParams params);
+
+	@RPCName("turn/started")
+	Promise!void turnStarted(IgnoredParams params);
+
+	@RPCName("thread/tokenUsage/updated")
+	Promise!void threadTokenUsageUpdated(IgnoredParams params);
+
+	@RPCName("account/rateLimits/updated")
+	Promise!void accountRateLimitsUpdated(IgnoredParams params);
+
+	@RPCName("account/updated")
+	Promise!void accountUpdated(IgnoredParams params);
 
 	@RPCName("account/login/completed")
 	Promise!void accountLoginCompleted();
@@ -280,6 +306,13 @@ private class CodexServerRouter : ICodexServer
 		return resolve();
 	}
 
+	Promise!void threadStarted(IgnoredParams params) { return resolve(); }
+	Promise!void threadStatusChanged(IgnoredParams params) { return resolve(); }
+	Promise!void turnStarted(IgnoredParams params) { return resolve(); }
+	Promise!void threadTokenUsageUpdated(IgnoredParams params) { return resolve(); }
+	Promise!void accountRateLimitsUpdated(IgnoredParams params) { return resolve(); }
+	Promise!void accountUpdated(IgnoredParams params) { return resolve(); }
+
 	Promise!void threadCompacted(ThreadIdParams params)
 	{
 		auto raw = buildRawNotification("thread/compacted", toJson(params));
@@ -346,6 +379,10 @@ class AppServerProcess
 		auto router = new CodexServerRouter(this);
 		serverDispatcher = jsonRpcDispatcher!ICodexServer(router);
 		codec.handleRequest = (JsonRpcRequest request) {
+			// Silently ignore v1 legacy notifications — they are always
+			// duplicates of v2 item/* / turn/* methods.
+			if (request.method.length >= 12 && request.method[0 .. 12] == "codex/event/")
+				return resolve(JsonRpcResponse.init);
 			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
 				{

@@ -260,10 +260,8 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
     }
 
     // After the test body: assert no unknown message type errors in the DOM.
-    // "Unknown message type: undefined" is allowed — these are JSON-RPC
-    // notifications forwarded from Codex that have no `type` field.
     const errorMessages = page.locator(".message.system-message pre", {
-      hasText: /Unknown message type: (?!undefined\b)/,
+      hasText: /Unknown message type/,
     });
     const errorCount = await errorMessages.count();
     if (errorCount > 0) {
