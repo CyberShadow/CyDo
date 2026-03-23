@@ -1246,8 +1246,12 @@ class App : ToolsBackend
 			auto typeDef = getTaskTypes().byName(td.taskType);
 			if (typeDef !is null)
 			{
+				import std.algorithm : filter;
+				import std.array : array;
 				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
-				messageToSend = [ContentBlock("text", rendered)];
+				// Preserve image blocks alongside the rendered text prompt.
+				messageToSend = ContentBlock("text", rendered)
+					~ blocks.filter!(b => b.type == "image").array;
 			}
 		}
 		td.lastSuggestions = null;
@@ -1660,9 +1664,14 @@ class App : ToolsBackend
 	/// state stays consistent.
 	private void sendTaskMessage(int tid, const(ContentBlock)[] content)
 	{
-		import std.algorithm : min;
+		import std.algorithm : min, filter;
+		import std.array : array;
 		auto td = &tasks[tid];
-		td.session.sendMessage(content);
+		// Strip image blocks for agents that don't support them.
+		const(ContentBlock)[] toSend = td.session.supportsImages
+			? content
+			: content.filter!(b => b.type != "image").array;
+		td.session.sendMessage(toSend);
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
