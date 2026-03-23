@@ -591,7 +591,8 @@ class ClaudeCodeSession : AgentSession
 			probe = jsonParse!TypeProbe(rawLine);
 		catch (Exception)
 		{
-			emitEvent(rawLine);
+			import cydo.agent.protocol : makeUnrecognizedEvent;
+			emitEvent(makeUnrecognizedEvent("non-JSON output", rawLine));
 			return;
 		}
 
@@ -1355,7 +1356,11 @@ private string translateClaudeEventInner(string rawLine)
 	try
 		probe = jsonParse!TypeProbe(rawLine);
 	catch (Exception e)
-	{ tracef("translateEvent: type probe parse error: %s", e.msg); return rawLine; }
+	{
+		tracef("translateEvent: type probe parse error: %s", e.msg);
+		import cydo.agent.protocol : makeUnrecognizedEvent;
+		return makeUnrecognizedEvent("JSON parse error: " ~ e.msg, rawLine);
+	}
 
 	switch (probe.type)
 	{
@@ -1379,7 +1384,8 @@ private string translateClaudeEventInner(string rawLine)
 		case "file-history-snapshot":
 			return null; // not used by frontend
 		default:
-			return rawLine; // unknown → pass through
+			import cydo.agent.protocol : makeUnrecognizedEvent;
+			return makeUnrecognizedEvent("unknown event type: " ~ probe.type, rawLine);
 	}
 }
 

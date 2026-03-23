@@ -774,7 +774,19 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "external_tool.requested":
 				handleExternalToolRequested(event.data);
 				break;
+			case "plan":
+			case "available_commands_update":
+			case "config_option_update":
+			case "current_mode_update":
+			case "session_info_update":
+			case "usage_update":
+				break;
 			default:
+				import cydo.agent.protocol : makeUnrecognizedEvent;
+				if (outputHandler_)
+					outputHandler_(makeUnrecognizedEvent(
+						"unknown copilot event: " ~ event.type,
+						event.data.json));
 				break;
 		}
 	}

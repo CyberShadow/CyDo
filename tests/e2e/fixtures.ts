@@ -275,6 +275,19 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
       ).toBe(0);
     }
 
+    // Also assert no unrecognized agent data messages.
+    const unrecognizedMessages = page.locator(".message.system-message pre", {
+      hasText: /Unrecognized agent data/,
+    });
+    const unrecognizedCount = await unrecognizedMessages.count();
+    if (unrecognizedCount > 0) {
+      const firstMsg = await unrecognizedMessages.first().textContent();
+      throw new Error(
+        `Found ${unrecognizedCount} unrecognized agent data message(s) in DOM. ` +
+        `First: ${firstMsg?.slice(0, 200)}`,
+      );
+    }
+
     // Assert no unknown tool result fields rendered — every toolUseResult
     // field should be explicitly categorized per tool.
     const unknownResultFields = page.locator(".unknown-result-fields");

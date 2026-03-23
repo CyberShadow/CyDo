@@ -915,6 +915,14 @@ export function reduceMessage(
     case "process/stderr":
       return reduceStderr(s, msg.text);
 
+    case "agent/unrecognized":
+      return reduceParseError(
+        s,
+        "Unrecognized agent data",
+        msg.reason,
+        msg.raw_content,
+      );
+
     default:
       return reduceParseError(
         s,

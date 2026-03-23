@@ -247,6 +247,12 @@ export interface SystemStopHookSummaryMessage {
   [key: string]: unknown;
 }
 
+export interface AgentUnrecognizedEvent {
+  type: "agent/unrecognized";
+  reason: string;
+  raw_content: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Union event types
 // ---------------------------------------------------------------------------
@@ -271,7 +277,8 @@ export type AgnosticEvent =
   | TurnStopEvent
   | ControlResponseMessage
   | ExitMessage
-  | StderrMessage;
+  | StderrMessage
+  | AgentUnrecognizedEvent;
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };
 
