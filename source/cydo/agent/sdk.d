@@ -237,11 +237,23 @@ class SdkProcess
 		sessions.remove(sessionId);
 	}
 
-	/// Terminate the underlying SDK process.
+	/// Terminate the underlying SDK process and immediately fire exit handlers.
+	/// The copilot binary may spawn children that hold the stdout pipe open,
+	/// preventing AgentProcess.tryFireExit from ever firing.  Work around this
+	/// by sending SIGTERM, marking ourselves dead, and calling handleExit
+	/// directly so the session lifecycle proceeds without waiting for pipe EOF.
 	void shutdown()
 	{
-		if (!dead)
-			process.terminate();
+		if (dead)
+			return;
+		// Prevent AgentProcess.tryFireExit from double-firing.
+		process.onExit = null;
+		process.closeStdin();
+		process.terminate();
+		state_ = State.dead;
+		// Notify sessions immediately — don't wait for pipe EOF.
+		foreach (session; sessions)
+			session.handleExit(1);
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if

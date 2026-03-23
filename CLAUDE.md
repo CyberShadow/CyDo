@@ -67,3 +67,12 @@ All source in `web/src/`. Pure functional components with hooks.
 - Sessions tracked in SQLite (`sessions` table: sid, claude_session_id)
 - Session history loaded from Claude's own JSONL files at `~/.claude/projects/<path>/<uuid>.jsonl`
 - Resume via `claude --resume <uuid>`
+
+### Testing Principles
+
+**Test against real software, not mocks.** Integration tests must exercise the
+actual agent binaries (Claude CLI, Codex CLI, Copilot CLI) via the HTTPS proxy
+infrastructure in `tests/mock-api/`. Mocks of the agent binary itself are not
+acceptable — they mask real integration issues. The proxy intercepts API traffic
+(LLM completions, auth, models) while letting the real binary handle protocol
+framing, startup, and session management.

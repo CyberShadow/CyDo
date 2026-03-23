@@ -29,6 +29,7 @@ class CopilotAgent : Agent
 	// Shared SDK process for one-shot requests.
 	package SdkProcess sharedSdkServer_;
 	package string sharedWorkDir_;
+	private string lastMcpConfigPath_;
 	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
 	package(cydo) ToolDispatchFn toolDispatch_;
 
@@ -81,7 +82,7 @@ class CopilotAgent : Agent
 
 	@property string gitName() { return "GitHub Copilot"; }
 	@property string gitEmail() { return "noreply@github.com"; }
-	@property string lastMcpConfigPath() { return ""; }
+	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
 	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
 		SessionConfig config = SessionConfig.init)
@@ -89,8 +90,19 @@ class CopilotAgent : Agent
 		auto model = config.model.length > 0 ? resolveModelAlias(config.model) : "";
 		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
 
-		// Build CLI args: copilot --headless --no-auto-update --stdio
+		// Generate MCP config file if a socket path was provided.
+		string mcpConfigPath = null;
+		if (config.mcpSocketPath.length > 0)
+		{
+			mcpConfigPath = generateCopilotMcpConfig(tid, config.creatableTaskTypes,
+				config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
+			lastMcpConfigPath_ = mcpConfigPath;
+		}
+
+		// Build CLI args: copilot --headless --no-auto-update --stdio [--additional-mcp-config @<path>]
 		string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
+		if (mcpConfigPath !is null)
+			copilotArgs ~= ["--additional-mcp-config", "@" ~ mcpConfigPath];
 
 		string[] args;
 		if (bwrapPrefix !is null)
@@ -558,9 +570,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		string name;  // tool name (tool_use only)
 		string input; // tool input JSON (tool_use only)
 		string text;  // accumulated text/output
+		// Set true in handleExternalToolRequested after item/completed + item/result
+		// have been emitted, so handleToolExecutionStart knows to skip this item.
+		bool externallyHandled;
 	}
 	private ActiveItem activeItem;
 	private string lastResultText;  // last completed text content, for turn/result
+
+	private bool sessionReady_; // true after session.create/resume response
 
 	// Queued messages waiting for the current turn to finish.
 	private string[] pendingMessages;
@@ -595,6 +612,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		this.model = m;
 		this.workDir = wd;
 		replayMode = false; // Done with replay (or was never in it)
+		sessionReady_ = true;
 
 		// Emit synthetic session/init.
 		import cydo.agent.protocol : SessionInitEvent;
@@ -625,7 +643,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 
 		// Queue message if session hasn't been created yet.
-		if (sessionId.length == 0)
+		if (!sessionReady_)
 		{
 			pendingMessages ~= content;
 			return;
@@ -753,6 +771,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "session.error":
 				handleSessionError(event.data);
 				break;
+			case "external_tool.requested":
+				handleExternalToolRequested(event.data);
+				break;
 			default:
 				break;
 		}
@@ -770,8 +791,16 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return resolve(SdkToolCallResult(SdkToolResult(
 				"Tool dispatch not configured", "failure")));
 
+		import std.algorithm : startsWith;
+
+		// Strip cydo- prefix so the backend dispatcher sees canonical names
+		// (e.g., "cydo-Task" → "Task", "cydo-Bash" → "Bash").
+		auto toolName = params.toolName;
+		if (toolName.startsWith("cydo-"))
+			toolName = toolName[5 .. $];
+
 		auto result = new Promise!SdkToolCallResult;
-		toolDispatch_(params.toolName, to!string(tid), params.arguments)
+		toolDispatch_(toolName, to!string(tid), params.arguments)
 		.then((McpResult mcpResult) {
 			result.fulfill(SdkToolCallResult(SdkToolResult(
 				mcpResult.text,
@@ -780,6 +809,90 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			result.fulfill(SdkToolCallResult(SdkToolResult(e.msg, "failure")));
 		});
 		return result;
+	}
+
+	/// Handle external_tool.requested session event (protocol v3).
+	/// The copilot binary dispatches custom tool calls as broadcast events
+	/// instead of tool.call JSON-RPC requests.  We execute the tool via the
+	/// same dispatch path as handleToolCall and send the result back via
+	/// session.tools.handlePendingToolCall.
+	///
+	/// We also emit item/started here so the UI shows the tool call immediately.
+	/// After the tool resolves we emit item/completed + item/result and mark
+	/// activeItem.externallyHandled so that any subsequent tool.execution_start
+	/// event (which Copilot fires for MCP tools after receiving the result) is
+	/// silently ignored instead of creating a duplicate UI entry.
+	private void handleExternalToolRequested(JSONFragment data)
+	{
+		import std.algorithm : startsWith;
+
+		if (toolDispatch_ is null)
+			return;
+
+		@JSONPartial static struct ExtToolReq
+		{
+			string requestId;
+			string toolName;
+			JSONFragment arguments;
+		}
+
+		ExtToolReq req;
+		try req = jsonParse!ExtToolReq(data.json);
+		catch (Exception) return;
+
+		if (req.requestId.length == 0 || req.toolName.length == 0)
+			return;
+
+		// Strip cydo- prefix for backend dispatch (same as handleToolCall).
+		auto toolName = req.toolName;
+		if (toolName.startsWith("cydo-"))
+			toolName = toolName[5 .. $];
+
+		// Set up an active item for UI rendering before the async dispatch.
+		finalizeActiveItem();
+		auto toolItemId = "cp-ext-" ~ req.requestId;
+		string inputJson = req.arguments.json !is null && req.arguments.json.length > 0
+			? req.arguments.json : "{}";
+		activeItem = ActiveItem(toolItemId, "tool_use", toolName, inputJson, "", false);
+		if (outputHandler_)
+			outputHandler_(
+				`{"type":"item/started","item_id":"` ~ cpEscape(toolItemId)
+				~ `","item_type":"tool_use","name":"` ~ cpEscape(toolName)
+				~ `","input":` ~ inputJson ~ `}`);
+
+		toolDispatch_(toolName, to!string(tid), req.arguments)
+		.then((McpResult mcpResult) {
+			// Emit completion events for the UI.
+			if (outputHandler_)
+			{
+				outputHandler_(
+					`{"type":"item/completed","item_id":"` ~ cpEscape(toolItemId)
+					~ `","input":` ~ inputJson ~ `}`);
+				outputHandler_(
+					`{"type":"item/result","item_id":"` ~ cpEscape(toolItemId)
+					~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`);
+			}
+			// Mark as externally handled so tool.execution_start (if it fires
+			// later for this same tool) skips creating a duplicate UI entry.
+			activeItem.externallyHandled = true;
+
+			auto resultType = mcpResult.isError ? "failure" : "success";
+			auto escaped = cpEscape(mcpResult.text);
+			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
+				~ `","requestId":"` ~ cpEscape(req.requestId)
+				~ `","result":{"textResultForLlm":"` ~ escaped
+				~ `","resultType":"` ~ resultType ~ `"}}`;
+			server.sendRequest("session.tools.handlePendingToolCall", params);
+		}, (Exception e) {
+			// Mark as externally handled even on error.
+			activeItem.externallyHandled = true;
+
+			auto escaped = cpEscape(e.msg);
+			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
+				~ `","requestId":"` ~ cpEscape(req.requestId)
+				~ `","error":"` ~ escaped ~ `"}`;
+			server.sendRequest("session.tools.handlePendingToolCall", params);
+		});
 	}
 
 	void handleStderr(string line)
@@ -811,12 +924,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleMessageDelta(JSONFragment data)
 	{
-		@JSONPartial static struct MsgDelta { string content; }
+		@JSONPartial static struct MsgDelta { string deltaContent; }
 		MsgDelta d;
 		try d = jsonParse!MsgDelta(data.json);
 		catch (Exception) return;
 
-		auto text = d.content;
+		auto text = d.deltaContent;
 
 		// Start a new text item if we don't have an active one.
 		if (activeItem.type != "text")
@@ -840,12 +953,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleReasoningDelta(JSONFragment data)
 	{
-		@JSONPartial static struct ReasoningDelta { string content; }
+		@JSONPartial static struct ReasoningDelta { string deltaContent; }
 		ReasoningDelta d;
 		try d = jsonParse!ReasoningDelta(data.json);
 		catch (Exception) return;
 
-		auto text = d.content;
+		auto text = d.deltaContent;
 
 		// Start a new thinking item if we don't have an active one.
 		if (activeItem.type != "thinking")
@@ -879,6 +992,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		try ts = jsonParse!ToolStart(data.json);
 		catch (Exception) return;
 
+		// Skip if this tool was already handled by handleExternalToolRequested.
+		if (activeItem.externallyHandled)
+		{
+			activeItem = ActiveItem.init;
+			return;
+		}
+
 		// Finalize any active text/thinking item.
 		finalizeActiveItem();
 
@@ -910,6 +1030,10 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		try tc = jsonParse!ToolComplete(data.json);
 		catch (Exception) return;
 
+		// Skip if no active item or already completed by handleExternalToolRequested.
+		if (activeItem.id.length == 0 || activeItem.externallyHandled)
+			return;
+
 		if (tc.result.length > 0)
 			activeItem.text = tc.result;
 
@@ -934,14 +1058,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleUserMessage(JSONFragment data)
 	{
-		@JSONPartial static struct UserMsg { string content; }
-		UserMsg um;
-		try um = jsonParse!UserMsg(data.json);
-		catch (Exception) return;
-
-		if (um.content.length > 0 && outputHandler_)
-			outputHandler_(
-				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ cpEscape(um.content) ~ `"}`);
+		// Suppress: sendMessage() already emits the user echo.  Copilot's
+		// user.message event is a redundant echo that would create a
+		// duplicate user message in the frontend.
 	}
 
 	private void handleSessionStart(JSONFragment data)
@@ -1012,6 +1131,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (activeItem.type.length == 0)
 			return;
 
+		// If already completed by handleExternalToolRequested, just clear.
+		if (activeItem.externallyHandled)
+		{
+			activeItem = ActiveItem.init;
+			return;
+		}
+
 		if (outputHandler_)
 		{
 			if (activeItem.type == "tool_use")
@@ -1058,11 +1184,11 @@ private final class OneShotCopilotSession : SdkSessionHandler
 		{
 			case "assistant.message_delta":
 			{
-				@JSONPartial static struct OneShotDelta { string content; }
+				@JSONPartial static struct OneShotDelta { string deltaContent; }
 				OneShotDelta d;
 				try d = jsonParse!OneShotDelta(event.data.json);
 				catch (Exception) return;
-				text_ ~= d.content;
+				text_ ~= d.deltaContent;
 				break;
 			}
 			case "session.idle":
@@ -1158,20 +1284,30 @@ string cydoBinaryDir()
 
 /// Build tool definitions JSON array for session.create params.
 /// Only includes tools if an MCP socket is configured (tools backend is available).
+/// Tool names use `cydo-` prefix to match MCP convention (copilot-proxy sends `cydo-Task` etc.).
+/// The prefix is stripped in handleToolCall before dispatching to the backend.
 string buildToolDefinitions(SessionConfig config)
 {
 	if (config.mcpSocketPath.length == 0)
 		return "[]";
 
-	// Provide CyDo's native tools via SDK tool registration.
-	// These are dispatched via the tool.call RPC to App.dispatchTool.
+	// Names use cydo- prefix to match what the LLM sends in tool_calls.
 	return `[`
-		~ `{"name":"Task","description":"Create sub-tasks that run autonomously","parameters":`
+		~ `{"name":"cydo-Task","description":"Create sub-tasks that run autonomously","parameters":`
 		~ `{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}}`
 		~ `,"required":["tasks"]},"skipPermission":true}`
-		~ `,{"name":"Bash","description":"Execute a shell command and return its output","parameters":`
+		~ `,{"name":"cydo-Bash","description":"Execute a shell command and return its output","parameters":`
 		~ `{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`
 		~ `,"skipPermission":true}`
+		~ `,{"name":"cydo-SwitchMode","description":"Switch this task to a different mode","parameters":`
+		~ `{"type":"object","properties":{"continuation":{"type":"string"}},"required":["continuation"]}`
+		~ `,"skipPermission":true}`
+		~ `,{"name":"cydo-Handoff","description":"Hand off this task to a successor","parameters":`
+		~ `{"type":"object","properties":{"continuation":{"type":"string"},"prompt":{"type":"string"}}`
+		~ `,"required":["continuation","prompt"]},"skipPermission":true}`
+		~ `,{"name":"cydo-AskUserQuestion","description":"Ask the user one or more questions","parameters":`
+		~ `{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}}`
+		~ `,"required":["questions"]},"skipPermission":true}`
 		~ `]`;
 }
 
@@ -1197,6 +1333,7 @@ string buildSessionCreateParams(string sessionId, string model, string workDir, 
 /// Build JSON params string for session.resume.
 string buildSessionResumeParams(string sessionId, string model, SessionConfig config)
 {
+	auto tools = buildToolDefinitions(config);
 	auto modelPart = model.length > 0 ? `,"model":"` ~ cpEscape(model) ~ `"` : "";
 	auto systemMsg = config.appendSystemPrompt.length > 0
 		? `,"systemMessage":{"mode":"append","content":"` ~ cpEscape(config.appendSystemPrompt) ~ `"}`
@@ -1205,8 +1342,42 @@ string buildSessionResumeParams(string sessionId, string model, SessionConfig co
 		~ modelPart
 		~ `,"streaming":true`
 		~ `,"requestPermission":true`
+		~ `,"tools":` ~ tools
 		~ systemMsg
 		~ `}`;
+}
+
+/// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
+string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
+	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
+{
+	import std.array : join;
+	import std.file : exists, mkdirRecurse, write;
+
+	auto cydoBin = cydoBinaryPath;
+	if (cydoBin.length == 0)
+		return null;
+
+	import std.process : environment;
+	auto home = environment.get("HOME", "/tmp");
+	auto copilotHome = environment.get("COPILOT_HOME", buildPath(home, ".copilot"));
+	auto configDir = buildPath(copilotHome, "mcp-configs");
+	if (!exists(configDir))
+		mkdirRecurse(configDir);
+
+	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
+
+	auto config = `{"mcpServers":{"cydo":{"command":"`
+		~ cpEscape(cydoBin) ~ `","args":["--mcp-server"],"env":{"CYDO_TID":"`
+		~ to!string(tid) ~ `","CYDO_SOCKET":"`
+		~ cpEscape(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
+		~ cpEscape(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
+		~ cpEscape(switchModes) ~ `","CYDO_HANDOFFS":"`
+		~ cpEscape(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
+		~ cpEscape(includeTools is null ? "" : includeTools.join(",")) ~ `"}}}}`;
+
+	write(configPath, config);
+	return configPath;
 }
 
 /// Escape a string for embedding in JSON.

@@ -145,9 +145,6 @@ test("on_yield continuation auto-fires on clean exit", async ({ page, agentType 
 });
 
 test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
-  // Copilot ACP startup takes ~7s; Kill before the session registers leaves
-  // no exit handler, so the exit event is never broadcast.
-  test.skip(agentType === "copilot", "Copilot ACP startup delay makes Kill timing unreliable");
   // Codex exits with code 0 on "OutputTextDelta without active item" errors,
   // triggering on_yield before the Kill button can be clicked.
   test.skip(agentType === "codex", "Codex exits with code 0 on internal errors, triggering on_yield before kill");
