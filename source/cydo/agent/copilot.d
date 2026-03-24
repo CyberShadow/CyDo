@@ -339,9 +339,11 @@ class CopilotAgent : Agent
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
 				auto toolName = ev.data.mcpToolName.length > 0 ? ev.data.mcpToolName
 					: ev.data.toolName.length > 0 ? ev.data.toolName : "unknown";
-				// Strip cydo- prefix so protocol events use canonical names.
+				// Convert cydo- prefix to mcp__cydo__ so protocol events match
+				// Claude Code's MCP naming convention and the frontend can
+				// distinguish our tools from built-in or third-party ones.
 				if (toolName.startsWith("cydo-"))
-					toolName = toolName[5 .. $];
+					toolName = "mcp__cydo__" ~ toolName[5 .. $];
 				auto inputFrag = ev.data.arguments;
 				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
 					? inputFrag.json : `{}`;
@@ -868,9 +870,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 
 		// Strip cydo- prefix for backend dispatch (same as handleToolCall).
-		auto toolName = req.toolName;
-		if (toolName.startsWith("cydo-"))
-			toolName = toolName[5 .. $];
+		auto dispatchName = req.toolName;
+		if (dispatchName.startsWith("cydo-"))
+			dispatchName = dispatchName[5 .. $];
+		// Convert cydo- prefix to mcp__cydo__ for UI display (matches Claude Code convention).
+		auto displayName = req.toolName;
+		if (displayName.startsWith("cydo-"))
+			displayName = "mcp__cydo__" ~ displayName[5 .. $];
 
 		// Set up an active item for UI rendering before the async dispatch.
 		// If handleToolExecutionStart already created an activeItem for the
@@ -878,7 +884,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		// it instead of creating a duplicate.
 		string inputJson = req.arguments.json !is null && req.arguments.json.length > 0
 			? req.arguments.json : "{}";
-		if (activeItem.id.length > 0 && activeItem.name == toolName && !activeItem.externallyHandled)
+		if (activeItem.id.length > 0 && activeItem.name == displayName && !activeItem.externallyHandled)
 		{
 			// handleToolExecutionStart already emitted item/started — just mark it.
 			activeItem.externallyHandled = true;
@@ -886,16 +892,16 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		else
 		{
 			finalizeActiveItem();
-			activeItem = ActiveItem("cp-ext-" ~ req.requestId, "tool_use", toolName, inputJson, "", true);
+			activeItem = ActiveItem("cp-ext-" ~ req.requestId, "tool_use", displayName, inputJson, "", true);
 			if (outputHandler_)
 				outputHandler_(
 					`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","item_type":"tool_use","name":"` ~ cpEscape(toolName)
+					~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
 					~ `","input":` ~ inputJson ~ `}`);
 		}
 		auto itemId = activeItem.id;
 
-		toolDispatch_(toolName, to!string(tid), req.arguments)
+		toolDispatch_(dispatchName, to!string(tid), req.arguments)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
 			if (outputHandler_)
@@ -1034,9 +1040,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		auto id = ts.toolCallId;
 		auto name = ts.toolName;
-		// Strip cydo- prefix so protocol events use canonical names.
+		// Convert cydo- prefix to mcp__cydo__ (Claude Code MCP convention).
 		if (name.startsWith("cydo-"))
-			name = name[5 .. $];
+			name = "mcp__cydo__" ~ name[5 .. $];
 		string inputJson = ts.arguments.json !is null && ts.arguments.json.length > 0
 			? ts.arguments.json : "{}";
 
@@ -1317,8 +1323,9 @@ string cydoBinaryDir()
 
 /// Build tool definitions JSON array for session.create params.
 /// Only includes tools if an MCP socket is configured (tools backend is available).
-/// Tool names use `cydo-` prefix to match MCP convention (copilot-proxy sends `cydo-Task` etc.).
-/// The prefix is stripped in handleToolCall before dispatching to the backend.
+/// Tool names use `cydo-` prefix to avoid collisions with built-in or third-party tools.
+/// The prefix is stripped to canonical names for dispatch (handleToolCall), and converted
+/// to `mcp__cydo__` format for UI events (matching Claude Code's MCP naming convention).
 string buildToolDefinitions(SessionConfig config)
 {
 	if (config.mcpSocketPath.length == 0)
