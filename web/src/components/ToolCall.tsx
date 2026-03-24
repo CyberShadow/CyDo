@@ -72,6 +72,11 @@ function getDisplayName(name: string): string {
   return name.startsWith(CYDO_PREFIX) ? name.slice(CYDO_PREFIX.length) : name;
 }
 
+/** Check if a tool name (possibly mcp__cydo__ prefixed) matches a set. */
+function toolNameIn(name: string, set: Set<string>): boolean {
+  return set.has(name) || set.has(getDisplayName(name));
+}
+
 interface Props {
   name: string;
   toolUseId?: string;
@@ -1223,7 +1228,7 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (fileWriteToolNames.has(name) && filePath) {
+  if (toolNameIn(name, fileWriteToolNames) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
   }
   if (name === "Read" && filePath) {
@@ -1293,7 +1298,7 @@ function getHeaderSubtitle(
       </a>
     );
   }
-  if (shellToolNames.has(name) && typeof input.description === "string") {
+  if (toolNameIn(name, shellToolNames) && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
   if (name === "Task" && typeof input.description === "string") {
@@ -1423,7 +1428,7 @@ function formatInput(
     return <EditInput input={input} result={result} />;
   }
   if (
-    fileWriteToolNames.has(name) &&
+    toolNameIn(name, fileWriteToolNames) &&
     "file_path" in input &&
     "content" in input
   ) {
@@ -1461,7 +1466,7 @@ function formatInput(
     );
   }
   if (
-    shellToolNames.has(name) &&
+    toolNameIn(name, shellToolNames) &&
     (typeof input.command === "string" || typeof input.cmd === "string")
   ) {
     return <ShellCommandInput input={input} />;
@@ -1683,14 +1688,14 @@ export function ToolCall({
   // Collapse pending AskUserQuestion input — the interactive form shows the same content
   const isAsk = askToolNames.has(name);
   const [inputOpen, setInputOpen] = useState(
-    isAsk ? !!result : defaultExpandedTools.has(name),
+    isAsk ? !!result : toolNameIn(name, defaultExpandedTools),
   );
   // Auto-expand when result arrives for ask tools
   useEffect(() => {
     if (isAsk && result) setInputOpen(true);
   }, [isAsk, !!result]);
   const [resultOpen, setResultOpen] = useState(
-    defaultExpandedResults.has(name),
+    toolNameIn(name, defaultExpandedResults),
   );
   const subtitle = getHeaderSubtitle(name, input);
 
@@ -1779,7 +1784,7 @@ export function ToolCall({
         <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
-        {(name === "Edit" || fileWriteToolNames.has(name)) &&
+        {(name === "Edit" || toolNameIn(name, fileWriteToolNames)) &&
           filePath &&
           onViewFile && (
             <button
