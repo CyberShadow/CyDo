@@ -780,6 +780,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "current_mode_update":
 			case "session_info_update":
 			case "usage_update":
+			case "pending_messages.modified":
+			case "session.title_changed":
+			case "session.tools_updated":
+			case "session.usage_info":
+			case "assistant.turn_end":
+			case "assistant.streaming_delta":
+			case "assistant.usage":
+			case "external_tool.completed":
 				break;
 			default:
 				import cydo.agent.protocol : makeUnrecognizedEvent;
