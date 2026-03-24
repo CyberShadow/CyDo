@@ -1566,6 +1566,10 @@ function renderResultContent(
     }
     return <ResultPre content={display} isError={isError} />;
   }
+  if (!Array.isArray(content)) {
+    const json = JSON.stringify(content, null, 2);
+    return <ResultPre content={json} isError={isError} />;
+  }
   return (
     <div class={`tool-result-blocks ${isError ? "error" : ""}`}>
       {content.map((block, i) => {
