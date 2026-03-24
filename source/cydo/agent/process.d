@@ -185,7 +185,7 @@ class AgentProcess
 				exitFired = true;
 				if (onExit)
 					onExit(exitStatus);
-			}, 200.msecs);
+			}, 2000.msecs);
 		}
 	}
 
