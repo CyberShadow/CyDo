@@ -1,6 +1,6 @@
 module cydo.agent.protocol;
 
-import ae.utils.json : JSONFragment, JSONOptional, JSONExtras, toJson;
+import ae.utils.json : JSONFragment, JSONOptional, JSONExtras, jsonParse, toJson;
 
 // ── Agnostic protocol struct definitions ───────────────────────────────────
 
@@ -236,14 +236,17 @@ struct AgentUnrecognizedEvent
 {
 	string type = "agent/unrecognized";
 	string reason;      // e.g. "unknown event type: foo", "unknown method: bar/baz", "non-JSON output"
-	string raw_content; // the raw string from the agent (JSON or otherwise)
+	JSONFragment raw_content; // the raw string from the agent (JSON or otherwise)
 }
 
 string makeUnrecognizedEvent(string reason, string rawContent)
 {
 	AgentUnrecognizedEvent ev;
 	ev.reason = reason;
-	ev.raw_content = rawContent;
+	// Embed rawContent as a JSON value if it's valid JSON; otherwise quote it
+	// as a string so the resulting event is always well-formed JSON.
+	try { ev.raw_content = jsonParse!JSONFragment(rawContent); }
+	catch (Exception) { ev.raw_content = JSONFragment(toJson(rawContent)); }
 	return toJson(ev);
 }
 
