@@ -981,14 +981,29 @@ export function reduceMessage(
     case "process/stderr":
       return reduceStderr(s, msg.text);
 
-    case "agent/unrecognized":
-      return reduceParseError(
-        s,
-        "Unrecognized agent data",
-        msg.reason,
-        msg.raw_content,
-        msg,
-      );
+    case "agent/unrecognized": {
+      // If mid-turn, embed in the streaming message to preserve temporal order.
+      const streamIdx = findStreamingMsg(s.messages);
+      if (streamIdx >= 0) {
+        const messages = s.messages.slice();
+        const updated = { ...messages[streamIdx]! };
+        messages[streamIdx] = updated;
+        const creationOrder = updated.nextCreationOrder ?? 0;
+        updated.nextCreationOrder = creationOrder + 1;
+        updated.streamingBlocks = [
+          ...(updated.streamingBlocks || []),
+          {
+            itemId: `unrecognized-${++s.msgIdCounter}`,
+            type: "unrecognized",
+            text: `${msg.reason}\n${JSON.stringify(msg.raw_content, null, 2)}`,
+            creationOrder,
+          },
+        ];
+        return { ...s, messages };
+      }
+      // No streaming message — top-level system message.
+      return reduceParseError(s, "Unrecognized agent data", msg.reason, msg.raw_content, msg);
+    }
 
     default:
       return reduceParseError(

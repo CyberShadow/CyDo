@@ -255,6 +255,12 @@ export function AssistantMessage({
                   <pre>{block.text}</pre>
                 </div>
               )}
+              {block.type === "unrecognized" && (
+                <div class="unknown-block">
+                  <div class="unknown-block-label">Unrecognized agent data</div>
+                  <pre>{block.text}</pre>
+                </div>
+              )}
             </div>
           );
         });
