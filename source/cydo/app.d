@@ -669,7 +669,12 @@ class App : ToolsBackend
 		}).ignoreResult();
 
 		if (description.length == 0)
-			generateTitle(childTid, prompt);
+		{
+			auto promptForTitle = prompt;
+			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
+				generateTitle(childTid, promptForTitle);
+			}).ignoreResult();
+		}
 		infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
 		return promise;
@@ -967,7 +972,9 @@ class App : ToolsBackend
 			td.title = truncateTitle(json.content, 80);
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
-			generateTitle(tid, json.content);
+			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
+				generateTitle(tid, msgContent);
+			}).ignoreResult();
 		}
 	}
 
@@ -1207,7 +1214,10 @@ class App : ToolsBackend
 			td.title = truncateTitle(json.content, 80);
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
-			generateTitle(tid, json.content);
+			auto userContent = json.content;
+			td.processQueue.setGoal(ProcessState.Alive).then(() {
+				generateTitle(tid, userContent);
+			}).ignoreResult();
 		}
 
 		// Clear draft when message is sent

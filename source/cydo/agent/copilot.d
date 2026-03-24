@@ -512,35 +512,54 @@ class CopilotAgent : Agent
 		auto session = new OneShotCopilotSession(p);
 
 		auto model = modelClass.length > 0 ? resolveModelAlias(modelClass) : "";
-		string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
-		auto srv = new SdkProcess(copilotArgs, null, null);
-
 		auto cwd = sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".";
 
 		import std.uuid : randomUUID;
 		auto sessionId = randomUUID().toString();
 
-		// Set cleanup callback before registering
-		session.onFulfill_ = () {
-			srv.unregisterSession(sessionId);
-			srv.sendRequest("session.destroy",
-				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
-			.then((JsonRpcResponse r) { srv.shutdown(); });
-		};
+		// Spawn and wire up our own one-shot SdkProcess.
+		void startOwnProcess()
+		{
+			string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
+			auto srv = new SdkProcess(copilotArgs, null, null);
 
-		srv.registerSession(sessionId, session);
+			// Set cleanup callback before registering
+			session.onFulfill_ = () {
+				srv.unregisterSession(sessionId);
+				srv.sendRequest("session.destroy",
+					`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+				.then((JsonRpcResponse r) { srv.shutdown(); });
+			};
 
-		srv.onReady(() {
-			srv.sendRequest("session.create",
-				buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
-			.then((JsonRpcResponse createResp) {
-				srv.sendRequest("session.send",
-					`{"sessionId":"` ~ cpEscape(sessionId) ~ `","prompt":"` ~ cpEscape(prompt) ~ `"}`)
-				.then((JsonRpcResponse sendResp) {
-					// Turn completion via session.idle event → handleEvent → promise fulfilled
+			srv.registerSession(sessionId, session);
+
+			srv.onReady(() {
+				srv.sendRequest("session.create",
+					buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
+				.then((JsonRpcResponse createResp) {
+					srv.sendRequest("session.send",
+						`{"sessionId":"` ~ cpEscape(sessionId) ~ `","prompt":"` ~ cpEscape(prompt) ~ `"}`)
+					.then((JsonRpcResponse sendResp) {
+						// Turn completion via session.idle event → handleEvent → promise fulfilled
+					});
 				});
 			});
-		});
+		}
+
+		// If the shared server exists and is still initializing, wait for it to
+		// reach ready state (extraction complete) before spawning our own process.
+		// This avoids the race condition where two copilot processes try to
+		// self-extract to the same ~/.cache/copilot/pkg/ directory simultaneously.
+		// If the shared server is already ready or doesn't exist, start immediately.
+		if (sharedSdkServer_ !is null && !sharedSdkServer_.dead
+			&& sharedSdkServer_.state == SdkProcess.State.initializing)
+		{
+			sharedSdkServer_.onReady(&startOwnProcess);
+		}
+		else
+		{
+			startOwnProcess();
+		}
 
 		return p;
 	}
