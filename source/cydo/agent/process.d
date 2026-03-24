@@ -192,7 +192,7 @@ class AgentProcess
 	/// Send a message to the process stdin. The framing adapter handles encoding.
 	void sendMessage(string line)
 	{
-		if (disconnected)
+		if (dead)
 			return;
 		stdoutLines.send(Data(line.asBytes));
 	}
