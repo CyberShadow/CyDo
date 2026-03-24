@@ -195,6 +195,9 @@ private interface ICodexServer
 	@RPCName("item/reasoning/textDelta")
 	Promise!void itemReasoningTextDelta(DeltaParams params);
 
+	@RPCName("item/reasoning/summaryTextDelta")
+	Promise!void itemReasoningSummaryTextDelta(DeltaParams params);
+
 	@RPCName("item/commandExecution/outputDelta")
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params);
 
@@ -277,6 +280,14 @@ private class CodexServerRouter : ICodexServer
 	Promise!void itemReasoningTextDelta(DeltaParams params)
 	{
 		auto raw = buildRawNotification("item/reasoning/textDelta", toJson(params));
+		routeToSession(params.threadId,
+			(s) => s.handleDelta(params, "thinking_delta", raw));
+		return resolve();
+	}
+
+	Promise!void itemReasoningSummaryTextDelta(DeltaParams params)
+	{
+		auto raw = buildRawNotification("item/reasoning/summaryTextDelta", toJson(params));
 		routeToSession(params.threadId,
 			(s) => s.handleDelta(params, "thinking_delta", raw));
 		return resolve();
