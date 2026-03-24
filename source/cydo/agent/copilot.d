@@ -335,9 +335,13 @@ class CopilotAgent : Agent
 				CpToolStartEvent ev;
 				try ev = jsonParse!CpToolStartEvent(line);
 				catch (Exception) {}
+				import std.algorithm : startsWith;
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
 				auto toolName = ev.data.mcpToolName.length > 0 ? ev.data.mcpToolName
 					: ev.data.toolName.length > 0 ? ev.data.toolName : "unknown";
+				// Strip cydo- prefix so protocol events use canonical names.
+				if (toolName.startsWith("cydo-"))
+					toolName = toolName[5 .. $];
 				auto inputFrag = ev.data.arguments;
 				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
 					? inputFrag.json : `{}`;
@@ -869,16 +873,27 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			toolName = toolName[5 .. $];
 
 		// Set up an active item for UI rendering before the async dispatch.
-		finalizeActiveItem();
-		auto toolItemId = "cp-ext-" ~ req.requestId;
+		// If handleToolExecutionStart already created an activeItem for the
+		// same tool (race: events arrive via different I/O channels), reuse
+		// it instead of creating a duplicate.
 		string inputJson = req.arguments.json !is null && req.arguments.json.length > 0
 			? req.arguments.json : "{}";
-		activeItem = ActiveItem(toolItemId, "tool_use", toolName, inputJson, "", false);
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"item/started","item_id":"` ~ cpEscape(toolItemId)
-				~ `","item_type":"tool_use","name":"` ~ cpEscape(toolName)
-				~ `","input":` ~ inputJson ~ `}`);
+		if (activeItem.id.length > 0 && activeItem.name == toolName && !activeItem.externallyHandled)
+		{
+			// handleToolExecutionStart already emitted item/started — just mark it.
+			activeItem.externallyHandled = true;
+		}
+		else
+		{
+			finalizeActiveItem();
+			activeItem = ActiveItem("cp-ext-" ~ req.requestId, "tool_use", toolName, inputJson, "", true);
+			if (outputHandler_)
+				outputHandler_(
+					`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
+					~ `","item_type":"tool_use","name":"` ~ cpEscape(toolName)
+					~ `","input":` ~ inputJson ~ `}`);
+		}
+		auto itemId = activeItem.id;
 
 		toolDispatch_(toolName, to!string(tid), req.arguments)
 		.then((McpResult mcpResult) {
@@ -886,16 +901,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			if (outputHandler_)
 			{
 				outputHandler_(
-					`{"type":"item/completed","item_id":"` ~ cpEscape(toolItemId)
+					`{"type":"item/completed","item_id":"` ~ cpEscape(itemId)
 					~ `","input":` ~ inputJson ~ `}`);
 				outputHandler_(
-					`{"type":"item/result","item_id":"` ~ cpEscape(toolItemId)
+					`{"type":"item/result","item_id":"` ~ cpEscape(itemId)
 					~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`);
 			}
-			// Mark as externally handled so tool.execution_start (if it fires
-			// later for this same tool) skips creating a duplicate UI entry.
-			activeItem.externallyHandled = true;
-
 			auto resultType = mcpResult.isError ? "failure" : "success";
 			auto escaped = cpEscape(mcpResult.text);
 			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
@@ -904,9 +915,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				~ `","resultType":"` ~ resultType ~ `"}}`;
 			server.sendRequest("session.tools.handlePendingToolCall", params);
 		}, (Exception e) {
-			// Mark as externally handled even on error.
-			activeItem.externallyHandled = true;
-
 			auto escaped = cpEscape(e.msg);
 			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
 				~ `","requestId":"` ~ cpEscape(req.requestId)
@@ -1022,8 +1030,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		// Finalize any active text/thinking item.
 		finalizeActiveItem();
 
+		import std.algorithm : startsWith;
+
 		auto id = ts.toolCallId;
 		auto name = ts.toolName;
+		// Strip cydo- prefix so protocol events use canonical names.
+		if (name.startsWith("cydo-"))
+			name = name[5 .. $];
 		string inputJson = ts.arguments.json !is null && ts.arguments.json.length > 0
 			? ts.arguments.json : "{}";
 
