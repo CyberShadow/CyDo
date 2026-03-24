@@ -58,6 +58,7 @@ export function reduceParseError(
   label: string,
   detail: string,
   raw: unknown,
+  rawSource?: unknown,
 ): SessionState {
   const id = `parse-error-${++s.msgIdCounter}`;
   return {
@@ -74,6 +75,7 @@ export function reduceParseError(
             text: `${label}: ${detail}\n${JSON.stringify(raw, null, 2)}`,
           },
         ],
+        rawSource: rawSource ?? raw,
       },
     ],
   };
@@ -985,6 +987,7 @@ export function reduceMessage(
         "Unrecognized agent data",
         msg.reason,
         msg.raw_content,
+        msg,
       );
 
     default:
@@ -992,6 +995,7 @@ export function reduceMessage(
         s,
         "Unknown message type",
         (msg as Record<string, unknown>).type as string,
+        msg,
         msg,
       );
   }
