@@ -182,6 +182,10 @@ export class Connection {
     );
   }
 
+  refreshWorkspaces() {
+    this.send(JSON.stringify({ type: "refresh_workspaces" }));
+  }
+
   private scheduleReconnect() {
     if (this.reconnectTimer || this.disposed) return;
     this.reconnectTimer = setTimeout(() => {

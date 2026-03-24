@@ -10,6 +10,7 @@ interface Props {
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
   taskTypes: TaskTypeInfo[];
+  onRefreshWorkspaces: () => void;
 }
 
 export function WelcomePage({
@@ -19,6 +20,7 @@ export function WelcomePage({
   onSelectTask,
   onNavigateToProject,
   taskTypes,
+  onRefreshWorkspaces,
 }: Props) {
   const [filter, setFilter] = useState("")
   const filterRef = useRef<HTMLInputElement>(null)
@@ -111,20 +113,29 @@ export function WelcomePage({
         <h1>CyDo</h1>
       </header>
       <div class="welcome-filter-row">
-        <input
-          ref={filterRef}
-          class="welcome-filter-input"
-          type="text"
-          placeholder="Filter projects..."
-          value={filter}
-          onInput={(e) => { setFilter((e.target as HTMLInputElement).value) }}
-          onKeyDown={handleFilterKeyDown}
-        />
-        {filter && (
-          <button class="welcome-filter-clear" onClick={() => { setFilter("") }}>
-            ×
-          </button>
-        )}
+        <div class="welcome-filter-wrapper">
+          <input
+            ref={filterRef}
+            class="welcome-filter-input"
+            type="text"
+            placeholder="Filter projects..."
+            value={filter}
+            onInput={(e) => { setFilter((e.target as HTMLInputElement).value) }}
+            onKeyDown={handleFilterKeyDown}
+          />
+          {filter && (
+            <button class="welcome-filter-clear" onClick={() => { setFilter("") }}>
+              ×
+            </button>
+          )}
+        </div>
+        <button
+          class="sidebar-new-btn refresh-workspaces-btn"
+          onClick={onRefreshWorkspaces}
+          title="Refresh project list"
+        >
+          ↻
+        </button>
       </div>
       {workspaces.map((ws) => {
         const filteredProjects = filterLower

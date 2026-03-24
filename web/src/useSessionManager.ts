@@ -80,6 +80,7 @@ export interface TaskManager {
   activeProject: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
+  refreshWorkspaces: () => void;
 }
 
 /// Extract text content from a user message event (for unconfirmed display).
@@ -1091,6 +1092,7 @@ export function useTaskManager(): TaskManager {
     activeProject,
     navigateHome,
     navigateToProject,
+    refreshWorkspaces: () => connRef.current?.refreshWorkspaces(),
   };
 }
 

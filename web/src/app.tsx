@@ -41,6 +41,7 @@ function AppContent() {
     activeProject,
     navigateHome,
     navigateToProject,
+    refreshWorkspaces,
   } = useTaskManager();
 
   const { theme, toggleTheme } = useTheme();
@@ -112,6 +113,7 @@ function AppContent() {
               setActiveTaskId(String(tid));
             }}
             onNavigateToProject={navigateToProject}
+            onRefreshWorkspaces={refreshWorkspaces}
           />
           {searchPopup}
           <ErrorToast

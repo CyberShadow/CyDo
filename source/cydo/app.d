@@ -925,6 +925,7 @@ class App : ToolsBackend
 			case "set_archived":      handleSetArchivedMsg(json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
+			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			default: break;
 		}
 	}
@@ -2789,6 +2790,12 @@ class App : ToolsBackend
 		discoverAllWorkspaces();
 		broadcast(buildWorkspacesList());
 		infof("Config reloaded successfully");
+	}
+
+	private void handleRefreshWorkspacesMsg()
+	{
+		discoverAllWorkspaces();
+		broadcast(buildWorkspacesList());
 	}
 
 	/// Read a prompt template file from the task types directory and substitute variables.

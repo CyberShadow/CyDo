@@ -2518,9 +2518,15 @@ pre.extra-field-value {
   font-weight: normal;
 }
 
+.refresh-workspaces-btn {
+  background: var(--bg-secondary);
+  width: 34px;
+  height: 34px;
+}
+
 .project-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 16px;
 }
 
@@ -2594,8 +2600,15 @@ pre.extra-field-value {
 }
 
 .welcome-filter-row {
-  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
   margin-bottom: 24px;
+}
+
+.welcome-filter-wrapper {
+  position: relative;
+  flex: 1;
 }
 
 .welcome-filter-input {
