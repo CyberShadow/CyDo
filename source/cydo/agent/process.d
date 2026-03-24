@@ -10,6 +10,7 @@ import std.stdio : File;
 import ae.net.asockets : ConnectionAdapter, ConnectionState, DisconnectType, Duplex, FileConnection, IConnection, LineBufferedAdapter;
 import ae.sys.data : Data;
 import ae.sys.process : asyncWait;
+import ae.sys.timing : setTimeout, TimerTask;
 import ae.utils.array : asBytes;
 
 import cydo.agent.contentlength : ContentLengthAdapter;
@@ -30,8 +31,11 @@ class AgentProcess
 	private bool exited;
 	private int exitStatus;
 	private bool stdoutEOF;
+	private bool stderrEOF;
 
 	private bool disconnected;
+	private bool exitFired;
+	private TimerTask stderrDrainTimer;
 
 	void delegate(string line) onStdoutLine;
 	void delegate(string line) onStderrLine;
@@ -138,6 +142,10 @@ class AgentProcess
 				onStderrLine(text);
 			}
 		};
+		stderrLines.handleDisconnect = (string, DisconnectType) {
+			stderrEOF = true;
+			tryFireExit();
+		};
 
 		// Async process exit notification via SIGCHLD.
 		// The process may have exited but stdout pipe data can still be
@@ -150,13 +158,35 @@ class AgentProcess
 		});
 	}
 
-	/// Fire onExit only once both conditions are met:
-	/// the process has exited AND stdout has been fully drained (EOF).
+	/// Fire onExit only once all conditions are met:
+	/// the process has exited AND both stdout and stderr have been fully drained (EOF).
+	/// If stderr is slow to drain (e.g. child processes hold the fd), a short
+	/// timer fires onExit anyway to avoid blocking indefinitely.
 	private void tryFireExit()
 	{
-		if (exited && stdoutEOF)
+		import core.time : msecs;
+
+		if (exitFired)
+			return;
+		if (exited && stdoutEOF && stderrEOF)
+		{
+			exitFired = true;
+			if (stderrDrainTimer !is null)
+			{
+				stderrDrainTimer.cancel();
+				stderrDrainTimer = null;
+			}
 			if (onExit)
 				onExit(exitStatus);
+		}
+		else if (exited && stdoutEOF && !stderrEOF && stderrDrainTimer is null)
+		{
+			stderrDrainTimer = setTimeout({
+				exitFired = true;
+				if (onExit)
+					onExit(exitStatus);
+			}, 200.msecs);
+		}
 	}
 
 	/// Send a message to the process stdin. The framing adapter handles encoding.
