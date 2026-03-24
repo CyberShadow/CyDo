@@ -55,9 +55,11 @@ with the new mode's instructions and full context preserved.
 
 These run as autonomous agents and return results to you:
 
-- **research** — codebase exploration. Use for finding files, tracing
-  patterns, or understanding subsystems. Include output file paths from prior
-  research so new tasks can build on existing findings.
+- **quick_research** — targeted codebase lookup (find a file, trace a
+  function, check a pattern). Returns fast.
+- **deep_research** — broader exploration requiring multiple rounds of
+  searching and reading. Include output file paths from prior research so
+  new tasks can build on existing findings.
 - **spike** — test a theory or prototype in an isolated worktree.
 - **bug** — investigate a bug report. Use for batches of bugs (one sub-task
   each); for a single interactive investigation, use bug mode instead.
