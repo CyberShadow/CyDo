@@ -18,6 +18,8 @@ type RestartableBackend = {
   port: number;
   baseURL: string;
   workDir: string;
+  stop: () => Promise<void>;
+  start: () => Promise<void>;
   restart: () => Promise<void>;
 };
 
@@ -123,7 +125,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       throw e;
     }
 
-    const restart = async () => {
+    const stop = async () => {
       const oldPgid = proc.pid!;
       process.kill(-oldPgid, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", () => r()));
@@ -137,11 +139,19 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
           break;
         }
       }
+    };
+
+    const start = async () => {
       proc = spawnBackend(port, workDir, workerHome, codexHome);
       await waitForBackend(baseURL, proc);
     };
 
-    await use({ port, baseURL, workDir, restart });
+    const restart = async () => {
+      await stop();
+      await start();
+    };
+
+    await use({ port, baseURL, workDir, stop, start, restart });
 
     process.kill(-proc.pid!, "SIGTERM");
     await new Promise<void>((r) => proc.on("exit", () => r()));
@@ -500,6 +510,9 @@ test("waiting parent with completed children gets results after restart", async 
     }),
   ).toBeVisible({ timeout: 30_000 });
 
+  // Stop the backend before manipulating the DB to avoid "database is locked".
+  await restartableBackend.stop();
+
   // Manipulate the DB to simulate the race condition:
   // 1. Set parent (tid=1) status to "waiting"
   // 2. Create a fake completed child task (tid=2)
@@ -513,9 +526,9 @@ test("waiting parent with completed children gets results after restart", async 
       `INSERT OR IGNORE INTO task_deps VALUES(1, 2);"`,
   );
 
-  // Restart — the backend should find parent="waiting" with child="completed"
+  // Start fresh — the backend should find parent="waiting" with child="completed"
   // and trigger resumeAndDeliverResults.
-  await restartableBackend.restart();
+  await restartableBackend.start();
 
   // Reload and navigate to the parent task.
   await page.goto("/");
