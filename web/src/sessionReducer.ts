@@ -49,6 +49,25 @@ function getSeq(msg: unknown): number | undefined {
   return typeof seq === "number" ? seq : undefined;
 }
 
+/** Append `event` to `msg.rawSource` and accumulate its seq into `msg.seq`.
+ *  Mutates `msg` in place — callers must already hold a shallow copy. */
+function appendRawSource(msg: DisplayMessage, event: unknown): void {
+  const prevRaw = msg.rawSource;
+  msg.rawSource = prevRaw
+    ? Array.isArray(prevRaw)
+      ? [...(prevRaw as unknown[]), event]
+      : [prevRaw, event]
+    : event;
+
+  const newSeq = getSeq(event);
+  if (newSeq != null) {
+    const prevSeq = msg.seq;
+    msg.seq = prevSeq != null
+      ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
+      : newSeq;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Individual reducers
 // ---------------------------------------------------------------------------
@@ -602,6 +621,8 @@ export function reduceItemStarted(
     bumpNestedVersion(messages, event.parent_tool_use_id);
   }
 
+  appendRawSource(msg, event);
+
   return { ...s, messages };
 }
 
@@ -688,6 +709,8 @@ export function reduceItemCompleted(
     (b) => b.itemId !== event.item_id,
   );
 
+  appendRawSource(msg, event);
+
   bumpNestedVersion(messages, msg.parentToolUseId);
   return { ...s, messages };
 }
@@ -720,6 +743,7 @@ export function reduceItemResult(
     isError: event.is_error,
     toolResult: event.tool_result,
   });
+  appendRawSource(parentMsg, event);
   messages[parentMsgIdx] = parentMsg;
 
   bumpNestedVersion(messages, parentMsg.parentToolUseId);
@@ -756,22 +780,7 @@ export function reduceTurnDelta(
       if (event.uuid) updated.uuid = event.uuid;
 
       // Attach to rawSource for "View source" → "Raw".
-      const prevRaw = updated.rawSource;
-      updated.rawSource = prevRaw
-        ? Array.isArray(prevRaw)
-          ? [...(prevRaw as unknown[]), event]
-          : [prevRaw, event]
-        : event;
-
-      if (event.uuid) {
-        const newSeq = getSeq(event);
-        if (newSeq != null) {
-          const prevSeq = updated.seq;
-          updated.seq = prevSeq != null
-            ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
-            : newSeq;
-        }
-      }
+      appendRawSource(updated, event);
 
       if (updated.parentToolUseId) {
         bumpNestedVersion(messages, updated.parentToolUseId);
@@ -806,21 +815,7 @@ export function reduceTurnStop(
 
       // Always append to rawSource — every raw Claude Code event that
       // contributes to the message should be visible via "View source" → "Raw".
-      const prevRaw = updated.rawSource;
-      updated.rawSource = prevRaw
-        ? Array.isArray(prevRaw)
-          ? [...(prevRaw as unknown[]), event]
-          : [prevRaw, event]
-        : event;
-      {
-        const newSeq = getSeq(event);
-        if (newSeq != null) {
-          const prevSeq = updated.seq;
-          updated.seq = prevSeq != null
-            ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
-            : newSeq;
-        }
-      }
+      appendRawSource(updated, event);
 
       // Promote any remaining streaming blocks to content (safety net —
       // prevents orphaned blocks from persisting past the turn boundary).
@@ -999,6 +994,7 @@ export function reduceMessage(
             creationOrder,
           },
         ];
+        appendRawSource(updated, msg);
         return { ...s, messages };
       }
       // No streaming message — top-level system message.
