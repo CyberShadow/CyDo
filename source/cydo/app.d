@@ -599,7 +599,11 @@ class App : ToolsBackend
 		// Unified async dispatch — all tools return Promise!McpResult
 		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
 			if (!conn.connected)
-				return; // Deps survive for fallback delivery
+			{
+				// MCP delivery failed — trigger fallback delivery for Task tool calls.
+				onMcpDeliveryFailed(call.tid);
+				return;
+			}
 			auto resultJson = toJson(McpContentResult(
 				[McpContentItem("text", result.text)],
 				result.isError,
@@ -953,6 +957,37 @@ class App : ToolsBackend
 			persistence.setStatus(tid, "active");
 			broadcastTaskUpdate(tid);
 		}
+	}
+
+	/// Called when MCP delivery fails (connection dead). If this was a Task tool
+	/// call and all children are done, triggers fallback delivery via
+	/// deliverBatchResults so the parent receives results as a user message
+	/// without requiring manual resume.
+	private void onMcpDeliveryFailed(string callerTidStr)
+	{
+		import std.conv : to;
+		int tid;
+		try tid = to!int(callerTidStr);
+		catch (Exception) return;
+
+		if (tid !in tasks)
+			return;
+
+		// No-op for non-Task tools (no children to deliver)
+		if (childrenOf(tid).length == 0)
+			return;
+
+		// Only deliver when ALL children are done — partial delivery
+		// would lose the remaining results.
+		foreach (childTid, depParent; taskDeps)
+		{
+			if (depParent == tid && childTid in tasks
+				&& tasks[childTid].status != "completed"
+				&& tasks[childTid].status != "failed")
+				return; // Remaining children will trigger this check on their exit
+		}
+
+		deliverBatchResults(tid);
 	}
 
 	private void handleAskUserResponse(WsMessage json)
