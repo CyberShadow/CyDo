@@ -596,13 +596,14 @@ class App : ToolsBackend
 		// Unified async dispatch — all tools return Promise!McpResult
 		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
 			if (!conn.connected)
-				return;
+				return; // Deps survive for fallback delivery
 			auto resultJson = toJson(McpContentResult(
 				[McpContentItem("text", result.text)],
 				result.isError,
 				result.structuredContent,
 			));
 			conn.sendResponse(response.serveData(resultJson));
+			onToolCallDelivered(call.tid);
 		});
 	}
 
@@ -918,20 +919,36 @@ class App : ToolsBackend
 		return promise;
 	}
 
-	void onSubTasksComplete(string callerTidStr)
+	/// Called after an MCP tool call result is successfully sent back to the
+	/// agent's MCP proxy. Cleans up sub-task deps (if any) and transitions
+	/// the parent from "waiting" to "active".
+	private void onToolCallDelivered(string callerTidStr)
 	{
 		import std.conv : to;
 		int tid;
 		try tid = to!int(callerTidStr);
 		catch (Exception) return;
-		if (auto td = tid in tasks)
+
+		if (tid !in tasks)
+			return;
+
+		// Clean up deps for completed children (no-op for non-Task tools)
+		auto children = childrenOf(tid);
+		if (children.length == 0)
+			return;
+
+		foreach (childTid; children)
 		{
-			if (td.status == "waiting")
-			{
-				td.status = "active";
-				persistence.setStatus(tid, "active");
-				broadcastTaskUpdate(tid);
-			}
+			persistence.removeTaskDep(tid, childTid);
+			taskDeps.remove(childTid);
+		}
+
+		// Transition parent from waiting to active
+		if (tasks[tid].status == "waiting")
+		{
+			tasks[tid].status = "active";
+			persistence.setStatus(tid, "active");
+			broadcastTaskUpdate(tid);
 		}
 	}
 
@@ -2078,8 +2095,8 @@ class App : ToolsBackend
 				auto resultJson = toJson(taskResult);
 				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));
 				pendingSubTasks.remove(tid);
-				persistence.removeAllChildDeps(tid);
-				taskDeps.remove(tid);
+				// Deps left intact — cleaned by onToolCallDelivered() on success,
+				// or used by deliverBatchResults() as fallback if MCP delivery fails.
 			}
 			else if (auto parentTidPtr = tid in taskDeps)
 			{

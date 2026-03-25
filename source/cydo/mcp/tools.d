@@ -161,7 +161,6 @@ interface ToolsBackend
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 	Promise!McpResult handleBash(string callerTid, string command);
-	void onSubTasksComplete(string callerTid);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -219,7 +218,8 @@ class CydoToolsImpl : CydoTools
 			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
 
 		McpResult[] results = all(promises).await();
-		app.onSubTasksComplete(callerTid);
+		// Status transition (waiting → active) and dep cleanup handled
+		// by onToolCallDelivered() after MCP delivery is confirmed.
 
 		// Collect into a JSON array
 		bool anyError;
