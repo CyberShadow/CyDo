@@ -481,7 +481,10 @@ class ClaudeCodeSession : AgentSession
 		if (config.appendSystemPrompt.length > 0)
 			claudeArgs ~= ["--append-system-prompt", config.appendSystemPrompt];
 
-		claudeArgs ~= ["--disallowedTools", "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion"];
+		string disallowed = config.allowNativeSubagents
+			? "EnterPlanMode,ExitPlanMode,AskUserQuestion"
+			: "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion";
+		claudeArgs ~= ["--disallowedTools", disallowed];
 
 		// When sandboxed, bwrap handles workDir via --chdir
 		string[] args;

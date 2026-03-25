@@ -1767,6 +1767,9 @@ class App : ToolsBackend
 		if (getTaskTypes().isInteractive(td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
 
+		if (typeDef !is null && typeDef.allow_native_subagents)
+			sessionConfig.allowNativeSubagents = true;
+
 		td.session = taskAgent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup

@@ -58,6 +58,7 @@ struct TaskTypeDef
 	string model_class = "large";
 	@Optional bool read_only;
 	string output_type = "report";
+	@Optional bool allow_native_subagents;
 
 	// Flow control
 	@Optional @Key("name") CreatableTaskDef[] creatable_tasks;
@@ -270,6 +271,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			errors ~= format("%s: invalid model_class '%s'", def.name, def.model_class);
 		if (!["commit", "patch", "report"].canFind(def.output_type))
 			errors ~= format("%s: invalid output_type '%s'", def.name, def.output_type);
+
+		if (def.allow_native_subagents && def.creatable_tasks.length > 0)
+			errors ~= format("%s: allow_native_subagents and creatable_tasks are mutually exclusive", def.name);
 	}
 
 	// Check that requires_approval has stewards available

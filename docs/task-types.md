@@ -16,6 +16,7 @@ prompt_template: string | path        # system prompt wrapping the task descript
 model_class: small | medium | large   # maps to haiku / sonnet / opus
 read_only: bool                   # sandbox mounts project dir as ro (default false)
 output_type: commit | patch | report  # what the task produces
+allow_native_subagents: bool  # use Claude's built-in Task tool instead of CyDo's (default false)
 
 # Flow control
 creatable_tasks: string[]             # task types this agent can spawn (modal)
