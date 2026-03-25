@@ -79,15 +79,6 @@ task_types:
     model_class: large
     output_type: report
     allow_native_subagents: true
-    continuations:
-      plan:
-        task_type: plan_mode
-        keep_context: true
-        prompt_template: prompts/enter_plan_mode.md
-      bug:
-        task_type: bug_mode
-        keep_context: true
-        prompt_template: prompts/enter_bug_mode.md
     parallelizable: true
     user_visible: true
 
