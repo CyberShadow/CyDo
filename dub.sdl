@@ -6,8 +6,8 @@ targetPath "build"
 
 sourcePaths "source"
 
-dependency "ae" version="~>0.0.3811"
-dependency "ae:sqlite" version="~>0.0.3811"
-dependency "ae:openssl" version="~>0.0.3811"
-dependency "ae:zlib" version="~>0.0.3811"
+dependency "ae" version="~>0.0.3816"
+dependency "ae:sqlite" version="~>0.0.3816"
+dependency "ae:openssl" version="~>0.0.3816"
+dependency "ae:zlib" version="~>0.0.3816"
 dependency "configy" version="~>2.2.0"

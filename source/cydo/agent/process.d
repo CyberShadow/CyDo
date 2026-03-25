@@ -13,7 +13,7 @@ import ae.sys.process : asyncWait;
 import ae.sys.timing : setTimeout, TimerTask;
 import ae.utils.array : asBytes;
 
-import cydo.agent.contentlength : ContentLengthAdapter;
+import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
 
 /// Selects the framing mode for stdout of an AgentProcess.
 enum FramingMode { ndjson, contentLength }
