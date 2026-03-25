@@ -229,6 +229,7 @@ function AppContent() {
 
   const [selectedTaskType, setSelectedTaskType] = useState("conversation");
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
+  const newTaskPasteTextRef = useRef<((text: string) => void) | null>(null);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
   const handleSidebarSelect = useCallback(
@@ -269,6 +270,26 @@ function AppContent() {
     document.addEventListener("keydown", handler);
     return () => {
       document.removeEventListener("keydown", handler);
+    };
+  }, [active, connected]);
+
+  useEffect(() => {
+    if (active || !connected) return;
+    const handler = (e: ClipboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      )
+        return;
+      const text = e.clipboardData?.getData("text");
+      if (!text) return;
+      e.preventDefault();
+      newTaskPasteTextRef.current?.(text);
+    };
+    document.addEventListener("paste", handler);
+    return () => {
+      document.removeEventListener("paste", handler);
     };
   }, [active, connected]);
 
@@ -390,6 +411,7 @@ function AppContent() {
                 />
                 <InputBox
                   inputRef={newTaskInputRef}
+                  pasteTextRef={newTaskPasteTextRef}
                   onSend={(text: string) => {
                     send(text, selectedTaskType || taskTypes[0]?.name);
                   }}

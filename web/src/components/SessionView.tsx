@@ -60,6 +60,7 @@ function SessionViewInner({
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
+  const pasteTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
 
   const [fileViewerState, setFileViewerState] = useState<{
@@ -151,6 +152,26 @@ function SessionViewInner({
     document.addEventListener("keydown", handler);
     return () => {
       document.removeEventListener("keydown", handler);
+    };
+  }, [isActive]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const handler = (e: ClipboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      )
+        return;
+      const text = e.clipboardData?.getData("text");
+      if (!text) return;
+      e.preventDefault();
+      pasteTextRef.current?.(text);
+    };
+    document.addEventListener("paste", handler);
+    return () => {
+      document.removeEventListener("paste", handler);
     };
   }, [isActive]);
 
@@ -284,6 +305,7 @@ function SessionViewInner({
           onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
           inputRef={inputRef}
           insertTextRef={insertTextRef}
+          pasteTextRef={pasteTextRef}
           suggestions={task.suggestions}
         />
       )}

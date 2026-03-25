@@ -15,6 +15,7 @@ interface Props {
   onSaveDraft?: (text: string) => void;
   inputRef?: RefObject<HTMLTextAreaElement>;
   insertTextRef?: RefObject<((text: string) => void) | null>;
+  pasteTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
   suggestions?: string[];
 }
@@ -52,6 +53,7 @@ export function InputBox({
   onSaveDraft,
   inputRef,
   insertTextRef,
+  pasteTextRef,
   onEscape,
   suggestions,
 }: Props) {
@@ -104,6 +106,27 @@ export function InputBox({
       insertTextRef.current = null;
     };
   }, [insertTextRef]);
+
+  useEffect(() => {
+    if (!pasteTextRef) return;
+    pasteTextRef.current = (pasted: string) => {
+      const ta = textareaRef.current;
+      const start = ta?.selectionStart ?? 0;
+      const end = ta?.selectionEnd ?? 0;
+      setText((prev) => prev.slice(0, start) + pasted + prev.slice(end));
+      requestAnimationFrame(() => {
+        if (ta) {
+          const pos = start + pasted.length;
+          ta.selectionStart = pos;
+          ta.selectionEnd = pos;
+        }
+      });
+      ta?.focus();
+    };
+    return () => {
+      pasteTextRef.current = null;
+    };
+  }, [pasteTextRef]);
 
   // Pre-fill with unsaved user messages recovered after session reload
   useEffect(() => {
