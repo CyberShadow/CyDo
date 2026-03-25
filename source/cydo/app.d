@@ -34,7 +34,7 @@ import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
-import cydo.sandbox : ResolvedSandbox, buildBwrapArgs, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
@@ -1752,7 +1752,7 @@ class App : ToolsBackend
 		if (mcpSocketPath.length > 0)
 			td.sandbox.paths[mcpSocketPath] = PathMode.ro;
 
-		auto bwrapPrefix = buildBwrapArgs(td.sandbox, chdir);
+		auto cmdPrefix = buildCommandPrefix(td.sandbox, chdir);
 
 		// Pass workspace and working directory for agents that need them (Codex).
 		sessionConfig.workspace = td.workspace;
@@ -1771,7 +1771,7 @@ class App : ToolsBackend
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
-		td.session = taskAgent.createSession(tid, td.agentSessionId, bwrapPrefix, sessionConfig);
+		td.session = taskAgent.createSession(tid, td.agentSessionId, cmdPrefix, sessionConfig);
 
 		// Track MCP config temp file for cleanup
 		if (taskAgent.lastMcpConfigPath.length > 0)
@@ -2696,14 +2696,14 @@ class App : ToolsBackend
 		{
 			auto sandbox = resolveSandboxForDiscovery(
 				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
-			auto bwrapArgs = buildBwrapArgs(sandbox, "/");
+			auto cmdPrefix = buildCommandPrefix(sandbox, "/");
 			auto isProjectJson = ws.project_discovery.is_project.isConfigured
 				? ws.project_discovery.is_project.toJson().toString()
 				: "";
 			auto recurseWhenJson = ws.project_discovery.recurse_when.isConfigured
 				? ws.project_discovery.recurse_when.toJson().toString()
 				: "";
-			auto cmd = bwrapArgs ~ cydoBinaryPath
+			auto cmd = (cmdPrefix !is null ? cmdPrefix : []) ~ cydoBinaryPath
 				~ ["discover", ws.root, ws.name, isProjectJson, recurseWhenJson]
 				~ ws.exclude;
 

@@ -5,6 +5,8 @@ import std.path : buildPath, dirName, expandTilde;
 import std.process : environment;
 import std.logger : tracef, warningf;
 
+import configy.attributes : SetInfo;
+
 import cydo.agent.agent : Agent;
 import cydo.config : GitIdentityConfig, PathMode, SandboxConfig;
 
@@ -28,11 +30,16 @@ string cydoBinaryDir()
 /// Resolved sandbox configuration after merging all layers.
 struct ResolvedSandbox
 {
+	bool isolate_filesystem;
+	bool isolate_processes;
+	bool isolate_environment;
 	PathMode[string] paths;
 	string[string] env;
 	string gitName;
 	string gitEmail;
 	string[] tempFiles; // temp files to clean up on exit
+
+	@property bool useBwrap() const { return isolate_filesystem || isolate_processes; }
 }
 
 /// Merge four layers of sandbox config: agent defaults → global config → per-agent config → per-workspace config.
@@ -106,6 +113,20 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	if (workspace.git.email.length > 0)
 		result.gitEmail = workspace.git.email;
 
+	// Resolve isolation flags (last-writer-wins across layers)
+	result.isolate_filesystem = true;
+	result.isolate_processes = true;
+	result.isolate_environment = true;
+	overrideBool(result.isolate_filesystem, global.isolate_filesystem);
+	overrideBool(result.isolate_filesystem, agentTypeConfig.isolate_filesystem);
+	overrideBool(result.isolate_filesystem, workspace.isolate_filesystem);
+	overrideBool(result.isolate_processes, global.isolate_processes);
+	overrideBool(result.isolate_processes, agentTypeConfig.isolate_processes);
+	overrideBool(result.isolate_processes, workspace.isolate_processes);
+	overrideBool(result.isolate_environment, global.isolate_environment);
+	overrideBool(result.isolate_environment, agentTypeConfig.isolate_environment);
+	overrideBool(result.isolate_environment, workspace.isolate_environment);
+
 	return result;
 }
 
@@ -158,133 +179,169 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 		expandedEnv[k] = expandAllTildes(v, home);
 	result.env = expandedEnv;
 
+	// Resolve isolation flags (last-writer-wins across layers)
+	result.isolate_filesystem = true;
+	result.isolate_processes = true;
+	result.isolate_environment = true;
+	overrideBool(result.isolate_filesystem, global.isolate_filesystem);
+	overrideBool(result.isolate_filesystem, workspace.isolate_filesystem);
+	overrideBool(result.isolate_processes, global.isolate_processes);
+	overrideBool(result.isolate_processes, workspace.isolate_processes);
+	overrideBool(result.isolate_environment, global.isolate_environment);
+	overrideBool(result.isolate_environment, workspace.isolate_environment);
+
 	return result;
 }
 
-/// Build the full bwrap command-line arguments.
-/// Returns the bwrap prefix including all flags — append the inner command after this.
-string[] buildBwrapArgs(ref ResolvedSandbox sandbox, string workDir)
+/// Build the command prefix for running a process with sandbox settings.
+/// Returns bwrap args when filesystem or process isolation is needed,
+/// env args when only environment/workdir management is needed,
+/// or null when no prefix is required.
+/// Append the inner command after the returned prefix.
+string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir)
 {
+	if (!sandbox.useBwrap)
+		return buildEnvPrefix(sandbox, workDir);
+
 	string[] args;
 
 	args ~= findBwrap();
 
-	// Namespace isolation (hardcoded)
-	args ~= [
-		"--unshare-ipc",
-		"--unshare-pid",
-		"--as-pid-1",
-		"--unshare-uts",
-		"--unshare-cgroup",
-		"--share-net",
-		"--die-with-parent",
-	];
-
-	// Pseudo-filesystems (hardcoded)
-	args ~= ["--dev", "/dev"];
-	args ~= ["--proc", "/proc"];
-	args ~= ["--tmpfs", "/tmp"];
-
-	auto currentSystem = resolveNixCurrentSystem();
-
-	if (currentSystem.length > 0)
+	// Process isolation — gated on sandbox.isolate_processes
+	if (sandbox.isolate_processes)
 	{
-		// NixOS: mount nix store, system binaries, and minimal /etc + /run
-		// entries needed for DNS, TLS, and bwrap-wrapped binaries.
-		static immutable nixPaths = [
-			"/nix",
-			"/bin",
-			"/lib64",
-			"/usr/bin",
-			"/etc/nix",
-			"/etc/static/nix",
-			"/etc/resolv.conf",
-			"/etc/ssl",
-			"/etc/static/ssl",
+		args ~= [
+			"--unshare-ipc",
+			"--unshare-pid",
+			"--as-pid-1",
+			"--unshare-uts",
+			"--unshare-cgroup",
 		];
-		foreach (p; nixPaths)
-			if (exists(p))
-				args ~= ["--ro-bind", p, p];
+	}
 
-		args ~= ["--tmpfs", "/run"];
-		args ~= ["--symlink", currentSystem, "/run/current-system"];
-		if (exists("/run/wrappers"))
-			args ~= ["--ro-bind", "/run/wrappers", "/run/wrappers"];
+	args ~= "--share-net";
+	args ~= "--die-with-parent";
+
+	if (sandbox.isolate_filesystem)
+	{
+		// Restricted mode: selective bind mounts
+
+		// Pseudo-filesystems
+		args ~= ["--dev", "/dev"];
+		args ~= ["--proc", "/proc"];
+		args ~= ["--tmpfs", "/tmp"];
+
+		auto currentSystem = resolveNixCurrentSystem();
+
+		if (currentSystem.length > 0)
+		{
+			// NixOS: mount nix store, system binaries, and minimal /etc + /run
+			// entries needed for DNS, TLS, and bwrap-wrapped binaries.
+			static immutable nixPaths = [
+				"/nix",
+				"/bin",
+				"/lib64",
+				"/usr/bin",
+				"/etc/nix",
+				"/etc/static/nix",
+				"/etc/resolv.conf",
+				"/etc/ssl",
+				"/etc/static/ssl",
+			];
+			foreach (p; nixPaths)
+				if (exists(p))
+					args ~= ["--ro-bind", p, p];
+
+			args ~= ["--tmpfs", "/run"];
+			args ~= ["--symlink", currentSystem, "/run/current-system"];
+			if (exists("/run/wrappers"))
+				args ~= ["--ro-bind", "/run/wrappers", "/run/wrappers"];
+		}
+		else
+		{
+			// non-NixOS: bind-mount system directories so dynamically linked
+			// binaries can find shared libraries, the ELF interpreter (ld-linux),
+			// DNS resolver (systemd-resolved socket in /run), and CA certificates
+			if (exists("/run"))
+				args ~= ["--ro-bind", "/run", "/run"];
+			if (exists("/etc"))
+				args ~= ["--ro-bind", "/etc", "/etc"];
+			if (exists("/usr"))
+				args ~= ["--ro-bind", "/usr", "/usr"];
+			if (exists("/lib64") && isSymlink("/lib64"))
+				args ~= ["--symlink", readLink("/lib64"), "/lib64"];
+			else if (exists("/lib64"))
+				args ~= ["--ro-bind", "/lib64", "/lib64"];
+			if (exists("/lib") && isSymlink("/lib"))
+				args ~= ["--symlink", readLink("/lib"), "/lib"];
+			else if (exists("/lib") && !exists("/lib64"))
+				args ~= ["--ro-bind", "/lib", "/lib"];
+		}
+
+		// Cgroup filesystem
+		if (exists("/sys/fs/cgroup"))
+			args ~= ["--bind", "/sys/fs/cgroup", "/sys/fs/cgroup"];
+
+		// Configured path binds — sorted by length so parent dirs are bound before
+		// children.  This ensures a child rw bind overrides a parent ro bind.
+		import std.algorithm : sort;
+		import std.array : array;
+		auto sortedPaths = sandbox.paths.byKeyValue.array;
+		sortedPaths.sort!((a, b) => a.key.length < b.key.length);
+		foreach (entry; sortedPaths)
+		{
+			final switch (entry.value)
+			{
+				case PathMode.ro: args ~= ["--ro-bind", entry.key, entry.key]; break;
+				case PathMode.rw: args ~= ["--bind", entry.key, entry.key]; break;
+				case PathMode.always_rw: args ~= ["--bind", entry.key, entry.key]; break;
+				case PathMode.tmpfs:
+					args ~= ["--tmpfs", entry.key];
+					break;
+				case PathMode.empty_dir:
+					args ~= ["--ro-bind", emptyDirPath(), entry.key];
+					break;
+				case PathMode.empty_file:
+					args ~= ["--ro-bind", emptyFilePath(), entry.key];
+					break;
+			}
+		}
+
+		// /etc/passwd injection
+		auto passwdTmp = createPasswdTempFile();
+		if (passwdTmp.length > 0)
+		{
+			args ~= ["--ro-bind", passwdTmp, "/etc/passwd"];
+			sandbox.tempFiles ~= passwdTmp;
+		}
+
+		// Git config injection
+		auto gitTmp = createGitConfigTempFile(sandbox.gitName, sandbox.gitEmail);
+		if (gitTmp.length > 0)
+		{
+			auto home = environment.get("HOME", "");
+			args ~= ["--ro-bind", gitTmp, buildPath(home, ".config/git/config")];
+			sandbox.tempFiles ~= gitTmp;
+		}
 	}
 	else
 	{
-		// non-NixOS: bind-mount system directories so dynamically linked
-		// binaries can find shared libraries, the ELF interpreter (ld-linux),
-		// DNS resolver (systemd-resolved socket in /run), and CA certificates
-		if (exists("/run"))
-			args ~= ["--ro-bind", "/run", "/run"];
-		if (exists("/etc"))
-			args ~= ["--ro-bind", "/etc", "/etc"];
-		if (exists("/usr"))
-			args ~= ["--ro-bind", "/usr", "/usr"];
-		if (exists("/lib64") && isSymlink("/lib64"))
-			args ~= ["--symlink", readLink("/lib64"), "/lib64"];
-		else if (exists("/lib64"))
-			args ~= ["--ro-bind", "/lib64", "/lib64"];
-		if (exists("/lib") && isSymlink("/lib"))
-			args ~= ["--symlink", readLink("/lib"), "/lib"];
-		else if (exists("/lib") && !exists("/lib64"))
-			args ~= ["--ro-bind", "/lib", "/lib"];
-	}
-
-	// Cgroup filesystem
-	if (exists("/sys/fs/cgroup"))
-		args ~= ["--bind", "/sys/fs/cgroup", "/sys/fs/cgroup"];
-
-	// Configured path binds — sorted by length so parent dirs are bound before
-	// children.  This ensures a child rw bind overrides a parent ro bind.
-	import std.algorithm : sort;
-	import std.array : array;
-	auto sortedPaths = sandbox.paths.byKeyValue.array;
-	sortedPaths.sort!((a, b) => a.key.length < b.key.length);
-	foreach (entry; sortedPaths)
-	{
-		final switch (entry.value)
-		{
-			case PathMode.ro: args ~= ["--ro-bind", entry.key, entry.key]; break;
-			case PathMode.rw: args ~= ["--bind", entry.key, entry.key]; break;
-			case PathMode.always_rw: args ~= ["--bind", entry.key, entry.key]; break;
-			case PathMode.tmpfs:
-				args ~= ["--tmpfs", entry.key];
-				break;
-			case PathMode.empty_dir:
-				args ~= ["--ro-bind", emptyDirPath(), entry.key];
-				break;
-			case PathMode.empty_file:
-				args ~= ["--ro-bind", emptyFilePath(), entry.key];
-				break;
-		}
-	}
-
-	// /etc/passwd injection
-	auto passwdTmp = createPasswdTempFile();
-	if (passwdTmp.length > 0)
-	{
-		args ~= ["--ro-bind", passwdTmp, "/etc/passwd"];
-		sandbox.tempFiles ~= passwdTmp;
-	}
-
-	// Git config injection
-	auto gitTmp = createGitConfigTempFile(sandbox.gitName, sandbox.gitEmail);
-	if (gitTmp.length > 0)
-	{
-		auto home = environment.get("HOME", "");
-		args ~= ["--ro-bind", gitTmp, buildPath(home, ".config/git/config")];
-		sandbox.tempFiles ~= gitTmp;
+		// Unrestricted filesystem: --dev-bind / / gives the child full host
+		// filesystem access including device nodes, /proc, etc.
+		// bwrap always creates a mount namespace, so this is required.
+		args ~= ["--dev-bind", "/", "/"];
 	}
 
 	// Environment
-	args ~= "--clearenv";
-	args ~= ["--setenv", "HOME", environment.get("HOME", "/tmp")];
+	if (sandbox.isolate_environment)
+	{
+		args ~= "--clearenv";
+		args ~= ["--setenv", "HOME", environment.get("HOME", "/tmp")];
 
-	auto nixPath = environment.get("NIX_PATH", "");
-	if (nixPath.length > 0)
-		args ~= ["--setenv", "NIX_PATH", nixPath];
+		auto nixPath = environment.get("NIX_PATH", "");
+		if (nixPath.length > 0)
+			args ~= ["--setenv", "NIX_PATH", nixPath];
+	}
 
 	foreach (k, v; sandbox.env)
 		args ~= ["--setenv", k, v];
@@ -315,6 +372,46 @@ void cleanup(ref ResolvedSandbox sandbox)
 }
 
 private:
+
+/// Override dest with source value if source was explicitly set in config.
+void overrideBool(ref bool dest, SetInfo!bool source)
+{
+	if (source.set)
+		dest = source.value;
+}
+
+/// Build an env-based command prefix for non-bwrap mode.
+string[] buildEnvPrefix(ref ResolvedSandbox sandbox, string workDir)
+{
+	bool hasEnv = (sandbox.env !is null && sandbox.env.length > 0) || sandbox.isolate_environment;
+	bool hasWorkDir = workDir.length > 0;
+
+	if (!hasEnv && !hasWorkDir)
+		return null;
+
+	string[] args = ["env"];
+
+	// Options (-i, -C) must come before KEY=VALUE assignments;
+	// GNU env stops option parsing at the first NAME=VALUE argument.
+	if (sandbox.isolate_environment)
+		args ~= "-i";
+
+	if (hasWorkDir)
+		args ~= ["-C", workDir];
+
+	if (sandbox.isolate_environment)
+	{
+		args ~= "HOME=" ~ environment.get("HOME", "/tmp");
+		auto nixPath = environment.get("NIX_PATH", "");
+		if (nixPath.length > 0)
+			args ~= "NIX_PATH=" ~ nixPath;
+	}
+
+	foreach (k, v; sandbox.env)
+		args ~= k ~ "=" ~ v;
+
+	return args;
+}
 
 /// Return the CyDo runtime directory (e.g. /run/user/1000/cydo/).
 /// Uses $XDG_RUNTIME_DIR if set, otherwise /tmp/cydo-<uid>/.

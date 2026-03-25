@@ -75,12 +75,12 @@ class ClaudeCodeAgent : Agent
 
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
 			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
-		return new ClaudeCodeSession(resumeSessionId, bwrapPrefix, lastMcpConfigPath_, config);
+		return new ClaudeCodeSession(resumeSessionId, cmdPrefix, lastMcpConfigPath_, config);
 	}
 
 	string parseSessionId(string line)
@@ -454,7 +454,7 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 
-	this(string resumeSessionId = null, string[] bwrapPrefix = null,
+	this(string resumeSessionId = null, string[] cmdPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
 		string[] claudeArgs = [
@@ -486,10 +486,10 @@ class ClaudeCodeSession : AgentSession
 			: "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion";
 		claudeArgs ~= ["--disallowedTools", disallowed];
 
-		// When sandboxed, bwrap handles workDir via --chdir
+		// When sandboxed, cmdPrefix handles workDir via --chdir (bwrap) or -C (env)
 		string[] args;
-		if (bwrapPrefix !is null)
-			args = bwrapPrefix ~ claudeArgs;
+		if (cmdPrefix !is null)
+			args = cmdPrefix ~ claudeArgs;
 		else
 			args = claudeArgs;
 

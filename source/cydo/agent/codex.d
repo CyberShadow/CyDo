@@ -614,11 +614,11 @@ class CodexAgent : Agent
 	@property string gitEmail() { return "noreply@openai.com"; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
 		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
-		auto server = getOrCreateServer(workspace, bwrapPrefix);
+		auto server = getOrCreateServer(workspace, cmdPrefix);
 		auto session = new CodexSession(server, tid, config);
 		server.registerSessionByTid(tid, session);
 
@@ -681,7 +681,7 @@ class CodexAgent : Agent
 		return session;
 	}
 
-	private AppServerProcess getOrCreateServer(string workspace, string[] bwrapPrefix)
+	private AppServerProcess getOrCreateServer(string workspace, string[] cmdPrefix)
 	{
 		if (auto existing = workspace in serverPool)
 			if (!existing.dead)
@@ -689,8 +689,8 @@ class CodexAgent : Agent
 
 		string[] codexArgs = [getCodexBinName(), "app-server", "--listen", "stdio://"];
 		string[] args;
-		if (bwrapPrefix !is null)
-			args = bwrapPrefix ~ codexArgs;
+		if (cmdPrefix !is null)
+			args = cmdPrefix ~ codexArgs;
 		else
 			args = codexArgs;
 

@@ -1,6 +1,6 @@
 module cydo.config;
 
-import configy.attributes : Key, Optional;
+import configy.attributes : Key, Optional, SetInfo;
 import configy.read : parseConfigFileSimple;
 
 import std.typecons : Nullable;
@@ -17,6 +17,9 @@ struct GitIdentityConfig
 
 struct SandboxConfig
 {
+	@Optional SetInfo!bool isolate_filesystem;
+	@Optional SetInfo!bool isolate_processes;
+	@Optional SetInfo!bool isolate_environment;
 	@Optional PathMode[string] paths;
 	@Optional string[string] env;
 	@Optional GitIdentityConfig git;

@@ -84,7 +84,7 @@ class CopilotAgent : Agent
 	@property string gitEmail() { return "noreply@github.com"; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
 		auto model = config.model.length > 0 ? resolveModelAlias(config.model) : "";
@@ -105,8 +105,8 @@ class CopilotAgent : Agent
 			copilotArgs ~= ["--additional-mcp-config", "@" ~ mcpConfigPath];
 
 		string[] args;
-		if (bwrapPrefix !is null)
-			args = bwrapPrefix ~ copilotArgs;
+		if (cmdPrefix !is null)
+			args = cmdPrefix ~ copilotArgs;
 		else
 			args = copilotArgs;
 
@@ -117,7 +117,7 @@ class CopilotAgent : Agent
 		auto server = new SdkProcess(args, null, null);
 		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
-		auto session = new CopilotSession(server, tid, sessionId, model, workDir, bwrapPrefix, toolDispatch_);
+		auto session = new CopilotSession(server, tid, sessionId, model, workDir, cmdPrefix, toolDispatch_);
 
 		// Register before sending create/resume so events can be routed immediately.
 		server.registerSession(sessionId, session);
@@ -576,7 +576,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private string sessionId;
 	private string model;
 	private string workDir;
-	private string[] bwrapPrefix_;
+	private string[] cmdPrefix_;
 	private bool alive_;
 	private bool turnInProgress;
 	private bool replayMode; // true during session.resume replay
@@ -613,14 +613,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private void delegate(int status) exitHandler_;
 
 	this(SdkProcess server, int tid, string sessionId, string model, string workDir,
-		string[] bwrapPrefix = null, ToolDispatchFn toolDispatch = null)
+		string[] cmdPrefix = null, ToolDispatchFn toolDispatch = null)
 	{
 		this.server = server;
 		this.tid = tid;
 		this.sessionId = sessionId;
 		this.model = model;
 		this.workDir = workDir;
-		this.bwrapPrefix_ = bwrapPrefix;
+		this.cmdPrefix_ = cmdPrefix;
 		this.toolDispatch_ = toolDispatch;
 		this.alive_ = true;
 	}

@@ -37,9 +37,9 @@ interface Agent
 	@property string gitEmail();
 
 	/// Create a new session (or resume an existing one).
-	/// bwrapPrefix is the full bwrap command including --bind/--chdir
-	/// for the work directory. tid identifies the task for MCP tool routing.
-	AgentSession createSession(int tid, string resumeSessionId, string[] bwrapPrefix,
+	/// cmdPrefix is the full command prefix (bwrap or env) including workdir handling.
+	/// tid identifies the task for MCP tool routing.
+	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init);
 
 	/// Try to extract the agent session ID from an output line.
