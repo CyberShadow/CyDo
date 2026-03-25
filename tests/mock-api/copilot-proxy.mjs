@@ -169,6 +169,22 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
       "[DONE]",
     ]);
+  } else if (intent.type === "stall") {
+    // Send an initial SSE header and one empty assistant delta, then stall indefinitely.
+    // The connection stays open so the copilot process keeps waiting for more data.
+    const initialChunk = `data: ${JSON.stringify({ id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] })}\n\n`;
+    const response =
+      `HTTP/1.1 200 OK\r\n` +
+      `Content-Type: text/event-stream\r\n` +
+      `Cache-Control: no-cache\r\n` +
+      `Transfer-Encoding: chunked\r\n` +
+      `\r\n`;
+    socket.write(response);
+    const buf = Buffer.from(initialChunk);
+    socket.write(`${buf.length.toString(16)}\r\n`);
+    socket.write(buf);
+    socket.write(`\r\n`);
+    // Do NOT close the connection — leave it open so the process stalls.
   } else if (intent.type === "shell") {
     // Use the CyDo MCP Bash tool — copilot's native bash fails in the sandbox
     const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
