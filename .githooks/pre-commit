@@ -1,2 +1,49 @@
 #!/usr/bin/env bash
-# Pre-commit hook — see commit 2 for nix flake check verification
+#
+# Pre-commit hook: verify that `nix flake check` has passed for the
+# exact tree being committed.
+#
+# How it works:
+#   1. Creates an ephemeral commit from the index (no ref/worktree mutation)
+#   2. Evaluates nix to get derivation output paths for that tree
+#   3. Checks if all outputs exist in the nix store
+#
+# If any check output is missing, the commit is rejected with a message
+# to run `nix flake check` first.
+
+set -euo pipefail
+
+# Create ephemeral commit from the index
+TREE=$(git write-tree)
+COMMIT=$(git commit-tree "$TREE" -m 'pre-commit check')
+
+# Get system architecture
+SYSTEM=$(nix eval --raw --impure --expr 'builtins.currentSystem')
+
+# Evaluate derivation output paths (no building, just evaluation ~2s)
+PATHS=$(nix eval ".?rev=$COMMIT#checks.$SYSTEM" \
+  --apply 'builtins.mapAttrs (_: c: c.outPath)' --json 2>/dev/null) || {
+  echo "error: could not evaluate flake checks"
+  exit 1
+}
+
+# Check all outputs exist in the nix store
+MISSING=()
+while IFS= read -r path; do
+  if ! nix path-info "$path" >/dev/null 2>&1; then
+    MISSING+=("$path")
+  fi
+done < <(echo "$PATHS" | jq -r '.[]')
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "nix flake check has not passed for this tree."
+  echo ""
+  echo "Run:"
+  echo "  nix flake check"
+  echo ""
+  echo "Missing outputs:"
+  for p in "${MISSING[@]}"; do
+    echo "  $p"
+  done
+  exit 1
+fi
