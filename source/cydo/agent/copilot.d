@@ -448,11 +448,6 @@ class CopilotAgent : Agent
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
 				auto toolName = ev.data.mcpToolName.length > 0 ? ev.data.mcpToolName
 					: ev.data.toolName.length > 0 ? ev.data.toolName : "unknown";
-				// Convert cydo- prefix to mcp__cydo__ so protocol events match
-				// Claude Code's MCP naming convention and the frontend can
-				// distinguish our tools from built-in or third-party ones.
-				if (toolName.startsWith("cydo-"))
-					toolName = "mcp__cydo__" ~ toolName[5 .. $];
 				auto inputFrag = ev.data.arguments;
 				string inputJson = inputFrag.json !is null && inputFrag.json.length > 0
 					? inputFrag.json : `{}`;
@@ -460,7 +455,14 @@ class CopilotAgent : Agent
 				ItemStartedEvent startEv;
 				startEv.item_id   = toolId;
 				startEv.item_type = "tool_use";
-				startEv.name      = toolName;
+				if (toolName.startsWith("cydo-"))
+				{
+					startEv.name        = toolName[5 .. $];
+					startEv.tool_server = "cydo";
+					startEv.tool_source = "mcp";
+				}
+				else
+					startEv.name = toolName;
 				startEv.input     = JSONFragment(inputJson);
 
 				ItemCompletedEvent compEv;
@@ -1011,10 +1013,10 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		auto dispatchName = req.toolName;
 		if (dispatchName.startsWith("cydo-"))
 			dispatchName = dispatchName[5 .. $];
-		// Convert cydo- prefix to mcp__cydo__ for UI display (matches Claude Code convention).
 		auto displayName = req.toolName;
-		if (displayName.startsWith("cydo-"))
-			displayName = "mcp__cydo__" ~ displayName[5 .. $];
+		bool isCydo = displayName.startsWith("cydo-");
+		if (isCydo)
+			displayName = displayName[5 .. $];
 
 		// Set up an active item for UI rendering before the async dispatch.
 		// If handleToolExecutionStart already created an activeItem for the
@@ -1035,6 +1037,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				outputHandler_(
 					`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
 					~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
+					~ (isCydo ? `","tool_server":"cydo","tool_source":"mcp` : "")
 					~ `","input":` ~ inputJson ~ `}`);
 		}
 		auto itemId = activeItem.id;
@@ -1178,9 +1181,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		auto id = ts.toolCallId;
 		auto name = ts.toolName;
-		// Convert cydo- prefix to mcp__cydo__ (Claude Code MCP convention).
+		string toolServer;
+		string toolSource;
 		if (name.startsWith("cydo-"))
-			name = "mcp__cydo__" ~ name[5 .. $];
+		{
+			toolServer = "cydo";
+			toolSource = "mcp";
+			name = name[5 .. $];
+		}
 		string inputJson = ts.arguments.json !is null && ts.arguments.json.length > 0
 			? ts.arguments.json : "{}";
 
@@ -1190,6 +1198,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			outputHandler_(
 				`{"type":"item/started","item_id":"` ~ cpEscape(id)
 				~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
+				~ (toolServer.length > 0 ? `","tool_server":"cydo","tool_source":"mcp` : "")
 				~ `","input":` ~ inputJson ~ `}`);
 
 		// Emit the full input as a single input_json_delta so the UI can
@@ -1462,8 +1471,8 @@ string cydoBinaryDir()
 /// Build tool definitions JSON array for session.create params.
 /// Only includes tools if an MCP socket is configured (tools backend is available).
 /// Tool names use `cydo-` prefix to avoid collisions with built-in or third-party tools.
-/// The prefix is stripped to canonical names for dispatch (handleToolCall), and converted
-/// to `mcp__cydo__` format for UI events (matching Claude Code's MCP naming convention).
+/// The prefix is stripped to canonical names for dispatch (handleToolCall), and structured
+/// tool_server/tool_source fields are set for UI events.
 string buildToolDefinitions(SessionConfig config)
 {
 	if (config.mcpSocketPath.length == 0)

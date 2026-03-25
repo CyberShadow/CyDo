@@ -971,6 +971,8 @@ export function reduceItemStarted(
     type: event.item_type,
     text: event.text ?? "",
     name: event.name,
+    toolServer: event.tool_server,
+    toolSource: event.tool_source,
     input:
       event.item_type === "tool_use" && event.name === "fileChange"
         ? (event.input ??

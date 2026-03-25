@@ -33,7 +33,9 @@ import { CodePre } from "./CopyButton";
  *    prominently.
  */
 
-const CYDO_PREFIX = "mcp__cydo__";
+function toolKey(name: string, server?: string): string {
+  return server ? `${server}:${name}` : name;
+}
 
 function ResultPre({
   content,
@@ -83,17 +85,10 @@ const fileWriteToolNames = new Set([
   "fileChange", // Codex live
 ]);
 
-function getDisplayName(name: string): string {
-  return name.startsWith(CYDO_PREFIX) ? name.slice(CYDO_PREFIX.length) : name;
-}
-
-/** Check if a tool name (possibly mcp__cydo__ prefixed) matches a set. */
-function toolNameIn(name: string, set: Set<string>): boolean {
-  return set.has(name) || set.has(getDisplayName(name));
-}
-
 interface Props {
   name: string;
+  toolServer?: string;
+  toolSource?: string;
   toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
@@ -1288,7 +1283,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "durationMs",
   ]),
   AskUserQuestion: new Set(["questions", "answers", "annotations"]),
-  mcp__cydo__AskUserQuestion: new Set(["questions", "answers"]),
+  "cydo:AskUserQuestion": new Set(["questions", "answers"]),
   Task: new Set([
     "status",
     "prompt",
@@ -1340,13 +1335,14 @@ const knownResultFields: Record<string, Set<string>> = {
   EnterPlanMode: new Set(["message"]),
   ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
   NotebookEdit: new Set([]),
-  mcp__cydo__Task: new Set(["tasks", "content", "structuredContent"]),
-  mcp__cydo__SwitchMode: new Set(["message"]),
-  mcp__cydo__Handoff: new Set(["message"]),
+  "cydo:Task": new Set(["tasks", "content", "structuredContent"]),
+  "cydo:SwitchMode": new Set(["message"]),
+  "cydo:Handoff": new Set(["message"]),
 };
 
 function formatToolUseResult(
   name: string,
+  toolServer: string | undefined,
   toolResult: Record<string, unknown> | unknown[],
 ): h.JSX.Element | null {
   if (Array.isArray(toolResult)) {
@@ -1370,7 +1366,7 @@ function formatToolUseResult(
 
   if (Object.keys(toolResult).length === 0) return null;
 
-  const known = knownResultFields[name];
+  const known = knownResultFields[toolKey(name, toolServer)];
   const unknown: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(toolResult)) {
     if (!known?.has(k)) unknown[k] = v;
@@ -1392,6 +1388,7 @@ function formatToolUseResult(
 
 function getHeaderSubtitle(
   name: string,
+  toolServer: string | undefined,
   input: Record<string, unknown>,
 ): h.JSX.Element | null {
   const viewPaths = getToolCallFilePaths(name, input);
@@ -1405,7 +1402,7 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (toolNameIn(name, fileWriteToolNames) && filePath) {
+  if (fileWriteToolNames.has(name) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
   }
   if (name === "fileChange" || name === "apply_patch") {
@@ -1455,10 +1452,7 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (
-    (name === "AskUserQuestion" || name === "mcp__cydo__AskUserQuestion") &&
-    Array.isArray(input.questions)
-  ) {
+  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
     const questions = input.questions as AskQuestion[];
     if (questions.length === 1) {
       return <span class="tool-subtitle">{questions[0]!.header}</span>;
@@ -1483,10 +1477,7 @@ function getHeaderSubtitle(
       </a>
     );
   }
-  if (
-    toolNameIn(name, shellToolNames) &&
-    typeof input.description === "string"
-  ) {
+  if (shellToolNames.has(name) && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
   if (name === "Task" && typeof input.description === "string") {
@@ -1501,15 +1492,20 @@ function getHeaderSubtitle(
   }
   // --- CyDo MCP tools ---
   if (
-    name === "mcp__cydo__SwitchMode" &&
+    name === "SwitchMode" &&
+    toolServer === "cydo" &&
     typeof input.continuation === "string"
   ) {
     return <span class="tool-subtitle">{input.continuation}</span>;
   }
-  if (name === "mcp__cydo__Handoff" && typeof input.continuation === "string") {
+  if (
+    name === "Handoff" &&
+    toolServer === "cydo" &&
+    typeof input.continuation === "string"
+  ) {
     return <span class="tool-subtitle">{input.continuation}</span>;
   }
-  if (name === "mcp__cydo__Task") {
+  if (name === "Task" && toolServer === "cydo") {
     const tasks = input.tasks as
       | Array<{ task_type?: string; description?: string }>
       | undefined;
@@ -1609,6 +1605,7 @@ function getHeaderSubtitle(
 
 function formatInput(
   name: string,
+  toolServer: string | undefined,
   input: Record<string, unknown>,
   result?: ToolResult,
 ): h.JSX.Element {
@@ -1616,7 +1613,7 @@ function formatInput(
     return <EditInput input={input} result={result} />;
   }
   if (
-    toolNameIn(name, fileWriteToolNames) &&
+    fileWriteToolNames.has(name) &&
     "file_path" in input &&
     "content" in input
   ) {
@@ -1628,10 +1625,7 @@ function formatInput(
   ) {
     return formatTodoWriteInput(input);
   }
-  if (
-    (name === "AskUserQuestion" || name === "mcp__cydo__AskUserQuestion") &&
-    Array.isArray(input.questions)
-  ) {
+  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
     return <AskUserQuestionInput input={input} result={result} />;
   }
   if (name === "ExitPlanMode" && typeof input.plan === "string") {
@@ -1654,7 +1648,7 @@ function formatInput(
     );
   }
   if (
-    toolNameIn(name, shellToolNames) &&
+    shellToolNames.has(name) &&
     (typeof input.command === "string" || typeof input.cmd === "string")
   ) {
     return <ShellCommandInput input={input} />;
@@ -1668,10 +1662,10 @@ function formatInput(
     return formatGenericInput(remaining);
   }
   // --- CyDo MCP tools ---
-  if (name === "mcp__cydo__Task" && Array.isArray(input.tasks)) {
+  if (name === "Task" && toolServer === "cydo" && Array.isArray(input.tasks)) {
     return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
   }
-  if (name === "mcp__cydo__Handoff") {
+  if (name === "Handoff" && toolServer === "cydo") {
     const { continuation, prompt: handoffPrompt, ...remaining } = input;
     return formatGenericInput(
       remaining,
@@ -1880,9 +1874,8 @@ const defaultExpandedTools = new Set([
   "TodoWrite",
   "AskUserQuestion",
   "WebFetch",
-  "mcp__cydo__Task",
-  "mcp__cydo__Handoff",
-  "mcp__cydo__AskUserQuestion",
+  "Task",
+  "Handoff",
   "SendMessage",
   "TaskCreate",
 ]);
@@ -1894,15 +1887,15 @@ const defaultExpandedResults = new Set([
   "Task",
   "WebSearch",
   "WebFetch",
-  "mcp__cydo__Task",
   "TaskOutput",
   "TaskStop",
 ]);
 
-const askToolNames = new Set(["AskUserQuestion", "mcp__cydo__AskUserQuestion"]);
+const askToolNames = new Set(["AskUserQuestion"]);
 
 export function ToolCall({
   name,
+  toolServer,
   toolUseId,
   input,
   result,
@@ -1913,22 +1906,25 @@ export function ToolCall({
   // Collapse pending AskUserQuestion input — the interactive form shows the same content
   const isAsk = askToolNames.has(name);
   const [inputOpen, setInputOpen] = useState(
-    isAsk ? !!result : toolNameIn(name, defaultExpandedTools),
+    isAsk ? !!result : defaultExpandedTools.has(name),
   );
   // Auto-expand when result arrives for ask tools
   useEffect(() => {
     if (isAsk && result) setInputOpen(true);
   }, [isAsk, !!result]);
   const [resultOpen, setResultOpen] = useState(
-    toolNameIn(name, defaultExpandedResults),
+    defaultExpandedResults.has(name),
   );
-  const subtitle = getHeaderSubtitle(name, input);
+  const subtitle = getHeaderSubtitle(name, toolServer, input);
   const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
 
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
   const resultText = result ? extractResultText(result.content) : null;
   const cydoTaskItems =
-    name === "mcp__cydo__Task" && resultText != null && !result!.isError
+    name === "Task" &&
+    toolServer === "cydo" &&
+    resultText != null &&
+    !result!.isError
       ? parseCydoTaskResult(resultText)
       : null;
   const useReadHighlight =
@@ -1988,7 +1984,7 @@ export function ToolCall({
         <span class="tool-icon">
           {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
         </span>
-        {name.startsWith(CYDO_PREFIX) && (
+        {toolServer === "cydo" && (
           <svg
             class="cydo-tool-logo"
             width="13"
@@ -2008,12 +2004,12 @@ export function ToolCall({
             />
           </svg>
         )}
-        <span class="tool-name">{getDisplayName(name)}</span>
+        <span class="tool-name">{name}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
         {(name === "Edit" ||
           name === "apply_patch" ||
-          toolNameIn(name, fileWriteToolNames)) &&
+          fileWriteToolNames.has(name)) &&
           viewPaths.length > 0 &&
           onViewFile && (
             <button
@@ -2059,7 +2055,7 @@ export function ToolCall({
           ))}
         </div>
       )}
-      {inputOpen && formatInput(name, input, result)}
+      {inputOpen && formatInput(name, toolServer, input, result)}
       {children}
       {result && (
         <div class="tool-result-section">
@@ -2147,6 +2143,7 @@ export function ToolCall({
                 typeof result.toolResult === "object" &&
                 formatToolUseResult(
                   name,
+                  toolServer,
                   result.toolResult as Record<string, unknown> | unknown[],
                 )}
             </>

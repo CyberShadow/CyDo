@@ -178,6 +178,8 @@ export function AssistantMessage({
               <Fragment key={itemId}>
                 <ToolCall
                   name={block.name}
+                  toolServer={block.toolServer}
+                  toolSource={block.toolSource}
                   toolUseId={block.itemId}
                   streaming={!block.completed}
                   input={

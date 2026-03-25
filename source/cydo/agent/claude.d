@@ -796,12 +796,12 @@ class ClaudeCodeSession : AgentSession
 					activeItemIds_[idx] = itemId;
 					activeItemTypes_[idx] = blockType;
 
-					import cydo.agent.protocol : ItemStartedEvent, injectRawField;
+					import cydo.agent.protocol : ItemStartedEvent, injectRawField, decomposeToolName;
 					ItemStartedEvent ev;
 					ev.item_id = itemId;
 					ev.item_type = blockType;
 					if (blockType == "tool_use")
-						ev.name = probe.content_block.name;
+						decomposeToolName(probe.content_block.name, ev.name, ev.tool_server, ev.tool_source);
 					emitEvent(injectRawField(toJson(ev), rawLine));
 				}
 				catch (Exception e)
@@ -1279,7 +1279,7 @@ private string[] translateClaudeHistoryEvent(string rawLine)
 private string[] translateAssistantHistory(string rawLine)
 {
 	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
-		UsageInfo, injectRawField;
+		UsageInfo, injectRawField, decomposeToolName;
 
 	static struct ClaudeThinkingBlock
 	{
@@ -1346,7 +1346,7 @@ private string[] translateAssistantHistory(string rawLine)
 		startEv.item_type = b.type;
 		if (b.type == "tool_use")
 		{
-			startEv.name  = b.name;
+			decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
 			startEv.input = b.input;
 		}
 		else

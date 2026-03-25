@@ -178,7 +178,9 @@ struct ItemStartedEvent
 	string type = "item/started";
 	string item_id;
 	string item_type;            // "text", "thinking", "tool_use", "user_message"
-	@JSONOptional string name;           // tool name for tool_use
+	@JSONOptional string name;           // tool name for tool_use (canonical, no prefix)
+	@JSONOptional string tool_server;    // MCP server name (e.g. "cydo", "github"); null = built-in
+	@JSONOptional string tool_source;    // "mcp" for MCP tools; null = built-in
 	@JSONOptional JSONFragment input;    // initial input for tool_use
 	@JSONOptional string text;           // initial text for text/thinking or user_message
 	@JSONOptional ContentBlock[] content; // structured content blocks (for user messages with images)
@@ -309,4 +311,25 @@ string extractRawField(string event)
 		return null;
 	// Value spans from after marker to before the closing }
 	return event[idx + marker.length .. $ - 1];
+}
+
+/// Decompose a raw tool name (possibly `mcp__server__tool`) into structured fields.
+/// On return, `name` holds the canonical display name, `tool_server` and `tool_source`
+/// are set for MCP tools and left unchanged (null) for built-in tools.
+void decomposeToolName(string rawName, ref string name, ref string tool_server, ref string tool_source)
+{
+	import std.string : indexOf;
+	if (rawName.length > 5 && rawName[0 .. 5] == "mcp__")
+	{
+		auto rest = rawName[5 .. $];
+		auto sep = indexOf(rest, "__");
+		if (sep >= 0)
+		{
+			tool_server = rest[0 .. sep];
+			name = rest[sep + 2 .. $];
+			tool_source = "mcp";
+			return;
+		}
+	}
+	name = rawName;
 }

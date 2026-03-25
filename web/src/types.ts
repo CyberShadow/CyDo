@@ -138,6 +138,8 @@ export interface Block {
   type: string; // "text" | "tool_use" | "thinking" | "unrecognized"
   text: string; // accumulated text content
   name?: string; // tool name (tool_use)
+  toolServer?: string; // MCP server name (e.g. "cydo"); absent for built-ins
+  toolSource?: string; // "mcp" for MCP tools; absent for built-ins
   input?: unknown; // tool input
   output?: string; // accumulated output (output_delta)
   stdin?: string; // accumulated stdin (stdin_delta)

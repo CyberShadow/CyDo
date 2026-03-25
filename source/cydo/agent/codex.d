@@ -1613,7 +1613,14 @@ class CodexSession : AgentSession
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				if (item.tool.length > 0)
-					ev.name = item.server.length > 0 ? "mcp__" ~ item.server ~ "__" ~ item.tool : item.tool;
+				{
+					ev.name = item.tool;
+					if (item.server.length > 0)
+					{
+						ev.tool_server = item.server;
+						ev.tool_source = "mcp";
+					}
+				}
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
 				if (item.arguments_.json !is null)
@@ -2144,7 +2151,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 string[] translateRolloutToolUse(string callId, string toolName, string inputJson)
 {
 	import std.uuid : randomUUID;
-	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent;
+	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, decomposeToolName;
 
 	if (callId.length == 0)
 		callId = randomUUID().toString();
@@ -2152,7 +2159,7 @@ string[] translateRolloutToolUse(string callId, string toolName, string inputJso
 	ItemStartedEvent startEv;
 	startEv.item_id = callId;
 	startEv.item_type = "tool_use";
-	startEv.name = toolName;
+	decomposeToolName(toolName, startEv.name, startEv.tool_server, startEv.tool_source);
 	if (inputJson.length > 0 && inputJson != `{}`)
 		startEv.input = JSONFragment(inputJson);
 

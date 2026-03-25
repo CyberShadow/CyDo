@@ -22,6 +22,8 @@ export interface AssistantContentBlock {
   text?: string;
   id?: string;
   name?: string;
+  tool_server?: string;
+  tool_source?: string;
   input?: Record<string, unknown>;
   caller?: { type: string; tool_id?: string };
   _extras?: Record<string, unknown>;
@@ -136,6 +138,8 @@ export interface ItemStartedEvent {
   item_id: string;
   item_type: "text" | "thinking" | "tool_use" | "user_message";
   name?: string;
+  tool_server?: string;
+  tool_source?: string;
   input?: Record<string, unknown>;
   text?: string;
   content?: ContentBlock[];
