@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks"
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
@@ -22,8 +22,8 @@ export function WelcomePage({
   taskTypes,
   onRefreshWorkspaces,
 }: Props) {
-  const [filter, setFilter] = useState("")
-  const filterRef = useRef<HTMLInputElement>(null)
+  const [filter, setFilter] = useState("");
+  const filterRef = useRef<HTMLInputElement>(null);
 
   // Type anywhere to focus the filter input
   useEffect(() => {
@@ -59,18 +59,22 @@ export function WelcomePage({
     (a, b) => b.tid - a.tid,
   );
 
-  const filterLower = filter.toLowerCase()
+  const filterLower = filter.toLowerCase();
 
   const filteredUngrouped = filterLower
-    ? ungrouped.filter(t => (t.title || `Task ${t.tid}`).toLowerCase().includes(filterLower))
-    : ungrouped
+    ? ungrouped.filter((t) =>
+        (t.title || `Task ${t.tid}`).toLowerCase().includes(filterLower),
+      )
+    : ungrouped;
 
   function handleFilterKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       for (const ws of workspaces) {
         const projs = filterLower
-          ? ws.projects.filter(p => p.name.toLowerCase().includes(filterLower))
-          : ws.projects
+          ? ws.projects.filter((p) =>
+              p.name.toLowerCase().includes(filterLower),
+            )
+          : ws.projects;
         if (projs.length > 0) {
           onNavigateToProject(ws.name, projs[0]!.name);
           return;
@@ -106,8 +110,17 @@ export function WelcomePage({
   return (
     <div class="welcome-page">
       <header class="welcome-page-header">
-        <svg class="welcome-logo" viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round">
-          <path style={{ stroke: "var(--success)" }} d="M5.5 12L10.5 4L13 8l-2.5 4" />
+        <svg
+          class="welcome-logo"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke-width="2"
+          stroke-linecap="round"
+        >
+          <path
+            style={{ stroke: "var(--success)" }}
+            d="M5.5 12L10.5 4L13 8l-2.5 4"
+          />
           <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
         </svg>
         <h1>CyDo</h1>
@@ -120,11 +133,18 @@ export function WelcomePage({
             type="text"
             placeholder="Filter projects..."
             value={filter}
-            onInput={(e) => { setFilter((e.target as HTMLInputElement).value) }}
+            onInput={(e) => {
+              setFilter((e.target as HTMLInputElement).value);
+            }}
             onKeyDown={handleFilterKeyDown}
           />
           {filter && (
-            <button class="welcome-filter-clear" onClick={() => { setFilter("") }}>
+            <button
+              class="welcome-filter-clear"
+              onClick={() => {
+                setFilter("");
+              }}
+            >
               ×
             </button>
           )}
@@ -139,25 +159,29 @@ export function WelcomePage({
       </div>
       {workspaces.map((ws) => {
         const filteredProjects = filterLower
-          ? ws.projects.filter(p => p.name.toLowerCase().includes(filterLower))
-          : ws.projects
-        if (filteredProjects.length === 0) return null
+          ? ws.projects.filter((p) =>
+              p.name.toLowerCase().includes(filterLower),
+            )
+          : ws.projects;
+        if (filteredProjects.length === 0) return null;
         const sortedProjects = [...filteredProjects].sort((a, b) => {
           const aKey = `${ws.name}:${a.path}`;
           const bKey = `${ws.name}:${b.path}`;
           const aTasks = tasksByProject.get(aKey) || [];
           const bTasks = tasksByProject.get(bKey) || [];
 
-          const aActive = aTasks.some(t => t.isProcessing || t.alive);
-          const bActive = bTasks.some(t => t.isProcessing || t.alive);
+          const aActive = aTasks.some((t) => t.isProcessing || t.alive);
+          const bActive = bTasks.some((t) => t.isProcessing || t.alive);
           if (aActive !== bActive) return aActive ? -1 : 1;
 
-          const aMaxTid = aTasks.length > 0 ? Math.max(...aTasks.map(t => t.tid)) : -1;
-          const bMaxTid = bTasks.length > 0 ? Math.max(...bTasks.map(t => t.tid)) : -1;
+          const aMaxTid =
+            aTasks.length > 0 ? Math.max(...aTasks.map((t) => t.tid)) : -1;
+          const bMaxTid =
+            bTasks.length > 0 ? Math.max(...bTasks.map((t) => t.tid)) : -1;
           if (aMaxTid !== bMaxTid) return bMaxTid - aMaxTid;
 
           return a.name.localeCompare(b.name);
-        })
+        });
         return (
           <section class="workspace-group" key={ws.name}>
             <h2 class="workspace-group-title">{ws.name}</h2>
@@ -180,7 +204,16 @@ export function WelcomePage({
                         {(() => {
                           const slash = proj.name.lastIndexOf("/");
                           if (slash === -1) return proj.name;
-                          return <><span class="project-card-prefix">{proj.name.slice(0, slash)}</span><span class="project-card-leaf">/{proj.name.slice(slash + 1)}</span></>;
+                          return (
+                            <>
+                              <span class="project-card-prefix">
+                                {proj.name.slice(0, slash)}
+                              </span>
+                              <span class="project-card-leaf">
+                                /{proj.name.slice(slash + 1)}
+                              </span>
+                            </>
+                          );
                         })()}
                       </span>
                       <button
@@ -225,7 +258,7 @@ export function WelcomePage({
               })}
             </div>
           </section>
-        )
+        );
       })}
       {filteredUngrouped.length > 0 && (
         <section class="workspace-group">

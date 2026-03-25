@@ -60,7 +60,12 @@ export const Markdown: FunctionComponent<Props> = memo(
           }}
           title={showRaw ? "Show rendered" : "Show source"}
         >
-          <span class="action-icon" dangerouslySetInnerHTML={{ __html: showRaw ? sourceOnIcon : sourceOffIcon }} />
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{
+              __html: showRaw ? sourceOnIcon : sourceOffIcon,
+            }}
+          />
         </button>
         {showRaw ? (
           <CodePre class="markdown-source" copyText={text}>

@@ -85,7 +85,8 @@ export interface TaskManager {
 
 /// Extract text content from a user message event (for unconfirmed display).
 function extractTextContent(msg: AgnosticEvent): string {
-  if (msg.type !== "item/started" || msg.item_type !== "user_message") return "";
+  if (msg.type !== "item/started" || msg.item_type !== "user_message")
+    return "";
   return msg.text ?? "";
 }
 

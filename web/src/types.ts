@@ -17,7 +17,15 @@ export interface DisplayMessage {
     | "rate_limit"
     | "compact_boundary";
   /** System message subtype — routes to the correct view component. */
-  subtype?: "init" | "status" | "compact_boundary" | "task_lifecycle" | "control_response" | "stop_hook_summary" | "stderr" | "parse_error";
+  subtype?:
+    | "init"
+    | "status"
+    | "compact_boundary"
+    | "task_lifecycle"
+    | "control_response"
+    | "stop_hook_summary"
+    | "stderr"
+    | "parse_error";
   content: AssistantContentBlock[];
   toolResults?: Map<string, ToolResult>;
   model?: string;
@@ -105,12 +113,12 @@ export interface TrackedFile {
 }
 
 export interface StreamingBlock {
-  itemId: string;     // ID-based lookup for item/* protocol
-  type: string;       // "text" | "tool_use" | "thinking"
-  text: string;       // accumulated text/input_json so far
-  name?: string;      // tool name for tool_use blocks
-  input?: unknown;    // initial input (from item/started, for tool_use)
-  output?: string;    // accumulated output (for output_delta)
+  itemId: string; // ID-based lookup for item/* protocol
+  type: string; // "text" | "tool_use" | "thinking"
+  text: string; // accumulated text/input_json so far
+  name?: string; // tool name for tool_use blocks
+  input?: unknown; // initial input (from item/started, for tool_use)
+  output?: string; // accumulated output (for output_delta)
   creationOrder: number; // monotonic counter for preserving creation order
 }
 

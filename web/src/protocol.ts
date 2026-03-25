@@ -150,7 +150,11 @@ export interface ItemStartedEvent {
 export interface ItemDeltaEvent {
   type: "item/delta";
   item_id: string;
-  delta_type: "text_delta" | "thinking_delta" | "input_json_delta" | "output_delta";
+  delta_type:
+    | "text_delta"
+    | "thinking_delta"
+    | "input_json_delta"
+    | "output_delta";
   content: string;
   [key: string]: unknown;
 }

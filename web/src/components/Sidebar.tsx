@@ -524,7 +524,12 @@ export const Sidebar = memo(function Sidebar({
             const name = projectName || "Tasks";
             const slash = name.lastIndexOf("/");
             if (slash === -1) return name;
-            return <><span class="sidebar-title-prefix">{name.slice(0, slash)}</span><span class="sidebar-title-leaf">/{name.slice(slash + 1)}</span></>;
+            return (
+              <>
+                <span class="sidebar-title-prefix">{name.slice(0, slash)}</span>
+                <span class="sidebar-title-leaf">/{name.slice(slash + 1)}</span>
+              </>
+            );
           })()}
         </span>
         <div class="sidebar-header-right">

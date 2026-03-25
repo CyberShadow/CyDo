@@ -427,6 +427,23 @@ EOF
               touch $out
             '';
           };
+          format = pkgs.buildNpmPackage {
+            pname = "cydo-format-check";
+            version = "0.1.0";
+            src = frontendSrc;
+            nodejs = pkgs.nodejs_22;
+            npmDepsHash = "sha256-P3K3i9ZiauK8Ck9+677i6+ug7+/kfiOAg6LFVlrMFkg=";
+
+            buildPhase = ''
+              runHook preBuild
+              npx prettier --check src/
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
         });
 
       apps = forAllSystems (system: {

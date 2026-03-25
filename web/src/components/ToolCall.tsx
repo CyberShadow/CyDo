@@ -55,11 +55,15 @@ function ResultPre({
 }
 
 /** Extract plain text from tool result content, regardless of shape. */
-function extractResultText(content: ToolResultContent | null | undefined): string | null {
+function extractResultText(
+  content: ToolResultContent | null | undefined,
+): string | null {
   if (content == null) return null;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
-  const texts = content.filter(b => b.type === "text" && b.text).map(b => b.text!);
+  const texts = content
+    .filter((b) => b.type === "text" && b.text)
+    .map((b) => b.text!);
   return texts.length > 0 ? texts.join("") : null;
 }
 
@@ -980,7 +984,11 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
 function WebSearchResult({ content }: { content: string }) {
   const iterations = parseWebSearchResult(content);
   if (!iterations) {
-    return <CodePre class="tool-result" copyText={content}>{content}</CodePre>;
+    return (
+      <CodePre class="tool-result" copyText={content}>
+        {content}
+      </CodePre>
+    );
   }
 
   return (
@@ -1198,7 +1206,14 @@ function formatToolUseResult(
       )
     )
       return null;
-    return <CodePre class="tool-result" copyText={JSON.stringify(toolResult, null, 2)}>{JSON.stringify(toolResult, null, 2)}</CodePre>;
+    return (
+      <CodePre
+        class="tool-result"
+        copyText={JSON.stringify(toolResult, null, 2)}
+      >
+        {JSON.stringify(toolResult, null, 2)}
+      </CodePre>
+    );
   }
 
   if (Object.keys(toolResult).length === 0) return null;
@@ -1307,7 +1322,10 @@ function getHeaderSubtitle(
       </a>
     );
   }
-  if (toolNameIn(name, shellToolNames) && typeof input.description === "string") {
+  if (
+    toolNameIn(name, shellToolNames) &&
+    typeof input.description === "string"
+  ) {
     return <span class="tool-subtitle">{input.description}</span>;
   }
   if (name === "Task" && typeof input.description === "string") {
@@ -1565,13 +1583,14 @@ function renderResultContent(
   }
   if (!Array.isArray(content)) {
     // Unexpected shape (string or object) — render defensively
-    const json = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+    const json =
+      typeof content === "string" ? content : JSON.stringify(content, null, 2);
     return <ResultPre content={json} isError={isError} />;
   }
   // Standard path: extract text from content blocks, render as monospace
   const text = content
-    .filter(block => block.type === "text" && block.text)
-    .map(block => block.text!)
+    .filter((block) => block.type === "text" && block.text)
+    .map((block) => block.text!)
     .join("\n");
 
   // Pretty-print compact JSON strings
@@ -1579,7 +1598,9 @@ function renderResultContent(
   if (text.startsWith("{") || text.startsWith("[")) {
     try {
       display = JSON.stringify(JSON.parse(text), null, 2);
-    } catch { /* not JSON, use as-is */ }
+    } catch {
+      /* not JSON, use as-is */
+    }
   }
 
   return <ResultPre content={display} isError={isError} />;
@@ -1713,22 +1734,13 @@ export function ToolCall({
       ? parseCydoTaskResult(resultText)
       : null;
   const useReadHighlight =
-    name === "Read" &&
-    filePath &&
-    resultText != null &&
-    !result!.isError;
+    name === "Read" && filePath && resultText != null && !result!.isError;
   const useExecCommandResult =
-    name === "exec_command" &&
-    resultText != null &&
-    !result!.isError;
+    name === "exec_command" && resultText != null && !result!.isError;
   const useWebSearchResult =
-    name === "WebSearch" &&
-    resultText != null &&
-    !result!.isError;
+    name === "WebSearch" && resultText != null && !result!.isError;
   const useWebFetchResult =
-    name === "WebFetch" &&
-    resultText != null &&
-    !result!.isError;
+    name === "WebFetch" && resultText != null && !result!.isError;
   const useTaskOutputResult =
     name === "TaskOutput" &&
     result &&
@@ -1862,18 +1874,12 @@ export function ToolCall({
               ) : useExecCommandResult ? (
                 <ExecCommandResult content={resultText} />
               ) : useReadHighlight ? (
-                <ReadResult
-                  content={resultText}
-                  filePath={filePath}
-                />
+                <ReadResult content={resultText} filePath={filePath} />
               ) : useWebSearchResult ? (
                 <WebSearchResult content={resultText} />
               ) : useWebFetchResult ? (
                 <div class="tool-result-blocks">
-                  <Markdown
-                    text={resultText}
-                    class="text-content"
-                  />
+                  <Markdown text={resultText} class="text-content" />
                 </div>
               ) : taskOutputElement ? (
                 taskOutputElement

@@ -109,14 +109,25 @@ export function AssistantMessage({
         // Build unified render list sorted by creationOrder so completed
         // content blocks and still-streaming blocks stay in stable order.
         type RenderItem =
-          | { streaming: false; block: (typeof message.content)[number]; order: number }
-          | { streaming: true; block: NonNullable<typeof message.streamingBlocks>[number]; order: number };
+          | {
+              streaming: false;
+              block: (typeof message.content)[number];
+              order: number;
+            }
+          | {
+              streaming: true;
+              block: NonNullable<typeof message.streamingBlocks>[number];
+              order: number;
+            };
         const items: RenderItem[] = [];
         for (const block of message.content) {
           items.push({
             streaming: false,
             block,
-            order: ((block as Record<string, unknown>)._creationOrder as number | undefined) ?? 0,
+            order:
+              ((block as Record<string, unknown>)._creationOrder as
+                | number
+                | undefined) ?? 0,
           });
         }
         for (const block of message.streamingBlocks ?? []) {

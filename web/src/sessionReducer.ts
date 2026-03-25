@@ -62,9 +62,12 @@ function appendRawSource(msg: DisplayMessage, event: unknown): void {
   const newSeq = getSeq(event);
   if (newSeq != null) {
     const prevSeq = msg.seq;
-    msg.seq = prevSeq != null
-      ? Array.isArray(prevSeq) ? [...prevSeq, newSeq] : [prevSeq, newSeq]
-      : newSeq;
+    msg.seq =
+      prevSeq != null
+        ? Array.isArray(prevSeq)
+          ? [...prevSeq, newSeq]
+          : [prevSeq, newSeq]
+        : newSeq;
   }
 }
 
@@ -311,7 +314,13 @@ function trackFileEdits(
       if (!toolUse) continue;
 
       const toolName = toolUse.name;
-      if (!toolName || (toolName !== "Edit" && toolName !== "Write" && toolName !== "fileChange")) break;
+      if (
+        !toolName ||
+        (toolName !== "Edit" &&
+          toolName !== "Write" &&
+          toolName !== "fileChange")
+      )
+        break;
 
       const input = toolUse.input ?? {};
       const filePath =
@@ -517,9 +526,7 @@ function reduceItemStartedUserMessage(
   if (event.is_replay) {
     state = {
       ...state,
-      messages: state.messages.filter(
-        (m) => !(m.pending && m.type === "user"),
-      ),
+      messages: state.messages.filter((m) => !(m.pending && m.type === "user")),
     };
   }
 
@@ -580,10 +587,7 @@ function reduceItemStartedUserMessage(
     if (state.preReloadDrafts.includes(text)) {
       state = {
         ...state,
-        confirmedDuringReplay: [
-          ...(state.confirmedDuringReplay ?? []),
-          text,
-        ],
+        confirmedDuringReplay: [...(state.confirmedDuringReplay ?? []), text],
       };
     }
   }
@@ -673,7 +677,10 @@ export function reduceItemCompleted(
       name: block.name,
       // event.input is only set via rollout path; live path carries the
       // initial input in block.input (from item/started).
-      input: event.input ?? (block.input as Record<string, unknown> | undefined) ?? tryParseJson(block.text),
+      input:
+        event.input ??
+        (block.input as Record<string, unknown> | undefined) ??
+        tryParseJson(block.text),
       ...(event._extras ? { _extras: event._extras } : {}),
     };
   } else {
@@ -725,7 +732,9 @@ export function reduceItemResult(
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.type !== "assistant") continue;
-    if (m.content.some((c) => c.type === "tool_use" && c.id === event.item_id)) {
+    if (
+      m.content.some((c) => c.type === "tool_use" && c.id === event.item_id)
+    ) {
       parentMsgIdx = i;
       break;
     }
@@ -827,16 +836,23 @@ export function reduceTurnStop(
               type: "tool_use",
               id: block.itemId,
               name: block.name,
-              input: (block.input as Record<string, unknown> | undefined) ?? tryParseJson(block.text),
+              input:
+                (block.input as Record<string, unknown> | undefined) ??
+                tryParseJson(block.text),
             };
           } else {
             contentBlock = { type: block.type, text: block.text };
           }
-          (contentBlock as Record<string, unknown>)._creationOrder = block.creationOrder;
+          (contentBlock as Record<string, unknown>)._creationOrder =
+            block.creationOrder;
           let insertIdx = updated.content.length;
           for (let j = 0; j < updated.content.length; j++) {
-            const o = (updated.content[j] as Record<string, unknown>)._creationOrder as number | undefined;
-            if (o != null && o > block.creationOrder) { insertIdx = j; break; }
+            const o = (updated.content[j] as Record<string, unknown>)
+              ._creationOrder as number | undefined;
+            if (o != null && o > block.creationOrder) {
+              insertIdx = j;
+              break;
+            }
           }
           updated.content = [
             ...updated.content.slice(0, insertIdx),
@@ -998,7 +1014,13 @@ export function reduceMessage(
         return { ...s, messages };
       }
       // No streaming message — top-level system message.
-      return reduceParseError(s, "Unrecognized agent data", msg.reason, msg.raw_content, msg);
+      return reduceParseError(
+        s,
+        "Unrecognized agent data",
+        msg.reason,
+        msg.raw_content,
+        msg,
+      );
     }
 
     default:

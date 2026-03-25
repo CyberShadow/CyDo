@@ -91,7 +91,11 @@ export function SystemBanner({
           <button
             class={`btn-banner-archive${archived ? " archived" : ""}`}
             onClick={onSetArchived}
-            title={archived ? "Unarchive task (Ctrl+Shift+A)" : "Archive task (Ctrl+Shift+A)"}
+            title={
+              archived
+                ? "Unarchive task (Ctrl+Shift+A)"
+                : "Archive task (Ctrl+Shift+A)"
+            }
           >
             {archived ? "Unarchive" : "Archive"}
           </button>

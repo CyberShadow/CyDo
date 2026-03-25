@@ -21,7 +21,10 @@ export function CopyButton({ text }: { text: string }) {
       onClick={onClick}
       title={copied ? "Copied!" : "Copy to clipboard"}
     >
-      <span class="action-icon" dangerouslySetInnerHTML={{ __html: copied ? checkIcon : copyIcon }} />
+      <span
+        class="action-icon"
+        dangerouslySetInnerHTML={{ __html: copied ? checkIcon : copyIcon }}
+      />
     </button>
   );
 }
