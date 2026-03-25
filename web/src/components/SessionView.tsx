@@ -177,7 +177,7 @@ function SessionViewInner({
             : undefined
         }
       />
-      {fileViewerState && task.trackedFiles.size > 0 && (
+      {fileViewerState && (
         <FileViewer
           trackedFiles={task.trackedFiles}
           messages={task.messages}
