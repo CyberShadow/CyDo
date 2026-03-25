@@ -936,7 +936,13 @@ class ClaudeCodeSession : AgentSession
 				{
 					ItemResultEvent ev;
 					ev.item_id  = item.tool_use_id;
-					ev.content  = item.content;
+					auto cj = item.content.json;
+					if (cj is null || cj.length == 0)
+						ev.content = JSONFragment(`[{"type":"text","text":""}]`);
+					else if (cj[0] == '"')
+						ev.content = JSONFragment(`[{"type":"text","text":` ~ cj ~ `}]`);
+					else
+						ev.content = item.content;
 					ev.is_error = item.is_error;
 					if (raw.toolUseResult.json !is null && raw.toolUseResult.json.length > 0)
 						ev.tool_result = raw.toolUseResult;
@@ -1273,7 +1279,13 @@ private string[] normalizeUserHistory(string rawLine)
 			{
 				ItemResultEvent ev;
 				ev.item_id  = item.tool_use_id;
-				ev.content  = item.content;
+				auto cj2 = item.content.json;
+				if (cj2 is null || cj2.length == 0)
+					ev.content = JSONFragment(`[{"type":"text","text":""}]`);
+				else if (cj2[0] == '"')
+					ev.content = JSONFragment(`[{"type":"text","text":` ~ cj2 ~ `}]`);
+				else
+					ev.content = item.content;
 				ev.is_error = item.is_error;
 				if (raw.toolUseResult.json !is null && raw.toolUseResult.json.length > 0)
 					ev.tool_result = raw.toolUseResult;

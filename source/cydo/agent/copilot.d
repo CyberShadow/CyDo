@@ -378,7 +378,7 @@ class CopilotAgent : Agent
 
 				ItemResultEvent resEv;
 				resEv.item_id = toolId;
-				resEv.content = JSONFragment(`"` ~ cpEscape(outputText) ~ `"`);
+				resEv.content = JSONFragment(`[{"type":"text","text":"` ~ cpEscape(outputText) ~ `"}]`);
 				events = [toJson(resEv)];
 				break;
 			}

@@ -54,6 +54,15 @@ function ResultPre({
   );
 }
 
+/** Extract plain text from tool result content, regardless of shape. */
+function extractResultText(content: ToolResultContent | null | undefined): string | null {
+  if (content == null) return null;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const texts = content.filter(b => b.type === "text" && b.text).map(b => b.text!);
+  return texts.length > 0 ? texts.join("") : null;
+}
+
 /** Tool names that represent shell command execution across agents/formats. */
 const shellToolNames = new Set([
   "Bash", // Claude Code
@@ -1554,32 +1563,26 @@ function renderResultContent(
   if (content == null) {
     return <pre class={`tool-result ${isError ? "error" : ""}`}>{""}</pre>;
   }
-  if (typeof content === "string") {
-    // Pretty-print compact JSON strings (e.g. function_call_output from Codex rollout)
-    let display = content;
-    if (content.startsWith("{") || content.startsWith("[")) {
-      try {
-        display = JSON.stringify(JSON.parse(content), null, 2);
-      } catch {
-        /* not JSON, use as-is */
-      }
-    }
-    return <ResultPre content={display} isError={isError} />;
-  }
   if (!Array.isArray(content)) {
-    const json = JSON.stringify(content, null, 2);
+    // Unexpected shape (string or object) — render defensively
+    const json = typeof content === "string" ? content : JSON.stringify(content, null, 2);
     return <ResultPre content={json} isError={isError} />;
   }
-  return (
-    <div class={`tool-result-blocks ${isError ? "error" : ""}`}>
-      {content.map((block, i) => {
-        if (block.type === "text" && block.text) {
-          return <Markdown key={i} text={block.text} class="text-content" />;
-        }
-        return <CodePre key={i} copyText={JSON.stringify(block, null, 2)}>{JSON.stringify(block, null, 2)}</CodePre>;
-      })}
-    </div>
-  );
+  // Standard path: extract text from content blocks, render as monospace
+  const text = content
+    .filter(block => block.type === "text" && block.text)
+    .map(block => block.text!)
+    .join("\n");
+
+  // Pretty-print compact JSON strings
+  let display = text;
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      display = JSON.stringify(JSON.parse(text), null, 2);
+    } catch { /* not JSON, use as-is */ }
+  }
+
+  return <ResultPre content={display} isError={isError} />;
 }
 
 /**
@@ -1704,34 +1707,28 @@ export function ToolCall({
   const subtitle = getHeaderSubtitle(name, input);
 
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
+  const resultText = result ? extractResultText(result.content) : null;
   const cydoTaskItems =
-    name === "mcp__cydo__Task" &&
-    result &&
-    !result.isError &&
-    typeof result.content === "string"
-      ? parseCydoTaskResult(result.content)
+    name === "mcp__cydo__Task" && resultText != null && !result!.isError
+      ? parseCydoTaskResult(resultText)
       : null;
   const useReadHighlight =
     name === "Read" &&
     filePath &&
-    result &&
-    !result.isError &&
-    typeof result.content === "string";
+    resultText != null &&
+    !result!.isError;
   const useExecCommandResult =
     name === "exec_command" &&
-    result &&
-    !result.isError &&
-    typeof result.content === "string";
+    resultText != null &&
+    !result!.isError;
   const useWebSearchResult =
     name === "WebSearch" &&
-    result &&
-    !result.isError &&
-    typeof result.content === "string";
+    resultText != null &&
+    !result!.isError;
   const useWebFetchResult =
     name === "WebFetch" &&
-    result &&
-    !result.isError &&
-    typeof result.content === "string";
+    resultText != null &&
+    !result!.isError;
   const useTaskOutputResult =
     name === "TaskOutput" &&
     result &&
@@ -1863,18 +1860,18 @@ export function ToolCall({
                   })}
                 </div>
               ) : useExecCommandResult ? (
-                <ExecCommandResult content={result.content as string} />
+                <ExecCommandResult content={resultText} />
               ) : useReadHighlight ? (
                 <ReadResult
-                  content={result.content as string}
+                  content={resultText}
                   filePath={filePath}
                 />
               ) : useWebSearchResult ? (
-                <WebSearchResult content={result.content as string} />
+                <WebSearchResult content={resultText} />
               ) : useWebFetchResult ? (
                 <div class="tool-result-blocks">
                   <Markdown
-                    text={result.content as string}
+                    text={resultText}
                     class="text-content"
                   />
                 </div>

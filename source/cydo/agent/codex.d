@@ -1323,7 +1323,7 @@ class CodexSession : AgentSession
 			ItemResultEvent resEv;
 			resEv.item_id = itemId;
 			if (params.item.aggregatedOutput.length > 0)
-				resEv.content = JSONFragment(toJson(params.item.aggregatedOutput));
+				resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(params.item.aggregatedOutput) ~ `}]`);
 			else
 			{
 				// For webSearch items, serialize the full item as result content.
@@ -1334,10 +1334,10 @@ class CodexSession : AgentSession
 				if (isWebSearch)
 				{
 					auto itemJson = toJson(params.item);
-					resEv.content = JSONFragment(itemJson.length > 2 ? itemJson : `""`);
+					resEv.content = JSONFragment(`[{"type":"text","text":` ~ (itemJson.length > 2 ? toJson(itemJson) : `""`) ~ `}]`);
 				}
 				else
-					resEv.content = JSONFragment(`""`);
+					resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 			}
 			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
@@ -1648,16 +1648,12 @@ string translateRolloutToolResult(string callId, string outputJson)
 {
 	import cydo.agent.protocol : ItemResultEvent;
 
-	// Wrap content in a JSON fragment — use as-is if it's a string value
-	string contentJson;
-	if (outputJson.length > 0 && outputJson[0] == '"')
-		contentJson = outputJson;
-	else
-		contentJson = `"(output)"`;
-
 	ItemResultEvent ev;
 	ev.item_id = callId;
-	ev.content = JSONFragment(contentJson);
+	if (outputJson.length > 0 && outputJson[0] == '"')
+		ev.content = JSONFragment(`[{"type":"text","text":` ~ outputJson ~ `}]`);
+	else
+		ev.content = JSONFragment(outputJson);
 	return toJson(ev);
 }
 
