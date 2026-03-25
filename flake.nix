@@ -450,6 +450,7 @@ EOF
         default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/cydo";
+          meta.description = "CyDo multi-agent orchestration system";
         };
       });
 
