@@ -246,6 +246,8 @@ class App : ToolsBackend
 			td.archived = row.archived;
 			td.draft = row.draft;
 			td.resultText = row.resultText;
+			td.createdAt = row.createdAt;
+			td.lastActive = row.lastActive;
 			td.titleGenDone = row.title.length > 0;
 			auto rowTid = row.tid;
 			tasks[rowTid] = move(td);
@@ -261,6 +263,30 @@ class App : ToolsBackend
 		startMcpSocket();
 
 		resumeInFlightTasks();
+
+		// Recover last_active from .jsonl mtime for tasks that were alive
+		// when the backend crashed (last_active was cleared on session start).
+		foreach (ref td; tasks)
+		{
+			if (td.lastActive == 0 && td.agentSessionId.length > 0)
+			{
+				try
+				{
+					auto ta = agentForTask(td.tid);
+					auto jp = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+					if (jp.length > 0)
+					{
+						import std.file : exists, timeLastModified;
+						if (exists(jp))
+						{
+							td.lastActive = timeLastModified(jp).stdTime;
+							persistence.setLastActive(td.tid, td.lastActive);
+						}
+					}
+				}
+				catch (Exception) {} // best-effort
+			}
+		}
 
 		import std.process : environment;
 
@@ -815,6 +841,8 @@ class App : ToolsBackend
 		tdp.hasPendingQuestion = true;
 		tdp.notificationBody = "Waiting for your answer";
 		tdp.isProcessing = false;
+		touchTask(tid);
+		persistence.setLastActive(tid, tasks[tid].lastActive);
 		broadcastTaskUpdate(tid);
 
 		return promise;
@@ -1606,6 +1634,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		td.session.sendMessage(text);
 		td.isProcessing = true;
+		touchTask(tid);
 		td.needsAttention = false;
 		td.notificationBody = "";
 		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
@@ -1621,6 +1650,8 @@ class App : ToolsBackend
 		td.projectPath = projectPath;
 		td.agentType = agentType;
 		td.historyLoaded = true; // New tasks have no JSONL to load
+		import std.datetime : Clock;
+		td.createdAt = Clock.currStdTime;
 		tasks[tid] = move(td);
 		tasks[tid].processQueue = new StateQueue!ProcessState(
 			(ProcessState goal) => processTransition(tid, goal),
@@ -1772,6 +1803,7 @@ class App : ToolsBackend
 			sessionConfig.allowNativeSubagents = true;
 
 		td.session = taskAgent.createSession(tid, td.agentSessionId, cmdPrefix, sessionConfig);
+		persistence.clearLastActive(tid);
 
 		// Track MCP config temp file for cleanup
 		if (taskAgent.lastMcpConfigPath.length > 0)
@@ -1819,6 +1851,8 @@ class App : ToolsBackend
 					persistence.setStatus(tid, "alive");
 					td.needsAttention = true;
 					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
+					touchTask(tid);
+					persistence.setLastActive(tid, tasks[tid].lastActive);
 					try
 						generateSuggestions(tid);
 					catch (Exception e)
@@ -1844,6 +1878,8 @@ class App : ToolsBackend
 			// "alive" in the DB and can be resumed after restart.
 			if (shuttingDown)
 				return;
+			touchTask(tid);
+			persistence.setLastActive(tid, tasks[tid].lastActive);
 			import ae.utils.json : toJson;
 			import cydo.agent.protocol : ProcessExitEvent;
 			tracef("onExit: tid=%d exitCode=%d status=%s",
@@ -2878,12 +2914,20 @@ class App : ToolsBackend
 			ws.send(data);
 	}
 
+	private void touchTask(int tid)
+	{
+		import std.datetime : Clock;
+		tasks[tid].lastActive = Clock.currStdTime;
+	}
+
 	private TaskListEntry buildTaskEntry(ref TaskData td)
 	{
+		import cydo.task : stdTimeToUnixMillis;
 		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
 			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.archived, td.draft, td.error);
+			td.taskType, td.archived, td.draft, td.error,
+			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 	}
 
 	private string buildTasksList()

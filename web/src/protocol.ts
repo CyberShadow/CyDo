@@ -329,6 +329,8 @@ export interface TasksListMessage {
     archived?: boolean;
     draft?: string;
     error?: string;
+    created_at?: number;
+    last_active?: number;
   }[];
 }
 export interface TaskUpdatedMessage {
@@ -351,6 +353,8 @@ export interface TaskUpdatedMessage {
     archived?: boolean;
     draft?: string;
     error?: string;
+    created_at?: number;
+    last_active?: number;
   };
 }
 export interface TaskReloadMessage {

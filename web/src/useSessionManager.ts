@@ -387,6 +387,8 @@ export function useTaskManager(): TaskManager {
                   entry.hasPendingQuestion || false,
                   entry.task_type || undefined,
                   entry.archived || false,
+                  entry.created_at || undefined,
+                  entry.last_active || undefined,
                 ),
                 serverDraft: entry.draft || undefined,
                 error: entry.error || undefined,
@@ -421,6 +423,8 @@ export function useTaskManager(): TaskManager {
                     : t.suggestions,
                 archived: entry.archived || false,
                 error: entry.error || undefined,
+                createdAt: entry.created_at || t.createdAt,
+                lastActive: entry.last_active || t.lastActive,
               };
               liveStates.set(entry.tid, updated);
               next.set(entry.tid, updated);
@@ -454,6 +458,8 @@ export function useTaskManager(): TaskManager {
                 entry.hasPendingQuestion || false,
                 entry.task_type || undefined,
                 entry.archived || false,
+                entry.created_at || undefined,
+                entry.last_active || undefined,
               ),
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
@@ -485,6 +491,8 @@ export function useTaskManager(): TaskManager {
                   : t.suggestions,
               archived: entry.archived || false,
               error: entry.error || undefined,
+              createdAt: entry.created_at || t.createdAt,
+              lastActive: entry.last_active || t.lastActive,
             };
             liveStates.set(entry.tid, updated);
             next.set(entry.tid, updated);

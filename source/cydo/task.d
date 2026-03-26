@@ -27,6 +27,8 @@ struct TaskData
 	string title;
 	string status = "pending";  // pending, active, completed, failed
 	bool archived;
+	long createdAt;    // StdTime; 0 = not set
+	long lastActive;   // StdTime; 0 = not set
 
 	/// Per-task directory: .cydo/tasks/<tid>/
 	@property string taskDir() const
@@ -195,6 +197,8 @@ struct TaskListEntry
 	bool archived;
 	string draft;
 	string error;
+	long created_at;
+	long last_active;
 }
 
 struct ProjectInfo
@@ -323,6 +327,17 @@ string truncateTitle(string text, size_t maxLen)
 	if (cleaned.length <= maxLen)
 		return cleaned;
 	return cleaned[0 .. maxLen] ~ "…";
+}
+
+/// Convert D StdTime (hnsecs since Windows epoch) to unix milliseconds.
+/// Returns 0 if the input is 0 (not set).
+long stdTimeToUnixMillis(long stdTime)
+{
+	if (stdTime == 0)
+		return 0;
+	import std.datetime : SysTime, UTC;
+	enum long unixEpochStdTime = SysTime.fromUnixTime(0, UTC()).stdTime;
+	return (stdTime - unixEpochStdTime) / 10_000;
 }
 
 /// Extract the "event" field from a task envelope JSON string.

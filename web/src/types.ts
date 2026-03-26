@@ -173,6 +173,10 @@ export interface TaskState {
   archived?: boolean;
   /** Last stderr text from non-zero exit; cleared on restart. */
   error?: string;
+  /** Task creation timestamp (unix millis), undefined if not set. */
+  createdAt?: number;
+  /** Last activity timestamp (unix millis), undefined if not set. */
+  lastActive?: number;
   /** Pending undo confirmation (set by dry_run preview, cleared on confirm/dismiss). */
   undoPending?: {
     afterUuid: string;
@@ -207,6 +211,8 @@ export function makeTaskState(
   hasPendingQuestion: boolean = false,
   taskType?: string,
   archived: boolean = false,
+  createdAt?: number,
+  lastActive?: number,
 ): TaskState {
   return {
     tid,
@@ -229,6 +235,8 @@ export function makeTaskState(
     forkableUuids: new Set(),
     taskType,
     archived,
+    createdAt: createdAt || undefined,
+    lastActive: lastActive || undefined,
     trackedFiles: new Map(),
   };
 }
