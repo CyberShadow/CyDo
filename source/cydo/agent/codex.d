@@ -1303,6 +1303,8 @@ class CodexSession : AgentSession
 					ev.name = item.server.length > 0 ? "mcp__" ~ item.server ~ "__" ~ item.tool : item.tool;
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
+				if (auto pArguments = "arguments" in item.extras)
+					ev.input = *pArguments;
 				break;
 			case "webSearch":
 				activeItemTypes_[itemId] = "tool_use";
@@ -1377,18 +1379,42 @@ class CodexSession : AgentSession
 				resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(params.item.aggregatedOutput) ~ `}]`);
 			else
 			{
+				@JSONPartial
+				static struct ResultPayload
+				{
+					@JSONOptional JSONFragment content;
+				}
+
+				bool hasResultContent = false;
+				if (auto pResult = "result" in params.item.extras)
+				{
+					try
+					{
+						auto payload = jsonParse!ResultPayload(pResult.json);
+						if (payload.content.json !is null)
+						{
+							resEv.content = payload.content;
+							hasResultContent = true;
+						}
+					}
+					catch (Exception) {}
+				}
+
 				// For webSearch items, serialize the full item as result content.
 				// For all other tool_use items (commandExecution, mcpToolCall, etc.),
 				// use an empty string — the frontend expects a string or array, not an object.
-				auto pItemType = "type" in params.item.extras;
-				bool isWebSearch = pItemType !is null && pItemType.json == `"webSearch"`;
-				if (isWebSearch)
+				if (!hasResultContent)
 				{
-					auto itemJson = toJson(params.item);
-					resEv.content = JSONFragment(`[{"type":"text","text":` ~ (itemJson.length > 2 ? toJson(itemJson) : `""`) ~ `}]`);
+					auto pItemType = "type" in params.item.extras;
+					bool isWebSearch = pItemType !is null && pItemType.json == `"webSearch"`;
+					if (isWebSearch)
+					{
+						auto itemJson = toJson(params.item);
+						resEv.content = JSONFragment(`[{"type":"text","text":` ~ (itemJson.length > 2 ? toJson(itemJson) : `""`) ~ `}]`);
+					}
+					else
+						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 				}
-				else
-					resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 			}
 			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
@@ -1832,6 +1858,112 @@ private string getCodexBinName()
 {
 	import std.process : environment;
 	return environment.get("CYDO_CODEX_BIN", "codex");
+}
+
+unittest
+{
+	@JSONPartial
+	struct StartedNotification
+	{
+		ItemStartedParams params;
+	}
+
+	@JSONPartial
+	struct CompletedNotification
+	{
+		ItemCompletedParams params;
+	}
+
+	@JSONPartial
+	struct EmittedStartedEvent
+	{
+		string type;
+		@JSONOptional JSONFragment input;
+	}
+
+	@JSONPartial
+	struct AskQuestionOption
+	{
+		string label;
+		string description;
+	}
+
+	@JSONPartial
+	struct AskQuestion
+	{
+		string header;
+		string question;
+		AskQuestionOption[] options;
+		@JSONOptional bool multiSelect;
+	}
+
+	@JSONPartial
+	struct AskUserQuestionInput
+	{
+		AskQuestion[] questions;
+	}
+
+	@JSONPartial
+	struct EmittedResultEvent
+	{
+		string type;
+		JSONFragment content;
+	}
+
+	@JSONPartial
+	struct TextContentBlock
+	{
+		string type;
+		@JSONOptional string text;
+	}
+
+	enum startedPayload =
+		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thread-ask","turnId":"turn-ask","item":{"id":"mcp-call-ask","type":"mcpToolCall","server":"cydo","tool":"AskUserQuestion","arguments":{"questions":[{"header":"Test","question":"Do you agree?","options":[{"label":"Yes","description":"Confirm"},{"label":"No","description":"Deny"}],"multiSelect":false}]}}}}`;
+
+	enum completedPayload =
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-ask","item":{"id":"mcp-call-ask","result":{"content":[{"type":"text","text":"User has answered your questions: \"Do you agree?\"=\"Yes\"."}]}}}}`;
+
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	string[] emitted;
+	void sink(string line) { emitted ~= line; }
+	session.onOutput(&sink);
+
+	auto started = jsonParse!StartedNotification(startedPayload);
+	session.handleItemStarted(started.params, startedPayload);
+
+	auto completed = jsonParse!CompletedNotification(completedPayload);
+	session.handleItemCompleted(completed.params, completedPayload);
+
+	auto startedEvent = jsonParse!EmittedStartedEvent(emitted[0]);
+	auto resultEvent = jsonParse!EmittedResultEvent(emitted[$ - 1]);
+
+	bool inputOk = false;
+	string actualInput = "<missing>";
+	if (startedEvent.input.json !is null)
+	{
+		actualInput = startedEvent.input.json;
+		const parsedInput = jsonParse!AskUserQuestionInput(startedEvent.input.json);
+		inputOk =
+			parsedInput.questions.length == 1
+			&& parsedInput.questions[0].header == "Test"
+			&& parsedInput.questions[0].question == "Do you agree?"
+			&& parsedInput.questions[0].options.length == 2
+			&& parsedInput.questions[0].options[0].label == "Yes";
+	}
+
+	auto blocks = jsonParse!(TextContentBlock[])(resultEvent.content.json);
+	const actualResult =
+		blocks.length > 0 && blocks[0].text.length > 0 ? blocks[0].text : "<empty>";
+	const resultOk =
+		blocks.length == 1
+		&& blocks[0].type == "text"
+		&& actualResult == `User has answered your questions: "Do you agree?"="Yes".`;
+
+	assert(
+		inputOk && resultOk,
+		"expected Codex mcpToolCall AskUserQuestion payload to survive translation; "
+			~ "actual input=" ~ actualInput ~ " actual result=" ~ actualResult,
+	);
 }
 
 /// Resolve the codex binary path by searching PATH.

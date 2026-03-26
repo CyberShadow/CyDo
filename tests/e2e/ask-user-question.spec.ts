@@ -123,3 +123,24 @@ test("sidebar shows asking status while AskUserQuestion is pending", async ({
   // The question icon should no longer be visible
   await expect(questionIcon).not.toBeVisible({ timeout: 5_000 });
 });
+
+test("codex AskUserQuestion with delimiter text shows selected answer", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only regression for normalized array result content");
+
+  await enterSession(page);
+  await sendMessage(page, 'call askuserquestion What does "=" mean?');
+
+  const form = page.locator(".ask-user-form");
+  await expect(form).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  await page.locator(".ask-option-btn", { hasText: "Yes" }).click();
+  await page.locator(".ask-submit-btn").click();
+  await expect(form).not.toBeVisible({ timeout: 5_000 });
+
+  await expect(
+    page.locator(".tool-call .ask-answer", { hasText: "Yes" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+});

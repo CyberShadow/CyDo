@@ -822,7 +822,7 @@ interface AskQuestion {
 }
 
 function getAskAnswers(
-  _input: Record<string, unknown>,
+  input: Record<string, unknown>,
   result?: ToolResult,
 ): Record<string, string> | null {
   // Built-in AskUserQuestion: answers in toolResult
@@ -832,16 +832,66 @@ function getAskAnswers(
   }
   // MCP AskUserQuestion: parse from result text
   // Format: User has answered your questions: "Q"="A". "Q2"="A2".
-  if (result && typeof result.content === "string") {
+  if (result) {
+    const text = extractResultText(result.content);
+    if (text == null) return null;
     const prefix = "User has answered your questions: ";
-    const text = result.content;
     if (text.startsWith(prefix)) {
       const answers: Record<string, string> = {};
       const body = text.slice(prefix.length);
-      const re = /"([^"]*)"="([^"]*)"/g;
-      let m;
-      while ((m = re.exec(body)) !== null) {
-        answers[m[1]!] = m[2]!;
+
+      const questions = Array.isArray(input.questions) ? input.questions : null;
+      if (questions) {
+        for (const q of questions) {
+          const question =
+            q &&
+            typeof q === "object" &&
+            typeof (q as AskQuestion).question === "string"
+              ? (q as AskQuestion).question
+              : null;
+          if (question == null) continue;
+          const marker = `"${question}"="`;
+          const start = body.indexOf(marker);
+          if (start < 0) continue;
+          const valueStart = start + marker.length;
+          for (let i = valueStart; i < body.length; i++) {
+            if (body[i] !== '"') continue;
+            const next = body[i + 1];
+            if (next === "." || next === undefined) {
+              answers[question] = body.slice(valueStart, i);
+              break;
+            }
+          }
+        }
+        if (Object.keys(answers).length > 0) return answers;
+      }
+
+      let cursor = 0;
+      while (cursor < body.length) {
+        const start = body.indexOf('"', cursor);
+        if (start < 0) break;
+        const keyValueSep = body.indexOf('"="', start + 1);
+        if (keyValueSep < 0) break;
+
+        const key = body.slice(start + 1, keyValueSep);
+        const valueStart = keyValueSep + 3;
+        let valueEnd = -1;
+        for (let i = valueStart; i < body.length; i++) {
+          if (body[i] !== '"') continue;
+          const next = body[i + 1];
+          if (next === "." || next === undefined) {
+            valueEnd = i;
+            break;
+          }
+        }
+        if (valueEnd < 0) break;
+
+        const value = body.slice(valueStart, valueEnd);
+        answers[key] = value;
+
+        cursor = valueEnd + 1;
+        if (body[cursor] === ".") cursor++;
+        if (body[cursor] === " ") cursor++;
       }
       if (Object.keys(answers).length > 0) return answers;
     }
