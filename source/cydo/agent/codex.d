@@ -109,6 +109,7 @@ struct TurnInterruptParams
 struct ItemStartedParams
 {
 	string threadId;
+	@JSONOptional string turnId;
 	static struct Item
 	{
 		string type;
@@ -1046,6 +1047,7 @@ class CodexSession : AgentSession
 	private AppServerProcess server;
 	private int tid;
 	private string threadId;
+	private string activeTurnId_;
 	private string model;
 	private string workDir;
 	private bool alive_;
@@ -1154,6 +1156,7 @@ class CodexSession : AgentSession
 		else
 		{
 			turnInProgress = true;
+			activeTurnId_ = null;
 			activeItemId_ = null;
 			activeItemTypes_ = null;
 
@@ -1167,10 +1170,10 @@ class CodexSession : AgentSession
 
 	void interrupt()
 	{
-		if (!alive_ || threadId.length == 0 || !turnInProgress)
+		if (!alive_ || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
 			return;
 		server.sendRequest("turn/interrupt",
-			JSONFragment(toJson(TurnInterruptParams(threadId))));
+			JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_))));
 	}
 
 	void sigint()
@@ -1186,12 +1189,13 @@ class CodexSession : AgentSession
 		// only this session stops and other concurrent sessions are unaffected.
 		if (threadId.length > 0)
 		{
-			if (turnInProgress)
+			if (turnInProgress && activeTurnId_.length > 0)
 				server.sendRequest("turn/interrupt",
-					JSONFragment(toJson(TurnInterruptParams(threadId))));
+					JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_))));
 			server.unregisterSession(threadId);
 		}
 		server.unregisterSessionByTid(tid);
+		activeTurnId_ = null;
 		alive_ = false;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
@@ -1206,6 +1210,7 @@ class CodexSession : AgentSession
 		if (threadId.length > 0)
 			server.unregisterSession(threadId);
 		server.unregisterSessionByTid(tid);
+		activeTurnId_ = null;
 		alive_ = false;
 		auto cb = exitHandler_;
 		exitHandler_ = null;
@@ -1223,6 +1228,8 @@ class CodexSession : AgentSession
 	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
 		import cydo.agent.protocol : ItemStartedEvent, injectRawField;
+		if (params.turnId.length > 0)
+			activeTurnId_ = params.turnId;
 
 		auto item = params.item;
 
@@ -1395,6 +1402,7 @@ class CodexSession : AgentSession
 	package void handleTurnCompleted(string rawNotification)
 	{
 		turnInProgress = false;
+		activeTurnId_ = null;
 
 		// Do NOT clear activeItemId_ or activeItemTypes_ here — background items
 		// may still complete after the turn ends.
