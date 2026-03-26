@@ -335,8 +335,9 @@ task_types:
       file paths, and recommendations. No code changes are made.
     tool_guidance: >
       Use for quick, targeted lookups — finding a file, tracing a function,
-      checking a pattern. Returns fast. For broader exploration that may
-      require multiple rounds, use deep_research instead.
+      checking a pattern. Returns fast. Not suitable for analysis, planning, or
+      or anything involving decision-making. For deeper or broader exploration,
+      use deep_research instead.
     model_class: small
     read_only: true
     output_type: report
