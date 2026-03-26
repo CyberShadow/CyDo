@@ -4,19 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Please see @docs/VISION.md
 
-## Build & Run Commands
+## Development Environment
 
+All dependencies (D compiler, Node.js 22, npm, etc.) are provided by Nix.
+Use `nix develop -ic` to prefix commands, or enter `nix develop` interactively.
+
+**One-time setup:**
 ```bash
-make all          # Build backend + frontend
-make backend      # dub build → build/cydo
-make frontend     # npm install + vite build in web/
-make run          # Build all, then dub run (serves on :3940)
-make clean        # Remove build/, web/dist/, web/node_modules/
+git config core.hooksPath .githooks   # Enable pre-commit checks
 ```
 
-**Development with hot reload:**
-- Backend: `dub run` (recompiles and runs)
-- Frontend: `cd web && npm run dev` (Vite dev server on :5173, proxies `/ws` to :3940)
+**Build & run:**
+```bash
+nix develop -ic dub build                          # Build backend → build/cydo
+nix develop -ic env -C web npm ci                  # Install frontend deps
+nix develop -ic env -C web npm run build           # Build frontend → web/dist/
+nix develop -ic dub run                            # Build + run backend (serves on :3940)
+```
+
+**Production build (sandboxed, no incremental):**
+```bash
+nix build         # Build the full application
+```
 
 **Testing:**
 ```bash
