@@ -524,7 +524,14 @@ class ClaudeCodeSession : AgentSession
 	/// Send a user message formatted as Claude stream-json input.
 	void sendMessage(const(ContentBlock)[] content)
 	{
-		auto claudeContent = buildClaudeContentBlocks(content);
+		// Use plain string content when possible (single text block) for backward
+		// compatibility with Claude CLI's JSONL format.  Array content is only
+		// needed when images or multiple blocks are present.
+		JSONFragment claudeContent;
+		if (content.length == 1 && content[0].type == "text")
+			claudeContent = JSONFragment(toJson(content[0].text));
+		else
+			claudeContent = buildClaudeContentBlocks(content);
 		auto input = ClaudeInput(
 			"user",
 			ClaudeInputMessage("user", claudeContent),

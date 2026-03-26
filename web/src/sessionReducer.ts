@@ -556,7 +556,10 @@ function reduceItemStartedUserMessage(
     return { ...state, messages };
   }
 
-  if (content.length > 0) {
+  const hasContent = content.some(
+    (b) => (b.type === "text" && b.text.trim().length > 0) || b.type !== "text",
+  );
+  if (hasContent) {
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,

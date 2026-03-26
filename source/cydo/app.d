@@ -1010,8 +1010,12 @@ class App : ToolsBackend
 			auto messageToSend = blocks;
 			if (typeDef !is null)
 			{
+				import std.algorithm : filter;
+				import std.array : array;
 				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
-				messageToSend = [ContentBlock("text", rendered)];
+				// Preserve image blocks alongside the rendered text prompt.
+				messageToSend = ContentBlock("text", rendered)
+					~ blocks.filter!(b => b.type == "image").array;
 			}
 			auto msgContent = blocks;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {

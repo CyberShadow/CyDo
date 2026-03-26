@@ -75,7 +75,12 @@ export interface TaskManager {
   activeTaskId: string | null;
   setActiveTaskId: (id: string) => void;
   connected: boolean;
-  send: (text: string, images?: ImageAttachment[], taskType?: string, agentType?: string) => void;
+  send: (
+    text: string,
+    images?: ImageAttachment[],
+    taskType?: string,
+    agentType?: string,
+  ) => void;
   interrupt: () => void;
   stop: () => void;
   closeStdin: () => void;
@@ -869,7 +874,12 @@ export function useTaskManager(): TaskManager {
   }, [connected, activeTaskId]);
 
   const send = useCallback(
-    (text: string, images?: ImageAttachment[], taskType?: string, agentType?: string) => {
+    (
+      text: string,
+      images?: ImageAttachment[],
+      taskType?: string,
+      agentType?: string,
+    ) => {
       const content = buildContentBlocks(text, images);
       if (activeTaskId === null) {
         // No active task — create one with the message atomically

@@ -228,7 +228,7 @@ test("suggestion one-shot rejection keeps session responsive", async ({ backend,
   let sawFailure = false;
   for (let i = 0; i < 6; i++) {
     const seenResults = countMatches(backendLogs, resultPattern);
-    ws.send(JSON.stringify({ type: "message", tid, content: 'Please reply with "done"' }));
+    ws.send(JSON.stringify({ type: "message", tid, content: [{ type: "text", text: 'Please reply with "done"' }] }));
 
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {

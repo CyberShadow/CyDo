@@ -57,7 +57,7 @@ test.describe("image paste", () => {
     // Step 6: Verify mock API recognized the image and responded
     await expect(
       page.locator(".message.assistant-message .text-content", {
-        hasText: "[image received]",
+        hasText: "image received",
       }),
     ).toBeVisible({ timeout: responseTimeout(agentType) });
 
