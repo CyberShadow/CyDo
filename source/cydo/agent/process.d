@@ -182,7 +182,15 @@ class AgentProcess
 		else if (exited && stdoutEOF && !stderrEOF && stderrDrainTimer is null)
 		{
 			stderrDrainTimer = setTimeout({
+				if (exitFired)
+					return;
 				exitFired = true;
+				if (stderrLines !is null)
+				{
+					auto lines = stderrLines;
+					stderrLines = null;
+					lines.disconnect("stderr drain timeout");
+				}
 				if (onExit)
 					onExit(exitStatus);
 			}, 2000.msecs);

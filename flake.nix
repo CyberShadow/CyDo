@@ -324,6 +324,7 @@ EOF
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests
               chmod +x /tmp/tests/extra-fields-wrapper.sh
+              chmod +x /tmp/tests/suggestion-one-shot-fail-wrapper.sh
               cd /tmp/tests
               playwright test ${testMatch} || TEST_RESULT=$?
 

@@ -2877,28 +2877,30 @@ class App : ToolsBackend
 			return;
 
 		td.titleGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
-		td.titleGenHandle.then((string title) {
-			if (tid !in tasks)
-				return;
-			tasks[tid].titleGenHandle = null;
-			tasks[tid].titleGenDone = true;
-			if (title.length > 0 && title.length < 200)
-			{
-				tasks[tid].title = title;
-				persistence.setTitle(tid, title);
-				broadcastTitleUpdate(tid, title);
-			}
-		});
-		td.titleGenHandle.except((Exception e) {
-			if (tid !in tasks)
-				return;
-			tasks[tid].titleGenHandle = null;
-			import ae.utils.json : toJson;
-			import cydo.agent.protocol : ProcessStderrEvent;
-			ProcessStderrEvent ev;
-			ev.text = "failed to generate title: " ~ e.msg;
-			broadcastTask(tid, toJson(ev));
-		});
+		td.titleGenHandle.then(
+			(string title) {
+				if (tid !in tasks)
+					return;
+				tasks[tid].titleGenHandle = null;
+				tasks[tid].titleGenDone = true;
+				if (title.length > 0 && title.length < 200)
+				{
+					tasks[tid].title = title;
+					persistence.setTitle(tid, title);
+					broadcastTitleUpdate(tid, title);
+				}
+			},
+			(Exception e) {
+				if (tid !in tasks)
+					return;
+				tasks[tid].titleGenHandle = null;
+				import ae.utils.json : toJson;
+				import cydo.agent.protocol : ProcessStderrEvent;
+				ProcessStderrEvent ev;
+				ev.text = "failed to generate title: " ~ e.msg;
+				broadcastTask(tid, toJson(ev));
+			},
+		).ignoreResult();
 	}
 
 	private void broadcast(string message)
@@ -3013,6 +3015,8 @@ class App : ToolsBackend
 		// Only generate for interactive (non-sub-task) sessions
 		if (td.parentTid != 0)
 			return;
+		if (td.wasKilledByUser)
+			return;
 
 		// Don't spawn if a suggestion generation is already in-flight
 		if (td.suggestGenHandle !is null)
@@ -3044,32 +3048,34 @@ class App : ToolsBackend
 		auto capturedGen = td.suggestGeneration;
 
 		td.suggestGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
-		td.suggestGenHandle.then((string result) {
-			if (tid !in tasks)
-				return;
-			if (tasks[tid].suggestGeneration != capturedGen)
-				return;
-			tasks[tid].suggestGenHandle = null;
+		td.suggestGenHandle.then(
+			(string result) {
+				if (tid !in tasks)
+					return;
+				if (tasks[tid].suggestGeneration != capturedGen)
+					return;
+				tasks[tid].suggestGenHandle = null;
 
-			import ae.utils.json : jsonParse;
-			string[] suggestionList;
-			try
-				suggestionList = jsonParse!(string[])(result);
-			catch (Exception e)
-			{ warningf("generateSuggestions: failed to parse result: %s", e.msg); return; }
+				import ae.utils.json : jsonParse;
+				string[] suggestionList;
+				try
+					suggestionList = jsonParse!(string[])(result);
+				catch (Exception e)
+				{ warningf("generateSuggestions: failed to parse result: %s", e.msg); return; }
 
-			if (suggestionList.length > 0)
-			{
-				tasks[tid].lastSuggestions = suggestionList;
-				broadcastSuggestionsUpdate(tid, suggestionList);
-			}
-		});
-		td.suggestGenHandle.except((Exception e) {
-			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
-			if (tid !in tasks)
-				return;
-			tasks[tid].suggestGenHandle = null;
-		});
+				if (suggestionList.length > 0)
+				{
+					tasks[tid].lastSuggestions = suggestionList;
+					broadcastSuggestionsUpdate(tid, suggestionList);
+				}
+			},
+			(Exception e) {
+				warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
+				if (tid !in tasks)
+					return;
+				tasks[tid].suggestGenHandle = null;
+			},
+		).ignoreResult();
 	}
 
 	/// Build an abbreviated conversation history string for suggestion generation.
@@ -3287,4 +3293,3 @@ private string replaceUserMessageContent(string line, string newContent)
 		json["message"]["content"] = JSONValue(newContent);
 	return json.toString();
 }
-

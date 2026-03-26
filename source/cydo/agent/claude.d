@@ -425,14 +425,25 @@ class ClaudeCodeAgent : Agent
 		}
 
 		string responseText;
+		string stderrText;
 
 		proc.onStdoutLine = (string line) {
 			responseText ~= line;
 		};
 
+		proc.onStderrLine = (string line) {
+			stderrText ~= line ~ "\n";
+		};
+
 		proc.onExit = (int status) {
 			if (status != 0)
-				promise.reject(new Exception("claude exited with status " ~ status.to!string));
+			{
+				auto msg = "claude exited with status " ~ status.to!string;
+				auto details = stderrText.strip();
+				if (details.length > 0)
+					msg ~= ": " ~ details;
+				promise.reject(new Exception(msg));
+			}
 			else
 				promise.fulfill(responseText.strip());
 		};
