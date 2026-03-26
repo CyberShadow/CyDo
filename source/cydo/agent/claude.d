@@ -1038,7 +1038,7 @@ private string getClaudeBinName()
 }
 
 /// Resolve the claude binary path by searching PATH.
-string resolveClaudeBinary()
+package string resolveClaudeBinary()
 {
 	import std.algorithm : splitter, startsWith;
 	import std.file : exists, isFile;

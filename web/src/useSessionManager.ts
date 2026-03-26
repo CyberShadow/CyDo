@@ -32,6 +32,7 @@ export interface WorkspaceInfo {
 export interface AgentTypeInfo {
   name: string;
   display_name?: string;
+  is_available?: boolean;
 }
 
 export interface TaskTypeInfo {

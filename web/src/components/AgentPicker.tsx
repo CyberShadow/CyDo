@@ -17,8 +17,9 @@ export function AgentPicker({ agentTypes, selected, onChange }: Props) {
       }}
     >
       {agentTypes.map((a) => (
-        <option key={a.name} value={a.name}>
+        <option key={a.name} value={a.name} disabled={a.is_available === false}>
           {a.display_name || a.name}
+          {a.is_available === false ? " (not installed)" : ""}
         </option>
       ))}
     </select>

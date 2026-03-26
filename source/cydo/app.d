@@ -2962,7 +2962,7 @@ class App : ToolsBackend
 
 		AgentTypeListEntry[] entries;
 		foreach (ref entry; agentRegistry)
-			entries ~= AgentTypeListEntry(entry.name, entry.displayName);
+			entries ~= AgentTypeListEntry(entry.name, entry.displayName, entry.resolveBinary().length > 0);
 		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
 	}
 

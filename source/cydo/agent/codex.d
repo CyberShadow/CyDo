@@ -1778,7 +1778,7 @@ private string getCodexBinName()
 }
 
 /// Resolve the codex binary path by searching PATH.
-string resolveCodexBinary()
+package string resolveCodexBinary()
 {
 	import std.algorithm : splitter, startsWith;
 	import std.file : exists, isFile;

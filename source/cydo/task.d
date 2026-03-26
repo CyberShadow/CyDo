@@ -241,6 +241,7 @@ struct AgentTypeListEntry
 {
 	string name;           // "claude", "codex", "copilot"
 	string display_name;   // "Claude Code", "Codex", "Copilot"
+	bool is_available;
 }
 
 struct AgentTypesListMessage

@@ -214,6 +214,10 @@ body,
   outline: none;
 }
 
+.agent-picker option:disabled {
+  color: var(--text-dim);
+}
+
 .task-type-header {
   display: flex;
   align-items: center;

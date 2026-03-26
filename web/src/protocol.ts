@@ -396,6 +396,7 @@ export interface AgentTypesListMessage {
   agent_types: {
     name: string;
     display_name?: string;
+    is_available?: boolean;
   }[];
   default_agent_type?: string;
 }

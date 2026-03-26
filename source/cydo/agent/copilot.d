@@ -1306,7 +1306,7 @@ string getCopilotBinName()
 }
 
 /// Resolve the copilot binary directory by searching PATH.
-string resolveCopilotBinary()
+package string resolveCopilotBinary()
 {
 	import std.algorithm : startsWith;
 	import std.file : exists, isFile;
