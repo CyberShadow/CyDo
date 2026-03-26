@@ -26,6 +26,12 @@ export interface ProjectInfo {
 export interface WorkspaceInfo {
   name: string;
   projects: ProjectInfo[];
+  default_agent_type?: string;
+}
+
+export interface AgentTypeInfo {
+  name: string;
+  display_name?: string;
 }
 
 export interface TaskTypeInfo {
@@ -43,7 +49,7 @@ export interface TaskManager {
   activeTaskId: string | null;
   setActiveTaskId: (id: string) => void;
   connected: boolean;
-  send: (text: string, taskType?: string) => void;
+  send: (text: string, taskType?: string, agentType?: string) => void;
   interrupt: () => void;
   stop: () => void;
   closeStdin: () => void;
@@ -76,6 +82,8 @@ export interface TaskManager {
   }>;
   workspaces: WorkspaceInfo[];
   taskTypes: TaskTypeInfo[];
+  agentTypes: AgentTypeInfo[];
+  defaultAgentType: string;
   activeWorkspace: string | null;
   activeProject: string | null;
   navigateHome: () => void;
@@ -108,6 +116,8 @@ export function useTaskManager(): TaskManager {
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [taskTypes, setTaskTypes] = useState<TaskTypeInfo[]>([]);
+  const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
+  const [defaultAgentType, setDefaultAgentType] = useState("claude");
   const { route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -297,6 +307,11 @@ export function useTaskManager(): TaskManager {
       }
       case "task_types_list": {
         setTaskTypes(msg.task_types);
+        break;
+      }
+      case "agent_types_list": {
+        setAgentTypes(msg.agent_types);
+        if (msg.default_agent_type) setDefaultAgentType(msg.default_agent_type);
         break;
       }
       case "task_created": {
@@ -823,7 +838,7 @@ export function useTaskManager(): TaskManager {
   }, [connected, activeTaskId]);
 
   const send = useCallback(
-    (text: string, taskType?: string) => {
+    (text: string, taskType?: string, agentType?: string) => {
       if (activeTaskId === null) {
         // No active task — create one with the message atomically
         const correlationId = crypto.randomUUID();
@@ -837,7 +852,7 @@ export function useTaskManager(): TaskManager {
             projPath || "",
             taskType,
             text,
-            undefined,
+            agentType,
             correlationId,
           );
         } else {
@@ -846,7 +861,7 @@ export function useTaskManager(): TaskManager {
             undefined,
             taskType,
             text,
-            undefined,
+            agentType,
             correlationId,
           );
         }
@@ -1097,6 +1112,8 @@ export function useTaskManager(): TaskManager {
     sidebarTasks,
     workspaces,
     taskTypes,
+    agentTypes,
+    defaultAgentType,
     activeWorkspace,
     activeProject,
     navigateHome,

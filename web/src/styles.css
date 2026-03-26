@@ -196,6 +196,24 @@ body,
   border-color: var(--accent);
 }
 
+.agent-picker {
+  margin-top: 12px;
+  width: 100%;
+  max-width: 640px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.agent-picker:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
 .task-type-header {
   display: flex;
   align-items: center;

@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useErrorOverlay } from "./useErrorOverlay";
 import { useTheme, ThemeContext } from "./useTheme";
+import { AgentPicker } from "./components/AgentPicker";
 import { InputBox } from "./components/InputBox";
 import { SessionConfig } from "./components/SessionConfig";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
@@ -37,6 +44,8 @@ function AppContent() {
     sidebarTasks,
     workspaces,
     taskTypes,
+    agentTypes,
+    defaultAgentType,
     activeWorkspace,
     activeProject,
     navigateHome,
@@ -233,9 +242,20 @@ function AppContent() {
   }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
 
   const [selectedTaskType, setSelectedTaskType] = useState("conversation");
+  const [selectedAgent, setSelectedAgent] = useState("");
   const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
   const newTaskPasteTextRef = useRef<((text: string) => void) | null>(null);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
+
+  const effectiveDefaultAgent = useMemo(() => {
+    const ws = workspaces.find((w) => w.name === activeWorkspace);
+    return ws?.default_agent_type || defaultAgentType;
+  }, [workspaces, activeWorkspace, defaultAgentType]);
+
+  // Reset selected agent when workspace changes so the new default takes effect
+  useEffect(() => {
+    setSelectedAgent("");
+  }, [activeWorkspace]);
 
   const handleSidebarSelect = useCallback(
     (tid: string) => {
@@ -419,11 +439,20 @@ function AppContent() {
                   onConfirm={focusNewTaskInput}
                   onType={focusNewTaskInput}
                 />
+                <AgentPicker
+                  agentTypes={agentTypes}
+                  selected={selectedAgent || effectiveDefaultAgent}
+                  onChange={setSelectedAgent}
+                />
                 <InputBox
                   inputRef={newTaskInputRef}
                   pasteTextRef={newTaskPasteTextRef}
                   onSend={(text: string) => {
-                    send(text, selectedTaskType || taskTypes[0]?.name);
+                    send(
+                      text,
+                      selectedTaskType || taskTypes[0]?.name,
+                      selectedAgent || effectiveDefaultAgent,
+                    );
                   }}
                   onInterrupt={interrupt}
                   onEscape={focusTaskTypePicker}

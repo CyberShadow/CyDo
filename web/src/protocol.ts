@@ -376,6 +376,7 @@ export interface WorkspacesListMessage {
   workspaces: {
     name: string;
     projects: { name: string; path: string }[];
+    default_agent_type?: string;
   }[];
 }
 export interface TaskTypesListMessage {
@@ -389,6 +390,14 @@ export interface TaskTypesListMessage {
     icon?: string;
     user_visible?: boolean;
   }[];
+}
+export interface AgentTypesListMessage {
+  type: "agent_types_list";
+  agent_types: {
+    name: string;
+    display_name?: string;
+  }[];
+  default_agent_type?: string;
 }
 export interface ForkableUuidsMessage {
   type: "forkable_uuids";
@@ -442,6 +451,7 @@ export type ControlMessage =
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage
+  | AgentTypesListMessage
   | ForkableUuidsMessage
   | ErrorMessage
   | UndoPreviewMessage

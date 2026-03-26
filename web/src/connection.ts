@@ -48,6 +48,7 @@ export class Connection {
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||
+          raw.type === "agent_types_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "error" ||
           raw.type === "undo_preview" ||

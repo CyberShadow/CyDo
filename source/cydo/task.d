@@ -211,6 +211,7 @@ struct WorkspaceInfo
 {
 	string name;
 	ProjectInfo[] projects;
+	string default_agent_type;   // per-workspace override, empty = use global
 }
 
 struct WorkspacesListMessage
@@ -234,6 +235,19 @@ struct TaskTypesListMessage
 {
 	string type = "task_types_list";
 	TaskTypeListEntry[] task_types;
+}
+
+struct AgentTypeListEntry
+{
+	string name;           // "claude", "codex", "copilot"
+	string display_name;   // "Claude Code", "Codex", "Copilot"
+}
+
+struct AgentTypesListMessage
+{
+	string type = "agent_types_list";
+	AgentTypeListEntry[] agent_types;
+	string default_agent_type;   // global default from config
 }
 
 struct TaskReloadMessage

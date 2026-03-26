@@ -487,6 +487,7 @@ class App : ToolsBackend
 		// Send workspaces list, task types, and tasks list to new client
 		ws.send(Data(buildWorkspacesList().representation));
 		ws.send(Data(buildTaskTypesList().representation));
+		ws.send(Data(buildAgentTypesList().representation));
 		ws.send(Data(buildTasksList().representation));
 
 		ws.handleReadData = (Data data) {
@@ -2740,7 +2741,7 @@ class App : ToolsBackend
 			if (result.status != 0)
 			{
 				warningf("Discovery failed for workspace '%s': exit %d", ws.name, result.status);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type);
 				continue;
 			}
 
@@ -2754,7 +2755,7 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
 
-			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos);
+			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent_type);
 
 			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
 			foreach (ref p; projInfos)
@@ -2952,6 +2953,17 @@ class App : ToolsBackend
 		foreach (ref def; getTaskTypes())
 			entries ~= TaskTypeListEntry(def.name, def.display_name, def.description, def.model_class, def.read_only, def.icon, def.user_visible);
 		return toJson(TaskTypesListMessage("task_types_list", entries));
+	}
+
+	private string buildAgentTypesList()
+	{
+		import ae.utils.json : toJson;
+		import cydo.agent.registry : agentRegistry;
+
+		AgentTypeListEntry[] entries;
+		foreach (ref entry; agentRegistry)
+			entries ~= AgentTypeListEntry(entry.name, entry.displayName);
+		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
 	}
 
 	private void removeClient(WebSocketAdapter ws)
