@@ -2619,6 +2619,8 @@ class App : ToolsBackend
 			return false;
 
 		auto lastEntry = cast(const(char)[])(*history)[$ - 1].unsafeContents;
+		if (lastEntry.length > 64 * 1024)
+			return false;
 		if (!lastEntry.canFind(`"type":"item/delta"`) &&
 		    !lastEntry.canFind(`"type":"item\/delta"`))
 			return false;
