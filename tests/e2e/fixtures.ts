@@ -73,7 +73,7 @@ export function responseTimeout(agentType: AgentType): number {
 }
 
 type WorkerFixtures = {
-  backend: { port: number; baseURL: string };
+  backend: { port: number; baseURL: string; pid: number };
   logs: LogCollector;
 };
 
@@ -203,7 +203,7 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
         throw new Error(`CyDo backend on port ${port} did not start in time`);
       }
 
-      await use({ port, baseURL });
+      await use({ port, baseURL, pid: proc.pid! });
 
       // Teardown
       process.kill(-proc.pid!, "SIGTERM");
