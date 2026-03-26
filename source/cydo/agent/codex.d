@@ -59,6 +59,12 @@ struct ThreadStartParams
 struct ThreadResumeParams
 {
 	string threadId;
+	@JSONOptional string model;
+	@JSONOptional string cwd;
+	@JSONOptional string approvalPolicy;
+	@JSONOptional string sandbox;
+	@JSONOptional string developerInstructions;
+	@JSONOptional JSONFragment config;
 }
 
 @RPCFlatten @JSONPartial
@@ -635,35 +641,22 @@ class CodexAgent : Agent
 		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
 		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
 
+		// Build developerInstructions: system prompt + disallowedTools restriction.
+		string devInstructions = config.appendSystemPrompt;
+		if (devInstructions.length > 0)
+			devInstructions ~= "\n\n";
+		devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
+			~ "spawn_agent,update_plan,request_user_input"
+			~ ". If you attempt to use them, they will fail.";
+
+		// Build MCP config override for CyDo tools.
+		auto mcpConfig = buildMcpConfigOverride(tid,
+			config.creatableTaskTypes, config.switchModes, config.handoffs,
+			config.includeTools, config.mcpSocketPath);
+
 		server.onReady(() {
-			if (resumeSessionId.length > 0)
+			void startFreshThread()
 			{
-				server.sendRequest("thread/resume",
-					JSONFragment(toJson(ThreadResumeParams(resumeSessionId)))
-				).then((JsonRpcResponse resp) {
-					ThreadStartResult result;
-					try
-						result = resp.getResult!ThreadStartResult();
-					catch (Exception e)
-					{ warningf("thread/resume error: %s", e.msg); }
-					session.onThreadStarted(result, resumeSessionId, model, workDir,
-						resp.result.json);
-				});
-			}
-			else
-			{
-				// Build developerInstructions: system prompt + disallowedTools restriction
-				string devInstructions = config.appendSystemPrompt;
-				if (devInstructions.length > 0)
-					devInstructions ~= "\n\n";
-				devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
-					~ "spawn_agent,update_plan,request_user_input"
-					~ ". If you attempt to use them, they will fail.";
-
-				// Build MCP config override for CyDo tools
-				auto mcpConfig = buildMcpConfigOverride(tid,
-					config.creatableTaskTypes, config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
-
 				ThreadStartParams tsp;
 				tsp.cwd = workDir;
 				tsp.model = model;
@@ -681,11 +674,52 @@ class CodexAgent : Agent
 					try
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
-					{ warningf("thread/start error: %s", e.msg); }
+						warningf("thread/start error: %s", e.msg);
 					session.onThreadStarted(result, null, model, workDir,
 						resp.result.json);
 				});
 			}
+
+			if (resumeSessionId.length > 0)
+			{
+				ThreadResumeParams trp;
+				trp.threadId = resumeSessionId;
+				trp.model = model;
+				trp.cwd = workDir;
+				trp.approvalPolicy = "never";
+				trp.sandbox = "danger-full-access";
+				if (devInstructions.length > 0)
+					trp.developerInstructions = devInstructions;
+				if (mcpConfig.length > 0)
+					trp.config = JSONFragment(mcpConfig);
+
+				server.sendRequest("thread/resume",
+					JSONFragment(toJson(trp))
+				).then((JsonRpcResponse resp) {
+					ThreadStartResult result;
+					try
+						result = resp.getResult!ThreadStartResult();
+					catch (Exception e)
+					{
+						// Resume can fail when sandbox/workspace changes require a new
+						// app-server process that does not know the old thread ID.
+						// Fall back to a fresh thread so tools (MCP) are still available.
+						warningf("thread/resume error: %s; falling back to thread/start", e.msg);
+						startFreshThread();
+						return;
+					}
+					if (result.thread.id.length == 0)
+					{
+						warningf("thread/resume returned empty thread id; falling back to thread/start");
+						startFreshThread();
+						return;
+					}
+					session.onThreadStarted(result, resumeSessionId, model, workDir,
+						resp.result.json);
+				});
+			}
+			else
+				startFreshThread();
 		});
 
 		return session;
