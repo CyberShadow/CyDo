@@ -558,7 +558,7 @@ class AppServerProcess
 
 class CodexAgent : Agent
 {
-	private AppServerProcess[string] serverPool; // keyed by workspace
+	private AppServerProcess[string] serverPool; // keyed by workspace+sandbox signature
 	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
 
@@ -615,11 +615,20 @@ class CodexAgent : Agent
 	@property string gitEmail() { return "noreply@openai.com"; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
+	private string serverPoolKey(string workspace, string[] cmdPrefix)
+	{
+		// The outer bwrap namespace is fixed when `codex app-server` starts.
+		// Reusing a workspace-scoped server across tasks with different cmdPrefix
+		// values leaks the first task's mount policy into later sessions.
+		auto prefixSig = cmdPrefix is null ? "[]" : toJson(cmdPrefix);
+		return workspace ~ "\n" ~ prefixSig;
+	}
+
 	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
 		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
-		auto server = getOrCreateServer(workspace, cmdPrefix);
+		auto server = getOrCreateServer(serverPoolKey(workspace, cmdPrefix), cmdPrefix);
 		auto session = new CodexSession(server, tid, config);
 		server.registerSessionByTid(tid, session);
 
@@ -682,9 +691,9 @@ class CodexAgent : Agent
 		return session;
 	}
 
-	private AppServerProcess getOrCreateServer(string workspace, string[] cmdPrefix)
+	private AppServerProcess getOrCreateServer(string poolKey, string[] cmdPrefix)
 	{
-		if (auto existing = workspace in serverPool)
+		if (auto existing = poolKey in serverPool)
 			if (!existing.dead)
 				return *existing;
 
@@ -696,7 +705,7 @@ class CodexAgent : Agent
 			args = codexArgs;
 
 		auto server = new AppServerProcess(args);
-		serverPool[workspace] = server;
+		serverPool[poolKey] = server;
 		return server;
 	}
 
