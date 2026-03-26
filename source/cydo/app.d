@@ -1682,20 +1682,11 @@ class App : ToolsBackend
 	/// Create an Agent instance by type name.
 	private static Agent createAgent(string agentType)
 	{
-		switch (agentType)
-		{
-			case "claude":
-				import cydo.agent.claude : ClaudeCodeAgent;
-				return new ClaudeCodeAgent();
-			case "codex":
-				import cydo.agent.codex : CodexAgent;
-				return new CodexAgent();
-			case "copilot":
-				import cydo.agent.copilot : CopilotAgent;
-				return new CopilotAgent();
-			default:
-				throw new Exception("Unknown agent type: " ~ agentType);
-		}
+		import cydo.agent.registry : agentRegistry;
+		foreach (ref entry; agentRegistry)
+			if (entry.name == agentType)
+				return entry.create();
+		throw new Exception("Unknown agent type: " ~ agentType);
 	}
 
 	/// Set up a worktree for a task: either create a new git worktree or
