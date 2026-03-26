@@ -25,7 +25,17 @@ export function WelcomePage({
   onRefreshWorkspaces,
 }: Props) {
   const [filter, setFilter] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const filterRef = useRef<HTMLInputElement>(null);
+
+  function toggleCollapsed(name: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   // Type anywhere to focus the filter input
   useEffect(() => {
@@ -198,122 +208,148 @@ export function WelcomePage({
 
           return a.name.localeCompare(b.name);
         });
+        const isCollapsed = collapsed.has(ws.name);
         return (
           <section class="workspace-group" key={ws.name}>
-            <h2 class="workspace-group-title">{ws.name}</h2>
-            <div class="project-cards">
-              {sortedProjects.map((proj) => {
-                const key = `${ws.name}:${proj.path}`;
-                const projTasks = (tasksByProject.get(key) || []).sort(
-                  (a, b) =>
-                    (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
-                );
-                return (
-                  <div class="project-card" key={proj.path}>
-                    <div class="project-card-header">
-                      <span
-                        class="project-card-title"
-                        title={proj.name}
-                        onClick={() => {
-                          onNavigateToProject(ws.name, proj.name);
-                        }}
-                      >
-                        {(() => {
-                          const slash = proj.name.lastIndexOf("/");
-                          if (slash === -1) return proj.name;
-                          return (
-                            <>
-                              <span class="project-card-prefix">
-                                {proj.name.slice(0, slash)}
-                              </span>
-                              <span class="project-card-leaf">
-                                /{proj.name.slice(slash + 1)}
-                              </span>
-                            </>
-                          );
-                        })()}
-                      </span>
-                      <button
-                        class="sidebar-new-btn"
-                        onClick={() => {
-                          onNavigateToProject(ws.name, proj.name);
-                        }}
-                        title="New task"
-                      >
-                        +
-                      </button>
-                    </div>
-                    <div class="project-card-sessions">
-                      {projTasks.length === 0 ? (
-                        <div class="project-card-empty">No tasks yet</div>
-                      ) : (
-                        projTasks.map((t) => (
-                          <div
-                            key={t.tid}
-                            class={`sidebar-item${
-                              attention.has(t.tid) ? " attention" : ""
-                            }`}
-                            onClick={() => {
-                              onSelectTask(t.tid);
-                            }}
-                          >
-                            {attention.has(t.tid) ? (
-                              <span class="task-type-icon task-type-icon-check alive" />
-                            ) : (
-                              renderTaskDot(t)
-                            )}
-                            <span
-                              class="sidebar-label"
-                              title={t.title || `Task ${t.tid}`}
+            <h2
+              class="workspace-group-title"
+              onClick={() => {
+                toggleCollapsed(ws.name);
+              }}
+            >
+              <span class="workspace-group-chevron">
+                {isCollapsed ? "▶" : "▼"}
+              </span>
+              {ws.name}
+            </h2>
+            {!isCollapsed && (
+              <div class="project-cards">
+                {sortedProjects.map((proj) => {
+                  const key = `${ws.name}:${proj.path}`;
+                  const projTasks = (tasksByProject.get(key) || []).sort(
+                    (a, b) =>
+                      (b.lastActive ?? 0) - (a.lastActive ?? 0) ||
+                      b.tid - a.tid,
+                  );
+                  return (
+                    <div class="project-card" key={proj.path}>
+                      <div class="project-card-header">
+                        <span
+                          class="project-card-title"
+                          title={proj.name}
+                          onClick={() => {
+                            onNavigateToProject(ws.name, proj.name);
+                          }}
+                        >
+                          {(() => {
+                            const slash = proj.name.lastIndexOf("/");
+                            if (slash === -1) return proj.name;
+                            return (
+                              <>
+                                <span class="project-card-prefix">
+                                  {proj.name.slice(0, slash)}
+                                </span>
+                                <span class="project-card-leaf">
+                                  /{proj.name.slice(slash + 1)}
+                                </span>
+                              </>
+                            );
+                          })()}
+                        </span>
+                        <button
+                          class="sidebar-new-btn"
+                          onClick={() => {
+                            onNavigateToProject(ws.name, proj.name);
+                          }}
+                          title="New task"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div class="project-card-sessions">
+                        {projTasks.length === 0 ? (
+                          <div class="project-card-empty">No tasks yet</div>
+                        ) : (
+                          projTasks.map((t) => (
+                            <div
+                              key={t.tid}
+                              class={`sidebar-item${
+                                attention.has(t.tid) ? " attention" : ""
+                              }`}
+                              onClick={() => {
+                                onSelectTask(t.tid);
+                              }}
                             >
-                              {t.title || `Task ${t.tid}`}
-                            </span>
-                          </div>
-                        ))
-                      )}
+                              {attention.has(t.tid) ? (
+                                <span class="task-type-icon task-type-icon-check alive" />
+                              ) : (
+                                renderTaskDot(t)
+                              )}
+                              <span
+                                class="sidebar-label"
+                                title={t.title || `Task ${t.tid}`}
+                              >
+                                {t.title || `Task ${t.tid}`}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         );
       })}
       {filteredUngrouped.length > 0 && (
         <section class="workspace-group">
-          <h2 class="workspace-group-title">Ungrouped</h2>
-          <div class="project-cards">
-            <div class="project-card">
-              <div class="project-card-header">
-                <span class="project-card-title">Legacy tasks</span>
-              </div>
-              <div class="project-card-sessions">
-                {filteredUngrouped.map((t) => (
-                  <div
-                    key={t.tid}
-                    class={`sidebar-item${
-                      attention.has(t.tid) ? " attention" : ""
-                    }`}
-                    onClick={() => {
-                      onSelectTask(t.tid);
-                    }}
-                  >
-                    {attention.has(t.tid) ? (
-                      <span class="task-type-icon task-type-icon-check alive" />
-                    ) : (
-                      renderTaskDot(t)
-                    )}
-                    <span
-                      class="sidebar-label"
-                      title={t.title || `Task ${t.tid}`}
+          <h2
+            class="workspace-group-title"
+            onClick={() => {
+              toggleCollapsed("Ungrouped");
+            }}
+          >
+            <span class="workspace-group-chevron">
+              {collapsed.has("Ungrouped") ? "▶" : "▼"}
+            </span>
+            Ungrouped
+          </h2>
+          {!collapsed.has("Ungrouped") && (
+            <div class="project-cards">
+              <div class="project-card">
+                <div class="project-card-header">
+                  <span class="project-card-title">Legacy tasks</span>
+                </div>
+                <div class="project-card-sessions">
+                  {filteredUngrouped.map((t) => (
+                    <div
+                      key={t.tid}
+                      class={`sidebar-item${
+                        attention.has(t.tid) ? " attention" : ""
+                      }`}
+                      onClick={() => {
+                        onSelectTask(t.tid);
+                      }}
                     >
-                      {t.title || `Task ${t.tid}`}
-                    </span>
-                  </div>
-                ))}
+                      {attention.has(t.tid) ? (
+                        <span class="task-type-icon task-type-icon-check alive" />
+                      ) : (
+                        renderTaskDot(t)
+                      )}
+                      <span
+                        class="sidebar-label"
+                        title={t.title || `Task ${t.tid}`}
+                      >
+                        {t.title || `Task ${t.tid}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </section>
       )}
     </div>

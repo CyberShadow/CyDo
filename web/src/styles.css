@@ -2578,6 +2578,13 @@ pre.extra-field-value {
   letter-spacing: 1px;
   margin-bottom: 12px;
   font-weight: normal;
+  cursor: pointer;
+  user-select: none;
+}
+
+.workspace-group-chevron {
+  margin-right: 6px;
+  font-size: 12px;
 }
 
 .refresh-workspaces-btn {
