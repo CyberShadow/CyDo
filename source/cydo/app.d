@@ -100,12 +100,13 @@ static:
 	void discover(
 		Parameter!(string, "Workspace root path.") root,
 		Parameter!(string, "Workspace name.") name,
-		Parameter!(uint, "Maximum scan depth.") maxDepth,
+		Parameter!(string, "is_project expression (JSON).") isProjectJson,
+		Parameter!(string, "recurse_when expression (JSON).") recurseWhenJson,
 		Parameter!(immutable(string)[], "Patterns to exclude.") exclude = null,
 	)
 	{
 		import cydo.discover : runDiscover;
-		runDiscover(root, name, maxDepth, cast(string[]) exclude);
+		runDiscover(root, name, isProjectJson, recurseWhenJson, cast(string[]) exclude);
 	}
 }
 
@@ -2687,7 +2688,6 @@ class App : ToolsBackend
 	/// Discover projects in all configured workspaces and populate workspacesInfo.
 	private void discoverAllWorkspaces()
 	{
-		import std.conv : to;
 		import std.json : parseJSON;
 		import std.process : execute;
 
@@ -2697,8 +2697,14 @@ class App : ToolsBackend
 			auto sandbox = resolveSandboxForDiscovery(
 				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
 			auto bwrapArgs = buildBwrapArgs(sandbox, "/");
+			auto isProjectJson = ws.project_discovery.is_project.isConfigured
+				? ws.project_discovery.is_project.toJson().toString()
+				: "";
+			auto recurseWhenJson = ws.project_discovery.recurse_when.isConfigured
+				? ws.project_discovery.recurse_when.toJson().toString()
+				: "";
 			auto cmd = bwrapArgs ~ cydoBinaryPath
-				~ ["discover", ws.root, ws.name, to!string(ws.max_depth)]
+				~ ["discover", ws.root, ws.name, isProjectJson, recurseWhenJson]
 				~ ws.exclude;
 
 			auto result = execute(cmd);

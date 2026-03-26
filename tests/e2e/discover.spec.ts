@@ -137,7 +137,7 @@ test("cydo discover subcommand works standalone", ({}, testInfo) => {
 
   const result = spawnSync(
     process.env.CYDO_BIN!,
-    ["discover", "/tmp/cydo-test-workspace", "local", "3"],
+    ["discover", "/tmp/cydo-test-workspace", "local", "", ""],
     { encoding: "utf8" },
   );
 
@@ -197,7 +197,6 @@ test(
         "workspaces:",
         "  myws:",
         `    root: ${wsRoot}`,
-        "    max_depth: 2",
         "    sandbox:",
         "      paths:",
         `        ${wsRoot}/project-beta: empty_dir`,
@@ -279,7 +278,6 @@ test(
           "    root: /tmp/cydo-test-workspace",
           "  ws2:",
           `    root: ${wsRoot2}`,
-          "    max_depth: 2",
         ].join("\n") + "\n",
       );
 
@@ -357,6 +355,265 @@ test(
     } finally {
       await killBackend(proc);
       rmSync(workDir, { recursive: true, force: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Test 5: custom is_project expression (has_entry: .git OR has_file: CLAUDE.md)
+// ---------------------------------------------------------------------------
+
+test(
+  "custom is_project expression discovers directories matching either criterion",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "agent-agnostic, runs in claude project only",
+    );
+
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const port = 7050 + seq;
+    const { workDir, workerHome } = createWorkDir(seq);
+    const wsRoot = `/tmp/cydo-discover-expr-${seq}`;
+    rmSync(wsRoot, { recursive: true, force: true });
+
+    // project-git: has .git directory (via git init)
+    initGitRepo(`${wsRoot}/project-git`);
+
+    // project-claude: has only CLAUDE.md (not a git repo)
+    mkdirSync(`${wsRoot}/project-claude`, { recursive: true });
+    writeFileSync(`${wsRoot}/project-claude/CLAUDE.md`, "# Project\n");
+
+    // project-both: has both .git and CLAUDE.md
+    initGitRepo(`${wsRoot}/project-both`);
+    writeFileSync(`${wsRoot}/project-both/CLAUDE.md`, "# Project\n");
+
+    // plain-dir: empty directory — should NOT be discovered
+    mkdirSync(`${wsRoot}/plain-dir`, { recursive: true });
+
+    writeFileSync(
+      `${workerHome}/.config/cydo/config.yaml`,
+      [
+        "workspaces:",
+        "  testws:",
+        `    root: ${wsRoot}`,
+        "    project_discovery:",
+        "      is_project:",
+        "        or:",
+        "          - has_entry: .git",
+        "          - has_file: CLAUDE.md",
+      ].join("\n") + "\n",
+    );
+
+    const proc = spawnBackend(port, workDir, workerHome);
+    try {
+      await waitForBackend(`http://localhost:${port}`, proc);
+      await page.goto(`http://localhost:${port}/`);
+
+      await expect(
+        page.locator(".project-card-title", { hasText: "project-git" }),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.locator(".project-card-title", { hasText: "project-claude" }),
+      ).toBeVisible({ timeout: 5_000 });
+      await expect(
+        page.locator(".project-card-title", { hasText: "project-both" }),
+      ).toBeVisible({ timeout: 5_000 });
+      await expect(
+        page.locator(".project-card-title", { hasText: "plain-dir" }),
+      ).not.toBeVisible();
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(wsRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Test 6: custom recurse_when discovers nested projects
+// ---------------------------------------------------------------------------
+
+test(
+  "recurse_when: true discovers nested git repos inside a project",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "agent-agnostic, runs in claude project only",
+    );
+
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const port = 7050 + seq;
+    const { workDir, workerHome } = createWorkDir(seq);
+    const wsRoot = `/tmp/cydo-discover-nested-${seq}`;
+    rmSync(wsRoot, { recursive: true, force: true });
+
+    // mono/.git and mono/sub/.git — nested repos
+    initGitRepo(`${wsRoot}/mono`);
+    initGitRepo(`${wsRoot}/mono/sub`);
+
+    writeFileSync(
+      `${workerHome}/.config/cydo/config.yaml`,
+      [
+        "workspaces:",
+        "  mono:",
+        `    root: ${wsRoot}`,
+        "    project_discovery:",
+        "      is_project:",
+        "        has_entry: .git",
+        "      recurse_when: true",
+      ].join("\n") + "\n",
+    );
+
+    const proc = spawnBackend(port, workDir, workerHome);
+    try {
+      await waitForBackend(`http://localhost:${port}`, proc);
+      await page.goto(`http://localhost:${port}/`);
+
+      // Both the outer and inner repos must appear
+      await expect(
+        page.locator(".project-card-title[title='mono']"),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.locator(".project-card-title[title='mono/sub']"),
+      ).toBeVisible({ timeout: 5_000 });
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(wsRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Test 7: hard-coded project list using equals: [$relative_path, ...]
+// ---------------------------------------------------------------------------
+
+test(
+  "hard-coded project list with equals discovers only named directories",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "agent-agnostic, runs in claude project only",
+    );
+
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const port = 7050 + seq;
+    const { workDir, workerHome } = createWorkDir(seq);
+    const wsRoot = `/tmp/cydo-discover-list-${seq}`;
+    rmSync(wsRoot, { recursive: true, force: true });
+
+    // Three plain directories — none have .git
+    mkdirSync(`${wsRoot}/alpha`, { recursive: true });
+    mkdirSync(`${wsRoot}/beta`, { recursive: true });
+    mkdirSync(`${wsRoot}/gamma`, { recursive: true });
+
+    writeFileSync(
+      `${workerHome}/.config/cydo/config.yaml`,
+      [
+        "workspaces:",
+        "  work:",
+        `    root: ${wsRoot}`,
+        "    project_discovery:",
+        "      is_project:",
+        "        or:",
+        "          - equals: [$relative_path, alpha]",
+        "          - equals: [$relative_path, gamma]",
+      ].join("\n") + "\n",
+    );
+
+    const proc = spawnBackend(port, workDir, workerHome);
+    try {
+      await waitForBackend(`http://localhost:${port}`, proc);
+      await page.goto(`http://localhost:${port}/`);
+
+      await expect(
+        page.locator(".project-card-title", { hasText: "alpha" }),
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(
+        page.locator(".project-card-title", { hasText: "gamma" }),
+      ).toBeVisible({ timeout: 5_000 });
+      await expect(
+        page.locator(".project-card-title", { hasText: "beta" }),
+      ).not.toBeVisible();
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(wsRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Test 8: depth control via less_than expression
+// ---------------------------------------------------------------------------
+
+test(
+  "depth-limited recurse_when stops recursion at the configured depth",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "agent-agnostic, runs in claude project only",
+    );
+
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const port = 7050 + seq;
+    const { workDir, workerHome } = createWorkDir(seq);
+    const wsRoot = `/tmp/cydo-discover-depth-${seq}`;
+    rmSync(wsRoot, { recursive: true, force: true });
+
+    // a/b/c/d — d has .git but is at depth 3 (a=1, b=2, c=3, d=4 inside c)
+    initGitRepo(`${wsRoot}/a/b/c/d`);
+
+    const configPath = `${workerHome}/.config/cydo/config.yaml`;
+
+    // With depth limit 2: d is NOT reachable (scanning stops at depth 2)
+    writeFileSync(
+      configPath,
+      [
+        "workspaces:",
+        "  deep:",
+        `    root: ${wsRoot}`,
+        "    project_discovery:",
+        "      is_project:",
+        "        has_entry: .git",
+        "      recurse_when:",
+        "        less_than: [$depth, 2]",
+      ].join("\n") + "\n",
+    );
+
+    const proc = spawnBackend(port, workDir, workerHome);
+    try {
+      await waitForBackend(`http://localhost:${port}`, proc);
+      await page.goto(`http://localhost:${port}/`);
+
+      // d is too deep — must not appear
+      await expect(
+        page.locator(".project-card-title", { hasText: "d" }),
+      ).not.toBeVisible({ timeout: 10_000 });
+
+      // Increase depth limit to 4: d IS reachable now
+      writeFileSync(
+        configPath,
+        [
+          "workspaces:",
+          "  deep:",
+          `    root: ${wsRoot}`,
+          "    project_discovery:",
+          "      is_project:",
+          "        has_entry: .git",
+          "      recurse_when:",
+          "        less_than: [$depth, 4]",
+        ].join("\n") + "\n",
+      );
+
+      await expect(
+        page.locator(".project-card-title", { hasText: "d" }),
+      ).toBeVisible({ timeout: 20_000 });
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(wsRoot, { recursive: true, force: true });
     }
   },
 );

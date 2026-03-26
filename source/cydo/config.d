@@ -5,6 +5,8 @@ import configy.read : parseConfigFileSimple;
 
 import std.typecons : Nullable;
 
+import cydo.discover : DiscoverExpr, ProjectDiscoveryConfig;
+
 enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
 
 struct GitIdentityConfig
@@ -30,11 +32,11 @@ struct WorkspaceConfig
 {
 	string name;
 	string root;
-	uint max_depth = 3;
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
 	@Optional string task_types;
 	@Optional string default_agent_type;
+	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
 struct CydoConfig
@@ -61,7 +63,7 @@ CydoConfig loadConfig()
 	{
 		import std.path : expandTilde;
 		config.workspaces = [
-			WorkspaceConfig("local", expandTilde("~"), 3, null),
+			WorkspaceConfig("local", expandTilde("~")),
 		];
 	}
 
