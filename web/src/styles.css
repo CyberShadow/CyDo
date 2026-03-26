@@ -2946,6 +2946,19 @@ pre.extra-field-value {
   color: var(--bg);
 }
 
+/* Connection overlay */
+.connection-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  color: #fff;
+  font-size: 16px;
+}
+
 /* Error toast overlay */
 .error-toast-container {
   position: fixed;

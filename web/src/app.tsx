@@ -115,6 +115,11 @@ function AppContent() {
             onNavigateToProject={navigateToProject}
             onRefreshWorkspaces={refreshWorkspaces}
           />
+          {!connected && (
+            <div class="connection-overlay">
+              <span>Connecting…</span>
+            </div>
+          )}
           {searchPopup}
           <ErrorToast
             errors={errors}
@@ -304,6 +309,11 @@ function AppContent() {
             }}
           />
         )}
+        {!connected && (
+          <div class="connection-overlay">
+            <span>Connecting…</span>
+          </div>
+        )}
         <Sidebar
           tasks={sidebarTasks}
           activeTaskId={activeTaskId}
@@ -366,10 +376,10 @@ function AppContent() {
                 <span class="archive-placeholder">Archived tasks</span>
               </div>
             </div>
-          ) : !connected || activeTaskId !== null ? (
+          ) : activeTaskId !== null ? (
             <div class="session-empty no-sidebar">
               <div class="session-empty-inner">
-                <span>{connected ? "Loading task…" : "Connecting…"}</span>
+                <span>Loading task…</span>
               </div>
             </div>
           ) : (
@@ -418,7 +428,7 @@ function AppContent() {
                   onInterrupt={interrupt}
                   onEscape={focusTaskTypePicker}
                   isProcessing={false}
-                  disabled={false}
+                  disabled={!connected}
                   sessionId={0}
                 />
               </div>
