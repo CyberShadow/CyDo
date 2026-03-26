@@ -90,3 +90,7 @@ infrastructure in `tests/mock-api/`. Mocks of the agent binary itself are not
 acceptable — they mask real integration issues. The proxy intercepts API traffic
 (LLM completions, auth, models) while letting the real binary handle protocol
 framing, startup, and session management.
+
+**Test real user interactions, not low-level details.** E2e tests should exercise
+the full stack (frontend, backend, agent binary, LLM API), rather than narrow
+scoped slices. Do not use WebSocket packet injection or agent software mocking.
