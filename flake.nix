@@ -469,6 +469,7 @@ EOF
               openssl
               zlib
               pkg-config
+              playwright-test
             ];
           };
         });
