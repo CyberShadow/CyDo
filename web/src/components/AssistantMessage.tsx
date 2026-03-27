@@ -250,14 +250,15 @@ export function AssistantMessage({
                       tryParsePartialJson(block.text)
                     }
                     onViewFile={onViewFile}
-                  />
-                  {block.output && (
-                    <pre class="tool-result streaming-output">
-                      {hasAnsi(block.output)
-                        ? renderAnsi(block.output)
-                        : block.output}
-                    </pre>
-                  )}
+                  >
+                    {block.output && (
+                      <pre class="tool-result streaming-output">
+                        {hasAnsi(block.output)
+                          ? renderAnsi(block.output)
+                          : block.output}
+                      </pre>
+                    )}
+                  </ToolCall>
                 </Fragment>
               )}
               {block.type === "tool_use" && !block.name && (
