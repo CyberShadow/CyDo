@@ -304,6 +304,7 @@ export function useTaskManager(): TaskManager {
     switch (msg.type) {
       case "workspaces_list": {
         setWorkspaces(msg.workspaces);
+        setConnected(true);
         break;
       }
       case "task_types_list": {
@@ -797,8 +798,8 @@ export function useTaskManager(): TaskManager {
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     conn.onStatusChange = (connected) => {
-      setConnected(connected);
       if (!connected) {
+        setConnected(false);
         liveStates.clear();
         requestedHistoryRef.current.clear();
         setTasks(new Map());
