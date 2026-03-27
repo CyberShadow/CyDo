@@ -95,7 +95,9 @@ export function AssistantMessage({
   const isSynthetic = message.model === "<synthetic>";
   return (
     <div
-      class={`message assistant-message${hasStreamingBlocks ? " streaming" : ""}${isSynthetic ? " synthetic-message" : ""}`}
+      class={`message assistant-message${
+        hasStreamingBlocks ? " streaming" : ""
+      }${isSynthetic ? " synthetic-message" : ""}`}
     >
       {(message.isSidechain || isSynthetic) && (
         <div class="message-meta">

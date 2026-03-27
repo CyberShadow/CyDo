@@ -452,6 +452,10 @@ export interface ServerStatusMessage {
   type: "server_status";
   auth_enabled: boolean;
 }
+export interface TaskDeletedMessage {
+  type: "task_deleted";
+  tid: number;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -468,4 +472,5 @@ export type ControlMessage =
   | SuggestionsUpdateMessage
   | AskUserQuestionControlMessage
   | DraftUpdatedMessage
-  | ServerStatusMessage;
+  | ServerStatusMessage
+  | TaskDeletedMessage;

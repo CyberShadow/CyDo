@@ -98,7 +98,9 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
             return (
               <div
                 key={t.tid}
-                class={`search-result-item${i === selectedIdx ? " selected" : ""}`}
+                class={`search-result-item${
+                  i === selectedIdx ? " selected" : ""
+                }`}
                 onClick={() => {
                   onSelect(t.tid);
                   onClose();
@@ -115,7 +117,9 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
                   />
                 ) : (
                   <span
-                    class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+                    class={`task-type-icon task-type-icon-dot${
+                      statusClass ? ` ${statusClass}` : ""
+                    }`}
                   />
                 )}
                 <span class="search-result-title">

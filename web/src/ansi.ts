@@ -36,7 +36,9 @@ function color256(n: number): string {
     const b = n % 6;
     const g = ((n - b) / 6) % 6;
     const r = ((n - b - g * 6) / 36) % 6;
-    return `rgb(${r ? r * 40 + 55 : 0},${g ? g * 40 + 55 : 0},${b ? b * 40 + 55 : 0})`;
+    return `rgb(${r ? r * 40 + 55 : 0},${g ? g * 40 + 55 : 0},${
+      b ? b * 40 + 55 : 0
+    })`;
   }
   // Grayscale ramp
   const v = (n - 232) * 10 + 8;
@@ -84,7 +86,9 @@ function applyCodes(codes: number[], style: AnsiStyle): void {
       style.color = color256(codes[i + 2] ?? 0);
       i += 2;
     } else if (c === 38 && codes[i + 1] === 2) {
-      style.color = `rgb(${codes[i + 2] ?? 0},${codes[i + 3] ?? 0},${codes[i + 4] ?? 0})`;
+      style.color = `rgb(${codes[i + 2] ?? 0},${codes[i + 3] ?? 0},${
+        codes[i + 4] ?? 0
+      })`;
       i += 4;
     } else if (c === 39) {
       delete style.color;
@@ -94,7 +98,9 @@ function applyCodes(codes: number[], style: AnsiStyle): void {
       style.backgroundColor = color256(codes[i + 2] ?? 0);
       i += 2;
     } else if (c === 48 && codes[i + 1] === 2) {
-      style.backgroundColor = `rgb(${codes[i + 2] ?? 0},${codes[i + 3] ?? 0},${codes[i + 4] ?? 0})`;
+      style.backgroundColor = `rgb(${codes[i + 2] ?? 0},${codes[i + 3] ?? 0},${
+        codes[i + 4] ?? 0
+      })`;
       i += 4;
     } else if (c === 49) {
       delete style.backgroundColor;

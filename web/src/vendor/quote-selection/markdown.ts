@@ -142,7 +142,9 @@ const filters: Filters = {
       : "";
 
     if (widthAttr || heightAttr) {
-      return `<img alt="${escapeAttribute(alt)}"${widthAttr}${heightAttr} src="${escapeAttribute(src)}">`;
+      return `<img alt="${escapeAttribute(
+        alt,
+      )}"${widthAttr}${heightAttr} src="${escapeAttribute(src)}">`;
     } else {
       return `![${alt}](${src})`;
     }

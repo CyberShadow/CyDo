@@ -38,7 +38,9 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
   if (!expanded) {
     return (
       <div
-        class={`result-divider ${d.isError ? "result-error" : "result-success"}`}
+        class={`result-divider ${
+          d.isError ? "result-error" : "result-success"
+        }`}
         onClick={() => {
           setExpanded(true);
         }}
@@ -52,7 +54,9 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
 
   return (
     <div
-      class={`message result-message ${d.isError ? "result-error" : "result-success"}`}
+      class={`message result-message ${
+        d.isError ? "result-error" : "result-success"
+      }`}
       onClick={() => {
         setExpanded(false);
       }}
@@ -192,7 +196,11 @@ function InitDetailList({ label, items }: { label: string; items: unknown[] }) {
             {typeof item === "string"
               ? item
               : typeof item === "object" && item !== null && "name" in item
-                ? `${(item as Record<string, unknown>).name}${(item as Record<string, unknown>).status ? ` [${(item as Record<string, unknown>).status}]` : ""}`
+                ? `${(item as Record<string, unknown>).name}${
+                    (item as Record<string, unknown>).status
+                      ? ` [${(item as Record<string, unknown>).status}]`
+                      : ""
+                  }`
                 : JSON.stringify(item)}
           </li>
         ))}
@@ -278,7 +286,9 @@ function TaskLifecycleView({ message }: { message: DisplayMessage }) {
 
   return (
     <div
-      class={`message task-lifecycle-message${isStarted ? " task-started" : " task-notification"}`}
+      class={`message task-lifecycle-message${
+        isStarted ? " task-started" : " task-notification"
+      }`}
     >
       <span class="task-lifecycle-label">{label}</span>
       {taskType && <span class="task-lifecycle-type">{taskType}</span>}

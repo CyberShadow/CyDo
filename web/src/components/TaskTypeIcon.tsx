@@ -67,7 +67,9 @@ export function ensureIconStyles() {
   const rules = Object.entries(rawIcons)
     .map(([name, raw]) => {
       const uri = toMaskUri(raw);
-      return `.task-type-icon-${CSS.escape(name)}{mask-image:${uri};-webkit-mask-image:${uri}}`;
+      return `.task-type-icon-${CSS.escape(
+        name,
+      )}{mask-image:${uri};-webkit-mask-image:${uri}}`;
     })
     .join("\n");
   const style = document.createElement("style");
@@ -106,7 +108,9 @@ export function TaskTypeIcon({
 
   return (
     <span
-      class={`task-type-icon task-type-icon-${iconName}${className ? ` ${className}` : ""}`}
+      class={`task-type-icon task-type-icon-${iconName}${
+        className ? ` ${className}` : ""
+      }`}
     />
   );
 }

@@ -26,7 +26,9 @@ function ensureRelationIconStyles() {
   const rules = Object.entries(relationIcons)
     .map(([name, raw]) => {
       const uri = toMaskUri(raw);
-      return `.relation-icon-${CSS.escape(name)}{mask-image:${uri};-webkit-mask-image:${uri}}`;
+      return `.relation-icon-${CSS.escape(
+        name,
+      )}{mask-image:${uri};-webkit-mask-image:${uri}}`;
     })
     .join("\n");
   const style = document.createElement("style");
@@ -251,6 +253,7 @@ function computeStatusClass(t: SidebarTask): string {
   if (t.status === "failed") return "failed";
   if (t.resumable) return "resumable";
   if (t.status === "completed") return "completed";
+  if (t.status === "pending" && !t.title) return "draft";
   return "";
 }
 
@@ -366,7 +369,9 @@ const SidebarItem = memo(function SidebarItem({
   if (isArchive) {
     return (
       <div
-        class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}${depth === 0 ? " top-level" : ""}`}
+        class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}${
+          depth === 0 ? " top-level" : ""
+        }`}
         data-tid={id}
         onClick={() => {
           onSelect(id);
@@ -381,7 +386,9 @@ const SidebarItem = memo(function SidebarItem({
 
   return (
     <div
-      class={`sidebar-item${isActive ? " active" : ""}${hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""}${depth === 0 ? " top-level" : ""}`}
+      class={`sidebar-item${isActive ? " active" : ""}${
+        hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""
+      }${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
       onClick={(e: MouseEvent) => {
         if (e.altKey && onArchive) {
@@ -399,14 +406,21 @@ const SidebarItem = memo(function SidebarItem({
         <span class="task-type-icon task-type-icon-check alive" />
       ) : iconName ? (
         <span
-          class={`task-type-icon task-type-icon-${iconName}${statusClass ? ` ${statusClass}` : ""}`}
+          class={`task-type-icon task-type-icon-${iconName}${
+            statusClass ? ` ${statusClass}` : ""
+          }`}
         />
       ) : (
         <span
-          class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+          class={`task-type-icon task-type-icon-dot${
+            statusClass ? ` ${statusClass}` : ""
+          }`}
         />
       )}
-      <span class="sidebar-label" title={title}>
+      <span
+        class={`sidebar-label${statusClass === "draft" ? " draft-label" : ""}`}
+        title={title}
+      >
         {title}
       </span>
     </div>
@@ -558,7 +572,9 @@ export const Sidebar = memo(function Sidebar({
       </div>
       <div class="sidebar-list" ref={listRef}>
         <div
-          class={`sidebar-item sidebar-new-task${activeTaskId === null ? " active" : ""}`}
+          class={`sidebar-item sidebar-new-task${
+            activeTaskId === null ? " active" : ""
+          }`}
           onClick={onNewTask}
         >
           <span class="task-type-icon task-type-icon-plus" />

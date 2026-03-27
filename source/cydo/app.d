@@ -1010,6 +1010,7 @@ class App : ToolsBackend
 			case "edit_message":      handleEditMessage(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
+			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			default: break;
@@ -1462,6 +1463,27 @@ class App : ToolsBackend
 				if (auto subs = ws in clientSubscriptions)
 					if (tid in *subs)
 						ws.send(data);
+	}
+
+	private void handleDeleteTaskMsg(WsMessage json)
+	{
+		import ae.utils.json : toJson;
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		// Only allow deletion of empty pending tasks (no agent has run)
+		if (td.agentSessionId.length > 0 || td.alive || td.status != "pending")
+			return;
+		// Clean up subscriptions
+		foreach (ref subs; clientSubscriptions)
+			subs.remove(tid);
+		// Remove from in-memory state
+		tasks.remove(tid);
+		// Remove from database
+		persistence.deleteTask(tid);
+		// Broadcast deletion to all clients
+		broadcast(toJson(TaskDeletedMessage("task_deleted", tid)));
 	}
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)

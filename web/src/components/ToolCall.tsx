@@ -46,7 +46,9 @@ function ResultPre({
   isError?: boolean;
   children?: ComponentChildren;
 }) {
-  const cls = `tool-result${isError ? " error" : ""}${className ? ` ${className}` : ""}`;
+  const cls = `tool-result${isError ? " error" : ""}${
+    className ? ` ${className}` : ""
+  }`;
   return (
     <CodePre class={cls} copyText={content}>
       {children ?? (hasAnsi(content) ? renderAnsi(content) : content)}
@@ -925,7 +927,9 @@ function AskUserQuestionInput({
                 return (
                   <div
                     key={oi}
-                    class={`ask-option${isSelected ? " ask-option-selected" : ""}`}
+                    class={`ask-option${
+                      isSelected ? " ask-option-selected" : ""
+                    }`}
                   >
                     <div class="ask-option-label">{opt.label}</div>
                     <Markdown text={opt.description} class="ask-option-desc" />

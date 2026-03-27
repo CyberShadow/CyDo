@@ -87,7 +87,9 @@ export function AskUserForm({ questions, onSubmit, onAbort }: Props) {
               );
             })}
             <button
-              class={`ask-option-btn other ${useCustom.get(qi) ? "selected" : ""}`}
+              class={`ask-option-btn other ${
+                useCustom.get(qi) ? "selected" : ""
+              }`}
               onClick={() => {
                 const isMulti = q.multiSelect ?? false;
                 setUseCustom((prev) => {

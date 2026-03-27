@@ -255,7 +255,9 @@ function FileTreeNode({
   if (node.isLeaf) {
     return (
       <div
-        class={`file-tree-item${selectedFile === node.fullPath ? " selected" : ""}`}
+        class={`file-tree-item${
+          selectedFile === node.fullPath ? " selected" : ""
+        }`}
         style={{ "--depth": depth } as CSSProperties}
         onClick={() => {
           onSelectFile(node.fullPath);
@@ -472,7 +474,9 @@ function EditHistory({
         return (
           <div
             key={i}
-            class={`edit-history-item${selectedEditIndex === i ? " selected" : ""}`}
+            class={`edit-history-item${
+              selectedEditIndex === i ? " selected" : ""
+            }`}
             onClick={() => {
               const deselecting = selectedEditIndex === i;
               onSelectEdit(deselecting ? null : i);

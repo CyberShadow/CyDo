@@ -1,18 +1,9 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "preact/hooks";
+import { useCallback, useEffect, useState } from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useErrorOverlay } from "./useErrorOverlay";
 import { useTheme, ThemeContext } from "./useTheme";
-import { AgentPicker } from "./components/AgentPicker";
-import { InputBox } from "./components/InputBox";
-import { SessionConfig } from "./components/SessionConfig";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
@@ -41,11 +32,12 @@ function AppContent() {
     saveDraft,
     sendAskUserResponse,
     editMessage,
+    createDraftTask,
+    deleteDraftTask,
+    draftRenderKey,
     sidebarTasks,
     workspaces,
     taskTypes,
-    agentTypes,
-    defaultAgentType,
     activeWorkspace,
     activeProject,
     authEnabled,
@@ -143,13 +135,13 @@ function AppContent() {
   }
 
   // Navigate to the "new task" view (project page with no tid)
+  // The useEffect in useTaskManager auto-creates a virtual draft when at project root
   const handleNewTask = useCallback(() => {
     if (activeWorkspace && activeProject) {
       navigateToProject(activeWorkspace, activeProject);
     } else {
       navigateHome();
     }
-    requestAnimationFrame(() => taskTypePickerRef.current?.focus());
   }, [activeWorkspace, activeProject, navigateToProject, navigateHome]);
 
   // Ctrl+Shift+A: archive/unarchive active task
@@ -243,22 +235,6 @@ function AppContent() {
     };
   }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
 
-  const [selectedTaskType, setSelectedTaskType] = useState("conversation");
-  const [selectedAgent, setSelectedAgent] = useState("");
-  const newTaskInputRef = useRef<HTMLTextAreaElement>(null);
-  const newTaskPasteTextRef = useRef<((text: string) => void) | null>(null);
-  const taskTypePickerRef = useRef<HTMLDivElement>(null);
-
-  const effectiveDefaultAgent = useMemo(() => {
-    const ws = workspaces.find((w) => w.name === activeWorkspace);
-    return ws?.default_agent_type || defaultAgentType;
-  }, [workspaces, activeWorkspace, defaultAgentType]);
-
-  // Reset selected agent when workspace changes so the new default takes effect
-  useEffect(() => {
-    setSelectedAgent("");
-  }, [activeWorkspace]);
-
   const handleSidebarSelect = useCallback(
     (tid: string) => {
       setActiveTaskId(tid);
@@ -272,53 +248,7 @@ function AppContent() {
     setSidebarOpen(false);
   }, [handleNewTask]);
 
-  const focusNewTaskInput = useCallback(() => {
-    newTaskInputRef.current?.focus();
-  }, []);
-
-  const focusTaskTypePicker = useCallback(() => {
-    taskTypePickerRef.current?.focus();
-  }, []);
-
-  // Type anywhere to focus the new-task input (mirrors SessionView behavior)
-  useEffect(() => {
-    if (active || !connected) return;
-    const handler = (e: KeyboardEvent) => {
-      const target = e.target;
-      if (
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLInputElement
-      )
-        return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key.length !== 1) return;
-      newTaskInputRef.current?.focus();
-    };
-    document.addEventListener("keydown", handler);
-    return () => {
-      document.removeEventListener("keydown", handler);
-    };
-  }, [active, connected]);
-
-  useEffect(() => {
-    if (active || !connected) return;
-    const handler = (e: ClipboardEvent) => {
-      const target = e.target;
-      if (
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLInputElement
-      )
-        return;
-      const text = e.clipboardData?.getData("text");
-      if (!text) return;
-      e.preventDefault();
-      newTaskPasteTextRef.current?.(text);
-    };
-    document.addEventListener("paste", handler);
-    return () => {
-      document.removeEventListener("paste", handler);
-    };
-  }, [active, connected]);
+  const hasDraftView = activeTaskId === null && draftRenderKey !== null;
 
   return (
     <ThemeContext.Provider value={theme}>
@@ -358,12 +288,33 @@ function AppContent() {
           }}
         />
         {Array.from(tasks.values())
-          .filter((t) => t.historyLoaded || String(t.tid) === activeTaskId)
+          .filter((t) => {
+            // Virtual drafts (tid=0) should only render in draft mode
+            if (t.tid === 0) {
+              return (
+                activeTaskId === null &&
+                draftRenderKey !== null &&
+                t.renderKey === draftRenderKey
+              );
+            }
+            // Also keep real draft tasks visible while user is still at project root
+            return (
+              t.historyLoaded ||
+              String(t.tid) === activeTaskId ||
+              (activeTaskId === null &&
+                draftRenderKey !== null &&
+                t.renderKey === draftRenderKey)
+            );
+          })
           .map((task) => {
-            const isActive = String(task.tid) === activeTaskId;
+            const isActive =
+              String(task.tid) === activeTaskId ||
+              (activeTaskId === null &&
+                draftRenderKey !== null &&
+                task.renderKey === draftRenderKey);
             return (
               <div
-                key={task.tid}
+                key={task.renderKey ?? String(task.tid)}
                 style={{ display: isActive ? "contents" : "none" }}
               >
                 <SessionView
@@ -387,82 +338,37 @@ function AppContent() {
                   onSetArchived={setArchived}
                   onAskUserResponse={sendAskUserResponse}
                   onEditMessage={editMessage}
+                  taskTypes={
+                    task.renderKey === draftRenderKey ? taskTypes : undefined
+                  }
+                  onContentStart={
+                    task.renderKey === draftRenderKey
+                      ? (taskType: string) => {
+                          createDraftTask(taskType);
+                        }
+                      : undefined
+                  }
+                  onContentEnd={
+                    task.renderKey === draftRenderKey
+                      ? deleteDraftTask
+                      : undefined
+                  }
                 />
               </div>
             );
           })}
         {!active &&
+          !hasDraftView &&
           (activeTaskId?.startsWith("archive") ? (
             <div class="session-empty">
               <div class="session-empty-inner">
                 <span class="archive-placeholder">Archived tasks</span>
               </div>
             </div>
-          ) : activeTaskId !== null ? (
+          ) : (
             <div class="session-empty no-sidebar">
               <div class="session-empty-inner">
                 <span>Loading task…</span>
-              </div>
-            </div>
-          ) : (
-            <div class="session-empty">
-              <button
-                class="hamburger-btn hamburger-floating"
-                onClick={toggleSidebar}
-                title="Toggle sidebar"
-              >
-                &#9776;
-              </button>
-              <div class="session-empty-inner">
-                <div class="welcome-page-header">
-                  <svg
-                    class="welcome-logo"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                  >
-                    <path
-                      style={{ stroke: "var(--success)" }}
-                      d="M5.5 12L10.5 4L13 8l-2.5 4"
-                    />
-                    <path
-                      style={{ stroke: "var(--processing)" }}
-                      d="M5.5 4L3 8l2.5 4"
-                    />
-                  </svg>
-                  <h1>CyDo</h1>
-                </div>
-                <SessionConfig
-                  taskTypes={taskTypes}
-                  selected={selectedTaskType}
-                  onTaskTypeChange={setSelectedTaskType}
-                  pickerRef={taskTypePickerRef}
-                  onConfirm={focusNewTaskInput}
-                  onType={focusNewTaskInput}
-                />
-                <AgentPicker
-                  agentTypes={agentTypes}
-                  selected={selectedAgent || effectiveDefaultAgent}
-                  onChange={setSelectedAgent}
-                />
-                <InputBox
-                  inputRef={newTaskInputRef}
-                  pasteTextRef={newTaskPasteTextRef}
-                  onSend={(text, images) => {
-                    send(
-                      text,
-                      images,
-                      selectedTaskType || taskTypes[0]?.name,
-                      selectedAgent || effectiveDefaultAgent,
-                    );
-                  }}
-                  onInterrupt={interrupt}
-                  onEscape={focusTaskTypePicker}
-                  isProcessing={false}
-                  disabled={!connected}
-                  sessionId={0}
-                />
               </div>
             </div>
           ))}

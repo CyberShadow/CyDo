@@ -306,6 +306,12 @@ struct DraftUpdatedMessage
 	string new_draft;
 }
 
+struct TaskDeletedMessage
+{
+	string type = "task_deleted";
+	int tid;
+}
+
 struct AskUserQuestionMessage
 {
 	string type = "ask_user_question";

@@ -2,7 +2,7 @@ import { RefObject } from "preact";
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 import type { ImageAttachment } from "../useSessionManager";
 
-const drafts = new Map<number, string>();
+export const drafts = new Map<number, string>();
 
 interface Props {
   onSend: (text: string, images?: ImageAttachment[]) => void;
@@ -19,6 +19,8 @@ interface Props {
   pasteTextRef?: RefObject<((text: string) => void) | null>;
   onEscape?: () => void;
   suggestions?: string[];
+  onContentStart?: () => void;
+  onContentEnd?: () => void;
 }
 
 function debounce<A extends unknown[]>(
@@ -57,6 +59,8 @@ export function InputBox({
   pasteTextRef,
   onEscape,
   suggestions,
+  onContentStart,
+  onContentEnd,
 }: Props) {
   const [text, setText] = useState(() => {
     const memDraft = drafts.get(sessionId);
@@ -82,6 +86,10 @@ export function InputBox({
     const initial = memDraft !== undefined ? memDraft : (serverDraft ?? "");
     setText(initial);
     lastServerDraftRef.current = serverDraft ?? "";
+    // Trigger a save if there's content — handles the case where the previous
+    // session had onSaveDraft=undefined (e.g. virtual draft tid=0) and its
+    // debounce was cancelled, leaving unsaved text.
+    if (initial) saveDraftDebounced(initial);
     return () => {
       drafts.set(sessionId, textRef.current);
       saveDraftDebounced.cancel();
@@ -139,9 +147,13 @@ export function InputBox({
   }, [inputDraft]);
 
   const handleChange = (newText: string) => {
+    const wasEmpty = textRef.current.trim() === "";
+    const isEmpty = newText.trim() === "";
     setText(newText);
     drafts.set(sessionId, newText);
     saveDraftDebounced(newText);
+    if (wasEmpty && !isEmpty) onContentStart?.();
+    if (!wasEmpty && isEmpty) onContentEnd?.();
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {

@@ -104,7 +104,9 @@ export function WelcomePage({
     }
     return (
       <span
-        class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+        class={`task-type-icon task-type-icon-dot${
+          statusClass ? ` ${statusClass}` : ""
+        }`}
       />
     );
   }
@@ -243,7 +245,9 @@ export function WelcomePage({
                         projTasks.map((t) => (
                           <div
                             key={t.tid}
-                            class={`sidebar-item${attention.has(t.tid) ? " attention" : ""}`}
+                            class={`sidebar-item${
+                              attention.has(t.tid) ? " attention" : ""
+                            }`}
                             onClick={() => {
                               onSelectTask(t.tid);
                             }}
@@ -282,7 +286,9 @@ export function WelcomePage({
                 {filteredUngrouped.map((t) => (
                   <div
                     key={t.tid}
-                    class={`sidebar-item${attention.has(t.tid) ? " attention" : ""}`}
+                    class={`sidebar-item${
+                      attention.has(t.tid) ? " attention" : ""
+                    }`}
                     onClick={() => {
                       onSelectTask(t.tid);
                     }}

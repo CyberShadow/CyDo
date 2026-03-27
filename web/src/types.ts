@@ -171,6 +171,8 @@ export interface TaskState {
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
   archived?: boolean;
+  /** Stable Preact key for draft tasks (UUID). */
+  renderKey?: string;
   /** Last stderr text from non-zero exit; cleared on restart. */
   error?: string;
   /** Task creation timestamp (unix millis), undefined if not set. */

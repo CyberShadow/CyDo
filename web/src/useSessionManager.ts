@@ -17,6 +17,7 @@ import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
 import type { TaskState } from "./types";
 import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
+import { drafts as inputDrafts } from "./components/InputBox";
 
 export interface ImageAttachment {
   id: string;
@@ -99,6 +100,9 @@ export interface TaskManager {
   saveDraft: (tid: number, draft: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
+  createDraftTask: (taskType?: string) => void;
+  deleteDraftTask: () => void;
+  draftRenderKey: string | null;
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
@@ -265,6 +269,122 @@ export function useTaskManager(): TaskManager {
   // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
+  // Draft task management state
+  const draftTidRef = useRef<number | null>(null);
+  const draftRenderKeyRef = useRef<string | null>(null);
+  const [draftRenderKey, setDraftRenderKey] = useState<string | null>(null);
+  const pendingDraftCorrelation = useRef<string | null>(null);
+  const draftCancelled = useRef(false);
+  const draftCreateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  // Stored first message for path (c): timer fired before task_created arrived.
+  // Sent to the real task when task_created arrives instead of creating a zombie.
+  const pendingFirstMessage = useRef<{
+    text: string;
+    taskType?: string;
+  } | null>(null);
+
+  const createVirtualDraft = useCallback(() => {
+    const renderKey = crypto.randomUUID();
+    const ws = activeWorkspaceRef.current ?? "";
+    const proj = activeProjectRef.current;
+    const projPath = proj
+      ? (findProjectPath(workspacesRef.current, ws, proj) ?? "")
+      : "";
+    const t: TaskState = {
+      ...makeTaskState(0, false, false, undefined, true, ws, projPath),
+      renderKey,
+    };
+    liveStates.set(0, t);
+    setTasks((prev) => {
+      const next = new Map(prev);
+      next.set(0, t);
+      return next;
+    });
+    draftRenderKeyRef.current = renderKey;
+    setDraftRenderKey(renderKey);
+    return renderKey;
+  }, []);
+
+  const createDraftTask = useCallback((taskType?: string) => {
+    if (
+      draftTidRef.current !== null ||
+      pendingDraftCorrelation.current !== null ||
+      draftCreateTimerRef.current !== null
+    )
+      return;
+    const ws = activeWorkspaceRef.current;
+    const proj = activeProjectRef.current;
+    if (!ws || !proj) return;
+    // Debounce: delay sending create_task so that rapid fill()+click()
+    // sequences (common in Playwright tests) don't create zombie tasks.
+    draftCreateTimerRef.current = setTimeout(() => {
+      draftCreateTimerRef.current = null;
+      draftCancelled.current = false;
+      const projPath = findProjectPath(workspacesRef.current, ws, proj);
+      const correlationId = crypto.randomUUID();
+      pendingDraftCorrelation.current = correlationId;
+      connRef.current?.createTask(
+        ws,
+        projPath || "",
+        taskType,
+        undefined,
+        undefined,
+        correlationId,
+      );
+    }, 16);
+  }, []);
+
+  const deleteDraftTask = useCallback(() => {
+    // Cancel pending debounced create — create_task was never sent
+    if (draftCreateTimerRef.current !== null) {
+      clearTimeout(draftCreateTimerRef.current);
+      draftCreateTimerRef.current = null;
+      return;
+    }
+    const tid = draftTidRef.current;
+    if (tid !== null && tid > 0) {
+      // Real backend task — delete it
+      inputDrafts.delete(tid);
+      connRef.current?.deleteTask(tid);
+      // Remove from tasks Map
+      liveStates.delete(tid);
+      setTasks((prev) => {
+        if (!prev.has(tid)) return prev;
+        const next = new Map(prev);
+        next.delete(tid);
+        return next;
+      });
+      // Reset virtual draft to tid=0 (reuse same renderKey — no remount)
+      const renderKey = draftRenderKeyRef.current;
+      draftTidRef.current = null;
+      if (renderKey) {
+        const ws = activeWorkspaceRef.current ?? "";
+        const proj = activeProjectRef.current;
+        const projPath = proj
+          ? (findProjectPath(workspacesRef.current, ws, proj) ?? "")
+          : "";
+        const t: TaskState = {
+          ...makeTaskState(0, false, false, undefined, true, ws, projPath),
+          renderKey,
+        };
+        // Clear stale in-memory draft from the virtual slot so the InputBox
+        // starts fresh on the next cycle (avoids wasEmpty=false blocking onContentStart).
+        inputDrafts.delete(0);
+        liveStates.set(0, t);
+        setTasks((prev) => {
+          const next = new Map(prev);
+          next.set(0, t);
+          return next;
+        });
+      }
+    } else if (pendingDraftCorrelation.current !== null) {
+      // Creation is pending — mark for deletion when task_created arrives
+      draftCancelled.current = true;
+    }
+  }, []);
+
   // -- Live stdout message handler --
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
@@ -376,6 +496,92 @@ export function useTaskManager(): TaskManager {
           next.set(tid, t);
           return next;
         });
+
+        // Check if this is a draft task creation (no navigation)
+        const isDraftCreation =
+          pendingDraftCorrelation.current !== null &&
+          msg.correlation_id === pendingDraftCorrelation.current;
+        if (isDraftCreation) {
+          pendingDraftCorrelation.current = null;
+          if (draftCancelled.current) {
+            // User blanked before task_created arrived — delete zombie
+            draftCancelled.current = false;
+            pendingFirstMessage.current = null;
+            connRef.current?.deleteTask(tid);
+            liveStates.delete(tid);
+            setTasks((prev) => {
+              if (!prev.has(tid)) return prev;
+              const next = new Map(prev);
+              next.delete(tid);
+              return next;
+            });
+            break;
+          }
+          // Check if user sent before task_created arrived (path c piggyback)
+          const firstMsg = pendingFirstMessage.current;
+          pendingFirstMessage.current = null;
+          // Copy in-memory draft from slot 0 to the real tid (only if not piggybacking)
+          if (firstMsg === null) {
+            const currentText = inputDrafts.get(0);
+            if (currentText !== undefined) {
+              inputDrafts.set(tid, currentText);
+            }
+          }
+          // Transfer renderKey from virtual task (tid=0) to real task
+          const renderKey = draftRenderKeyRef.current;
+          liveStates.delete(0);
+          const realTask: TaskState = {
+            ...t,
+            renderKey: renderKey ?? undefined,
+          };
+          liveStates.set(tid, realTask);
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.delete(0);
+            next.set(tid, realTask);
+            return next;
+          });
+          if (firstMsg !== null) {
+            // Path (c): user sent before task_created arrived — send now.
+            // Navigate URL to reflect the real tid.
+            if (workspace && projectPath) {
+              const projName = findProjectName(
+                workspacesRef.current,
+                workspace,
+                projectPath,
+              );
+              if (projName) {
+                const encodedProject = projName.replace(/\//g, ":");
+                routeRef.current(
+                  `/${workspace}/${encodedProject}/task/${tid}`,
+                  true,
+                );
+              }
+            }
+            connRef.current?.sendMessage(
+              tid,
+              buildContentBlocks(firstMsg.text),
+            );
+            draftTidRef.current = null;
+            draftRenderKeyRef.current = null;
+            setDraftRenderKey(null);
+            setTasks((prev) => {
+              const taskState = prev.get(tid);
+              if (!taskState) return prev;
+              const next = new Map(prev);
+              next.set(tid, {
+                ...taskState,
+                isProcessing: true,
+                suggestions: undefined,
+              });
+              return next;
+            });
+          } else {
+            // User is still typing — keep URL at project root, just record the real tid.
+            draftTidRef.current = tid;
+          }
+          break; // Skip normal navigation logic
+        }
 
         // Navigate to the new task only if:
         // - this client created it (top-level, correlation ID matches), or
@@ -708,6 +914,24 @@ export function useTaskManager(): TaskManager {
         });
         break;
       }
+      case "task_deleted": {
+        const { tid } = msg;
+        // Clear draft refs if this was the current draft
+        if (draftTidRef.current === tid) {
+          draftTidRef.current = null;
+          // Note: don't clear draftRenderKey — the virtual task with renderKey
+          // is recreated by deleteDraftTask (same renderKey, tid=0)
+        }
+        liveStates.delete(tid);
+        requestedHistoryRef.current.delete(tid);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
+          const next = new Map(prev);
+          next.delete(tid);
+          return next;
+        });
+        break;
+      }
       case "forkable_uuids": {
         const { tid, uuids } = msg;
         const t = liveStates.get(tid);
@@ -850,6 +1074,16 @@ export function useTaskManager(): TaskManager {
         setConnected(false);
         liveStates.clear();
         requestedHistoryRef.current.clear();
+        draftTidRef.current = null;
+        draftRenderKeyRef.current = null;
+        pendingDraftCorrelation.current = null;
+        draftCancelled.current = false;
+        pendingFirstMessage.current = null;
+        if (draftCreateTimerRef.current !== null) {
+          clearTimeout(draftCreateTimerRef.current);
+          draftCreateTimerRef.current = null;
+        }
+        setDraftRenderKey(null);
         setTasks(new Map());
       }
     };
@@ -887,6 +1121,27 @@ export function useTaskManager(): TaskManager {
     }
   }, [connected, activeTaskId]);
 
+  // Auto-create virtual draft when at project root with no active task
+  useEffect(() => {
+    if (activeTaskId !== null) return; // a task is active, no draft needed
+    if (activeWorkspace === null) return; // on welcome page, no draft
+    if (draftRenderKeyRef.current !== null) return; // draft already exists
+    createVirtualDraft();
+  }, [activeTaskId, activeWorkspace, createVirtualDraft]);
+
+  // Clear draft tracking when user navigates to the draft task via sidebar
+  useEffect(() => {
+    if (
+      activeTaskId !== null &&
+      draftTidRef.current !== null &&
+      activeTaskId === String(draftTidRef.current)
+    ) {
+      draftTidRef.current = null;
+      draftRenderKeyRef.current = null;
+      setDraftRenderKey(null);
+    }
+  }, [activeTaskId]);
+
   const send = useCallback(
     (
       text: string,
@@ -895,8 +1150,73 @@ export function useTaskManager(): TaskManager {
       agentType?: string,
     ) => {
       const content = buildContentBlocks(text, images);
+      // Check for virtual draft with real tid
+      const draftTid = draftTidRef.current;
+      if (draftTid !== null && draftTid > 0) {
+        // Draft task exists — send message to it
+        connRef.current?.sendMessage(draftTid, content);
+        // Clear draft state (task transitions from draft to active)
+        draftTidRef.current = null;
+        draftRenderKeyRef.current = null;
+        setDraftRenderKey(null);
+        // Navigate URL to the real task
+        const draftState = liveStates.get(draftTid);
+        if (draftState && draftState.workspace && draftState.projectPath) {
+          const projName = findProjectName(
+            workspacesRef.current,
+            draftState.workspace,
+            draftState.projectPath,
+          );
+          if (projName) {
+            const encodedProject = projName.replace(/\//g, ":");
+            routeRef.current(
+              `/${draftState.workspace}/${encodedProject}/task/${draftTid}`,
+              false,
+            );
+          }
+        }
+        // Optimistically mark as processing
+        setTasks((prev) => {
+          const t = prev.get(draftTid);
+          if (!t) return prev;
+          const next = new Map(prev);
+          next.set(draftTid, {
+            ...t,
+            isProcessing: true,
+            suggestions: undefined,
+          });
+          return next;
+        });
+        return;
+      }
+
       if (activeTaskId === null) {
-        // No active task — create one with the message atomically
+        // Path (c): timer already fired (create_task in flight) but task_created
+        // hasn't arrived yet. Store the message for task_created to deliver —
+        // no zombie task is created.
+        if (pendingDraftCorrelation.current !== null) {
+          pendingFirstMessage.current = { text, taskType };
+          return;
+        }
+
+        // Path (b): timer hasn't fired yet — cancel it and use atomic create+send.
+        if (draftCreateTimerRef.current !== null) {
+          clearTimeout(draftCreateTimerRef.current);
+          draftCreateTimerRef.current = null;
+        }
+        // Remove virtual draft (tid=0).
+        liveStates.delete(0);
+        setTasks((prev) => {
+          if (!prev.has(0)) return prev;
+          const next = new Map(prev);
+          next.delete(0);
+          return next;
+        });
+        draftTidRef.current = null;
+        draftRenderKeyRef.current = null;
+        setDraftRenderKey(null);
+
+        // Atomic create+send
         const correlationId = crypto.randomUUID();
         pendingFocusId.current = correlationId;
         const ws = activeWorkspaceRef.current;
@@ -1096,7 +1416,7 @@ export function useTaskManager(): TaskManager {
     import("./components/Sidebar").SidebarTask[]
   >([]);
   const sidebarTasks = useMemo(() => {
-    let filtered = Array.from(tasks.values());
+    let filtered = Array.from(tasks.values()).filter((t) => t.tid > 0); // Exclude virtual drafts
     if (activeWorkspace !== null && activeProject !== null) {
       filtered = filtered.filter((t) => {
         if (!t.workspace || !t.projectPath) return false;
@@ -1170,6 +1490,9 @@ export function useTaskManager(): TaskManager {
     saveDraft,
     sendAskUserResponse,
     editMessage,
+    createDraftTask,
+    deleteDraftTask,
+    draftRenderKey,
     sidebarTasks,
     workspaces,
     taskTypes,

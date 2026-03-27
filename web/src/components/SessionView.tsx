@@ -3,10 +3,11 @@ import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
-import type { ImageAttachment } from "../useSessionManager";
+import type { ImageAttachment, TaskTypeInfo } from "../useSessionManager";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
+import { SessionConfig } from "./SessionConfig";
 import { AskUserForm } from "./AskUserForm";
 import { FileViewer } from "./FileViewer";
 
@@ -14,7 +15,12 @@ interface Props {
   task: TaskState;
   connected: boolean;
   isActive: boolean;
-  onSend: (text: string, images?: ImageAttachment[]) => void;
+  onSend: (
+    text: string,
+    images?: ImageAttachment[],
+    taskType?: string,
+    agentType?: string,
+  ) => void;
   onInterrupt: () => void;
   onStop: () => void;
   onCloseStdin: () => void;
@@ -35,6 +41,9 @@ interface Props {
   onToggleSidebar: () => void;
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
+  taskTypes?: TaskTypeInfo[];
+  onContentStart?: (taskType: string) => void;
+  onContentEnd?: () => void;
 }
 
 function SessionViewInner({
@@ -58,11 +67,44 @@ function SessionViewInner({
   onToggleSidebar,
   onSetArchived,
   onEditMessage,
+  taskTypes,
+  onContentStart,
+  onContentEnd,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
   const pasteTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
+
+  const isDraft =
+    task.status === "pending" &&
+    task.messages.length === 0 &&
+    !task.isProcessing;
+
+  // Task type picker state (only used in draft mode)
+  const [selectedTaskType, setSelectedTaskType] = useState(
+    task.taskType || "conversation",
+  );
+  const taskTypePickerRef = useRef<HTMLDivElement>(null);
+
+  const focusTaskTypePicker = useCallback(() => {
+    taskTypePickerRef.current?.focus();
+  }, []);
+
+  const handleSend = useCallback(
+    (text: string, images?: ImageAttachment[]) => {
+      if (isDraft) {
+        onSend(text, images, selectedTaskType);
+      } else {
+        onSend(text, images);
+      }
+    },
+    [onSend, isDraft, selectedTaskType],
+  );
+
+  const handleContentStart = useCallback(() => {
+    onContentStart?.(selectedTaskType);
+  }, [onContentStart, selectedTaskType]);
 
   const [fileViewerState, setFileViewerState] = useState<{
     open: boolean;
@@ -93,17 +135,19 @@ function SessionViewInner({
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
-  // Auto-focus input box or resume button when session becomes active.
+  // Auto-focus input box, resume button, or task type picker when session becomes active.
   // Skip on touch devices to avoid opening the virtual keyboard.
   useEffect(() => {
     if (!isActive) return;
     if (matchMedia("(pointer: coarse)").matches) return;
-    if (task.resumable) {
+    if (isDraft) {
+      taskTypePickerRef.current?.focus();
+    } else if (task.resumable) {
       resumeRef.current?.focus();
     } else {
       inputRef.current?.focus();
     }
-  }, [isActive, task.resumable]);
+  }, [isActive, task.resumable, isDraft]);
 
   const handleSaveDraft = useCallback(
     (draft: string) => onSaveDraft?.(task.tid, draft),
@@ -232,12 +276,46 @@ function SessionViewInner({
           <span>Loading session…</span>
         </div>
       ) : task.messages.length === 0 && !task.isProcessing ? (
-        <div class="message-list welcome-prompt">
-          <div class="welcome-box">
-            <h1 class="welcome-title">CyDo</h1>
-            <p class="welcome-subtitle">Multi-agent orchestration system</p>
+        isDraft && taskTypes ? (
+          <div class="message-list welcome-prompt">
+            <div class="session-empty-inner">
+              <div class="welcome-page-header">
+                <svg
+                  class="welcome-logo"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                >
+                  <path
+                    style={{ stroke: "var(--success)" }}
+                    d="M5.5 12L10.5 4L13 8l-2.5 4"
+                  />
+                  <path
+                    style={{ stroke: "var(--processing)" }}
+                    d="M5.5 4L3 8l2.5 4"
+                  />
+                </svg>
+                <h1>CyDo</h1>
+              </div>
+              <SessionConfig
+                taskTypes={taskTypes}
+                selected={selectedTaskType}
+                onTaskTypeChange={setSelectedTaskType}
+                pickerRef={taskTypePickerRef}
+                onConfirm={() => inputRef.current?.focus()}
+                onType={() => inputRef.current?.focus()}
+              />
+            </div>
           </div>
-        </div>
+        ) : (
+          <div class="message-list welcome-prompt">
+            <div class="welcome-box">
+              <h1 class="welcome-title">CyDo</h1>
+              <p class="welcome-subtitle">Multi-agent orchestration system</p>
+            </div>
+          </div>
+        )
       ) : (
         <MessageList
           sessionId={task.tid}
@@ -293,21 +371,26 @@ function SessionViewInner({
         />
       ) : (
         <InputBox
-          onSend={onSend}
+          onSend={handleSend}
           onInterrupt={onInterrupt}
           isProcessing={task.isProcessing}
-          disabled={!connected}
+          disabled={isDraft ? false : !connected}
           sessionId={task.tid}
           inputDraft={task.inputDraft}
           onInputDraftConsumed={() => {
             onClearInputDraft(task.tid);
           }}
           serverDraft={task.serverDraft}
-          onSaveDraft={onSaveDraft ? handleSaveDraft : undefined}
+          onSaveDraft={
+            task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
+          }
           inputRef={inputRef}
           insertTextRef={insertTextRef}
           pasteTextRef={pasteTextRef}
+          onEscape={isDraft ? focusTaskTypePicker : undefined}
           suggestions={task.suggestions}
+          onContentStart={isDraft ? handleContentStart : undefined}
+          onContentEnd={isDraft ? onContentEnd : undefined}
         />
       )}
     </>

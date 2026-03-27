@@ -26,7 +26,11 @@ export function UserMessage({ message }: Props) {
 
   return (
     <div
-      class={`message user-message${message.pending ? " pending" : ""}${message.isMeta ? " meta-message" : ""}${message.isSteering ? " steering-message" : ""}${message.isCompactSummary ? " compact-summary-message" : ""}`}
+      class={`message user-message${message.pending ? " pending" : ""}${
+        message.isMeta ? " meta-message" : ""
+      }${message.isSteering ? " steering-message" : ""}${
+        message.isCompactSummary ? " compact-summary-message" : ""
+      }`}
     >
       {message.isCompactSummary && (
         <div class="message-meta">

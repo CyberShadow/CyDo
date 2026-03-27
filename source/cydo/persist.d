@@ -220,6 +220,12 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET draft = ? WHERE tid = ?".exec(draft, tid);
 	}
 
+	void deleteTask(int tid)
+	{
+		db.stmt!"DELETE FROM task_deps WHERE parent_tid = ? OR child_tid = ?".exec(tid, tid);
+		db.stmt!"DELETE FROM tasks WHERE tid = ?".exec(tid);
+	}
+
 	void setResultText(int tid, string resultText)
 	{
 		db.stmt!"UPDATE tasks SET result_text = ? WHERE tid = ?".exec(resultText, tid);

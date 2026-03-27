@@ -450,6 +450,16 @@ body,
   background-color: #f0a030;
 }
 
+.task-type-icon.draft {
+  background-color: var(--text-dim);
+  opacity: 0.4;
+}
+
+.sidebar-item .sidebar-label.draft-label {
+  opacity: 0.5;
+  font-style: italic;
+}
+
 .sidebar-new-task {
   border-top: 1px solid var(--border);
 }
