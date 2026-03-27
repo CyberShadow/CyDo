@@ -1767,6 +1767,7 @@ class App : ToolsBackend
 		td.historyLoaded = true; // New tasks have no JSONL to load
 		import std.datetime : Clock;
 		td.createdAt = Clock.currStdTime;
+		td.lastActive = td.createdAt;
 		tasks[tid] = move(td);
 		tasks[tid].processQueue = new StateQueue!ProcessState(
 			(ProcessState goal) => processTransition(tid, goal),
