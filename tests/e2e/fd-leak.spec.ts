@@ -5,6 +5,35 @@ function getFdCount(pid: number): number {
   return readdirSync(`/proc/${pid}/fd`).length;
 }
 
+async function waitForFdStabilization(
+  pid: number,
+  timeoutMs: number = 10_000,
+  pollMs: number = 200,
+  stableSamples: number = 4,
+): Promise<void> {
+  let stableCount = 0;
+  let lastCount = getFdCount(pid);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    const current = getFdCount(pid);
+    if (current === lastCount) {
+      stableCount += 1;
+      if (stableCount >= stableSamples) {
+        return;
+      }
+      continue;
+    }
+    lastCount = current;
+    stableCount = 0;
+  }
+
+  throw new Error(
+    `FD count for backend pid ${pid} did not stabilize within ${timeoutMs}ms (last count: ${lastCount})`,
+  );
+}
+
 function getFdDetails(pid: number): string[] {
   const fdDir = `/proc/${pid}/fd`;
   const entries = readdirSync(fdDir);
@@ -23,12 +52,13 @@ test("agent session teardown does not leak file descriptors", async ({
   agentType,
 }) => {
   test.skip(agentType !== "claude", "codex has a separate FD leak to investigate");
+  test.setTimeout(120_000);
 
   // Warm up: load the page so HTTP/WebSocket connections are established
   // before we take the baseline FD measurement.
   await page.goto("/");
   await page.waitForLoadState("load");
-  await new Promise((r) => setTimeout(r, 2000));
+  await waitForFdStabilization(backend.pid);
 
   const fdBefore = getFdCount(backend.pid);
   const fdDetailsBefore = getFdDetails(backend.pid);
@@ -39,11 +69,12 @@ test("agent session teardown does not leak file descriptors", async ({
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "fd-leak-test" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(page.locator(".suggestions")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
-
-  // Give the backend time to finish async cleanup
-  await new Promise((r) => setTimeout(r, 2000));
+  await waitForFdStabilization(backend.pid);
 
   const fdAfter = getFdCount(backend.pid);
   const fdDetailsAfter = getFdDetails(backend.pid);
@@ -68,12 +99,12 @@ test("FD count stays stable across multiple session cycles", async ({
   agentType,
 }) => {
   test.skip(agentType !== "claude", "codex has a separate FD leak to investigate");
-  test.setTimeout(120_000);
+  test.setTimeout(300_000);
 
   // Warm up
   await page.goto("/");
   await page.waitForLoadState("load");
-  await new Promise((r) => setTimeout(r, 2000));
+  await waitForFdStabilization(backend.pid);
 
   const fdBaseline = getFdCount(backend.pid);
   const cycles = 3;
@@ -85,8 +116,11 @@ test("FD count stays stable across multiple session cycles", async ({
     await expect(
       page.locator(".message.assistant-message .text-content", { hasText: `cycle-${i}` }),
     ).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(page.locator(".suggestions")).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
     await killSession(page, agentType);
-    await new Promise((r) => setTimeout(r, 2000));
+    await waitForFdStabilization(backend.pid);
 
     const fdNow = getFdCount(backend.pid);
     fdCounts.push(fdNow);
