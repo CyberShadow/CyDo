@@ -53,6 +53,7 @@ struct TaskTypeDef
 	@Optional string agent_description;
 	@Optional string tool_guidance;
 	@Optional string prompt_template;
+	@Optional string system_prompt_template;
 
 	// Capabilities
 	string model_class = "large";
@@ -237,6 +238,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			hasSteward = true;
 
 		checkTemplateFile(def.name, def.prompt_template);
+		checkTemplateFile(def.name, def.system_prompt_template);
 
 		// Check creatable_tasks references
 		foreach (ref edge; def.creatable_tasks)
@@ -795,6 +797,34 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 	foreach (k, v; extraVars)
 		vars[k] = v;
 	return substituteVars(readText(templatePath), vars);
+}
+
+/// Load and render a system prompt template from disk. Returns null if the
+/// type has no system_prompt_template or the file does not exist.
+/// Substitutes {{output_file}}, {{output_dir}}, and {{knowledge_base}}.
+string loadSystemPrompt(ref TaskTypeDef def, string typesDir,
+	string outputFile = "", string[string] extraVars = null)
+{
+	import std.file : exists, readText;
+	import std.path : buildPath, dirName;
+
+	if (def.system_prompt_template.length == 0 || typesDir.length == 0)
+		return null;
+	auto path = buildPath(typesDir, def.system_prompt_template);
+	if (!exists(path))
+		return null;
+	string[string] vars;
+	if (def.knowledge_base.length > 0)
+		vars["knowledge_base"] = def.knowledge_base;
+	if (outputFile.length > 0)
+	{
+		vars["output_file"] = outputFile;
+		vars["output_dir"] = dirName(outputFile);
+	}
+	foreach (k, v; extraVars)
+		vars[k] = v;
+	auto text = readText(path);
+	return vars.length > 0 ? substituteVars(text, vars) : text;
 }
 
 /// Render a continuation's prompt template. The continuation must have a

@@ -38,7 +38,8 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
-	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs;
+	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
+	loadSystemPrompt;
 import cydo.task;
 
 @(`CyDo backend and tooling.`)
@@ -1994,7 +1995,8 @@ class App : ToolsBackend
 		if (typeDef !is null)
 		{
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
-			}
+			sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef, taskTypesDir, td.outputPath);
+		}
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
 		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
 		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
