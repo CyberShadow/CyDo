@@ -92,3 +92,33 @@ test("session resume continues conversation", async ({ page, agentType }) => {
     page.locator(".message.assistant-message .text-content", { hasText: "post-resume" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
+
+test("codex reload replays apply_patch tool call", async ({ page, agentType }) => {
+  test.skip(agentType !== "codex", "codex-only test");
+
+  await enterSession(page);
+  await sendMessage(page, "codex filechange create fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  await killSession(page, agentType);
+  await page.reload();
+  await page
+    .locator(".sidebar-item .sidebar-label", { hasText: "codex filechange create fixture" })
+    .first()
+    .click({ timeout: 15_000 });
+
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  await tool.locator(".tool-header").hover();
+  const viewBtn = tool.locator(".tool-view-file");
+  await expect(viewBtn).toBeVisible({ timeout: 5_000 });
+  await viewBtn.click();
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toContainText("codex-fileviewer-create.txt");
+});

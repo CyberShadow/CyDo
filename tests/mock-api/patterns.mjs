@@ -36,6 +36,39 @@ export function matchPattern(userText) {
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
 
+  // Codex file-viewer deterministic fixtures
+  // Keep these before broad "call task ..." matching because codex prompts
+  // include instruction text that can otherwise shadow these fixtures.
+  if (/codex filechange create fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input: "*** Begin Patch\n*** Add File: tmp/codex-fileviewer-create.txt\n+hello from create fixture\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex filechange update fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Update File: tmp/codex-fileviewer-create.txt\n@@\n-hello from create fixture\n+hello from update fixture\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex filechange delete fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Delete File: tmp/codex-fileviewer-create.txt\n*** End Patch\n",
+      },
+    };
+  }
+
   // Task-creation patterns must come before "run command" because a task prompt
   // like "call 2 tasks research run command sleep 10" contains "run command" as
   // a substring, which would otherwise match the shell pattern first.

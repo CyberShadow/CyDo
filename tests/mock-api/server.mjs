@@ -269,6 +269,70 @@ function oaiStreamFunctionCallResponse(res, name, args) {
   res.end();
 }
 
+function oaiStreamCustomToolCallResponse(res, name, input) {
+  const respId = nextRespId();
+  const callId = nextCallId();
+  // Extract raw patch string from the pattern's input object
+  const rawInput = typeof input === 'object' && input !== null && typeof input.input === 'string'
+    ? input.input
+    : (typeof input === 'string' ? input : JSON.stringify(input));
+
+  const itemId = `ctc_mock_${callId}`;
+
+  oaiSseEvent(res, "response.created", {
+    type: "response.created",
+    response: { id: respId },
+  });
+  // 1. output_item.added — item in progress with empty input
+  oaiSseEvent(res, "response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: {
+      id: itemId,
+      type: "custom_tool_call",
+      status: "in_progress",
+      call_id: callId,
+      name,
+      input: "",
+    },
+  });
+  // 2. Single delta with full input (real API streams token by token)
+  oaiSseEvent(res, "response.custom_tool_call_input.delta", {
+    type: "response.custom_tool_call_input.delta",
+    delta: rawInput,
+    item_id: itemId,
+    output_index: 0,
+  });
+  // 3. input.done with final assembled input
+  oaiSseEvent(res, "response.custom_tool_call_input.done", {
+    type: "response.custom_tool_call_input.done",
+    input: rawInput,
+    item_id: itemId,
+    output_index: 0,
+  });
+  // 4. output_item.done — completed item with full input
+  oaiSseEvent(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: 0,
+    item: {
+      id: itemId,
+      type: "custom_tool_call",
+      status: "completed",
+      call_id: callId,
+      name,
+      input: rawInput,
+    },
+  });
+  oaiSseEvent(res, "response.completed", {
+    type: "response.completed",
+    response: {
+      id: respId,
+      usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+    },
+  });
+  res.end();
+}
+
 // Extract the last user text from the Responses API input array.
 function extractLastUserTextFromInput(input) {
   for (let i = input.length - 1; i >= 0; i--) {
@@ -285,10 +349,22 @@ function extractLastUserTextFromInput(input) {
   return null;
 }
 
-// Check if the input array contains tool output (local_shell_call_output or function_call_output).
+// Check if the input array contains tool output AFTER the last user message.
+// Multi-turn inputs include tool outputs from previous turns, so we must only
+// check for tool outputs that belong to the current (most recent) turn.
 function hasToolOutput(input) {
-  return input.some(
-    (item) => item.type === "local_shell_call_output" || item.type === "function_call_output",
+  let lastUserIdx = -1;
+  for (let i = input.length - 1; i >= 0; i--) {
+    if (input[i].type === "message" && input[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  return input.slice(lastUserIdx + 1).some(
+    (item) =>
+      item.type === "local_shell_call_output" ||
+      item.type === "function_call_output" ||
+      item.type === "custom_tool_call_output",
   );
 }
 
@@ -309,6 +385,7 @@ function handleResponses(req, res) {
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserTextFromInput(input);
     const isToolOutput = hasToolOutput(input);
+    const intent = userText === null ? null : matchPattern(userText);
     console.log(`[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} isToolOutput=${isToolOutput} inputLen=${input.length}`);
 
     res.writeHead(200, {
@@ -342,8 +419,6 @@ function handleResponses(req, res) {
       return;
     }
 
-    const intent = matchPattern(userText);
-
     if (intent.type === "text") {
       oaiStreamTextResponse(res, intent.text);
     } else if (intent.type === "background_shell") {
@@ -361,6 +436,8 @@ function handleResponses(req, res) {
       } else {
         oaiStreamShellCallResponse(res, intent.command);
       }
+    } else if (intent.name === "apply_patch") {
+      oaiStreamCustomToolCallResponse(res, intent.name, intent.input);
     } else {
       // tool_call — names are already correct for the OpenAI/Codex protocol
       oaiStreamFunctionCallResponse(res, intent.name, intent.input);

@@ -85,3 +85,84 @@ test("codex agent type indicator", async ({ page, agentType }) => {
   await expect(page.locator(".banner-agent")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".banner-agent")).toContainText("codex", { ignoreCase: true });
 });
+
+test("codex file fixture shows view-file action", async ({ page, agentType }) => {
+  test.skip(agentType !== "codex", "codex-only test");
+
+  await enterSession(page);
+  await sendMessage(page, "codex filechange create fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  const timeout = responseTimeout(agentType);
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout });
+
+  await tool.locator(".tool-header").hover();
+  const viewBtn = tool.locator(".tool-view-file");
+  await expect(viewBtn).toBeVisible({ timeout: 5_000 });
+  await viewBtn.click();
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toContainText("codex-fileviewer-create.txt");
+  await expect(page.locator(".file-viewer")).toContainText("hello from create fixture");
+});
+
+test("codex update fixture shows patch preview", async ({ page, agentType }) => {
+  test.skip(agentType !== "codex", "codex-only test");
+
+  await enterSession(page);
+  await sendMessage(page, "codex filechange create fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await sendMessage(page, "codex filechange update fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  const timeout = responseTimeout(agentType);
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout });
+
+  // dispatchEvent bypasses CSS display:none on the hover-reveal button
+  await tool.locator(".tool-view-file").dispatchEvent("click");
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toContainText("codex-fileviewer-create.txt");
+  // Edit history should show the Patch entry tracked from the second fileChange
+  await expect(page.locator(".file-viewer")).toContainText(/Patch/);
+});
+
+test("codex delete fixture shows deleted state", async ({ page, agentType }) => {
+  test.skip(agentType !== "codex", "codex-only test");
+
+  await enterSession(page);
+  await sendMessage(page, "codex filechange create fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await sendMessage(page, "codex filechange delete fixture");
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  const timeout = responseTimeout(agentType);
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout });
+
+  // dispatchEvent bypasses CSS display:none on the hover-reveal button
+  await tool.locator(".tool-view-file").dispatchEvent("click");
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toContainText("codex-fileviewer-create.txt");
+  // Edit history should show the Delete entry tracked from the second fileChange
+  await expect(page.locator(".file-viewer")).toContainText(/Delete/);
+});

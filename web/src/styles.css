@@ -1558,6 +1558,21 @@ body,
   background: var(--overlay-light);
 }
 
+.edit-history-item .edit-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+
+.edit-history-item.pending .edit-status {
+  color: var(--processing);
+}
+
+.edit-history-item.cancelled .edit-status {
+  color: var(--error);
+}
+
 .edit-history-num {
   color: var(--text-dim);
   font-size: 11px;

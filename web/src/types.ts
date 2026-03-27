@@ -96,6 +96,20 @@ export interface ToolResult {
   toolResult?: unknown;
 }
 
+export type FileEditOp = "add" | "update" | "delete" | "edit" | "write";
+
+export type FileEditStatus = "pending" | "applied" | "cancelled";
+
+export type FileEditSource =
+  | "claude-tool"
+  | "codex-fileChange"
+  | "codex-apply_patch-history";
+
+export type FileChangePayload =
+  | { mode: "full_content"; content: string }
+  | { mode: "patch_text"; patchText: string }
+  | { mode: "none" };
+
 /** A single edit operation on a file, linked to a tool call.
  *  Stores only lightweight metadata; file content is resolved on-demand
  *  via resolveEditContent() to avoid memory overhead when the viewer is closed. */
@@ -104,6 +118,12 @@ export interface FileEdit {
   messageId: string; // DisplayMessage.id for scroll-to
   filePath: string;
   type: "edit" | "write";
+  op?: FileEditOp;
+  status?: FileEditStatus;
+  payload?: FileChangePayload;
+  source?: FileEditSource;
+  changeIndex?: number;
+  turnId?: string;
 }
 
 /** Accumulated state for a single tracked file. */

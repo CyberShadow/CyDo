@@ -10,6 +10,10 @@ import type {
   DisplayMessage,
   ToolResultContent,
   FileEdit,
+  FileChangePayload,
+  FileEditOp,
+  FileEditSource,
+  FileEditStatus,
 } from "./types";
 import type {
   AgnosticEvent,
@@ -69,6 +73,299 @@ function appendRawSource(msg: DisplayMessage, event: unknown): void {
           : [prevSeq, newSeq]
         : newSeq;
   }
+}
+
+interface ParsedPatchPath {
+  path: string;
+  op: "add" | "update" | "delete";
+  addedContent?: string;
+  patchText?: string;
+}
+
+function normalizePath(path: string): string {
+  if (path.startsWith("a/") || path.startsWith("b/")) return path.slice(2);
+  return path;
+}
+
+function toAbsolutePath(path: string, cwd?: string): string {
+  if (path.startsWith("/")) return path;
+  if (!cwd || cwd.length === 0) return path;
+  const base = cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
+  return `${base}/${path}`;
+}
+
+function parseDiffHeaderPath(line: string, prefix: string): string | null {
+  if (!line.startsWith(prefix)) return null;
+  const value = line.slice(prefix.length).trim();
+  if (!value || value === "/dev/null") return value;
+  return normalizePath(value);
+}
+
+function parseApplyPatchPaths(patchText: string): ParsedPatchPath[] {
+  const lines = patchText.split("\n");
+  const out: ParsedPatchPath[] = [];
+  const seen = new Set<string>();
+  const pushPath = (
+    path: string,
+    op: "add" | "update" | "delete",
+    addedContent?: string,
+    patchText?: string,
+  ) => {
+    if (!path || path === "/dev/null") return;
+    const key = `${op}:${path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ path, op, addedContent, patchText });
+  };
+
+  let lastOld: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("*** Add File: ")) {
+      const path = line.slice("*** Add File: ".length).trim();
+      const contentLines: string[] = [];
+      const sectionLines = [line];
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j]!;
+        if (next.startsWith("*** ")) {
+          i = j - 1;
+          break;
+        }
+        sectionLines.push(next);
+        if (next.startsWith("+")) contentLines.push(next.slice(1));
+        else if (next.startsWith(" ")) contentLines.push(next.slice(1));
+        if (j === lines.length - 1) i = j;
+      }
+      pushPath(path, "add", contentLines.join("\n"), sectionLines.join("\n"));
+      continue;
+    }
+    if (line.startsWith("*** Update File: ")) {
+      const path = line.slice("*** Update File: ".length).trim();
+      const sectionLines = [line];
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j]!;
+        if (next.startsWith("*** ")) {
+          i = j - 1;
+          break;
+        }
+        sectionLines.push(next);
+        if (j === lines.length - 1) i = j;
+      }
+      pushPath(path, "update", undefined, sectionLines.join("\n"));
+      continue;
+    }
+    if (line.startsWith("*** Delete File: ")) {
+      const path = line.slice("*** Delete File: ".length).trim();
+      pushPath(path, "delete", undefined, line);
+      continue;
+    }
+    const oldPath = parseDiffHeaderPath(line, "--- ");
+    if (oldPath != null) {
+      lastOld = oldPath;
+      continue;
+    }
+    const newPath = parseDiffHeaderPath(line, "+++ ");
+    if (newPath != null) {
+      if (newPath === "/dev/null") {
+        if (lastOld && lastOld !== "/dev/null") pushPath(lastOld, "delete");
+      } else if (lastOld === "/dev/null") {
+        pushPath(newPath, "add");
+      } else {
+        pushPath(newPath, "update");
+      }
+    }
+  }
+  return out;
+}
+
+function parsePatchTextFromInput(
+  input: Record<string, unknown>,
+): string | null {
+  const direct = [input.input, input.patchText, input.patch, input.diff];
+  for (const candidate of direct) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+interface BuildEditsParams {
+  toolUseId: string;
+  messageId: string;
+  status: FileEditStatus;
+  source: FileEditSource;
+  cwd?: string;
+  turnId?: string;
+}
+
+function buildFileEdit(
+  params: BuildEditsParams,
+  path: string,
+  op: FileEditOp,
+  payload: FileChangePayload,
+  changeIndex: number,
+): FileEdit {
+  return {
+    toolUseId: params.toolUseId,
+    messageId: params.messageId,
+    filePath: toAbsolutePath(path, params.cwd),
+    type: op === "update" || op === "edit" ? "edit" : "write",
+    op,
+    status: params.status,
+    payload,
+    source: params.source,
+    changeIndex,
+    turnId: params.turnId,
+  };
+}
+
+function buildEditsFromApplyPatchInput(
+  input: Record<string, unknown>,
+  toolUseId: string,
+  messageId: string,
+  status: FileEditStatus,
+  cwd?: string,
+): FileEdit[] {
+  const patchText = parsePatchTextFromInput(input);
+  if (!patchText) return [];
+  const parsedPaths = parseApplyPatchPaths(patchText);
+  return parsedPaths.map((p, idx) =>
+    buildFileEdit(
+      {
+        toolUseId,
+        messageId,
+        status,
+        source: "codex-apply_patch-history",
+        cwd,
+      },
+      p.path,
+      p.op,
+      p.op === "add" && typeof p.addedContent === "string"
+        ? { mode: "full_content", content: p.addedContent }
+        : p.op === "delete"
+          ? { mode: "full_content", content: "" }
+          : {
+              mode: "patch_text",
+              patchText: p.patchText ?? patchText,
+            },
+      idx,
+    ),
+  );
+}
+
+function buildFileChangeInputFromRawEvent(
+  rawEvent: unknown,
+  cwd?: string,
+): Record<string, unknown> | undefined {
+  const parsedRaw =
+    typeof rawEvent === "string" ? tryParseJson(rawEvent) : rawEvent;
+  if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw))
+    return undefined;
+  const raw = parsedRaw as Record<string, unknown>;
+  const params =
+    raw.params && typeof raw.params === "object" && !Array.isArray(raw.params)
+      ? (raw.params as Record<string, unknown>)
+      : null;
+  const item =
+    params?.item &&
+    typeof params.item === "object" &&
+    !Array.isArray(params.item)
+      ? (params.item as Record<string, unknown>)
+      : null;
+  if (!item || !Array.isArray(item.changes) || item.changes.length === 0)
+    return undefined;
+
+  const changes: Array<Record<string, unknown>> = [];
+  for (const ch of item.changes as unknown[]) {
+    if (!ch || typeof ch !== "object" || Array.isArray(ch)) continue;
+    const change = ch as Record<string, unknown>;
+    const path = typeof change.path === "string" ? change.path : null;
+    if (!path) continue;
+    const kind =
+      change.kind &&
+      typeof change.kind === "object" &&
+      !Array.isArray(change.kind)
+        ? (change.kind as Record<string, unknown>)
+        : null;
+    const op =
+      kind?.type === "add" || kind?.type === "update" || kind?.type === "delete"
+        ? (kind.type as string)
+        : "update";
+    changes.push({ file_path: toAbsolutePath(path, cwd), op });
+  }
+  if (changes.length === 0) return undefined;
+  return { file_path: changes[0]!.file_path, changes };
+}
+
+function buildEditsFromCodexFileChangeEvent(
+  rawEvent: unknown,
+  toolUseId: string,
+  messageId: string,
+  status: FileEditStatus,
+  cwd?: string,
+): FileEdit[] {
+  const parsedRaw =
+    typeof rawEvent === "string" ? tryParseJson(rawEvent) : rawEvent;
+  if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw))
+    return [];
+  const raw = parsedRaw as Record<string, unknown>;
+  const params =
+    raw.params && typeof raw.params === "object" && !Array.isArray(raw.params)
+      ? (raw.params as Record<string, unknown>)
+      : null;
+  const item =
+    params?.item &&
+    typeof params.item === "object" &&
+    !Array.isArray(params.item)
+      ? (params.item as Record<string, unknown>)
+      : null;
+  const turnId = typeof params?.turnId === "string" ? params.turnId : undefined;
+  if (!item || !Array.isArray(item.changes)) return [];
+
+  const rawChanges = item.changes as unknown[];
+  const edits: FileEdit[] = [];
+  for (let i = 0; i < rawChanges.length; i++) {
+    const ch = rawChanges[i];
+    if (!ch || typeof ch !== "object" || Array.isArray(ch)) continue;
+    const change = ch as Record<string, unknown>;
+    const path = typeof change.path === "string" ? change.path : null;
+    if (!path) continue;
+    const kind =
+      change.kind &&
+      typeof change.kind === "object" &&
+      !Array.isArray(change.kind)
+        ? (change.kind as Record<string, unknown>)
+        : null;
+    const kindType = kind?.type;
+    const op: "add" | "update" | "delete" =
+      kindType === "add" || kindType === "update" || kindType === "delete"
+        ? kindType
+        : "update";
+    const payload: FileChangePayload =
+      typeof change.diff === "string"
+        ? op === "update"
+          ? { mode: "patch_text", patchText: change.diff }
+          : { mode: "full_content", content: change.diff }
+        : { mode: "none" };
+    edits.push(
+      buildFileEdit(
+        {
+          toolUseId,
+          messageId,
+          status,
+          source: "codex-fileChange",
+          cwd,
+          turnId,
+        },
+        path,
+        op,
+        payload,
+        i,
+      ),
+    );
+  }
+  return edits;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +592,82 @@ export function reduceRateLimit(
  *  filePath, type).  Actual file content is resolved on-demand by
  *  resolveEditContent() in FileViewer, avoiding string ops and memory
  *  overhead when the viewer is never opened. */
-function trackFileEdits(
+function appendTrackedEdits(
+  state: SessionState,
+  edits: FileEdit[],
+): SessionState {
+  if (edits.length === 0) return state;
+  const trackedFiles = new Map(state.trackedFiles);
+  for (const edit of edits) {
+    const existing = trackedFiles.get(edit.filePath);
+    if (existing) {
+      trackedFiles.set(edit.filePath, {
+        ...existing,
+        edits: [...existing.edits, edit],
+      });
+    } else {
+      trackedFiles.set(edit.filePath, {
+        path: edit.filePath,
+        edits: [edit],
+      });
+    }
+  }
+  return { ...state, trackedFiles };
+}
+
+function updateEditStatusByToolUseId(
+  state: SessionState,
+  toolUseId: string,
+  status: FileEditStatus,
+): SessionState {
+  let changed = false;
+  const trackedFiles = new Map(state.trackedFiles);
+  for (const [path, file] of trackedFiles) {
+    const hasChanges = file.edits.some(
+      (edit) => edit.toolUseId === toolUseId && edit.status !== status,
+    );
+    if (!hasChanges) continue;
+    changed = true;
+    trackedFiles.set(path, {
+      ...file,
+      edits: file.edits.map((edit) =>
+        edit.toolUseId === toolUseId ? { ...edit, status } : edit,
+      ),
+    });
+  }
+  return changed ? { ...state, trackedFiles } : state;
+}
+
+function hasTrackedEditsForToolUseId(
+  state: SessionState,
+  toolUseId: string,
+): boolean {
+  for (const file of state.trackedFiles.values()) {
+    if (file.edits.some((edit) => edit.toolUseId === toolUseId)) return true;
+  }
+  return false;
+}
+
+function cancelPendingFileEdits(state: SessionState): SessionState {
+  let changed = false;
+  const trackedFiles = new Map(state.trackedFiles);
+  for (const [path, file] of trackedFiles) {
+    const hasPending = file.edits.some((edit) => edit.status === "pending");
+    if (!hasPending) continue;
+    changed = true;
+    trackedFiles.set(path, {
+      ...file,
+      edits: file.edits.map((edit) =>
+        edit.status === "pending"
+          ? { ...edit, status: "cancelled" as const }
+          : edit,
+      ),
+    });
+  }
+  return changed ? { ...state, trackedFiles } : state;
+}
+
+function trackResultFileEdits(
   state: SessionState,
   toolResults: Array<{
     tool_use_id: string;
@@ -318,37 +690,43 @@ function trackFileEdits(
         !toolName ||
         (toolName !== "Edit" &&
           toolName !== "Write" &&
-          toolName !== "fileChange")
+          toolName !== "apply_patch")
       )
         break;
 
       const input = toolUse.input ?? {};
+      if (toolName === "apply_patch") {
+        if (hasTrackedEditsForToolUseId(state, block.tool_use_id)) break;
+        const edits = buildEditsFromApplyPatchInput(
+          input,
+          block.tool_use_id,
+          m.id,
+          "applied",
+          state.sessionInfo?.cwd,
+        );
+        state = appendTrackedEdits(state, edits);
+        break;
+      }
+
       const filePath =
         typeof input.file_path === "string" ? input.file_path : null;
       if (!filePath) break;
 
-      const edit: FileEdit = {
-        toolUseId: block.tool_use_id,
-        messageId: m.id,
-        filePath,
-        type: toolName === "Edit" ? "edit" : "write",
-      };
-
-      const trackedFiles = new Map(state.trackedFiles);
-      const existing = trackedFiles.get(filePath);
-      if (existing) {
-        trackedFiles.set(filePath, {
-          ...existing,
-          edits: [...existing.edits, edit],
-        });
-      } else {
-        trackedFiles.set(filePath, {
-          path: filePath,
-          edits: [edit],
-        });
-      }
-
-      state = { ...state, trackedFiles };
+      state = appendTrackedEdits(state, [
+        {
+          toolUseId: block.tool_use_id,
+          messageId: m.id,
+          filePath,
+          type: toolName === "Edit" ? "edit" : "write",
+          op: toolName === "Edit" ? "edit" : "write",
+          status: "applied",
+          source: "claude-tool",
+          payload:
+            toolName === "Write" && typeof input.content === "string"
+              ? { mode: "full_content", content: input.content }
+              : { mode: "none" },
+        },
+      ]);
       break;
     }
   }
@@ -389,7 +767,7 @@ export function reduceResultMessage(
 
   const id = `result-${++s.msgIdCounter}`;
   const resultExtraFields = getExtras(msg);
-  return {
+  const nextState = {
     ...s,
     totalCost: msg.total_cost_usd || s.totalCost,
     messages: [
@@ -418,6 +796,7 @@ export function reduceResultMessage(
       },
     ],
   };
+  return msg.is_error ? cancelPendingFileEdits(nextState) : nextState;
 }
 
 /** Insert a message before any in-progress streaming assistant message.
@@ -619,7 +998,14 @@ export function reduceItemStarted(
       type: event.item_type,
       text: event.text ?? "",
       name: event.name,
-      input: event.input,
+      input:
+        event.item_type === "tool_use" && event.name === "fileChange"
+          ? (event.input ??
+            buildFileChangeInputFromRawEvent(
+              (event as Record<string, unknown>)._raw,
+              s.sessionInfo?.cwd,
+            ))
+          : event.input,
       creationOrder,
     },
   ];
@@ -631,7 +1017,37 @@ export function reduceItemStarted(
 
   appendRawSource(msg, event);
 
-  return { ...s, messages };
+  let state = { ...s, messages };
+
+  if (event.item_type === "tool_use") {
+    if (event.name === "fileChange") {
+      // _raw is stripped before broadcast; fall back to event.input (set by backend
+      // for live events) wrapped in the shape buildEditsFromCodexFileChangeEvent expects.
+      const rawForEdits =
+        (event as Record<string, unknown>)._raw ??
+        (event.input != null ? { params: { item: event.input } } : undefined);
+      const edits = buildEditsFromCodexFileChangeEvent(
+        rawForEdits,
+        event.item_id,
+        msg.id,
+        "pending",
+        state.sessionInfo?.cwd,
+      );
+      state = appendTrackedEdits(state, edits);
+    } else if (event.name === "apply_patch") {
+      const edits = buildEditsFromApplyPatchInput(
+        (msg.streamingBlocks[msg.streamingBlocks.length - 1]!.input ??
+          {}) as Record<string, unknown>,
+        event.item_id,
+        msg.id,
+        "pending",
+        state.sessionInfo?.cwd,
+      );
+      state = appendTrackedEdits(state, edits);
+    }
+  }
+
+  return state;
 }
 
 export function reduceItemDelta(
@@ -659,7 +1075,13 @@ export function reduceItemCompleted(
   event: ItemCompletedEvent,
 ): SessionState {
   const targetIdx = findStreamingMsg(s.messages);
-  if (targetIdx < 0) return s;
+  if (targetIdx < 0) {
+    return updateEditStatusByToolUseId(
+      s,
+      event.item_id,
+      event.is_error ? "cancelled" : "applied",
+    );
+  }
 
   const messages = s.messages.slice();
   const msg = { ...messages[targetIdx]! };
@@ -668,7 +1090,13 @@ export function reduceItemCompleted(
   const blockIdx = msg.streamingBlocks!.findIndex(
     (b) => b.itemId === event.item_id,
   );
-  if (blockIdx < 0) return s;
+  if (blockIdx < 0) {
+    return updateEditStatusByToolUseId(
+      s,
+      event.item_id,
+      event.is_error ? "cancelled" : "applied",
+    );
+  }
 
   const block = msg.streamingBlocks![blockIdx]!;
   const { creationOrder } = block;
@@ -723,7 +1151,15 @@ export function reduceItemCompleted(
   appendRawSource(msg, event);
 
   bumpNestedVersion(messages, msg.parentToolUseId);
-  return { ...s, messages };
+  let state = { ...s, messages };
+  if (block.type === "tool_use") {
+    state = updateEditStatusByToolUseId(
+      state,
+      event.item_id,
+      event.is_error ? "cancelled" : "applied",
+    );
+  }
+  return state;
 }
 
 export function reduceItemResult(
@@ -762,7 +1198,7 @@ export function reduceItemResult(
   bumpNestedVersion(messages, parentMsg.parentToolUseId);
 
   let state = { ...s, messages };
-  state = trackFileEdits(state, [
+  state = trackResultFileEdits(state, [
     {
       tool_use_id: event.item_id,
       content: event.content as import("./types").ToolResultContent,
@@ -896,7 +1332,7 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
 
 export function reduceExit(s: SessionState): SessionState {
   // Backend owns alive/resumable via tasks_list; nothing to update here.
-  return s;
+  return cancelPendingFileEdits(s);
 }
 
 // ---------------------------------------------------------------------------

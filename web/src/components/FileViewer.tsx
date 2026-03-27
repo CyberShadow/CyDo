@@ -2,7 +2,7 @@ import { Fragment } from "preact";
 import type { CSSProperties, PointerEventHandler } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
-import { structuredPatch } from "diff";
+import { applyPatch, structuredPatch } from "diff";
 import type { DisplayMessage, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import type { ThemedToken } from "../highlight";
@@ -20,6 +20,8 @@ interface ResolvedEdit {
   contentBefore: string | null;
   contentAfter: string;
   structuredPatch?: unknown[];
+  patchText?: string;
+  isDeleted?: boolean;
 }
 
 /** Resolve the content for a single FileEdit by looking up the tool_use input
@@ -30,6 +32,24 @@ function resolveEditContent(
   edit: FileEdit,
   messages: DisplayMessage[],
 ): ResolvedEdit | null {
+  if (edit.payload?.mode === "full_content") {
+    if (edit.op === "delete") {
+      return {
+        contentBefore: edit.payload.content,
+        contentAfter: "",
+        isDeleted: true,
+      };
+    }
+    return { contentBefore: null, contentAfter: edit.payload.content };
+  }
+  if (edit.payload?.mode === "patch_text") {
+    return {
+      contentBefore: null,
+      contentAfter: "",
+      patchText: edit.payload.patchText,
+    };
+  }
+
   // Find the assistant message containing the tool_use block
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
@@ -89,6 +109,30 @@ interface ResolvedFileContent {
   originalContent: string;
   currentContent: string;
   resolved: Map<number, ResolvedEdit>;
+  isDeleted: boolean;
+  deletedContent: string | null;
+}
+
+function toUnifiedPatch(patchText: string): string | null {
+  const lines = patchText.split("\n");
+  if (lines.length === 0) return null;
+  const header = lines[0]!;
+  if (!header.startsWith("*** Update File: ")) return null;
+  const path = header.slice("*** Update File: ".length).trim();
+  if (!path) return null;
+  const bodyLines: string[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (
+      line.startsWith("*** Begin Patch") ||
+      line.startsWith("*** End Patch")
+    ) {
+      continue;
+    }
+    bodyLines.push(line);
+  }
+  const body = bodyLines.join("\n");
+  return `--- a/${path}\n+++ b/${path}\n${body}\n`;
 }
 
 /** Resolve all edits for a file and return the current (latest) content. */
@@ -99,18 +143,71 @@ function resolveFileContent(
   const resolved = new Map<number, ResolvedEdit>();
   let currentContent: string | null = null;
   let originalContent: string | null = null;
+  let isDeleted = false;
+  let deletedContent: string | null = null;
+  let hasApplied = false;
 
   for (let i = 0; i < file.edits.length; i++) {
-    const r = resolveEditContent(file.edits[i]!, messages);
+    const edit = file.edits[i]!;
+    if (edit.status === "cancelled") continue;
+    let r = resolveEditContent(edit, messages);
     if (r) {
       resolved.set(i, r);
+      if (edit.status !== "applied") continue;
+      hasApplied = true;
+      if (r.patchText) {
+        if (currentContent != null) {
+          const directPatch = applyPatch(currentContent, r.patchText);
+          let patched: string | false = directPatch;
+          if (directPatch === false || directPatch === currentContent) {
+            const unifiedPatch = toUnifiedPatch(r.patchText);
+            if (unifiedPatch) {
+              const fallbackPatch = applyPatch(currentContent, unifiedPatch);
+              if (
+                typeof fallbackPatch === "string" &&
+                fallbackPatch !== currentContent
+              ) {
+                patched = fallbackPatch;
+              }
+            }
+          }
+          if (typeof patched === "string") currentContent = patched;
+        }
+        continue;
+      }
+      if (r.isDeleted && currentContent != null && !r.contentBefore) {
+        r = { ...r, contentBefore: currentContent };
+        resolved.set(i, r);
+      }
       if (originalContent == null) originalContent = r.contentBefore ?? "";
       currentContent = r.contentAfter;
+      isDeleted = !!r.isDeleted;
+      deletedContent = r.isDeleted ? (r.contentBefore ?? "") : null;
     }
   }
 
-  if (currentContent == null) return null;
-  return { originalContent: originalContent ?? "", currentContent, resolved };
+  if (!hasApplied) {
+    for (let i = file.edits.length - 1; i >= 0; i--) {
+      const r = resolved.get(i);
+      if (!r || r.patchText) continue;
+      currentContent = r.contentAfter;
+      if (originalContent == null) originalContent = r.contentBefore ?? "";
+      isDeleted = !!r.isDeleted;
+      break;
+    }
+  }
+
+  if (currentContent == null) {
+    if (resolved.size === 0) return null;
+    currentContent = "";
+  }
+  return {
+    originalContent: originalContent ?? "",
+    currentContent,
+    resolved,
+    isDeleted,
+    deletedContent,
+  };
 }
 
 /** Compute line-level diffstat between two strings. */
@@ -352,6 +449,8 @@ const ContentViewer = memo(function ContentViewer({
   resolvedEdit,
   diffEdit,
   cumulativeContent,
+  isDeleted,
+  deletedContent,
   viewMode,
   onChangeViewMode,
 }: {
@@ -365,11 +464,22 @@ const ContentViewer = memo(function ContentViewer({
   diffEdit: ResolvedEdit | null;
   /** Content after applying edits up to and including the selected one (for cumulative diff). */
   cumulativeContent: string;
+  isDeleted: boolean;
+  deletedContent: string | null;
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
 }) {
   const isMarkdown = /\.(md|mdx)$/i.test(filePath);
-  const content = resolvedEdit ? resolvedEdit.contentAfter : currentContent;
+  const content =
+    resolvedEdit?.patchText != null
+      ? resolvedEdit.patchText
+      : resolvedEdit
+        ? resolvedEdit.isDeleted
+          ? (resolvedEdit.contentBefore ?? "")
+          : resolvedEdit.contentAfter
+        : isDeleted
+          ? (deletedContent ?? originalContent)
+          : currentContent;
 
   return (
     <div class="content-viewer">
@@ -410,8 +520,17 @@ const ContentViewer = memo(function ContentViewer({
         )}
       </div>
       <div class="content-viewer-body">
+        {(resolvedEdit?.isDeleted || (!resolvedEdit && isDeleted)) && (
+          <div class="file-viewer-empty">File deleted in this change.</div>
+        )}
         {viewMode === "source" && (
           <SourceView content={content} filePath={filePath} />
+        )}
+        {viewMode === "diff" && diffEdit?.patchText && (
+          <SourceView
+            content={diffEdit.patchText}
+            filePath={`${filePath}.patch`}
+          />
         )}
         {viewMode === "diff" && diffEdit?.structuredPatch?.length ? (
           <PatchView
@@ -420,7 +539,8 @@ const ContentViewer = memo(function ContentViewer({
           />
         ) : (
           viewMode === "diff" &&
-          diffEdit && (
+          diffEdit &&
+          !diffEdit.patchText && (
             <DiffView
               oldStr={diffEdit.contentBefore ?? ""}
               newStr={diffEdit.contentAfter}
@@ -468,15 +588,25 @@ function EditHistory({
       {file.edits.map((edit, i) => {
         const r = resolvedEdits.get(i);
         let diffstat: { added: number; removed: number } | null = null;
-        if (r) {
+        if (r && !r.patchText) {
           diffstat = computeDiffstat(r.contentBefore ?? "", r.contentAfter);
         }
+        const label =
+          edit.op === "delete"
+            ? "Delete"
+            : edit.op === "add"
+              ? "Add"
+              : edit.op === "update"
+                ? "Patch"
+                : edit.type === "edit"
+                  ? "Edit"
+                  : "Write";
         return (
           <div
             key={i}
             class={`edit-history-item${
               selectedEditIndex === i ? " selected" : ""
-            }`}
+            }${edit.status ? ` ${edit.status}` : ""}`}
             onClick={() => {
               const deselecting = selectedEditIndex === i;
               onSelectEdit(deselecting ? null : i);
@@ -484,9 +614,8 @@ function EditHistory({
             }}
           >
             <span class="edit-history-num">#{i + 1}</span>
-            <span class="edit-type">
-              {edit.type === "edit" ? "Edit" : "Write"}
-            </span>
+            <span class="edit-type">{label}</span>
+            {edit.status && <span class="edit-status">{edit.status}</span>}
             {diffstat && (
               <span class="edit-diffstat">
                 {diffstat.added > 0 && (
@@ -534,6 +663,16 @@ export function FileViewer({
     () => (file ? resolveFileContent(file, messages) : null),
     [file, messages],
   );
+  const selectedResolvedEdit =
+    file && resolved && selectedEditIndex != null
+      ? (resolved.resolved.get(selectedEditIndex) ?? null)
+      : null;
+  const latestResolvedEdit =
+    file && resolved
+      ? (resolved.resolved.get(file.edits.length - 1) ?? null)
+      : null;
+  const cumulativeContent =
+    selectedResolvedEdit?.contentAfter ?? resolved?.currentContent ?? "";
 
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
@@ -585,23 +724,12 @@ export function FileViewer({
               filePath={file.path}
               currentContent={resolved.currentContent}
               originalContent={resolved.originalContent}
-              resolvedEdit={
-                selectedEditIndex != null
-                  ? (resolved.resolved.get(selectedEditIndex) ?? null)
-                  : null
-              }
-              diffEdit={
-                selectedEditIndex != null
-                  ? (resolved.resolved.get(selectedEditIndex) ?? null)
-                  : (resolved.resolved.get(file.edits.length - 1) ?? null)
-              }
-              cumulativeContent={
-                selectedEditIndex != null
-                  ? (resolved.resolved.get(selectedEditIndex)?.contentAfter ??
-                    resolved.currentContent)
-                  : resolved.currentContent
-              }
+              resolvedEdit={selectedResolvedEdit}
+              diffEdit={selectedResolvedEdit ?? latestResolvedEdit}
+              cumulativeContent={cumulativeContent}
               viewMode={viewMode}
+              isDeleted={resolved.isDeleted}
+              deletedContent={resolved.deletedContent}
               onChangeViewMode={onChangeViewMode}
             />
             <EditHistory

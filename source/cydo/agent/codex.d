@@ -256,6 +256,9 @@ private interface ICodexServer
 
 	@RPCName("item/fileChange/requestApproval")
 	Promise!ApprovalDecision fileChangeApproval(ItemStartedParams params);
+
+	@RPCName("item/fileChange/outputDelta")
+	Promise!void itemFileChangeOutputDelta(DeltaParams params);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +319,14 @@ private class CodexServerRouter : ICodexServer
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params)
 	{
 		auto raw = buildRawNotification("item/commandExecution/outputDelta", toJson(params));
+		routeToSession(params.threadId,
+			(s) => s.handleDelta(params, "output_delta", raw));
+		return resolve();
+	}
+
+	Promise!void itemFileChangeOutputDelta(DeltaParams params)
+	{
+		auto raw = buildRawNotification("item/fileChange/outputDelta", toJson(params));
 		routeToSession(params.threadId,
 			(s) => s.handleDelta(params, "output_delta", raw));
 		return resolve();
@@ -1359,6 +1370,10 @@ class CodexSession : AgentSession
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "fileChange";
+				// Include changes directly so the frontend can show the File Viewer button
+				// without relying on _raw (which is stripped before broadcast).
+				if (auto pChanges = "changes" in item.extras)
+					ev.input = JSONFragment(`{"changes":` ~ pChanges.json ~ `}`);
 				break;
 			case "mcpToolCall":
 				activeItemTypes_[itemId] = "tool_use";
@@ -1612,7 +1627,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 		static struct Payload
 		{
 			string type;   // "message", "local_shell_call", "function_call",
-			               // "function_call_output", "reasoning"
+			               // "custom_tool_call", "function_call_output", "reasoning"
 			string role;   // for message type
 			JSONFragment content;  // message content array or reasoning content
 
@@ -1623,6 +1638,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 			// function_call fields
 			string name;
 			string arguments;
+			string input;
 
 			// function_call_output fields
 			JSONFragment output;
@@ -1658,6 +1674,22 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 			inputJson = argsJson;  // already a JSON object
 		else
 			inputJson = `{}`;
+		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
+			inputJson);
+	}
+	else if (ptype == "custom_tool_call")
+	{
+		// custom_tool_call.input is string payload. Wrap plain string into {"input": "..."}
+		// so frontend parser can recover apply_patch text consistently.
+		string inputJson = `{}`;
+		auto rawInput = probe.payload.input;
+		if (rawInput.length > 0)
+		{
+			if (rawInput[0] == '{')
+				inputJson = rawInput;
+			else
+				inputJson = `{"input":` ~ toJson(rawInput) ~ `}`;
+		}
 		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
 			inputJson);
 	}

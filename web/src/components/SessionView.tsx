@@ -114,21 +114,40 @@ function SessionViewInner({
     height: number;
   } | null>(null);
 
-  const openFileViewer = useCallback((filePath: string) => {
-    setFileViewerState((prev) => ({
-      open: true,
-      selectedFile: filePath,
-      selectedEditIndex: null,
-      viewMode:
-        prev?.viewMode ??
-        (/\.(md|mdx)$/i.test(filePath) ? "rendered" : "source"),
-      height: prev?.height ?? 300,
-    }));
-  }, []);
+  const openFileViewer = useCallback(
+    (filePath: string) => {
+      const cwd = task.sessionInfo?.cwd;
+      const absolutePath =
+        !task.trackedFiles.has(filePath) &&
+        !filePath.startsWith("/") &&
+        cwd &&
+        task.trackedFiles.has(`${cwd}/${filePath}`)
+          ? `${cwd}/${filePath}`
+          : filePath;
+      const tracked = task.trackedFiles.get(absolutePath);
+      setFileViewerState((prev) => ({
+        open: true,
+        selectedFile: absolutePath,
+        selectedEditIndex:
+          tracked && tracked.edits.length > 0 ? tracked.edits.length - 1 : null,
+        viewMode:
+          prev?.viewMode ??
+          (/\.(md|mdx)$/i.test(absolutePath) ? "rendered" : "source"),
+        height: prev?.height ?? 300,
+      }));
+    },
+    [task.sessionInfo?.cwd, task.trackedFiles],
+  );
 
   const closeFileViewer = useCallback(() => {
     setFileViewerState(null);
   }, []);
+
+  useEffect(() => {
+    if (!fileViewerState?.selectedFile) return;
+    if (task.trackedFiles.has(fileViewerState.selectedFile)) return;
+    setFileViewerState(null);
+  }, [fileViewerState?.selectedFile, task.trackedFiles]);
 
   const scrollToToolCall = useCallback((toolUseId: string) => {
     const el = document.getElementById(`tool-${toolUseId}`);

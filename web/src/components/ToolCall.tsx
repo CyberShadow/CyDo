@@ -122,6 +122,96 @@ function splitChangeLines(value: string): string[] {
   return lines;
 }
 
+function parsePatchTextFromInput(
+  input: Record<string, unknown>,
+): string | null {
+  const direct = [input.input, input.patchText, input.patch, input.diff];
+  for (const candidate of direct) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function parseApplyPatchPaths(patchText: string): string[] {
+  const lines = patchText.split("\n");
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const addPath = (path: string | null) => {
+    if (!path || path === "/dev/null" || seen.has(path)) return;
+    seen.add(path);
+    paths.push(
+      path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path,
+    );
+  };
+
+  let lastOld: string | null = null;
+  for (const line of lines) {
+    if (line.startsWith("*** Add File: ")) {
+      addPath(line.slice("*** Add File: ".length).trim());
+      continue;
+    }
+    if (line.startsWith("*** Update File: ")) {
+      addPath(line.slice("*** Update File: ".length).trim());
+      continue;
+    }
+    if (line.startsWith("*** Delete File: ")) {
+      addPath(line.slice("*** Delete File: ".length).trim());
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      lastOld = line.slice(4).trim();
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      const nextPath = line.slice(4).trim();
+      if (nextPath === "/dev/null") addPath(lastOld);
+      else addPath(nextPath);
+    }
+  }
+  return paths;
+}
+
+function getToolCallFilePaths(
+  name: string,
+  input: Record<string, unknown>,
+): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const addPath = (path: string | null) => {
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    paths.push(path);
+  };
+
+  addPath(typeof input.file_path === "string" ? input.file_path : null);
+
+  if (name === "fileChange" && Array.isArray(input.changes)) {
+    for (const change of input.changes) {
+      if (!change || typeof change !== "object" || Array.isArray(change))
+        continue;
+      const c = change as Record<string, unknown>;
+      addPath(
+        typeof c.file_path === "string"
+          ? c.file_path
+          : typeof c.path === "string"
+            ? c.path
+            : null,
+      );
+    }
+  }
+
+  if (name === "apply_patch") {
+    const patchText = parsePatchTextFromInput(input);
+    if (patchText) {
+      for (const path of parseApplyPatchPaths(patchText)) addPath(path);
+    }
+  }
+
+  return paths;
+}
+
 interface AnnotatedSpan {
   content: string;
   color?: string;
@@ -1296,6 +1386,7 @@ function getHeaderSubtitle(
   name: string,
   input: Record<string, unknown>,
 ): h.JSX.Element | null {
+  const viewPaths = getToolCallFilePaths(name, input);
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
 
   if (name === "Edit" && filePath) {
@@ -1308,6 +1399,14 @@ function getHeaderSubtitle(
   }
   if (toolNameIn(name, fileWriteToolNames) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
+  }
+  if (name === "fileChange" || name === "apply_patch") {
+    if (viewPaths.length === 1) {
+      return <span class="tool-subtitle-path">{viewPaths[0]}</span>;
+    }
+    if (viewPaths.length > 1) {
+      return <span class="tool-subtitle">{viewPaths.length} files</span>;
+    }
   }
   if (name === "Read" && filePath) {
     const offset = typeof input.offset === "number" ? input.offset : null;
@@ -1780,6 +1879,7 @@ export function ToolCall({
     toolNameIn(name, defaultExpandedResults),
   );
   const subtitle = getHeaderSubtitle(name, input);
+  const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
 
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
   const resultText = result ? extractResultText(result.content) : null;
@@ -1851,14 +1951,16 @@ export function ToolCall({
         <span class="tool-name">{getDisplayName(name)}</span>
         {subtitle}
         {!result && <span class="tool-spinner" />}
-        {(name === "Edit" || toolNameIn(name, fileWriteToolNames)) &&
-          filePath &&
+        {(name === "Edit" ||
+          name === "apply_patch" ||
+          toolNameIn(name, fileWriteToolNames)) &&
+          viewPaths.length > 0 &&
           onViewFile && (
             <button
               class="tool-view-file"
               onClick={(e) => {
                 e.stopPropagation();
-                onViewFile(filePath);
+                onViewFile(viewPaths[0]!);
               }}
               title="View file"
             >
@@ -1878,6 +1980,25 @@ export function ToolCall({
             </button>
           )}
       </div>
+      {inputOpen && viewPaths.length > 1 && onViewFile && (
+        <div class="tool-input-formatted">
+          {viewPaths.map((path) => (
+            <div key={path} class="tool-input-field">
+              <span class="field-label">file:</span>
+              <button
+                class="tool-subtitle-path"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewFile(path);
+                }}
+                type="button"
+              >
+                {path}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {inputOpen && formatInput(name, input, result)}
       {children}
       {result && (
