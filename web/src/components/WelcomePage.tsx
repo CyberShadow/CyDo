@@ -186,11 +186,15 @@ export function WelcomePage({
           const bActive = bTasks.some((t) => t.isProcessing || t.alive);
           if (aActive !== bActive) return aActive ? -1 : 1;
 
-          const aMaxTid =
-            aTasks.length > 0 ? Math.max(...aTasks.map((t) => t.tid)) : -1;
-          const bMaxTid =
-            bTasks.length > 0 ? Math.max(...bTasks.map((t) => t.tid)) : -1;
-          if (aMaxTid !== bMaxTid) return bMaxTid - aMaxTid;
+          const aMaxActive =
+            aTasks.length > 0
+              ? Math.max(...aTasks.map((t) => t.lastActive ?? 0))
+              : 0;
+          const bMaxActive =
+            bTasks.length > 0
+              ? Math.max(...bTasks.map((t) => t.lastActive ?? 0))
+              : 0;
+          if (aMaxActive !== bMaxActive) return bMaxActive - aMaxActive;
 
           return a.name.localeCompare(b.name);
         });
