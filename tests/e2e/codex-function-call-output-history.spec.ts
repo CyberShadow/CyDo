@@ -75,6 +75,8 @@ function spawnBackend(
       HOME: workerHome,
       CYDO_LISTEN_PORT: String(port),
       CYDO_LOG_LEVEL: "trace",
+      CYDO_AUTH_USER: "",
+      CYDO_AUTH_PASS: "",
       ANTHROPIC_BASE_URL: mockApiBaseURL,
       OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
       CODEX_HOME: codexHome,

@@ -144,6 +144,8 @@ const test = base.extend<WorkerFixtures>({
           HOME: workerHome,
           CYDO_LISTEN_PORT: String(port),
           CYDO_LOG_LEVEL: "trace",
+          CYDO_AUTH_USER: "",
+          CYDO_AUTH_PASS: "",
           CYDO_CLAUDE_BIN: wrapperPath,
           CYDO_REAL_CLAUDE_BIN: realClaudeBin,
           ANTHROPIC_BASE_URL: mockApiBaseURL,

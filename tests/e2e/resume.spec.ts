@@ -71,6 +71,8 @@ function spawnBackend(port: number, workDir: string, workerHome: string, codexHo
       HOME: workerHome,
       CYDO_LISTEN_PORT: String(port),
       CYDO_LOG_LEVEL: "trace",
+      CYDO_AUTH_USER: "",
+      CYDO_AUTH_PASS: "",
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
     },
     stdio: ["ignore", "ignore", "pipe"],

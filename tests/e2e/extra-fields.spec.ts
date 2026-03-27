@@ -77,6 +77,8 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
           CYDO_REAL_CLAUDE_BIN: "claude",
           ANTHROPIC_BASE_URL: mockApiBaseURL,
           OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
+          CYDO_AUTH_USER: "",
+          CYDO_AUTH_PASS: "",
         },
         stdio: ["ignore", "ignore", "inherit"],
       });

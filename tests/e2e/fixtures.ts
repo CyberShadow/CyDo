@@ -172,6 +172,8 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
           CYDO_LOG_LEVEL: "trace",
           ANTHROPIC_BASE_URL: mockApiBaseURL,
           OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
+          CYDO_AUTH_USER: "",
+          CYDO_AUTH_PASS: "",
           ...(process.env.COPILOT_HOME !== undefined ? { COPILOT_HOME: copilotHome } : {}),
           CODEX_HOME: codexHome,
         },

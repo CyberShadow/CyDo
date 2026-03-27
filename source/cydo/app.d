@@ -4,7 +4,7 @@ import core.lifetime : move;
 
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
-import std.logger : tracef, infof, warningf, errorf;
+import std.logger : tracef, infof, warningf, errorf, fatalf;
 import std.stdio : File, stderr;
 import std.string : representation;
 
@@ -303,8 +303,34 @@ class App : ToolsBackend
 		else
 			server = new HttpServer();
 
-		authUser = environment.get("CYDO_AUTH_USER", null);
-		authPass = environment.get("CYDO_AUTH_PASS", null);
+		import core.sys.posix.unistd : isatty, STDERR_FILENO;
+
+		auto userEnv = environment.get("CYDO_AUTH_USER", null);
+		auto passEnv = environment.get("CYDO_AUTH_PASS", null);
+		bool generatedCredentials;
+
+		if (passEnv is null)
+		{
+			if (!isatty(STDERR_FILENO))
+			{
+				fatalf("CYDO_AUTH_PASS not set and stderr is not a TTY — cannot safely communicate generated password. " ~
+					"Set CYDO_AUTH_PASS explicitly, or set CYDO_AUTH_PASS='' to disable authentication.");
+			}
+			import std.random : Random, unpredictableSeed, uniform;
+			auto rng = Random(unpredictableSeed);
+			enum chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+			char[16] buf;
+			foreach (ref c; buf)
+				c = chars[uniform(0, chars.length, rng)];
+			authPass = buf[].idup;
+			generatedCredentials = true;
+		}
+		else
+			authPass = passEnv;
+
+		authUser = userEnv is null ? (authPass.length > 0 ? "user" : "") : userEnv;
+		if (userEnv is null && generatedCredentials)
+			warningf("CYDO_AUTH_USER not set — defaulting to 'user'.");
 
 		server.handleRequest = &handleRequest;
 
@@ -334,7 +360,13 @@ class App : ToolsBackend
 			auto port = server.listen(listenPort, listenAddr);
 			auto proto = sslCert ? "https" : "http";
 			auto addrStr = listenAddr ? listenAddr : "*";
-			infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
+			if (generatedCredentials)
+			{
+				warningf("Generated random credentials for this session. Set CYDO_AUTH_PASS='' to disable authentication.");
+				infof("CyDo server listening on %s://%s:%s@%s:%d", proto, authUser, authPass, addrStr, port);
+			}
+			else
+				infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
 		}
 	}
 
@@ -367,7 +399,7 @@ class App : ToolsBackend
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
 	{
-		if (!authUser && !authPass)
+		if (authUser.length == 0 && authPass.length == 0)
 			return true;
 		auto response = new HttpResponseEx();
 		if (!response.authorize(request, (reqUser, reqPass) => reqUser == authUser && reqPass == authPass))
@@ -485,11 +517,12 @@ class App : ToolsBackend
 		ws.sendBinary = true; // binary frames — no UTF-8 encoding requirement
 		clients ~= ws;
 
-		// Send workspaces list, task types, and tasks list to new client
+		// Send workspaces list, task types, tasks list, and server status to new client
 		ws.send(Data(buildWorkspacesList().representation));
 		ws.send(Data(buildTaskTypesList().representation));
 		ws.send(Data(buildAgentTypesList().representation));
 		ws.send(Data(buildTasksList().representation));
+		ws.send(Data(buildServerStatus().representation));
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -3014,6 +3047,12 @@ class App : ToolsBackend
 		foreach (ref entry; agentRegistry)
 			entries ~= AgentTypeListEntry(entry.name, entry.displayName, entry.resolveBinary().length > 0);
 		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
+	}
+
+	private string buildServerStatus()
+	{
+		import ae.utils.json : toJson;
+		return toJson(ServerStatusMessage("server_status", authUser.length > 0 || authPass.length > 0));
 	}
 
 	private void removeClient(WebSocketAdapter ws)
