@@ -1545,6 +1545,9 @@ class App : ToolsBackend
 		newTd.agentType = td.agentType;
 		newTd.description = td.description;
 		newTd.taskType = td.taskType;
+		import std.datetime : Clock;
+		newTd.createdAt = Clock.currStdTime;
+		newTd.lastActive = newTd.createdAt;
 		tasks[result.tid] = move(newTd);
 		tasks[result.tid].processQueue = new StateQueue!ProcessState(
 			(ProcessState goal) => processTransition(result.tid, goal),
@@ -1635,6 +1638,9 @@ class App : ToolsBackend
 						bTd.agentType = td.agentType;
 						bTd.description = td.description;
 						bTd.taskType = td.taskType;
+						import std.datetime : Clock;
+						bTd.createdAt = Clock.currStdTime;
+						bTd.lastActive = bTd.createdAt;
 						persistence.setRelationType(backup.tid, "undo-backup");
 						persistence.setTitle(backup.tid, bTd.title);
 						tasks[backup.tid] = move(bTd);
