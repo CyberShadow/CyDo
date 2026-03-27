@@ -16,9 +16,12 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // All tasks sorted by tid descending (most recent first)
+  // All tasks sorted by lastActive descending (most recent first)
   const allTasks = useMemo(
-    () => Array.from(tasks.values()).sort((a, b) => b.tid - a.tid),
+    () =>
+      Array.from(tasks.values()).sort(
+        (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
+      ),
     [tasks],
   );
 
