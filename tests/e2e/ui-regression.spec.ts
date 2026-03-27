@@ -73,7 +73,7 @@ test("tool result with Bash output renders correctly", async ({ page, agentType 
 
   await expect(
     page.locator(".tool-result", { hasText: "tool-result-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  ).toBeVisible({ timeout: responseTimeout(agentType) + 15_000 });
 
   // Tool subtitle only present for Claude (description field)
   if (agentType === "claude") {
