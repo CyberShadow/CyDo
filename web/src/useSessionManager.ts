@@ -417,83 +417,12 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "tasks_list": {
-        setTasks((prev) => {
-          const next = new Map(prev);
-          for (const entry of msg.tasks) {
-            const workspace = entry.workspace || "";
-            const projectPath = entry.project_path || "";
-            if (!next.has(entry.tid)) {
-              const t = {
-                ...makeTaskState(
-                  entry.tid,
-                  entry.alive,
-                  entry.resumable,
-                  entry.title,
-                  false,
-                  workspace,
-                  projectPath,
-                  entry.parent_tid || undefined,
-                  entry.relation_type || undefined,
-                  entry.status || "pending",
-                  entry.isProcessing || false,
-                  entry.needsAttention || false,
-                  entry.hasPendingQuestion || false,
-                  entry.task_type || undefined,
-                  entry.archived || false,
-                  entry.created_at || undefined,
-                  entry.last_active || undefined,
-                ),
-                serverDraft: entry.draft || undefined,
-                error: entry.error || undefined,
-              };
-              liveStates.set(entry.tid, t);
-              next.set(entry.tid, t);
-            } else {
-              const t = next.get(entry.tid)!;
-              // If a task becomes resumable but has no messages loaded,
-              // reset historyLoaded so JSONL history gets requested
-              // (e.g. forked tasks with pre-existing JSONL).
-              const needsHistory =
-                entry.resumable && t.messages.length === 0 && t.historyLoaded;
-              const updated = {
-                ...t,
-                alive: entry.alive,
-                resumable: entry.resumable,
-                isProcessing: entry.isProcessing || false,
-                needsAttention: entry.needsAttention || false,
-                hasPendingQuestion: entry.hasPendingQuestion || false,
-                historyLoaded: needsHistory ? false : t.historyLoaded,
-                title: entry.title || t.title,
-                workspace: workspace || t.workspace,
-                projectPath: projectPath || t.projectPath,
-                parentTid: entry.parent_tid || t.parentTid,
-                relationType: entry.relation_type || t.relationType,
-                status: entry.status || t.status,
-                taskType: entry.task_type || t.taskType,
-                suggestions:
-                  entry.isProcessing && !t.isProcessing
-                    ? undefined
-                    : t.suggestions,
-                archived: entry.archived || false,
-                error: entry.error || undefined,
-                createdAt: entry.created_at || t.createdAt,
-                lastActive: entry.last_active || t.lastActive,
-              };
-              liveStates.set(entry.tid, updated);
-              next.set(entry.tid, updated);
-            }
-          }
-          return next;
-        });
-        break;
-      }
-      case "task_updated": {
-        const entry = msg.task;
-        setTasks((prev) => {
-          const next = new Map(prev);
+        const updates = new Map<number, TaskState>();
+        for (const entry of msg.tasks) {
           const workspace = entry.workspace || "";
           const projectPath = entry.project_path || "";
-          if (!next.has(entry.tid)) {
+          const existing = liveStates.get(entry.tid);
+          if (!existing) {
             const t = {
               ...makeTaskState(
                 entry.tid,
@@ -518,38 +447,116 @@ export function useTaskManager(): TaskManager {
               error: entry.error || undefined,
             };
             liveStates.set(entry.tid, t);
-            next.set(entry.tid, t);
+            updates.set(entry.tid, t);
           } else {
-            const t = next.get(entry.tid)!;
+            // If a task becomes resumable but has no messages loaded,
+            // reset historyLoaded so JSONL history gets requested
+            // (e.g. forked tasks with pre-existing JSONL).
             const needsHistory =
-              entry.resumable && t.messages.length === 0 && t.historyLoaded;
+              entry.resumable &&
+              existing.messages.length === 0 &&
+              existing.historyLoaded;
             const updated = {
-              ...t,
+              ...existing,
               alive: entry.alive,
               resumable: entry.resumable,
               isProcessing: entry.isProcessing || false,
               needsAttention: entry.needsAttention || false,
               hasPendingQuestion: entry.hasPendingQuestion || false,
-              historyLoaded: needsHistory ? false : t.historyLoaded,
-              title: entry.title || t.title,
-              workspace: workspace || t.workspace,
-              projectPath: projectPath || t.projectPath,
-              parentTid: entry.parent_tid || t.parentTid,
-              relationType: entry.relation_type || t.relationType,
-              status: entry.status || t.status,
-              taskType: entry.task_type || t.taskType,
+              historyLoaded: needsHistory ? false : existing.historyLoaded,
+              title: entry.title || existing.title,
+              workspace: workspace || existing.workspace,
+              projectPath: projectPath || existing.projectPath,
+              parentTid: entry.parent_tid || existing.parentTid,
+              relationType: entry.relation_type || existing.relationType,
+              status: entry.status || existing.status,
+              taskType: entry.task_type || existing.taskType,
               suggestions:
-                entry.isProcessing && !t.isProcessing
+                entry.isProcessing && !existing.isProcessing
                   ? undefined
-                  : t.suggestions,
+                  : existing.suggestions,
               archived: entry.archived || false,
               error: entry.error || undefined,
-              createdAt: entry.created_at || t.createdAt,
-              lastActive: entry.last_active || t.lastActive,
+              createdAt: entry.created_at || existing.createdAt,
+              lastActive: entry.last_active || existing.lastActive,
             };
             liveStates.set(entry.tid, updated);
-            next.set(entry.tid, updated);
+            updates.set(entry.tid, updated);
           }
+        }
+        setTasks((prev) => {
+          const next = new Map(prev);
+          for (const [tid, state] of updates) {
+            next.set(tid, state);
+          }
+          return next;
+        });
+        break;
+      }
+      case "task_updated": {
+        const entry = msg.task;
+        const workspace = entry.workspace || "";
+        const projectPath = entry.project_path || "";
+        const existing = liveStates.get(entry.tid);
+        let taskUpdated: TaskState;
+        if (!existing) {
+          taskUpdated = {
+            ...makeTaskState(
+              entry.tid,
+              entry.alive,
+              entry.resumable,
+              entry.title,
+              false,
+              workspace,
+              projectPath,
+              entry.parent_tid || undefined,
+              entry.relation_type || undefined,
+              entry.status || "pending",
+              entry.isProcessing || false,
+              entry.needsAttention || false,
+              entry.hasPendingQuestion || false,
+              entry.task_type || undefined,
+              entry.archived || false,
+              entry.created_at || undefined,
+              entry.last_active || undefined,
+            ),
+            serverDraft: entry.draft || undefined,
+            error: entry.error || undefined,
+          };
+        } else {
+          const needsHistory =
+            entry.resumable &&
+            existing.messages.length === 0 &&
+            existing.historyLoaded;
+          taskUpdated = {
+            ...existing,
+            alive: entry.alive,
+            resumable: entry.resumable,
+            isProcessing: entry.isProcessing || false,
+            needsAttention: entry.needsAttention || false,
+            hasPendingQuestion: entry.hasPendingQuestion || false,
+            historyLoaded: needsHistory ? false : existing.historyLoaded,
+            title: entry.title || existing.title,
+            workspace: workspace || existing.workspace,
+            projectPath: projectPath || existing.projectPath,
+            parentTid: entry.parent_tid || existing.parentTid,
+            relationType: entry.relation_type || existing.relationType,
+            status: entry.status || existing.status,
+            taskType: entry.task_type || existing.taskType,
+            suggestions:
+              entry.isProcessing && !existing.isProcessing
+                ? undefined
+                : existing.suggestions,
+            archived: entry.archived || false,
+            error: entry.error || undefined,
+            createdAt: entry.created_at || existing.createdAt,
+            lastActive: entry.last_active || existing.lastActive,
+          };
+        }
+        liveStates.set(entry.tid, taskUpdated);
+        setTasks((prev) => {
+          const next = new Map(prev);
+          next.set(entry.tid, taskUpdated);
           return next;
         });
         break;
@@ -689,15 +696,16 @@ export function useTaskManager(): TaskManager {
       }
       case "draft_updated": {
         const { tid, new_draft } = msg;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        const updated = { ...t, serverDraft: new_draft };
+        liveStates.set(tid, updated);
         setTasks((prev) => {
-          const task = prev.get(tid);
-          if (!task) return prev;
+          if (!prev.has(tid)) return prev;
           const next = new Map(prev);
-          next.set(tid, { ...task, serverDraft: new_draft });
+          next.set(tid, updated);
           return next;
         });
-        const t = liveStates.get(tid);
-        if (t) liveStates.set(tid, { ...t, serverDraft: new_draft });
         break;
       }
       case "forkable_uuids": {
@@ -919,13 +927,17 @@ export function useTaskManager(): TaskManager {
       if (tid === null) return;
       connRef.current?.sendMessage(tid, content);
       // Optimistically mark as processing so suggestions disappear immediately.
-      setTasks((prev) => {
-        const t = prev.get(tid);
-        if (!t) return prev;
-        const next = new Map(prev);
-        next.set(tid, { ...t, isProcessing: true, suggestions: undefined });
-        return next;
-      });
+      const t = liveStates.get(tid);
+      if (t) {
+        const updated = { ...t, isProcessing: true, suggestions: undefined };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          if (!prev.has(tid)) return prev;
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+      }
     },
     [activeTaskId, setTasks],
   );
@@ -1013,11 +1025,12 @@ export function useTaskManager(): TaskManager {
   }, []);
 
   const clearInputDraft = useCallback((tid: number) => {
+    const t = liveStates.get(tid);
+    if (!t?.inputDraft) return;
+    const updated = { ...t, inputDraft: undefined };
+    liveStates.set(tid, updated);
     setTasks((prev) => {
-      const t = prev.get(tid);
-      if (!t?.inputDraft) return prev;
-      const updated = { ...t, inputDraft: undefined };
-      liveStates.set(tid, updated);
+      if (!prev.has(tid)) return prev;
       const next = new Map(prev);
       next.set(tid, updated);
       return next;
