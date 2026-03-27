@@ -14,7 +14,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
 import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
@@ -1015,7 +1015,7 @@ class CodexAgent : Agent
 	/// Currently unused — no callers in the codebase. Implement if a caller is added.
 	string extractUserText(string line) { return ""; }
 
-	Promise!string completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass)
 	{
 		import std.string : strip;
 
@@ -1038,7 +1038,7 @@ class CodexAgent : Agent
 		{
 			errorf("completeOneShot: failed to spawn codex: %s", e.msg);
 			promise.reject(new Exception("failed to spawn codex: " ~ e.msg));
-			return promise;
+			return OneShotHandle(promise, null);
 		}
 
 		// When stdout is a pipe (not a TTY), codex exec writes only the final
@@ -1066,7 +1066,9 @@ class CodexAgent : Agent
 				promise.fulfill(responseText.strip());
 		};
 
-		return promise;
+		void cancel() { proc.sendSignal(15); } // SIGTERM; no-op if already exited
+
+		return OneShotHandle(promise, &cancel);
 	}
 }
 

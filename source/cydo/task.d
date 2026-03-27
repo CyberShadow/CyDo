@@ -93,11 +93,18 @@ struct TaskData
 	string handoffPrompt;      // prompt for the successor task (Handoff only)
 	bool titleGenDone; // true after LLM title generation completed
 	Promise!string titleGenHandle;   // prevent GC while running
+	void delegate() titleGenKill;    // cancel one-shot subprocess; null if not running
 	Promise!string suggestGenHandle; // prevent GC while running
+	void delegate() suggestGenKill;  // cancel one-shot subprocess; null if not running
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] lastSuggestions; // most recent suggestions, sent on subscribe
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 	string[] enqueuedSteeringRawLines; // parallel: raw JSONL lines for _raw
+	/// Texts of all messages sent to this task, in send order.
+	/// Populated in handleUserMessage; NOT cleared by history reset.
+	/// Consumed by ensureHistoryLoaded to supply text for queue-operation:enqueue
+	/// lines (which Claude's JSONL does not include a content field for).
+	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
 	string error;  // last stderr text on non-zero exit; cleared on restart

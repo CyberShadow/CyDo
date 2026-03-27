@@ -1106,6 +1106,9 @@ class App : ToolsBackend
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
 			}
+			// Record text so ensureHistoryLoaded can produce correct synthetics
+			// for queue-operation:remove lines (same as handleUserMessage does).
+			td.pendingSteeringTexts ~= textContent;
 			auto msgContent = blocks;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 				broadcastUnconfirmedUserMessage(tid, msgContent);
@@ -1140,6 +1143,8 @@ class App : ToolsBackend
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 		// steeringStash holds (text, enqueueLineNum, rawLine) for queued steering messages.
 		// Using parallel arrays to avoid struct allocation in a delegate closure.
+		bool hasQueueOps = false;     // set when any queue-operation line is seen
+		int userMsgFromJsonl = 0;     // count of user message lines seen in JSONL
 		string[] steeringStash;
 		int[] steeringEnqueueLineNums;
 		string[] steeringEnqueueRawLines;
@@ -1154,7 +1159,17 @@ class App : ToolsBackend
 				auto op = jsonParse!QueueOperationProbe(line);
 				if (op.operation == "enqueue")
 				{
-					steeringStash ~= op.content;
+					hasQueueOps = true;
+					// Claude's JSONL enqueue lines have no content field.
+					// Use the text recorded at send time (pendingSteeringTexts),
+					// falling back to op.content (null) if unavailable.
+					string text = op.content;
+					if (td.pendingSteeringTexts.length > 0)
+					{
+						text = td.pendingSteeringTexts[0];
+						td.pendingSteeringTexts = td.pendingSteeringTexts[1 .. $];
+					}
+					steeringStash ~= text;
 					steeringEnqueueLineNums ~= lineNum;
 					steeringEnqueueRawLines ~= line;
 					return []; // Dequeue+echo/compaction will emit the confirmed version
@@ -1176,13 +1191,35 @@ class App : ToolsBackend
 					}
 					if (steeringStash.length > 0)
 					{
-						lastDequeuedText = steeringStash[0];
-						lastDequeuedEnqueueLineNum = steeringEnqueueLineNums[0];
-						lastDequeuedRawLine = steeringEnqueueRawLines[0];
+						auto text = steeringStash[0];
+						auto enqLineNum = steeringEnqueueLineNums[0];
+						auto enqRaw = steeringEnqueueRawLines[0];
 						steeringStash = steeringStash[1 .. $];
 						steeringEnqueueLineNums = steeringEnqueueLineNums[1 .. $];
 						steeringEnqueueRawLines = steeringEnqueueRawLines[1 .. $];
-						// Defer: wait to see if type:"user" echo follows
+						if (op.operation == "remove")
+						{
+							// "remove" means the message was removed from the queue
+							// without a type:"user" echo following in the JSONL.
+							// Emit the synthetic confirmed event immediately (with
+							// enqueue UUID for undo support), matching live-stream
+							// behaviour where remove → synthetic broadcast.
+							auto enqueueUuid = format!"enqueue-%d"(enqLineNum);
+							auto synthetic = buildSyntheticUserEvent(text, true);
+							synthetic = synthetic[0 .. $ - 1]
+								~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
+							if (enqRaw.length > 0)
+								synthetic = injectRawField(synthetic, enqRaw);
+							result ~= synthetic;
+						}
+						else
+						{
+							// "dequeue" means a type:"user" echo should follow.
+							lastDequeuedText = text;
+							lastDequeuedEnqueueLineNum = enqLineNum;
+							lastDequeuedRawLine = enqRaw;
+							// Defer: wait to see if type:"user" echo follows
+						}
 					}
 					return result;
 				}
@@ -1248,9 +1285,40 @@ class App : ToolsBackend
 				// stay in deferred mode waiting for type:"user" or type:"assistant".
 				return ta.translateHistoryLine(line, lineNum);
 			}
+			if (ta.isUserMessageLine(line))
+				userMsgFromJsonl++;
 			return ta.translateHistoryLine(line, lineNum);
 		});
 		td.historyLoaded = true;
+		// For agents without queue-operations (e.g. Copilot), emit synthetics for
+		// user messages that were sent but not yet flushed to JSONL at kill time.
+		if (!hasQueueOps && td.pendingSteeringTexts.length > userMsgFromJsonl)
+		{
+			import std.file : append, mkdirRecurse;
+			import std.path : dirName;
+			import ae.utils.json : toJson;
+			import std.uuid : randomUUID;
+			import std.format : format;
+			foreach (text; td.pendingSteeringTexts[cast(size_t)userMsgFromJsonl .. $])
+			{
+				auto uuid = randomUUID().toString();
+				// Append to events.jsonl so undo can truncate at this UUID.
+				if (jsonlPath.length > 0)
+				{
+					mkdirRecurse(dirName(jsonlPath));
+					append(jsonlPath,
+						`{"type":"user.message","id":"` ~ uuid
+						~ `","data":{"content":` ~ toJson(text) ~ `}}` ~ "\n");
+				}
+				// Emit synthetic into history with uuid for undo support.
+				auto synthetic = buildSyntheticUserEvent(text);
+				synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ uuid ~ `"}`;
+				td.history ~= Data(
+					(format!`{"tid":%d,"event":%s}`(tid, synthetic)).representation);
+			}
+			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
+			jsonlTracker.broadcastForkableUuidsFromFile(tid);
+		}
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
@@ -1331,6 +1399,11 @@ class App : ToolsBackend
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
 		auto textContent = extractContentText(blocks);
+
+		// Record text for ensureHistoryLoaded, which needs it to produce correct
+		// synthetic confirmed events for queue-operation:remove lines (Claude's JSONL
+		// does not include message text in enqueue/remove entries).
+		td.pendingSteeringTexts ~= textContent;
 
 		// Wrap first message in prompt template (e.g. conversation.md)
 		auto messageToSend = blocks;
@@ -1704,6 +1777,24 @@ class App : ToolsBackend
 				td.history = DataVec();
 				td.historyLoaded = false;
 				unsubscribeAll(tid);
+				// Clip pendingSteeringTexts to match remaining user messages in the
+				// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
+				// synthetics for messages that were intentionally undone.
+				if (td.pendingSteeringTexts.length > 0)
+				{
+					import std.file : readText, exists;
+					import std.string : splitLines;
+					auto histPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+					if (histPath.length > 0 && histPath.exists)
+					{
+						int remaining = 0;
+						foreach (line; readText(histPath).splitLines())
+							if (ta.isUserMessageLine(line))
+								remaining++;
+						if (remaining < cast(int)td.pendingSteeringTexts.length)
+							td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
+					}
+				}
 			}
 
 			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
@@ -1901,7 +1992,9 @@ class App : ToolsBackend
 		// Derive session config from task type definition
 		SessionConfig sessionConfig;
 		if (typeDef !is null)
+		{
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
+			}
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
 		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
 		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
@@ -2064,6 +2157,18 @@ class App : ToolsBackend
 				tasks[tid].needsAttention = false;
 				tasks[tid].hasPendingQuestion = false;
 				tasks[tid].notificationBody = "";
+			}
+
+			// Kill any in-flight one-shot subprocesses (title/suggestion generation).
+			if (tasks[tid].titleGenKill !is null)
+			{
+				tasks[tid].titleGenKill();
+				tasks[tid].titleGenKill = null;
+			}
+			if (tasks[tid].suggestGenKill !is null)
+			{
+				tasks[tid].suggestGenKill();
+				tasks[tid].suggestGenKill = null;
 			}
 
 			// Force JSONL reload on next request_history so that
@@ -3039,31 +3144,34 @@ class App : ToolsBackend
 		if (prompt.length == 0)
 			return;
 
-		td.titleGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
-		td.titleGenHandle.then(
-			(string title) {
-				if (tid !in tasks)
-					return;
-				tasks[tid].titleGenHandle = null;
-				tasks[tid].titleGenDone = true;
-				if (title.length > 0 && title.length < 200)
-				{
-					tasks[tid].title = title;
-					persistence.setTitle(tid, title);
-					broadcastTitleUpdate(tid, title);
-				}
-			},
-			(Exception e) {
-				if (tid !in tasks)
-					return;
-				tasks[tid].titleGenHandle = null;
-				import ae.utils.json : toJson;
-				import cydo.agent.protocol : ProcessStderrEvent;
-				ProcessStderrEvent ev;
-				ev.text = "failed to generate title: " ~ e.msg;
-				broadcastTask(tid, toJson(ev));
-			},
-		).ignoreResult();
+		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		td.titleGenHandle = titleHandle.promise;
+		td.titleGenKill = titleHandle.cancel;
+		td.titleGenHandle.then((string title) {
+			if (tid !in tasks)
+				return;
+			tasks[tid].titleGenHandle = null;
+			tasks[tid].titleGenKill = null;
+			tasks[tid].titleGenDone = true;
+			if (title.length > 0 && title.length < 200)
+			{
+				tasks[tid].title = title;
+				persistence.setTitle(tid, title);
+				broadcastTitleUpdate(tid, title);
+			}
+		});
+		td.titleGenHandle.except((Exception e) {
+			if (tid !in tasks)
+				return;
+			tasks[tid].titleGenHandle = null;
+			tasks[tid].titleGenKill = null;
+			import ae.utils.json : toJson;
+			import cydo.agent.protocol : ProcessStderrEvent;
+			ProcessStderrEvent ev;
+			ev.text = "failed to generate title: " ~ e.msg;
+			broadcastTask(tid, toJson(ev));
+		});
+
 	}
 
 	private void broadcast(string message)
@@ -3216,14 +3324,17 @@ class App : ToolsBackend
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
 
-		td.suggestGenHandle = agentForTask(tid).completeOneShot(prompt, "small");
-		td.suggestGenHandle.then(
-			(string result) {
-				if (tid !in tasks)
-					return;
-				if (tasks[tid].suggestGeneration != capturedGen)
-					return;
-				tasks[tid].suggestGenHandle = null;
+		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		td.suggestGenHandle = suggestHandle.promise;
+		td.suggestGenKill = suggestHandle.cancel;
+		td.suggestGenHandle.then((string result) {
+			if (tid !in tasks)
+				return;
+			if (tasks[tid].suggestGeneration != capturedGen)
+				return;
+			tasks[tid].suggestGenHandle = null;
+			tasks[tid].suggestGenKill = null;
+
 
 				import ae.utils.json : jsonParse;
 				string[] suggestionList;
@@ -3232,19 +3343,20 @@ class App : ToolsBackend
 				catch (Exception e)
 				{ warningf("generateSuggestions: failed to parse result: %s", e.msg); return; }
 
-				if (suggestionList.length > 0)
-				{
-					tasks[tid].lastSuggestions = suggestionList;
-					broadcastSuggestionsUpdate(tid, suggestionList);
-				}
-			},
-			(Exception e) {
-				warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
-				if (tid !in tasks)
-					return;
-				tasks[tid].suggestGenHandle = null;
-			},
-		).ignoreResult();
+			if (suggestionList.length > 0)
+			{
+				tasks[tid].lastSuggestions = suggestionList;
+				broadcastSuggestionsUpdate(tid, suggestionList);
+			}
+		});
+		td.suggestGenHandle.except((Exception e) {
+			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
+			if (tid !in tasks)
+				return;
+			tasks[tid].suggestGenHandle = null;
+			tasks[tid].suggestGenKill = null;
+		});
+
 	}
 
 	/// Build an abbreviated conversation history string for suggestion generation.

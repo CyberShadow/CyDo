@@ -8,7 +8,7 @@ import std.logger : errorf, tracef, warningf;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
 import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
@@ -386,7 +386,7 @@ class ClaudeCodeAgent : Agent
 		return null;
 	}
 
-	Promise!string completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass)
 	{
 		import std.path : buildPath;
 		import std.process : environment;
@@ -421,7 +421,7 @@ class ClaudeCodeAgent : Agent
 		{
 			errorf("completeOneShot: failed to spawn claude: %s", e.msg);
 			promise.reject(new Exception("failed to spawn claude: " ~ e.msg));
-			return promise;
+			return OneShotHandle(promise, null);
 		}
 
 		string responseText;
@@ -448,7 +448,9 @@ class ClaudeCodeAgent : Agent
 				promise.fulfill(responseText.strip());
 		};
 
-		return promise;
+		void cancel() { proc.sendSignal(15); } // SIGTERM; no-op if already exited
+
+		return OneShotHandle(promise, &cancel);
 	}
 }
 

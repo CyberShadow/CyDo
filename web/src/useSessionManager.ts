@@ -1119,7 +1119,7 @@ export function useTaskManager(): TaskManager {
     if (connRef.current?.requestHistory(tid)) {
       requestedHistoryRef.current.add(tid);
     }
-  }, [connected, activeTaskId]);
+  }, [connected, activeTaskId, tasks]);
 
   // Auto-create virtual draft when at project root with no active task
   useEffect(() => {

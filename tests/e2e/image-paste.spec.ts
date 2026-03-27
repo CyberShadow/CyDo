@@ -58,6 +58,7 @@ test.describe("image paste", () => {
     await expect(
       page.locator(".message.assistant-message .text-content", {
         hasText: "image received",
+
       }),
     ).toBeVisible({ timeout: responseTimeout(agentType) });
 

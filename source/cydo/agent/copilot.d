@@ -11,7 +11,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkPermissionRequest, SdkPermissionResult,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -431,13 +431,13 @@ class CopilotAgent : Agent
 	bool isUserMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/user"`);
+		return rawLine.canFind(`"type":"user.message"`);
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
 		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"message/assistant"`);
+		return rawLine.canFind(`"type":"assistant.message"`);
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -507,7 +507,7 @@ class CopilotAgent : Agent
 		return "File revert is not supported for Copilot sessions";
 	}
 
-	Promise!string completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass)
 	{
 		auto p = new Promise!string;
 		auto session = new OneShotCopilotSession(p);
@@ -562,7 +562,7 @@ class CopilotAgent : Agent
 			startOwnProcess();
 		}
 
-		return p;
+		return OneShotHandle(p, null);
 	}
 }
 

@@ -130,5 +130,13 @@ interface Agent
 
 	/// Run a one-shot LLM completion. Returns a Promise that resolves with
 	/// the raw response text, or rejects on failure/non-zero exit.
-	Promise!string completeOneShot(string prompt, string modelClass);
+	OneShotHandle completeOneShot(string prompt, string modelClass);
+}
+
+/// Handle returned by completeOneShot, containing the result promise and a
+/// cancel delegate that sends SIGTERM to the subprocess (no-op after exit).
+struct OneShotHandle
+{
+	Promise!string promise;
+	void delegate() cancel;
 }

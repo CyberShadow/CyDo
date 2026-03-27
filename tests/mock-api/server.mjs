@@ -464,6 +464,7 @@ function handleMessages(req, res) {
     const intent = matchPattern(userText);
     if (hasImages && intent.type === "text") {
       intent.text = "image received";
+
     }
 
     if (intent.type === "stall") {
