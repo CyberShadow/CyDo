@@ -76,17 +76,23 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
 });
 
 test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agentType }) => {
-  // Listen for task_reload broadcast frames — sent to ALL clients regardless
+  // Listen for websocket broadcast frames sent to ALL clients regardless
   // of subscription. The process/exit event with is_continuation is only sent
   // to subscribers of the child's tid, which is racy (the child can exit
   // before any client subscribes). task_reload with reason "continuation" is
   // the reliable broadcast equivalent.
+  const taskCreatedEvents: Array<{ tid: number; relation_type?: string }> = [];
   const reloadEvents: Array<{ tid: number; reason?: string }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
         const data = JSON.parse(event.payload.toString());
-        if (data.type === "task_reload") {
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
+            tid: data.tid,
+            relation_type: data.relation_type,
+          });
+        } else if (data.type === "task_reload") {
           reloadEvents.push({
             tid: data.tid,
             reason: data.reason,
@@ -103,12 +109,21 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
   // "call switchmode plan", triggering a keep_context continuation.
   await sendMessage(page, "call task blank call switchmode plan");
 
+  const timeout = agentType === "copilot" ? 60_000 : 30_000;
+
+  // Wait for the child task to be created first; otherwise continuation reload
+  // checks can race ahead before the sub-task exists on slower MCP paths.
+  await expect(async () => {
+    const subTaskCreated = taskCreatedEvents.find((e) => e.relation_type === "subtask");
+    expect(subTaskCreated).toBeTruthy();
+  }).toPass({ timeout });
+
   // Wait for a task_reload with reason "continuation" — this confirms the
   // backend processed the SwitchMode and transitioned the task in-place.
   await expect(async () => {
     const continuationReload = reloadEvents.find((e) => e.reason === "continuation");
     expect(continuationReload).toBeTruthy();
-  }).toPass({ timeout: 30_000 });
+  }).toPass({ timeout });
 });
 
 test("on_yield continuation auto-fires on clean exit", async ({ page, agentType }) => {
