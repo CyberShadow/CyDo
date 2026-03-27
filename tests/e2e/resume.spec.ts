@@ -398,7 +398,7 @@ test("sub-task result delivered to parent after backend restart", async ({
   // Navigate to the parent task. The parent has the lower task ID so it appears
   // last when tasks are sorted by descending tid (WelcomePage) or in the Sidebar.
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(taskItems.last()).toBeVisible({ timeout: 15_000 });
+  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
   await taskItems.last().click();
 
   // Resume if necessary
@@ -453,7 +453,7 @@ test("waiting parent receives batch results after restart", async ({
 
   // Navigate to the parent task (lowest tid → last in desc-sorted sidebar).
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(taskItems.last()).toBeVisible({ timeout: 15_000 });
+  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
   await taskItems.last().click();
 
   // Resume if needed.

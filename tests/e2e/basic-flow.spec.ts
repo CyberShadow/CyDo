@@ -121,8 +121,8 @@ test("codex update fixture shows patch preview", async ({ page, agentType }) => 
   ).toBeVisible({ timeout: responseTimeout(agentType) });
   await sendMessage(page, "codex filechange update fixture");
   await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+  ).toHaveCount(2, { timeout: responseTimeout(agentType) });
 
   const timeout = responseTimeout(agentType);
   const tool = page
@@ -149,8 +149,8 @@ test("codex delete fixture shows deleted state", async ({ page, agentType }) => 
   ).toBeVisible({ timeout: responseTimeout(agentType) });
   await sendMessage(page, "codex filechange delete fixture");
   await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+  ).toHaveCount(2, { timeout: responseTimeout(agentType) });
 
   const timeout = responseTimeout(agentType);
   const tool = page
