@@ -448,6 +448,10 @@ export interface DraftUpdatedMessage {
   tid: number;
   new_draft: string;
 }
+export interface ServerStatusMessage {
+  type: "server_status";
+  auth_enabled: boolean;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -463,4 +467,5 @@ export type ControlMessage =
   | UndoPreviewMessage
   | SuggestionsUpdateMessage
   | AskUserQuestionControlMessage
-  | DraftUpdatedMessage;
+  | DraftUpdatedMessage
+  | ServerStatusMessage;

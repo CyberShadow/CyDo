@@ -466,6 +466,26 @@ body,
   font-size: 12px;
 }
 
+.auth-notice {
+  padding: 12px;
+  border: 1px solid #e6a700;
+  color: #e6a700;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 16px;
+}
+
+.auth-notice code {
+  background: var(--overlay-dark);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+[data-theme="light"] .auth-notice {
+  border-color: #b38600;
+  color: #7a5c00;
+}
+
 /* Banner */
 .system-banner {
   display: flex;

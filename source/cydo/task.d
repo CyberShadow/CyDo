@@ -251,6 +251,12 @@ struct AgentTypesListMessage
 	string default_agent_type;   // global default from config
 }
 
+struct ServerStatusMessage
+{
+	string type = "server_status";
+	bool auth_enabled;
+}
+
 struct TaskReloadMessage
 {
 	string type = "task_reload";

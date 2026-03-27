@@ -117,6 +117,7 @@ export interface TaskManager {
   defaultAgentType: string;
   activeWorkspace: string | null;
   activeProject: string | null;
+  authEnabled: boolean;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
   refreshWorkspaces: () => void;
@@ -149,6 +150,7 @@ export function useTaskManager(): TaskManager {
   const [taskTypes, setTaskTypes] = useState<TaskTypeInfo[]>([]);
   const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
+  const [authEnabled, setAuthEnabled] = useState(true);
   const { route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -753,6 +755,10 @@ export function useTaskManager(): TaskManager {
         });
         break;
       }
+      case "server_status": {
+        setAuthEnabled(msg.auth_enabled);
+        break;
+      }
       case "error": {
         const errMsg = msg.message;
         const errTid = msg.tid;
@@ -1158,6 +1164,7 @@ export function useTaskManager(): TaskManager {
     defaultAgentType,
     activeWorkspace,
     activeProject,
+    authEnabled,
     navigateHome,
     navigateToProject,
     refreshWorkspaces: () => connRef.current?.refreshWorkspaces(),

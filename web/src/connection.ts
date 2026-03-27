@@ -54,7 +54,8 @@ export class Connection {
           raw.type === "undo_preview" ||
           raw.type === "suggestions_update" ||
           raw.type === "ask_user_question" ||
-          raw.type === "draft_updated"
+          raw.type === "draft_updated" ||
+          raw.type === "server_status"
         ) {
           this.onControlMessage?.(raw as unknown as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {

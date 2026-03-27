@@ -48,6 +48,7 @@ function AppContent() {
     defaultAgentType,
     activeWorkspace,
     activeProject,
+    authEnabled,
     navigateHome,
     navigateToProject,
     refreshWorkspaces,
@@ -118,6 +119,7 @@ function AppContent() {
             tasks={tasks}
             attention={attention}
             taskTypes={taskTypes}
+            authEnabled={authEnabled}
             onSelectTask={(tid) => {
               setActiveTaskId(String(tid));
             }}

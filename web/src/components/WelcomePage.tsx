@@ -10,6 +10,7 @@ interface Props {
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
   taskTypes: TaskTypeInfo[];
+  authEnabled: boolean;
   onRefreshWorkspaces: () => void;
 }
 
@@ -20,6 +21,7 @@ export function WelcomePage({
   onSelectTask,
   onNavigateToProject,
   taskTypes,
+  authEnabled,
   onRefreshWorkspaces,
 }: Props) {
   const [filter, setFilter] = useState("");
@@ -125,6 +127,14 @@ export function WelcomePage({
         </svg>
         <h1>CyDo</h1>
       </header>
+      {!authEnabled && (
+        <div class="auth-notice">
+          <strong>Authentication is disabled.</strong> Anyone with network
+          access to this server can view and control all agent sessions. Set{" "}
+          <code>CYDO_AUTH_PASS</code> to a non-empty value to enable
+          authentication, or leave it unset to auto-generate a password.
+        </div>
+      )}
       <div class="welcome-filter-row">
         <div class="welcome-filter-wrapper">
           <input
