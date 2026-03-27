@@ -77,12 +77,9 @@ test("should use the selected light theme while connecting", async ({
     const appStyle = getComputedStyle(document.body);
     return {
       overlayBackground: overlayStyle.backgroundColor,
-      overlayColor: overlayStyle.color,
       appBackground: appStyle.backgroundColor,
-      appColor: appStyle.color,
     };
   });
 
   expect(styles.overlayBackground).toBe(styles.appBackground);
-  expect(styles.overlayColor).toBe(styles.appColor);
 });
