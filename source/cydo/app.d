@@ -382,6 +382,12 @@ class App : ToolsBackend
 		foreach (ref td; tasks)
 			if (td.session && td.session.alive)
 				td.session.stop();
+		{
+			import cydo.agent.codex : CodexAgent;
+			foreach (a; agentsByType)
+				if (auto ca = cast(CodexAgent) a)
+					ca.shutdownAllServers();
+		}
 		foreach (ws; clients)
 			ws.disconnect("shutting down");
 		clients = null;

@@ -491,6 +491,8 @@ class AppServerProcess
 	void unregisterSession(string threadId)
 	{
 		sessions.remove(threadId);
+		if (sessions.length == 0 && sessionsByTid.length == 0)
+			shutdown();
 	}
 
 	void registerSessionByTid(int tid, CodexSession session)
@@ -501,6 +503,8 @@ class AppServerProcess
 	void unregisterSessionByTid(int tid)
 	{
 		sessionsByTid.remove(tid);
+		if (sessions.length == 0 && sessionsByTid.length == 0)
+			shutdown();
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if
@@ -532,6 +536,24 @@ class AppServerProcess
 	}
 
 	@property bool dead() { return process.dead; }
+
+	/// Callback invoked when this server shuts down, for pool cleanup.
+	private void delegate() onShutdown_;
+
+	/// Terminate the server immediately and notify remaining sessions.
+	/// Nulls onExit to prevent double-firing from the async process exit.
+	void shutdown()
+	{
+		if (state_ == State.dead) return;
+		process.onExit = null;
+		process.closeStdin();
+		process.terminate();
+		state_ = State.dead;
+		foreach (session; sessionsByTid)
+			session.onServerExit(1);
+		if (onShutdown_)
+			onShutdown_();
+	}
 
 	/// Send a JSON-RPC request to the Codex server.
 	/// Returns a promise for the response. For fire-and-forget, ignore the promise.
@@ -773,7 +795,17 @@ class CodexAgent : Agent
 
 		auto server = new AppServerProcess(args);
 		serverPool[poolKey] = server;
+		server.onShutdown_ = { serverPool.remove(poolKey); };
 		return server;
+	}
+
+	/// Shut down all pooled server processes (safety net for app shutdown).
+	void shutdownAllServers()
+	{
+		auto servers = serverPool.values;
+		serverPool = null;
+		foreach (server; servers)
+			server.shutdown();
 	}
 
 	string parseSessionId(string line)

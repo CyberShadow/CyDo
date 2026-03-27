@@ -51,7 +51,6 @@ test("agent session teardown does not leak file descriptors", async ({
   backend,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "codex has a separate FD leak to investigate");
   test.setTimeout(120_000);
 
   // Warm up: load the page so HTTP/WebSocket connections are established
@@ -98,7 +97,6 @@ test("FD count stays stable across multiple session cycles", async ({
   backend,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "codex has a separate FD leak to investigate");
   test.setTimeout(300_000);
 
   // Warm up
