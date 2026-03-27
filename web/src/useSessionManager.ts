@@ -283,6 +283,7 @@ export function useTaskManager(): TaskManager {
   const pendingFirstMessage = useRef<{
     text: string;
     taskType?: string;
+    images?: ImageAttachment[];
   } | null>(null);
 
   const createVirtualDraft = useCallback(() => {
@@ -532,6 +533,7 @@ export function useTaskManager(): TaskManager {
           liveStates.delete(0);
           const realTask: TaskState = {
             ...t,
+            historyLoaded: true,
             renderKey: renderKey ?? undefined,
           };
           liveStates.set(tid, realTask);
@@ -541,6 +543,11 @@ export function useTaskManager(): TaskManager {
             next.set(tid, realTask);
             return next;
           });
+          // Subscribe to live events for the new task. The backend uses
+          // request_history as the subscription mechanism — without it,
+          // sendToSubscribed won't deliver agent messages to this client.
+          connRef.current?.requestHistory(tid);
+          requestedHistoryRef.current.add(tid);
           if (firstMsg !== null) {
             // Path (c): user sent before task_created arrived — send now.
             // Navigate URL to reflect the real tid.
@@ -560,7 +567,7 @@ export function useTaskManager(): TaskManager {
             }
             connRef.current?.sendMessage(
               tid,
-              buildContentBlocks(firstMsg.text),
+              buildContentBlocks(firstMsg.text, firstMsg.images),
             );
             draftTidRef.current = null;
             draftRenderKeyRef.current = null;
@@ -1157,8 +1164,6 @@ export function useTaskManager(): TaskManager {
         connRef.current?.sendMessage(draftTid, content);
         // Clear draft state (task transitions from draft to active)
         draftTidRef.current = null;
-        draftRenderKeyRef.current = null;
-        setDraftRenderKey(null);
         // Navigate URL to the real task
         const draftState = liveStates.get(draftTid);
         if (draftState && draftState.workspace && draftState.projectPath) {
@@ -1175,6 +1180,9 @@ export function useTaskManager(): TaskManager {
             );
           }
         }
+        // Clear renderKey after navigation to avoid brief unmount
+        draftRenderKeyRef.current = null;
+        setDraftRenderKey(null);
         // Optimistically mark as processing
         setTasks((prev) => {
           const t = prev.get(draftTid);
@@ -1195,7 +1203,7 @@ export function useTaskManager(): TaskManager {
         // hasn't arrived yet. Store the message for task_created to deliver —
         // no zombie task is created.
         if (pendingDraftCorrelation.current !== null) {
-          pendingFirstMessage.current = { text, taskType };
+          pendingFirstMessage.current = { text, taskType, images };
           return;
         }
 
