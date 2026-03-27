@@ -1,4 +1,5 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import { existsSync, rmSync } from "fs";
+import { test, expect, enterSession, sendMessage, responseTimeout, killSession } from "./fixtures";
 
 // Regression test for background commands shown as still running after completion.
 //
@@ -97,4 +98,87 @@ test("multiple background command spinners all disappear after completion", asyn
   // Wait for both commands to finish.
   // sleep 8 finishes ~8s after start, sleep 10 ~10s after start (offset by ~0.5s).
   await expect(spinners).toHaveCount(0, { timeout: 20_000 });
+});
+
+test("kill stops codex background command before delayed side effect", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: pooled app-server kill behavior");
+
+  await enterSession(page);
+
+  const marker = `/tmp/cydo-codex-kill-marker-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
+  rmSync(marker, { force: true });
+
+  await sendMessage(
+    page,
+    `run background command sh -c "sleep 6; touch ${marker}"`,
+  );
+
+  await expect(page.locator(".tool-call")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  await killSession(page, agentType);
+  await page.waitForTimeout(8_000);
+  expect(existsSync(marker)).toBe(false);
+  rmSync(marker, { force: true });
+});
+
+test("killing one codex task also interrupts sibling session on pooled server", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: pooled app-server sibling interruption");
+
+  const markerA = `/tmp/cydo-codex-kill-sibling-a-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
+  const markerB = `/tmp/cydo-codex-kill-sibling-b-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
+  rmSync(markerA, { force: true });
+  rmSync(markerB, { force: true });
+
+  await enterSession(page);
+  await sendMessage(
+    page,
+    `run background command sh -c "sleep 8; touch ${markerA}"`,
+  );
+  await expect(page.locator(".tool-call")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  await enterSession(page);
+  await sendMessage(
+    page,
+    `run background command sh -c "sleep 8; touch ${markerB}"`,
+  );
+  await expect(page.locator(".tool-call")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  await killSession(page, agentType);
+
+  await page.waitForTimeout(9_000);
+  const siblingWasInterrupted = !existsSync(markerA);
+  expect(existsSync(markerB)).toBe(false);
+
+  if (!siblingWasInterrupted) {
+    rmSync(markerA, { force: true });
+    rmSync(markerB, { force: true });
+    return;
+  }
+
+  const siblingTask = page
+    .locator(".sidebar-item:not(.active):not(.sidebar-new-task)")
+    .first();
+  await siblingTask.click({ timeout: 15_000 });
+  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 30_000 });
+
+  await page.locator(".btn-resume").click();
+  await sendMessage(page, 'Please reply with "sibling-resumed"');
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "sibling-resumed" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  rmSync(markerA, { force: true });
+  rmSync(markerB, { force: true });
 });

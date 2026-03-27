@@ -36,6 +36,7 @@ class AgentProcess
 	private bool disconnected;
 	private bool exitFired;
 	private TimerTask stderrDrainTimer;
+	private bool waitForPipeDrain;
 
 	void delegate(string line) onStdoutLine;
 	void delegate(string line) onStderrLine;
@@ -46,8 +47,10 @@ class AgentProcess
 	/// If logName is non-empty, a LoggingAdapter is inserted below the framing adapter
 	/// to trace-log raw I/O at the trace level.
 	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false,
-		FramingMode mode = FramingMode.ndjson, string logName = null)
+		FramingMode mode = FramingMode.ndjson, string logName = null,
+		bool waitForPipeDrain = true)
 	{
+		this.waitForPipeDrain = waitForPipeDrain;
 		Pipe stdinPipe;
 		if (!noStdin)
 			stdinPipe = pipe();
@@ -168,7 +171,7 @@ class AgentProcess
 
 		if (exitFired)
 			return;
-		if (exited && stdoutEOF && stderrEOF)
+		if (exited && (!waitForPipeDrain || (stdoutEOF && stderrEOF)))
 		{
 			exitFired = true;
 			if (stderrDrainTimer !is null)
@@ -179,7 +182,7 @@ class AgentProcess
 			if (onExit)
 				onExit(exitStatus);
 		}
-		else if (exited && stdoutEOF && !stderrEOF && stderrDrainTimer is null)
+		else if (waitForPipeDrain && exited && stdoutEOF && !stderrEOF && stderrDrainTimer is null)
 		{
 			stderrDrainTimer = setTimeout({
 				if (exitFired)

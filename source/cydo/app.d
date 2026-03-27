@@ -1930,7 +1930,8 @@ class App : ToolsBackend
 			unsubscribeAll(tid);
 
 			// --- StateQueue notification ---
-			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive;
+			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive
+				|| (tasks[tid].agentType == "codex" && exitCode == 143);
 
 			if (tasks[tid].killPromise !is null)
 			{

@@ -81,7 +81,7 @@ export function SystemBanner({
             <button
               class="btn-banner-stop"
               onClick={onStop}
-              title="Kill agent process (SIGTERM)"
+              title="Force-stop task execution"
             >
               Kill
             </button>

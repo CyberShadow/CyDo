@@ -15,7 +15,7 @@ import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, SessionConfig;
-import cydo.agent.process : AgentProcess, LoggingAdapter;
+import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -382,6 +382,7 @@ class AppServerProcess
 	private AgentProcess process;
 	private JsonRpcCodec codec;
 	private JsonRpcDispatcher!ICodexServer serverDispatcher;
+	private bool terminating_;
 
 	enum State { starting, initializing, authenticating, ready, failed, dead }
 	private State state_ = State.starting;
@@ -397,7 +398,8 @@ class AppServerProcess
 	this(string[] args)
 	{
 		// Environment and current directory are handled by bwrap (included in args).
-		process = new AgentProcess(args, null, null);
+		process = new AgentProcess(args, null, null, false,
+			FramingMode.ndjson, null, false);
 
 		// Set up bidirectional JSON-RPC codec on the process connection.
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
@@ -467,8 +469,11 @@ class AppServerProcess
 
 		process.onExit = (int status) {
 			state_ = State.dead;
+			auto effectiveStatus = status;
+			if (terminating_)
+				effectiveStatus = 143;
 			foreach (session; sessionsByTid)
-				session.onServerExit(status);
+				session.onServerExit(effectiveStatus);
 		};
 
 		// Begin initialization handshake.
@@ -509,7 +514,20 @@ class AppServerProcess
 
 	void terminate()
 	{
+		if (process.dead || terminating_)
+			return;
+		terminating_ = true;
+		// codex app-server runs over stdio; closing stdin reliably triggers
+		// shutdown even when SIGTERM is not handled promptly.
+		process.closeStdin();
 		process.terminate();
+		import core.time : msecs;
+		import core.sys.posix.signal : SIGKILL;
+		import ae.sys.timing : setTimeout;
+		setTimeout({
+			if (!process.dead)
+				process.sendSignal(SIGKILL);
+		}, 1500.msecs);
 	}
 
 	@property bool dead() { return process.dead; }
@@ -636,10 +654,11 @@ class CodexAgent : Agent
 
 	private string serverPoolKey(string workspace, string[] cmdPrefix)
 	{
-		// The outer bwrap namespace is fixed when `codex app-server` starts.
-		// Reusing a workspace-scoped server across tasks with different cmdPrefix
-		// values leaks the first task's mount policy into later sessions.
+		import std.regex : regex, replaceAll;
 		auto prefixSig = cmdPrefix is null ? "[]" : toJson(cmdPrefix);
+		// Task-local scratch paths differ by tid but are safe to share across
+		// Codex threads in the same workspace; ignore only that variance.
+		prefixSig = replaceAll(prefixSig, regex(`/\.cydo\/tasks\/\d+/`), "/.cydo/tasks/*");
 		return workspace ~ "\n" ~ prefixSig;
 	}
 
@@ -1197,22 +1216,10 @@ class CodexSession : AgentSession
 	{
 		if (!alive_)
 			return;
-		// Send a thread-level interrupt (not server-level terminate) so that
-		// only this session stops and other concurrent sessions are unaffected.
-		if (threadId.length > 0)
-		{
-			if (turnInProgress && activeTurnId_.length > 0)
-				server.sendRequest("turn/interrupt",
-					JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_))));
-			server.unregisterSession(threadId);
-		}
-		server.unregisterSessionByTid(tid);
-		activeTurnId_ = null;
-		alive_ = false;
-		auto cb = exitHandler_;
-		exitHandler_ = null;
-		if (cb)
-			cb(1); // non-zero = killed by user
+		// Codex sessions share a pooled app-server process. Kill is an
+		// emergency stop that terminates that process and lets onServerExit
+		// propagate the real exit to all attached sessions.
+		server.terminate();
 	}
 
 	void closeStdin()
