@@ -139,6 +139,14 @@ struct ThreadIdParams
 	string threadId;
 }
 
+@RPCFlatten @JSONPartial
+struct TurnDiffUpdatedParams
+{
+	string threadId;
+	string turnId;
+	JSONFragment diff;
+}
+
 /// Catch-all params struct for no-op handlers that receive notifications
 /// we don't process (may or may not have a threadId).
 @RPCFlatten @JSONPartial
@@ -226,6 +234,9 @@ private interface ICodexServer
 
 	@RPCName("turn/started")
 	Promise!void turnStarted(IgnoredParams params);
+
+	@RPCName("turn/diff/updated")
+	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params);
 
 	@RPCName("thread/tokenUsage/updated")
 	Promise!void threadTokenUsageUpdated(IgnoredParams params);
@@ -328,6 +339,7 @@ private class CodexServerRouter : ICodexServer
 	Promise!void threadStarted(IgnoredParams params) { return resolve(); }
 	Promise!void threadStatusChanged(IgnoredParams params) { return resolve(); }
 	Promise!void turnStarted(IgnoredParams params) { return resolve(); }
+	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params) { return resolve(); }
 	Promise!void threadTokenUsageUpdated(IgnoredParams params) { return resolve(); }
 	Promise!void accountRateLimitsUpdated(IgnoredParams params) { return resolve(); }
 	Promise!void accountUpdated(IgnoredParams params) { return resolve(); }
