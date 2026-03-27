@@ -287,6 +287,9 @@ class App : ToolsBackend
 				}
 				catch (Exception) {} // best-effort
 			}
+			// Final fallback: if still no lastActive but has createdAt, use that
+			if (td.lastActive == 0 && td.createdAt != 0)
+				td.lastActive = td.createdAt;
 		}
 
 		import std.process : environment;
