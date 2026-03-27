@@ -58,7 +58,7 @@ export function WelcomePage({
 
   // Check for ungrouped tasks (no workspace/projectPath)
   const ungrouped = (tasksByProject.get(":") || []).sort(
-    (a, b) => b.tid - a.tid,
+    (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
   );
 
   const filterLower = filter.toLowerCase();
@@ -201,7 +201,8 @@ export function WelcomePage({
               {sortedProjects.map((proj) => {
                 const key = `${ws.name}:${proj.path}`;
                 const projTasks = (tasksByProject.get(key) || []).sort(
-                  (a, b) => b.tid - a.tid,
+                  (a, b) =>
+                    (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
                 );
                 return (
                   <div class="project-card" key={proj.path}>
