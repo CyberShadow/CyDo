@@ -2972,12 +2972,12 @@ pre.extra-field-value {
 .connection-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 500;
-  color: #fff;
+  color: var(--text);
   font-size: 16px;
 }
 
