@@ -583,13 +583,23 @@ class App : ToolsBackend
 		import std.conv : to;
 
 		// Reject tool calls after SwitchMode/Handoff — the agent must yield.
-		if (auto tdp = to!int(tid) in tasks)
+		int parsedTid;
+		bool hasParsedTid = true;
+		try
+			parsedTid = to!int(tid);
+		catch (Exception)
+			hasParsedTid = false;
+
+		if (hasParsedTid)
 		{
-			if (tdp.pendingContinuation.length > 0)
-				return resolve(McpResult(
-					"Tool call rejected: you already called SwitchMode/Handoff. "
-					~ "Yield your turn immediately — do not make any more tool calls.",
-					true));
+			if (auto tdp = parsedTid in tasks)
+			{
+				if (tdp.pendingContinuation.length > 0)
+					return resolve(McpResult(
+						"Tool call rejected: you already called SwitchMode/Handoff. "
+						~ "Yield your turn immediately — do not make any more tool calls.",
+						true));
+			}
 		}
 
 		return async({
@@ -608,16 +618,22 @@ class App : ToolsBackend
 		import std.array : join;
 		import std.conv : to;
 
+		McpResult structuredTaskError(string message)
+		{
+			auto taskResultJson = toJson(TaskResult(message, null, null, null, message));
+			return McpResult(message, true, JSONFragment(taskResultJson));
+		}
+
 		// Look up calling task
 		int parentTid;
 		try
 			parentTid = to!int(callerTid);
 		catch (Exception)
-			return resolve(McpResult("Invalid calling task ID", true));
+			return resolve(structuredTaskError("Invalid calling task ID"));
 
 		auto parentTd = parentTid in tasks;
 		if (parentTd is null)
-			return resolve(McpResult("Calling task not found", true));
+			return resolve(structuredTaskError("Calling task not found"));
 
 		// Validate task_type against parent's creatable_tasks and resolve alias
 		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
@@ -628,10 +644,10 @@ class App : ToolsBackend
 			auto edge = parentTypeDef.creatable_tasks.byName(taskType);
 			if (edge is null)
 			{
-				return resolve(McpResult(
+				return resolve(structuredTaskError(
 					"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
 					parentTd.taskType ~ "'. Allowed: " ~
-					parentTypeDef.creatable_tasks.map!(c => c.name).join(", "), true));
+					parentTypeDef.creatable_tasks.map!(c => c.name).join(", ")));
 			}
 			resolvedTaskType = edge.resolvedType;
 		}
@@ -639,7 +655,7 @@ class App : ToolsBackend
 		// Validate child task type exists
 		auto childTypeDef = getTaskTypes().byName(resolvedTaskType);
 		if (childTypeDef is null)
-			return resolve(McpResult("Unknown task type: " ~ resolvedTaskType, true));
+			return resolve(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
 
 		// Create child task
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, parentTd.agentType);
@@ -2244,6 +2260,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
 		bool hasWorktree = td.hasWorktree;
+		bool isFailed = td.status == "failed";
 		string note;
 		if (hasOutput && hasWorktree)
 			note = "Read the output file for full findings. The worktree path is included for adopting changes.";
@@ -2256,6 +2273,7 @@ class App : ToolsBackend
 			hasOutput ? td.outputPath : null,
 			hasWorktree ? td.worktreePath : null,
 			note.length > 0 ? note : td.resultNote,
+			isFailed ? td.resultText : null,
 		);
 	}
 

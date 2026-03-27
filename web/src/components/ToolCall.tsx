@@ -1068,9 +1068,7 @@ function WebSearchResult({ content }: { content: string }) {
   );
 }
 
-function parseCydoTaskResult(
-  content: string,
-): Record<string, unknown>[] | null {
+function parseCydoTaskResult(content: string): unknown[] | null {
   try {
     const parsed = JSON.parse(content) as unknown;
     // Backend returns either a raw array or {"tasks": [...]} wrapper
@@ -1083,7 +1081,7 @@ function parseCydoTaskResult(
       : Array.isArray(parsedObj?.tasks)
         ? parsedObj.tasks
         : null;
-    return arr && arr.length > 0 ? (arr as Record<string, unknown>[]) : null;
+    return arr && arr.length > 0 ? arr : null;
   } catch {
     return null;
   }
@@ -1094,12 +1092,14 @@ function formatCydoTaskResultItem(item: Record<string, unknown>): {
   text: string | null;
 } {
   const text =
-    typeof item.summary === "string"
-      ? item.summary
-      : typeof item.result === "string"
-        ? item.result
-        : null;
-  const { summary, result: _result, ...rest } = item;
+    typeof item.error === "string"
+      ? item.error
+      : typeof item.summary === "string"
+        ? item.summary
+        : typeof item.result === "string"
+          ? item.result
+          : null;
+  const { error: _error, summary, result: _result, ...rest } = item;
   return { fields: rest, text };
 }
 
@@ -1891,7 +1891,25 @@ export function ToolCall({
               {cydoTaskItems ? (
                 <div class="tool-input-formatted">
                   {cydoTaskItems.map((item, i) => {
-                    const { fields, text } = formatCydoTaskResultItem(item);
+                    if (
+                      typeof item !== "object" ||
+                      item === null ||
+                      Array.isArray(item)
+                    ) {
+                      const fallbackText =
+                        typeof item === "string" ? item : String(item);
+                      return (
+                        <div key={i} class="cydo-task-spec">
+                          <div class="tool-input-field">
+                            <span class="field-label">result:</span>
+                            <span class="field-value"> {fallbackText}</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const { fields, text } = formatCydoTaskResultItem(
+                      item as Record<string, unknown>,
+                    );
                     const taskType =
                       typeof fields.task_type === "string"
                         ? fields.task_type

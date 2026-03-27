@@ -316,6 +316,7 @@ struct TaskResult
 	@JSONOptional string output_file; // path to output artifact, if any
 	@JSONOptional string worktree;    // path to worktree, if any
 	@JSONOptional string note;        // contextual guidance for the parent agent
+	@JSONOptional string error;       // canonical per-task error message
 }
 
 struct McpContentItem
@@ -378,4 +379,3 @@ string extractEventFromEnvelope(string envelope)
 		return envelope[start .. $ - 1];
 	return envelope[start .. $];
 }
-
