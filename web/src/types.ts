@@ -216,6 +216,8 @@ export interface TaskState {
   } | null;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;
+  /** Maps item IDs to their message index for O(1) lookup after sealing. */
+  itemIndex: Map<string, number>;
 }
 
 export function makeTaskState(
@@ -261,5 +263,6 @@ export function makeTaskState(
     createdAt: createdAt || undefined,
     lastActive: lastActive || undefined,
     trackedFiles: new Map(),
+    itemIndex: new Map(),
   };
 }

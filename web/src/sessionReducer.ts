@@ -854,6 +854,59 @@ function findStreamingMsg(messages: DisplayMessage[]): number {
   return -1;
 }
 
+type BlockLocation =
+  | { inStreaming: true; msgIdx: number; blockIdx: number }
+  | { inStreaming: false; msgIdx: number; blockIdx: number };
+
+/** Find a block by item ID: first in the streaming message, then in sealed
+ *  content via the item index. Returns null if not found. */
+function findBlockByItemId(
+  messages: DisplayMessage[],
+  itemId: string,
+  itemIndex: Map<string, number>,
+): BlockLocation | null {
+  // Check the streaming message first (the common fast path)
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.streamingBlocks?.length) {
+      const blockIdx = m.streamingBlocks.findIndex((b) => b.itemId === itemId);
+      if (blockIdx >= 0) return { inStreaming: true, msgIdx: i, blockIdx };
+      break; // Only one message has active streaming blocks
+    }
+  }
+  // Fallback: use the index for O(1) message lookup into sealed content
+  const msgIdx = itemIndex.get(itemId);
+  if (msgIdx === undefined) return null;
+  const msg = messages[msgIdx];
+  if (!msg || msg.type !== "assistant") return null;
+  const blockIdx = msg.content.findIndex(
+    (b) => b.id === itemId || (b as Record<string, unknown>)._itemId === itemId,
+  );
+  if (blockIdx < 0) return null;
+  return { inStreaming: false, msgIdx, blockIdx };
+}
+
+/** Clone a sealed content block for immutable update. Returns the cloned
+ *  messages array and the mutable block copy. */
+function updateSealedBlock(
+  messages: DisplayMessage[],
+  msgIdx: number,
+  blockIdx: number,
+): {
+  messages: DisplayMessage[];
+  block: import("./protocol").AssistantContentBlock;
+} {
+  const result = messages.slice();
+  const msg = { ...result[msgIdx]! };
+  result[msgIdx] = msg;
+  const content = msg.content.slice();
+  msg.content = content;
+  const block = { ...content[blockIdx]! };
+  content[blockIdx] = block;
+  bumpNestedVersion(result, msg.parentToolUseId);
+  return { messages: result, block };
+}
+
 /** Find or create the in-progress assistant message for streaming blocks. */
 function getStreamingMessage(s: SessionState): {
   messages: DisplayMessage[];
@@ -1017,7 +1070,10 @@ export function reduceItemStarted(
 
   appendRawSource(msg, event);
 
-  let state = { ...s, messages };
+  const itemIndex = new Map(s.itemIndex);
+  itemIndex.set(event.item_id, msgIdx);
+
+  let state = { ...s, messages, itemIndex };
 
   if (event.item_type === "tool_use") {
     if (event.name === "fileChange") {
@@ -1054,22 +1110,39 @@ export function reduceItemDelta(
   s: SessionState,
   event: ItemDeltaEvent,
 ): SessionState {
-  const targetIdx = findStreamingMsg(s.messages);
-  if (targetIdx < 0) return s;
-  const messages = s.messages.slice();
-  const msg = { ...messages[targetIdx]! };
-  messages[targetIdx] = msg;
-  msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
-    if (b.itemId !== event.item_id) return b;
-    if (event.delta_type === "output_delta") {
-      return { ...b, output: (b.output ?? "") + event.content };
-    }
-    if (event.delta_type === "stdin_delta") {
-      return { ...b, stdin: (b.stdin ?? "") + event.content };
-    }
-    return { ...b, text: b.text + event.content };
-  });
-  bumpNestedVersion(messages, msg.parentToolUseId);
+  const loc = findBlockByItemId(s.messages, event.item_id, s.itemIndex);
+  if (!loc) return s;
+
+  if (loc.inStreaming) {
+    // Hot path: update streaming block (unchanged from original)
+    const messages = s.messages.slice();
+    const msg = { ...messages[loc.msgIdx]! };
+    messages[loc.msgIdx] = msg;
+    msg.streamingBlocks = msg.streamingBlocks!.map((b) => {
+      if (b.itemId !== event.item_id) return b;
+      if (event.delta_type === "output_delta") {
+        return { ...b, output: (b.output ?? "") + event.content };
+      }
+      if (event.delta_type === "stdin_delta") {
+        return { ...b, stdin: (b.stdin ?? "") + event.content };
+      }
+      return { ...b, text: b.text + event.content };
+    });
+    bumpNestedVersion(messages, msg.parentToolUseId);
+    return { ...s, messages };
+  }
+
+  // Sealed content block — update in place
+  const { messages, block } = updateSealedBlock(
+    s.messages,
+    loc.msgIdx,
+    loc.blockIdx,
+  );
+  if (event.delta_type === "output_delta") {
+    block.output = ((block.output as string | undefined) ?? "") + event.content;
+  } else {
+    block.text = (block.text ?? "") + event.content;
+  }
   return { ...s, messages };
 }
 
@@ -1077,8 +1150,10 @@ export function reduceItemCompleted(
   s: SessionState,
   event: ItemCompletedEvent,
 ): SessionState {
-  const targetIdx = findStreamingMsg(s.messages);
-  if (targetIdx < 0) {
+  const loc = findBlockByItemId(s.messages, event.item_id, s.itemIndex);
+
+  if (!loc) {
+    // Item not found anywhere — just update edit status
     return updateEditStatusByToolUseId(
       s,
       event.item_id,
@@ -1086,22 +1161,29 @@ export function reduceItemCompleted(
     );
   }
 
+  if (!loc.inStreaming) {
+    // Block already sealed — update metadata on the content block
+    const { messages, block } = updateSealedBlock(
+      s.messages,
+      loc.msgIdx,
+      loc.blockIdx,
+    );
+    if (event.text !== undefined) block.text = event.text;
+    if (event.input !== undefined) block.input = event.input;
+    if (event._extras) block._extras = event._extras;
+    return updateEditStatusByToolUseId(
+      { ...s, messages },
+      event.item_id,
+      event.is_error ? "cancelled" : "applied",
+    );
+  }
+
+  // ---- Normal streaming path: promote block from streamingBlocks to content ----
   const messages = s.messages.slice();
-  const msg = { ...messages[targetIdx]! };
-  messages[targetIdx] = msg;
+  const msg = { ...messages[loc.msgIdx]! };
+  messages[loc.msgIdx] = msg;
 
-  const blockIdx = msg.streamingBlocks!.findIndex(
-    (b) => b.itemId === event.item_id,
-  );
-  if (blockIdx < 0) {
-    return updateEditStatusByToolUseId(
-      s,
-      event.item_id,
-      event.is_error ? "cancelled" : "applied",
-    );
-  }
-
-  const block = msg.streamingBlocks![blockIdx]!;
+  const block = msg.streamingBlocks![loc.blockIdx]!;
   const { creationOrder } = block;
 
   let contentBlock: import("./protocol").AssistantContentBlock;
@@ -1122,6 +1204,7 @@ export function reduceItemCompleted(
     contentBlock = {
       type: block.type,
       text: event.text ?? block.text,
+      _itemId: block.itemId,
       ...(event._extras ? { _extras: event._extras } : {}),
     };
   }
@@ -1282,9 +1365,14 @@ export function reduceTurnStop(
               input:
                 (block.input as Record<string, unknown> | undefined) ??
                 tryParseJson(block.text),
+              ...(block.output !== undefined ? { output: block.output } : {}),
             };
           } else {
-            contentBlock = { type: block.type, text: block.text };
+            contentBlock = {
+              type: block.type,
+              text: block.text,
+              _itemId: block.itemId,
+            };
           }
           (contentBlock as Record<string, unknown>)._creationOrder =
             block.creationOrder;

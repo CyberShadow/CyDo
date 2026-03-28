@@ -100,6 +100,41 @@ test("multiple background command spinners all disappear after completion", asyn
   await expect(spinners).toHaveCount(0, { timeout: 20_000 });
 });
 
+// Regression test: late output_delta content after turn/stop is rendered.
+//
+// When a command continues producing output after the agent's turn ends
+// (turn/stop seals the message), the output_delta events must be applied
+// to the sealed content block and rendered in the UI.
+
+test("late command output appears after turn completes", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: exec_command with yield_time_ms");
+
+  await enterSession(page);
+
+  // yield_time_ms=1 causes near-immediate yield. The shell command sleeps
+  // briefly then echoes a marker string. The turn completes before the echo
+  // runs, so the output arrives as a late output_delta on a sealed message.
+  await sendMessage(page, 'run quick-yield command sleep 2 && echo late-output-marker');
+
+  const timeout = responseTimeout(agentType);
+
+  // Wait for the tool call to appear and the turn to complete.
+  await expect(page.locator(".tool-call")).toBeVisible({ timeout });
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+  ).toBeVisible({ timeout });
+
+  // The late output should appear in the tool call's output area.
+  // This verifies that output_delta events are applied to the sealed content
+  // block and rendered by the UI.
+  await expect(
+    page.locator(".tool-result", { hasText: "late-output-marker" }),
+  ).toBeVisible({ timeout: 10_000 });
+});
+
 test("kill stops codex background command before delayed side effect", async ({
   page,
   agentType,

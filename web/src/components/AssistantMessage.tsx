@@ -184,6 +184,13 @@ export function AssistantMessage({
                     result={result}
                     onViewFile={onViewFile}
                   >
+                    {typeof block.output === "string" && block.output && (
+                      <pre class="tool-result streaming-output">
+                        {hasAnsi(block.output)
+                          ? renderAnsi(block.output)
+                          : block.output}
+                      </pre>
+                    )}
                     {nested && nested.length > 0 && (
                       <div class="sub-agent-messages">
                         {nested.map((child) => {

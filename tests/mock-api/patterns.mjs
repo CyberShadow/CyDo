@@ -101,6 +101,11 @@ export function matchPattern(userText) {
   match = userText.match(/run parallel commands/i);
   if (match) return { type: "parallel_shell", commands: ["echo one", "echo two"] };
 
+  // "run quick-yield command <cmd>" — exec_command with yield_time_ms=1
+  // (must come before "run background command" to avoid substring match)
+  match = userText.match(/run quick-yield command (.+)/i);
+  if (match) return { type: "quick_yield_shell", command: match[1].trim() };
+
   // "run two background commands" — two sequential exec_command with yield_time_ms
   // (must come before single "run background command" to avoid substring match)
   match = userText.match(/run two background commands/i);

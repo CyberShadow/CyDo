@@ -421,6 +421,11 @@ function handleResponses(req, res) {
 
     if (intent.type === "text") {
       oaiStreamTextResponse(res, intent.text);
+    } else if (intent.type === "quick_yield_shell") {
+      oaiStreamFunctionCallResponse(res, "exec_command", {
+        cmd: intent.command,
+        yield_time_ms: 1,
+      });
     } else if (intent.type === "background_shell") {
       // exec_command with short yield_time_ms — command keeps running after yield
       oaiStreamFunctionCallResponse(res, "exec_command", {
