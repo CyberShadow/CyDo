@@ -1333,7 +1333,7 @@ body,
 
 .app.has-sidebar .session-loading {
   grid-column: 2;
-  grid-row: 1 / -1;
+  grid-row: 3;
 }
 
 .session-loading span {
