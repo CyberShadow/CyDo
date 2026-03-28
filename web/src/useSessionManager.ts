@@ -1186,26 +1186,26 @@ export function useTaskManager(): TaskManager {
     }
   }, [connected, activeTaskId, tasks]);
 
-  // Auto-create virtual draft when at project root with no active task
+  // Auto-create virtual draft when at project root with no active task.
+  // Also clears stale draft tracking when navigating back to project root
+  // (e.g. user clicks "New Task") so a fresh draft is created atomically.
+  // Both concerns must live in one effect to avoid ordering issues — if they
+  // were separate, the "create" effect could run before the "clear" effect
+  // and bail out because the stale ref is still set.
   useEffect(() => {
     if (activeTaskId !== null) return; // a task is active, no draft needed
     if (activeWorkspace === null) return; // on welcome page, no draft
-    if (draftRenderKeyRef.current !== null) return; // draft already exists
-    createVirtualDraft();
-  }, [activeTaskId, activeWorkspace, createVirtualDraft]);
-
-  // Clear draft tracking when user navigates to project root (e.g. clicks
-  // "New Task") while a draft task exists.  This lets createVirtualDraft
-  // create a fresh blank draft.  Do NOT clear when navigating TO the draft
-  // task (e.g. sidebar click) — the draft must stay wired for
-  // onContentEnd/deleteDraftTask and taskTypes.
-  useEffect(() => {
-    if (activeTaskId === null && draftTidRef.current !== null) {
+    // Clear existing draft tracking when a real draft task exists
+    if (draftTidRef.current !== null) {
       draftTidRef.current = null;
       draftRenderKeyRef.current = null;
       setDraftRenderKey(null);
     }
-  }, [activeTaskId]);
+    // Create fresh virtual draft if none exists
+    if (draftRenderKeyRef.current === null) {
+      createVirtualDraft();
+    }
+  }, [activeTaskId, activeWorkspace, createVirtualDraft]);
 
   const send = useCallback(
     (
