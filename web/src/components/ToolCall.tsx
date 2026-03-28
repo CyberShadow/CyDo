@@ -1230,15 +1230,22 @@ const knownResultFields: Record<string, Set<string>> = {
     "stdout",
     "stderr",
     "interrupted",
-    "isImage",
     "returnCodeInterpretation",
+    "isImage",
     "noOutputExpected",
     "backgroundTaskId",
     "backgroundedByUser",
     "persistedOutputPath",
     "persistedOutputSize",
   ]),
-  commandExecution: new Set([]),
+  commandExecution: new Set([
+    "exitCode",
+    "status",
+    "durationMs",
+    "command",
+    "cwd",
+    "processId",
+  ]),
   local_shell_call: new Set([]),
   exec_command: new Set([]),
   Read: new Set(["type", "file"]),
@@ -1807,6 +1814,41 @@ function formatTaskOutputResult(
 }
 
 /**
+ * Render commandExecution result metadata: exit code (when non-zero) and duration.
+ */
+function formatCommandExecutionResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
+  const fields: Record<string, unknown> = {};
+  if (typeof toolResult.exitCode === "number" && toolResult.exitCode !== 0)
+    fields.exit_code = toolResult.exitCode;
+  if (typeof toolResult.durationMs === "number")
+    fields.duration_ms = `${toolResult.durationMs}ms`;
+  if (Object.keys(fields).length === 0) return null;
+  return formatGenericInput(fields);
+}
+
+/**
+ * Render Bash result supplemental fields: stderr (when non-empty), interrupted (when true),
+ * and returnCodeInterpretation (when present).
+ */
+function formatBashResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
+  const fields: Record<string, unknown> = {};
+  if (typeof toolResult.stderr === "string" && toolResult.stderr.length > 0)
+    fields.stderr = toolResult.stderr;
+  if (toolResult.interrupted === true) fields.interrupted = true;
+  if (
+    typeof toolResult.returnCodeInterpretation === "string" &&
+    toolResult.returnCodeInterpretation.length > 0
+  )
+    fields.returnCodeInterpretation = toolResult.returnCodeInterpretation;
+  if (Object.keys(fields).length === 0) return null;
+  return formatGenericInput(fields);
+}
+
+/**
  * Render TaskStop result: show task_type and command using standard field layout.
  */
 function formatTaskStopResult(
@@ -1909,11 +1951,27 @@ export function ToolCall({
     !result.isError &&
     result.toolResult != null &&
     typeof result.toolResult === "object";
+  const useCommandExecutionResult =
+    name === "commandExecution" &&
+    result != null &&
+    result.toolResult != null &&
+    typeof result.toolResult === "object";
+  const useBashResult =
+    name === "Bash" &&
+    result != null &&
+    result.toolResult != null &&
+    typeof result.toolResult === "object";
   const taskOutputElement = useTaskOutputResult
     ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
     : null;
   const taskStopElement = useTaskStopResult
     ? formatTaskStopResult(result.toolResult as Record<string, unknown>)
+    : null;
+  const commandExecutionElement = useCommandExecutionResult
+    ? formatCommandExecutionResult(result.toolResult as Record<string, unknown>)
+    : null;
+  const bashElement = useBashResult
+    ? formatBashResult(result.toolResult as Record<string, unknown>)
     : null;
 
   return (
@@ -2083,6 +2141,8 @@ export function ToolCall({
               ) : (
                 renderResultContent(result.content, result.isError)
               )}
+              {commandExecutionElement}
+              {bashElement}
               {result.toolResult != null &&
                 typeof result.toolResult === "object" &&
                 formatToolUseResult(

@@ -1658,15 +1658,6 @@ private string renameType(string rawLine, string newType)
 	return rawLine;
 }
 
-/// Convert a JSONExtras map to a JSONFragment wrapping it in a JSON object.
-/// Returns JSONFragment.init (null) if the extras map is empty.
-private JSONFragment extrasToFragment(JSONExtras extras)
-{
-	if (extras._data is null || extras._data.length == 0)
-		return JSONFragment.init;
-	return JSONFragment(toJson(extras._data));
-}
-
 /// Recursively collect all JSONExtras from a struct and its nested struct fields.
 /// Arrays are skipped (content blocks are handled per-element by the caller).
 private JSONExtras collectAllExtras(S)(ref const S s)

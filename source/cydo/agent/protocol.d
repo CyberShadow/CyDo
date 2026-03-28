@@ -2,6 +2,15 @@ module cydo.agent.protocol;
 
 import ae.utils.json : JSONFragment, JSONOptional, JSONExtras, jsonParse, toJson;
 
+/// Convert a JSONExtras map to a JSONFragment wrapping it as a JSON object.
+/// Returns JSONFragment.init (null) if the extras map is empty.
+JSONFragment extrasToFragment(JSONExtras extras)
+{
+	if (extras._data is null || extras._data.length == 0)
+		return JSONFragment.init;
+	return JSONFragment(toJson(extras._data));
+}
+
 // ── Agnostic protocol struct definitions ───────────────────────────────────
 
 // ── Content types ──────────────────────────────────────────────

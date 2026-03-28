@@ -3,6 +3,7 @@ module cydo.agent.codex;
 import std.conv : to;
 import std.logger : errorf, tracef, warningf;
 import std.path : buildPath, dirName;
+import std.typecons : Nullable;
 
 import ae.net.asockets : IConnection;
 import ae.net.jsonrpc.binding : JsonRpcDispatcher,
@@ -16,7 +17,7 @@ import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
 import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
-import cydo.agent.protocol : ContentBlock;
+import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 
@@ -122,6 +123,25 @@ struct ItemStartedParams
 		@JSONOptional JSONFragment content; // userMessage items: Array<UserInput>
 		@JSONOptional string tool;          // mcpToolCall: tool name (e.g. "AskUserQuestion")
 		@JSONOptional string server;        // mcpToolCall: server name (e.g. "cydo")
+		// commandExecution fields (explicit to prevent appearance in _extras):
+		@JSONOptional string cwd;
+		@JSONOptional string status;
+		@JSONOptional string processId;
+		@JSONOptional Nullable!int exitCode;  // null while command is running
+		@JSONOptional Nullable!int durationMs; // null while command is running
+		@JSONOptional JSONFragment commandActions;
+		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr (null while running)
+		// fileChange fields:
+		@JSONOptional JSONFragment changes;
+		// mcpToolCall fields:
+		@JSONName("arguments") @JSONOptional JSONFragment arguments_;
+		// webSearch fields:
+		@JSONOptional JSONFragment query;
+		// agentMessage fields:
+		@JSONOptional string phase;
+		// mcpToolCall pending-result fields (null until item/completed):
+		@JSONOptional JSONFragment result;
+		@JSONOptional JSONFragment error;
 		JSONExtras extras;
 	}
 	Item item;
@@ -175,7 +195,25 @@ struct ItemCompletedParams
 		@JSONOptional string id;
 		@JSONOptional bool is_error;
 		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr
-		JSONExtras extras;
+		@JSONOptional string status;           // "inProgress", "failed", "completed"
+		@JSONOptional int exitCode;            // process exit code
+		@JSONOptional int durationMs;          // execution duration in ms
+		@JSONOptional string command;          // original command string
+		@JSONOptional string cwd;              // working directory
+		@JSONOptional string type;             // item type (e.g. "commandExecution")
+		@JSONOptional string processId;        // process ID for commandExecution
+		@JSONOptional JSONFragment commandActions; // commandExecution actions log
+		@JSONOptional JSONFragment result;     // mcpToolCall/webSearch result payload
+		@JSONOptional JSONFragment changes;    // fileChange: array of file changes
+		// agentMessage fields:
+		@JSONOptional string text;
+		@JSONOptional string phase;
+		// mcpToolCall fields (repeated from item/started for completed items):
+		@JSONOptional string server;
+		@JSONOptional string tool;
+		@JSONName("arguments") @JSONOptional JSONFragment arguments_;
+		@JSONOptional JSONFragment error;
+		JSONExtras extras;                     // remaining unknown fields
 	}
 	@JSONOptional Item item;
 }
@@ -1397,8 +1435,8 @@ class CodexSession : AgentSession
 				ev.name = "fileChange";
 				// Include changes directly so the frontend can show the File Viewer button
 				// without relying on _raw (which is stripped before broadcast).
-				if (auto pChanges = "changes" in item.extras)
-					ev.input = JSONFragment(`{"changes":` ~ pChanges.json ~ `}`);
+				if (item.changes.json !is null)
+					ev.input = JSONFragment(`{"changes":` ~ item.changes.json ~ `}`);
 				break;
 			case "mcpToolCall":
 				activeItemTypes_[itemId] = "tool_use";
@@ -1407,15 +1445,15 @@ class CodexSession : AgentSession
 					ev.name = item.server.length > 0 ? "mcp__" ~ item.server ~ "__" ~ item.tool : item.tool;
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
-				if (auto pArguments = "arguments" in item.extras)
-					ev.input = *pArguments;
+				if (item.arguments_.json !is null)
+					ev.input = item.arguments_;
 				break;
 			case "webSearch":
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "WebSearch";
-				if (auto pQuery = "query" in item.extras)
-					ev.input = JSONFragment(`{"query":` ~ pQuery.json ~ `}`);
+				if (item.query.json !is null)
+					ev.input = JSONFragment(`{"query":` ~ item.query.json ~ `}`);
 				break;
 			default:
 				activeItemTypes_[itemId] = "text";
@@ -1429,6 +1467,9 @@ class CodexSession : AgentSession
 		// include it directly in the event.
 		if (item.text.length > 0)
 			ev.text = item.text;
+
+		// Forward Codex extras (processId, status, cwd, commandActions, etc.) to _extras.
+		ev._extras = extrasToFragment(item.extras);
 
 		if (outputHandler_)
 			outputHandler_(injectRawField(toJson(ev), rawNotification));
@@ -1487,9 +1528,15 @@ class CodexSession : AgentSession
 		ItemCompletedEvent ev;
 		ev.item_id = itemId;
 		ev.is_error = params.item.is_error;
+		// Derive is_error from Codex status field (Codex uses "failed" instead of is_error).
+		if (!ev.is_error && params.item.status == "failed")
+			ev.is_error = true;
 
 		if (itemType == "tool_use" && params.item.aggregatedOutput.length > 0)
 			ev.output = params.item.aggregatedOutput;
+
+		// Forward remaining Codex extras (processId, commandActions, type, etc.) to _extras.
+		ev._extras = extrasToFragment(params.item.extras);
 
 		if (outputHandler_)
 			outputHandler_(injectRawField(toJson(ev), rawNotification));
@@ -1501,6 +1548,11 @@ class CodexSession : AgentSession
 		{
 			ItemResultEvent resEv;
 			resEv.item_id = itemId;
+			resEv.is_error = ev.is_error;
+
+			// Item type is now an explicit field.
+			string itemTypeName = params.item.type;
+
 			if (params.item.aggregatedOutput.length > 0)
 				resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(params.item.aggregatedOutput) ~ `}]`);
 			else
@@ -1512,11 +1564,11 @@ class CodexSession : AgentSession
 				}
 
 				bool hasResultContent = false;
-				if (auto pResult = "result" in params.item.extras)
+				if (params.item.result.json !is null)
 				{
 					try
 					{
-						auto payload = jsonParse!ResultPayload(pResult.json);
+						auto payload = jsonParse!ResultPayload(params.item.result.json);
 						if (payload.content.json !is null)
 						{
 							resEv.content = payload.content;
@@ -1531,9 +1583,7 @@ class CodexSession : AgentSession
 				// use an empty string — the frontend expects a string or array, not an object.
 				if (!hasResultContent)
 				{
-					auto pItemType = "type" in params.item.extras;
-					bool isWebSearch = pItemType !is null && pItemType.json == `"webSearch"`;
-					if (isWebSearch)
+					if (itemTypeName == "webSearch")
 					{
 						auto itemJson = toJson(params.item);
 						resEv.content = JSONFragment(`[{"type":"text","text":` ~ (itemJson.length > 2 ? toJson(itemJson) : `""`) ~ `}]`);
@@ -1542,6 +1592,55 @@ class CodexSession : AgentSession
 						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 				}
 			}
+
+			// Build structured tool_result for commandExecution items.
+			// Surfaces exitCode, status, durationMs, command, cwd for frontend rendering.
+			if (itemTypeName == "commandExecution")
+			{
+				import std.array : appender;
+				auto tr = appender!string;
+				tr ~= `{`;
+				bool trFirst = true;
+				if (params.item.status.length > 0)
+				{
+					tr ~= `"status":` ~ toJson(params.item.status);
+					trFirst = false;
+				}
+				// Always include exitCode for commandExecution items.
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"exitCode":` ~ to!string(params.item.exitCode);
+					trFirst = false;
+				}
+				if (params.item.durationMs > 0)
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"durationMs":` ~ to!string(params.item.durationMs);
+					trFirst = false;
+				}
+				if (params.item.command.length > 0)
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"command":` ~ toJson(params.item.command);
+					trFirst = false;
+				}
+				if (params.item.cwd.length > 0)
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"cwd":` ~ toJson(params.item.cwd);
+					trFirst = false;
+				}
+				if (params.item.processId.length > 0)
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"processId":` ~ toJson(params.item.processId);
+					trFirst = false;
+				}
+				tr ~= `}`;
+				if (!trFirst)
+					resEv.tool_result = JSONFragment(tr.data);
+			}
+
 			outputHandler_(injectRawField(toJson(resEv), rawNotification));
 		}
 
