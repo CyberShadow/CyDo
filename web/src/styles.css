@@ -3128,12 +3128,11 @@ pre.extra-field-value {
   position: absolute;
   top: -6px;
   right: -6px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: none;
-  background: var(--error);
-  color: white;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--error);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -3141,6 +3140,15 @@ pre.extra-field-value {
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0;
+}
+
+.image-preview-remove:hover {
+  border-color: var(--error);
+}
+
+.image-previews:hover .image-preview-remove {
+  opacity: 1;
 }
 
 .input-box-dragging {
