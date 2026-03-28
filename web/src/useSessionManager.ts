@@ -277,6 +277,13 @@ export function useTaskManager(): TaskManager {
   const [draftRenderKey, setDraftRenderKey] = useState<string | null>(null);
   const pendingDraftCorrelation = useRef<string | null>(null);
   const draftCancelled = useRef(false);
+  // Track recently deleted draft tids so handleTaskMessage skips stale
+  // events arriving after deleteDraftTask (e.g. from requestHistory).
+  // Cleared when the backend confirms deletion via task_deleted.
+  const deletedDraftTids = useRef(new Set<number>());
+  // Set by isDraftCreation to prevent the activeTaskId useEffect from
+  // clearing draft state when navigating URL to /task/:tid internally.
+  const draftNavigatingRef = useRef(false);
   const draftCreateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -349,6 +356,7 @@ export function useTaskManager(): TaskManager {
     const tid = draftTidRef.current;
     if (tid !== null && tid > 0) {
       // Real backend task — delete it
+      deletedDraftTids.current.add(tid);
       inputDrafts.delete(tid);
       connRef.current?.deleteTask(tid);
       // Remove from tasks Map
@@ -381,6 +389,12 @@ export function useTaskManager(): TaskManager {
           next.set(0, t);
           return next;
         });
+        // Navigate back to project root so activeTaskId becomes null
+        // and the virtual draft view renders.
+        if (ws && proj) {
+          const encodedProject = proj.replace(/\//g, ":");
+          routeRef.current(`/${ws}/${encodedProject}`, true);
+        }
       }
     } else if (pendingDraftCorrelation.current !== null) {
       // Creation is pending — mark for deletion when task_created arrives
@@ -424,6 +438,9 @@ export function useTaskManager(): TaskManager {
   );
 
   const handleTaskMessage = useCallback((tid: number, msg: AgnosticEvent) => {
+    // Skip stale events for recently deleted draft tasks (e.g. from
+    // requestHistory responses arriving after deleteDraftTask).
+    if (deletedDraftTids.current.has(tid)) return;
     const t = liveStates.get(tid);
     const prev = t ?? makeTaskState(tid, true);
     const updated = reduceMessage(prev, msg);
@@ -586,8 +603,24 @@ export function useTaskManager(): TaskManager {
               return next;
             });
           } else {
-            // User is still typing — keep URL at project root, just record the real tid.
+            // User is still typing — navigate URL to reflect the real tid
+            // (replaceState so back button returns to "new task" view).
             draftTidRef.current = tid;
+            draftNavigatingRef.current = true;
+            if (workspace && projectPath) {
+              const projName = findProjectName(
+                workspacesRef.current,
+                workspace,
+                projectPath,
+              );
+              if (projName) {
+                const encodedProject = projName.replace(/\//g, ":");
+                routeRef.current(
+                  `/${workspace}/${encodedProject}/task/${tid}`,
+                  true,
+                );
+              }
+            }
           }
           break; // Skip normal navigation logic
         }
@@ -634,6 +667,8 @@ export function useTaskManager(): TaskManager {
       case "tasks_list": {
         const updates = new Map<number, TaskState>();
         for (const entry of msg.tasks) {
+          // Skip recently deleted draft tasks
+          if (deletedDraftTids.current.has(entry.tid)) continue;
           const workspace = entry.workspace || "";
           const projectPath = entry.project_path || "";
           const existing = liveStates.get(entry.tid);
@@ -710,6 +745,8 @@ export function useTaskManager(): TaskManager {
       }
       case "task_updated": {
         const entry = msg.task;
+        // Skip updates for recently deleted draft tasks
+        if (deletedDraftTids.current.has(entry.tid)) break;
         const workspace = entry.workspace || "";
         const projectPath = entry.project_path || "";
         const existing = liveStates.get(entry.tid);
@@ -931,6 +968,7 @@ export function useTaskManager(): TaskManager {
           // Note: don't clear draftRenderKey — the virtual task with renderKey
           // is recreated by deleteDraftTask (same renderKey, tid=0)
         }
+        deletedDraftTids.current.delete(tid);
         liveStates.delete(tid);
         requestedHistoryRef.current.delete(tid);
         setTasks((prev) => {
@@ -1105,6 +1143,7 @@ export function useTaskManager(): TaskManager {
         draftRenderKeyRef.current = null;
         pendingDraftCorrelation.current = null;
         draftCancelled.current = false;
+        deletedDraftTids.current.clear();
         pendingFirstMessage.current = null;
         if (draftCreateTimerRef.current !== null) {
           clearTimeout(draftCreateTimerRef.current);
@@ -1156,8 +1195,14 @@ export function useTaskManager(): TaskManager {
     createVirtualDraft();
   }, [activeTaskId, activeWorkspace, createVirtualDraft]);
 
-  // Clear draft tracking when user navigates to the draft task via sidebar
+  // Clear draft tracking when user navigates to the draft task via sidebar.
+  // Skip when the isDraftCreation handler navigated the URL internally —
+  // draft state must persist so onContentEnd stays wired to deleteDraftTask.
   useEffect(() => {
+    if (draftNavigatingRef.current) {
+      draftNavigatingRef.current = false;
+      return;
+    }
     if (
       activeTaskId !== null &&
       draftTidRef.current !== null &&
