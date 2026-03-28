@@ -137,17 +137,6 @@ body,
   grid-row: 4;
 }
 
-/* Hide sidebar during loading/connecting state */
-.app.has-sidebar:has(.session-empty.no-sidebar) .sidebar {
-  display: none;
-}
-.app.has-sidebar:has(.session-empty.no-sidebar) {
-  grid-template-columns: 1fr;
-}
-.session-empty.no-sidebar {
-  grid-column: 1;
-}
-
 /* Welcome prompt (empty session with sidebar) */
 .welcome-prompt {
   display: flex;
@@ -1343,9 +1332,6 @@ body,
 
 .session-loading span {
   color: var(--text-dim);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  padding: 12px 24px;
 }
 
 .resume-bar {

@@ -371,7 +371,7 @@ function AppContent() {
               </div>
             </div>
           ) : (
-            <div class="session-empty no-sidebar">
+            <div class="session-empty">
               <div class="session-empty-inner">
                 <span>Loading task…</span>
               </div>
