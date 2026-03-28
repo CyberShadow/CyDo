@@ -17,7 +17,11 @@ function countMatches(lines: string[], pattern: RegExp): number {
 function waitForOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     ws.addEventListener("open", () => resolve(), { once: true });
-    ws.addEventListener("error", () => reject(new Error("WebSocket failed to open")), { once: true });
+    ws.addEventListener(
+      "error",
+      () => reject(new Error("WebSocket failed to open")),
+      { once: true },
+    );
   });
 }
 
@@ -29,7 +33,11 @@ function waitForMessage(
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       ws.removeEventListener("message", onMessage);
-      reject(new Error(`Timed out waiting for matching WebSocket message after ${timeoutMs}ms`));
+      reject(
+        new Error(
+          `Timed out waiting for matching WebSocket message after ${timeoutMs}ms`,
+        ),
+      );
     }, timeoutMs);
 
     const onMessage = async (event: MessageEvent) => {
@@ -60,6 +68,27 @@ function waitForMessage(
   });
 }
 
+function parsePortFromLines(
+  rl: ReturnType<typeof createInterface>,
+  proc: ReturnType<typeof spawn>,
+  pattern: RegExp,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onExit = (code: number | null) =>
+      reject(new Error(`Process exited with ${code} before logging port`));
+    const onLine = (line: string) => {
+      const match = line.match(pattern);
+      if (match) {
+        rl.off("line", onLine);
+        proc.off("exit", onExit);
+        resolve(parseInt(match[1], 10));
+      }
+    };
+    rl.on("line", onLine);
+    proc.on("exit", onExit);
+  });
+}
+
 const test = base.extend<WorkerFixtures>({
   backendLogs: [
     async ({}, use) => {
@@ -74,8 +103,6 @@ const test = base.extend<WorkerFixtures>({
       use: (value: WorkerFixtures["backend"]) => Promise<void>,
       workerInfo: WorkerInfo,
     ) => {
-      const port = 4300 + workerInfo.workerIndex;
-      const mockApiPort = 9300 + workerInfo.workerIndex;
       const workDir = `/tmp/cydo-suggestion-failure-worker-${workerInfo.workerIndex}`;
       const workerHome = `${workDir}/home`;
 
@@ -95,24 +122,30 @@ const test = base.extend<WorkerFixtures>({
         'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
       );
 
+      // Start per-worker mock API with port 0 (OS-assigned)
       const mockApiServerPath = join(__dirname, "../mock-api/server.mjs");
-      const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
       const mockProc = spawn(process.execPath, [mockApiServerPath], {
         env: {
           ...process.env,
-          MOCK_API_PORT: String(mockApiPort),
+          MOCK_API_PORT: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      if (mockProc.stdout) {
-        const rl = createInterface({ input: mockProc.stdout });
-        rl.on("line", (line) => backendLogs.push(`[mock-api] ${line}`));
-      }
+      const mockOutRl = createInterface({ input: mockProc.stdout! });
+      mockOutRl.on("line", (line) => backendLogs.push(`[mock-api] ${line}`));
       if (mockProc.stderr) {
         const rl = createInterface({ input: mockProc.stderr });
         rl.on("line", (line) => backendLogs.push(`[mock-api] ${line}`));
       }
+
+      // Parse actual port from mock API stdout
+      const mockApiPort = await parsePortFromLines(
+        mockOutRl,
+        mockProc,
+        /listening on http:\/\/127\.0\.0\.1:(\d+)/,
+      );
+      const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
 
       let mockReady = false;
       for (let i = 0; i < 30; i++) {
@@ -129,10 +162,16 @@ const test = base.extend<WorkerFixtures>({
       }
       if (!mockReady) {
         mockProc.kill();
-        throw new Error(`Mock API on port ${mockApiPort} did not start in time`);
+        throw new Error(
+          `Mock API on port ${mockApiPort} did not start in time`,
+        );
       }
 
-      const wrapperPath = join(__dirname, "..", "suggestion-one-shot-fail-wrapper.sh");
+      const wrapperPath = join(
+        __dirname,
+        "..",
+        "suggestion-one-shot-fail-wrapper.sh",
+      );
       const realClaudeBin = execFileSync("sh", ["-lc", "command -v claude"], {
         encoding: "utf8",
       }).trim();
@@ -142,7 +181,7 @@ const test = base.extend<WorkerFixtures>({
         env: {
           ...process.env,
           HOME: workerHome,
-          CYDO_LISTEN_PORT: String(port),
+          CYDO_LISTEN_PORT: "0",
           CYDO_LOG_LEVEL: "trace",
           CYDO_AUTH_USER: "",
           CYDO_AUTH_PASS: "",
@@ -155,12 +194,17 @@ const test = base.extend<WorkerFixtures>({
         stdio: ["ignore", "ignore", "pipe"],
       });
 
-      if (proc.stderr) {
-        const rl = createInterface({ input: proc.stderr });
-        rl.on("line", (line) => backendLogs.push(line));
-      }
+      const backendErrRl = createInterface({ input: proc.stderr! });
+      backendErrRl.on("line", (line) => backendLogs.push(line));
 
+      // Parse actual port from backend stderr
+      const port = await parsePortFromLines(
+        backendErrRl,
+        proc,
+        /CyDo server listening on \S+:(\d+)/,
+      );
       const baseURL = `http://localhost:${port}`;
+
       let ready = false;
       for (let i = 0; i < 60; i++) {
         try {
@@ -198,7 +242,10 @@ const test = base.extend<WorkerFixtures>({
   },
 });
 
-test("suggestion one-shot rejection keeps session responsive", async ({ backend, backendLogs }) => {
+test("suggestion one-shot rejection keeps session responsive", async ({
+  backend,
+  backendLogs,
+}) => {
   const ws = new WebSocket(`${backend.baseURL.replace("http", "ws")}/ws`);
   await waitForOpen(ws);
 
@@ -207,12 +254,14 @@ test("suggestion one-shot rejection keeps session responsive", async ({ backend,
     (data) => data.type === "task_created" && typeof data.tid === "number",
     10_000,
   );
-  ws.send(JSON.stringify({
-    type: "create_task",
-    workspace: "local",
-    project_path: "/tmp/cydo-test-workspace",
-    correlation_id: "repro",
-  }));
+  ws.send(
+    JSON.stringify({
+      type: "create_task",
+      workspace: "local",
+      project_path: "/tmp/cydo-test-workspace",
+      correlation_id: "repro",
+    }),
+  );
 
   const created = await createdPromise;
   const tid = created.tid as number;
@@ -225,12 +274,19 @@ test("suggestion one-shot rejection keeps session responsive", async ({ backend,
   ws.send(JSON.stringify({ type: "request_history", tid }));
   await historyEndPromise;
 
-  const failurePattern = /generateSuggestions\[\d+\]: one-shot failed: claude exited with status 1/;
+  const failurePattern =
+    /generateSuggestions\[\d+\]: one-shot failed: claude exited with status 1/;
   const resultPattern = /"type":"result","subtype":"success"/;
   let sawFailure = false;
   for (let i = 0; i < 6; i++) {
     const seenResults = countMatches(backendLogs, resultPattern);
-    ws.send(JSON.stringify({ type: "message", tid, content: [{ type: "text", text: 'Please reply with "done"' }] }));
+    ws.send(
+      JSON.stringify({
+        type: "message",
+        tid,
+        content: [{ type: "text", text: 'Please reply with "done"' }],
+      }),
+    );
 
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
