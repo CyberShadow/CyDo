@@ -1428,6 +1428,7 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
+		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
 		// Resumable tasks (completed with agentSessionId) require explicit "resume".
 		if (td.agentSessionId.length > 0 && (td.session is null || !td.session.alive))
 			return; // resumable but not resumed — ignore
@@ -1922,6 +1923,7 @@ class App : ToolsBackend
 		import std.algorithm : min, filter;
 		import std.array : array;
 		auto td = &tasks[tid];
+		assert(td.taskType.length > 0, "Task must have a task_type when sending a message");
 		// Strip image blocks for agents that don't support them.
 		const(ContentBlock)[] toSend = td.session.supportsImages
 			? content
@@ -2026,6 +2028,7 @@ class App : ToolsBackend
 	private void spawnTaskSession(int tid)
 	{
 		auto td = &tasks[tid];
+		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
 		td.wasKilledByUser = false;
 
 		// Look up the correct agent for this task's agent type
