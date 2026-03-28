@@ -69,6 +69,7 @@ function spawnBackend(port: number, workDir: string, workerHome: string, codexHo
     env: {
       ...process.env,
       HOME: workerHome,
+      CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
       CYDO_LISTEN_PORT: String(port),
       CYDO_LOG_LEVEL: "trace",
       CYDO_AUTH_USER: "",
@@ -108,6 +109,20 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     cpSync(
       "/tmp/playwright-home/.config/cydo/config.yaml",
       `${workerHome}/.config/cydo/config.yaml`,
+    );
+
+    // Per-test CLAUDE_CONFIG_DIR to prevent enumerateSessions() on restart
+    // from scanning JSONL files created by other parallel tests.
+    const claudeConfigDir = `${workerHome}/.claude`;
+    mkdirSync(claudeConfigDir, { recursive: true });
+    writeFileSync(
+      `${claudeConfigDir}/settings.json`,
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        theme: "dark",
+        skipDangerousModePermissionPrompt: true,
+        autoUpdates: false,
+      }),
     );
 
     // Per-test CODEX_HOME to avoid contention between parallel tests

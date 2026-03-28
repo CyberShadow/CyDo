@@ -308,6 +308,8 @@ class App : ToolsBackend
 				td.lastActive = td.createdAt;
 		}
 
+		enumerateSessions();
+
 		import std.process : environment;
 
 		auto sslCert = environment.get("CYDO_TLS_CERT", null);
