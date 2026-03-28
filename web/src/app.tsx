@@ -108,19 +108,20 @@ function AppContent() {
     return (
       <ThemeContext.Provider value={theme}>
         <div class="app welcome-page-container">
-          <WelcomePage
-            workspaces={workspaces}
-            tasks={tasks}
-            attention={attention}
-            taskTypes={taskTypes}
-            authEnabled={authEnabled}
-            onSelectTask={(tid) => {
-              setActiveTaskId(String(tid));
-            }}
-            onNavigateToProject={navigateToProject}
-            onRefreshWorkspaces={refreshWorkspaces}
-          />
-          {!connected && (
+          {connected ? (
+            <WelcomePage
+              workspaces={workspaces}
+              tasks={tasks}
+              attention={attention}
+              taskTypes={taskTypes}
+              authEnabled={authEnabled}
+              onSelectTask={(tid) => {
+                setActiveTaskId(String(tid));
+              }}
+              onNavigateToProject={navigateToProject}
+              onRefreshWorkspaces={refreshWorkspaces}
+            />
+          ) : (
             <div class="connection-overlay">
               <span>Connecting…</span>
             </div>
