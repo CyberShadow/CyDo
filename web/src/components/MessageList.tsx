@@ -10,6 +10,7 @@ import {
 } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
 import { useHighlight, renderTokens } from "../highlight";
+import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
@@ -712,6 +713,22 @@ export function MessageList({
                 inner = <TaskLifecycleView message={msg} />;
               } else if (msg.subtype === "control_response") {
                 inner = <ControlResponseView message={msg} />;
+              } else if (msg.subtype === "stderr") {
+                const text = msg.content
+                  .filter(
+                    (b): b is { type: "text"; text: string } =>
+                      b.type === "text",
+                  )
+                  .map((b) => b.text)
+                  .join("\n");
+                inner = (
+                  <div class="message stderr-message">
+                    <span class="stderr-badge">stderr</span>
+                    <pre class="stderr-content">
+                      {hasAnsi(text) ? renderAnsi(text) : text}
+                    </pre>
+                  </div>
+                );
               } else {
                 const text = msg.content
                   .filter(

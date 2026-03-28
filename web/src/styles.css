@@ -792,6 +792,32 @@ body,
   word-break: break-word;
 }
 
+/* Stderr messages */
+.stderr-message {
+  background: rgba(244, 67, 54, 0.08);
+  border-left: 3px solid var(--error);
+  font-size: 12px;
+}
+
+.stderr-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(244, 67, 54, 0.15);
+  color: var(--error);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.stderr-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
 /* Task lifecycle messages */
 .task-lifecycle-message {
   display: flex;
