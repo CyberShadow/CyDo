@@ -37,7 +37,7 @@ import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, Workspace
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
-	resolveSandbox, resolveSandboxForDiscovery;
+	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt;
@@ -1625,7 +1625,10 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 
 		if (archived)
+		{
 			archiveWorktreesForTask(tid);
+			cleanupSharedTmp(tid);
+		}
 		else
 			unarchiveWorktreesForTask(tid);
 	}
@@ -2084,6 +2087,9 @@ class App : ToolsBackend
 		// MCP socket must be accessible inside the sandbox
 		if (mcpSocketPath.length > 0)
 			td.sandbox.paths[mcpSocketPath] = PathMode.ro;
+
+		// Set up shared /tmp: all tasks in a tree share the same host-backed directory
+		td.sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
 
 		auto cmdPrefix = buildCommandPrefix(td.sandbox, chdir);
 
@@ -2908,6 +2914,61 @@ class App : ToolsBackend
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
 				unarchiveWorktreesDFS(childTid, true);
+	}
+
+	/// Find the root task ID by walking parentTid to the top of the tree.
+	private int findRootTid(int tid)
+	{
+		int current = tid;
+		for (;;)
+		{
+			auto tdp = current in tasks;
+			if (tdp is null)
+				return current;
+			if (tdp.parentTid <= 0 || tdp.parentTid == current)
+				return current;
+			current = tdp.parentTid;
+		}
+	}
+
+	/// Resolve the shared /tmp host path for a task.
+	/// All tasks in a tree share the same directory, keyed by root task ID.
+	/// Creates the directory on first access.
+	private string resolveSharedTmpPath(int tid)
+	{
+		import std.conv : to;
+		import std.file : mkdirRecurse, exists;
+		import std.path : buildPath;
+
+		int rootTid = findRootTid(tid);
+		auto path = buildPath(runtimeDir(), "tmp-" ~ rootTid.to!string);
+		if (!exists(path))
+			mkdirRecurse(path);
+		return path;
+	}
+
+	/// Remove the shared /tmp directory for this task's tree if this task is the root.
+	private void cleanupSharedTmp(int tid)
+	{
+		import std.conv : to;
+		import std.file : exists, rmdirRecurse;
+		import std.path : buildPath;
+
+		int rootTid = findRootTid(tid);
+		auto rootTd = rootTid in tasks;
+		if (rootTd is null)
+			return;
+		if (rootTid != tid && !rootTd.archived)
+			return; // root is still active, don't clean up
+
+		auto path = buildPath(runtimeDir(), "tmp-" ~ rootTid.to!string);
+		if (exists(path))
+		{
+			try
+				rmdirRecurse(path);
+			catch (Exception e)
+				warningf("cleanupSharedTmp: failed to remove %s: %s", path, e.msg);
+		}
 	}
 
 	/// Walk the parent_tid chain from `tid` to find the owning task's worktree path.
