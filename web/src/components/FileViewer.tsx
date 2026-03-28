@@ -3,7 +3,7 @@ import type { CSSProperties, PointerEventHandler } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { applyPatch, structuredPatch } from "diff";
-import type { DisplayMessage, FileEdit, TrackedFile } from "../types";
+import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import type { ThemedToken } from "../highlight";
 import { DiffView, PatchView } from "./ToolCall";
@@ -24,13 +24,12 @@ interface ResolvedEdit {
   isDeleted?: boolean;
 }
 
-/** Resolve the content for a single FileEdit by looking up the tool_use input
- *  and tool_result payload from the messages array.  This avoids storing full
- *  file contents in the reducer — content is only computed when the viewer
- *  is actually rendering. */
+/** Resolve the content for a single FileEdit by looking up the tool_use block
+ *  directly from the flat block store.  This avoids storing full file contents
+ *  in the reducer — content is only computed when the viewer is actually rendering. */
 function resolveEditContent(
   edit: FileEdit,
-  messages: DisplayMessage[],
+  blocks: Map<string, Block>,
 ): ResolvedEdit | null {
   if (edit.payload?.mode === "full_content") {
     if (edit.op === "delete") {
@@ -50,58 +49,49 @@ function resolveEditContent(
     };
   }
 
-  // Find the assistant message containing the tool_use block
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.type !== "assistant") continue;
-    const toolUse = m.content.find(
-      (c) => c.type === "tool_use" && c.id === edit.toolUseId,
-    );
-    if (!toolUse) continue;
+  // Look up the tool_use block directly by toolUseId (O(1)).
+  const block = blocks.get(edit.toolUseId);
+  if (!block) return null;
 
-    const input = toolUse.input ?? {};
-    const toolResult = m.toolResults?.get(edit.toolUseId);
-    const tr = (toolResult?.toolResult ?? {}) as Record<string, unknown>;
+  const input = (block.input ?? {}) as Record<string, unknown>;
+  const tr = (block.result?.toolResult ?? {}) as Record<string, unknown>;
 
-    const originalFile =
-      typeof tr.originalFile === "string" ? tr.originalFile : null;
-    const structuredPatch = Array.isArray(tr.structuredPatch)
-      ? tr.structuredPatch
-      : undefined;
+  const originalFile =
+    typeof tr.originalFile === "string" ? tr.originalFile : null;
+  const structuredPatch = Array.isArray(tr.structuredPatch)
+    ? tr.structuredPatch
+    : undefined;
 
-    if (edit.type === "edit") {
-      if (originalFile == null) return null;
-      const oldString =
-        typeof input.old_string === "string" ? input.old_string : "";
-      const newString =
-        typeof input.new_string === "string" ? input.new_string : "";
-      let contentAfter: string;
-      if (input.replace_all) {
-        contentAfter = originalFile.split(oldString).join(newString);
+  if (edit.type === "edit") {
+    if (originalFile == null) return null;
+    const oldString =
+      typeof input.old_string === "string" ? input.old_string : "";
+    const newString =
+      typeof input.new_string === "string" ? input.new_string : "";
+    let contentAfter: string;
+    if (input.replace_all) {
+      contentAfter = originalFile.split(oldString).join(newString);
+    } else {
+      const idx = originalFile.indexOf(oldString);
+      if (idx >= 0) {
+        contentAfter =
+          originalFile.slice(0, idx) +
+          newString +
+          originalFile.slice(idx + oldString.length);
       } else {
-        const idx = originalFile.indexOf(oldString);
-        if (idx >= 0) {
-          contentAfter =
-            originalFile.slice(0, idx) +
-            newString +
-            originalFile.slice(idx + oldString.length);
-        } else {
-          contentAfter = originalFile;
-        }
+        contentAfter = originalFile;
       }
-      return { contentBefore: originalFile, contentAfter, structuredPatch };
     }
-
-    const contentAfter =
-      typeof input.content === "string" ? input.content : null;
-    if (contentAfter == null) return null;
-    return {
-      contentBefore: originalFile,
-      contentAfter,
-      structuredPatch,
-    };
+    return { contentBefore: originalFile, contentAfter, structuredPatch };
   }
-  return null;
+
+  const contentAfter = typeof input.content === "string" ? input.content : null;
+  if (contentAfter == null) return null;
+  return {
+    contentBefore: originalFile,
+    contentAfter,
+    structuredPatch,
+  };
 }
 
 interface ResolvedFileContent {
@@ -138,7 +128,7 @@ function toUnifiedPatch(patchText: string): string | null {
 /** Resolve all edits for a file and return the current (latest) content. */
 function resolveFileContent(
   file: TrackedFile,
-  messages: DisplayMessage[],
+  blocks: Map<string, Block>,
 ): ResolvedFileContent | null {
   const resolved = new Map<number, ResolvedEdit>();
   let currentContent: string | null = null;
@@ -150,7 +140,7 @@ function resolveFileContent(
   for (let i = 0; i < file.edits.length; i++) {
     const edit = file.edits[i]!;
     if (edit.status === "cancelled") continue;
-    let r = resolveEditContent(edit, messages);
+    let r = resolveEditContent(edit, blocks);
     if (r) {
       resolved.set(i, r);
       if (edit.status !== "applied") continue;
@@ -246,7 +236,7 @@ type ViewMode = "source" | "diff" | "cumulative" | "rendered";
 
 interface FileViewerProps {
   trackedFiles: Map<string, TrackedFile>;
-  messages: DisplayMessage[];
+  blocks: Map<string, Block>;
   selectedFile: string | null;
   selectedEditIndex: number | null;
   viewMode: ViewMode;
@@ -639,7 +629,7 @@ function EditHistory({
 
 export function FileViewer({
   trackedFiles,
-  messages,
+  blocks,
   selectedFile,
   selectedEditIndex,
   viewMode,
@@ -660,8 +650,8 @@ export function FileViewer({
   // and a file is selected.  useMemo ensures we don't recompute on every render
   // unless the file or messages actually change.
   const resolved = useMemo(
-    () => (file ? resolveFileContent(file, messages) : null),
-    [file, messages],
+    () => (file ? resolveFileContent(file, blocks) : null),
+    [file, blocks],
   );
   const selectedResolvedEdit =
     file && resolved && selectedEditIndex != null

@@ -1,5 +1,5 @@
 import { Fragment } from "preact";
-import type { DisplayMessage } from "../types";
+import type { DisplayMessage, Block } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
@@ -82,21 +82,23 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
 
 interface Props {
   message: DisplayMessage;
+  blocks: Map<string, Block>;
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
 }
 
 export function AssistantMessage({
   message,
+  blocks,
   childrenByParent,
   onViewFile,
 }: Props) {
-  const hasStreamingBlocks = (message.streamingBlocks?.length ?? 0) > 0;
+  const isStreaming = message.streaming === true;
   const isSynthetic = message.model === "<synthetic>";
   return (
     <div
       class={`message assistant-message${
-        hasStreamingBlocks ? " streaming" : ""
+        isStreaming ? " streaming" : ""
       }${isSynthetic ? " synthetic-message" : ""}`}
     >
       {(message.isSidechain || isSynthetic) && (
@@ -107,191 +109,150 @@ export function AssistantMessage({
           {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
         </div>
       )}
-      {(() => {
-        // Build unified render list sorted by creationOrder so completed
-        // content blocks and still-streaming blocks stay in stable order.
-        type RenderItem =
-          | {
-              streaming: false;
-              block: (typeof message.content)[number];
-              order: number;
-            }
-          | {
-              streaming: true;
-              block: NonNullable<typeof message.streamingBlocks>[number];
-              order: number;
-            };
-        const items: RenderItem[] = [];
-        for (const block of message.content) {
-          items.push({
-            streaming: false,
-            block,
-            order:
-              ((block as Record<string, unknown>)._creationOrder as
-                | number
-                | undefined) ?? 0,
-          });
+      {(message.blockIds ?? []).map((itemId, i) => {
+        const block = blocks.get(itemId);
+        if (!block) return null;
+
+        const blockExtras = { ...(block._extras ?? {}) };
+        const caller = blockExtras.caller;
+        if (
+          caller &&
+          typeof caller === "object" &&
+          (caller as Record<string, unknown>).type === "direct"
+        ) {
+          delete blockExtras.caller;
         }
-        for (const block of message.streamingBlocks ?? []) {
-          items.push({ streaming: true, block, order: block.creationOrder });
-        }
-        items.sort((a, b) => a.order - b.order);
-
-        return items.map((item, i) => {
-          if (!item.streaming) {
-            const block = item.block;
-            const blockExtras = { ...block._extras };
-            const caller = blockExtras.caller;
-            if (
-              caller &&
-              typeof caller === "object" &&
-              (caller as Record<string, unknown>).type === "direct"
-            ) {
-              delete blockExtras.caller;
-            }
-            const blockExtraEl =
-              Object.keys(blockExtras).length > 0 ? (
-                <div class="unknown-extra-fields">
-                  {Object.entries(blockExtras).map(([k, v]) => (
-                    <div key={k} class="tool-input-field">
-                      <span class="field-label">{k}:</span>
-                      <span class="field-value">
-                        {" "}
-                        {typeof v === "string" ? v : JSON.stringify(v)}
-                      </span>
-                    </div>
-                  ))}
+        const blockExtraEl =
+          Object.keys(blockExtras).length > 0 ? (
+            <div class="unknown-extra-fields">
+              {Object.entries(blockExtras).map(([k, v]) => (
+                <div key={k} class="tool-input-field">
+                  <span class="field-label">{k}:</span>
+                  <span class="field-value">
+                    {" "}
+                    {typeof v === "string" ? v : JSON.stringify(v)}
+                  </span>
                 </div>
-              ) : null;
+              ))}
+            </div>
+          ) : null;
 
-            if (block.type === "thinking") {
-              return (
-                <Fragment key={i}>
-                  <Markdown text={block.text ?? ""} class="thinking-text" />
-                  {blockExtraEl}
-                </Fragment>
-              );
-            }
-            if (block.type === "tool_use") {
-              const result = message.toolResults?.get(block.id!);
-              const nested = childrenByParent?.get(block.id!);
-              return (
-                <Fragment key={i}>
-                  <ToolCall
-                    name={block.name!}
-                    toolUseId={block.id}
-                    input={block.input!}
-                    result={result}
-                    onViewFile={onViewFile}
-                  >
-                    {typeof block.output === "string" && block.output && (
-                      <pre class="tool-result streaming-output">
-                        {hasAnsi(block.output)
-                          ? renderAnsi(block.output)
-                          : block.output}
-                      </pre>
-                    )}
-                    {nested && nested.length > 0 && (
-                      <div class="sub-agent-messages">
-                        {nested.map((child) => {
-                          if (child.type === "assistant") {
-                            return (
-                              <AssistantMessage
-                                key={child.id}
-                                message={child}
-                                childrenByParent={childrenByParent}
-                                onViewFile={onViewFile}
-                              />
-                            );
-                          }
-                          if (child.type === "user") {
-                            return (
-                              <UserMessage key={child.id} message={child} />
-                            );
-                          }
-                          return null;
-                        })}
-                      </div>
-                    )}
-                  </ToolCall>
-                  {blockExtraEl}
-                </Fragment>
-              );
-            }
-            if (block.type === "text") {
-              return (
-                <Fragment key={i}>
-                  <Markdown text={block.text ?? ""} class="text-content" />
-                  {blockExtraEl}
-                </Fragment>
-              );
-            }
-            return (
-              <div key={i} class="unknown-block">
-                <div class="unknown-block-label">
-                  Unknown block type: {block.type}
-                </div>
-                <pre>{JSON.stringify(block, null, 2)}</pre>
-                {blockExtraEl}
-              </div>
-            );
-          }
-
-          // Streaming block
-          const block = item.block;
+        if (block.type === "thinking") {
           return (
-            <div key={block.itemId} class={`content-block ${block.type}`}>
-              {block.type === "thinking" && (
-                <Markdown text={block.text} class="thinking-text" />
-              )}
-              {block.type === "text" && (
+            <Fragment key={itemId}>
+              <Markdown text={block.text} class="thinking-text" />
+              {blockExtraEl}
+            </Fragment>
+          );
+        }
+
+        if (block.type === "text") {
+          return (
+            <Fragment key={itemId}>
+              {block.completed ? (
+                <Markdown text={block.text} class="text-content" />
+              ) : (
                 <div class="text-content streaming-text">
                   <Markdown text={block.text} />
                   <span class="cursor" />
                 </div>
               )}
-              {block.type === "tool_use" && block.name && (
-                <Fragment>
-                  <ToolCall
-                    name={block.name}
-                    streaming
-                    input={
-                      (block.input as Record<string, unknown> | undefined) ??
-                      tryParsePartialJson(block.text)
-                    }
-                    onViewFile={onViewFile}
-                  >
-                    {block.stdin && (
-                      <pre class="tool-result streaming-stdin">
-                        {block.stdin}
-                      </pre>
-                    )}
-                    {block.output && (
+              {blockExtraEl}
+            </Fragment>
+          );
+        }
+
+        if (block.type === "tool_use") {
+          if (!block.name && !block.completed) {
+            // Tool name not yet arrived
+            return (
+              <div key={itemId} class="tool-streaming">
+                <span class="tool-label">Tool call building...</span>
+                <pre>{block.text}</pre>
+              </div>
+            );
+          }
+          if (block.name) {
+            const nested = childrenByParent?.get(block.itemId);
+            return (
+              <Fragment key={itemId}>
+                <ToolCall
+                  name={block.name}
+                  toolUseId={block.itemId}
+                  streaming={!block.completed}
+                  input={
+                    block.completed
+                      ? ((block.input as Record<string, unknown> | undefined) ??
+                        {})
+                      : ((block.input as Record<string, unknown> | undefined) ??
+                        tryParsePartialJson(block.text))
+                  }
+                  result={block.completed ? block.result : undefined}
+                  onViewFile={onViewFile}
+                >
+                  {block.stdin && (
+                    <pre class="tool-result streaming-stdin">{block.stdin}</pre>
+                  )}
+                  {typeof block.output === "string" &&
+                    block.output &&
+                    !block.result && (
                       <pre class="tool-result streaming-output">
                         {hasAnsi(block.output)
                           ? renderAnsi(block.output)
                           : block.output}
                       </pre>
                     )}
-                  </ToolCall>
-                </Fragment>
-              )}
-              {block.type === "tool_use" && !block.name && (
-                <div class="tool-streaming">
-                  <span class="tool-label">Tool call building...</span>
-                  <pre>{block.text}</pre>
-                </div>
-              )}
-              {block.type === "unrecognized" && (
-                <div class="unknown-block">
-                  <div class="unknown-block-label">Unrecognized agent data</div>
-                  <pre>{block.text}</pre>
-                </div>
-              )}
+                  {nested && nested.length > 0 && block.completed && (
+                    <div class="sub-agent-messages">
+                      {nested.map((child) => {
+                        if (child.type === "assistant") {
+                          return (
+                            <AssistantMessage
+                              key={child.id}
+                              message={child}
+                              blocks={blocks}
+                              childrenByParent={childrenByParent}
+                              onViewFile={onViewFile}
+                            />
+                          );
+                        }
+                        if (child.type === "user") {
+                          return <UserMessage key={child.id} message={child} />;
+                        }
+                        return null;
+                      })}
+                    </div>
+                  )}
+                </ToolCall>
+                {blockExtraEl}
+              </Fragment>
+            );
+          }
+          return null;
+        }
+
+        if (block.type === "unrecognized") {
+          return (
+            <div key={itemId} class={`content-block ${block.type}`}>
+              <div class="unknown-block">
+                <div class="unknown-block-label">Unrecognized agent data</div>
+                <pre>{block.text}</pre>
+              </div>
             </div>
           );
-        });
-      })()}
+        }
+
+        // Unknown block type
+        return (
+          <div key={i} class="unknown-block">
+            <div class="unknown-block-label">
+              Unknown block type: {block.type}
+            </div>
+            <pre>{JSON.stringify(block, null, 2)}</pre>
+            {blockExtraEl}
+          </div>
+        );
+      })}
       {message.extraFields && Object.keys(message.extraFields).length > 0 && (
         <div class="unknown-extra-fields">
           {Object.entries(message.extraFields).map(([k, v]) => (

@@ -271,7 +271,7 @@ function SessionViewInner({
       {fileViewerState && (
         <FileViewer
           trackedFiles={task.trackedFiles}
-          messages={task.messages}
+          blocks={task.blocks}
           selectedFile={fileViewerState.selectedFile}
           selectedEditIndex={fileViewerState.selectedEditIndex}
           viewMode={fileViewerState.viewMode}
@@ -345,6 +345,7 @@ function SessionViewInner({
         <MessageList
           sessionId={task.tid}
           messages={task.messages}
+          blocks={task.blocks}
           isProcessing={task.isProcessing}
           onFork={onFork}
           onUndo={onUndo}

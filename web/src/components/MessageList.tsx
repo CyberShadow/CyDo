@@ -8,7 +8,7 @@ import {
   useMemo,
   useCallback,
 } from "preact/hooks";
-import type { DisplayMessage } from "../types";
+import type { DisplayMessage, Block } from "../types";
 import { useHighlight, renderTokens } from "../highlight";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
@@ -21,6 +21,7 @@ import undoIcon from "../icons/undo.svg?raw";
 interface Props {
   sessionId: number;
   messages: DisplayMessage[];
+  blocks: Map<string, Block>;
   isProcessing: boolean;
   onFork?: (sid: number, afterUuid: string) => void;
   onUndo?: (tid: number, afterUuid: string) => void;
@@ -408,6 +409,7 @@ const MessageView = memo(
   function MessageView({
     msg,
     tid,
+    blocks,
     onFork,
     onUndo,
     onEdit,
@@ -416,6 +418,7 @@ const MessageView = memo(
   }: {
     msg: DisplayMessage;
     tid: number;
+    blocks: Map<string, Block>;
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     onEdit?: (uuid: string, content: string) => void;
@@ -428,13 +431,22 @@ const MessageView = memo(
     const uuid = msg.uuid;
 
     const startEdit = useCallback(() => {
-      const text = msg.content
-        .filter((b): b is { type: "text"; text: string } => b.type === "text")
-        .map((b) => b.text)
-        .join("\n");
+      let text: string;
+      if (msg.type === "assistant") {
+        text = (msg.blockIds ?? [])
+          .map((id) => blocks.get(id))
+          .filter((b) => b?.type === "text")
+          .map((b) => b!.text)
+          .join("\n");
+      } else {
+        text = msg.content
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text)
+          .join("\n");
+      }
       setEditText(text);
       setEditing(true);
-    }, [msg.content]);
+    }, [msg, blocks]);
 
     const saveEdit = useCallback(() => {
       if (uuid && onEdit) onEdit(uuid, editText);
@@ -459,7 +471,7 @@ const MessageView = memo(
               />
             </button>
           )}
-          {(msg.rawSource != null || msg.streamingBlocks !== undefined) && (
+          {(msg.rawSource != null || msg.streaming === true) && (
             <button
               class="msg-action-btn view-source-btn"
               onClick={() => {
@@ -548,6 +560,7 @@ const MessageView = memo(
   },
   (prev, next) =>
     prev.msg === next.msg &&
+    prev.blocks === next.blocks &&
     prev.tid === next.tid &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
@@ -558,6 +571,7 @@ const MessageView = memo(
 export function MessageList({
   sessionId,
   messages,
+  blocks,
   onFork,
   onUndo,
   onEditMessage,
@@ -671,6 +685,7 @@ export function MessageList({
               inner = (
                 <AssistantMessage
                   message={msg}
+                  blocks={blocks}
                   childrenByParent={childrenByParent}
                   onViewFile={onViewFile}
                 />
@@ -732,6 +747,7 @@ export function MessageList({
               key={msg.id}
               msg={msg}
               tid={sessionId}
+              blocks={blocks}
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               onEdit={msg.type === "user" ? handleEditMessage : undefined}

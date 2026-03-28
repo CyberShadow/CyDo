@@ -27,11 +27,12 @@ export interface DisplayMessage {
     | "stderr"
     | "parse_error";
   content: AssistantContentBlock[];
-  toolResults?: Map<string, ToolResult>;
   model?: string;
   pending?: boolean;
-  // In-progress streaming content blocks (text/tool_use/thinking being received)
-  streamingBlocks?: StreamingBlock[];
+  /** Ordered block IDs for assistant messages — references blocks in TaskState.blocks. */
+  blockIds?: string[];
+  /** True while the assistant turn is still streaming; false after turn/stop. */
+  streaming?: boolean;
   // Additional metadata for richer display
   isSidechain?: boolean;
   isSynthetic?: boolean;
@@ -39,8 +40,6 @@ export interface DisplayMessage {
   isSteering?: boolean;
   isCompactSummary?: boolean;
   parentToolUseId?: string | null;
-  /** Bumped when a nested child message under this message's tool_use blocks changes. */
-  nestedVersion?: number;
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields
   resultData?: {
@@ -72,7 +71,7 @@ export interface DisplayMessage {
   };
   // System status
   statusText?: string;
-  // Monotonic counter for assigning creation order to streaming blocks
+  // Monotonic counter for assigning creation order to blocks
   nextCreationOrder?: number;
   // Original wire-protocol message(s) for "view source"
   rawSource?: unknown;
@@ -132,15 +131,20 @@ export interface TrackedFile {
   edits: FileEdit[];
 }
 
-export interface StreamingBlock {
-  itemId: string; // ID-based lookup for item/* protocol
-  type: string; // "text" | "tool_use" | "thinking"
-  text: string; // accumulated text/input_json so far
-  name?: string; // tool name for tool_use blocks
-  input?: unknown; // initial input (from item/started, for tool_use)
-  output?: string; // accumulated output (for output_delta)
-  stdin?: string; // accumulated stdin (for stdin_delta)
-  creationOrder: number; // monotonic counter for preserving creation order
+/** Unified block type replacing StreamingBlock and AssistantContentBlock for rendering.
+ *  Present in TaskState.blocks, keyed by itemId. */
+export interface Block {
+  itemId: string;
+  type: string; // "text" | "tool_use" | "thinking" | "unrecognized"
+  text: string; // accumulated text content
+  name?: string; // tool name (tool_use)
+  input?: unknown; // tool input
+  output?: string; // accumulated output (output_delta)
+  stdin?: string; // accumulated stdin (stdin_delta)
+  completed: boolean; // false while streaming, true after item/completed or turn/stop
+  creationOrder: number; // monotonic counter for stable ordering
+  result?: ToolResult; // tool result (tool_use only, set by item/result)
+  _extras?: Record<string, unknown>;
 }
 
 export interface SessionInfo {
@@ -216,8 +220,10 @@ export interface TaskState {
   } | null;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;
-  /** Maps item IDs to their message index for O(1) lookup after sealing. */
-  itemIndex: Map<string, number>;
+  /** Flat block store keyed by unique block key — source of truth for assistant message content. */
+  blocks: Map<string, Block>;
+  /** Maps raw event item_id → block key (item IDs are only unique within a turn). */
+  itemIdMap: Map<string, string>;
 }
 
 export function makeTaskState(
@@ -263,6 +269,7 @@ export function makeTaskState(
     createdAt: createdAt || undefined,
     lastActive: lastActive || undefined,
     trackedFiles: new Map(),
-    itemIndex: new Map(),
+    blocks: new Map(),
+    itemIdMap: new Map(),
   };
 }
