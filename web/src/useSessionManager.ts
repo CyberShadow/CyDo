@@ -1033,9 +1033,14 @@ export function useTaskManager(): TaskManager {
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
+    let flushTimerId: ReturnType<typeof setTimeout> | null = null;
 
     const flush = () => {
       flushId = null;
+      if (flushTimerId !== null) {
+        clearTimeout(flushTimerId);
+        flushTimerId = null;
+      }
       const batch = buffer;
       buffer = [];
       for (const item of batch) {
@@ -1054,6 +1059,10 @@ export function useTaskManager(): TaskManager {
         cancelAnimationFrame(flushId);
         flushId = null;
       }
+      if (flushTimerId !== null) {
+        clearTimeout(flushTimerId);
+        flushTimerId = null;
+      }
     };
 
     const scheduleFlush = () => {
@@ -1064,6 +1073,15 @@ export function useTaskManager(): TaskManager {
       }
       if (flushId !== null) return;
       flushId = requestAnimationFrame(flush);
+      // Fallback: if rAF is deprioritized (e.g. headless Chromium with no
+      // interaction), flush after 50ms so tests don't time out.
+      flushTimerId = setTimeout(() => {
+        if (flushId !== null) {
+          cancelAnimationFrame(flushId);
+          flushId = null;
+          flush();
+        }
+      }, 50);
     };
 
     // If the tab becomes hidden while a rAF is pending, it will never fire.
