@@ -395,8 +395,20 @@ class App : ToolsBackend
 	{
 		shuttingDown = true;
 		foreach (ref td; tasks)
+		{
 			if (td.session && td.session.alive)
 				td.session.stop();
+			if (td.titleGenKill !is null)
+			{
+				td.titleGenKill();
+				td.titleGenKill = null;
+			}
+			if (td.suggestGenKill !is null)
+			{
+				td.suggestGenKill();
+				td.suggestGenKill = null;
+			}
+		}
 		{
 			import cydo.agent.codex : CodexAgent;
 			foreach (a; agentsByType)
@@ -633,7 +645,9 @@ class App : ToolsBackend
 			));
 			conn.sendResponse(response.serveData(resultJson));
 			onToolCallDelivered(call.tid);
-		});
+		}).except((Exception e) {
+			warningf("dispatchTool: unhandled error: %s", e.msg);
+		}).ignoreResult();
 	}
 
 	/// Dispatch an MCP tool call. Returns a promise that resolves when the
@@ -3505,8 +3519,7 @@ class App : ToolsBackend
 				persistence.setTitle(tid, title);
 				broadcastTitleUpdate(tid, title);
 			}
-		});
-		td.titleGenHandle.except((Exception e) {
+		}).except((Exception e) {
 			if (tid !in tasks)
 				return;
 			tasks[tid].titleGenHandle = null;
@@ -3516,7 +3529,7 @@ class App : ToolsBackend
 			ProcessStderrEvent ev;
 			ev.text = "failed to generate title: " ~ e.msg;
 			broadcastTask(tid, toJson(ev));
-		});
+		}).ignoreResult();
 
 	}
 
@@ -3695,14 +3708,13 @@ class App : ToolsBackend
 				tasks[tid].lastSuggestions = suggestionList;
 				broadcastSuggestionsUpdate(tid, suggestionList);
 			}
-		});
-		td.suggestGenHandle.except((Exception e) {
+		}).except((Exception e) {
 			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
 			if (tid !in tasks)
 				return;
 			tasks[tid].suggestGenHandle = null;
 			tasks[tid].suggestGenKill = null;
-		});
+		}).ignoreResult();
 
 	}
 
