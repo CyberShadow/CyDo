@@ -84,22 +84,29 @@ function AppContent() {
     };
   }, []);
 
+  const handleSearchSelect = useCallback(
+    (tid: number) => {
+      setActiveTaskId(String(tid));
+    },
+    [setActiveTaskId],
+  );
+
+  const handleSearchClose = useCallback(() => {
+    setShowSearch(false);
+    // Re-focus the input box or resume button after dismissing search
+    requestAnimationFrame(() => {
+      const input = document.querySelector(".input-textarea");
+      const resume = document.querySelector(".btn-resume");
+      ((input ?? resume) as HTMLElement | null)?.focus();
+    });
+  }, []);
+
   const searchPopup = showSearch && (
     <SearchPopup
       tasks={tasks}
       taskTypes={taskTypes}
-      onSelect={(tid) => {
-        setActiveTaskId(String(tid));
-      }}
-      onClose={() => {
-        setShowSearch(false);
-        // Re-focus the input box or resume button after dismissing search
-        requestAnimationFrame(() => {
-          const input = document.querySelector(".input-textarea");
-          const resume = document.querySelector(".btn-resume");
-          ((input ?? resume) as HTMLElement | null)?.focus();
-        });
-      }}
+      onSelect={handleSearchSelect}
+      onClose={handleSearchClose}
     />
   );
 
@@ -115,9 +122,7 @@ function AppContent() {
               attention={attention}
               taskTypes={taskTypes}
               authEnabled={authEnabled}
-              onSelectTask={(tid) => {
-                setActiveTaskId(String(tid));
-              }}
+              onSelectTask={handleSearchSelect}
               onNavigateToProject={navigateToProject}
               onRefreshWorkspaces={refreshWorkspaces}
             />
@@ -238,6 +243,31 @@ function AppContent() {
     };
   }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
 
+  const handleCloseSidebar = useCallback(() => {
+    setSidebarOpen(false);
+  }, []);
+
+  const handleOpenSearch = useCallback(() => {
+    setShowSearch(true);
+  }, []);
+
+  const handleSidebarArchive = useCallback(
+    (tid: number) => {
+      const task = tasks.get(tid);
+      if (task) {
+        setArchived(tid, !task.archived);
+      }
+    },
+    [tasks, setArchived],
+  );
+
+  const handleDraftContentStart = useCallback(
+    (taskType: string) => {
+      createDraftTask(taskType);
+    },
+    [createDraftTask],
+  );
+
   const handleSidebarSelect = useCallback(
     (tid: string) => {
       setActiveTaskId(tid);
@@ -257,12 +287,7 @@ function AppContent() {
     <ThemeContext.Provider value={theme}>
       <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         {sidebarOpen && (
-          <div
-            class="sidebar-backdrop"
-            onClick={() => {
-              setSidebarOpen(false);
-            }}
-          />
+          <div class="sidebar-backdrop" onClick={handleCloseSidebar} />
         )}
         {!connected && (
           <div class="connection-overlay">
@@ -280,15 +305,8 @@ function AppContent() {
           projectName={activeProject || undefined}
           taskTypes={taskTypes}
           visible={sidebarOpen}
-          onOpenSearch={() => {
-            setShowSearch(true);
-          }}
-          onArchive={(tid) => {
-            const task = tasks.get(tid);
-            if (task) {
-              setArchived(tid, !task.archived);
-            }
-          }}
+          onOpenSearch={handleOpenSearch}
+          onArchive={handleSidebarArchive}
         />
         {Array.from(tasks.values())
           .filter((t) => {
@@ -349,9 +367,7 @@ function AppContent() {
                   }
                   onContentStart={
                     task.renderKey === draftRenderKey
-                      ? (taskType: string) => {
-                          createDraftTask(taskType);
-                        }
+                      ? handleDraftContentStart
                       : undefined
                   }
                   onContentEnd={

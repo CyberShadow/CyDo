@@ -185,7 +185,65 @@ function SessionViewInner({
     [onSaveDraft, task.tid],
   );
 
-  const quoteSelection = () => {
+  const handleSetArchived = useCallback(() => {
+    onSetArchived?.(task.tid, !task.archived);
+  }, [onSetArchived, task.tid, task.archived]);
+
+  const handleSelectFile = useCallback((path: string) => {
+    setFileViewerState((s) =>
+      s ? { ...s, selectedFile: path, selectedEditIndex: null } : s,
+    );
+  }, []);
+
+  const handleSelectEdit = useCallback((idx: number | null) => {
+    setFileViewerState((s) => (s ? { ...s, selectedEditIndex: idx } : s));
+  }, []);
+
+  const handleChangeViewMode = useCallback(
+    (mode: "source" | "diff" | "cumulative" | "rendered") => {
+      setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s));
+    },
+    [],
+  );
+
+  const handleResize = useCallback((h: number) => {
+    setFileViewerState((s) => (s ? { ...s, height: h } : s));
+  }, []);
+
+  const handleSessionConfigFocus = useCallback(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleInputDraftConsumed = useCallback(() => {
+    onClearInputDraft(task.tid);
+  }, [onClearInputDraft, task.tid]);
+
+  const handleUndoConfirm = useCallback(
+    (rc: boolean, rf: boolean) => {
+      onUndoConfirm(task.tid, rc, rf);
+    },
+    [onUndoConfirm, task.tid],
+  );
+
+  const handleUndoDismiss = useCallback(() => {
+    onUndoDismiss(task.tid);
+  }, [onUndoDismiss, task.tid]);
+
+  const handleAskUserSubmit = useCallback(
+    (answers: Record<string, string>) => {
+      onAskUserResponse(task.tid, JSON.stringify({ answers }));
+    },
+    [onAskUserResponse, task.tid],
+  );
+
+  const handleAskUserAbort = useCallback(() => {
+    onAskUserResponse(
+      task.tid,
+      JSON.stringify({ error: "User refused to answer questions" }),
+    );
+  }, [onAskUserResponse, task.tid]);
+
+  const quoteSelection = useCallback(() => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return false;
     const anchor =
@@ -201,7 +259,7 @@ function SessionViewInner({
       return true;
     }
     return false;
-  };
+  }, []);
 
   useLayoutEffect(() => {
     if (!isActive) return;
@@ -266,13 +324,7 @@ function SessionViewInner({
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
         archived={task.archived}
-        onSetArchived={
-          onSetArchived
-            ? () => {
-                onSetArchived(task.tid, !task.archived);
-              }
-            : undefined
-        }
+        onSetArchived={onSetArchived ? handleSetArchived : undefined}
       />
       {fileViewerState && (
         <FileViewer
@@ -282,23 +334,11 @@ function SessionViewInner({
           selectedEditIndex={fileViewerState.selectedEditIndex}
           viewMode={fileViewerState.viewMode}
           height={fileViewerState.height}
-          onSelectFile={(path) => {
-            setFileViewerState((s) =>
-              s ? { ...s, selectedFile: path, selectedEditIndex: null } : s,
-            );
-          }}
-          onSelectEdit={(idx) => {
-            setFileViewerState((s) =>
-              s ? { ...s, selectedEditIndex: idx } : s,
-            );
-          }}
-          onChangeViewMode={(mode) => {
-            setFileViewerState((s) => (s ? { ...s, viewMode: mode } : s));
-          }}
+          onSelectFile={handleSelectFile}
+          onSelectEdit={handleSelectEdit}
+          onChangeViewMode={handleChangeViewMode}
           onClose={closeFileViewer}
-          onResize={(h) => {
-            setFileViewerState((s) => (s ? { ...s, height: h } : s));
-          }}
+          onResize={handleResize}
           onScrollToToolCall={scrollToToolCall}
         />
       )}
@@ -334,8 +374,8 @@ function SessionViewInner({
                 selected={selectedTaskType}
                 onTaskTypeChange={setSelectedTaskType}
                 pickerRef={taskTypePickerRef}
-                onConfirm={() => inputRef.current?.focus()}
-                onType={() => inputRef.current?.focus()}
+                onConfirm={handleSessionConfigFocus}
+                onType={handleSessionConfigFocus}
               />
               <InputBox
                 onSend={handleSend}
@@ -344,9 +384,7 @@ function SessionViewInner({
                 disabled={false}
                 sessionId={task.tid}
                 inputDraft={task.inputDraft}
-                onInputDraftConsumed={() => {
-                  onClearInputDraft(task.tid);
-                }}
+                onInputDraftConsumed={handleInputDraftConsumed}
                 serverDraft={task.serverDraft}
                 onSaveDraft={
                   task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
@@ -386,12 +424,8 @@ function SessionViewInner({
         <UndoConfirmDialog
           messagesRemoved={task.undoPending.messagesRemoved}
           supportsFileRevert={task.sessionInfo?.supports_file_revert !== false}
-          onConfirm={(rc, rf) => {
-            onUndoConfirm(task.tid, rc, rf);
-          }}
-          onDismiss={() => {
-            onUndoDismiss(task.tid);
-          }}
+          onConfirm={handleUndoConfirm}
+          onDismiss={handleUndoDismiss}
         />
       )}
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
@@ -423,15 +457,8 @@ function SessionViewInner({
       ) : task.pendingAskUser ? (
         <AskUserForm
           questions={task.pendingAskUser.questions}
-          onSubmit={(answers) => {
-            onAskUserResponse(task.tid, JSON.stringify({ answers }));
-          }}
-          onAbort={() => {
-            onAskUserResponse(
-              task.tid,
-              JSON.stringify({ error: "User refused to answer questions" }),
-            );
-          }}
+          onSubmit={handleAskUserSubmit}
+          onAbort={handleAskUserAbort}
         />
       ) : isDraft && taskTypes ? null : (
         <InputBox
@@ -441,9 +468,7 @@ function SessionViewInner({
           disabled={!connected}
           sessionId={task.tid}
           inputDraft={task.inputDraft}
-          onInputDraftConsumed={() => {
-            onClearInputDraft(task.tid);
-          }}
+          onInputDraftConsumed={handleInputDraftConsumed}
           serverDraft={task.serverDraft}
           onSaveDraft={
             task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
