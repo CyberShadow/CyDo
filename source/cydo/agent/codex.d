@@ -193,6 +193,27 @@ struct IgnoredParams
 }
 
 @RPCFlatten @JSONPartial
+struct TokenUsageUpdatedParams
+{
+	string threadId;
+	@JSONOptional string turnId;
+	@JSONOptional TokenUsagePayload tokenUsage;
+}
+
+@JSONPartial
+struct TokenUsagePayload
+{
+	@JSONOptional TokenUsageBreakdown last;
+}
+
+@JSONPartial
+struct TokenUsageBreakdown
+{
+	@JSONOptional int inputTokens;
+	@JSONOptional int outputTokens;
+}
+
+@RPCFlatten @JSONPartial
 struct ItemCompletedParams
 {
 	string threadId;
@@ -307,7 +328,7 @@ private interface ICodexServer
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params);
 
 	@RPCName("thread/tokenUsage/updated")
-	Promise!void threadTokenUsageUpdated(IgnoredParams params);
+	Promise!void threadTokenUsageUpdated(TokenUsageUpdatedParams params);
 
 	@RPCName("account/rateLimits/updated")
 	Promise!void accountRateLimitsUpdated(IgnoredParams params);
@@ -428,7 +449,13 @@ private class CodexServerRouter : ICodexServer
 	Promise!void turnStarted(IgnoredParams params) { return resolve(); }
 	Promise!void itemReasoningSummaryPartAdded(IgnoredParams) { return resolve(); }
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params) { return resolve(); }
-	Promise!void threadTokenUsageUpdated(IgnoredParams params) { return resolve(); }
+	Promise!void threadTokenUsageUpdated(TokenUsageUpdatedParams params)
+	{
+		auto raw = buildRawNotification("thread/tokenUsage/updated", toJson(params));
+		routeToSession(params.threadId,
+			(s) => s.handleTokenUsageUpdated(params, raw));
+		return resolve();
+	}
 	Promise!void accountRateLimitsUpdated(IgnoredParams params) { return resolve(); }
 	Promise!void accountUpdated(IgnoredParams params) { return resolve(); }
 
@@ -1328,6 +1355,7 @@ class CodexSession : AgentSession
 	private string workDir;
 	private bool alive_;
 	private bool turnInProgress;
+	private bool hadItemsSinceLastStop_;
 
 	// Active item tracking for item/delta routing.
 	private string activeItemId_;              // most recently started item (for delta routing)
@@ -1444,6 +1472,7 @@ class CodexSession : AgentSession
 			activeTurnId_ = null;
 			activeItemId_ = null;
 			activeItemTypes_ = null;
+			hadItemsSinceLastStop_ = false;
 
 			server.sendRequest("turn/start",
 				JSONFragment(toJson(TurnStartParams(
@@ -1535,6 +1564,8 @@ class CodexSession : AgentSession
 			}
 			return;
 		}
+
+		hadItemsSinceLastStop_ = true;
 
 		// Assign item ID: use native id if available, else generate one.
 		auto itemId = item.id.length > 0 ? item.id : "codex-item-" ~ to!string(itemCounter_++);
@@ -1798,8 +1829,8 @@ class CodexSession : AgentSession
 		// Do NOT clear activeItemId_ or activeItemTypes_ here — background items
 		// may still complete after the turn ends.
 
-		// 1. turn/stop
-		if (outputHandler_)
+		// 1. turn/stop — only if items were emitted since the last intermediate stop
+		if (hadItemsSinceLastStop_ && outputHandler_)
 		{
 			import cydo.agent.protocol : TurnStopEvent, UsageInfo, injectRawField;
 			TurnStopEvent tsev;
@@ -1807,8 +1838,9 @@ class CodexSession : AgentSession
 			tsev.usage = UsageInfo(0, 0);
 			outputHandler_(injectRawField(toJson(tsev), rawNotification));
 		}
+		hadItemsSinceLastStop_ = false;
 
-		// 2. turn/result
+		// 2. turn/result — always emitted
 		if (outputHandler_)
 		{
 			import cydo.agent.protocol : TurnResultEvent, UsageInfo, injectRawField;
@@ -1820,6 +1852,28 @@ class CodexSession : AgentSession
 			outputHandler_(injectRawField(toJson(tre), rawNotification));
 		}
 		lastResultText_ = null;
+	}
+
+	package void handleTokenUsageUpdated(TokenUsageUpdatedParams params, string rawNotification)
+	{
+		if (!turnInProgress || !hadItemsSinceLastStop_)
+			return;
+
+		hadItemsSinceLastStop_ = false;
+
+		if (outputHandler_)
+		{
+			import cydo.agent.protocol : TurnStopEvent, UsageInfo, injectRawField;
+			TurnStopEvent tsev;
+			tsev.model = model;
+			if (params.tokenUsage != TokenUsagePayload.init
+				&& params.tokenUsage.last != TokenUsageBreakdown.init)
+				tsev.usage = UsageInfo(params.tokenUsage.last.inputTokens,
+					params.tokenUsage.last.outputTokens);
+			else
+				tsev.usage = UsageInfo(0, 0);
+			outputHandler_(injectRawField(toJson(tsev), rawNotification));
+		}
 	}
 }
 
