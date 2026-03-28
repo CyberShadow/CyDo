@@ -1099,7 +1099,7 @@ class App : ToolsBackend
 			case "fork_task":         handleForkTaskMsg(ws, json); break;
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
 			case "edit_message":      handleEditMessage(ws, json); break;
-			case "set_archived":      handleSetArchivedMsg(json); break;
+			case "set_archived":      handleSetArchivedMsg(ws, json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
@@ -1598,18 +1598,28 @@ class App : ToolsBackend
 		}
 	}
 
-	private void handleSetArchivedMsg(WsMessage json)
+	private void handleSetArchivedMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		// Only allow archiving inactive (not alive) tasks
-		if (td.alive)
-			return;
 		bool archived = json.content.json == `"true"`;
 		if (td.archived == archived)
 			return; // no change
+
+		// Block archiving if any task in the subtree is alive
+		if (archived)
+		{
+			int aliveTid = findAliveInSubtree(tid);
+			if (aliveTid >= 0)
+			{
+				ws.send(Data(toJson(ErrorMessage("error",
+					format!"Cannot archive: task %d is still running"(aliveTid), tid)).representation));
+				return;
+			}
+		}
+
 		td.archived = archived;
 		persistence.setArchived(tid, archived);
 		broadcastTaskUpdate(tid);
@@ -2788,6 +2798,25 @@ class App : ToolsBackend
 				return true;
 			current = parent;
 		}
+	}
+
+	/// Returns the tid of the first alive task in the subtree rooted at `tid`,
+	/// or -1 if none are alive.
+	private int findAliveInSubtree(int tid)
+	{
+		auto tdp = tid in tasks;
+		if (tdp is null)
+			return -1;
+		if (tdp.alive)
+			return tid;
+		foreach (childTid, ref child; tasks)
+			if (child.parentTid == tid)
+			{
+				int found = findAliveInSubtree(childTid);
+				if (found >= 0)
+					return found;
+			}
+		return -1;
 	}
 
 	/// Archive worktrees for task `tid` and all descendants via DFS.

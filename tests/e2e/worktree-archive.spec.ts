@@ -122,6 +122,94 @@ test("archive and unarchive a spike task's worktree", async ({
   expect(existsSync(wtDir)).toBe(true);
 });
 
+test("cannot archive parent with alive descendant", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType === "codex", "codex does not use git worktrees");
+
+  const taskCreatedEvents: Array<{ tid: number; relation_type: string }> = [];
+  const taskUpdatedEvents: Array<{
+    tid: number;
+    alive: boolean;
+    archived: boolean;
+  }> = [];
+
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
+            tid: data.tid,
+            relation_type: data.relation_type,
+          });
+        } else if (data.type === "task_updated") {
+          taskUpdatedEvents.push({
+            tid: data.task.tid,
+            alive: data.task.alive,
+            archived: data.task.archived,
+          });
+        }
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
+
+  // 1. Enter a conversation session and create a spike that stalls.
+  await enterSession(page);
+  await sendMessage(page, "call task spike stall session");
+
+  // 2. Wait for the conversation task_created event (first event).
+  await expect(async () => {
+    expect(taskCreatedEvents.length).toBeGreaterThan(0);
+  }).toPass({ timeout: 30_000 });
+  const convTid = taskCreatedEvents[0].tid;
+
+  // 3. Wait for spike to be created and alive.
+  await expect(async () => {
+    const spike = taskCreatedEvents.find((e) => e.relation_type === "subtask");
+    expect(spike).toBeTruthy();
+  }).toPass({ timeout: 60_000 });
+  const spikeTid = taskCreatedEvents.find(
+    (e) => e.relation_type === "subtask",
+  )!.tid;
+
+  await expect(async () => {
+    const aliveEvent = taskUpdatedEvents.find(
+      (e) => e.tid === spikeTid && e.alive,
+    );
+    expect(aliveEvent).toBeTruthy();
+  }).toPass({ timeout: 30_000 });
+
+  // 4. Navigate to the parent conversation task (which is alive, waiting for
+  //    the stalling spike's MCP result).
+  await expect(async () => {
+    await page.locator(`.sidebar-item[data-tid="${convTid}"]`).click();
+    await expect(
+      page.locator(`.sidebar-item[data-tid="${convTid}"].active`),
+    ).toBeVisible({ timeout: 3_000 });
+  }).toPass({ timeout: 15_000 });
+
+  // 5. Attempt to archive via keyboard shortcut while the subtree is alive.
+  //    Ctrl+Shift+A calls setArchived regardless of the task's own alive state,
+  //    so this exercises the subtree check in handleSetArchivedMsg.
+  const dialogPromise = page.waitForEvent("dialog");
+  await page.keyboard.press("Control+Shift+A");
+  const dialog = await dialogPromise;
+  expect(dialog.message()).toMatch(/Cannot archive/i);
+  await dialog.dismiss();
+
+  // 6. Verify the parent was NOT archived (most recent task_updated for convTid
+  //    should not have archived=true).
+  const convEvents = taskUpdatedEvents.filter((e) => e.tid === convTid);
+  const lastConvEvent = convEvents[convEvents.length - 1];
+  if (lastConvEvent) {
+    expect(lastConvEvent.archived).toBe(false);
+  }
+});
+
 test("archiving parent task archives spike's worktree", async ({
   page,
   agentType,
