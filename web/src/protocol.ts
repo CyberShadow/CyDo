@@ -159,7 +159,8 @@ export interface ItemDeltaEvent {
     | "text_delta"
     | "thinking_delta"
     | "input_json_delta"
-    | "output_delta";
+    | "output_delta"
+    | "stdin_delta";
   content: string;
   [key: string]: unknown;
 }

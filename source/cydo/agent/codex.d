@@ -135,6 +135,16 @@ struct DeltaParams
 }
 
 @RPCFlatten @JSONPartial
+struct TerminalInteractionParams
+{
+	string threadId;
+	string itemId;
+	string processId;
+	string stdin;
+	string turnId;
+}
+
+@RPCFlatten @JSONPartial
 struct ThreadIdParams
 {
 	string threadId;
@@ -217,6 +227,9 @@ private interface ICodexServer
 
 	@RPCName("item/commandExecution/outputDelta")
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params);
+
+	@RPCName("item/commandExecution/terminalInteraction")
+	Promise!void itemCommandExecutionTerminalInteraction(TerminalInteractionParams params);
 
 	@RPCName("item/completed")
 	Promise!void itemCompleted(ItemCompletedParams params);
@@ -329,6 +342,14 @@ private class CodexServerRouter : ICodexServer
 		auto raw = buildRawNotification("item/fileChange/outputDelta", toJson(params));
 		routeToSession(params.threadId,
 			(s) => s.handleDelta(params, "output_delta", raw));
+		return resolve();
+	}
+
+	Promise!void itemCommandExecutionTerminalInteraction(TerminalInteractionParams params)
+	{
+		auto raw = buildRawNotification("item/commandExecution/terminalInteraction", toJson(params));
+		routeToSession(params.threadId,
+			(s) => s.handleTerminalInteraction(params, raw));
 		return resolve();
 	}
 
@@ -1420,6 +1441,20 @@ class CodexSession : AgentSession
 		ev.item_id = activeItemId_;
 		ev.delta_type = deltaType;
 		ev.content = params.delta;
+		outputHandler_(injectRawField(toJson(ev), rawNotification));
+	}
+
+	/// Handle terminal interaction notification (stdin written to a running process).
+	package void handleTerminalInteraction(TerminalInteractionParams params, string rawNotification)
+	{
+		if (outputHandler_ is null)
+			return;
+
+		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
+		ItemDeltaEvent ev;
+		ev.item_id = params.itemId.length > 0 ? params.itemId : activeItemId_;
+		ev.delta_type = "stdin_delta";
+		ev.content = params.stdin;
 		outputHandler_(injectRawField(toJson(ev), rawNotification));
 	}
 

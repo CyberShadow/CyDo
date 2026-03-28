@@ -139,6 +139,7 @@ export interface StreamingBlock {
   name?: string; // tool name for tool_use blocks
   input?: unknown; // initial input (from item/started, for tool_use)
   output?: string; // accumulated output (for output_delta)
+  stdin?: string; // accumulated stdin (for stdin_delta)
   creationOrder: number; // monotonic counter for preserving creation order
 }
 

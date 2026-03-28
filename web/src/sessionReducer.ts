@@ -1064,6 +1064,9 @@ export function reduceItemDelta(
     if (event.delta_type === "output_delta") {
       return { ...b, output: (b.output ?? "") + event.content };
     }
+    if (event.delta_type === "stdin_delta") {
+      return { ...b, stdin: (b.stdin ?? "") + event.content };
+    }
     return { ...b, text: b.text + event.content };
   });
   bumpNestedVersion(messages, msg.parentToolUseId);

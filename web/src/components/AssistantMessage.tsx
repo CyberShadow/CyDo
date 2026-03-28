@@ -253,6 +253,11 @@ export function AssistantMessage({
                     }
                     onViewFile={onViewFile}
                   >
+                    {block.stdin && (
+                      <pre class="tool-result streaming-stdin">
+                        {block.stdin}
+                      </pre>
+                    )}
                     {block.output && (
                       <pre class="tool-result streaming-output">
                         {hasAnsi(block.output)

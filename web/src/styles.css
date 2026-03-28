@@ -981,6 +981,10 @@ body,
   color: var(--error);
 }
 
+.streaming-stdin {
+  color: var(--text-dim);
+}
+
 .web-search-links {
   display: flex;
   flex-wrap: wrap;
