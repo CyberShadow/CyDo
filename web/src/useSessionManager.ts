@@ -117,6 +117,7 @@ export interface TaskManager {
     archived?: boolean;
     hasPendingQuestion?: boolean;
     lastActive?: number;
+    hasMessages?: boolean;
   }>;
   workspaces: WorkspaceInfo[];
   taskTypes: TaskTypeInfo[];
@@ -282,9 +283,6 @@ export function useTaskManager(): TaskManager {
   // events arriving after deleteDraftTask (e.g. from requestHistory).
   // Cleared when the backend confirms deletion via task_deleted.
   const deletedDraftTids = useRef(new Set<number>());
-  // Set by isDraftCreation to prevent the activeTaskId useEffect from
-  // clearing draft state when navigating URL to /task/:tid internally.
-  const draftNavigatingRef = useRef(false);
   const draftCreateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -548,6 +546,7 @@ export function useTaskManager(): TaskManager {
               inputDrafts.set(tid, currentText);
             }
           }
+          inputDrafts.delete(0);
           // Transfer renderKey from virtual task (tid=0) to real task
           const renderKey = draftRenderKeyRef.current;
           liveStates.delete(0);
@@ -607,7 +606,6 @@ export function useTaskManager(): TaskManager {
             // User is still typing — navigate URL to reflect the real tid
             // (replaceState so back button returns to "new task" view).
             draftTidRef.current = tid;
-            draftNavigatingRef.current = true;
             if (workspace && projectPath) {
               const projName = findProjectName(
                 workspacesRef.current,
@@ -1196,19 +1194,13 @@ export function useTaskManager(): TaskManager {
     createVirtualDraft();
   }, [activeTaskId, activeWorkspace, createVirtualDraft]);
 
-  // Clear draft tracking when user navigates to the draft task via sidebar.
-  // Skip when the isDraftCreation handler navigated the URL internally —
-  // draft state must persist so onContentEnd stays wired to deleteDraftTask.
+  // Clear draft tracking when user navigates to project root (e.g. clicks
+  // "New Task") while a draft task exists.  This lets createVirtualDraft
+  // create a fresh blank draft.  Do NOT clear when navigating TO the draft
+  // task (e.g. sidebar click) — the draft must stay wired for
+  // onContentEnd/deleteDraftTask and taskTypes.
   useEffect(() => {
-    if (draftNavigatingRef.current) {
-      draftNavigatingRef.current = false;
-      return;
-    }
-    if (
-      activeTaskId !== null &&
-      draftTidRef.current !== null &&
-      activeTaskId === String(draftTidRef.current)
-    ) {
+    if (activeTaskId === null && draftTidRef.current !== null) {
       draftTidRef.current = null;
       draftRenderKeyRef.current = null;
       setDraftRenderKey(null);
@@ -1475,6 +1467,20 @@ export function useTaskManager(): TaskManager {
 
   const saveDraft = useCallback((tid: number, draft: string) => {
     connRef.current?.saveDraft(tid, draft);
+    // Derive sidebar title from draft text for pending tasks with no messages
+    const t = liveStates.get(tid);
+    if (t && t.status === "pending" && t.messages.length === 0) {
+      const firstLine = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
+      if (firstLine !== t.title) {
+        const updated = { ...t, title: firstLine };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+      }
+    }
   }, []);
 
   const sendAskUserResponse = useCallback((tid: number, content: string) => {
@@ -1531,6 +1537,7 @@ export function useTaskManager(): TaskManager {
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
         lastActive: t.lastActive,
+        hasMessages: t.messages.length > 0,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -1550,7 +1557,8 @@ export function useTaskManager(): TaskManager {
           t.archived === p.archived &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
-          t.lastActive === p.lastActive
+          t.lastActive === p.lastActive &&
+          t.hasMessages === p.hasMessages
         );
       })
     ) {

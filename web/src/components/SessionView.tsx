@@ -331,6 +331,28 @@ function SessionViewInner({
                 onConfirm={() => inputRef.current?.focus()}
                 onType={() => inputRef.current?.focus()}
               />
+              <InputBox
+                onSend={handleSend}
+                onInterrupt={onInterrupt}
+                isProcessing={task.isProcessing}
+                disabled={false}
+                sessionId={task.tid}
+                inputDraft={task.inputDraft}
+                onInputDraftConsumed={() => {
+                  onClearInputDraft(task.tid);
+                }}
+                serverDraft={task.serverDraft}
+                onSaveDraft={
+                  task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
+                }
+                inputRef={inputRef}
+                insertTextRef={insertTextRef}
+                pasteTextRef={pasteTextRef}
+                onEscape={focusTaskTypePicker}
+                suggestions={task.suggestions}
+                onContentStart={handleContentStart}
+                onContentEnd={onContentEnd}
+              />
             </div>
           </div>
         ) : (
@@ -405,12 +427,12 @@ function SessionViewInner({
             );
           }}
         />
-      ) : (
+      ) : isDraft && taskTypes ? null : (
         <InputBox
           onSend={handleSend}
           onInterrupt={onInterrupt}
           isProcessing={task.isProcessing}
-          disabled={isDraft ? false : !connected}
+          disabled={!connected}
           sessionId={task.tid}
           inputDraft={task.inputDraft}
           onInputDraftConsumed={() => {
@@ -423,10 +445,7 @@ function SessionViewInner({
           inputRef={inputRef}
           insertTextRef={insertTextRef}
           pasteTextRef={pasteTextRef}
-          onEscape={isDraft ? focusTaskTypePicker : undefined}
           suggestions={task.suggestions}
-          onContentStart={isDraft ? handleContentStart : undefined}
-          onContentEnd={isDraft ? onContentEnd : undefined}
         />
       )}
     </>

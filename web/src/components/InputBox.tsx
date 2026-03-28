@@ -110,7 +110,8 @@ export function InputBox({
   useEffect(() => {
     if (!insertTextRef) return;
     insertTextRef.current = (quoted: string) => {
-      setText((prev) => (prev ? `${prev}\n\n${quoted}` : quoted));
+      const prev = textRef.current;
+      handleChange(prev ? `${prev}\n\n${quoted}` : quoted);
       textareaRef.current?.focus();
     };
     return () => {
@@ -124,7 +125,8 @@ export function InputBox({
       const ta = textareaRef.current;
       const start = ta?.selectionStart ?? 0;
       const end = ta?.selectionEnd ?? 0;
-      setText((prev) => prev.slice(0, start) + pasted + prev.slice(end));
+      const prev = textRef.current;
+      handleChange(prev.slice(0, start) + pasted + prev.slice(end));
       requestAnimationFrame(() => {
         if (ta) {
           const pos = start + pasted.length;
@@ -218,12 +220,16 @@ export function InputBox({
   const send = () => {
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
-    onSend(trimmed, images.length > 0 ? images : undefined);
+    // Clear text eagerly: onSend may trigger a re-render that unmounts this
+    // InputBox (e.g. draft → active transition).  Without this, the cleanup
+    // function saves stale text to `drafts` because setState hasn't flushed.
     setText("");
+    textRef.current = "";
     setImages([]);
     drafts.set(sessionId, "");
     saveDraftDebounced.cancel();
     onSaveDraft?.("");
+    onSend(trimmed, images.length > 0 ? images : undefined);
     textareaRef.current?.focus();
   };
 

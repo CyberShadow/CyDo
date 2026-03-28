@@ -132,6 +132,7 @@ export interface SidebarTask {
   isArchiveNode?: boolean;
   taskType?: string;
   hasPendingQuestion?: boolean;
+  hasMessages?: boolean;
 }
 
 interface TreeNode {
@@ -286,7 +287,7 @@ function computeStatusClass(t: SidebarTask): string {
   if (t.resumable) return "resumable";
   if (t.status === "importable") return "importable";
   if (t.status === "completed") return "completed";
-  if (t.status === "pending" && !t.title) return "draft";
+  if (t.status === "pending" && !t.hasMessages) return "draft";
   return "";
 }
 
