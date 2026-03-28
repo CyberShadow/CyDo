@@ -1186,14 +1186,35 @@ export function useTaskManager(): TaskManager {
     }
   }, [connected, activeTaskId, tasks]);
 
-  // Auto-create virtual draft when at project root with no active task.
-  // Also clears stale draft tracking when navigating back to project root
-  // (e.g. user clicks "New Task") so a fresh draft is created atomically.
-  // Both concerns must live in one effect to avoid ordering issues — if they
-  // were separate, the "create" effect could run before the "clear" effect
-  // and bail out because the stale ref is still set.
+  // Manage draft tracking state in response to navigation.
+  //
+  // When activeTaskId is null (project root / "New Task"):
+  //   - Clear stale draft tracking and create a fresh virtual draft.
+  //   Both must happen atomically in one effect to avoid ordering issues.
+  //
+  // When activeTaskId points to a pending draft task:
+  //   - Re-adopt it as the active draft so isDraft/taskTypes/onContentEnd
+  //   are wired correctly (e.g. after navigating away and back).
   useEffect(() => {
-    if (activeTaskId !== null) return; // a task is active, no draft needed
+    if (activeTaskId !== null) {
+      // Re-adopt an existing draft task when navigating to it.
+      const tid = parseTaskId(activeTaskId);
+      if (tid !== null) {
+        const task = liveStates.get(tid);
+        if (
+          task &&
+          task.status === "pending" &&
+          task.messages.length === 0 &&
+          !task.isProcessing &&
+          task.renderKey
+        ) {
+          draftTidRef.current = tid;
+          draftRenderKeyRef.current = task.renderKey;
+          setDraftRenderKey(task.renderKey);
+        }
+      }
+      return;
+    }
     if (activeWorkspace === null) return; // on welcome page, no draft
     // Clear existing draft tracking when a real draft task exists
     if (draftTidRef.current !== null) {
@@ -1203,6 +1224,7 @@ export function useTaskManager(): TaskManager {
     }
     // Create fresh virtual draft if none exists
     if (draftRenderKeyRef.current === null) {
+      inputDrafts.delete(0); // clear stale text re-saved by InputBox cleanup
       createVirtualDraft();
     }
   }, [activeTaskId, activeWorkspace, createVirtualDraft]);

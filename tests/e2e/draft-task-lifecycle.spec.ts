@@ -220,6 +220,57 @@ test("draft task visible to second client", async ({ page, browser }) => {
   await context2.close();
 });
 
+test("new task after draft clears form correctly", async ({ page }) => {
+  await enterSession(page);
+
+  const before = await snapshotTids(page);
+
+  // Step 1: Type something to create a draft task
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("draft navigation test");
+
+  // Step 2: Wait for draft to appear in sidebar
+  const draftTid = await waitForNewTid(page, before);
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
+  ).toBeVisible({ timeout: 2_000 });
+
+  // Step 3: Click 'New Task' in the sidebar
+  await page.locator(".sidebar-new-task").click();
+
+  // Bug 1: Should show welcome prompt, not 'Loading task…'
+  await expect(page.locator(".session-loading")).not.toBeAttached({
+    timeout: 5_000,
+  });
+  await expect(
+    page.locator(".welcome-prompt:visible"),
+  ).toBeVisible({ timeout: 5_000 });
+
+  // Bug 1: Input should be empty in the new task form
+  const newInput = page.locator(".input-textarea:visible").first();
+  await expect(newInput).toHaveValue("", { timeout: 5_000 });
+
+  // Step 4: Click the draft task in sidebar to go back to it
+  await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
+
+  // Bug 2: Should show the task type picker (SessionConfig) on return
+  await expect(
+    page.locator(".welcome-prompt .task-type-picker"),
+  ).toBeVisible({ timeout: 5_000 });
+
+  // Bug 3: Clear input text — draft should be deleted from sidebar
+  const draftInput = page.locator(".input-textarea:visible").first();
+  await expect(draftInput).toBeVisible({ timeout: 5_000 });
+  await draftInput.fill("");
+
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
+  ).not.toBeAttached({
+    timeout: 5_000,
+  });
+});
+
 test("draft persists across page reload", async ({ page }) => {
   await enterSession(page);
 
