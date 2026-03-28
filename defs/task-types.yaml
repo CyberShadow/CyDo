@@ -77,7 +77,7 @@ task_types:
     icon: blank
     prompt_template: prompts/blank.md
     model_class: large
-    output_type: report
+    output_type: []
     allow_native_subagents: true
     parallelizable: true
     user_visible: true
@@ -89,7 +89,7 @@ task_types:
     prompt_template: prompts/conversation.md
     model_class: large
     read_only: true
-    output_type: report
+    output_type: []
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -158,7 +158,7 @@ task_types:
       back when the plan is approved and the user is ready to implement.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: []
     creatable_tasks:
       plan:
         prompt_template: prompts/plan.md
@@ -209,7 +209,7 @@ task_types:
       the investigation is complete and the user is ready to act on findings.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: []
     creatable_tasks:
       bug:
         prompt_template: prompts/bug.md
@@ -261,7 +261,7 @@ task_types:
       cherry-pick or edit before switching.
     prompt_template: prompts/write_mode.md
     model_class: large
-    output_type: report
+    output_type: []
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -301,7 +301,7 @@ task_types:
       existing patterns before making changes.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -332,7 +332,7 @@ task_types:
       use deep_research instead.
     model_class: small
     read_only: true
-    output_type: report
+    output_type: [report]
     parallelizable: true
     user_visible: false
 
@@ -353,7 +353,7 @@ task_types:
       quick_research instead.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -380,7 +380,7 @@ task_types:
       prompt. Prefer this over investigating bugs inline — the agent has
       dedicated context for systematic debugging.
     model_class: large
-    output_type: report
+    output_type: [report]
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -409,7 +409,7 @@ task_types:
       reproduction steps. The agent writes a failing test, not a standalone
       script.
     model_class: large
-    output_type: report
+    output_type: [report, worktree]
     creatable_tasks:
       quick_research:
         prompt_template: prompts/quick_research.md
@@ -436,7 +436,7 @@ task_types:
       Use when you want to try something before committing to it. The worktree
       is disposable — experiment freely.
     model_class: large
-    output_type: report
+    output_type: [report, worktree]
     creatable_tasks:
       spike:
         worktree: true
@@ -458,7 +458,7 @@ task_types:
       Use to add test coverage for new or changed code. Works on the same
       tree as the parent implementation task.
     model_class: medium
-    output_type: patch
+    output_type: []
     parallelizable: true
     user_visible: false
 
@@ -483,7 +483,7 @@ task_types:
       completion before starting the next.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     continuations:
       implement:
         task_type: implement
@@ -506,7 +506,7 @@ task_types:
       smaller sub-tasks that are each executed recursively.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     creatable_tasks:
       execute:
         task_type: triage
@@ -542,7 +542,7 @@ task_types:
       directly. Best when the prompt includes a specific plan or clear
       requirements.
     model_class: medium
-    output_type: commit
+    output_type: [commit]
     creatable_tasks:
       test:
         prompt_template: prompts/test.md
@@ -568,7 +568,7 @@ task_types:
       etc.). Runs in its own worktree and can write adversarial tests using
       the project's test framework.
     model_class: medium
-    output_type: report
+    output_type: [report]
     parallelizable: true
     user_visible: false
 
@@ -581,7 +581,7 @@ task_types:
       project conventions.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     parallelizable: true
     user_visible: false
 
@@ -600,7 +600,7 @@ task_types:
       technical debt.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     serial: true
     knowledge_base: .cydo/stewards/quality/
     user_visible: false
@@ -615,7 +615,7 @@ task_types:
       authentication/authorization issues, data exposure.
     model_class: large
     read_only: true
-    output_type: report
+    output_type: [report]
     serial: true
     knowledge_base: .cydo/stewards/security/
     user_visible: false

@@ -38,7 +38,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, loadTaskTypes, validateTaskTypes,
+import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt;
 import cydo.task;
@@ -2287,6 +2287,29 @@ class App : ToolsBackend
 				return;
 			}
 
+			// Output enforcement: check declared outputs before completing
+			if (exitCode == 0)
+			{
+				auto missing = checkDeclaredOutputs(tid);
+				if (missing !is null && !tasks[tid].outputEnforcementAttempted)
+				{
+					tasks[tid].outputEnforcementAttempted = true;
+					infof("Output enforcement: tid=%d missing outputs, resuming: %s", tid, missing);
+					auto enfMissing = missing;
+					tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
+						auto msg = "[SYSTEM: Missing required outputs]\n\n"
+							~ "Your task type declares outputs that were not produced:\n"
+							~ enfMissing ~ "\n\n"
+							~ "Please produce the missing output(s) before finishing. "
+							~ "Write your report to your output file if you haven't already.";
+						sendTaskMessage(tid, [ContentBlock("text", msg)]);
+					}).ignoreResult();
+					return; // Don't complete yet — wait for the agent to try again
+				}
+				if (missing !is null)
+					warningf("Output enforcement: tid=%d still missing outputs after retry: %s", tid, missing);
+			}
+
 			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
 			persistence.setStatus(tid, tasks[tid].status);
 			persistence.setResultText(tid, tasks[tid].resultText);
@@ -2565,6 +2588,45 @@ class App : ToolsBackend
 			if (auto ac = agentType in config.agents)
 				return ac.sandbox;
 		return SandboxConfig.init;
+	}
+
+	/// Check whether a completing task has produced all declared outputs.
+	/// Returns null if all outputs are present, or a message describing what's missing.
+	private string checkDeclaredOutputs(int tid)
+	{
+		import std.file : exists;
+
+		auto td = &tasks[tid];
+		auto typeDef = getTaskTypes().byName(td.taskType);
+		if (typeDef is null || typeDef.output_type.length == 0)
+			return null;
+
+		string[] missing;
+
+		foreach (ot; typeDef.output_type)
+		{
+			final switch (ot)
+			{
+			case OutputType.report:
+				if (td.outputPath.length == 0 || !exists(td.outputPath))
+					missing ~= "report (expected at " ~ td.outputPath ~ ")";
+				break;
+
+			case OutputType.worktree:
+				// TODO: implement worktree/commit checks
+				break;
+
+			case OutputType.commit:
+				// TODO: implement worktree/commit checks
+				break;
+			}
+		}
+
+		if (missing.length == 0)
+			return null;
+
+		import std.array : join;
+		return "Missing declared outputs: " ~ missing.join(", ");
 	}
 
 	private TaskResult buildTaskResult(int tid)

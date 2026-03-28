@@ -6,7 +6,7 @@ module cydo.tasktype;
 
 import configy.attributes : Key, Optional;
 
-import std.algorithm : canFind, filter, map, sort;
+import std.algorithm : canFind, filter, map, reverse, sort;
 import std.array : array, join;
 import std.conv : to;
 import std.format : format;
@@ -16,6 +16,13 @@ import std.string : chomp, lineSplitter, strip;
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
+
+enum OutputType : string
+{
+	report = "report",
+	commit = "commit",
+	worktree = "worktree",
+}
 
 struct ContinuationDef
 {
@@ -58,7 +65,7 @@ struct TaskTypeDef
 	// Capabilities
 	string model_class = "large";
 	@Optional bool read_only;
-	string output_type = "report";
+	@Optional OutputType[] output_type;
 	@Optional bool allow_native_subagents;
 
 	// Flow control
@@ -261,9 +268,8 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		// Steward validation
 		if (def.steward)
 		{
-			if (def.output_type != "report")
-				errors ~= format("%s: steward should have output_type 'report', got '%s'",
-					def.name, def.output_type);
+			if (def.output_type.canFind(OutputType.commit) || def.output_type.canFind(OutputType.worktree))
+				errors ~= format("%s: steward should not have commit or worktree outputs", def.name);
 			if (!def.serial)
 				errors ~= format("%s: steward should have serial: true", def.name);
 		}
@@ -271,8 +277,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		// Validate enum-like fields
 		if (!["small", "medium", "large"].canFind(def.model_class))
 			errors ~= format("%s: invalid model_class '%s'", def.name, def.model_class);
-		if (!["commit", "patch", "report"].canFind(def.output_type))
-			errors ~= format("%s: invalid output_type '%s'", def.name, def.output_type);
+		// output_type is validated by D enum deserialization — unknown values cause parse errors
 
 		if (def.allow_native_subagents && def.creatable_tasks.length > 0)
 			errors ~= format("%s: allow_native_subagents and creatable_tasks are mutually exclusive", def.name);
@@ -286,6 +291,104 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			if (cont.requires_approval && !hasSteward)
 				errors ~= format("%s: continuation '%s' requires approval but no steward types defined",
 					def.name, cname);
+		}
+	}
+
+	// Worktree/commit reachability: for each type that declares worktree or
+	// commit output, verify it is never reachable from a user-visible type
+	// via a path where no edge along the way has worktree: true.
+	// Types can inherit a worktree from their parent (via keep_context or
+	// continuation edges), so we track the has_worktree state along each path.
+	{
+		// BFS state encoded as "typeName|0" (no worktree) or "typeName|1" (has worktree).
+		// Predecessor info: how did we reach this state?
+		struct Pred { string fromKey; string edgeLabel; }
+		Pred[string] visited;
+		string[] queue;
+
+		void enqueue(string toType, bool toWt, string fromKey, string edgeLabel)
+		{
+			auto k = toType ~ "|" ~ (toWt ? "1" : "0");
+			if (k !in visited)
+			{
+				visited[k] = Pred(fromKey, edgeLabel);
+				queue ~= k;
+			}
+		}
+
+		// Seed from all user-visible types with hasWorktree=false.
+		foreach (ref def; types)
+			if (def.user_visible)
+				enqueue(def.name, false, "", "");
+
+		while (queue.length > 0)
+		{
+			auto curKey = queue[0];
+			queue = queue[1 .. $];
+			auto sep = curKey.length - 2; // "|0" or "|1" at end
+			auto curType = curKey[0 .. sep];
+			auto curWt = curKey[sep + 1] == '1';
+
+			auto def = types.byName(curType);
+			if (def is null)
+				continue;
+
+			foreach (ref edge; def.creatable_tasks)
+				enqueue(edge.resolvedType, curWt || edge.worktree, curKey,
+					format("creatable '%s'", edge.name));
+
+			foreach (cname, ref cont; def.continuations)
+				enqueue(cont.task_type, curWt || cont.worktree, curKey,
+					format("continuation '%s'", cname));
+
+			if (def.on_yield.task_type.length > 0)
+				enqueue(def.on_yield.task_type, curWt || def.on_yield.worktree,
+					curKey, "on_yield");
+		}
+
+		// Report types with worktree/commit output that can be reached without a worktree.
+		foreach (ref def; types)
+		{
+			bool needsWorktree = def.output_type.canFind(OutputType.commit)
+				|| def.output_type.canFind(OutputType.worktree);
+			if (!needsWorktree)
+				continue;
+
+			auto badKey = def.name ~ "|0";
+			if (badKey !in visited)
+				continue;
+
+			// Reconstruct path for the error message.
+			string[] parts;
+			auto k = badKey;
+			while (k.length > 0)
+			{
+				auto pi = k in visited;
+				if (pi is null)
+					break;
+				auto tn = k[0 .. k.length - 2];
+				if (pi.fromKey.length == 0)
+				{
+					parts ~= tn;
+					break;
+				}
+				parts ~= tn ~ " (via " ~ pi.edgeLabel ~ ")";
+				k = pi.fromKey;
+			}
+			parts.reverse();
+			errors ~= format("type '%s' declares worktree/commit output but is reachable "
+				~ "without a worktree: %s", def.name, parts.join(" → "));
+		}
+	}
+
+	// Interactive types must have empty output_type (they produce no structured output)
+	{
+		auto interactive = types.interactiveTypeSet;
+		foreach (ref def; types)
+		{
+			if (def.name in interactive && def.output_type.length > 0)
+				errors ~= format("%s: interactive type should have output_type: [] but has [%s]",
+					def.name, def.output_type.map!(o => cast(string) o).join(", "));
 		}
 	}
 
@@ -425,10 +528,12 @@ void printTypes(TaskTypeDef[] types)
 	writeln("=== Task Type Definitions ===\n");
 	foreach (ref def; types)
 	{
-		writefln("  %-20s  model: %-6s  output: %-6s%s%s%s%s",
+		auto outputStr = def.output_type.length == 0 ? "—"
+			: def.output_type.map!(o => cast(string) o).join("+");
+		writefln("  %-20s  model: %-6s  output: %-14s%s%s%s%s",
 			def.name,
 			def.model_class,
-			def.output_type,
+			outputStr,
 			def.read_only ? "  [ro]" : "",
 			def.steward ? "  [steward]" : "",
 			def.serial ? "  [serial]" : "",
@@ -534,8 +639,10 @@ void simulateWorkflow(TaskTypeDef[] types)
 			id, typeName,
 			parentId > 0 ? format(" (from #%d)  ", parentId) : "  ",
 			desc.length > 60 ? desc[0 .. 60] ~ "…" : desc);
+		auto outputStr = def.output_type.length == 0 ? "—"
+			: def.output_type.map!(o => cast(string) o).join("+");
 		writefln("    model: %s | output: %s%s",
-			def.model_class, def.output_type,
+			def.model_class, outputStr,
 			def.read_only ? " (read-only)" : "");
 
 		if (def.creatable_tasks.length > 0)
@@ -1147,7 +1254,8 @@ void runDumpContext(string path, string typeName)
 	// Task type metadata
 	writefln("Description:    %s", def.description);
 	writefln("Model:          %s", def.model_class);
-	writefln("Output:         %s", def.output_type);
+	writefln("Output:         %s", def.output_type.length == 0 ? "—"
+		: def.output_type.map!(o => cast(string) o).join("+"));
 	writefln("Read-only:      %s", def.read_only);
 	writefln("Parallelizable: %s", def.parallelizable);
 	writefln("User-visible:   %s", def.user_visible);

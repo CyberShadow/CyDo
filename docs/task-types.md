@@ -15,7 +15,7 @@ agent_description: string             # LLM-visible; explains when to use this t
 prompt_template: string | path        # system prompt wrapping the task description
 model_class: small | medium | large   # maps to haiku / sonnet / opus
 read_only: bool                   # sandbox mounts project dir as ro (default false)
-output_type: commit | patch | report  # what the task produces
+output_type: [commit | worktree | report]  # what the task produces (empty = no output)
 allow_native_subagents: bool  # use Claude's built-in Task tool instead of CyDo's (default false)
 
 # Flow control
@@ -41,11 +41,16 @@ knowledge_base: path?                 # persistent state directory
 
 ## Output Types
 
-- **commit** — Standalone reviewable code changes. Runs in its own worktree.
-  Goes through CI and steward review before landing.
-- **patch** — Incremental code changes on the parent's working tree. Part of a
-  larger effort, not independently reviewable.
-- **report** — Text output, no code changes. Plans, analyses, verdicts.
+- **commit** — A reviewable commit in an isolated worktree. Goes through CI
+  and steward review before landing. Enforced: worktree must contain at least
+  one commit ahead of its base.
+- **worktree** — Working tree changes that the parent may adopt. Used when a
+  task produces code changes alongside a report (e.g., spike, reproduce).
+  Enforced: worktree must have changes (committed or uncommitted).
+- **report** — A text artifact at `<taskDir>/output.md`. Plans, analyses,
+  verdicts, investigation reports. Enforced: file must exist and be non-empty.
+- **Empty `[]`** — No structured output. Used by interactive types and types
+  that modify an inherited worktree (e.g., test).
 
 ## Read-Only Mode
 
