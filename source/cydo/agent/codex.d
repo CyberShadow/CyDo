@@ -820,8 +820,8 @@ class CodexAgent : Agent
 			~ "spawn_agent,update_plan,request_user_input"
 			~ ". If you attempt to use them, they will fail.";
 
-		// Build MCP config override for CyDo tools.
-		auto mcpConfig = buildMcpConfigOverride(tid,
+		// Build config override (reasoning summary + MCP tools).
+		auto configOverride = buildConfigOverride(tid,
 			config.creatableTaskTypes, config.switchModes, config.handoffs,
 			config.includeTools, config.mcpSocketPath);
 
@@ -835,8 +835,7 @@ class CodexAgent : Agent
 				tsp.sandbox = "danger-full-access";
 				if (devInstructions.length > 0)
 					tsp.developerInstructions = devInstructions;
-				if (mcpConfig.length > 0)
-					tsp.config = JSONFragment(mcpConfig);
+				tsp.config = JSONFragment(configOverride);
 
 				server.sendRequest("thread/start",
 					JSONFragment(toJson(tsp))
@@ -861,8 +860,7 @@ class CodexAgent : Agent
 				trp.sandbox = "danger-full-access";
 				if (devInstructions.length > 0)
 					trp.developerInstructions = devInstructions;
-				if (mcpConfig.length > 0)
-					trp.config = JSONFragment(mcpConfig);
+				trp.config = JSONFragment(configOverride);
 
 				server.sendRequest("thread/resume",
 					JSONFragment(toJson(trp))
@@ -1890,36 +1888,40 @@ class CodexSession : AgentSession
 
 private:
 
-/// Build a JSON config override object with MCP server config for CyDo tools.
-/// Returns empty string if CyDo binary is not available.
-/// The JSON value is passed as the "config" field in thread/start params.
-string buildMcpConfigOverride(int tid, string creatableTaskTypes,
+/// Build a JSON config override object passed as the "config" field in
+/// thread/start params. Includes reasoning summary and, when available,
+/// MCP server config for CyDo tools.
+string buildConfigOverride(int tid, string creatableTaskTypes,
 	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
 {
 	import std.array : join;
 
-	auto cydoBin = cydoBinaryPath;
-	if (cydoBin.length == 0)
-		return "";
-
-	string[string] env;
-	env["CYDO_TID"] = to!string(tid);
-	env["CYDO_SOCKET"] = mcpSocketPath;
-	env["CYDO_CREATABLE_TYPES"] = creatableTaskTypes;
-	env["CYDO_SWITCHMODES"] = switchModes;
-	env["CYDO_HANDOFFS"] = handoffs;
-	env["CYDO_INCLUDE_TOOLS"] = includeTools is null ? "" : includeTools.join(",");
-
-	auto serverConfig = McpServerConfig(
-		cydoBin,
-		["mcp-server"],
-		env,
-		100000000,
-	);
-
-	// Build {"mcp_servers.cydo": {...}} — dotted key is a normal string key.
 	JSONFragment[string] config;
-	config["mcp_servers.cydo"] = JSONFragment(toJson(serverConfig));
+
+	// Always request reasoning summaries from the model.
+	config["model_reasoning_summary"] = JSONFragment(`"auto"`);
+
+	auto cydoBin = cydoBinaryPath;
+	if (cydoBin.length > 0)
+	{
+		string[string] env;
+		env["CYDO_TID"] = to!string(tid);
+		env["CYDO_SOCKET"] = mcpSocketPath;
+		env["CYDO_CREATABLE_TYPES"] = creatableTaskTypes;
+		env["CYDO_SWITCHMODES"] = switchModes;
+		env["CYDO_HANDOFFS"] = handoffs;
+		env["CYDO_INCLUDE_TOOLS"] = includeTools is null ? "" : includeTools.join(",");
+
+		auto serverConfig = McpServerConfig(
+			cydoBin,
+			["mcp-server"],
+			env,
+			100000000,
+		);
+
+		config["mcp_servers.cydo"] = JSONFragment(toJson(serverConfig));
+	}
+
 	return toJson(config);
 }
 
