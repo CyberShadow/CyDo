@@ -303,3 +303,51 @@ test("draft persists across page reload", async ({ page }) => {
     timeout: 5_000,
   });
 });
+
+test("draft deletable after page reload", async ({ page }) => {
+  await enterSession(page);
+
+  const before = await snapshotTids(page);
+
+  // Type text to create draft task
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("delete after reload");
+
+  // Wait for draft to appear in sidebar and debounce to save
+  const draftTid = await waitForNewTid(page, before);
+  await page.waitForTimeout(1000); // wait for debounce
+
+  // Reload the page
+  await page.reload();
+
+  // Wait for the draft task to reappear in sidebar after reload
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
+  ).toBeAttached({
+    timeout: 15_000,
+  });
+
+  // Click the draft task in the sidebar to navigate to it
+  await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
+  const restoredInput = page.locator(".input-textarea:visible").first();
+  await expect(restoredInput).toBeVisible({ timeout: 5_000 });
+  await expect(restoredInput).toHaveValue("delete after reload", {
+    timeout: 5_000,
+  });
+
+  // Wait for re-adopt to complete (task type picker visible = onContentEnd wired)
+  await expect(
+    page.locator(".welcome-prompt .task-type-picker"),
+  ).toBeVisible({ timeout: 5_000 });
+
+  // Clear the text — this should trigger draft deletion
+  await restoredInput.fill("");
+
+  // Assert that the draft task is deleted from the sidebar
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
+  ).not.toBeAttached({
+    timeout: 5_000,
+  });
+});

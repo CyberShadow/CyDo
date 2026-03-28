@@ -1186,6 +1186,24 @@ export function useTaskManager(): TaskManager {
     }
   }, [connected, activeTaskId, tasks]);
 
+  // True when the active task is a draft loaded from the backend (no renderKey
+  // yet).  Used as a dep below so re-adopt runs when the task first appears
+  // after page reload (activeTaskId is already set from the URL but liveStates
+  // is empty until tasks_list arrives).
+  const activeTaskNeedsAdoption = useMemo(() => {
+    if (activeTaskId === null) return false;
+    const tid = parseTaskId(activeTaskId);
+    if (tid === null) return false;
+    const task = tasks.get(tid);
+    return (
+      !!task &&
+      task.status === "pending" &&
+      task.messages.length === 0 &&
+      !task.isProcessing &&
+      !task.renderKey
+    );
+  }, [activeTaskId, tasks]);
+
   // Manage draft tracking state in response to navigation.
   //
   // When activeTaskId is null (project root / "New Task"):
@@ -1194,7 +1212,8 @@ export function useTaskManager(): TaskManager {
   //
   // When activeTaskId points to a pending draft task:
   //   - Re-adopt it as the active draft so isDraft/taskTypes/onContentEnd
-  //   are wired correctly (e.g. after navigating away and back).
+  //   are wired correctly (e.g. after navigating away and back, or after
+  //   page reload where the task loads from tasks_list asynchronously).
   useEffect(() => {
     if (activeTaskId !== null) {
       // Re-adopt an existing draft task when navigating to it.
@@ -1205,12 +1224,24 @@ export function useTaskManager(): TaskManager {
           task &&
           task.status === "pending" &&
           task.messages.length === 0 &&
-          !task.isProcessing &&
-          task.renderKey
+          !task.isProcessing
         ) {
+          // Tasks loaded from backend (page reload, second client) don't have
+          // renderKey.  Assign one so app.tsx wiring (isDraft, taskTypes,
+          // onContentEnd) works correctly.
+          const renderKey = task.renderKey || crypto.randomUUID();
+          if (!task.renderKey) {
+            const updated = { ...task, renderKey };
+            liveStates.set(tid, updated);
+            setTasks((prev) => {
+              const next = new Map(prev);
+              next.set(tid, updated);
+              return next;
+            });
+          }
           draftTidRef.current = tid;
-          draftRenderKeyRef.current = task.renderKey;
-          setDraftRenderKey(task.renderKey);
+          draftRenderKeyRef.current = renderKey;
+          setDraftRenderKey(renderKey);
         }
       }
       return;
@@ -1227,7 +1258,12 @@ export function useTaskManager(): TaskManager {
       inputDrafts.delete(0); // clear stale text re-saved by InputBox cleanup
       createVirtualDraft();
     }
-  }, [activeTaskId, activeWorkspace, createVirtualDraft]);
+  }, [
+    activeTaskId,
+    activeWorkspace,
+    createVirtualDraft,
+    activeTaskNeedsAdoption,
+  ]);
 
   const send = useCallback(
     (
@@ -1240,7 +1276,10 @@ export function useTaskManager(): TaskManager {
       // Check for virtual draft with real tid
       const draftTid = draftTidRef.current;
       if (draftTid !== null && draftTid > 0) {
-        // Draft task exists — send message to it
+        // Draft task exists — update task type if changed, then send message
+        if (taskType) {
+          connRef.current?.setTaskType(draftTid, taskType);
+        }
         connRef.current?.sendMessage(draftTid, content);
         // Clear draft state (task transitions from draft to active)
         draftTidRef.current = null;

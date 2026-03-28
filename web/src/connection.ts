@@ -95,6 +95,12 @@ export class Connection {
     this.send(JSON.stringify({ type: "message", tid, content }));
   }
 
+  setTaskType(tid: number, taskType: string) {
+    this.send(
+      JSON.stringify({ type: "set_task_type", tid, task_type: taskType }),
+    );
+  }
+
   sendInterrupt(tid: number) {
     this.send(JSON.stringify({ type: "interrupt", tid }));
   }

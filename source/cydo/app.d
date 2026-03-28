@@ -1107,8 +1107,21 @@ class App : ToolsBackend
 			case "ask_user_response": handleAskUserResponse(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(json); break;
+			case "set_task_type":    handleSetTaskTypeMsg(json); break;
 			default: break;
 		}
+	}
+
+	private void handleSetTaskTypeMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks) return;
+		if (tasks[tid].alive) return; // can't change type of a running task
+		if (json.task_type.length == 0) return;
+		if (getTaskTypes().byName(json.task_type) is null) return;
+		tasks[tid].taskType = json.task_type;
+		persistence.setTaskType(tid, json.task_type);
+		broadcastTaskUpdate(tid);
 	}
 
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
