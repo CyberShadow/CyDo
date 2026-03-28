@@ -2302,8 +2302,9 @@ class App : ToolsBackend
 				return;
 			}
 
-			// Output enforcement: check declared outputs before completing
-			if (exitCode == 0)
+			// Output enforcement: check declared outputs before completing.
+			// Skip when user stopped the task — they may resume or abandon it.
+			if (cleanExit)
 			{
 				auto missing = checkDeclaredOutputs(tid);
 				if (missing !is null && !tasks[tid].outputEnforcementAttempted)
