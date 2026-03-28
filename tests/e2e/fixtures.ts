@@ -1,6 +1,6 @@
 import { test as base, expect } from "@playwright/test";
 import type { Page, TestInfo } from "@playwright/test";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createInterface } from "readline";
 import { join } from "path";
@@ -26,7 +26,7 @@ let currentLogs: LogCollector | null = null;
 
 /** Navigate to the welcome page, click +, and wait for the InputBox to be ready. */
 export async function enterSession(page: Page) {
-  currentLogs?.push('test', 'enterSession');
+  currentLogs?.push("test", "enterSession");
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
@@ -36,7 +36,7 @@ export async function enterSession(page: Page) {
 
 /** Send a message from whichever input is currently visible. */
 export async function sendMessage(page: Page, text: string) {
-  currentLogs?.push('test', `sendMessage: "${text}"`);
+  currentLogs?.push("test", `sendMessage: "${text}"`);
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled({ timeout: 15_000 });
   await input.click();
@@ -54,7 +54,7 @@ export async function sendMessage(page: Page, text: string) {
 
 /** Kill the active session and wait for it to become inactive. */
 export async function killSession(page: Page, agentType: AgentType) {
-  currentLogs?.push('test', 'killSession');
+  currentLogs?.push("test", "killSession");
   await page.locator(".btn-banner-stop").click();
   const timeout = 15_000;
   await expect(page.locator(".btn-banner-archive")).toBeVisible({ timeout });
@@ -68,7 +68,7 @@ export function responseTimeout(agentType: AgentType): number {
 type TestFixtures = {
   agentType: AgentType;
   logs: LogCollector;
-  backend: { port: number; baseURL: string; pid: number };
+  backend: { port: number; baseURL: string; pid: number; wsDir: string };
 };
 
 // Sequential counter for unique temp directories within a worker.
@@ -85,13 +85,13 @@ function parsePortFromLines(
     const onLine = (line: string) => {
       const match = line.match(pattern);
       if (match) {
-        rl.off('line', onLine);
-        proc.off('exit', onExit);
+        rl.off("line", onLine);
+        proc.off("exit", onExit);
         resolve(parseInt(match[1], 10));
       }
     };
-    rl.on('line', onLine);
-    proc.on('exit', onExit);
+    rl.on("line", onLine);
+    proc.on("exit", onExit);
   });
 }
 
@@ -119,11 +119,24 @@ export const test = base.extend<TestFixtures>({
     mkdirSync(`${workDir}/data`, { recursive: true });
     symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
 
-    // Copy config from the shared playwright HOME
+    // Create a per-test git workspace so parallel tests don't conflict on
+    // task directories (each backend gets unique task paths).
+    const wsDir = `${workDir}/workspace`;
+    mkdirSync(wsDir, { recursive: true });
+    spawnSync("git", ["-C", wsDir, "init", "-q"]);
+    spawnSync("git", ["-C", wsDir, "config", "user.email", "test@test"]);
+    spawnSync("git", ["-C", wsDir, "config", "user.name", "Test"]);
+    writeFileSync(`${wsDir}/README.md`, "test\n");
+    spawnSync("git", ["-C", wsDir, "add", "."]);
+    spawnSync("git", ["-C", wsDir, "commit", "-qm", "init"]);
+
+    // Write per-test config with unique workspace root to avoid race conditions
+    // between parallel tests that would otherwise share /tmp/cydo-test-workspace.
+    const agentType = (testInfo.project.use as any).agentType ?? "claude";
     mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
-    cpSync(
-      "/tmp/playwright-home/.config/cydo/config.yaml",
+    writeFileSync(
       `${workerHome}/.config/cydo/config.yaml`,
+      `default_agent_type: ${agentType}\nworkspaces:\n  local:\n    root: ${wsDir}\n`,
     );
 
     // Give each test its own COPILOT_HOME to avoid MCP config file
@@ -140,19 +153,19 @@ export const test = base.extend<TestFixtures>({
     );
 
     // Start per-test mock API with port 0 (OS-assigned)
-    const mockApiServerPath = join(__dirname, '../mock-api/server.mjs');
+    const mockApiServerPath = join(__dirname, "../mock-api/server.mjs");
     const mockProc = spawn(process.execPath, [mockApiServerPath], {
       env: {
         ...process.env,
-        MOCK_API_PORT: '0',
+        MOCK_API_PORT: "0",
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const mockOutRl = createInterface({ input: mockProc.stdout! });
-    mockOutRl.on('line', (line) => logs.push('mock-api', line));
+    mockOutRl.on("line", (line) => logs.push("mock-api", line));
     if (mockProc.stderr) {
       const rl = createInterface({ input: mockProc.stderr });
-      rl.on('line', (line) => logs.push('mock-api', line));
+      rl.on("line", (line) => logs.push("mock-api", line));
     }
 
     // Parse actual port from mock API stdout
@@ -168,7 +181,10 @@ export const test = base.extend<TestFixtures>({
     for (let i = 0; i < 30; i++) {
       try {
         const res = await fetch(`${mockApiBaseURL}/api/hello`);
-        if (res.ok) { mockReady = true; break; }
+        if (res.ok) {
+          mockReady = true;
+          break;
+        }
       } catch {
         // not ready yet
       }
@@ -186,19 +202,21 @@ export const test = base.extend<TestFixtures>({
       env: {
         ...process.env,
         HOME: workerHome,
-        CYDO_LISTEN_PORT: '0',
+        CYDO_LISTEN_PORT: "0",
         CYDO_LOG_LEVEL: "trace",
         ANTHROPIC_BASE_URL: mockApiBaseURL,
         OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
         CYDO_AUTH_USER: "",
         CYDO_AUTH_PASS: "",
-        ...(process.env.COPILOT_HOME !== undefined ? { COPILOT_HOME: copilotHome } : {}),
+        ...(process.env.COPILOT_HOME !== undefined
+          ? { COPILOT_HOME: copilotHome }
+          : {}),
         CODEX_HOME: codexHome,
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
     const backendErrRl = createInterface({ input: proc.stderr! });
-    backendErrRl.on('line', (line) => logs.push('backend', line));
+    backendErrRl.on("line", (line) => logs.push("backend", line));
 
     // Parse actual port from backend stderr
     const port = await parsePortFromLines(
@@ -228,7 +246,7 @@ export const test = base.extend<TestFixtures>({
       throw new Error(`CyDo backend on port ${port} did not start in time`);
     }
 
-    await use({ port, baseURL, pid: proc.pid! });
+    await use({ port, baseURL, pid: proc.pid!, wsDir });
 
     // Teardown
     process.kill(-proc.pid!, "SIGTERM");
@@ -264,20 +282,28 @@ export const test = base.extend<TestFixtures>({
   page: async ({ page, logs }, use, testInfo: TestInfo) => {
     currentLogs = logs;
 
-    page.on('console', (msg) => logs.push('browser', `console.${msg.type()}: ${msg.text()}`));
-    page.on('request', (req) => logs.push('browser', `→ ${req.method()} ${req.url()}`));
-    page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) logs.push('browser', `navigate: ${frame.url()}`);
+    page.on("console", (msg) =>
+      logs.push("browser", `console.${msg.type()}: ${msg.text()}`),
+    );
+    page.on("request", (req) =>
+      logs.push("browser", `→ ${req.method()} ${req.url()}`),
+    );
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame())
+        logs.push("browser", `navigate: ${frame.url()}`);
     });
 
     await use(page);
 
     currentLogs = null;
     const rawLogs = logs.flushRaw();
-    if (rawLogs.length > 0 && (testInfo.status === 'failed' || testInfo.status === 'timedOut')) {
-      await testInfo.attach('server-log', {
+    if (
+      rawLogs.length > 0 &&
+      (testInfo.status === "failed" || testInfo.status === "timedOut")
+    ) {
+      await testInfo.attach("server-log", {
         body: JSON.stringify(rawLogs),
-        contentType: 'application/json',
+        contentType: "application/json",
       });
     }
 
@@ -293,7 +319,7 @@ export const test = base.extend<TestFixtures>({
       }
       expect(
         errorCount,
-        `Protocol errors in DOM:\n${texts.join("\n---\n")}`
+        `Protocol errors in DOM:\n${texts.join("\n---\n")}`,
       ).toBe(0);
     }
 
@@ -306,7 +332,7 @@ export const test = base.extend<TestFixtures>({
       const firstMsg = await unrecognizedMessages.first().textContent();
       throw new Error(
         `Found ${unrecognizedCount} unrecognized agent data message(s) in DOM. ` +
-        `First: ${firstMsg?.slice(0, 200)}`,
+          `First: ${firstMsg?.slice(0, 200)}`,
       );
     }
 

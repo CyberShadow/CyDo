@@ -41,6 +41,7 @@ import cydo.tasktype : TaskTypeDef, ContinuationDef, byName, isInteractive, load
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt;
 import cydo.task;
+import cydo.worktree;
 
 @(`CyDo backend and tooling.`)
 struct Program
@@ -1577,9 +1578,16 @@ class App : ToolsBackend
 		if (td.alive)
 			return;
 		bool archived = json.content.json == `"true"`;
+		if (td.archived == archived)
+			return; // no change
 		td.archived = archived;
 		persistence.setArchived(tid, archived);
 		broadcastTaskUpdate(tid);
+
+		if (archived)
+			archiveWorktreesForTask(tid);
+		else
+			unarchiveWorktreesForTask(tid);
 	}
 
 	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)
@@ -2726,6 +2734,133 @@ class App : ToolsBackend
 			if (depParent == parentTid)
 				children ~= childTid;
 		return children;
+	}
+
+	/// Returns true if any ancestor of `tid` (via parent_tid chain) is archived.
+	private bool isEffectivelyArchivedByAncestor(int tid)
+	{
+		int current = tid;
+		for (;;)
+		{
+			auto tdp = current in tasks;
+			if (!tdp)
+				return false;
+			int parent = tdp.parentTid;
+			if (parent <= 0 || parent == current)
+				return false;
+			auto parentTdp = parent in tasks;
+			if (!parentTdp)
+				return false;
+			if (parentTdp.archived)
+				return true;
+			current = parent;
+		}
+	}
+
+	/// Archive worktrees for task `tid` and all descendants via DFS.
+	/// Skips if `tid` is already effectively archived by an ancestor.
+	private void archiveWorktreesForTask(int tid)
+	{
+		if (isEffectivelyArchivedByAncestor(tid))
+			return;
+		archiveWorktreesDFS(tid, false);
+	}
+
+	/// Unarchive worktrees for task `tid` and all descendants via DFS.
+	/// Skips if `tid` is still effectively archived by an ancestor.
+	private void unarchiveWorktreesForTask(int tid)
+	{
+		if (isEffectivelyArchivedByAncestor(tid))
+			return;
+		unarchiveWorktreesDFS(tid, false);
+	}
+
+	/// DFS archive: process this task's worktree, then recurse to children.
+	/// `parentEffectivelyArchived` is true if an ancestor in this walk was
+	/// already directly archived (meaning its subtree was handled earlier).
+	private void archiveWorktreesDFS(int tid, bool parentEffectivelyArchived)
+	{
+		import std.path : buildPath;
+
+		auto tdp = tid in tasks;
+		if (tdp is null)
+			return;
+
+		// If this descendant is directly archived, its worktrees were already
+		// handled when it was archived individually — prune this subtree.
+		if (parentEffectivelyArchived && tdp.archived)
+			return;
+
+		if (tdp.hasWorktree && tdp.taskDir.length > 0)
+		{
+			if (tdp.ownsWorktree())
+				archiveWorktree(tdp.worktreePath, tdp.projectPath, tid);
+			else
+			{
+				// Inherited worktree via symlink: remove to avoid dangling
+				import std.file : exists, remove;
+				auto wtPath = buildPath(tdp.taskDir, "worktree");
+				if (exists(wtPath))
+					remove(wtPath);
+			}
+		}
+
+		// Recurse to structural children
+		foreach (childTid, ref child; tasks)
+			if (child.parentTid == tid)
+				archiveWorktreesDFS(childTid, true);
+	}
+
+	/// DFS unarchive: process this task's worktree, then recurse to children.
+	private void unarchiveWorktreesDFS(int tid, bool parentEffectivelyArchived)
+	{
+		import std.file : exists, symlink;
+		import std.path : buildPath;
+
+		auto tdp = tid in tasks;
+		if (tdp is null)
+			return;
+
+		// If this descendant is directly archived, it remains effectively
+		// archived — don't restore its subtree.
+		if (parentEffectivelyArchived && tdp.archived)
+			return;
+
+		if (tdp.hasWorktree && tdp.taskDir.length > 0)
+		{
+			auto wtPath = buildPath(tdp.taskDir, "worktree");
+			if (hasArchiveRef(tdp.projectPath, tid))
+				unarchiveWorktree(tdp.projectPath, tid, wtPath);
+			else if (!exists(wtPath))
+			{
+				// Inherited worktree via symlink: recreate it
+				string ownerPath = findOwnerWorktreePath(tid);
+				if (ownerPath.length > 0)
+					symlink(ownerPath, wtPath);
+				else
+					warningf("unarchiveWorktreesDFS: could not find worktree owner for tid=%d", tid);
+			}
+		}
+
+		// Recurse to structural children
+		foreach (childTid, ref child; tasks)
+			if (child.parentTid == tid)
+				unarchiveWorktreesDFS(childTid, true);
+	}
+
+	/// Walk the parent_tid chain from `tid` to find the owning task's worktree path.
+	private string findOwnerWorktreePath(int tid)
+	{
+		import std.path : buildPath;
+		int current = tasks[tid].parentTid;
+		while (current > 0 && current in tasks)
+		{
+			auto td = &tasks[current];
+			if (td.hasWorktree && td.ownsWorktree())
+				return buildPath(td.taskDir, "worktree");
+			current = td.parentTid;
+		}
+		return "";
 	}
 
 	private void resumeAndDeliverResults(int tid)

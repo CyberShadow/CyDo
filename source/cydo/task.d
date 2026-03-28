@@ -72,6 +72,21 @@ struct TaskData
 		return hasWorktree ? worktreePath : projectPath;
 	}
 
+	/// Returns true if this task owns its worktree (real directory, not a symlink).
+	/// False if the task has no worktree or inherits one via symlink.
+	bool ownsWorktree() const
+	{
+		if (!hasWorktree || taskDir.length == 0)
+			return false;
+		import std.file : isSymlink;
+		import std.path : buildPath;
+		auto path = buildPath(taskDir, "worktree");
+		try
+			return !isSymlink(path);
+		catch (Exception)
+			return false;
+	}
+
 	string draft;
 
 	// Runtime state (not persisted)

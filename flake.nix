@@ -358,7 +358,14 @@ EOF
 
             dubLock = ./dub-lock.json;
 
+            nativeBuildInputs = [ pkgs.git ];
             buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
+
+            # Provide git identity so worktree unit tests can create commits.
+            GIT_AUTHOR_NAME = "CyDo Test";
+            GIT_AUTHOR_EMAIL = "test@example.com";
+            GIT_COMMITTER_NAME = "CyDo Test";
+            GIT_COMMITTER_EMAIL = "test@example.com";
 
             buildPhase = ''
               runHook preBuild
