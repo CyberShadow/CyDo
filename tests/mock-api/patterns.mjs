@@ -32,9 +32,9 @@ export function matchPattern(userText) {
 
   let match;
 
-  // "reply with "<text>""
-  match = userText.match(/reply with "([^"]*)"/i);
-  if (match) return { type: "text", text: match[1] };
+  // Task-creation patterns must come before "reply with" and "run command"
+  // because a task prompt like "call task research reply with X" contains
+  // "reply with" as a substring, which would otherwise match first.
 
   // Codex file-viewer deterministic fixtures
   // Keep these before broad "call task ..." matching because codex prompts
@@ -69,10 +69,6 @@ export function matchPattern(userText) {
     };
   }
 
-  // Task-creation patterns must come before "run command" because a task prompt
-  // like "call 2 tasks research run command sleep 10" contains "run command" as
-  // a substring, which would otherwise match the shell pattern first.
-
   // "call N tasks <type> <prompt>" → MCP Task tool call (create multiple sub-tasks)
   match = userText.match(/call (\d+) tasks (\S+) (.*)/is);
   if (match) {
@@ -93,6 +89,10 @@ export function matchPattern(userText) {
   // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
   match = userText.match(/call task (\S+) (.*)/is);
   if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+
+  // "reply with "<text>""
+  match = userText.match(/reply with "([^"]*)"/i);
+  if (match) return { type: "text", text: match[1] };
 
   // "stall session" → keep LLM connection open without completing
   if (/stall session/i.test(userText)) return { type: "stall" };

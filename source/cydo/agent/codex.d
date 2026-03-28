@@ -1155,6 +1155,7 @@ class CodexSession : AgentSession
 	private string activeItemId_;              // most recently started item (for delta routing)
 	private string[string] activeItemTypes_;   // itemId → itemType for all active items
 	private int itemCounter_;                  // monotonic counter for generating item IDs
+	private string lastResultText_;             // last completed text content, for turn/result
 
 	private string sessionId;
 
@@ -1366,6 +1367,9 @@ class CodexSession : AgentSession
 			case "agentMessage":
 				activeItemTypes_[itemId] = "text";
 				ev.item_type = "text";
+				// Reset + capture text for result extraction. Text may arrive
+				// fully formed here (no deltas) or be empty with deltas following.
+				lastResultText_ = item.text;
 				break;
 			case "reasoning":
 				activeItemTypes_[itemId] = "thinking";
@@ -1435,6 +1439,14 @@ class CodexSession : AgentSession
 	{
 		if (activeItemId_.length == 0 || outputHandler_ is null)
 			return;
+
+		// Accumulate text deltas for result extraction.
+		if (deltaType == "text_delta")
+		{
+			auto pType = activeItemId_ in activeItemTypes_;
+			if (pType !is null && *pType == "text")
+				lastResultText_ ~= params.delta;
+		}
 
 		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
 		ItemDeltaEvent ev;
@@ -1565,8 +1577,10 @@ class CodexSession : AgentSession
 			tre.subtype = "success";
 			tre.num_turns = 1;
 			tre.usage = UsageInfo(0, 0);
+			tre.result = lastResultText_;
 			outputHandler_(injectRawField(toJson(tre), rawNotification));
 		}
+		lastResultText_ = null;
 	}
 }
 
