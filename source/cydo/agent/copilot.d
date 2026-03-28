@@ -11,7 +11,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkPermissionRequest, SdkPermissionResult,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
-import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -33,6 +33,8 @@ class CopilotAgent : Agent
 	private string lastMcpConfigPath_;
 	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
 	package(cydo) ToolDispatchFn toolDispatch_;
+	// Background thread: sessionId → session directory path (populated by enumerateAllSessions)
+	private string[string] sessionIdToDirPath_;
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
@@ -213,6 +215,112 @@ class CopilotAgent : Agent
 	}
 
 	string extractUserText(string line) { return ""; }
+
+	DiscoveredSession[] enumerateAllSessions()
+	{
+		import std.file : DirEntry, dirEntries, exists, SpanMode;
+		import std.path : baseName, buildPath;
+		import std.process : environment;
+
+		auto home = environment.get("HOME", "/tmp");
+		auto copilotHome = environment.get("COPILOT_HOME", buildPath(home, ".copilot"));
+		auto sessionStateDir = buildPath(copilotHome, "session-state");
+		if (!exists(sessionStateDir))
+			return [];
+
+		sessionIdToDirPath_ = null;
+		DiscoveredSession[] result;
+		try
+		{
+			foreach (DirEntry dirEntry; dirEntries(sessionStateDir, SpanMode.shallow))
+			{
+				if (!dirEntry.isDir)
+					continue;
+				auto eventsFile = buildPath(dirEntry.name, "events.jsonl");
+				if (!exists(eventsFile))
+					continue;
+				auto sessionId = baseName(dirEntry.name);
+				sessionIdToDirPath_[sessionId] = dirEntry.name;
+				DiscoveredSession ds;
+				ds.sessionId = sessionId;
+				import std.file : timeLastModified;
+				ds.mtime = timeLastModified(eventsFile).stdTime;
+				ds.projectPath = ""; // not derivable
+				result ~= ds;
+			}
+		}
+		catch (Exception e)
+		{
+			import std.logger : tracef;
+			tracef("enumerateAllSessions(copilot): error scanning %s: %s", sessionStateDir, e.msg);
+		}
+		return result;
+	}
+
+	SessionMeta readSessionMeta(string sessionId)
+	{
+		import std.algorithm : canFind;
+		import std.path : buildPath;
+		import std.stdio : File;
+		import cydo.task : truncateTitle;
+
+		auto pathp = sessionId in sessionIdToDirPath_;
+		if (pathp is null)
+			return SessionMeta.init;
+
+		auto eventsFile = buildPath(*pathp, "events.jsonl");
+		SessionMeta meta;
+		try
+		{
+			int lineCount = 0;
+			auto f = File(eventsFile, "r");
+			foreach (line; f.byLine)
+			{
+				if (lineCount++ > 50)
+					break;
+				string lineStr = cast(string) line.idup;
+				// Look for working directory in early events
+				if (meta.projectPath.length == 0 && lineStr.canFind(`"cwd"`))
+				{
+					@JSONPartial
+					static struct CwdProbe { string cwd; }
+					try
+					{
+						auto probe = jsonParse!CwdProbe(lineStr);
+						if (probe.cwd.length > 0)
+							meta.projectPath = probe.cwd;
+					}
+					catch (Exception) {}
+				}
+				// Look for first user message
+				if (meta.title.length == 0 && lineStr.canFind(`"role":"user"`)
+					&& lineStr.canFind(`"content"`))
+				{
+					@JSONPartial
+					static struct UserMsgProbe
+					{
+						string role;
+						string content;
+					}
+					try
+					{
+						auto probe = jsonParse!UserMsgProbe(lineStr);
+						if (probe.role == "user" && probe.content.length > 0)
+							meta.title = truncateTitle(probe.content, 80);
+					}
+					catch (Exception) {}
+				}
+				if (meta.title.length > 0 && meta.projectPath.length > 0)
+					break;
+			}
+		}
+		catch (Exception e)
+		{
+			import std.logger : tracef;
+			tracef("readSessionMeta(copilot, %s): error: %s", sessionId, e.msg);
+		}
+		return meta;
+	}
 
 	void setModelAliases(string[string] aliases)
 	{

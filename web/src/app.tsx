@@ -22,6 +22,7 @@ function AppContent() {
     stop,
     closeStdin,
     resume,
+    promote,
     fork,
     undoPreview,
     undoConfirm,
@@ -326,6 +327,9 @@ function AppContent() {
                   onStop={stop}
                   onCloseStdin={closeStdin}
                   onResume={resume}
+                  onPromote={() => {
+                    promote(task.tid);
+                  }}
                   onFork={fork}
                   onUndo={undoPreview}
                   onUndoConfirm={undoConfirm}

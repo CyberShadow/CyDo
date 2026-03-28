@@ -25,7 +25,7 @@ struct TaskData
 	string projectPath;
 	bool hasWorktree;
 	string title;
-	string status = "pending";  // pending, active, completed, failed
+	string status = "pending";  // pending, active, alive, waiting, completed, failed, importable
 	bool archived;
 	long createdAt;    // StdTime; 0 = not set
 	long lastActive;   // StdTime; 0 = not set

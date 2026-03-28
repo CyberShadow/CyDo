@@ -24,6 +24,7 @@ import dotIcon from "../icons/dot.svg?raw";
 import plusIcon from "../icons/plus.svg?raw";
 import questionIcon from "../icons/question.svg?raw";
 import archiveIcon from "../icons/archive.svg?raw";
+import importIcon from "../icons/import.svg?raw";
 
 const rawIcons: Record<string, string> = {
   check: checkIcon,
@@ -31,6 +32,7 @@ const rawIcons: Record<string, string> = {
   plus: plusIcon,
   question: questionIcon,
   archive: archiveIcon,
+  import: importIcon,
   blank: blankIcon,
   conversation: conversationIcon,
   "plan-mode": planModeIcon,

@@ -15,7 +15,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
 import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
@@ -691,6 +691,8 @@ class CodexAgent : Agent
 	private AppServerProcess[string] serverPool; // keyed by workspace+sandbox signature
 	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
+	// Background thread: sessionId → file path (populated by enumerateAllSessions)
+	private string[string] sessionIdToPath_;
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
@@ -1116,6 +1118,127 @@ class CodexAgent : Agent
 
 	/// Currently unused — no callers in the codebase. Implement if a caller is added.
 	string extractUserText(string line) { return ""; }
+
+	DiscoveredSession[] enumerateAllSessions()
+	{
+		import std.file : DirEntry, dirEntries, exists, SpanMode;
+		import std.path : baseName, buildPath;
+		import std.process : environment;
+		import std.string : lastIndexOf;
+
+		auto home = environment.get("HOME", "/tmp");
+		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
+		auto sessionsDir = buildPath(codexHome, "sessions");
+		if (!exists(sessionsDir))
+			return [];
+
+		sessionIdToPath_ = null;
+		DiscoveredSession[] result;
+		try
+		{
+			foreach (DirEntry entry; dirEntries(sessionsDir, "*.jsonl", SpanMode.depth))
+			{
+				auto base = baseName(entry.name, ".jsonl");
+				// Extract the UUID suffix from the filename.
+				// Codex rollout files are named rollout-<YYYY>-<MM>-<DD>T<HH>-<MM>-<SS>-<UUID>.jsonl
+				// where UUID = 8-4-4-4-12 hex digits. The UUID is the last 36 chars of the basename.
+				// This matches historyPath glob *-<UUID>.jsonl and parseSessionId which returns the
+				// full UUID from session/init.
+				import std.regex : ctRegex, matchFirst;
+				enum uuidRx = ctRegex!`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`;
+				auto m = base.matchFirst(uuidRx);
+				auto sessionId = m.empty ? base : m.hit;
+				sessionIdToPath_[sessionId] = entry.name;
+				DiscoveredSession ds;
+				ds.sessionId = sessionId;
+				ds.mtime = entry.timeLastModified.stdTime;
+				ds.projectPath = ""; // not derivable from directory structure
+				result ~= ds;
+			}
+		}
+		catch (Exception e)
+		{ tracef("enumerateAllSessions(codex): error scanning %s: %s", sessionsDir, e.msg); }
+		return result;
+	}
+
+	SessionMeta readSessionMeta(string sessionId)
+	{
+		import std.algorithm : canFind;
+		import std.stdio : File;
+		import cydo.task : truncateTitle;
+
+		auto pathp = sessionId in sessionIdToPath_;
+		if (pathp is null)
+			return SessionMeta.init;
+
+		SessionMeta meta;
+		try
+		{
+			int lineCount = 0;
+			auto f = File(*pathp, "r");
+			foreach (line; f.byLine)
+			{
+				if (lineCount++ > 50)
+					break;
+				string lineStr = cast(string) line.idup;
+				// Extract cwd from session_meta line
+				if (meta.projectPath.length == 0 && lineStr.canFind(`"type":"session_meta"`))
+				{
+					@JSONPartial
+					static struct SessionMetaProbe
+					{
+						@JSONPartial
+						static struct Payload { string cwd; }
+						Payload payload;
+					}
+					try
+					{
+						auto probe = jsonParse!SessionMetaProbe(lineStr);
+						if (probe.payload.cwd.length > 0)
+							meta.projectPath = probe.payload.cwd;
+					}
+					catch (Exception) {}
+				}
+				// Extract title from first user response_item
+				if (meta.title.length == 0 && lineStr.canFind(`"type":"response_item"`)
+					&& lineStr.canFind(`"role":"user"`))
+				{
+					@JSONPartial
+					static struct RiProbe
+					{
+						@JSONPartial
+						static struct Payload
+						{
+							string role;
+							@JSONPartial
+							static struct ContentItem { string type; string text; }
+							ContentItem[] content;
+						}
+						Payload payload;
+					}
+					try
+					{
+						auto probe = jsonParse!RiProbe(lineStr);
+						if (probe.payload.role == "user")
+						{
+							string text;
+							foreach (ref ci; probe.payload.content)
+								if (ci.type == "input_text" || ci.type == "text")
+									text ~= ci.text;
+							if (text.length > 0)
+								meta.title = truncateTitle(text, 80);
+						}
+					}
+					catch (Exception) {}
+				}
+				if (meta.title.length > 0 && meta.projectPath.length > 0)
+					break;
+			}
+		}
+		catch (Exception e)
+		{ tracef("readSessionMeta(codex, %s): error: %s", sessionId, e.msg); }
+		return meta;
+	}
 
 	OneShotHandle completeOneShot(string prompt, string modelClass)
 	{

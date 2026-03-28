@@ -25,6 +25,7 @@ interface Props {
   onStop: () => void;
   onCloseStdin: () => void;
   onResume: () => void;
+  onPromote?: () => void;
   onFork: (tid: number, afterUuid: string) => void;
   onUndo: (tid: number, afterUuid: string) => void;
   onUndoConfirm: (
@@ -55,6 +56,7 @@ function SessionViewInner({
   onStop,
   onCloseStdin,
   onResume,
+  onPromote,
   onFork,
   onUndo,
   onUndoConfirm,
@@ -161,12 +163,12 @@ function SessionViewInner({
     if (matchMedia("(pointer: coarse)").matches) return;
     if (isDraft) {
       taskTypePickerRef.current?.focus();
-    } else if (task.resumable) {
+    } else if (task.resumable || task.status === "importable") {
       resumeRef.current?.focus();
     } else {
       inputRef.current?.focus();
     }
-  }, [isActive, task.resumable, isDraft]);
+  }, [isActive, task.resumable, task.status, isDraft]);
 
   const handleSaveDraft = useCallback(
     (draft: string) => onSaveDraft?.(task.tid, draft),
@@ -360,7 +362,13 @@ function SessionViewInner({
         />
       )}
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
-      {task.resumable ? (
+      {task.status === "importable" ? (
+        <div class="resume-bar">
+          <button ref={resumeRef} class="btn btn-resume" onClick={onPromote}>
+            Import Session
+          </button>
+        </div>
+      ) : task.resumable ? (
         <div class="resume-bar">
           {task.error && (
             <span class="session-failed-label">

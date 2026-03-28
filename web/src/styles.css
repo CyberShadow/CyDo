@@ -455,6 +455,11 @@ body,
   opacity: 0.4;
 }
 
+.task-type-icon.importable {
+  background-color: var(--accent);
+  opacity: 0.4;
+}
+
 .sidebar-item .sidebar-label.draft-label {
   opacity: 0.5;
   font-style: italic;

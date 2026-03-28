@@ -86,6 +86,7 @@ export interface TaskManager {
   stop: () => void;
   closeStdin: () => void;
   resume: () => void;
+  promote: (tid: number) => void;
   fork: (tid: number, afterUuid: string) => void;
   undoPreview: (tid: number, afterUuid: string) => void;
   undoConfirm: (
@@ -114,6 +115,7 @@ export interface TaskManager {
     status?: string;
     archived?: boolean;
     hasPendingQuestion?: boolean;
+    lastActive?: number;
   }>;
   workspaces: WorkspaceInfo[];
   taskTypes: TaskTypeInfo[];
@@ -1407,6 +1409,20 @@ export function useTaskManager(): TaskManager {
     }
   }, [activeTaskId]);
 
+  const promote = useCallback((tid: number) => {
+    const t = liveStates.get(tid);
+    if (!t || t.status !== "importable") return;
+    connRef.current?.promoteTask(tid);
+    // Optimistic update
+    const updated = { ...t, status: "completed", resumable: true };
+    liveStates.set(tid, updated);
+    setTasks((prev) => {
+      const next = new Map(prev);
+      next.set(tid, updated);
+      return next;
+    });
+  }, []);
+
   const setArchived = useCallback((tid: number, archived: boolean) => {
     connRef.current?.setArchived(tid, archived);
   }, []);
@@ -1468,6 +1484,7 @@ export function useTaskManager(): TaskManager {
         archived: t.archived,
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
+        lastActive: t.lastActive,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -1486,7 +1503,8 @@ export function useTaskManager(): TaskManager {
           t.status === p.status &&
           t.archived === p.archived &&
           t.taskType === p.taskType &&
-          t.hasPendingQuestion === p.hasPendingQuestion
+          t.hasPendingQuestion === p.hasPendingQuestion &&
+          t.lastActive === p.lastActive
         );
       })
     ) {
@@ -1506,6 +1524,7 @@ export function useTaskManager(): TaskManager {
     stop,
     closeStdin,
     resume,
+    promote,
     fork,
     undoPreview,
     undoConfirm,

@@ -20,6 +20,21 @@ struct SessionConfig
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
 }
 
+/// Lightweight info from directory scanning — no file reads.
+struct DiscoveredSession
+{
+	string sessionId;   /// Opaque agent-meaningful identifier (UUID, path-based ID, etc.)
+	long mtime;         /// Modification time (SysTime.stdTime) — for cache invalidation
+	string projectPath; /// Project path if cheaply derivable from directory structure (empty otherwise)
+}
+
+/// Metadata extracted by reading session content.
+struct SessionMeta
+{
+	string title;       /// First user message text (truncated)
+	string projectPath; /// Working directory from init/meta event (empty if not found)
+}
+
 /// Describes an agent type: its sandbox requirements, git identity,
 /// and how to create sessions. Separates agent metadata from
 /// the runtime AgentSession interface.
@@ -127,6 +142,16 @@ interface Agent
 
 	/// Extract user message text from a raw event line.
 	string extractUserText(string line);
+
+	/// Enumerate all persisted sessions for this agent type.
+	/// Returns lightweight info from directory scanning / DB query only — no content reads.
+	/// Must be safe to call from a background thread (no shared mutable state).
+	DiscoveredSession[] enumerateAllSessions();
+
+	/// Extract metadata (title, project path) from a session's persisted content.
+	/// The agent reads only as much as needed (e.g., first few lines via byLine).
+	/// Must be safe to call from a background thread (pure I/O, no shared mutable state).
+	SessionMeta readSessionMeta(string sessionId);
 
 	/// Run a one-shot LLM completion. Returns a Promise that resolves with
 	/// the raw response text, or rejects on failure/non-zero exit.

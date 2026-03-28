@@ -22,6 +22,7 @@ import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, resolve, reject;
+import ae.utils.promise.concurrency : threadAsync;
 import ae.utils.statequeue : StateQueue;
 
 mixin SSLUseLib;
@@ -29,7 +30,7 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, ToolsBackend;
 
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
@@ -176,6 +177,19 @@ class App : ToolsBackend
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
+
+	/// Result from background discovery thread for a single session.
+	private struct DiscoveryResult
+	{
+		string agentType;
+		string sessionId;
+		long mtime;
+		string enumProjectPath; // from enumerateAllSessions (best-effort, may be empty)
+		// Metadata — either from cache hit or from readSessionMeta call
+		string title;
+		string projectPath;
+		bool fromCache;
+	}
 
 	private TaskTypeDef[] getTaskTypes()
 	{
@@ -1076,6 +1090,7 @@ class App : ToolsBackend
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
+			case "promote_task":     handlePromoteTaskMsg(json); break;
 			default: break;
 		}
 	}
@@ -2656,7 +2671,8 @@ class App : ToolsBackend
 				bool allChildrenDone = true;
 				foreach (childTid, parentTid; taskDeps)
 					if (parentTid == tid && childTid in tasks
-						&& tasks[childTid].status != "completed" && tasks[childTid].status != "failed")
+						&& tasks[childTid].status != "completed" && tasks[childTid].status != "failed"
+					&& tasks[childTid].status != "importable")
 					{
 						tracef("resumeInFlightTasks: tid=%d waiting, child tid=%d still %s",
 							tid, childTid, tasks[childTid].status);
@@ -3126,6 +3142,192 @@ class App : ToolsBackend
 		broadcast(toJson(SuggestionsUpdateMessage("suggestions_update", tid, suggestions)));
 	}
 
+	private void handlePromoteTaskMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.status != "importable")
+			return;
+		td.status = "completed";
+		persistence.setStatus(tid, "completed");
+		broadcastTaskUpdate(tid);
+	}
+
+	/// Enumerate external sessions and create importable tasks for new ones.
+	private void enumerateSessions()
+	{
+		// Collect all known agent session IDs (agentType ~ "\0" ~ sessionId for uniqueness)
+		bool[string] knownSessionIds;
+		foreach (ref td; tasks)
+			if (td.agentSessionId.length > 0)
+				knownSessionIds[td.agentType ~ "\0" ~ td.agentSessionId] = true;
+
+		// Load cache into memory map keyed by agentType ~ "\0" ~ sessionId
+		Persistence.CacheRow[string] cacheMap;
+		foreach (row; persistence.loadSessionMetaCache())
+			cacheMap[row.agentType ~ "\0" ~ row.sessionId] = row;
+
+		// Snapshot agent references for background thread
+		Agent[] agentList;
+		string[] agentTypeNames;
+		foreach (name, a; agentsByType)
+		{
+			agentList ~= a;
+			agentTypeNames ~= name;
+		}
+
+		// Orphan cleanup: remove importable tasks whose files no longer exist
+		{
+			int[] toDelete;
+			foreach (ref td; tasks)
+			{
+				if (td.status != "importable")
+					continue;
+				try
+				{
+					auto ta = agentForTask(td.tid);
+					auto jp = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+					import std.file : exists;
+					if (jp.length == 0 || !exists(jp))
+						toDelete ~= td.tid;
+				}
+				catch (Exception)
+					toDelete ~= td.tid;
+			}
+			foreach (delTid; toDelete)
+			{
+				tasks.remove(delTid);
+				persistence.deleteTask(delTid);
+				broadcast(toJson(TaskDeletedMessage("task_deleted", delTid)));
+			}
+		}
+
+		// Capture cache keys for orphan cache cleanup after scan
+		string[] cacheKeys = cacheMap.keys;
+
+		// Launch background discovery scan (captures agentList, agentTypeNames,
+		// knownSessionIds, cacheMap by value — safe for background thread)
+		threadAsync({
+			DiscoveryResult[] results;
+			foreach (idx, agent; agentList)
+			{
+				auto agentType = agentTypeNames[idx];
+				DiscoveredSession[] discovered;
+				try
+					discovered = agent.enumerateAllSessions();
+				catch (Exception e)
+				{
+					warningf("enumerateSessions: error enumerating %s sessions: %s",
+						agentType, e.msg);
+					continue;
+				}
+
+				foreach (ref ds; discovered)
+				{
+					auto compositeKey = agentType ~ "\0" ~ ds.sessionId;
+					if (compositeKey in knownSessionIds)
+						continue;
+
+					auto cachedp = compositeKey in cacheMap;
+
+					DiscoveryResult dr;
+					dr.agentType = agentType;
+					dr.sessionId = ds.sessionId;
+					dr.mtime = ds.mtime;
+					dr.enumProjectPath = ds.projectPath;
+
+					if (cachedp !is null && cachedp.mtime == ds.mtime)
+					{
+						dr.title = cachedp.title;
+						dr.projectPath = cachedp.projectPath;
+						dr.fromCache = true;
+					}
+					else
+					{
+						try
+						{
+							auto meta = agent.readSessionMeta(ds.sessionId);
+							dr.title = meta.title;
+							dr.projectPath = meta.projectPath;
+						}
+						catch (Exception e)
+							warningf("enumerateSessions: error reading meta for %s/%s: %s",
+								agentType, ds.sessionId, e.msg);
+						dr.fromCache = false;
+					}
+					results ~= dr;
+				}
+			}
+			return results;
+		}).then((DiscoveryResult[] results) {
+			// Track discovered (agentType, sessionId) for cache orphan cleanup
+			bool[string] discoveredKeys;
+			foreach (ref r; results)
+				discoveredKeys[r.agentType ~ "\0" ~ r.sessionId] = true;
+
+			// Delete orphaned cache entries (sessions that disappeared)
+			foreach (key; cacheKeys)
+				if (key !in discoveredKeys)
+				{
+					import std.string : indexOf;
+					auto sep = key.indexOf('\0');
+					if (sep >= 0)
+						persistence.deleteSessionMetaCacheEntry(key[0 .. sep], key[sep + 1 .. $]);
+				}
+
+			foreach (ref r; results)
+			{
+				// Re-check: a new task might have been created during the scan
+				bool alreadyKnown = false;
+				foreach (ref td; tasks)
+					if (td.agentSessionId == r.sessionId && td.agentType == r.agentType)
+					{ alreadyKnown = true; break; }
+				if (alreadyKnown)
+					continue;
+
+				string finalProjectPath = r.projectPath.length > 0 ? r.projectPath : r.enumProjectPath;
+				string finalTitle;
+				if (r.title.length > 0)
+					finalTitle = r.title;
+				else
+				{
+					import std.algorithm : min;
+					finalTitle = r.sessionId[0 .. min(8, $)] ~ "…";
+				}
+
+				if (!r.fromCache)
+					persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
+						finalProjectPath, finalTitle);
+
+				// Match workspace by project path
+				string workspace = "";
+				foreach (ref wi; workspacesInfo)
+					if (wi.projects !is null)
+						foreach (ref pi; wi.projects)
+							if (pi.path == finalProjectPath)
+							{ workspace = wi.name; break; }
+
+				// Create importable task row
+				auto tid = createTask(workspace, finalProjectPath, r.agentType);
+				auto td = &tasks[tid];
+				td.status = "importable";
+				td.agentSessionId = r.sessionId;
+				td.title = finalTitle;
+				td.lastActive = r.mtime;
+				td.historyLoaded = false;
+				persistence.setStatus(tid, "importable");
+				persistence.setAgentSessionId(tid, r.sessionId);
+				persistence.setTitle(tid, finalTitle);
+				persistence.setLastActive(tid, r.mtime);
+
+				broadcast(toJson(TaskCreatedMessage("task_created", tid, workspace, finalProjectPath, 0, "")));
+				broadcastTaskUpdate(tid);
+			}
+		}).ignoreResult();
+	}
+
 	/// Discover projects in all configured workspaces and populate workspacesInfo.
 	private void discoverAllWorkspaces()
 	{
@@ -3256,6 +3458,7 @@ class App : ToolsBackend
 	{
 		discoverAllWorkspaces();
 		broadcast(buildWorkspacesList());
+		enumerateSessions();
 	}
 
 	/// Read a prompt template file from the task types directory and substitute variables.
@@ -3333,7 +3536,8 @@ class App : ToolsBackend
 	private TaskListEntry buildTaskEntry(ref TaskData td)
 	{
 		import cydo.task : stdTimeToUnixMillis;
-		return TaskListEntry(td.tid, td.alive, td.agentSessionId.length > 0 && !td.alive,
+		return TaskListEntry(td.tid, td.alive,
+			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
 			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 			td.taskType, td.archived, td.draft, td.error,

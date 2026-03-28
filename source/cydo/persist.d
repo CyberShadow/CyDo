@@ -78,6 +78,15 @@ struct Persistence
 			// Migration 13: task timestamps (created_at, last_active)
 			"ALTER TABLE tasks ADD COLUMN created_at INTEGER;" ~
 			"ALTER TABLE tasks ADD COLUMN last_active INTEGER;",
+			// Migration 14: cache for externally-discovered session metadata
+			"CREATE TABLE session_meta_cache (" ~
+			"    agent_type TEXT NOT NULL," ~
+			"    session_id TEXT NOT NULL," ~
+			"    mtime INTEGER NOT NULL," ~
+			"    project_path TEXT NOT NULL DEFAULT ''," ~
+			"    title TEXT NOT NULL DEFAULT ''," ~
+			"    PRIMARY KEY (agent_type, session_id)" ~
+			");",
 		]);
 	}
 
@@ -244,6 +253,39 @@ struct Persistence
 	void setCreatedAt(int tid, long createdAt)
 	{
 		db.stmt!"UPDATE tasks SET created_at = ? WHERE tid = ?".exec(createdAt, tid);
+	}
+
+	struct CacheRow
+	{
+		string agentType;
+		string sessionId;
+		long mtime;
+		string projectPath;
+		string title;
+	}
+
+	CacheRow[] loadSessionMetaCache()
+	{
+		CacheRow[] result;
+		foreach (string agentType, string sessionId, long mtime, string projectPath, string title;
+			db.stmt!"SELECT agent_type, session_id, mtime, project_path, title FROM session_meta_cache".iterate())
+		{
+			result ~= CacheRow(agentType, sessionId, mtime, projectPath, title);
+		}
+		return result;
+	}
+
+	void upsertSessionMetaCache(string agentType, string sessionId, long mtime,
+		string projectPath, string title)
+	{
+		db.stmt!"INSERT OR REPLACE INTO session_meta_cache (agent_type, session_id, mtime, project_path, title) VALUES (?, ?, ?, ?, ?)"
+			.exec(agentType, sessionId, mtime, projectPath, title);
+	}
+
+	void deleteSessionMetaCacheEntry(string agentType, string sessionId)
+	{
+		db.stmt!"DELETE FROM session_meta_cache WHERE agent_type = ? AND session_id = ?"
+			.exec(agentType, sessionId);
 	}
 }
 

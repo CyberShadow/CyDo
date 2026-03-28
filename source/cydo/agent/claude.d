@@ -8,7 +8,7 @@ import std.logger : errorf, tracef, warningf;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
-import cydo.agent.agent : Agent, OneShotHandle, SessionConfig;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
 import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
@@ -72,6 +72,8 @@ class ClaudeCodeAgent : Agent
 
 	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
+	// Background thread: sessionId → file path (populated by enumerateAllSessions)
+	private string[string] sessionIdToPath_;
 
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
@@ -198,6 +200,108 @@ class ClaudeCodeAgent : Agent
 		}
 		catch (Exception e)
 		{ tracef("extractUserContent: all parse attempts failed: %s", e.msg); return ""; }
+	}
+
+	DiscoveredSession[] enumerateAllSessions()
+	{
+		import std.file : DirEntry, dirEntries, exists, isDir, SpanMode;
+		import std.path : baseName, buildPath;
+		import std.process : environment;
+
+		auto home = environment.get("HOME", "/tmp");
+		auto claudeDir = environment.get("CLAUDE_CONFIG_DIR", buildPath(home, ".claude"));
+		auto projectsDir = buildPath(claudeDir, "projects");
+		if (!exists(projectsDir) || !isDir(projectsDir))
+			return [];
+
+		sessionIdToPath_ = null;
+		DiscoveredSession[] result;
+		foreach (DirEntry projEntry; dirEntries(projectsDir, SpanMode.shallow))
+		{
+			if (!projEntry.isDir)
+				continue;
+			// Best-effort reverse-mangle: replace - with / (correct for paths without dots)
+			auto mangledName = baseName(projEntry.name);
+			auto projectPathBuf = mangledName.dup;
+			foreach (ref c; projectPathBuf)
+				if (c == '-')
+					c = '/';
+			string projectPath = projectPathBuf.idup;
+
+			try
+			{
+				foreach (DirEntry fileEntry; dirEntries(projEntry.name, "*.jsonl", SpanMode.shallow))
+				{
+					auto sessionId = baseName(fileEntry.name, ".jsonl");
+					sessionIdToPath_[sessionId] = fileEntry.name;
+					DiscoveredSession ds;
+					ds.sessionId = sessionId;
+					ds.mtime = fileEntry.timeLastModified.stdTime;
+					ds.projectPath = projectPath;
+					result ~= ds;
+				}
+			}
+			catch (Exception e)
+			{ tracef("enumerateAllSessions: error scanning %s: %s", projEntry.name, e.msg); }
+		}
+		return result;
+	}
+
+	SessionMeta readSessionMeta(string sessionId)
+	{
+		import std.stdio : File;
+		import cydo.task : truncateTitle;
+
+		auto pathp = sessionId in sessionIdToPath_;
+		if (pathp is null)
+			return SessionMeta.init;
+
+		SessionMeta meta;
+		try
+		{
+			int lineCount = 0;
+			auto f = File(*pathp, "r");
+			foreach (line; f.byLine)
+			{
+				if (lineCount++ > 50)
+					break;
+				string lineStr = cast(string) line.idup;
+				// Extract cwd from init event (first line is typically system/init)
+				if (meta.projectPath.length == 0 && lineStr.length > 0)
+				{
+					import std.algorithm : canFind;
+					if (lineStr.canFind(`"type":"system"`) && lineStr.canFind(`"subtype":"init"`))
+					{
+						@JSONPartial
+						static struct InitProbe
+						{
+							string type;
+							string subtype;
+							string cwd;
+						}
+						try
+						{
+							auto probe = jsonParse!InitProbe(lineStr);
+							if (probe.type == "system" && probe.subtype == "init" && probe.cwd.length > 0)
+								meta.projectPath = probe.cwd;
+						}
+						catch (Exception) {}
+					}
+				}
+				// Extract title from first user message
+				if (meta.title.length == 0)
+				{
+					auto text = extractUserText(lineStr);
+					if (text.length > 0)
+						meta.title = truncateTitle(text, 80);
+				}
+				if (meta.title.length > 0 && meta.projectPath.length > 0)
+					break;
+			}
+		}
+		catch (Exception e)
+		{ tracef("readSessionMeta(%s): error: %s", sessionId, e.msg); }
+		return meta;
 	}
 
 	void setModelAliases(string[string] aliases)

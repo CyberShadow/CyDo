@@ -122,6 +122,7 @@ export interface SidebarTask {
   tid: number;
   alive: boolean;
   resumable: boolean;
+  lastActive?: number;
   isProcessing: boolean;
   title?: string;
   parentTid?: number;
@@ -222,6 +223,37 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
     tree = [archiveRoot, ...activeRoots];
   }
 
+  // Handle importable roots — group under "Import" node
+  const importableRoots = tree.filter((n) => n.task.status === "importable");
+  if (importableRoots.length > 0) {
+    // Separate archive/group nodes from non-importable regular tasks
+    const groupNodes = tree.filter((n) => n.task.isArchiveNode);
+    const regularNonImportable = tree.filter(
+      (n) => !n.task.isArchiveNode && n.task.status !== "importable",
+    );
+    // Sort importable by lastActive descending (newest first)
+    importableRoots.sort(
+      (a, b) => (b.task.lastActive ?? 0) - (a.task.lastActive ?? 0),
+    );
+    const importRoot: TreeNode = {
+      id: "import",
+      task: {
+        tid: 0,
+        alive: false,
+        resumable: false,
+        isProcessing: false,
+        title: "Import",
+        status: "completed",
+        isArchiveNode: true,
+      },
+      children: importableRoots,
+    };
+    // Array order (sidebar renders reversed):
+    //   [groupNodes..., importRoot, regularNonImportable...]
+    // After .reverse(): regularNonImportable (top), importRoot (middle), groupNodes (bottom)
+    tree = [...groupNodes, importRoot, ...regularNonImportable];
+  }
+
   return tree;
 }
 
@@ -252,6 +284,7 @@ function computeStatusClass(t: SidebarTask): string {
   if (t.alive) return "alive";
   if (t.status === "failed") return "failed";
   if (t.resumable) return "resumable";
+  if (t.status === "importable") return "importable";
   if (t.status === "completed") return "completed";
   if (t.status === "pending" && !t.title) return "draft";
   return "";
@@ -268,13 +301,17 @@ function flattenTree(
     const t = node.task;
 
     if (t.isArchiveNode) {
+      const groupLabel =
+        t.title === "Import"
+          ? `Import (${node.children.length})`
+          : `Archive (${node.children.length})`;
       items.push({
         id: node.id,
         tid: t.tid,
         depth,
         guides,
         statusClass: "",
-        title: `Archive (${node.children.length})`,
+        title: groupLabel,
         isArchive: true,
         hasPendingQuestion: false,
       });
@@ -378,7 +415,13 @@ const SidebarItem = memo(function SidebarItem({
         }}
       >
         {treeConnectors}
-        <span class="task-type-icon task-type-icon-archive" />
+        <span
+          class={`task-type-icon ${
+            title.startsWith("Import")
+              ? "task-type-icon-import"
+              : "task-type-icon-archive"
+          }`}
+        />
         <span class="sidebar-label">{title}</span>
       </div>
     );
