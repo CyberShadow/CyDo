@@ -469,6 +469,7 @@ EOF
         {
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
+              git
               ldc
               dub
               nodejs_22
