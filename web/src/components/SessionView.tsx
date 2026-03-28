@@ -25,7 +25,7 @@ interface Props {
   onStop: () => void;
   onCloseStdin: () => void;
   onResume: () => void;
-  onPromote?: () => void;
+  onPromote?: (tid: number) => void;
   onFork: (tid: number, afterUuid: string) => void;
   onUndo: (tid: number, afterUuid: string) => void;
   onUndoConfirm: (
@@ -103,6 +103,10 @@ function SessionViewInner({
     },
     [onSend, isDraft, selectedTaskType],
   );
+
+  const handlePromote = useCallback(() => {
+    onPromote?.(task.tid);
+  }, [onPromote, task.tid]);
 
   const handleContentStart = useCallback(() => {
     onContentStart?.(selectedTaskType);
@@ -364,7 +368,11 @@ function SessionViewInner({
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
       {task.status === "importable" ? (
         <div class="resume-bar">
-          <button ref={resumeRef} class="btn btn-resume" onClick={onPromote}>
+          <button
+            ref={resumeRef}
+            class="btn btn-resume"
+            onClick={handlePromote}
+          >
             Import Session
           </button>
         </div>
