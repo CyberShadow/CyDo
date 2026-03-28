@@ -1,5 +1,11 @@
 import { RefObject } from "preact";
-import { useState, useRef, useEffect, useMemo } from "preact/hooks";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+} from "preact/hooks";
 import type { ImageAttachment } from "../useSessionManager";
 
 export const drafts = new Map<number, string>();
@@ -119,7 +125,7 @@ export function InputBox({
     };
   }, [insertTextRef]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!pasteTextRef) return;
     pasteTextRef.current = (pasted: string) => {
       const ta = textareaRef.current;

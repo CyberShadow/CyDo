@@ -1,5 +1,11 @@
 import { memo } from "preact/compat";
-import { useRef, useEffect, useState, useCallback } from "preact/hooks";
+import {
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useCallback,
+} from "preact/hooks";
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
@@ -197,7 +203,7 @@ function SessionViewInner({
     return false;
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target;
@@ -225,7 +231,7 @@ function SessionViewInner({
     };
   }, [isActive]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) return;
     const handler = (e: ClipboardEvent) => {
       const target = e.target;
