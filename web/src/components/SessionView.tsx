@@ -9,11 +9,16 @@ import {
 import { MarkdownQuote } from "../vendor/quote-selection";
 import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
-import type { ImageAttachment, TaskTypeInfo } from "../useSessionManager";
+import type {
+  ImageAttachment,
+  TaskTypeInfo,
+  AgentTypeInfo,
+} from "../useSessionManager";
 import { SystemBanner } from "./SystemBanner";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
 import { SessionConfig } from "./SessionConfig";
+import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
 import { FileViewer } from "./FileViewer";
 
@@ -49,6 +54,8 @@ interface Props {
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   taskTypes?: TaskTypeInfo[];
+  agentTypes?: AgentTypeInfo[];
+  defaultAgentType?: string;
   onContentStart?: (taskType: string) => void;
   onContentEnd?: () => void;
 }
@@ -76,6 +83,8 @@ function SessionViewInner({
   onSetArchived,
   onEditMessage,
   taskTypes,
+  agentTypes,
+  defaultAgentType,
   onContentStart,
   onContentEnd,
 }: Props) {
@@ -95,6 +104,9 @@ function SessionViewInner({
   );
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
+  // Agent picker state (only used in draft mode)
+  const [selectedAgent, setSelectedAgent] = useState("");
+
   const focusTaskTypePicker = useCallback(() => {
     taskTypePickerRef.current?.focus();
   }, []);
@@ -102,12 +114,17 @@ function SessionViewInner({
   const handleSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
       if (isDraft) {
-        onSend(text, images, selectedTaskType);
+        onSend(
+          text,
+          images,
+          selectedTaskType,
+          selectedAgent || defaultAgentType || "claude",
+        );
       } else {
         onSend(text, images);
       }
     },
-    [onSend, isDraft, selectedTaskType],
+    [onSend, isDraft, selectedTaskType, selectedAgent, defaultAgentType],
   );
 
   const handlePromote = useCallback(() => {
@@ -376,6 +393,11 @@ function SessionViewInner({
                 pickerRef={taskTypePickerRef}
                 onConfirm={handleSessionConfigFocus}
                 onType={handleSessionConfigFocus}
+              />
+              <AgentPicker
+                agentTypes={agentTypes || []}
+                selected={selectedAgent || defaultAgentType || "claude"}
+                onChange={setSelectedAgent}
               />
               <InputBox
                 onSend={handleSend}

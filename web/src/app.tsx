@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
@@ -40,6 +40,8 @@ function AppContent() {
     sidebarTasks,
     workspaces,
     taskTypes,
+    agentTypes,
+    defaultAgentType,
     activeWorkspace,
     activeProject,
     authEnabled,
@@ -51,6 +53,11 @@ function AppContent() {
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
   const { errors, dismissError, clearErrors } = useErrorOverlay();
+
+  const effectiveDefaultAgent = useMemo(() => {
+    const ws = workspaces.find((w) => w.name === activeWorkspace);
+    return ws?.default_agent_type || defaultAgentType;
+  }, [workspaces, activeWorkspace, defaultAgentType]);
   const [showSearch, setShowSearch] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -364,6 +371,14 @@ function AppContent() {
                   onEditMessage={editMessage}
                   taskTypes={
                     task.renderKey === draftRenderKey ? taskTypes : undefined
+                  }
+                  agentTypes={
+                    task.renderKey === draftRenderKey ? agentTypes : undefined
+                  }
+                  defaultAgentType={
+                    task.renderKey === draftRenderKey
+                      ? effectiveDefaultAgent
+                      : undefined
                   }
                   onContentStart={
                     task.renderKey === draftRenderKey
