@@ -142,6 +142,12 @@ struct ItemStartedParams
 		// mcpToolCall pending-result fields (null until item/completed):
 		@JSONOptional JSONFragment result;
 		@JSONOptional JSONFragment error;
+		// reasoning fields (declared to prevent leaking into _extras):
+		@JSONOptional JSONFragment summary;
+		// agentMessage fields:
+		@JSONOptional typeof(null) memoryCitation;
+		// internal Codex metadata:
+		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
 		JSONExtras extras;
 	}
 	Item item;
@@ -213,6 +219,13 @@ struct ItemCompletedParams
 		@JSONOptional string tool;
 		@JSONName("arguments") @JSONOptional JSONFragment arguments_;
 		@JSONOptional JSONFragment error;
+		// reasoning fields (declared to prevent leaking into _extras):
+		@JSONOptional JSONFragment summary;
+		@JSONOptional JSONFragment content;
+		// agentMessage fields:
+		@JSONOptional typeof(null) memoryCitation;
+		// internal Codex metadata:
+		@JSONName("_creationOrder") @JSONOptional int _creationOrder;
 		JSONExtras extras;                     // remaining unknown fields
 	}
 	@JSONOptional Item item;
@@ -262,6 +275,9 @@ private interface ICodexServer
 
 	@RPCName("item/reasoning/summaryTextDelta")
 	Promise!void itemReasoningSummaryTextDelta(DeltaParams params);
+
+	@RPCName("item/reasoning/summaryPartAdded")
+	Promise!void itemReasoningSummaryPartAdded(IgnoredParams params);
 
 	@RPCName("item/commandExecution/outputDelta")
 	Promise!void itemCommandExecutionOutputDelta(DeltaParams params);
@@ -410,6 +426,7 @@ private class CodexServerRouter : ICodexServer
 	Promise!void threadStarted(IgnoredParams params) { return resolve(); }
 	Promise!void threadStatusChanged(IgnoredParams params) { return resolve(); }
 	Promise!void turnStarted(IgnoredParams params) { return resolve(); }
+	Promise!void itemReasoningSummaryPartAdded(IgnoredParams) { return resolve(); }
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params) { return resolve(); }
 	Promise!void threadTokenUsageUpdated(IgnoredParams params) { return resolve(); }
 	Promise!void accountRateLimitsUpdated(IgnoredParams params) { return resolve(); }
