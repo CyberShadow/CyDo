@@ -639,5 +639,6 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Mock API server (Anthropic + OpenAI) listening on http://127.0.0.1:${PORT}`);
+  const actualPort = server.address().port;
+  console.log(`Mock API server (Anthropic + OpenAI) listening on http://127.0.0.1:${actualPort}`);
 });

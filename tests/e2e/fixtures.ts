@@ -1,5 +1,5 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page, WorkerInfo, TestInfo } from "@playwright/test";
+import type { Page, TestInfo } from "@playwright/test";
 import { spawn } from "child_process";
 import { mkdirSync, cpSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createInterface } from "readline";
@@ -9,20 +9,13 @@ type AgentType = "claude" | "codex" | "copilot";
 
 class LogCollector {
   private lines: { ts: number; source: string; text: string }[] = [];
-  private testStartIdx = 0;
 
   push(source: string, text: string) {
     this.lines.push({ ts: Date.now(), source, text });
   }
 
-  markTestStart() {
-    this.testStartIdx = this.lines.length;
-  }
-
   flushRaw(): { ts: number; source: string; text: string }[] {
-    const slice = this.lines.slice(this.testStartIdx);
-    this.testStartIdx = this.lines.length;
-    return slice;
+    return this.lines;
   }
 }
 
@@ -72,165 +65,193 @@ export function responseTimeout(agentType: AgentType): number {
   return agentType === "codex" ? 60_000 : 30_000;
 }
 
-type WorkerFixtures = {
-  backend: { port: number; baseURL: string; pid: number };
+type TestFixtures = {
+  agentType: AgentType;
   logs: LogCollector;
+  backend: { port: number; baseURL: string; pid: number };
 };
+
+// Sequential counter for unique temp directories within a worker.
+let _testSeq = 0;
+
+function parsePortFromLines(
+  rl: ReturnType<typeof createInterface>,
+  proc: ReturnType<typeof spawn>,
+  pattern: RegExp,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onExit = (code: number | null) =>
+      reject(new Error(`Process exited with ${code} before logging port`));
+    const onLine = (line: string) => {
+      const match = line.match(pattern);
+      if (match) {
+        rl.off('line', onLine);
+        proc.off('exit', onExit);
+        resolve(parseInt(match[1], 10));
+      }
+    };
+    rl.on('line', onLine);
+    proc.on('exit', onExit);
+  });
+}
 
 /**
  * Extended test fixture that:
- * - Starts a per-worker CyDo backend on a unique port (worker-scoped)
- * - Starts a per-worker mock API on a unique port (worker-scoped)
- * - Overrides baseURL to point to the per-worker backend
+ * - Starts a per-test CyDo backend on an OS-assigned port (test-scoped)
+ * - Starts a per-test mock API on an OS-assigned port (test-scoped)
+ * - Overrides baseURL to point to the per-test backend
  * - Automatically asserts no unknown message types appear during any test
  *
  * Usage: import { test, expect } from "./fixtures" instead of "@playwright/test".
  */
-export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
-  logs: [
-    async ({}, use) => {
-      await use(new LogCollector());
-    },
-    { scope: "worker" },
-  ],
+export const test = base.extend<TestFixtures>({
+  logs: async ({}, use) => {
+    await use(new LogCollector());
+  },
 
-  backend: [
-    async ({ logs }, use: (r: WorkerFixtures["backend"]) => Promise<void>, workerInfo: WorkerInfo) => {
-      const port = 4000 + workerInfo.workerIndex;
-      const mockApiPort = 9100 + workerInfo.workerIndex;
-      const workDir = `/tmp/cydo-worker-${workerInfo.workerIndex}`;
-      const workerHome = `${workDir}/home`;
+  backend: async ({ logs }, use, testInfo: TestInfo) => {
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const workDir = `/tmp/cydo-test-${seq}`;
+    const workerHome = `${workDir}/home`;
 
-      // Set up working directory with data dir (for SQLite) and defs
-      // (task type definitions are loaded relative to CWD)
-      mkdirSync(`${workDir}/data`, { recursive: true });
-      symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
+    // Set up working directory with data dir (for SQLite) and defs
+    // (task type definitions are loaded relative to CWD)
+    mkdirSync(`${workDir}/data`, { recursive: true });
+    symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
 
-      // Copy config from the shared playwright HOME
-      mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
-      cpSync(
-        "/tmp/playwright-home/.config/cydo/config.yaml",
-        `${workerHome}/.config/cydo/config.yaml`,
-      );
+    // Copy config from the shared playwright HOME
+    mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
+    cpSync(
+      "/tmp/playwright-home/.config/cydo/config.yaml",
+      `${workerHome}/.config/cydo/config.yaml`,
+    );
 
-      // Give each worker its own COPILOT_HOME to avoid MCP config file
-      // race conditions when multiple workers run concurrently.
-      const copilotHome = `${workDir}/copilot-home`;
-      mkdirSync(copilotHome, { recursive: true });
+    // Give each test its own COPILOT_HOME to avoid MCP config file
+    // race conditions when multiple tests run concurrently.
+    const copilotHome = `${workDir}/copilot-home`;
+    mkdirSync(copilotHome, { recursive: true });
 
-      // Per-worker CODEX_HOME to avoid contention between parallel workers
-      const codexHome = `${workDir}/codex-home`;
-      mkdirSync(codexHome, { recursive: true });
-      writeFileSync(
-        `${codexHome}/config.toml`,
-        'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
-      );
+    // Per-test CODEX_HOME to avoid contention between parallel tests
+    const codexHome = `${workDir}/codex-home`;
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      `${codexHome}/config.toml`,
+      'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
+    );
 
-      // Start per-worker mock API
-      const mockApiServerPath = join(__dirname, '../mock-api/server.mjs');
-      const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
-      const mockProc = spawn(process.execPath, [mockApiServerPath], {
-        env: {
-          ...process.env,
-          MOCK_API_PORT: String(mockApiPort),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      if (mockProc.stdout) {
-        const rl = createInterface({ input: mockProc.stdout });
-        rl.on('line', (line) => logs.push('mock-api', line));
+    // Start per-test mock API with port 0 (OS-assigned)
+    const mockApiServerPath = join(__dirname, '../mock-api/server.mjs');
+    const mockProc = spawn(process.execPath, [mockApiServerPath], {
+      env: {
+        ...process.env,
+        MOCK_API_PORT: '0',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const mockOutRl = createInterface({ input: mockProc.stdout! });
+    mockOutRl.on('line', (line) => logs.push('mock-api', line));
+    if (mockProc.stderr) {
+      const rl = createInterface({ input: mockProc.stderr });
+      rl.on('line', (line) => logs.push('mock-api', line));
+    }
+
+    // Parse actual port from mock API stdout
+    const mockApiPort = await parsePortFromLines(
+      mockOutRl,
+      mockProc,
+      /listening on http:\/\/127\.0\.0\.1:(\d+)/,
+    );
+    const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
+
+    // Wait for mock API to be ready (poll up to 15s)
+    let mockReady = false;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch(`${mockApiBaseURL}/api/hello`);
+        if (res.ok) { mockReady = true; break; }
+      } catch {
+        // not ready yet
       }
-      if (mockProc.stderr) {
-        const rl = createInterface({ input: mockProc.stderr });
-        rl.on('line', (line) => logs.push('mock-api', line));
-      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!mockReady) {
+      mockProc.kill();
+      throw new Error(`Mock API on port ${mockApiPort} did not start in time`);
+    }
 
-      // Wait for mock API to be ready (poll up to 15s)
-      let mockReady = false;
-      for (let i = 0; i < 30; i++) {
-        try {
-          const res = await fetch(`${mockApiBaseURL}/api/hello`);
-          if (res.ok) { mockReady = true; break; }
-        } catch {
-          // not ready yet
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!mockReady) {
-        mockProc.kill();
-        throw new Error(`Mock API on port ${mockApiPort} did not start in time`);
-      }
+    // Start backend with port 0 (OS-assigned)
+    const proc = spawn(process.env.CYDO_BIN!, [], {
+      detached: true,
+      cwd: workDir,
+      env: {
+        ...process.env,
+        HOME: workerHome,
+        CYDO_LISTEN_PORT: '0',
+        CYDO_LOG_LEVEL: "trace",
+        ANTHROPIC_BASE_URL: mockApiBaseURL,
+        OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
+        CYDO_AUTH_USER: "",
+        CYDO_AUTH_PASS: "",
+        ...(process.env.COPILOT_HOME !== undefined ? { COPILOT_HOME: copilotHome } : {}),
+        CODEX_HOME: codexHome,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const backendErrRl = createInterface({ input: proc.stderr! });
+    backendErrRl.on('line', (line) => logs.push('backend', line));
 
-      // Start backend
-      const proc = spawn(process.env.CYDO_BIN!, [], {
-        detached: true,
-        cwd: workDir,
-        env: {
-          ...process.env,
-          HOME: workerHome,
-          CYDO_LISTEN_PORT: String(port),
-          CYDO_LOG_LEVEL: "trace",
-          ANTHROPIC_BASE_URL: mockApiBaseURL,
-          OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
-          CYDO_AUTH_USER: "",
-          CYDO_AUTH_PASS: "",
-          ...(process.env.COPILOT_HOME !== undefined ? { COPILOT_HOME: copilotHome } : {}),
-          CODEX_HOME: codexHome,
-        },
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      if (proc.stderr) {
-        const rl = createInterface({ input: proc.stderr });
-        rl.on("line", (line) => logs.push('backend', line));
-      }
+    // Parse actual port from backend stderr
+    const port = await parsePortFromLines(
+      backendErrRl,
+      proc,
+      /CyDo server listening on \S+:(\d+)/,
+    );
+    const baseURL = `http://localhost:${port}`;
 
-      // Wait for ready (poll up to 30s)
-      const baseURL = `http://localhost:${port}`;
-      let ready = false;
-      for (let i = 0; i < 60; i++) {
-        try {
-          const res = await fetch(baseURL);
-          if (res.ok || res.status < 500) {
-            ready = true;
-            break;
-          }
-        } catch {
-          // not ready yet
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!ready) {
-        process.kill(-proc.pid!, "SIGTERM");
-        mockProc.kill();
-        throw new Error(`CyDo backend on port ${port} did not start in time`);
-      }
-
-      await use({ port, baseURL, pid: proc.pid! });
-
-      // Teardown
-      process.kill(-proc.pid!, "SIGTERM");
-      await new Promise<void>((r) => proc.on("exit", r));
-      // Wait for child processes in the group to exit before removing the
-      // work directory — the leader exits first, but bwrap/agent children
-      // may still be writing JSONL files.
-      const pgid = proc.pid!;
-      const drainDeadline = Date.now() + 5000;
-      while (Date.now() < drainDeadline) {
-        try {
-          process.kill(-pgid, 0);
-          await new Promise((r) => setTimeout(r, 100));
-        } catch {
+    // Wait for ready (poll up to 30s)
+    let ready = false;
+    for (let i = 0; i < 60; i++) {
+      try {
+        const res = await fetch(baseURL);
+        if (res.ok || res.status < 500) {
+          ready = true;
           break;
         }
+      } catch {
+        // not ready yet
       }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!ready) {
+      process.kill(-proc.pid!, "SIGTERM");
       mockProc.kill();
-      await new Promise<void>((r) => mockProc.on("exit", r));
-      rmSync(workDir, { recursive: true, force: true });
-    },
-    { scope: "worker" },
-  ],
+      throw new Error(`CyDo backend on port ${port} did not start in time`);
+    }
 
-  // Override baseURL per worker so page.goto("/") uses the right backend
+    await use({ port, baseURL, pid: proc.pid! });
+
+    // Teardown
+    process.kill(-proc.pid!, "SIGTERM");
+    await new Promise<void>((r) => proc.on("exit", r));
+    // Wait for child processes in the group to exit before removing the
+    // work directory — the leader exits first, but bwrap/agent children
+    // may still be writing JSONL files.
+    const pgid = proc.pid!;
+    const drainDeadline = Date.now() + 5000;
+    while (Date.now() < drainDeadline) {
+      try {
+        process.kill(-pgid, 0);
+        await new Promise((r) => setTimeout(r, 100));
+      } catch {
+        break;
+      }
+    }
+    mockProc.kill();
+    await new Promise<void>((r) => mockProc.on("exit", r));
+    rmSync(workDir, { recursive: true, force: true });
+  },
+
+  // Override baseURL per test so page.goto("/") uses the right backend
   baseURL: async ({ backend }, use) => {
     await use(backend.baseURL);
   },
@@ -241,7 +262,6 @@ export const test = base.extend<{ agentType: AgentType }, WorkerFixtures>({
   },
 
   page: async ({ page, logs }, use, testInfo: TestInfo) => {
-    logs.markTestStart();
     currentLogs = logs;
 
     page.on('console', (msg) => logs.push('browser', `console.${msg.type()}: ${msg.text()}`));
