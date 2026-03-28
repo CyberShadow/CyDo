@@ -247,6 +247,7 @@ export function AssistantMessage({
                 <Fragment>
                   <ToolCall
                     name={block.name}
+                    streaming
                     input={
                       (block.input as Record<string, unknown> | undefined) ??
                       tryParsePartialJson(block.text)

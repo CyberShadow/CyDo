@@ -97,6 +97,7 @@ interface Props {
   toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
+  streaming?: boolean;
   children?: ComponentChildren;
   onViewFile?: (filePath: string) => void;
 }
@@ -1863,6 +1864,7 @@ export function ToolCall({
   toolUseId,
   input,
   result,
+  streaming,
   children,
   onViewFile,
 }: Props) {
@@ -1917,7 +1919,7 @@ export function ToolCall({
   return (
     <div
       id={toolUseId ? `tool-${toolUseId}` : undefined}
-      class={`tool-call ${result?.isError ? "tool-error" : ""}`}
+      class={`tool-call${streaming ? " streaming" : ""}${result?.isError ? " tool-error" : ""}`}
     >
       <div
         class="tool-header"
