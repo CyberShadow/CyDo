@@ -15,6 +15,7 @@ function AppContent() {
   const {
     tasks,
     activeTaskId,
+    activeTaskIdRef,
     setActiveTaskId,
     connected,
     send,
@@ -302,6 +303,7 @@ function AppContent() {
             return (
               t.historyLoaded ||
               String(t.tid) === activeTaskId ||
+              String(t.tid) === activeTaskIdRef.current ||
               (activeTaskId === null &&
                 draftRenderKey !== null &&
                 t.renderKey === draftRenderKey)
@@ -310,6 +312,7 @@ function AppContent() {
           .map((task) => {
             const isActive =
               String(task.tid) === activeTaskId ||
+              String(task.tid) === activeTaskIdRef.current ||
               (activeTaskId === null &&
                 draftRenderKey !== null &&
                 task.renderKey === draftRenderKey);

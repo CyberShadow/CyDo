@@ -74,6 +74,7 @@ export interface TaskTypeInfo {
 export interface TaskManager {
   tasks: Map<number, TaskState>;
   activeTaskId: string | null;
+  activeTaskIdRef: { current: string | null };
   setActiveTaskId: (id: string) => void;
   connected: boolean;
   send: (
@@ -1562,6 +1563,7 @@ export function useTaskManager(): TaskManager {
   return {
     tasks,
     activeTaskId,
+    activeTaskIdRef,
     setActiveTaskId,
     connected,
     send,
