@@ -322,6 +322,8 @@ class CopilotAgent : Agent
 		return meta;
 	}
 
+	string matchProject(string sessionId, const string[] knownProjectPaths) { return ""; }
+
 	void setModelAliases(string[string] aliases)
 	{
 		modelAliasOverrides = aliases;

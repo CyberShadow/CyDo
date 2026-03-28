@@ -3376,8 +3376,14 @@ class App : ToolsBackend
 		// Capture cache keys for orphan cache cleanup after scan
 		string[] cacheKeys = cacheMap.keys;
 
+		// Snapshot known project paths for background thread project matching
+		string[] knownProjectPaths;
+		foreach (ref wi; workspacesInfo)
+			foreach (ref pi; wi.projects)
+				knownProjectPaths ~= pi.path;
+
 		// Launch background discovery scan (captures agentList, agentTypeNames,
-		// knownSessionIds, cacheMap by value — safe for background thread)
+		// knownSessionIds, cacheMap, knownProjectPaths by value — safe for background thread)
 		threadAsync({
 			DiscoveryResult[] results;
 			foreach (idx, agent; agentList)
@@ -3405,7 +3411,9 @@ class App : ToolsBackend
 					dr.agentType = agentType;
 					dr.sessionId = ds.sessionId;
 					dr.mtime = ds.mtime;
-					dr.enumProjectPath = ds.projectPath;
+					dr.enumProjectPath = ds.projectPath.length > 0
+						? ds.projectPath
+						: agent.matchProject(ds.sessionId, knownProjectPaths);
 
 					if (cachedp !is null && cachedp.mtime == ds.mtime)
 					{

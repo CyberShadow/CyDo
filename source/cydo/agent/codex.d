@@ -1282,6 +1282,8 @@ class CodexAgent : Agent
 		return meta;
 	}
 
+	string matchProject(string sessionId, const string[] knownProjectPaths) { return ""; }
+
 	OneShotHandle completeOneShot(string prompt, string modelClass)
 	{
 		import std.string : strip;

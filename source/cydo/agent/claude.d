@@ -220,13 +220,6 @@ class ClaudeCodeAgent : Agent
 		{
 			if (!projEntry.isDir)
 				continue;
-			// Best-effort reverse-mangle: replace - with / (correct for paths without dots)
-			auto mangledName = baseName(projEntry.name);
-			auto projectPathBuf = mangledName.dup;
-			foreach (ref c; projectPathBuf)
-				if (c == '-')
-					c = '/';
-			string projectPath = projectPathBuf.idup;
 
 			try
 			{
@@ -237,7 +230,7 @@ class ClaudeCodeAgent : Agent
 					DiscoveredSession ds;
 					ds.sessionId = sessionId;
 					ds.mtime = fileEntry.timeLastModified.stdTime;
-					ds.projectPath = projectPath;
+					ds.projectPath = "";
 					result ~= ds;
 				}
 			}
@@ -302,6 +295,26 @@ class ClaudeCodeAgent : Agent
 		catch (Exception e)
 		{ tracef("readSessionMeta(%s): error: %s", sessionId, e.msg); }
 		return meta;
+	}
+
+	string matchProject(string sessionId, const string[] knownProjectPaths)
+	{
+		import std.path : baseName, dirName;
+
+		auto pathp = sessionId in sessionIdToPath_;
+		if (pathp is null)
+			return "";
+		auto dirName_ = baseName(dirName(*pathp));
+		foreach (known; knownProjectPaths)
+		{
+			auto buf = known.dup;
+			foreach (ref c; buf)
+				if (c == '/' || c == '.')
+					c = '-';
+			if (buf == dirName_)
+				return known;
+		}
+		return "";
 	}
 
 	void setModelAliases(string[string] aliases)

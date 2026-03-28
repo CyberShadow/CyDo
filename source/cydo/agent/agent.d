@@ -153,6 +153,11 @@ interface Agent
 	/// Must be safe to call from a background thread (pure I/O, no shared mutable state).
 	SessionMeta readSessionMeta(string sessionId);
 
+	/// Cheaply match a session to a project path using directory structure only — no file reads.
+	/// Returns the matching project path, or "" if not determinable without reading content.
+	/// Must be safe to call from a background thread (no shared mutable state).
+	string matchProject(string sessionId, const string[] knownProjectPaths);
+
 	/// Run a one-shot LLM completion. Returns a Promise that resolves with
 	/// the raw response text, or rejects on failure/non-zero exit.
 	OneShotHandle completeOneShot(string prompt, string modelClass);
