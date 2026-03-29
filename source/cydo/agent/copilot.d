@@ -337,7 +337,7 @@ class CopilotAgent : Agent
 		{
 			case "small":  return "claude-haiku-4.5";
 			case "medium": return "claude-sonnet-4.6";
-			case "large":  return "claude-sonnet-4.6";
+			case "large":  return "claude-opus-4.6";
 			default:       return modelClass; // pass through unknown aliases
 		}
 	}
