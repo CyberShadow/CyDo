@@ -131,13 +131,12 @@ EOF
             '';
           };
 
-          backend = pkgs.buildDubPackage {
+          backendCommon = {
             pname = "cydo";
             version = "0.1.0";
             src = backendSrc;
 
             dubLock = ./dub-lock.json;
-            dubBuildType = "release-debug";
             dontStrip = true;
 
             buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
@@ -155,7 +154,15 @@ EOF
             };
           };
 
-          cydo = pkgs.stdenv.mkDerivation {
+          backend = pkgs.buildDubPackage (backendCommon // {
+            dubBuildType = "release-debug";
+          });
+
+          backendDebug = pkgs.buildDubPackage (backendCommon // {
+            dubBuildType = "debug";
+          });
+
+          mkCydo = backendPkg: pkgs.stdenv.mkDerivation {
             pname = "cydo";
             version = "0.1.0";
 
@@ -166,7 +173,7 @@ EOF
             installPhase = ''
               runHook preInstall
               mkdir -p $out/bin $out/share/cydo/web
-              install -Dm755 ${backend}/bin/cydo $out/share/cydo/
+              install -Dm755 ${backendPkg}/bin/cydo $out/share/cydo/
               cp -r ${frontend}/. $out/share/cydo/web/dist/
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo \
@@ -180,9 +187,12 @@ EOF
               mainProgram = "cydo";
             };
           };
+
+          cydo = mkCydo backend;
+          cydoDebug = mkCydo backendDebug;
         in
         {
-          inherit frontend backend codex-cli copilot-cli cydo;
+          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug;
           default = cydo;
         });
 
@@ -190,6 +200,7 @@ EOF
         let
           pkgs = pkgsFor system;
           cydo = self.packages.${system}.default;
+          cydoDebug = self.packages.${system}.cydoDebug;
           codex = self.packages.${system}.codex-cli;
           copilot = self.packages.${system}.copilot-cli;
 
@@ -331,7 +342,7 @@ EOF
                   root: /tmp/cydo-test-workspace
               CYDO_CFG
 
-              export CYDO_BIN="${cydo}/bin/cydo"
+              export CYDO_BIN="${cydoDebug}/bin/cydo"
 
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests
