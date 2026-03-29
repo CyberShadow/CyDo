@@ -750,6 +750,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		this.model = m;
 		this.workDir = wd;
 		replayMode = false; // Done with replay (or was never in it)
+		turnInProgress = false;
 		sessionReady_ = true;
 
 		// Emit synthetic session/init.
