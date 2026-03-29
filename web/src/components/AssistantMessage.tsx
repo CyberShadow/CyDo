@@ -83,6 +83,7 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
 interface Props {
   message: DisplayMessage;
   blocks: Map<string, Block>;
+  resolvedBlocks?: Block[];
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
 }
@@ -90,16 +91,22 @@ interface Props {
 export function AssistantMessage({
   message,
   blocks,
+  resolvedBlocks,
   childrenByParent,
   onViewFile,
 }: Props) {
   const isStreaming = message.streaming === true;
   const isSynthetic = message.model === "<synthetic>";
+  const blocksToRender =
+    resolvedBlocks ??
+    ((message.blockIds ?? [])
+      .map((id) => blocks.get(id))
+      .filter(Boolean) as Block[]);
   return (
     <div
-      class={`message assistant-message${
-        isStreaming ? " streaming" : ""
-      }${isSynthetic ? " synthetic-message" : ""}`}
+      class={`message assistant-message${isStreaming ? " streaming" : ""}${
+        isSynthetic ? " synthetic-message" : ""
+      }`}
     >
       {(message.isSidechain || isSynthetic) && (
         <div class="message-meta">
@@ -109,9 +116,8 @@ export function AssistantMessage({
           {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
         </div>
       )}
-      {(message.blockIds ?? []).map((itemId, i) => {
-        const block = blocks.get(itemId);
-        if (!block) return null;
+      {blocksToRender.map((block, i) => {
+        const itemId = block.itemId;
 
         const blockExtras = { ...(block._extras ?? {}) };
         const caller = blockExtras.caller;

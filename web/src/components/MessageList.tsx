@@ -406,11 +406,19 @@ function SourceView({ msg, tid }: { msg: DisplayMessage; tid: number }) {
   );
 }
 
+function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 const MessageView = memo(
   function MessageView({
     msg,
     tid,
-    blocks,
+    resolvedBlocks,
     onFork,
     onUndo,
     onEdit,
@@ -419,7 +427,7 @@ const MessageView = memo(
   }: {
     msg: DisplayMessage;
     tid: number;
-    blocks: Map<string, Block>;
+    resolvedBlocks: Block[];
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     onEdit?: (uuid: string, content: string) => void;
@@ -434,10 +442,9 @@ const MessageView = memo(
     const startEdit = useCallback(() => {
       let text: string;
       if (msg.type === "assistant") {
-        text = (msg.blockIds ?? [])
-          .map((id) => blocks.get(id))
-          .filter((b) => b?.type === "text")
-          .map((b) => b!.text)
+        text = resolvedBlocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
           .join("\n");
       } else {
         text = msg.content
@@ -447,7 +454,7 @@ const MessageView = memo(
       }
       setEditText(text);
       setEditing(true);
-    }, [msg, blocks]);
+    }, [msg, resolvedBlocks]);
 
     const saveEdit = useCallback(() => {
       if (uuid && onEdit) onEdit(uuid, editText);
@@ -561,7 +568,7 @@ const MessageView = memo(
   },
   (prev, next) =>
     prev.msg === next.msg &&
-    prev.blocks === next.blocks &&
+    shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.tid === next.tid &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
@@ -677,6 +684,12 @@ export function MessageList({
     <div class="message-list" ref={containerRef}>
       <div class="message-list-inner">
         {topLevelMessages.map((msg) => {
+          const resolvedBlocks =
+            msg.type === "assistant"
+              ? ((msg.blockIds ?? [])
+                  .map((id) => blocks.get(id))
+                  .filter(Boolean) as Block[])
+              : [];
           let inner;
           switch (msg.type) {
             case "user":
@@ -686,6 +699,7 @@ export function MessageList({
               inner = (
                 <AssistantMessage
                   message={msg}
+                  resolvedBlocks={resolvedBlocks}
                   blocks={blocks}
                   childrenByParent={childrenByParent}
                   onViewFile={onViewFile}
@@ -764,7 +778,7 @@ export function MessageList({
               key={msg.id}
               msg={msg}
               tid={sessionId}
-              blocks={blocks}
+              resolvedBlocks={resolvedBlocks}
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               onEdit={msg.type === "user" ? handleEditMessage : undefined}
