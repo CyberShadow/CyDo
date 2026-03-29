@@ -128,6 +128,108 @@ function createWorkDir(seq: number): { workDir: string; workerHome: string } {
 // ---------------------------------------------------------------------------
 
 test(
+  "Import group node in sidebar expands on click and navigates correctly",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "agent-agnostic, runs in claude project only",
+    );
+
+    const seq = testInfo.parallelIndex * 100 + _testSeq++;
+    const port = 7200 + seq;
+    const { workDir, workerHome } = createWorkDir(seq);
+
+    const projectPath = "/tmp/cydo-test-workspace";
+    const mangledPath = projectPath.replace(/\//g, "-");
+    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+    mkdirSync(claudeProjectsDir, { recursive: true });
+
+    const jsonlContent =
+      [
+        JSON.stringify({
+          type: "system",
+          subtype: "init",
+          session_id: sessionId,
+          model: "claude-3-5-sonnet-20241022",
+          cwd: projectPath,
+        }),
+        JSON.stringify({
+          type: "user",
+          message: { content: "sidebar import group test" },
+        }),
+      ].join("\n") + "\n";
+
+    writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+
+    writeFileSync(
+      `${workerHome}/.config/cydo/config.yaml`,
+      ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") +
+        "\n",
+    );
+
+    const proc = spawnBackend(port, workDir, workerHome);
+    try {
+      await waitForBackend(`http://localhost:${port}`, proc);
+
+      // Navigate to the project view (shows sidebar with tasks).
+      await page.goto(
+        `http://localhost:${port}/testws/cydo-test-workspace`,
+      );
+
+      // Sidebar should appear.
+      await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
+
+      // Wait for the Import group node to appear (enumerateSessions is async).
+      const importGroupNode = page.locator(
+        ".sidebar-item.sidebar-archive-node",
+        { hasText: /Import \(\d+\)/ },
+      );
+      await expect(importGroupNode).toBeVisible({ timeout: 15_000 });
+
+      // Before clicking the group, its children should NOT be visible.
+      const importableEntry = page.locator(".sidebar-item .sidebar-label", {
+        hasText: "sidebar import group test",
+      });
+      await expect(importableEntry).not.toBeVisible();
+
+      // Click the Import group node — should navigate to /import and expand.
+      await importGroupNode.click();
+
+      // URL must contain /import (not navigate to /).
+      await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+
+      // Group is now expanded: child importable session is visible.
+      await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+
+      // Click the importable session to load its history.
+      await importableEntry.click();
+
+      // History loads.
+      await expect(
+        page.locator(".message.user-message", {
+          hasText: "sidebar import group test",
+        }),
+      ).toBeVisible({ timeout: 15_000 });
+
+      // Group remains expanded because a descendant is active.
+      await expect(importableEntry).toBeVisible();
+
+      // Click the Import group node again — must stay on /import (not navigate to /).
+      await importGroupNode.click();
+      await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+
+      // Group is still visible and expanded.
+      await expect(importGroupNode).toBeVisible();
+      await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "importable session appears on startup, history loads, Import Session promotes it",
   async ({ page }, testInfo) => {
     test.skip(

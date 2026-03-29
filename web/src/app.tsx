@@ -387,6 +387,12 @@ function AppContent() {
                 <span class="archive-placeholder">Archived tasks</span>
               </div>
             </div>
+          ) : activeTaskId === "import" ? (
+            <div class="session-empty">
+              <div class="session-empty-inner">
+                <span class="archive-placeholder">Importable sessions</span>
+              </div>
+            </div>
           ) : (
             <div class="session-empty">
               <div class="session-empty-inner">
@@ -425,6 +431,7 @@ export function App() {
           component={AppContent}
         />
         <Route path="/:workspace/:project/archive" component={AppContent} />
+        <Route path="/:workspace/:project/import" component={AppContent} />
         <Route
           path="/:workspace/:project/session/:sid"
           component={AppContent}
@@ -432,6 +439,7 @@ export function App() {
         <Route path="/:workspace/:project" component={AppContent} />
         <Route path="/archive/:parentTid" component={AppContent} />
         <Route path="/archive" component={AppContent} />
+        <Route path="/import" component={AppContent} />
         <Route path="/" component={AppContent} />
         <Route default component={NotFound} />
       </Router>

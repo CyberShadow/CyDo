@@ -169,11 +169,14 @@ export function useTaskManager(): TaskManager {
   const parsed = useMemo(() => {
     // Archive routes set parentTid param; derive the virtual archive ID
     const isArchive = path.includes("/archive");
+    const isImport = path.includes("/import");
     const tid = isArchive
       ? params.parentTid
         ? `archive:${params.parentTid}`
         : "archive"
-      : (params.tid ?? params.sid ?? null);
+      : isImport
+        ? "import"
+        : (params.tid ?? params.sid ?? null);
     return {
       workspace: params.workspace ?? null,
       project: params.project ? params.project.replace(/:/g, "/") : null,
@@ -239,6 +242,17 @@ export function useTaskManager(): TaskManager {
       const parentTid = parseInt(archiveMatch[1]!, 10);
       const [ws, proj] = taskContext(parentTid);
       routeRef.current(buildUrl(ws, proj, `/archive/${parentTid}`));
+      return;
+    }
+
+    if (id === "import") {
+      routeRef.current(
+        buildUrl(
+          activeWorkspaceRef.current,
+          activeProjectRef.current,
+          "/import",
+        ),
+      );
       return;
     }
 
