@@ -237,11 +237,12 @@ class SdkProcess
 		sessions.remove(sessionId);
 	}
 
-	/// Terminate the underlying SDK process and immediately fire exit handlers.
-	/// The copilot binary may spawn children that hold the stdout pipe open,
-	/// preventing AgentProcess.tryFireExit from ever firing.  Work around this
-	/// by sending SIGTERM, marking ourselves dead, and calling handleExit
-	/// directly so the session lifecycle proceeds without waiting for pipe EOF.
+	/// Terminate the underlying SDK process and defer exit handlers until the
+	/// process has actually exited.  The copilot binary may spawn children that
+	/// hold the stdout pipe open, preventing AgentProcess.tryFireExit from ever
+	/// firing.  We bypass pipe-based exit detection by using asyncWait (SIGCHLD)
+	/// directly, which fires as soon as the process exits — guaranteeing the
+	/// binary has flushed its session files (events.jsonl) before onExit runs.
 	void shutdown()
 	{
 		if (dead)
@@ -251,9 +252,25 @@ class SdkProcess
 		process.closeStdin();
 		process.terminate();
 		state_ = State.dead;
-		// Notify sessions immediately — don't wait for pipe EOF.
-		foreach (session; sessions)
-			session.handleExit(1);
+
+		// Snapshot sessions — the map may be mutated by handleExit.
+		auto sessionsCopy = sessions.values;
+		bool fired = false;
+		void fireExit() {
+			if (fired) return;
+			fired = true;
+			foreach (session; sessionsCopy)
+				session.handleExit(1);
+		}
+
+		// Wait for actual process exit (SIGCHLD) before firing handlers.
+		// This ensures the binary has flushed its files (events.jsonl).
+		import ae.sys.process : asyncWait;
+		import ae.sys.timing : setTimeout;
+		import core.time : msecs;
+		asyncWait(process.processId, (int) { fireExit(); });
+		// Safety net: if asyncWait never fires (zombie), timeout after 3s.
+		setTimeout({ fireExit(); }, 3000.msecs);
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if

@@ -216,6 +216,9 @@ class AgentProcess
 	/// and onStdoutLine will no longer be called.
 	@property ConnectionAdapter connection() { return stdoutLines; }
 
+	/// The underlying process PID, for use with asyncWait.
+	@property Pid processId() { return pid; }
+
 	/// Send a signal to the child process.
 	void sendSignal(int sig)
 	{
