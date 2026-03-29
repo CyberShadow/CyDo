@@ -1256,6 +1256,14 @@ export function useTaskManager(): TaskManager {
           draftTidRef.current = tid;
           draftRenderKeyRef.current = renderKey;
           setDraftRenderKey(renderKey);
+        } else {
+          // Navigated to a non-draft task — clear stale draft tracking so
+          // send() doesn't accidentally target the previous draft.
+          if (draftTidRef.current !== null) {
+            draftTidRef.current = null;
+            draftRenderKeyRef.current = null;
+            setDraftRenderKey(null);
+          }
         }
       }
       return;
