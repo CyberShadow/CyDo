@@ -3461,6 +3461,10 @@ class App : ToolsBackend
 			foreach (ref r; results)
 				discoveredKeys[r.agentType ~ "\0" ~ r.sessionId] = true;
 
+			persistence.db.db.exec("BEGIN TRANSACTION;");
+			scope(success) persistence.db.db.exec("COMMIT TRANSACTION;");
+			scope(failure) persistence.db.db.exec("ROLLBACK TRANSACTION;");
+
 			// Delete orphaned cache entries (sessions that disappeared)
 			foreach (key; cacheKeys)
 				if (key !in discoveredKeys)
