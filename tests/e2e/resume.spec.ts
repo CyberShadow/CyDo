@@ -122,7 +122,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       await new Promise<void>((r) => proc.on("exit", () => r()));
       // Brief drain for agent children to finish writing JSONL —
       // restart tests read JSONL on the next start.
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 5000));
     };
 
     const start = async () => {

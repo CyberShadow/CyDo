@@ -63,7 +63,7 @@ static:
 		addShutdownHandler((scope const(char)[]) {
 			app.shutdown();
 			import core.sys.posix.unistd : alarm;
-			alarm(2);
+			alarm(5);
 		});
 
 		socketManager.loop();
