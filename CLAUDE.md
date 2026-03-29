@@ -30,6 +30,7 @@ nix build         # Build the full application
 **Testing:**
 ```bash
 nix flake check   # Run all tests — the single "all tests pass" command
+nix develop -ic env -C tests playwright ...        # Invoke Playwright directly
 ```
 Always run `nix flake check` after every unit of work and before committing. Do not skip or substitute with partial checks.
 
