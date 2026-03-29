@@ -6,7 +6,8 @@ export default defineConfig({
   // Nix provides effective reproducibility. As such, flaky tests are bugs.
   retries: 0, // Agents: you MAY NOT increase this value.
   fullyParallel: true,
-  reporter: [['list'], ['./log-reporter.ts']],
+  workers: 1, // One test per derivation — no Playwright-level parallelism
+  reporter: [["list"]],
   use: {
     headless: true,
     screenshot: "on",
@@ -18,22 +19,19 @@ export default defineConfig({
   projects: [
     {
       name: "claude",
-      testIgnore: /process-failure|suggestion-process-failure/,
       use: { agentType: "claude" } as any,
     },
     {
       name: "codex",
-      testIgnore: /process-failure|suggestion-process-failure/,
       use: { agentType: "codex" } as any,
     },
     {
       name: "copilot",
-      testIgnore: /process-failure|suggestion-process-failure/,
       use: { agentType: "copilot" } as any,
     },
     {
       name: "failure",
-      testMatch: /process-failure|suggestion-process-failure/,
+      testDir: "./failure",
       use: { agentType: "claude" } as any,
     },
   ],

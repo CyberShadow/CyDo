@@ -1,4 +1,4 @@
-import { test, expect, enterSession, sendMessage } from "./fixtures";
+import { test, expect, enterSession, sendMessage } from "../e2e/fixtures";
 
 test("process failure shows session-failed label", async ({ page }) => {
   await enterSession(page);

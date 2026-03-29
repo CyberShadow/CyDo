@@ -8,7 +8,6 @@ import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
-import { createInterface } from "readline";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -62,44 +61,23 @@ async function waitForBackend(
   await Promise.race([polling, processExited]);
 }
 
-function spawnBackend(port: number, workDir: string, workerHome: string, codexHome?: string): ChildProcess {
-  const proc = spawn(process.env.CYDO_BIN!, [], {
+function spawnBackend(workDir: string, workerHome: string, codexHome?: string): ChildProcess {
+  return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
     env: {
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
-      CYDO_LISTEN_PORT: String(port),
-      CYDO_LOG_LEVEL: "trace",
-      CYDO_AUTH_USER: "",
-      CYDO_AUTH_PASS: "",
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
     },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "inherit", "inherit"],
   });
-  if (proc.stderr) {
-    const rl = createInterface({ input: proc.stderr });
-    rl.on("line", (line) => console.error(`[backend:${port}] ${line}`));
-  }
-  return proc;
 }
-
-// Per-test unique sequence number. Each test in a worker gets a different
-// value so they use different ports and workDirs, preventing orphaned
-// processes from one test connecting to the next test's backend.
-let _testSeq = 0;
 
 const test = base.extend<{ restartableBackend: RestartableBackend }>({
   restartableBackend: async ({}, use, testInfo) => {
-    // Use ports starting at 5050. Combine worker index and per-test counter
-    // so tests in different workers also get distinct ports.
-    // Base must NOT be a multiple of 100 — port 6000 (= 5100 + 9*100) is in
-    // Node.js/Chromium's blocked-ports list (X11), causing fetch() to reject
-    // with "bad port" even though the D backend binds successfully.
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 5050 + seq;
-    const workDir = `/tmp/cydo-restart-${seq}`;
+    const workDir = "/tmp/cydo-restart";
     const workerHome = `${workDir}/home`;
 
     rmSync(workDir, { recursive: true, force: true });
@@ -111,8 +89,6 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       `${workerHome}/.config/cydo/config.yaml`,
     );
 
-    // Per-test CLAUDE_CONFIG_DIR to prevent enumerateSessions() on restart
-    // from scanning JSONL files created by other parallel tests.
     const claudeConfigDir = `${workerHome}/.claude`;
     mkdirSync(claudeConfigDir, { recursive: true });
     writeFileSync(
@@ -125,7 +101,6 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       }),
     );
 
-    // Per-test CODEX_HOME to avoid contention between parallel tests
     const codexHome = `${workDir}/codex-home`;
     mkdirSync(codexHome, { recursive: true });
     writeFileSync(
@@ -133,8 +108,8 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
     );
 
-    const baseURL = `http://localhost:${port}`;
-    let proc = spawnBackend(port, workDir, workerHome, codexHome);
+    const baseURL = "http://localhost:3940";
+    let proc = spawnBackend(workDir, workerHome, codexHome);
     try {
       await waitForBackend(baseURL, proc);
     } catch (e) {
@@ -143,23 +118,15 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     }
 
     const stop = async () => {
-      const oldPgid = proc.pid!;
-      process.kill(-oldPgid, "SIGTERM");
+      process.kill(-proc.pid!, "SIGTERM");
       await new Promise<void>((r) => proc.on("exit", () => r()));
-      // Drain child processes before spawning the new backend
-      const drainDeadline = Date.now() + 5000;
-      while (Date.now() < drainDeadline) {
-        try {
-          process.kill(-oldPgid, 0);
-          await new Promise((r) => setTimeout(r, 100));
-        } catch {
-          break;
-        }
-      }
+      // Brief drain for agent children to finish writing JSONL —
+      // restart tests read JSONL on the next start.
+      await new Promise((r) => setTimeout(r, 2000));
     };
 
     const start = async () => {
-      proc = spawnBackend(port, workDir, workerHome, codexHome);
+      proc = spawnBackend(workDir, workerHome, codexHome);
       await waitForBackend(baseURL, proc);
     };
 
@@ -168,23 +135,12 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       await start();
     };
 
-    await use({ port, baseURL, workDir, stop, start, restart });
+    await use({ port: 3940, baseURL, workDir, stop, start, restart });
 
-    process.kill(-proc.pid!, "SIGTERM");
+    try {
+      process.kill(-proc.pid!, "SIGTERM");
+    } catch {}
     await new Promise<void>((r) => proc.on("exit", () => r()));
-    // Wait for child processes in the group to drain
-    const pgid = proc.pid!;
-    const drainDeadline = Date.now() + 5000;
-    while (Date.now() < drainDeadline) {
-      try {
-        process.kill(-pgid, 0);
-        await new Promise((r) => setTimeout(r, 100));
-      } catch {
-        break;
-      }
-    }
-
-    rmSync(workDir, { recursive: true, force: true });
   },
   baseURL: async ({ restartableBackend }, use) => {
     await use(restartableBackend.baseURL);

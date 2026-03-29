@@ -218,7 +218,13 @@ EOF
 
         in
         let
-          mkIntegrationTest = { name, testMatch, agentType, claudeBin ? null, extraNativeBuildInputs ? [] }: pkgs.stdenv.mkDerivation {
+          mkIntegrationTest = {
+            name,
+            testMatch,
+            agentType,
+            claudeBin ? null,
+            extraNativeBuildInputs ? [],
+          }: pkgs.stdenv.mkDerivation {
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
@@ -249,6 +255,12 @@ EOF
             OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
             OPENAI_API_KEY = "test-key-mock";
             CODEX_HOME = "/tmp/codex-test-home";
+
+            # Fixed port env vars — fixtures inherit these
+            CYDO_LISTEN_PORT = "3940";
+            CYDO_LOG_LEVEL = "trace";
+            CYDO_AUTH_USER = "";
+            CYDO_AUTH_PASS = "";
 
             buildPhase = ''
               mkdir -p /tmp/playwright-home
@@ -283,7 +295,7 @@ EOF
                 if ! kill -0 $MOCK_PID 2>/dev/null; then echo "Mock API server died"; exit 1; fi
                 sleep 1
               done
-              echo "Mock API server ready"
+              echo "Mock API server ready on port 9000"
 
               ${lib.optionalString (agentType == "copilot") ''
               mkdir -p /tmp/copilot-test-home
@@ -326,7 +338,7 @@ EOF
               chmod +x /tmp/tests/extra-fields-wrapper.sh
               chmod +x /tmp/tests/suggestion-one-shot-fail-wrapper.sh
               cd /tmp/tests
-              playwright test ${testMatch} || TEST_RESULT=$?
+              playwright test ${testMatch} --workers=1 || TEST_RESULT=$?
 
               kill $MOCK_PID 2>/dev/null || true
               wait $MOCK_PID 2>/dev/null || true
@@ -349,8 +361,75 @@ EOF
               echo "Tests passed" > $out/result
             '';
           };
+
+          # Source for test listing — only test files + config needed for --list
+          testListingSrc = lib.fileset.toSource {
+            root = ./tests;
+            fileset = lib.fileset.unions [
+              ./tests/e2e
+              ./tests/failure
+              ./tests/playwright.config.ts
+            ];
+          };
+
+          # IFD: enumerate all tests as a JSON manifest
+          testManifest = pkgs.stdenv.mkDerivation {
+            pname = "cydo-test-manifest";
+            version = "0.1.0";
+            src = testListingSrc;
+            nativeBuildInputs = [ pkgs.playwright-test pkgs.nodejs_22 ];
+            buildPhase = ''
+              HOME=/tmp/pw-home
+              mkdir -p $HOME
+              playwright test --list --reporter=json > manifest.json 2>/dev/null || true
+            '';
+            installPhase = ''
+              cp manifest.json $out
+            '';
+          };
+
+          manifest = builtins.fromJSON (builtins.readFile testManifest);
+
+          # Flatten suites → list of { file, line, title, projectName }
+          allTests = lib.concatMap (suite:
+            lib.concatMap (spec:
+              map (t: {
+                file = spec.file;
+                line = spec.line;
+                title = spec.title;
+                projectName = t.projectName;
+              }) spec.tests
+            ) suite.specs
+          ) manifest.suites;
+
+          projectConfig = {
+            claude  = { agentType = "claude"; claudeBin = null; extraNativeBuildInputs = []; };
+            codex   = { agentType = "codex";  claudeBin = null; extraNativeBuildInputs = []; };
+            copilot = { agentType = "copilot"; claudeBin = null; extraNativeBuildInputs = [ copilot ]; };
+            failure = { agentType = "claude"; claudeBin = "fail-claude"; extraNativeBuildInputs = []; };
+          };
+
+          specStem = file: lib.removeSuffix ".spec.ts" file;
+
+          testAttrName = t:
+            "e2e-${t.projectName}-${specStem t.file}-L${toString t.line}";
+
+          testChecks = lib.listToAttrs (map (t:
+            let
+              cfg = projectConfig.${t.projectName};
+            in lib.nameValuePair (testAttrName t) (mkIntegrationTest {
+              name = "${t.projectName}-${specStem t.file}-L${toString t.line}";
+              # t.file is relative to the default testDir (./e2e).
+              # Prepend "e2e/" then normalize away any "e2e/../" prefix.
+              testMatch =
+                let raw = "e2e/${t.file}:${toString t.line}";
+                    normalized = builtins.replaceStrings ["e2e/../"] [""] raw;
+                in "${normalized} --project=${t.projectName}";
+              inherit (cfg) agentType claudeBin extraNativeBuildInputs;
+            })
+          ) allTests);
         in
-        pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        pkgs.lib.optionalAttrs pkgs.stdenv.isLinux ({
           unittests = pkgs.buildDubPackage {
             pname = "cydo-unittests";
             version = "0.1.0";
@@ -378,28 +457,6 @@ EOF
               touch $out
               runHook postInstall
             '';
-          };
-          integration-claude = mkIntegrationTest {
-            name = "claude";
-            testMatch = "--project=claude";
-            agentType = "claude";
-          };
-          integration-codex = mkIntegrationTest {
-            name = "codex";
-            testMatch = "--project=codex";
-            agentType = "codex";
-          };
-          integration-failure = mkIntegrationTest {
-            name = "failure";
-            testMatch = "--project=failure";
-            agentType = "claude";
-            claudeBin = "fail-claude";
-          };
-          integration-copilot = mkIntegrationTest {
-            name = "copilot";
-            testMatch = "--project=copilot";
-            agentType = "copilot";
-            extraNativeBuildInputs = [ copilot ];
           };
           typecheck = pkgs.buildNpmPackage {
             pname = "cydo-typecheck";
@@ -452,7 +509,8 @@ EOF
               touch $out
             '';
           };
-        });
+        } // testChecks)
+      );
 
       apps = forAllSystems (system: {
         default = {

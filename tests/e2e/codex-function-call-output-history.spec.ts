@@ -13,9 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { createServer } from "net";
 import { join } from "path";
-import { createInterface } from "readline";
 
 type RestartableBackend = {
   baseURL: string;
@@ -61,33 +59,20 @@ async function waitForHttp(baseURL: string, proc?: ChildProcess, timeoutMs = 30_
 }
 
 function spawnBackend(
-  port: number,
   workDir: string,
   workerHome: string,
   codexHome: string,
-  mockApiBaseURL: string,
 ): ChildProcess {
-  const proc = spawn(process.env.CYDO_BIN!, [], {
+  return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
     env: {
       ...process.env,
       HOME: workerHome,
-      CYDO_LISTEN_PORT: String(port),
-      CYDO_LOG_LEVEL: "trace",
-      CYDO_AUTH_USER: "",
-      CYDO_AUTH_PASS: "",
-      ANTHROPIC_BASE_URL: mockApiBaseURL,
-      OPENAI_BASE_URL: `${mockApiBaseURL}/v1`,
       CODEX_HOME: codexHome,
     },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "inherit", "inherit"],
   });
-  if (proc.stderr) {
-    const rl = createInterface({ input: proc.stderr });
-    rl.on("line", (line) => console.error(`[backend:${port}] ${line}`));
-  }
-  return proc;
 }
 
 function findRolloutJsonl(root: string): string | null {
@@ -104,36 +89,13 @@ function findRolloutJsonl(root: string): string | null {
   return null;
 }
 
-let testSeq = 0;
-
-async function getFreePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const addr = server.address();
-  if (!addr || typeof addr === "string") {
-    server.close();
-    throw new Error("Failed to allocate free TCP port");
-  }
-  const port = addr.port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
-
 const test = base.extend<{ restartableBackend: RestartableBackend }>({
   restartableBackend: async ({}, use, testInfo) => {
     test.skip(testInfo.project.name !== "codex", "codex-only regression");
 
-    const seq = testInfo.parallelIndex * 100 + testSeq++;
-    const port = await getFreePort();
-    const mockApiPort = await getFreePort();
-    const workDir = `/tmp/cydo-codex-history-${seq}`;
+    const workDir = "/tmp/cydo-codex-history";
     const workerHome = `${workDir}/home`;
     const codexHome = `${workDir}/codex-home`;
-    const mockApiBaseURL = `http://127.0.0.1:${mockApiPort}`;
-    const mockApiServerPath = join(__dirname, "../mock-api/server.mjs");
 
     rmSync(workDir, { recursive: true, force: true });
     mkdirSync(`${workDir}/data`, { recursive: true });
@@ -149,58 +111,31 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
     );
 
-    const mockProc = spawn(process.execPath, [mockApiServerPath], {
-      env: {
-        ...process.env,
-        MOCK_API_PORT: String(mockApiPort),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    if (mockProc.stdout) {
-      const rl = createInterface({ input: mockProc.stdout });
-      rl.on("line", (line) => console.error(`[mock-api:${mockApiPort}] ${line}`));
-    }
-    if (mockProc.stderr) {
-      const rl = createInterface({ input: mockProc.stderr });
-      rl.on("line", (line) => console.error(`[mock-api:${mockApiPort}] ${line}`));
-    }
-    await waitForHttp(`${mockApiBaseURL}/api/hello`, undefined, 15_000);
-
-    const baseURL = `http://localhost:${port}`;
-    let proc = spawnBackend(port, workDir, workerHome, codexHome, mockApiBaseURL);
+    const baseURL = "http://localhost:3940";
+    let proc = spawnBackend(workDir, workerHome, codexHome);
     await waitForHttp(baseURL, proc);
 
     const stop = async () => {
-      const pgid = proc.pid!;
-      process.kill(-pgid, "SIGTERM");
+      try {
+        process.kill(-proc.pid!, "SIGTERM");
+      } catch {}
       await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(-pgid, 0);
-          await new Promise((r) => setTimeout(r, 100));
-        } catch {
-          break;
-        }
-      }
+      // Brief drain for codex to finish writing rollout JSONL
+      await new Promise((r) => setTimeout(r, 2000));
     };
 
     const restart = async () => {
       await stop();
-      proc = spawnBackend(port, workDir, workerHome, codexHome, mockApiBaseURL);
+      proc = spawnBackend(workDir, workerHome, codexHome);
       await waitForHttp(baseURL, proc);
     };
 
     await use({ baseURL, codexHome, restart });
 
     try {
-      await stop();
-    } catch {
-      // best effort during teardown
-    }
-    mockProc.kill();
-    await new Promise<void>((resolve) => mockProc.on("exit", () => resolve()));
-    rmSync(workDir, { recursive: true, force: true });
+      process.kill(-proc.pid!, "SIGTERM");
+    } catch {}
+    await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
   },
 
   baseURL: async ({ restartableBackend }, use) => {

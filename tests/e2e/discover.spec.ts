@@ -12,18 +12,14 @@ import { test, expect } from "@playwright/test";
 import { spawn, spawnSync, execFileSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from "fs";
-import { createInterface } from "readline";
-
-// Per-file sequential counter — incremented only for tests that actually
-// run (not skipped), so ports are always unique within this file.
-let _testSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+const BACKEND_URL = "http://localhost:3940";
+
 async function waitForBackend(
-  baseURL: string,
   proc: ChildProcess,
   timeoutMs = 30_000,
 ): Promise<void> {
@@ -45,68 +41,46 @@ async function waitForBackend(
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(baseURL);
+        const res = await fetch(BACKEND_URL);
         if (res.ok || res.status < 500) return;
       } catch {
         /* not ready yet */
       }
       await new Promise((r) => setTimeout(r, 300));
     }
-    throw new Error(`Backend at ${baseURL} did not start within ${timeoutMs}ms`);
+    throw new Error(`Backend at ${BACKEND_URL} did not start within ${timeoutMs}ms`);
   })();
 
   await Promise.race([polling, processExited]);
 }
 
 function spawnBackend(
-  port: number,
   workDir: string,
   workerHome: string,
 ): ChildProcess {
-  const proc = spawn(process.env.CYDO_BIN!, [], {
+  return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
     env: {
       ...process.env,
       HOME: workerHome,
-      CYDO_LISTEN_PORT: String(port),
-      CYDO_LOG_LEVEL: "trace",
-      CYDO_AUTH_USER: "",
-      CYDO_AUTH_PASS: "",
     },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "inherit", "inherit"],
   });
-  if (proc.stderr) {
-    const rl = createInterface({ input: proc.stderr });
-    rl.on("line", (line) =>
-      console.error(`[discover-backend:${port}] ${line}`),
-    );
-  }
-  return proc;
 }
 
 async function killBackend(proc: ChildProcess): Promise<void> {
-  const pgid = proc.pid!;
   try {
-    process.kill(-pgid, "SIGTERM");
+    process.kill(-proc.pid!, "SIGTERM");
   } catch {
     /* already gone */
   }
   await new Promise<void>((r) => proc.on("exit", () => r()));
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(-pgid, 0);
-      await new Promise((r) => setTimeout(r, 100));
-    } catch {
-      break;
-    }
-  }
 }
 
 /** Create the standard per-test backend work directory layout. */
-function createWorkDir(seq: number): { workDir: string; workerHome: string } {
-  const workDir = `/tmp/cydo-discover-${seq}`;
+function createWorkDir(suffix: string): { workDir: string; workerHome: string } {
+  const workDir = `/tmp/cydo-backend-${suffix}`;
   const workerHome = `${workDir}/home`;
   rmSync(workDir, { recursive: true, force: true });
   mkdirSync(`${workDir}/data`, { recursive: true });
@@ -182,10 +156,8 @@ test(
       "real bwrap not found; empty_dir masking requires real bwrap",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
-    const wsRoot = `/tmp/cydo-discover-bwrap-${seq}`;
+    const { workDir, workerHome } = createWorkDir("bwrap");
+    const wsRoot = "/tmp/cydo-discover-bwrap";
     rmSync(wsRoot, { recursive: true, force: true });
 
     initGitRepo(`${wsRoot}/project-alpha`);
@@ -205,10 +177,10 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       // project-alpha should appear (not masked)
       await expect(
@@ -239,12 +211,10 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
+    const { workDir, workerHome } = createWorkDir("reload");
 
     // Second workspace: a directory containing one git repo.
-    const wsRoot2 = `/tmp/cydo-discover-reload-${seq}`;
+    const wsRoot2 = "/tmp/cydo-discover-reload";
     rmSync(wsRoot2, { recursive: true, force: true });
     initGitRepo(`${wsRoot2}/new-project`);
 
@@ -257,10 +227,10 @@ test(
       ) + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       // Initial workspace project is visible.
       await expect(
@@ -314,9 +284,7 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
+    const { workDir, workerHome } = createWorkDir("fail");
 
     // "badws" points at a path that does not exist.
     writeFileSync(
@@ -330,11 +298,11 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
       // The backend must start successfully — discovery failure must not crash it.
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       // Page loads: the backend is alive after the failed discovery.
       await expect(page.locator(".welcome-page-header h1")).toContainText(
@@ -373,10 +341,8 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
-    const wsRoot = `/tmp/cydo-discover-expr-${seq}`;
+    const { workDir, workerHome } = createWorkDir("expr");
+    const wsRoot = "/tmp/cydo-discover-expr";
     rmSync(wsRoot, { recursive: true, force: true });
 
     // project-git: has .git directory (via git init)
@@ -407,10 +373,10 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       await expect(
         page.locator(".project-card-title", { hasText: "project-git" }),
@@ -444,10 +410,8 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
-    const wsRoot = `/tmp/cydo-discover-nested-${seq}`;
+    const { workDir, workerHome } = createWorkDir("nested");
+    const wsRoot = "/tmp/cydo-discover-nested";
     rmSync(wsRoot, { recursive: true, force: true });
 
     // mono/.git and mono/sub/.git — nested repos
@@ -467,10 +431,10 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       // Both the outer and inner repos must appear
       await expect(
@@ -499,10 +463,8 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
-    const wsRoot = `/tmp/cydo-discover-list-${seq}`;
+    const { workDir, workerHome } = createWorkDir("list");
+    const wsRoot = "/tmp/cydo-discover-list";
     rmSync(wsRoot, { recursive: true, force: true });
 
     // Three plain directories — none have .git
@@ -524,10 +486,10 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       await expect(
         page.locator(".project-card-title", { hasText: "alpha" }),
@@ -558,10 +520,8 @@ test(
       "agent-agnostic, runs in claude project only",
     );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7050 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
-    const wsRoot = `/tmp/cydo-discover-depth-${seq}`;
+    const { workDir, workerHome } = createWorkDir("depth");
+    const wsRoot = "/tmp/cydo-discover-depth";
     rmSync(wsRoot, { recursive: true, force: true });
 
     // a/b/c/d — d has .git but is at depth 3 (a=1, b=2, c=3, d=4 inside c)
@@ -584,10 +544,10 @@ test(
       ].join("\n") + "\n",
     );
 
-    const proc = spawnBackend(port, workDir, workerHome);
+    const proc = spawnBackend(workDir, workerHome);
     try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
 
       // d is too deep — must not appear
       await expect(

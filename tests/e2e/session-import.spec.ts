@@ -19,38 +19,14 @@ import { test, expect } from "@playwright/test";
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { createInterface } from "readline";
-
-// Per-file sequential counter for unique temp directories within a worker.
-let _testSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers (following discover.spec.ts pattern)
 // ---------------------------------------------------------------------------
 
-function parsePortFromLines(
-  rl: ReturnType<typeof createInterface>,
-  proc: ReturnType<typeof spawn>,
-  pattern: RegExp,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const onExit = (code: number | null) =>
-      reject(new Error(`Process exited with ${code} before logging port`));
-    const onLine = (line: string) => {
-      const match = line.match(pattern);
-      if (match) {
-        rl.off("line", onLine);
-        proc.off("exit", onExit);
-        resolve(parseInt(match[1], 10));
-      }
-    };
-    rl.on("line", onLine);
-    proc.on("exit", onExit);
-  });
-}
+const BACKEND_URL = "http://localhost:3940";
 
 async function waitForBackend(
-  baseURL: string,
   proc: ChildProcess,
   timeoutMs = 30_000,
 ): Promise<void> {
@@ -72,7 +48,7 @@ async function waitForBackend(
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(baseURL);
+        const res = await fetch(BACKEND_URL);
         if (res.ok || res.status < 500) return;
       } catch {
         /* not ready yet */
@@ -80,62 +56,38 @@ async function waitForBackend(
       await new Promise((r) => setTimeout(r, 300));
     }
     throw new Error(
-      `Backend at ${baseURL} did not start within ${timeoutMs}ms`,
+      `Backend at ${BACKEND_URL} did not start within ${timeoutMs}ms`,
     );
   })();
 
   await Promise.race([polling, processExited]);
 }
 
-async function spawnBackend(
+function spawnBackend(
   workDir: string,
   workerHome: string,
-): Promise<{ proc: ChildProcess; port: number }> {
-  const proc = spawn(process.env.CYDO_BIN!, [], {
+): ChildProcess {
+  return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
     env: {
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
-      CYDO_LISTEN_PORT: "0",
-      CYDO_LOG_LEVEL: "trace",
-      CYDO_AUTH_USER: "",
-      CYDO_AUTH_PASS: "",
     },
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "inherit", "inherit"],
   });
-  const rl = createInterface({ input: proc.stderr! });
-  rl.on("line", (line) => console.error(`[session-import-backend] ${line}`));
-  const port = await parsePortFromLines(
-    rl,
-    proc,
-    /CyDo server listening on \S+:(\d+)/,
-  );
-  return { proc, port };
 }
 
 async function killBackend(proc: ChildProcess): Promise<void> {
-  const pgid = proc.pid!;
   try {
-    process.kill(-pgid, "SIGTERM");
-  } catch {
-    /* already gone */
-  }
+    process.kill(-proc.pid!, "SIGTERM");
+  } catch {}
   await new Promise<void>((r) => proc.on("exit", () => r()));
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(-pgid, 0);
-      await new Promise((r) => setTimeout(r, 100));
-    } catch {
-      break;
-    }
-  }
 }
 
-function createWorkDir(seq: number): { workDir: string; workerHome: string } {
-  const workDir = `/tmp/cydo-session-import-${seq}`;
+function createWorkDir(suffix: string): { workDir: string; workerHome: string } {
+  const workDir = `/tmp/cydo-session-import-${suffix}`;
   const workerHome = `${workDir}/home`;
   rmSync(workDir, { recursive: true, force: true });
   mkdirSync(`${workDir}/data`, { recursive: true });
@@ -156,8 +108,7 @@ test("Import group node in sidebar expands on click and navigates correctly", as
     "agent-agnostic, runs in claude project only",
   );
 
-  const seq = testInfo.parallelIndex * 100 + _testSeq++;
-  const { workDir, workerHome } = createWorkDir(seq);
+  const { workDir, workerHome } = createWorkDir("sidebar");
 
   const projectPath = "/tmp/cydo-test-workspace";
   const mangledPath = projectPath.replace(/\//g, "-");
@@ -187,12 +138,12 @@ test("Import group node in sidebar expands on click and navigates correctly", as
     ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
   );
 
-  const { proc, port } = await spawnBackend(workDir, workerHome);
+  const proc = spawnBackend(workDir, workerHome);
   try {
-    await waitForBackend(`http://localhost:${port}`, proc);
+    await waitForBackend(proc);
 
     // Navigate to the project view (shows sidebar with tasks).
-    await page.goto(`http://localhost:${port}/testws/cydo-test-workspace`);
+    await page.goto(BACKEND_URL + "/testws/cydo-test-workspace");
 
     // Sidebar should appear.
     await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
@@ -252,8 +203,7 @@ test("importable session appears on startup, history loads, Import Session promo
     "agent-agnostic, runs in claude project only",
   );
 
-  const seq = testInfo.parallelIndex * 100 + _testSeq++;
-  const { workDir, workerHome } = createWorkDir(seq);
+  const { workDir, workerHome } = createWorkDir("import");
 
   // Use the shared test workspace path so it matches a configured workspace.
   const projectPath = "/tmp/cydo-test-workspace";
@@ -287,10 +237,10 @@ test("importable session appears on startup, history loads, Import Session promo
     ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
   );
 
-  const { proc, port } = await spawnBackend(workDir, workerHome);
+  const proc = spawnBackend(workDir, workerHome);
   try {
-    await waitForBackend(`http://localhost:${port}`, proc);
-    await page.goto(`http://localhost:${port}/`);
+    await waitForBackend(proc);
+    await page.goto(BACKEND_URL + "/");
 
     // Welcome page: project card must appear.
     await expect(
