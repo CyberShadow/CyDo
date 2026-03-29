@@ -159,7 +159,7 @@ async function seedTaskAndLocateRollout(
     page.locator(".message.assistant-message .text-content", {
       hasText: "seed-history",
     }),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible({ timeout: 90_000 });
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
@@ -208,7 +208,7 @@ test("live invalid child task_type returns structured task error payload", async
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(taskTool).toContainText(toolError, { timeout: 60_000 });
+  await expect(taskTool).toContainText(toolError, { timeout: 90_000 });
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 

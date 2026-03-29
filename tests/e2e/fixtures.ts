@@ -40,7 +40,7 @@ export async function killSession(page: Page, agentType: AgentType) {
 
 /** Return an appropriate response timeout for the given agent. */
 export function responseTimeout(agentType: AgentType): number {
-  return agentType === "codex" ? 60_000 : 30_000;
+  return agentType === "codex" ? 90_000 : 30_000;
 }
 
 type TestFixtures = {

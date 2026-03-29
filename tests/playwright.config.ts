@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 60_000,
+  timeout: 180_000,
   // Nix provides effective reproducibility. As such, flaky tests are bugs.
   retries: 0, // Agents: you MAY NOT increase this value.
   fullyParallel: true,

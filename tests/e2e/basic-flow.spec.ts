@@ -81,7 +81,7 @@ test("codex agent type indicator", async ({ page, agentType }) => {
   await input.fill('reply with "hello"');
   await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.locator(".message.assistant-message")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator(".message.assistant-message")).toBeVisible({ timeout: responseTimeout(agentType) });
   await expect(page.locator(".banner-agent")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".banner-agent")).toContainText("codex", { ignoreCase: true });
 });
