@@ -14,6 +14,7 @@ import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 import { Markdown } from "./Markdown";
+import { CopyButton } from "./CopyButton";
 import editIcon from "../icons/edit.svg?raw";
 import viewSourceIcon from "../icons/view-source.svg?raw";
 import forkIcon from "../icons/fork.svg?raw";
@@ -329,16 +330,19 @@ function jsonReplacer(_key: string, value: unknown) {
 function HighlightedJson({ text }: { text: string }) {
   const tokens = useHighlight(text, "json");
   return (
-    <pre>
-      {tokens
-        ? tokens.map((line, i) => (
-            <span key={i}>
-              {i > 0 && "\n"}
-              {renderTokens(line)}
-            </span>
-          ))
-        : text}
-    </pre>
+    <div class="code-pre-wrap">
+      <CopyButton text={text} />
+      <pre>
+        {tokens
+          ? tokens.map((line, i) => (
+              <span key={i}>
+                {i > 0 && "\n"}
+                {renderTokens(line)}
+              </span>
+            ))
+          : text}
+      </pre>
+    </div>
   );
 }
 
