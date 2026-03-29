@@ -2134,6 +2134,16 @@ export function ToolCall({
                 taskOutputElement
               ) : taskStopElement ? (
                 taskStopElement
+              ) : useBashResult ? (
+                (result.toolResult as Record<string, unknown>).stdout ? (
+                  <ResultPre
+                    content={
+                      (result.toolResult as Record<string, unknown>)
+                        .stdout as string
+                    }
+                    isError={result.isError}
+                  />
+                ) : null
               ) : (
                 renderResultContent(result.content, result.isError)
               )}
