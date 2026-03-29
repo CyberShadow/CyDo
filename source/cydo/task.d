@@ -23,7 +23,7 @@ struct TaskData
 	string relationType;
 	string workspace;
 	string projectPath;
-	bool hasWorktree;
+	int worktreeTid;  // 0 = no worktree; own tid = owns worktree; other tid = shares worktree
 	string title;
 	string status = "pending";  // pending, active, alive, waiting, completed, failed, importable
 	bool archived;
@@ -39,22 +39,14 @@ struct TaskData
 		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(tid));
 	}
 
-	/// Worktree path (if this task has one), with symlinks resolved.
+	/// Worktree path: .cydo/tasks/{worktree_tid}/worktree
+	/// Returns "" if no worktree.
 	@property string worktreePath() const
 	{
-		if (!hasWorktree)
+		if (worktreeTid <= 0)
 			return "";
 		import std.path : buildPath;
-		auto path = buildPath(taskDir, "worktree");
-		try
-		{
-			import ae.sys.file : realPath;
-			return realPath(path);
-		}
-		catch (Exception)
-		{
-			return path;
-		}
+		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(worktreeTid), "worktree");
 	}
 
 	/// Output file path: .cydo/tasks/<tid>/output.md
@@ -69,22 +61,19 @@ struct TaskData
 	/// Effective working directory: worktree path if set, otherwise project path.
 	@property string effectiveCwd() const
 	{
-		return hasWorktree ? worktreePath : projectPath;
+		return worktreeTid > 0 ? worktreePath : projectPath;
 	}
 
-	/// Returns true if this task owns its worktree (real directory, not a symlink).
-	/// False if the task has no worktree or inherits one via symlink.
+	/// Returns true if this task owns its worktree (worktreeTid == own tid).
 	bool ownsWorktree() const
 	{
-		if (!hasWorktree || taskDir.length == 0)
-			return false;
-		import std.file : isSymlink;
-		import std.path : buildPath;
-		auto path = buildPath(taskDir, "worktree");
-		try
-			return !isSymlink(path);
-		catch (Exception)
-			return false;
+		return worktreeTid == tid && worktreeTid > 0;
+	}
+
+	/// True if this task uses any worktree (owned or shared).
+	@property bool hasWorktree() const
+	{
+		return worktreeTid > 0;
 	}
 
 	string draft;

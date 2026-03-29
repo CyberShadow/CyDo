@@ -87,6 +87,10 @@ struct Persistence
 			"    title TEXT NOT NULL DEFAULT ''," ~
 			"    PRIMARY KEY (agent_type, session_id)" ~
 			");",
+			// Migration 15: replace has_worktree boolean with worktree_tid
+			// (0 = no worktree, tid = owns worktree, other tid = shares worktree)
+			"ALTER TABLE tasks ADD COLUMN worktree_tid INTEGER NOT NULL DEFAULT 0;" ~
+			"UPDATE tasks SET worktree_tid = tid WHERE has_worktree = 1;",
 		]);
 	}
 
@@ -179,9 +183,9 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET relation_type = ? WHERE tid = ?".exec(relationType, tid);
 	}
 
-	void setHasWorktree(int tid, bool hasWorktree)
+	void setWorktreeTid(int tid, int worktreeTid)
 	{
-		db.stmt!"UPDATE tasks SET has_worktree = ? WHERE tid = ?".exec(hasWorktree ? 1 : 0, tid);
+		db.stmt!"UPDATE tasks SET worktree_tid = ? WHERE tid = ?".exec(worktreeTid, tid);
 	}
 
 	void setArchived(int tid, bool archived)
@@ -199,7 +203,7 @@ struct Persistence
 		string relationType;
 		string workspace;
 		string projectPath;
-		bool hasWorktree;
+		int worktreeTid;
 		string title;
 		string status;
 		string agentType;
@@ -215,11 +219,11 @@ struct Persistence
 		TaskRow[] result;
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
-			int hasWorktree, string title, string status, string agentType, int archived, string draft,
+			int worktreeTid, string title, string status, string agentType, int archived, string draft,
 			string resultText, long createdAt, long lastActive;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(has_worktree,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0) FROM tasks".iterate())
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0) FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, hasWorktree != 0, title, status, agentType, archived != 0, draft, resultText, createdAt, lastActive);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, title, status, agentType, archived != 0, draft, resultText, createdAt, lastActive);
 		}
 		return result;
 	}

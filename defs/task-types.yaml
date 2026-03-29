@@ -79,7 +79,6 @@ task_types:
     model_class: large
     output_type: []
     allow_native_subagents: true
-    parallelizable: true
     user_visible: true
 
   conversation:
@@ -98,7 +97,7 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       bug:
@@ -106,7 +105,7 @@ task_types:
         result_note: "Read the output file for the full investigation report."
       execute:
         task_type: triage
-        worktree: true
+        worktree: require
         prompt_template: prompts/execute.md
         result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
     continuations:
@@ -122,7 +121,6 @@ task_types:
         task_type: write_mode
         keep_context: true
         prompt_template: prompts/enter_write_mode.md
-    parallelizable: true
     user_visible: true
 
   plan_mode:
@@ -170,7 +168,7 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
     continuations:
@@ -178,7 +176,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_plan.md
-    parallelizable: true
     user_visible: false
 
   bug_mode:
@@ -221,11 +218,11 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       reproduce:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/reproduce.md
         result_note: "Read the output file for findings. The worktree path contains the failing test."
     continuations:
@@ -237,7 +234,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_bug.md
-    parallelizable: true
     user_visible: false
 
   write_mode:
@@ -274,7 +270,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
-    parallelizable: true
     user_visible: true
 
   # =========================================================================
@@ -310,10 +305,9 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
-    parallelizable: true
     user_visible: false
 
   quick_research:
@@ -333,7 +327,6 @@ task_types:
     model_class: small
     read_only: true
     output_type: [report]
-    parallelizable: true
     user_visible: false
 
   deep_research:
@@ -359,10 +352,9 @@ task_types:
         prompt_template: prompts/quick_research.md
         result_note: "Read the output file for findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
-    parallelizable: true
     user_visible: false
 
   bug:
@@ -389,10 +381,9 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
       reproduce:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/reproduce.md
         result_note: "Read the output file for findings. The worktree path contains the failing test."
-    parallelizable: true
     user_visible: false
 
   reproduce:
@@ -417,7 +408,6 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    parallelizable: true
     user_visible: false
 
   spike:
@@ -439,7 +429,7 @@ task_types:
     output_type: [report, worktree]
     creatable_tasks:
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       quick_research:
@@ -448,7 +438,6 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    parallelizable: true
     user_visible: false
 
   test:
@@ -459,7 +448,6 @@ task_types:
       tree as the parent implementation task.
     model_class: medium
     output_type: []
-    parallelizable: true
     user_visible: false
 
   # =========================================================================
@@ -494,7 +482,6 @@ task_types:
         requires_approval: true
         keep_context: true
         prompt_template: prompts/enter_decompose.md
-    parallelizable: false
     user_visible: false
 
   decompose:
@@ -516,7 +503,7 @@ task_types:
         prompt_template: prompts/plan.md
         result_note: "Read the output file for the full plan."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
       quick_research:
@@ -525,7 +512,6 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    parallelizable: true
     user_visible: false
 
   implement:
@@ -548,13 +534,12 @@ task_types:
         prompt_template: prompts/test.md
         result_note: "Read the output file for test results."
       verify:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/verify.md
         result_note: "Read the output file for the full verification report."
       review:
         prompt_template: prompts/review.md
         result_note: "Read the output file for the full review."
-    parallelizable: true
     user_visible: false
 
   verify:
@@ -569,7 +554,6 @@ task_types:
       the project's test framework.
     model_class: medium
     output_type: [report]
-    parallelizable: true
     user_visible: false
 
   review:
@@ -582,7 +566,6 @@ task_types:
     model_class: large
     read_only: true
     output_type: [report]
-    parallelizable: true
     user_visible: false
 
   # =========================================================================

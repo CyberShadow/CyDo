@@ -24,12 +24,19 @@ enum OutputType : string
 	worktree = "worktree",
 }
 
+enum WorktreeMode : string
+{
+	inherit = "inherit",
+	require = "require",
+	fork = "fork",
+}
+
 struct ContinuationDef
 {
 	string task_type;
 	bool requires_approval;
 	bool keep_context;
-	@Optional bool worktree;
+	@Optional WorktreeMode worktree;
 	@Optional string prompt_template;
 }
 
@@ -37,7 +44,7 @@ struct CreatableTaskDef
 {
 	string name;
 	@Optional string task_type; // actual type to create (defaults to name)
-	@Optional bool worktree;
+	@Optional WorktreeMode worktree;
 	@Optional string prompt_template;
 	@Optional string result_note;
 
@@ -74,7 +81,6 @@ struct TaskTypeDef
 	@Optional ContinuationDef on_yield; // auto-continuation on clean exit
 
 	// Execution
-	bool parallelizable;
 	@Optional bool serial;
 	bool user_visible = true;
 	@Optional uint max_turns;
@@ -228,9 +234,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		string[] errs;
 		if (types.byName(cont.task_type) is null)
 			errs ~= format("%s: references unknown type '%s'", context, cont.task_type);
-		if (cont.keep_context && cont.worktree)
-			errs ~= format("%s: has keep_context and worktree: true — these are incompatible",
-				context);
+		if (cont.keep_context && cont.worktree != WorktreeMode.inherit)
+			errs ~= format("%s: has keep_context and worktree: %s — keep_context requires worktree: inherit",
+				context, cont.worktree);
 		if (cont.keep_context && cont.prompt_template.length == 0)
 			errs ~= format("%s: has keep_context but no prompt_template"
 				~ " — mode switches need an entry prompt", context);
@@ -334,15 +340,15 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 				continue;
 
 			foreach (ref edge; def.creatable_tasks)
-				enqueue(edge.resolvedType, curWt || edge.worktree, curKey,
+				enqueue(edge.resolvedType, curWt || edge.worktree != WorktreeMode.inherit, curKey,
 					format("creatable '%s'", edge.name));
 
 			foreach (cname, ref cont; def.continuations)
-				enqueue(cont.task_type, curWt || cont.worktree, curKey,
+				enqueue(cont.task_type, curWt || cont.worktree != WorktreeMode.inherit, curKey,
 					format("continuation '%s'", cname));
 
 			if (def.on_yield.task_type.length > 0)
-				enqueue(def.on_yield.task_type, curWt || def.on_yield.worktree,
+				enqueue(def.on_yield.task_type, curWt || def.on_yield.worktree != WorktreeMode.inherit,
 					curKey, "on_yield");
 		}
 
@@ -481,6 +487,62 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 	}
 
 	return errors;
+}
+
+/// Compute which types are "tree-read-only": the type itself is read_only,
+/// and every descendant reachable without a fork edge is also read_only.
+/// A fork edge provides isolation, so the subtree behind it doesn't matter.
+bool[string] computeTreeReadOnly(TaskTypeDef[] types)
+{
+	bool[string] cache;
+	bool[string] inProgress;
+
+	bool isTreeRO(string typeName)
+	{
+		if (auto p = typeName in cache)
+			return *p;
+		if (typeName in inProgress)
+			return true; // optimistic for cycles of read_only types
+
+		inProgress[typeName] = true;
+		scope(exit) inProgress.remove(typeName);
+
+		auto def = types.byName(typeName);
+		if (def is null || !def.read_only)
+		{
+			cache[typeName] = false;
+			return false;
+		}
+
+		foreach (ref edge; def.creatable_tasks)
+			if (edge.worktree != WorktreeMode.fork && !isTreeRO(edge.resolvedType))
+			{
+				cache[typeName] = false;
+				return false;
+			}
+
+		foreach (cname, ref cont; def.continuations)
+			if (cont.worktree != WorktreeMode.fork && !isTreeRO(cont.task_type))
+			{
+				cache[typeName] = false;
+				return false;
+			}
+
+		if (def.on_yield.task_type.length > 0)
+			if (def.on_yield.worktree != WorktreeMode.fork && !isTreeRO(def.on_yield.task_type))
+			{
+				cache[typeName] = false;
+				return false;
+			}
+
+		cache[typeName] = true;
+		return true;
+	}
+
+	foreach (ref def; types)
+		isTreeRO(def.name);
+
+	return cache;
 }
 
 /// Detect unconditional cycles in continuation chains.
@@ -1091,8 +1153,10 @@ void generateDot(TaskTypeDef[] types)
 			string label = cname;
 			if (cont.keep_context)
 				label ~= " ⟳";
-			if (cont.worktree)
+			if (cont.worktree == WorktreeMode.fork)
 				label ~= " ⎘";
+			else if (cont.worktree == WorktreeMode.require)
+				label ~= " ⎘?";
 			auto attrs = format("label=\"%s\"", label);
 			if (cont.requires_approval)
 				attrs ~= " style=bold color=\"#856404\"";
@@ -1108,8 +1172,10 @@ void generateDot(TaskTypeDef[] types)
 			string label = "on_yield";
 			if (def.on_yield.keep_context)
 				label ~= " ⟳";
-			if (def.on_yield.worktree)
+			if (def.on_yield.worktree == WorktreeMode.fork)
 				label ~= " ⎘";
+			else if (def.on_yield.worktree == WorktreeMode.require)
+				label ~= " ⎘?";
 			writefln("    %s -> %s [label=\"%s\" style=dashed arrowhead=normal color=\"#6c757d\"];",
 				def.name, def.on_yield.task_type, label);
 		}
@@ -1123,8 +1189,10 @@ void generateDot(TaskTypeDef[] types)
 			string label = "creates";
 			if (ct.task_type.length > 0)
 				label ~= format(" (%s)", ct.name);
-			if (ct.worktree)
+			if (ct.worktree == WorktreeMode.fork)
 				label ~= " ⎘";
+			else if (ct.worktree == WorktreeMode.require)
+				label ~= " ⎘?";
 			writefln("    %s -> %s [style=dashed arrowhead=open label=\"%s\"];",
 				def.name, ct.resolvedType, label);
 		}
@@ -1156,7 +1224,7 @@ void generateDot(TaskTypeDef[] types)
 	writeln("        label=\"Legend\" style=dashed fontname=\"Helvetica\" fontsize=10;");
 	writeln("        node [shape=plaintext fontsize=9];");
 	writeln("        leg1 [label=\"Green = user-visible\\lGray = agent-initiated\\lYellow = steward\\l\"];");
-	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = new worktree\\l\"];");
+	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = fork worktree\\l⎘? = require worktree\\l\"];");
 	writeln("    }");
 
 	writeln("}");
@@ -1257,7 +1325,8 @@ void runDumpContext(string path, string typeName)
 	writefln("Output:         %s", def.output_type.length == 0 ? "—"
 		: def.output_type.map!(o => cast(string) o).join("+"));
 	writefln("Read-only:      %s", def.read_only);
-	writefln("Parallelizable: %s", def.parallelizable);
+	auto treeRO = computeTreeReadOnly(types);
+	writefln("Tree-read-only: %s", typeName in treeRO ? treeRO[typeName] : false);
 	writefln("User-visible:   %s", def.user_visible);
 	if (def.steward)
 	{
@@ -1270,7 +1339,8 @@ void runDumpContext(string path, string typeName)
 		writefln("On-yield:       %s%s%s%s",
 			def.on_yield.task_type,
 			def.on_yield.keep_context ? " (keep-context)" : "",
-			def.on_yield.worktree ? " (worktree)" : "",
+			def.on_yield.worktree != WorktreeMode.inherit
+				? format(" (worktree: %s)", def.on_yield.worktree) : "",
 			def.on_yield.requires_approval ? " (approval)" : "");
 	writefln("Disallowed:     (agent-specific)");
 	writeln();

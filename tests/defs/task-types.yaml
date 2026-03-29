@@ -15,7 +15,6 @@ task_types:
         task_type: plan_mode
         keep_context: true
         prompt_template: prompts/enter_plan_mode.md
-    parallelizable: true
     user_visible: true
 
   conversation:
@@ -31,7 +30,7 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for findings."
       spike:
-        worktree: true
+        worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings."
       blank:
@@ -49,7 +48,6 @@ task_types:
         task_type: write_mode
         keep_context: true
         prompt_template: prompts/enter_write_mode.md
-    parallelizable: true
     user_visible: true
 
   plan_mode:
@@ -63,7 +61,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_plan.md
-    parallelizable: true
     user_visible: false
 
   write_mode:
@@ -78,7 +75,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
-    parallelizable: true
     user_visible: true
 
   research:
@@ -87,7 +83,6 @@ task_types:
     model_class: small
     read_only: true
     output_type: []
-    parallelizable: true
     user_visible: false
 
   spike:
@@ -95,7 +90,6 @@ task_types:
     icon: spike
     model_class: large
     output_type: []
-    parallelizable: true
     user_visible: false
 
   test_handoff:

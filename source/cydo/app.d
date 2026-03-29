@@ -38,7 +38,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, byName, isInteractive, loadTaskTypes, validateTaskTypes,
+import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt;
 import cydo.task;
@@ -257,7 +257,7 @@ class App : ToolsBackend
 			td.relationType = row.relationType;
 			td.workspace = row.workspace;
 			td.projectPath = row.projectPath;
-			td.hasWorktree = row.hasWorktree;
+			td.worktreeTid = row.worktreeTid;
 			td.title = row.title;
 			td.status = row.status;
 			td.archived = row.archived;
@@ -272,6 +272,22 @@ class App : ToolsBackend
 				makeProcessQueueSF(rowTid),
 				ProcessState.Dead,
 			);
+		}
+
+		// Post-migration cleanup: remove stale worktree symlinks from pre-v2 sessions
+		foreach (tid, ref td; tasks)
+		{
+			if (td.taskDir.length == 0) continue;
+			import std.file : isSymlink, remove;
+			import std.path : buildPath;
+			auto wtPath = buildPath(td.taskDir, "worktree");
+			try {
+				if (isSymlink(wtPath))
+				{
+					remove(wtPath);
+					infof("Removed stale worktree symlink for task %d: %s", tid, wtPath);
+				}
+			} catch (Exception) {}
 		}
 
 		// Internal UNIX socket for MCP proxy calls (no auth required).
@@ -787,10 +803,7 @@ class App : ToolsBackend
 				edgeTemplate = edge.prompt_template;
 				childTd.resultNote = substituteVars(edge.result_note,
 					["output_dir": parentTd.taskDir]);
-				if (edge.worktree)
-					setupWorktree(childTid, true, "", parentTd.hasWorktree ? parentTd.worktreePath : "");
-				else if (parentTd.hasWorktree)
-					setupWorktree(childTid, false, parentTd.worktreePath);
+				setupWorktreeForEdge(childTid, parentTid, edge.worktree);
 			}
 		}
 
@@ -2040,43 +2053,114 @@ class App : ToolsBackend
 		throw new Exception("Unknown agent type: " ~ agentType);
 	}
 
-	/// Set up a worktree for a task: either create a new git worktree or
-	/// inherit an existing one from a predecessor/parent via symlink.
-	private void setupWorktree(int tid, bool createNew, string inheritFrom = "", string baseFrom = "")
+	/// Set up a worktree for a task based on the edge's WorktreeMode.
+	private void setupWorktreeForEdge(int childTid, int parentTid, WorktreeMode mode)
 	{
-		auto td = &tasks[tid];
-		if (td.hasWorktree || td.taskDir.length == 0)
+		final switch (mode)
+		{
+			case WorktreeMode.inherit:
+				setupWorktreeInherit(childTid, parentTid);
+				break;
+			case WorktreeMode.require:
+				setupWorktreeRequire(childTid, parentTid);
+				break;
+			case WorktreeMode.fork:
+				setupWorktreeFork(childTid, parentTid);
+				break;
+		}
+	}
+
+	/// Inherit: if the parent has a worktree, the child shares it.
+	private void setupWorktreeInherit(int childTid, int parentTid)
+	{
+		auto parentTd = parentTid in tasks;
+		if (parentTd is null || parentTd.worktreeTid <= 0)
+			return;
+		auto td = &tasks[childTid];
+		td.worktreeTid = parentTd.worktreeTid;
+		persistence.setWorktreeTid(childTid, td.worktreeTid);
+	}
+
+	/// Require: walk up ancestors to find an existing worktree. If none found,
+	/// create one at the root task's directory. The child then shares that worktree.
+	/// The root task's own worktree_tid stays 0 (root tasks never chdir).
+	private void setupWorktreeRequire(int childTid, int parentTid)
+	{
+		// Walk up to find nearest ancestor with a worktree
+		int current = parentTid;
+		while (current > 0)
+		{
+			auto ancestorTd = current in tasks;
+			if (ancestorTd is null)
+				break;
+			if (ancestorTd.worktreeTid > 0)
+			{
+				// Found an ancestor with a worktree — share it
+				auto td = &tasks[childTid];
+				td.worktreeTid = ancestorTd.worktreeTid;
+				persistence.setWorktreeTid(childTid, td.worktreeTid);
+				return;
+			}
+			current = ancestorTd.parentTid;
+		}
+		// No ancestor has a worktree — create one at the root task's directory
+		int rootTid = findRootTid(childTid);
+		auto rootTd = rootTid in tasks;
+		if (rootTd is null || rootTd.taskDir.length == 0)
+			return;
+
+		import std.file : exists, mkdirRecurse;
+		import std.path : buildPath;
+		auto wtPath = buildPath(rootTd.taskDir, "worktree");
+		if (!exists(wtPath))
+		{
+			mkdirRecurse(rootTd.taskDir);
+			import std.process : execute;
+			auto workDir = rootTd.projectPath.length > 0 ? rootTd.projectPath : null;
+			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
+			if (gitResult.status != 0)
+			{
+				errorf("Failed to create worktree for require at root task %d: %s", rootTid, gitResult.output);
+				return;
+			}
+			infof("Created shared worktree at root task %d: %s", rootTid, wtPath);
+		}
+		// Child points to the root's worktree. Root's worktree_tid stays 0.
+		auto td = &tasks[childTid];
+		td.worktreeTid = rootTid;
+		persistence.setWorktreeTid(childTid, rootTid);
+	}
+
+	/// Fork: create a new isolated worktree for this task.
+	private void setupWorktreeFork(int childTid, int parentTid)
+	{
+		auto td = &tasks[childTid];
+		if (td.worktreeTid > 0 || td.taskDir.length == 0)
 			return;
 
 		import std.file : mkdirRecurse;
 		import std.path : buildPath;
+		import std.process : execute;
 
 		mkdirRecurse(td.taskDir);
+		auto wtPath = buildPath(td.taskDir, "worktree");
 
-		if (createNew)
+		// Determine base: parent's worktree if available, else project dir
+		auto parentTd = parentTid in tasks;
+		string baseFrom;
+		if (parentTd !is null && parentTd.worktreeTid > 0)
+			baseFrom = parentTd.worktreePath;
+		auto workDir = baseFrom.length > 0 ? baseFrom : (td.projectPath.length > 0 ? td.projectPath : null);
+
+		auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
+		if (gitResult.status == 0)
 		{
-			import std.process : execute;
-			auto wtPath = buildPath(td.taskDir, "worktree");
-			auto workDir = baseFrom.length > 0 ? baseFrom : (td.projectPath.length > 0 ? td.projectPath : null);
-			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-			if (gitResult.status == 0)
-			{
-				td.hasWorktree = true;
-				persistence.setHasWorktree(td.tid, true);
-				infof("Created worktree for task %d: %s", td.tid, wtPath);
-			}
-			else
-				errorf("Failed to create worktree for task %d: %s", td.tid, gitResult.output);
+			td.worktreeTid = childTid;  // owns its own worktree
+			persistence.setWorktreeTid(childTid, childTid);
+			infof("Created fork worktree for task %d: %s", childTid, wtPath);
 		}
-		else if (inheritFrom.length > 0)
-		{
-			import std.file : symlink;
-			auto wtPath = buildPath(td.taskDir, "worktree");
-			symlink(inheritFrom, wtPath);
-			td.hasWorktree = true;
-			persistence.setHasWorktree(td.tid, true);
-			infof("Inherited worktree for task %d: %s → %s", td.tid, wtPath, inheritFrom);
-		}
+		else
+			errorf("Failed to create fork worktree for task %d: %s", childTid, gitResult.output);
 	}
 
 	private void spawnTaskSession(int tid)
@@ -2124,6 +2208,36 @@ class App : ToolsBackend
 		// Task directory is always writable (even for read-only tasks)
 		if (td.taskDir.length > 0)
 			td.sandbox.paths[td.taskDir] = PathMode.rw;
+
+		// Worktree sandbox restriction: when a task has a worktree and is not
+		// read-only, downgrade the project directory to ro and add git dirs as rw.
+		if (td.worktreeTid > 0 && !readOnly && workDir.length > 0)
+		{
+			import std.process : execute;
+			import std.string : strip;
+			import std.path : absolutePath;
+
+			// Downgrade project directory to read-only
+			td.sandbox.paths[workDir] = PathMode.ro;
+
+			// Add git dir and git common dir as writable for git operations
+			auto wtPath = td.worktreePath;
+			if (wtPath.length > 0)
+			{
+				auto gitDirResult = execute(["git", "-C", wtPath, "rev-parse", "--git-dir"]);
+				if (gitDirResult.status == 0)
+				{
+					auto gitDir = gitDirResult.output.strip.absolutePath(wtPath);
+					td.sandbox.paths[gitDir] = PathMode.rw;
+				}
+				auto gitCommonResult = execute(["git", "-C", wtPath, "rev-parse", "--git-common-dir"]);
+				if (gitCommonResult.status == 0)
+				{
+					auto gitCommonDir = gitCommonResult.output.strip.absolutePath(wtPath);
+					td.sandbox.paths[gitCommonDir] = PathMode.rw;
+				}
+			}
+		}
 
 		// MCP socket must be accessible inside the sandbox
 		if (mcpSocketPath.length > 0)
@@ -2556,11 +2670,8 @@ class App : ToolsBackend
 				taskDeps[childTid] = td.parentTid;
 			}
 
-			// Set up worktree from edge config: create new or inherit from predecessor
-			if (contDef.worktree)
-				setupWorktree(childTid, true, "", td.hasWorktree ? td.worktreePath : "");
-			else if (td.hasWorktree)
-				setupWorktree(childTid, false, td.worktreePath);
+			// Set up worktree from edge config
+			setupWorktreeForEdge(childTid, tid, contDef.worktree);
 
 			// Spawn the successor agent
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
@@ -2954,32 +3065,24 @@ class App : ToolsBackend
 	/// already directly archived (meaning its subtree was handled earlier).
 	private void archiveWorktreesDFS(int tid, bool parentEffectivelyArchived)
 	{
+		import std.file : exists, isDir;
 		import std.path : buildPath;
 
 		auto tdp = tid in tasks;
 		if (tdp is null)
 			return;
 
-		// If this descendant is directly archived, its worktrees were already
-		// handled when it was archived individually — prune this subtree.
 		if (parentEffectivelyArchived && tdp.archived)
 			return;
 
-		if (tdp.hasWorktree && tdp.taskDir.length > 0)
+		// Archive if this task has a physical worktree directory (owns it)
+		if (tdp.taskDir.length > 0)
 		{
-			if (tdp.ownsWorktree())
-				archiveWorktree(tdp.worktreePath, tdp.projectPath, tid);
-			else
-			{
-				// Inherited worktree via symlink: remove to avoid dangling
-				import std.file : exists, remove;
-				auto wtPath = buildPath(tdp.taskDir, "worktree");
-				if (exists(wtPath))
-					remove(wtPath);
-			}
+			auto wtPath = buildPath(tdp.taskDir, "worktree");
+			if (exists(wtPath) && isDir(wtPath))
+				archiveWorktree(wtPath, tdp.projectPath, tid);
 		}
 
-		// Recurse to structural children
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
 				archiveWorktreesDFS(childTid, true);
@@ -2988,35 +3091,22 @@ class App : ToolsBackend
 	/// DFS unarchive: process this task's worktree, then recurse to children.
 	private void unarchiveWorktreesDFS(int tid, bool parentEffectivelyArchived)
 	{
-		import std.file : exists, symlink;
 		import std.path : buildPath;
 
 		auto tdp = tid in tasks;
 		if (tdp is null)
 			return;
 
-		// If this descendant is directly archived, it remains effectively
-		// archived — don't restore its subtree.
 		if (parentEffectivelyArchived && tdp.archived)
 			return;
 
-		if (tdp.hasWorktree && tdp.taskDir.length > 0)
+		// Unarchive if this task has an archive ref (physical worktree was archived)
+		if (tdp.taskDir.length > 0 && hasArchiveRef(tdp.projectPath, tid))
 		{
 			auto wtPath = buildPath(tdp.taskDir, "worktree");
-			if (hasArchiveRef(tdp.projectPath, tid))
-				unarchiveWorktree(tdp.projectPath, tid, wtPath);
-			else if (!exists(wtPath))
-			{
-				// Inherited worktree via symlink: recreate it
-				string ownerPath = findOwnerWorktreePath(tid);
-				if (ownerPath.length > 0)
-					symlink(ownerPath, wtPath);
-				else
-					warningf("unarchiveWorktreesDFS: could not find worktree owner for tid=%d", tid);
-			}
+			unarchiveWorktree(tdp.projectPath, tid, wtPath);
 		}
 
-		// Recurse to structural children
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
 				unarchiveWorktreesDFS(childTid, true);
@@ -3075,21 +3165,6 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("cleanupSharedTmp: failed to remove %s: %s", path, e.msg);
 		}
-	}
-
-	/// Walk the parent_tid chain from `tid` to find the owning task's worktree path.
-	private string findOwnerWorktreePath(int tid)
-	{
-		import std.path : buildPath;
-		int current = tasks[tid].parentTid;
-		while (current > 0 && current in tasks)
-		{
-			auto td = &tasks[current];
-			if (td.hasWorktree && td.ownsWorktree())
-				return buildPath(td.taskDir, "worktree");
-			current = td.parentTid;
-		}
-		return "";
 	}
 
 	private void resumeAndDeliverResults(int tid)
