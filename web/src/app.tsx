@@ -32,6 +32,8 @@ function AppContent() {
     clearInputDraft,
     setArchived,
     saveDraft,
+    setTaskType,
+    setAgentType,
     sendAskUserResponse,
     editMessage,
     createDraftTask,
@@ -363,6 +365,8 @@ function AppContent() {
                   onUndoDismiss={undoDismiss}
                   onClearInputDraft={clearInputDraft}
                   onSaveDraft={saveDraft}
+                  onSetTaskType={setTaskType}
+                  onSetAgentType={setAgentType}
                   theme={theme}
                   onToggleTheme={toggleTheme}
                   onToggleSidebar={toggleSidebar}

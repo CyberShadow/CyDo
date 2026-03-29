@@ -100,6 +100,8 @@ export interface TaskManager {
   clearInputDraft: (tid: number) => void;
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
+  setTaskType: (tid: number, taskType: string) => void;
+  setAgentType: (tid: number, agentType: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
   createDraftTask: (taskType?: string) => void;
@@ -705,6 +707,7 @@ export function useTaskManager(): TaskManager {
                 entry.archived || false,
                 entry.created_at || undefined,
                 entry.last_active || undefined,
+                entry.agent_type || undefined,
               ),
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
@@ -734,6 +737,7 @@ export function useTaskManager(): TaskManager {
               relationType: entry.relation_type || existing.relationType,
               status: entry.status || existing.status,
               taskType: entry.task_type || existing.taskType,
+              agentType: entry.agent_type || existing.agentType,
               suggestions:
                 entry.isProcessing && !existing.isProcessing
                   ? undefined
@@ -784,6 +788,7 @@ export function useTaskManager(): TaskManager {
               entry.archived || false,
               entry.created_at || undefined,
               entry.last_active || undefined,
+              entry.agent_type || undefined,
             ),
             serverDraft: entry.draft || undefined,
             error: entry.error || undefined,
@@ -808,6 +813,7 @@ export function useTaskManager(): TaskManager {
             relationType: entry.relation_type || existing.relationType,
             status: entry.status || existing.status,
             taskType: entry.task_type || existing.taskType,
+            agentType: entry.agent_type || existing.agentType,
             suggestions:
               entry.isProcessing && !existing.isProcessing
                 ? undefined
@@ -1551,6 +1557,14 @@ export function useTaskManager(): TaskManager {
     connRef.current?.setArchived(tid, archived);
   }, []);
 
+  const setTaskType = useCallback((tid: number, taskType: string) => {
+    connRef.current?.setTaskType(tid, taskType);
+  }, []);
+
+  const setAgentType = useCallback((tid: number, agentType: string) => {
+    connRef.current?.setAgentType(tid, agentType);
+  }, []);
+
   const saveDraft = useCallback((tid: number, draft: string) => {
     connRef.current?.saveDraft(tid, draft);
     // Derive sidebar title from draft text for pending tasks with no messages
@@ -1678,6 +1692,8 @@ export function useTaskManager(): TaskManager {
     clearInputDraft,
     setArchived,
     saveDraft,
+    setTaskType,
+    setAgentType,
     sendAskUserResponse,
     editMessage,
     createDraftTask,

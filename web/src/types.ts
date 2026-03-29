@@ -197,6 +197,8 @@ export interface TaskState {
   forkableUuids: Set<string>;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
+  /** Current agent type (e.g. "claude", "codex"). */
+  agentType?: string;
   archived?: boolean;
   /** Stable Preact key for draft tasks (UUID). */
   renderKey?: string;
@@ -246,6 +248,7 @@ export function makeTaskState(
   archived: boolean = false,
   createdAt?: number,
   lastActive?: number,
+  agentType?: string,
 ): TaskState {
   return {
     tid,
@@ -267,6 +270,7 @@ export function makeTaskState(
     relationType,
     forkableUuids: new Set(),
     taskType,
+    agentType,
     archived,
     createdAt: createdAt || undefined,
     lastActive: lastActive || undefined,

@@ -47,6 +47,8 @@ interface Props {
   onUndoDismiss: (tid: number) => void;
   onClearInputDraft: (tid: number) => void;
   onSaveDraft?: (tid: number, draft: string) => void;
+  onSetTaskType?: (tid: number, taskType: string) => void;
+  onSetAgentType?: (tid: number, agentType: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
@@ -76,6 +78,8 @@ function SessionViewInner({
   onUndoDismiss,
   onClearInputDraft,
   onSaveDraft,
+  onSetTaskType,
+  onSetAgentType,
   onAskUserResponse,
   theme,
   onToggleTheme,
@@ -105,11 +109,27 @@ function SessionViewInner({
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
   // Agent picker state (only used in draft mode)
-  const [selectedAgent, setSelectedAgent] = useState("");
+  const [selectedAgent, setSelectedAgent] = useState(task.agentType ?? "");
 
   const focusTaskTypePicker = useCallback(() => {
     taskTypePickerRef.current?.focus();
   }, []);
+
+  const handleTaskTypeChange = useCallback(
+    (taskType: string) => {
+      setSelectedTaskType(taskType);
+      if (isDraft && task.tid > 0) onSetTaskType?.(task.tid, taskType);
+    },
+    [isDraft, task.tid, onSetTaskType],
+  );
+
+  const handleAgentChange = useCallback(
+    (agentType: string) => {
+      setSelectedAgent(agentType);
+      if (isDraft && task.tid > 0) onSetAgentType?.(task.tid, agentType);
+    },
+    [isDraft, task.tid, onSetAgentType],
+  );
 
   const handleSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
@@ -389,7 +409,7 @@ function SessionViewInner({
               <SessionConfig
                 taskTypes={taskTypes}
                 selected={selectedTaskType}
-                onTaskTypeChange={setSelectedTaskType}
+                onTaskTypeChange={handleTaskTypeChange}
                 pickerRef={taskTypePickerRef}
                 onConfirm={handleSessionConfigFocus}
                 onType={handleSessionConfigFocus}
@@ -397,7 +417,7 @@ function SessionViewInner({
               <AgentPicker
                 agentTypes={agentTypes || []}
                 selected={selectedAgent || defaultAgentType || "claude"}
-                onChange={setSelectedAgent}
+                onChange={handleAgentChange}
               />
               <InputBox
                 onSend={handleSend}
