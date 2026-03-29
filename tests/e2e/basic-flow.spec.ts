@@ -106,9 +106,12 @@ test("codex file fixture shows view-file action", async ({ page, agentType }) =>
       .locator(".tool-call")
       .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) }),
   ).toHaveCount(0);
+  const toolHeader = tool.locator(".tool-header");
+  await expect(toolHeader).toContainText("codex-fileviewer-create.txt");
+  await expect(toolHeader).toContainText(/Add/i);
   const toolBody = tool.locator(".tool-input-formatted").first();
-  await expect(toolBody).toContainText("codex-fileviewer-create.txt");
-  await expect(toolBody).toContainText(/Add/i);
+  await expect(toolBody).not.toContainText("codex-fileviewer-create.txt");
+  await expect(toolBody).not.toContainText(/Add/i);
   await expect(toolBody).toContainText("hello from create fixture");
 
   await tool.locator(".tool-header").hover();
@@ -139,6 +142,15 @@ test("codex update fixture shows patch preview", async ({ page, agentType }) => 
     .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
     .last();
   await expect(tool).toBeVisible({ timeout });
+  const toolHeader = tool.locator(".tool-header");
+  await expect(toolHeader).toContainText("codex-fileviewer-create.txt");
+  await expect(toolHeader).toContainText(/Patch/i);
+  const toolBody = tool.locator(".tool-input-formatted").first();
+  await expect(toolBody).not.toContainText("codex-fileviewer-create.txt");
+  await expect(toolBody).not.toContainText(/Patch/i);
+  await expect(toolBody).toContainText(/-\s*hello from create fixture/);
+  await expect(toolBody).toContainText(/\+\s*hello from update fixture/);
+  await expect(toolBody).not.toContainText("*** Begin Patch");
 
   // dispatchEvent bypasses CSS display:none on the hover-reveal button
   await tool.locator(".tool-view-file").dispatchEvent("click");

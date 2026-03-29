@@ -508,12 +508,15 @@ export function PatchView({
   const newTokens = useHighlight(newText, lang);
 
   const elements: h.JSX.Element[] = [];
+  let rowKey = 0;
   let oldTokenIdx = 0;
   let newTokenIdx = 0;
 
-  for (const hunk of hunks) {
+  for (let hi = 0; hi < hunks.length; hi++) {
+    const hunk = hunks[hi]!;
+    const keyPrefix = `h${hi}`;
     elements.push(
-      <div key={`h${hunk.oldStart}`} class="diff-header">
+      <div key={`${keyPrefix}-${rowKey++}`} class="diff-header">
         @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
       </div>,
     );
@@ -532,7 +535,7 @@ export function PatchView({
         const oNum = oldLineNum++;
         const nNum = newLineNum++;
         elements.push(
-          <div key={`c${oNum}`} class="diff-context">
+          <div key={`${keyPrefix}-${rowKey++}`} class="diff-context">
             <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
               {oNum}
             </span>
@@ -580,7 +583,7 @@ export function PatchView({
               "old",
             );
             elements.push(
-              <div key={`r${oNum}`} class="diff-removed">
+              <div key={`${keyPrefix}-${rowKey++}`} class="diff-removed">
                 <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
                   {oNum}
                 </span>
@@ -594,7 +597,7 @@ export function PatchView({
             );
           } else {
             elements.push(
-              <div key={`r${oNum}`} class="diff-removed">
+              <div key={`${keyPrefix}-${rowKey++}`} class="diff-removed">
                 <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
                   {oNum}
                 </span>
@@ -621,7 +624,7 @@ export function PatchView({
               "new",
             );
             elements.push(
-              <div key={`a${nNum}`} class="diff-added">
+              <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
                 <span
                   class="diff-gutter"
                   style={{ minWidth: gutterWidth }}
@@ -635,7 +638,7 @@ export function PatchView({
             );
           } else {
             elements.push(
-              <div key={`a${nNum}`} class="diff-added">
+              <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
                 <span
                   class="diff-gutter"
                   style={{ minWidth: gutterWidth }}
@@ -657,7 +660,7 @@ export function PatchView({
         const newIdx = newTokenIdx++;
         const nNum = newLineNum++;
         elements.push(
-          <div key={`a${nNum}`} class="diff-added">
+          <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
             <span class="diff-gutter" style={{ minWidth: gutterWidth }}></span>
             <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
               {nNum}
@@ -785,9 +788,11 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
 interface FileChangeRowData {
   path: string | null;
   operationLabel: string;
-  operationClass: "add" | "patch" | "delete" | "other";
-  body: string | null;
-  bodyMode: "content" | "patch";
+  mode: "diff" | "patch" | "content";
+  oldStr?: string;
+  newStr?: string;
+  patchHunks?: PatchHunk[];
+  content?: string;
 }
 
 function looksLikePatchText(text: string): boolean {
@@ -801,14 +806,106 @@ function looksLikePatchText(text: string): boolean {
   );
 }
 
+function parsePatchHunksFromText(text: string): PatchHunk[] | null {
+  const lines = text.split("\n");
+  const hunks: PatchHunk[] = [];
+  let sawMalformedLine = false;
+  let nextBareOldStart = 1;
+  let nextBareNewStart = 1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!line.startsWith("@@")) continue;
+    const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+
+    const hunkLines: string[] = [];
+    i++;
+    while (i < lines.length) {
+      const current = lines[i]!;
+      if (current.startsWith("@@")) {
+        i--;
+        break;
+      }
+      if (
+        current.startsWith("*** End Patch") ||
+        current.startsWith("*** Update File: ") ||
+        current.startsWith("*** Add File: ") ||
+        current.startsWith("*** Delete File: ") ||
+        current.startsWith("diff --git ") ||
+        current.startsWith("--- ") ||
+        current.startsWith("+++ ")
+      ) {
+        break;
+      }
+      if (current.startsWith("\\ No newline at end of file")) {
+        i++;
+        continue;
+      }
+      // Allow a terminal trailing newline after the final hunk body.
+      if (current === "" && i === lines.length - 1) {
+        break;
+      }
+
+      const prefix = current[0];
+      if (prefix === " " || prefix === "+" || prefix === "-") {
+        hunkLines.push(current);
+        i++;
+        continue;
+      }
+      sawMalformedLine = true;
+      break;
+    }
+
+    if (sawMalformedLine) {
+      return null;
+    }
+    if (!match && hunkLines.length === 0) {
+      return null;
+    }
+
+    let oldStart: number;
+    let oldLines = 0;
+    let newStart: number;
+    let newLines = 0;
+
+    if (match) {
+      oldStart = Number(match[1]);
+      oldLines = match[2] != null ? Number(match[2]) : 1;
+      newStart = Number(match[3]);
+      newLines = match[4] != null ? Number(match[4]) : 1;
+      nextBareOldStart = oldStart + Math.max(oldLines, 1);
+      nextBareNewStart = newStart + Math.max(newLines, 1);
+    } else {
+      for (const hunkLine of hunkLines) {
+        const prefix = hunkLine[0];
+        if (prefix === " " || prefix === "-") oldLines++;
+        if (prefix === " " || prefix === "+") newLines++;
+      }
+      oldStart = nextBareOldStart;
+      newStart = nextBareNewStart;
+      nextBareOldStart += Math.max(oldLines, 1);
+      nextBareNewStart += Math.max(newLines, 1);
+    }
+
+    hunks.push({
+      oldStart,
+      oldLines,
+      newStart,
+      newLines,
+      lines: hunkLines,
+    });
+  }
+
+  return hunks.length > 0 ? hunks : null;
+}
+
 function parseFileChangeOperation(
   kind: unknown,
   op: unknown,
   diffText: string | null,
 ): {
   label: string;
-  className: "add" | "patch" | "delete" | "other";
-  mode: "content" | "patch";
+  type: "add" | "update" | "delete" | "other";
 } {
   const opType = typeof op === "string" ? op : null;
   const kindType =
@@ -823,7 +920,7 @@ function parseFileChangeOperation(
   const normalized = (kindType ?? opType)?.trim().toLowerCase();
 
   if (normalized === "add" || normalized === "create" || normalized === "new") {
-    return { label: "Add", className: "add", mode: "content" };
+    return { label: "Add", type: "add" };
   }
   if (
     normalized === "update" ||
@@ -831,20 +928,20 @@ function parseFileChangeOperation(
     normalized === "modify" ||
     normalized === "edit"
   ) {
-    return { label: "Patch", className: "patch", mode: "patch" };
+    return { label: "Patch", type: "update" };
   }
   if (normalized === "delete" || normalized === "remove") {
-    return { label: "Delete", className: "delete", mode: "content" };
+    return { label: "Delete", type: "delete" };
   }
 
   if (diffText && looksLikePatchText(diffText)) {
-    return { label: "Patch", className: "patch", mode: "patch" };
+    return { label: "Patch", type: "update" };
   }
   if (normalized && normalized.length > 0) {
     const label = normalized[0]!.toUpperCase() + normalized.slice(1);
-    return { label, className: "other", mode: "content" };
+    return { label, type: "other" };
   }
-  return { label: "Change", className: "other", mode: "content" };
+  return { label: "Change", type: "other" };
 }
 
 function parseFileChangeRows(input: Record<string, unknown>): {
@@ -876,6 +973,18 @@ function parseFileChangeRows(input: Record<string, unknown>): {
       typeof change.patchText === "string" ? change.patchText : null;
     const contentText =
       typeof change.content === "string" ? change.content : null;
+    const oldString =
+      typeof change.old_string === "string"
+        ? change.old_string
+        : typeof change.oldString === "string"
+          ? change.oldString
+          : null;
+    const newString =
+      typeof change.new_string === "string"
+        ? change.new_string
+        : typeof change.newString === "string"
+          ? change.newString
+          : null;
     const hasOperation =
       typeof change.op === "string" ||
       typeof change.kind === "string" ||
@@ -886,64 +995,150 @@ function parseFileChangeRows(input: Record<string, unknown>): {
     const hasBodyLike =
       typeof diffText === "string" ||
       typeof patchText === "string" ||
-      typeof contentText === "string";
+      typeof contentText === "string" ||
+      typeof oldString === "string" ||
+      typeof newString === "string";
     if (!path && !hasOperation && !hasBodyLike) {
       unparsedChanges.push(rawChange);
       continue;
     }
     const bodyText = diffText ?? patchText ?? contentText;
-    const body =
-      typeof bodyText === "string" && bodyText.trim().length > 0
-        ? bodyText
-        : null;
+    const body = typeof bodyText === "string" ? bodyText : null;
     const operation = parseFileChangeOperation(
       change.kind,
       change.op,
       bodyText,
     );
-    rows.push({
-      path,
-      operationLabel: operation.label,
-      operationClass: operation.className,
-      body,
-      bodyMode: operation.mode,
-    });
+    if (operation.type === "add") {
+      const newStr = newString ?? contentText ?? diffText ?? patchText ?? "";
+      rows.push({
+        path,
+        operationLabel: operation.label,
+        mode: "diff",
+        oldStr: "",
+        newStr,
+      });
+      continue;
+    }
+    if (operation.type === "delete") {
+      const oldStr = oldString ?? diffText ?? contentText ?? patchText ?? "";
+      rows.push({
+        path,
+        operationLabel: operation.label,
+        mode: "diff",
+        oldStr,
+        newStr: "",
+      });
+      continue;
+    }
+
+    if (typeof oldString === "string" && typeof newString === "string") {
+      rows.push({
+        path,
+        operationLabel: operation.label,
+        mode: "diff",
+        oldStr: oldString,
+        newStr: newString,
+      });
+      continue;
+    }
+
+    if (body && looksLikePatchText(body)) {
+      const patchHunks = parsePatchHunksFromText(body);
+      if (patchHunks) {
+        rows.push({
+          path,
+          operationLabel: operation.label,
+          mode: "patch",
+          patchHunks,
+        });
+      } else {
+        rows.push({
+          path,
+          operationLabel: operation.label,
+          mode: "content",
+          content: body,
+        });
+      }
+      continue;
+    }
+
+    if (body) {
+      rows.push({
+        path,
+        operationLabel: operation.label,
+        mode: "content",
+        content: body,
+      });
+      continue;
+    }
+
+    unparsedChanges.push(rawChange);
   }
 
   return { rows, unparsedChanges };
 }
 
-function FileChangeRow({ row }: { row: FileChangeRowData }) {
+function FileChangeRow({
+  row,
+  showMeta,
+}: {
+  row: FileChangeRowData;
+  showMeta: boolean;
+}) {
   const lang = row.path ? langFromPath(row.path) : null;
-  const bodyLang = row.bodyMode === "patch" ? "diff" : lang;
-  const bodyText = row.body ?? "";
-  const bodyTokens = useHighlight(bodyText, bodyLang);
+  const contentText = row.content ?? "";
+  const contentLang = looksLikePatchText(contentText) ? "diff" : lang;
+  const contentTokens = useHighlight(contentText, contentLang);
 
   return (
-    <div class="filechange-row">
-      <div class="filechange-row-header">
-        <span class={`filechange-op filechange-op-${row.operationClass}`}>
-          {row.operationLabel}
-        </span>
-        <span class="filechange-path">{row.path ?? "(unknown file)"}</span>
-      </div>
-      {row.body && (
-        <CodePre
-          class={`write-content filechange-body${
-            row.bodyMode === "patch" ? " filechange-body-patch" : ""
-          }`}
-          copyText={row.body}
-        >
-          {bodyTokens ? renderTokenLines(bodyTokens) : row.body}
+    <div class="filechange-change">
+      {showMeta && (
+        <div class="tool-input-field filechange-meta">
+          <span class="tool-subtitle-tag">{row.operationLabel}</span>
+          <span class="tool-subtitle-path">{row.path ?? "(unknown file)"}</span>
+        </div>
+      )}
+      {row.mode === "diff" && (
+        <DiffView
+          oldStr={row.oldStr ?? ""}
+          newStr={row.newStr ?? ""}
+          filePath={row.path ?? undefined}
+        />
+      )}
+      {row.mode === "patch" && row.patchHunks && (
+        <PatchView hunks={row.patchHunks} filePath={row.path ?? undefined} />
+      )}
+      {row.mode === "content" && row.content && (
+        <CodePre class="write-content" copyText={row.content}>
+          {contentTokens ? renderTokenLines(contentTokens) : row.content}
         </CodePre>
       )}
     </div>
   );
 }
 
+function getSingleFileChangeHeaderSubtitle(
+  input: Record<string, unknown>,
+): h.JSX.Element | null {
+  const { rows, unparsedChanges } = parseFileChangeRows(input);
+  if (rows.length !== 1 || unparsedChanges.length > 0) return null;
+
+  const row = rows[0]!;
+  if (!row.path) return null;
+
+  return (
+    <Fragment>
+      <span class="tool-subtitle-tag">{row.operationLabel}</span>
+      <span class="tool-subtitle-path">{row.path}</span>
+    </Fragment>
+  );
+}
+
 function FileChangeInput({ input }: { input: Record<string, unknown> }) {
   const { rows, unparsedChanges } = parseFileChangeRows(input);
   if (rows.length === 0) return formatGenericInput(input);
+  const showRowMeta = rows.length > 1 || unparsedChanges.length > 0;
 
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
@@ -956,7 +1151,7 @@ function FileChangeInput({ input }: { input: Record<string, unknown> }) {
     remaining,
     <div class="filechange-list">
       {rows.map((row, i) => (
-        <FileChangeRow key={i} row={row} />
+        <FileChangeRow key={i} row={row} showMeta={showRowMeta} />
       ))}
     </div>,
   );
@@ -1585,7 +1780,14 @@ function getHeaderSubtitle(
   if (fileWriteToolNames.has(name) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
   }
-  if (name === "fileChange" || name === "apply_patch") {
+  if (name === "fileChange") {
+    const singleFileSubtitle = getSingleFileChangeHeaderSubtitle(input);
+    if (singleFileSubtitle) return singleFileSubtitle;
+    if (viewPaths.length > 1) {
+      return <span class="tool-subtitle">{viewPaths.length} files</span>;
+    }
+  }
+  if (name === "apply_patch") {
     if (viewPaths.length === 1) {
       return <span class="tool-subtitle-path">{viewPaths[0]}</span>;
     }
@@ -2219,25 +2421,28 @@ export function ToolCall({
             </button>
           )}
       </div>
-      {inputOpen && viewPaths.length > 1 && onViewFile && (
-        <div class="tool-input-formatted">
-          {viewPaths.map((path) => (
-            <div key={path} class="tool-input-field">
-              <span class="field-label">file:</span>
-              <button
-                class="tool-subtitle-path"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onViewFile(path);
-                }}
-                type="button"
-              >
-                {path}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      {inputOpen &&
+        name !== "fileChange" &&
+        viewPaths.length > 1 &&
+        onViewFile && (
+          <div class="tool-input-formatted">
+            {viewPaths.map((path) => (
+              <div key={path} class="tool-input-field">
+                <span class="field-label">file:</span>
+                <button
+                  class="tool-subtitle-path"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewFile(path);
+                  }}
+                  type="button"
+                >
+                  {path}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       {inputOpen && formatInput(name, toolServer, input, result)}
       {children}
       {result && (
