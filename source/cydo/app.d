@@ -3558,7 +3558,16 @@ class App : ToolsBackend
 				~ ["discover", ws.root, ws.name, isProjectJson, recurseWhenJson]
 				~ ws.exclude;
 
-			auto result = execute(cmd);
+			typeof(execute(cmd)) result;
+			try
+				result = execute(cmd);
+			catch (Exception e)
+			{
+				sandbox.cleanup();
+				warningf("Discovery subprocess failed for workspace '%s': %s", ws.name, e.msg);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type);
+				continue;
+			}
 			sandbox.cleanup();
 
 			if (result.status != 0)

@@ -21,12 +21,33 @@ import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createInterface } from "readline";
 
-// Per-file sequential counter for unique ports within a worker.
+// Per-file sequential counter for unique temp directories within a worker.
 let _testSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers (following discover.spec.ts pattern)
 // ---------------------------------------------------------------------------
+
+function parsePortFromLines(
+  rl: ReturnType<typeof createInterface>,
+  proc: ReturnType<typeof spawn>,
+  pattern: RegExp,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onExit = (code: number | null) =>
+      reject(new Error(`Process exited with ${code} before logging port`));
+    const onLine = (line: string) => {
+      const match = line.match(pattern);
+      if (match) {
+        rl.off("line", onLine);
+        proc.off("exit", onExit);
+        resolve(parseInt(match[1], 10));
+      }
+    };
+    rl.on("line", onLine);
+    proc.on("exit", onExit);
+  });
+}
 
 async function waitForBackend(
   baseURL: string,
@@ -66,11 +87,10 @@ async function waitForBackend(
   await Promise.race([polling, processExited]);
 }
 
-function spawnBackend(
-  port: number,
+async function spawnBackend(
   workDir: string,
   workerHome: string,
-): ChildProcess {
+): Promise<{ proc: ChildProcess; port: number }> {
   const proc = spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
@@ -78,20 +98,21 @@ function spawnBackend(
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
-      CYDO_LISTEN_PORT: String(port),
+      CYDO_LISTEN_PORT: "0",
       CYDO_LOG_LEVEL: "trace",
       CYDO_AUTH_USER: "",
       CYDO_AUTH_PASS: "",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
-  if (proc.stderr) {
-    const rl = createInterface({ input: proc.stderr });
-    rl.on("line", (line) =>
-      console.error(`[session-import-backend:${port}] ${line}`),
-    );
-  }
-  return proc;
+  const rl = createInterface({ input: proc.stderr! });
+  rl.on("line", (line) => console.error(`[session-import-backend] ${line}`));
+  const port = await parsePortFromLines(
+    rl,
+    proc,
+    /CyDo server listening on \S+:(\d+)/,
+  );
+  return { proc, port };
 }
 
 async function killBackend(proc: ChildProcess): Promise<void> {
@@ -127,229 +148,220 @@ function createWorkDir(seq: number): { workDir: string; workerHome: string } {
 // Test: full import flow
 // ---------------------------------------------------------------------------
 
-test(
-  "Import group node in sidebar expands on click and navigates correctly",
-  async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
+test("Import group node in sidebar expands on click and navigates correctly", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7200 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
+  const seq = testInfo.parallelIndex * 100 + _testSeq++;
+  const { workDir, workerHome } = createWorkDir(seq);
 
-    const projectPath = "/tmp/cydo-test-workspace";
-    const mangledPath = projectPath.replace(/\//g, "-");
-    const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
-    mkdirSync(claudeProjectsDir, { recursive: true });
+  const projectPath = "/tmp/cydo-test-workspace";
+  const mangledPath = projectPath.replace(/\//g, "-");
+  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+  mkdirSync(claudeProjectsDir, { recursive: true });
 
-    const jsonlContent =
-      [
-        JSON.stringify({
-          type: "system",
-          subtype: "init",
-          session_id: sessionId,
-          model: "claude-3-5-sonnet-20241022",
-          cwd: projectPath,
-        }),
-        JSON.stringify({
-          type: "user",
-          message: { content: "sidebar import group test" },
-        }),
-      ].join("\n") + "\n";
+  const jsonlContent =
+    [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        model: "claude-3-5-sonnet-20241022",
+        cwd: projectPath,
+      }),
+      JSON.stringify({
+        type: "user",
+        message: { content: "sidebar import group test" },
+      }),
+    ].join("\n") + "\n";
 
-    writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
 
-    writeFileSync(
-      `${workerHome}/.config/cydo/config.yaml`,
-      ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") +
-        "\n",
-    );
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+  );
 
-    const proc = spawnBackend(port, workDir, workerHome);
-    try {
-      await waitForBackend(`http://localhost:${port}`, proc);
+  const { proc, port } = await spawnBackend(workDir, workerHome);
+  try {
+    await waitForBackend(`http://localhost:${port}`, proc);
 
-      // Navigate to the project view (shows sidebar with tasks).
-      await page.goto(
-        `http://localhost:${port}/testws/cydo-test-workspace`,
-      );
+    // Navigate to the project view (shows sidebar with tasks).
+    await page.goto(`http://localhost:${port}/testws/cydo-test-workspace`);
 
-      // Sidebar should appear.
-      await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
+    // Sidebar should appear.
+    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
 
-      // Wait for the Import group node to appear (enumerateSessions is async).
-      const importGroupNode = page.locator(
-        ".sidebar-item.sidebar-archive-node",
-        { hasText: /Import \(\d+\)/ },
-      );
-      await expect(importGroupNode).toBeVisible({ timeout: 15_000 });
+    // Wait for the Import group node to appear (enumerateSessions is async).
+    const importGroupNode = page.locator(".sidebar-item.sidebar-archive-node", {
+      hasText: /Import \(\d+\)/,
+    });
+    await expect(importGroupNode).toBeVisible({ timeout: 15_000 });
 
-      // Before clicking the group, its children should NOT be visible.
-      const importableEntry = page.locator(".sidebar-item .sidebar-label", {
+    // Before clicking the group, its children should NOT be visible.
+    const importableEntry = page.locator(".sidebar-item .sidebar-label", {
+      hasText: "sidebar import group test",
+    });
+    await expect(importableEntry).not.toBeVisible();
+
+    // Click the Import group node — should navigate to /import and expand.
+    await importGroupNode.click();
+
+    // URL must contain /import (not navigate to /).
+    await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+
+    // Group is now expanded: child importable session is visible.
+    await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+
+    // Click the importable session to load its history.
+    await importableEntry.click();
+
+    // History loads.
+    await expect(
+      page.locator(".message.user-message", {
         hasText: "sidebar import group test",
-      });
-      await expect(importableEntry).not.toBeVisible();
+      }),
+    ).toBeVisible({ timeout: 15_000 });
 
-      // Click the Import group node — should navigate to /import and expand.
-      await importGroupNode.click();
+    // Group remains expanded because a descendant is active.
+    await expect(importableEntry).toBeVisible();
 
-      // URL must contain /import (not navigate to /).
-      await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+    // Click the Import group node again — must stay on /import (not navigate to /).
+    await importGroupNode.click();
+    await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
 
-      // Group is now expanded: child importable session is visible.
-      await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+    // Group is still visible and expanded.
+    await expect(importGroupNode).toBeVisible();
+    await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+  } finally {
+    await killBackend(proc);
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
 
-      // Click the importable session to load its history.
-      await importableEntry.click();
+test("importable session appears on startup, history loads, Import Session promotes it", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
-      // History loads.
-      await expect(
-        page.locator(".message.user-message", {
-          hasText: "sidebar import group test",
-        }),
-      ).toBeVisible({ timeout: 15_000 });
+  const seq = testInfo.parallelIndex * 100 + _testSeq++;
+  const { workDir, workerHome } = createWorkDir(seq);
 
-      // Group remains expanded because a descendant is active.
-      await expect(importableEntry).toBeVisible();
+  // Use the shared test workspace path so it matches a configured workspace.
+  const projectPath = "/tmp/cydo-test-workspace";
+  const mangledPath = projectPath.replace(/\//g, "-");
 
-      // Click the Import group node again — must stay on /import (not navigate to /).
-      await importGroupNode.click();
-      await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+  // Create a fake Claude session JSONL file with a recognizable user message.
+  const sessionId = "11111111-2222-3333-4444-555555555555";
+  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+  mkdirSync(claudeProjectsDir, { recursive: true });
 
-      // Group is still visible and expanded.
-      await expect(importGroupNode).toBeVisible();
-      await expect(importableEntry).toBeVisible({ timeout: 5_000 });
-    } finally {
-      await killBackend(proc);
-      rmSync(workDir, { recursive: true, force: true });
-    }
-  },
-);
+  const jsonlContent =
+    [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        model: "claude-3-5-sonnet-20241022",
+        cwd: projectPath,
+      }),
+      JSON.stringify({
+        type: "user",
+        message: { content: "hello imported session" },
+      }),
+    ].join("\n") + "\n";
 
-test(
-  "importable session appears on startup, history loads, Import Session promotes it",
-  async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
+  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+
+  // Workspace config pointing at the test workspace.
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+  );
+
+  const { proc, port } = await spawnBackend(workDir, workerHome);
+  try {
+    await waitForBackend(`http://localhost:${port}`, proc);
+    await page.goto(`http://localhost:${port}/`);
+
+    // Welcome page: project card must appear.
+    await expect(
+      page.locator(".project-card-title", {
+        hasText: "cydo-test-workspace",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // The importable session should appear in the project card task list.
+    // enumerateSessions() runs asynchronously in a background thread, so
+    // we wait for the session title to appear.
+    const importableLabel = page.locator(
+      ".project-card-sessions .sidebar-item .sidebar-label",
+      { hasText: "hello imported session" },
     );
+    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
 
-    const seq = testInfo.parallelIndex * 100 + _testSeq++;
-    const port = 7200 + seq;
-    const { workDir, workerHome } = createWorkDir(seq);
+    // Click the importable session to navigate to it.  This triggers
+    // setActiveTaskId(String(tid)) which routes to /:ws/:proj/task/:tid.
+    await importableLabel.click();
 
-    // Use the shared test workspace path so it matches a configured workspace.
-    const projectPath = "/tmp/cydo-test-workspace";
-    const mangledPath = projectPath.replace(/\//g, "-");
+    // Session view with sidebar should now be visible.
+    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 10_000 });
 
-    // Create a fake Claude session JSONL file with a recognizable user message.
-    const sessionId = "11111111-2222-3333-4444-555555555555";
-    const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
-    mkdirSync(claudeProjectsDir, { recursive: true });
+    // The Import group must be visible and expanded (the active task is a
+    // descendant, so flattenTree renders the group's children).
+    await expect(
+      page.locator(".sidebar-item.sidebar-archive-node", {
+        hasText: /Import \(1\)/,
+      }),
+    ).toBeVisible({ timeout: 10_000 });
 
-    const jsonlContent =
-      [
-        JSON.stringify({
-          type: "system",
-          subtype: "init",
-          session_id: sessionId,
-          model: "claude-3-5-sonnet-20241022",
-          cwd: projectPath,
-        }),
-        JSON.stringify({
-          type: "user",
-          message: { content: "hello imported session" },
-        }),
-      ].join("\n") + "\n";
+    // The importable session entry is visible inside the expanded group.
+    await expect(
+      page.locator(".sidebar-item .sidebar-label", {
+        hasText: "hello imported session",
+      }),
+    ).toBeVisible({ timeout: 5_000 });
 
-    writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+    // History loads: the user message from the JSONL file is rendered.
+    await expect(
+      page.locator(".message.user-message", {
+        hasText: "hello imported session",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
 
-    // Workspace config pointing at the test workspace.
-    writeFileSync(
-      `${workerHome}/.config/cydo/config.yaml`,
-      ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") +
-        "\n",
-    );
+    // The "Import Session" button is shown for importable tasks.
+    const importBtn = page.locator(".btn-resume", {
+      hasText: "Import Session",
+    });
+    await expect(importBtn).toBeVisible({ timeout: 5_000 });
 
-    const proc = spawnBackend(port, workDir, workerHome);
-    try {
-      await waitForBackend(`http://localhost:${port}`, proc);
-      await page.goto(`http://localhost:${port}/`);
+    // Click "Import Session" to promote the task to a regular session.
+    await importBtn.click();
 
-      // Welcome page: project card must appear.
-      await expect(
-        page.locator(".project-card-title", {
-          hasText: "cydo-test-workspace",
-        }),
-      ).toBeVisible({ timeout: 15_000 });
+    // After promotion the "Import Session" button disappears.
+    await expect(importBtn).not.toBeVisible({ timeout: 10_000 });
 
-      // The importable session should appear in the project card task list.
-      // enumerateSessions() runs asynchronously in a background thread, so
-      // we wait for the session title to appear.
-      const importableLabel = page.locator(
-        ".project-card-sessions .sidebar-item .sidebar-label",
-        { hasText: "hello imported session" },
-      );
-      await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    // The Import group disappears because there are no more importable sessions.
+    await expect(
+      page.locator(".sidebar-item.sidebar-archive-node", {
+        hasText: /Import/,
+      }),
+    ).not.toBeVisible({ timeout: 10_000 });
 
-      // Click the importable session to navigate to it.  This triggers
-      // setActiveTaskId(String(tid)) which routes to /:ws/:proj/task/:tid.
-      await importableLabel.click();
-
-      // Session view with sidebar should now be visible.
-      await expect(page.locator(".sidebar")).toBeVisible({ timeout: 10_000 });
-
-      // The Import group must be visible and expanded (the active task is a
-      // descendant, so flattenTree renders the group's children).
-      await expect(
-        page.locator(".sidebar-item.sidebar-archive-node", {
-          hasText: /Import \(1\)/,
-        }),
-      ).toBeVisible({ timeout: 10_000 });
-
-      // The importable session entry is visible inside the expanded group.
-      await expect(
-        page.locator(".sidebar-item .sidebar-label", {
-          hasText: "hello imported session",
-        }),
-      ).toBeVisible({ timeout: 5_000 });
-
-      // History loads: the user message from the JSONL file is rendered.
-      await expect(
-        page.locator(".message.user-message", {
-          hasText: "hello imported session",
-        }),
-      ).toBeVisible({ timeout: 15_000 });
-
-      // The "Import Session" button is shown for importable tasks.
-      const importBtn = page.locator(".btn-resume", {
-        hasText: "Import Session",
-      });
-      await expect(importBtn).toBeVisible({ timeout: 5_000 });
-
-      // Click "Import Session" to promote the task to a regular session.
-      await importBtn.click();
-
-      // After promotion the "Import Session" button disappears.
-      await expect(importBtn).not.toBeVisible({ timeout: 10_000 });
-
-      // The Import group disappears because there are no more importable sessions.
-      await expect(
-        page.locator(".sidebar-item.sidebar-archive-node", {
-          hasText: /Import/,
-        }),
-      ).not.toBeVisible({ timeout: 10_000 });
-
-      // The promoted session is now a regular resumable task in the sidebar.
-      await expect(
-        page.locator(".btn-resume", { hasText: "Resume Session" }),
-      ).toBeVisible({ timeout: 5_000 });
-    } finally {
-      await killBackend(proc);
-      rmSync(workDir, { recursive: true, force: true });
-    }
-  },
-);
+    // The promoted session is now a regular resumable task in the sidebar.
+    await expect(
+      page.locator(".btn-resume", { hasText: "Resume Session" }),
+    ).toBeVisible({ timeout: 5_000 });
+  } finally {
+    await killBackend(proc);
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
