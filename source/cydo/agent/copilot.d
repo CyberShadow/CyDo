@@ -117,7 +117,7 @@ class CopilotAgent : Agent
 		import std.uuid : randomUUID;
 		auto sessionId = resumeSessionId.length > 0 ? resumeSessionId : randomUUID().toString();
 
-		auto server = new SdkProcess(args, null, null);
+		auto server = new SdkProcess(args, null, null, "copilot");
 		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
 		auto session = new CopilotSession(server, tid, sessionId, model, workDir, cmdPrefix, toolDispatch_);
@@ -634,7 +634,7 @@ class CopilotAgent : Agent
 		void startOwnProcess()
 		{
 			string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
-			auto srv = new SdkProcess(copilotArgs, null, null);
+			auto srv = new SdkProcess(copilotArgs, null, null, "copilot");
 
 			// Set cleanup callback before registering
 			session.onFulfill_ = () {

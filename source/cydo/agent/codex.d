@@ -16,7 +16,7 @@ import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
-import cydo.agent.process : AgentProcess, FramingMode, LoggingAdapter;
+import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -513,15 +513,12 @@ class AppServerProcess
 	this(string[] args)
 	{
 		// Environment and current directory are handled by bwrap (included in args).
-		process = new AgentProcess(args, null, null, false,
-			FramingMode.ndjson, null, false);
+		process = new AgentProcess(args, logName: "codex");
 
 		// Set up bidirectional JSON-RPC codec on the process connection.
 		// The codec takes over handleReadData from stdoutLines; onStdoutLine
 		// is no longer called.
-		IConnection connection = process.connection;
-		connection = new LoggingAdapter(connection, "codex");
-		codec = new JsonRpcCodec(connection);
+		codec = new JsonRpcCodec(process.connection);
 
 		// Dispatcher for incoming notifications/requests from Codex.
 		auto router = new CodexServerRouter(this);
@@ -1302,7 +1299,7 @@ class CodexAgent : Agent
 				"--skip-git-repo-check",
 				"-m", resolveModelAlias(modelClass),
 				prompt,
-			], null, null, true); // noStdin
+			], noStdin: true, logName: "codex-oneshot"); // noStdin
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn codex: %s", e.msg);

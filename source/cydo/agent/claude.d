@@ -533,7 +533,7 @@ class ClaudeCodeAgent : Agent
 				"--max-turns", "1",
 				"--tools", "",
 				"--no-session-persistence",
-			], env, null, true); // noStdin
+			], env, noStdin: true, logName: "claude-oneshot");
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn claude: %s", e.msg);
@@ -623,7 +623,7 @@ class ClaudeCodeSession : AgentSession
 		else
 			args = claudeArgs;
 
-		process = new AgentProcess(args, null, null, false, FramingMode.ndjson, "claude");
+		process = new AgentProcess(args, logName: "claude");
 
 		process.onStdoutLine = (string line) {
 			translateLiveLine(line);

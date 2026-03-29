@@ -191,9 +191,9 @@ class SdkProcess
 	// Actions queued until server reaches ready state.
 	private void delegate()[] readyQueue;
 
-	this(string[] args, string[string] env, string workDir)
+	this(string[] args, string[string] env, string workDir, string logName)
 	{
-		process = new AgentProcess(args, env, workDir, false, FramingMode.contentLength);
+		process = new AgentProcess(args, env, workDir, false, FramingMode.contentLength, logName: logName);
 
 		IConnection connection = process.connection;
 		codec = new JsonRpcCodec(connection);
