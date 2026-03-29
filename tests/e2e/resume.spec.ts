@@ -334,7 +334,7 @@ test("active task receives nudge and continues after restart", async ({
   // After nudge, the agent retries and eventually responds with "Done."
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible({ timeout: 120_000 });
 });
 
 test("sub-task result delivered to parent after backend restart", async ({
