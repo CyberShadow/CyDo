@@ -304,6 +304,55 @@ test("draft persists across page reload", async ({ page }) => {
   });
 });
 
+test("draft sidebar title survives page reload", async ({ page }) => {
+  await enterSession(page);
+
+  const before = await snapshotTids(page);
+
+  // Type text to create draft task
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("my important draft title");
+
+  // Wait for draft to appear in sidebar
+  const draftTid = await waitForNewTid(page, before);
+
+  // Verify sidebar shows draft text as title (before reload)
+  const sidebarLabel = page.locator(
+    `.sidebar-item[data-tid="${draftTid}"] .sidebar-label`,
+  );
+  await expect(sidebarLabel).toHaveText("my important draft title", {
+    timeout: 5_000,
+  });
+
+  // Wait for debounce to persist draft to backend
+  await page.waitForTimeout(1000);
+
+  // Navigate away so InputBox for this task is NOT mounted after reload
+  await page.locator(".sidebar-new-task").click();
+  await expect(page.locator(".welcome-prompt:visible")).toBeVisible({
+    timeout: 5_000,
+  });
+
+  // Reload the page
+  await page.reload();
+
+  // Wait for the draft task to reappear in sidebar after reload
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
+  ).toBeAttached({
+    timeout: 15_000,
+  });
+
+  // Sidebar title should still show the draft text, not "Task NNN"
+  const reloadedLabel = page.locator(
+    `.sidebar-item[data-tid="${draftTid}"] .sidebar-label`,
+  );
+  await expect(reloadedLabel).toHaveText("my important draft title", {
+    timeout: 5_000,
+  });
+});
+
 test("draft deletable after page reload", async ({ page }) => {
   await enterSession(page);
 

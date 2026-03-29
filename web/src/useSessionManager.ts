@@ -1604,7 +1604,11 @@ export function useTaskManager(): TaskManager {
         alive: t.alive,
         resumable: t.resumable,
         isProcessing: t.isProcessing,
-        title: t.title,
+        title:
+          t.title ||
+          (t.status === "pending" && t.messages.length === 0 && t.serverDraft
+            ? t.serverDraft.trim().split("\n")[0]?.slice(0, 100)
+            : undefined),
         parentTid: t.parentTid,
         relationType: t.relationType,
         status: t.status,
