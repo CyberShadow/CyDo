@@ -12,9 +12,10 @@ test("sub-task result text delivered to parent", async ({ page }) => {
   await sendMessage(page, 'call task research reply with "subtask-result-marker"');
 
   // Wait for the marker text to appear in the message list.
-  // Scoped to .message-list to avoid matching the sidebar label which also
-  // shows the same text. Use exact:true to avoid matching the user message.
+  // Scoped to the active task view ([style*="display: contents"]) to avoid
+  // matching hidden tasks that share the same text. Use exact:true to avoid
+  // matching the user message.
   await expect(
-    page.locator('.message-list').getByText("subtask-result-marker", { exact: true }),
+    page.locator('[style*="display: contents"] .message-list').getByText("subtask-result-marker", { exact: true }),
   ).toBeVisible({ timeout: 90_000 });
 });
