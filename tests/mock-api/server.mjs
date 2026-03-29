@@ -364,7 +364,8 @@ function hasToolOutput(input) {
     (item) =>
       item.type === "local_shell_call_output" ||
       item.type === "function_call_output" ||
-      item.type === "custom_tool_call_output",
+      item.type === "custom_tool_call_output" ||
+      item.type === "mcp_tool_call_output",
   );
 }
 
