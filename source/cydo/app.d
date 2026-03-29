@@ -1117,6 +1117,7 @@ class App : ToolsBackend
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
+			case "set_agent_type":   handleSetAgentTypeMsg(json); break;
 			default: break;
 		}
 	}
@@ -1130,6 +1131,22 @@ class App : ToolsBackend
 		if (getTaskTypes().byName(json.task_type) is null) return;
 		tasks[tid].taskType = json.task_type;
 		persistence.setTaskType(tid, json.task_type);
+		broadcastTaskUpdate(tid);
+	}
+
+	private void handleSetAgentTypeMsg(WsMessage json)
+	{
+		import cydo.agent.registry : agentRegistry;
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks) return;
+		if (tasks[tid].alive) return; // can't change type of a running task
+		if (json.agent_type.length == 0) return;
+		bool found = false;
+		foreach (ref entry; agentRegistry)
+			if (entry.name == json.agent_type) { found = true; break; }
+		if (!found) return;
+		tasks[tid].agentType = json.agent_type;
+		persistence.setAgentType(tid, json.agent_type);
 		broadcastTaskUpdate(tid);
 	}
 
@@ -3756,7 +3773,7 @@ class App : ToolsBackend
 			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
 			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.archived, td.draft, td.error,
+			td.taskType, td.agentType, td.archived, td.draft, td.error,
 			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 	}
 

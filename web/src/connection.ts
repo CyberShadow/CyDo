@@ -101,6 +101,12 @@ export class Connection {
     );
   }
 
+  setAgentType(tid: number, agentType: string) {
+    this.send(
+      JSON.stringify({ type: "set_agent_type", tid, agent_type: agentType }),
+    );
+  }
+
   sendInterrupt(tid: number) {
     this.send(JSON.stringify({ type: "interrupt", tid }));
   }

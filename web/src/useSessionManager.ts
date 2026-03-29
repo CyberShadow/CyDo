@@ -1302,6 +1302,9 @@ export function useTaskManager(): TaskManager {
         if (taskType) {
           connRef.current?.setTaskType(draftTid, taskType);
         }
+        if (agentType) {
+          connRef.current?.setAgentType(draftTid, agentType);
+        }
         connRef.current?.sendMessage(draftTid, content);
         // Clear draft state (task transitions from draft to active)
         draftTidRef.current = null;

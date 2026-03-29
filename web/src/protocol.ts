@@ -336,6 +336,7 @@ export interface TasksListMessage {
     relation_type?: string;
     status?: string;
     task_type?: string;
+    agent_type?: string;
     archived?: boolean;
     draft?: string;
     error?: string;
@@ -360,6 +361,7 @@ export interface TaskUpdatedMessage {
     relation_type?: string;
     status?: string;
     task_type?: string;
+    agent_type?: string;
     archived?: boolean;
     draft?: string;
     error?: string;
