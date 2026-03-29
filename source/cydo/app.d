@@ -417,9 +417,18 @@ class App : ToolsBackend
 				if (auto ca = cast(CodexAgent) a)
 					ca.shutdownAllServers();
 		}
-		foreach (ws; clients)
-			ws.disconnect("shutting down");
-		clients = null;
+		{
+			import ae.net.asockets : disconnectable;
+			auto clientsSnapshot = clients;
+			clients = null;
+			foreach (ws; clientsSnapshot)
+			{
+				if (ws is null)
+					continue;
+				if (ws.state.disconnectable)
+					ws.disconnect("shutting down");
+			}
+		}
 		server.close();
 		if (mcpServer)
 			mcpServer.close();
