@@ -2143,6 +2143,74 @@ body,
   font-size: 12px;
 }
 
+.filechange-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.filechange-row {
+  padding: 8px;
+  background: var(--overlay-faint);
+  border: 1px solid var(--border);
+}
+
+.filechange-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.filechange-op {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.filechange-op-add {
+  color: var(--success);
+  background: rgba(76, 175, 80, 0.14);
+}
+
+.filechange-op-patch {
+  color: var(--info);
+  background: rgba(136, 160, 176, 0.18);
+}
+
+.filechange-op-delete {
+  color: var(--error);
+  background: rgba(244, 67, 54, 0.14);
+}
+
+.filechange-op-other {
+  color: var(--text-dim);
+  background: var(--overlay-light-more);
+}
+
+.filechange-path {
+  font-family: var(--font-mono);
+  color: var(--filepath);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filechange-body {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.filechange-body-patch {
+  border-left: 2px solid var(--info);
+  padding-left: 10px;
+}
+
 /* Diff view for Edit tool */
 .diff-view {
   margin-top: 6px;

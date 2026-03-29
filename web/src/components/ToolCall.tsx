@@ -782,6 +782,186 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
+interface FileChangeRowData {
+  path: string | null;
+  operationLabel: string;
+  operationClass: "add" | "patch" | "delete" | "other";
+  body: string | null;
+  bodyMode: "content" | "patch";
+}
+
+function looksLikePatchText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return (
+    trimmed.startsWith("*** Begin Patch") ||
+    trimmed.startsWith("@@") ||
+    trimmed.startsWith("--- ") ||
+    trimmed.startsWith("diff --git ") ||
+    /\n@@/.test(text)
+  );
+}
+
+function parseFileChangeOperation(
+  kind: unknown,
+  op: unknown,
+  diffText: string | null,
+): {
+  label: string;
+  className: "add" | "patch" | "delete" | "other";
+  mode: "content" | "patch";
+} {
+  const opType = typeof op === "string" ? op : null;
+  const kindType =
+    kind &&
+    typeof kind === "object" &&
+    !Array.isArray(kind) &&
+    typeof (kind as Record<string, unknown>).type === "string"
+      ? ((kind as Record<string, unknown>).type as string)
+      : typeof kind === "string"
+        ? kind
+        : null;
+  const normalized = (kindType ?? opType)?.trim().toLowerCase();
+
+  if (normalized === "add" || normalized === "create" || normalized === "new") {
+    return { label: "Add", className: "add", mode: "content" };
+  }
+  if (
+    normalized === "update" ||
+    normalized === "patch" ||
+    normalized === "modify" ||
+    normalized === "edit"
+  ) {
+    return { label: "Patch", className: "patch", mode: "patch" };
+  }
+  if (normalized === "delete" || normalized === "remove") {
+    return { label: "Delete", className: "delete", mode: "content" };
+  }
+
+  if (diffText && looksLikePatchText(diffText)) {
+    return { label: "Patch", className: "patch", mode: "patch" };
+  }
+  if (normalized && normalized.length > 0) {
+    const label = normalized[0]!.toUpperCase() + normalized.slice(1);
+    return { label, className: "other", mode: "content" };
+  }
+  return { label: "Change", className: "other", mode: "content" };
+}
+
+function parseFileChangeRows(input: Record<string, unknown>): {
+  rows: FileChangeRowData[];
+  unparsedChanges: unknown[];
+} {
+  if (!Array.isArray(input.changes)) return { rows: [], unparsedChanges: [] };
+  const rows: FileChangeRowData[] = [];
+  const unparsedChanges: unknown[] = [];
+
+  for (const rawChange of input.changes) {
+    if (
+      !rawChange ||
+      typeof rawChange !== "object" ||
+      Array.isArray(rawChange)
+    ) {
+      unparsedChanges.push(rawChange);
+      continue;
+    }
+    const change = rawChange as Record<string, unknown>;
+    const path =
+      typeof change.path === "string"
+        ? change.path
+        : typeof change.file_path === "string"
+          ? change.file_path
+          : null;
+    const diffText = typeof change.diff === "string" ? change.diff : null;
+    const patchText =
+      typeof change.patchText === "string" ? change.patchText : null;
+    const contentText =
+      typeof change.content === "string" ? change.content : null;
+    const hasOperation =
+      typeof change.op === "string" ||
+      typeof change.kind === "string" ||
+      (change.kind &&
+        typeof change.kind === "object" &&
+        !Array.isArray(change.kind) &&
+        typeof (change.kind as Record<string, unknown>).type === "string");
+    const hasBodyLike =
+      typeof diffText === "string" ||
+      typeof patchText === "string" ||
+      typeof contentText === "string";
+    if (!path && !hasOperation && !hasBodyLike) {
+      unparsedChanges.push(rawChange);
+      continue;
+    }
+    const bodyText = diffText ?? patchText ?? contentText;
+    const body =
+      typeof bodyText === "string" && bodyText.trim().length > 0
+        ? bodyText
+        : null;
+    const operation = parseFileChangeOperation(
+      change.kind,
+      change.op,
+      bodyText,
+    );
+    rows.push({
+      path,
+      operationLabel: operation.label,
+      operationClass: operation.className,
+      body,
+      bodyMode: operation.mode,
+    });
+  }
+
+  return { rows, unparsedChanges };
+}
+
+function FileChangeRow({ row }: { row: FileChangeRowData }) {
+  const lang = row.path ? langFromPath(row.path) : null;
+  const bodyLang = row.bodyMode === "patch" ? "diff" : lang;
+  const bodyText = row.body ?? "";
+  const bodyTokens = useHighlight(bodyText, bodyLang);
+
+  return (
+    <div class="filechange-row">
+      <div class="filechange-row-header">
+        <span class={`filechange-op filechange-op-${row.operationClass}`}>
+          {row.operationLabel}
+        </span>
+        <span class="filechange-path">{row.path ?? "(unknown file)"}</span>
+      </div>
+      {row.body && (
+        <CodePre
+          class={`write-content filechange-body${
+            row.bodyMode === "patch" ? " filechange-body-patch" : ""
+          }`}
+          copyText={row.body}
+        >
+          {bodyTokens ? renderTokenLines(bodyTokens) : row.body}
+        </CodePre>
+      )}
+    </div>
+  );
+}
+
+function FileChangeInput({ input }: { input: Record<string, unknown> }) {
+  const { rows, unparsedChanges } = parseFileChangeRows(input);
+  if (rows.length === 0) return formatGenericInput(input);
+
+  const remaining: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k !== "changes") remaining[k] = v;
+  }
+  if (unparsedChanges.length > 0) {
+    remaining.changes = unparsedChanges;
+  }
+  return formatGenericInput(
+    remaining,
+    <div class="filechange-list">
+      {rows.map((row, i) => (
+        <FileChangeRow key={i} row={row} />
+      ))}
+    </div>,
+  );
+}
+
 function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
   // Different Codex formats use different field names for the command:
   //   Bash/commandExecution/local_shell_call: "command"
@@ -1609,6 +1789,9 @@ function formatInput(
   input: Record<string, unknown>,
   result?: ToolResult,
 ): h.JSX.Element {
+  if (name === "fileChange" && Array.isArray(input.changes)) {
+    return <FileChangeInput input={input} />;
+  }
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return <EditInput input={input} result={result} />;
   }

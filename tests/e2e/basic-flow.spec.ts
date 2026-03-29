@@ -101,6 +101,15 @@ test("codex file fixture shows view-file action", async ({ page, agentType }) =>
     .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
     .last();
   await expect(tool).toBeVisible({ timeout });
+  await expect(
+    page
+      .locator(".tool-call")
+      .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) }),
+  ).toHaveCount(0);
+  const toolBody = tool.locator(".tool-input-formatted").first();
+  await expect(toolBody).toContainText("codex-fileviewer-create.txt");
+  await expect(toolBody).toContainText(/Add/i);
+  await expect(toolBody).toContainText("hello from create fixture");
 
   await tool.locator(".tool-header").hover();
   const viewBtn = tool.locator(".tool-view-file");
