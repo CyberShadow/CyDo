@@ -114,6 +114,9 @@ export const test = base.extend<TestFixtures>({
     const workDir = `/tmp/cydo-test-${seq}`;
     const workerHome = `${workDir}/home`;
 
+    // Clean up any stale directory from a previous run that didn't complete teardown.
+    rmSync(workDir, { recursive: true, force: true });
+
     // Set up working directory with data dir (for SQLite) and defs
     // (task type definitions are loaded relative to CWD)
     mkdirSync(`${workDir}/data`, { recursive: true });

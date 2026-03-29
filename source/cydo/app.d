@@ -2426,6 +2426,7 @@ class App : ToolsBackend
 				broadcastTaskUpdate(tid);
 				return reject!ProcessState(e);
 			}
+			broadcastTaskUpdate(tid);
 			return resolve(ProcessState.Alive);
 		}
 		else  // Dead
@@ -2692,8 +2693,9 @@ class App : ToolsBackend
 		auto td = &tasks[parentTid];
 		if (td.session is null || !td.session.alive)
 		{
-			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, deferring",
+			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, retrying via deliverBatchResults",
 				parentTid, td.session is null ? "is null" : "not alive");
+			deliverBatchResults(parentTid);
 			return;
 		}
 

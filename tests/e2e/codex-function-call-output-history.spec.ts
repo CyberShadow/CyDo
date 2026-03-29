@@ -1,5 +1,5 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import {
@@ -235,11 +235,11 @@ async function seedTaskAndLocateRollout(
   return { taskUrl, rolloutPath: rolloutPath! };
 }
 
-async function replayAndReadTaskTool(
+async function replayAndFindTaskTool(
   page: Page,
   restartableBackend: RestartableBackend,
   taskUrl: string,
-): Promise<string> {
+): Promise<Locator> {
   await restartableBackend.restart();
   await page.goto(taskUrl);
 
@@ -253,7 +253,7 @@ async function replayAndReadTaskTool(
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
   await expect(taskTool).toBeVisible({ timeout: 15_000 });
-  return taskTool.innerText();
+  return taskTool;
 }
 
 test("live invalid child task_type returns structured task error payload", async ({
@@ -342,8 +342,9 @@ test("codex history replay renders primitive task error as one message", async (
     ].join("\n"),
   );
 
-  const taskText = await replayAndReadTaskTool(page, restartableBackend, taskUrl);
-  expect(taskText).toContain(toolError);
+  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
+  await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
+  const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 });
 
@@ -386,8 +387,9 @@ test("codex history replay renders structured task error object cleanly", async 
     ].join("\n"),
   );
 
-  const taskText = await replayAndReadTaskTool(page, restartableBackend, taskUrl);
-  expect(taskText).toContain(toolError);
+  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
+  await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
+  const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 });
 
@@ -433,8 +435,8 @@ test("codex history replay keeps successful structured task rendering", async ({
     ].join("\n"),
   );
 
-  const taskText = await replayAndReadTaskTool(page, restartableBackend, taskUrl);
-  expect(taskText).toContain("Task finished successfully");
-  expect(taskText).toContain("output_file:");
-  expect(taskText).toContain("/tmp/out.md");
+  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
+  await expect(taskTool).toContainText("Task finished successfully", { timeout: 15_000 });
+  await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
+  await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
 });

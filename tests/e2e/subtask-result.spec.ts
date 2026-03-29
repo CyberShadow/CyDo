@@ -11,11 +11,10 @@ test("sub-task result text delivered to parent", async ({ page }) => {
   // tool result display (or as assistant text if auto-navigated to sub-task).
   await sendMessage(page, 'call task research reply with "subtask-result-marker"');
 
-  // Wait for the marker text to appear anywhere on the page.
-  // The UI may auto-navigate to the sub-task, so we can't rely on tool-call
-  // visibility in the parent. Use getByText with exact:true to avoid matching
-  // the user message which also contains the marker string.
+  // Wait for the marker text to appear in the message list.
+  // Scoped to .message-list to avoid matching the sidebar label which also
+  // shows the same text. Use exact:true to avoid matching the user message.
   await expect(
-    page.getByText("subtask-result-marker", { exact: true }),
+    page.locator('.message-list').getByText("subtask-result-marker", { exact: true }),
   ).toBeVisible({ timeout: 90_000 });
 });
