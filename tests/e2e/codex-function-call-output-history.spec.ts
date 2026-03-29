@@ -121,7 +121,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
       } catch {}
       await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
       // Brief drain for codex to finish writing rollout JSONL
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 5000));
     };
 
     const restart = async () => {
