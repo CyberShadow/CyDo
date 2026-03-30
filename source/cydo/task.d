@@ -236,9 +236,8 @@ struct WorkspacesListMessage
 
 struct EntryPointEntry
 {
-	string name;         // entry point name
+	string name;         // entry point name (used as display name in UI)
 	string task_type;    // resolved type name
-	string display_name; // from task type
 	string description;  // from entry point
 	string model_class;  // from task type
 	bool read_only;      // from task type
@@ -248,7 +247,6 @@ struct EntryPointEntry
 struct TypeInfoEntry
 {
 	string name;
-	string display_name;
 	string icon;
 }
 

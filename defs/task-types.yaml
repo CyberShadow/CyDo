@@ -68,11 +68,11 @@
 # flows through entry points.
 
 user_entry_points:
-  conversation:
+  agentic:
     task_type: conversation
     description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
     prompt_template: prompts/conversation.md
-  write:
+  direct:
     task_type: write_mode
     description: "Hands-on session — read-write access, edit and iterate directly"
     prompt_template: prompts/write_mode.md
@@ -98,7 +98,6 @@ task_types:
     allow_native_subagents: true
 
   conversation:
-    display_name: agentic
     icon: conversation
     model_class: large
     read_only: true
@@ -246,7 +245,6 @@ task_types:
         prompt_template: prompts/return_from_bug.md
 
   write_mode:
-    display_name: direct
     icon: write-mode
     agent_description: >
       Write mode grants read-write access to the main checkout. Use when:

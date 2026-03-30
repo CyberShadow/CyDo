@@ -69,7 +69,7 @@ export function SessionConfig({
             {t.icon && (
               <span class={`task-type-icon task-type-icon-${t.icon}`} />
             )}
-            <span class="task-type-name">{t.display_name || t.name}</span>
+            <span class="task-type-name">{t.name}</span>
             <span class="task-type-badges">
               <span class="config-badge">{t.model_class}</span>
               {t.read_only && <span class="config-badge">ro</span>}

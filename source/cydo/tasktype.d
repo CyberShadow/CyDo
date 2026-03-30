@@ -77,7 +77,6 @@ struct TaskTypeDef
 	string name;
 
 	// Identity
-	@Optional string display_name;
 	@Optional string icon;
 	@Optional string agent_description;
 	@Optional string tool_guidance;

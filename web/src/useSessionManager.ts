@@ -64,7 +64,6 @@ export interface AgentTypeInfo {
 export interface EntryPointInfo {
   name: string;
   task_type: string;
-  display_name?: string;
   description: string;
   model_class: string;
   read_only: boolean;
@@ -73,7 +72,6 @@ export interface EntryPointInfo {
 
 export interface TypeInfo {
   name: string;
-  display_name?: string;
   icon?: string;
 }
 

@@ -5,11 +5,11 @@
 # and references actually exercised by tests are included.
 
 user_entry_points:
-  conversation:
+  agentic:
     task_type: conversation
     description: "Orchestrated session"
     prompt_template: prompts/conversation.md
-  write:
+  direct:
     task_type: write_mode
     description: "Hands-on session with read-write access"
     prompt_template: prompts/write_mode.md
@@ -29,7 +29,6 @@ task_types:
         prompt_template: prompts/enter_plan_mode.md
 
   conversation:
-    display_name: agentic
     icon: conversation
     model_class: large
     read_only: true
@@ -70,7 +69,6 @@ task_types:
         prompt_template: prompts/return_from_plan.md
 
   write_mode:
-    display_name: direct
     icon: write-mode
     model_class: large
     output_type: []

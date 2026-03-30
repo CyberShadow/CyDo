@@ -3943,7 +3943,6 @@ class App : ToolsBackend
 			entry.description = ep.description;
 			if (typeDef !is null)
 			{
-				entry.display_name = typeDef.display_name;
 				entry.model_class = typeDef.model_class;
 				entry.read_only = typeDef.read_only;
 				entry.icon = typeDef.icon;
@@ -3952,7 +3951,7 @@ class App : ToolsBackend
 		}
 		TypeInfoEntry[] typeInfo;
 		foreach (ref def; types)
-			typeInfo ~= TypeInfoEntry(def.name, def.display_name, def.icon);
+			typeInfo ~= TypeInfoEntry(def.name, def.icon);
 		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo));
 	}
 

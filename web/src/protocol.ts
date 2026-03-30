@@ -396,7 +396,6 @@ export interface TaskTypesListMessage {
   entry_points: {
     name: string;
     task_type: string;
-    display_name?: string;
     description: string;
     model_class: string;
     read_only: boolean;
@@ -404,7 +403,6 @@ export interface TaskTypesListMessage {
   }[];
   type_info: {
     name: string;
-    display_name?: string;
     icon?: string;
   }[];
 }
