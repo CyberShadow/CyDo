@@ -1182,6 +1182,7 @@ class App : ToolsBackend
 		auto entryPoints = getEntryPoints();
 		string resolvedType = json.task_type;
 		string epTemplate;
+		WorktreeMode epWorktree = WorktreeMode.inherit;
 		if (json.entry_point.length > 0)
 		{
 			auto ep = entryPoints.byName(json.entry_point);
@@ -1189,6 +1190,7 @@ class App : ToolsBackend
 			{
 				resolvedType = ep.resolvedType;
 				epTemplate = ep.prompt_template;
+				epWorktree = ep.worktree;
 			}
 		}
 		if (resolvedType.length > 0 && taskTypes.byName(resolvedType) !is null)
@@ -1196,6 +1198,8 @@ class App : ToolsBackend
 			tasks[tid].taskType = resolvedType;
 			persistence.setTaskType(tid, resolvedType);
 		}
+		if (epWorktree != WorktreeMode.inherit)
+			setupWorktreeForEdge(tid, 0, epWorktree);
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));
