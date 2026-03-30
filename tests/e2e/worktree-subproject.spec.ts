@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { spawn, execFileSync } from "child_process";
 import type { ChildProcess } from "child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 
 const BACKEND_URL = "http://localhost:3940";
 
@@ -78,6 +78,42 @@ function initGitRepo(dir: string): void {
   execFileSync("git", ["-C", dir, "config", "user.name", "Test"]);
 }
 
+function setupMonorepo(workerHome: string, wsRoot: string): {
+  repoDir: string;
+  projectDir: string;
+} {
+  const repoDir = `${wsRoot}/monorepo`;
+  const projectDir = `${repoDir}/project`;
+
+  rmSync(wsRoot, { recursive: true, force: true });
+  initGitRepo(repoDir);
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(`${repoDir}/README.md`, "root\n");
+  writeFileSync(`${projectDir}/README.md`, "project\n");
+  execFileSync("git", ["-C", repoDir, "add", "."]);
+  execFileSync("git", ["-C", repoDir, "commit", "-qm", "init"]);
+
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    [
+      "workspaces:",
+      "  mono:",
+      `    root: ${wsRoot}`,
+      "    project_discovery:",
+      "      is_project:",
+      "        equals:",
+      "          - $relative_path",
+      "          - monorepo/project",
+      "      recurse_when:",
+      "        less_than:",
+      "          - $depth",
+      "          - 3",
+    ].join("\n") + "\n",
+  );
+
+  return { repoDir, projectDir };
+}
+
 function listFilesRecursive(dir: string): string[] {
   if (!existsSync(dir)) return [];
   const entries = readdirSync(dir);
@@ -105,36 +141,10 @@ test(
 
     const { workDir, workerHome } = createWorkDir("worktree-subproject");
     const wsRoot = "/tmp/cydo-worktree-subproject";
-    const repoDir = `${wsRoot}/monorepo`;
-    const projectDir = `${repoDir}/project`;
     const claudeDir =
       process.env.CLAUDE_CONFIG_DIR || `${process.env.HOME || "/tmp"}/.claude`;
 
-    rmSync(wsRoot, { recursive: true, force: true });
-    initGitRepo(repoDir);
-    mkdirSync(projectDir, { recursive: true });
-    writeFileSync(`${repoDir}/README.md`, "root\n");
-    writeFileSync(`${projectDir}/README.md`, "project\n");
-    execFileSync("git", ["-C", repoDir, "add", "."]);
-    execFileSync("git", ["-C", repoDir, "commit", "-qm", "init"]);
-
-    writeFileSync(
-      `${workerHome}/.config/cydo/config.yaml`,
-      [
-        "workspaces:",
-        "  mono:",
-        `    root: ${wsRoot}`,
-        "    project_discovery:",
-        "      is_project:",
-        "        equals:",
-        "          - $relative_path",
-        "          - monorepo/project",
-        "      recurse_when:",
-        "        less_than:",
-        "          - $depth",
-        "          - 3",
-      ].join("\n") + "\n",
-    );
+    const { repoDir, projectDir } = setupMonorepo(workerHome, wsRoot);
 
     const taskCreatedEvents: Array<{
       tid: number;
@@ -205,6 +215,50 @@ test(
           { timeout: 30_000 },
         )
         .toBeGreaterThan(0);
+    } finally {
+      await killBackend(proc);
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(wsRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "blank task sandbox allows writes at the monorepo root",
+  async ({ page }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "claude",
+      "sandbox regression is backend-level; run once in claude project",
+    );
+
+    const { workDir, workerHome } = createWorkDir("sandbox-subproject");
+    const wsRoot = "/tmp/cydo-sandbox-subproject";
+    const { repoDir } = setupMonorepo(workerHome, wsRoot);
+    const repoRootFile = `${repoDir}/repo-root-write.txt`;
+
+    const proc = spawnBackend(workDir, workerHome);
+    try {
+      await waitForBackend(proc);
+      await page.goto(BACKEND_URL + "/");
+
+      await expect(
+        page.locator(".project-card-title[title='monorepo/project']"),
+      ).toBeVisible({ timeout: 15_000 });
+
+      await page.locator(".project-card-title[title='monorepo/project']").click();
+      await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
+        timeout: 15_000,
+      });
+
+      await page.locator(".input-textarea:visible").first().fill(
+        "Please run command sh -lc 'printf sandbox-root-ok > ../repo-root-write.txt && cat ../repo-root-write.txt'",
+      );
+      await page.locator(".btn-send:visible").first().click();
+
+      await expect
+        .poll(() => existsSync(repoRootFile), { timeout: 60_000 })
+        .toBe(true);
+      expect(readFileSync(repoRootFile, "utf8")).toBe("sandbox-root-ok");
     } finally {
       await killBackend(proc);
       rmSync(workDir, { recursive: true, force: true });

@@ -2266,7 +2266,7 @@ class App : ToolsBackend
 		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
 		sessionConfig.mcpSocketPath = mcpSocketPath;
 
-		auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
+		auto workDir = td.repoPath.length > 0 ? td.repoPath : null;
 
 		// Ensure per-task directory exists
 		import std.path : buildPath;

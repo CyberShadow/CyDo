@@ -401,6 +401,39 @@ struct McpContentResult
 	@JSONOptional JSONFragment structuredContent;
 }
 
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+	import std.process : execute;
+
+	auto repoDir = buildPath("/tmp", "cydo-taskdata-subproject");
+	if (exists(repoDir))
+		rmdirRecurse(repoDir);
+	scope(exit)
+		if (exists(repoDir))
+			rmdirRecurse(repoDir);
+
+	auto projectDir = buildPath(repoDir, "project");
+	mkdirRecurse(projectDir);
+	execute(["git", "-C", repoDir, "init", "-q"]);
+	execute(["git", "-C", repoDir, "config", "user.email", "test@test"]);
+	execute(["git", "-C", repoDir, "config", "user.name", "Test"]);
+	write(buildPath(projectDir, "README.md"), "project\n");
+	execute(["git", "-C", repoDir, "add", "."]);
+	execute(["git", "-C", repoDir, "commit", "-qm", "init"]);
+
+	auto td = TaskData(42);
+	td.projectPath = projectDir;
+	td.worktreeTid = 42;
+
+	assert(td.repoPath == repoDir);
+	assert(td.taskDir == buildPath(repoDir, ".cydo", "tasks", "42"));
+	assert(td.worktreePath == buildPath(repoDir, ".cydo", "tasks", "42", "worktree"));
+	assert(td.outputPath == buildPath(repoDir, ".cydo", "tasks", "42", "output.md"));
+	assert(td.effectiveCwd == buildPath(repoDir, ".cydo", "tasks", "42", "worktree", "project"));
+}
+
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
 string truncateTitle(string text, size_t maxLen)
 {
