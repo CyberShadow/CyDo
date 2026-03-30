@@ -2282,9 +2282,11 @@ class App : ToolsBackend
 
 		// Resolve sandbox config: agent defaults + global + per-agent + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
+		auto wsRoot = findWorkspaceRoot(td.workspace);
 		auto agentTypeSandbox = findAgentTypeSandbox(td.agentType);
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		td.sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox, taskAgent, workDir, readOnly);
+		td.sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox,
+			taskAgent, workDir, wsRoot, readOnly);
 
 		// Task directory is always writable (even for read-only tasks)
 		if (td.taskDir.length > 0)
@@ -2843,6 +2845,14 @@ class App : ToolsBackend
 			if (ws.name == workspaceName)
 				return ws.sandbox;
 		return SandboxConfig.init;
+	}
+
+	private string findWorkspaceRoot(string workspaceName)
+	{
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName)
+				return ws.root;
+		return "";
 	}
 
 	private SandboxConfig findAgentTypeSandbox(string agentType)

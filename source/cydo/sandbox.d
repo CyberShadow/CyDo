@@ -43,12 +43,14 @@ struct ResolvedSandbox
 	@property bool useBwrap() const { return isolate_filesystem || isolate_processes; }
 }
 
-/// Merge four layers of sandbox config: agent defaults → global config → per-agent config → per-workspace config.
+/// Merge sandbox config layers: global config → per-agent config → default
+/// workspace/project mounts → per-workspace config → agent defaults.
 /// When readOnly is true, all config/workspace/project paths are downgraded
 /// to ro before the agent layer runs — so agent-declared paths (e.g. ~/.claude)
 /// stay rw while the project tree becomes read-only.
 ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConfig,
-	SandboxConfig workspace, Agent agent, string projectDir, bool readOnly = false)
+	SandboxConfig workspace, Agent agent, string projectDir, string wsRoot = "",
+	bool readOnly = false)
 {
 	ResolvedSandbox result;
 
@@ -58,12 +60,17 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	// Layer 1.5: per-agent config paths (overrides global)
 	mergePaths(result.paths, agentTypeConfig.paths);
 
-	// Layer 2: per-workspace config paths (overrides per-agent)
-	mergePaths(result.paths, workspace.paths);
+	// Default workspace root mount. Workspace config can still override this
+	// (e.g. mount the root as tmpfs to mask the host tree).
+	if (wsRoot.length > 0)
+		result.paths[expandTilde(wsRoot)] = PathMode.ro;
 
-	// Add project directory
+	// Default task workspace/project mount.
 	if (projectDir.length > 0)
 		result.paths[expandTilde(projectDir)] = PathMode.rw;
+
+	// Layer 2: per-workspace config paths (overrides defaults above)
+	mergePaths(result.paths, workspace.paths);
 
 	// Read-only mode: downgrade all rw paths to ro before agent layer
 	if (readOnly)
@@ -141,12 +148,13 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 	// Layer 1: global config paths
 	mergePaths(result.paths, global.paths);
 
-	// Layer 2: workspace config paths (overrides global)
-	mergePaths(result.paths, workspace.paths);
-
-	// Add workspace root as ro
+	// Default workspace root mount. Workspace config can still override this
+	// (e.g. mount the root as tmpfs to mask the host tree).
 	if (wsRoot.length > 0)
 		result.paths[expandTilde(wsRoot)] = PathMode.ro;
+
+	// Layer 2: workspace config paths (overrides defaults above)
+	mergePaths(result.paths, workspace.paths);
 
 	// Add cydo binary directory as ro
 	if (cydoBinDir.length > 0)
@@ -192,6 +200,37 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 	overrideBool(result.isolate_environment, workspace.isolate_environment);
 
 	return result;
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse;
+	import std.path : buildPath;
+
+	import cydo.agent.claude : ClaudeCodeAgent;
+
+	auto wsRoot = buildPath("/tmp", "cydo-sandbox-ws-root");
+	auto projectDir = buildPath(wsRoot, "project");
+	if (exists(wsRoot))
+		rmdirRecurse(wsRoot);
+	scope(exit)
+		if (exists(wsRoot))
+			rmdirRecurse(wsRoot);
+
+	mkdirRecurse(projectDir);
+
+	SandboxConfig workspace;
+	workspace.paths = [wsRoot : PathMode.tmpfs];
+
+	auto agent = new ClaudeCodeAgent();
+	auto taskSandbox = resolveSandbox(SandboxConfig.init, SandboxConfig.init,
+		workspace, agent, projectDir, wsRoot);
+	assert(taskSandbox.paths[wsRoot] == PathMode.tmpfs);
+	assert(taskSandbox.paths[projectDir] == PathMode.rw);
+
+	auto discoverySandbox = resolveSandboxForDiscovery(SandboxConfig.init,
+		workspace, wsRoot, "");
+	assert(discoverySandbox.paths[wsRoot] == PathMode.tmpfs);
 }
 
 /// Build the command prefix for running a process with sandbox settings.
