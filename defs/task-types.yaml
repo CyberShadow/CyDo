@@ -476,7 +476,8 @@ task_types:
       implement:
         task_type: implement
         requires_approval: true
-        prompt_template: prompts/implement.md
+        keep_context: true
+        prompt_template: prompts/enter_implement.md
       decompose:
         task_type: decompose
         requires_approval: true

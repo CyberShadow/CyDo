@@ -25,8 +25,7 @@ Choose one:
 
 ## Action
 
-- **implement**: Call the `mcp__cydo__Handoff` tool with `continuation: "implement"` and a
-  `prompt` containing the plan file path.
+- **implement**: Call the `mcp__cydo__SwitchMode` tool with `continuation: "implement"`.
 - **decompose**: Call the `mcp__cydo__SwitchMode` tool with `continuation: "decompose"`.
 
 The task description follows, provided by the parent task.
