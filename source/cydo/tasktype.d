@@ -502,6 +502,16 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 					errors ~= format("%s: continuation '%s' targets type '%s' without node-level"
 						~ " prompt_template but has no prompt_template", def.name, cname, cont.task_type);
 			}
+
+			// on_yield is also a continuation edge
+			if (def.on_yield.task_type.length > 0 && !def.on_yield.keep_context)
+			{
+				auto target = types.byName(def.on_yield.task_type);
+				if (target !is null && !target.steward && target.prompt_template.length == 0
+					&& def.on_yield.prompt_template.length == 0)
+					errors ~= format("%s: on_yield targets type '%s' without node-level"
+						~ " prompt_template but has no prompt_template", def.name, def.on_yield.task_type);
+			}
 		}
 	}
 
