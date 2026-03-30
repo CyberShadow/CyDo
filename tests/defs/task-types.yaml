@@ -17,6 +17,11 @@ user_entry_points:
     task_type: blank
     description: "Raw agent session"
     prompt_template: prompts/blank.md
+  isolated:
+    task_type: isolated
+    worktree: require
+    description: "Own worktree with sub-agent support"
+    prompt_template: prompts/isolated.md
 
 task_types:
   blank:
@@ -77,6 +82,11 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
+
+  isolated:
+    icon: crate
+    model_class: large
+    output_type: []
 
   research:
     icon: research

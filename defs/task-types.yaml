@@ -80,6 +80,11 @@ user_entry_points:
     task_type: write_mode
     description: "Hands-on session — read-write access, edit and iterate directly"
     prompt_template: prompts/write_mode.md
+  isolated:
+    task_type: isolated
+    worktree: require
+    description: "Own worktree with sub-agent support — changes stay isolated until you pull them"
+    prompt_template: prompts/isolated.md
 
 task_types:
   # =========================================================================
@@ -275,6 +280,28 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
+
+  isolated:
+    icon: crate
+    model_class: large
+    output_type: []
+    creatable_tasks:
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
+        result_note: "Read the output file for full findings."
+      plan:
+        prompt_template: prompts/plan.md
+        result_note: "Read the output file for full findings. `cp` it to {{output_dir}} so you can edit it during iteration with the user."
+      spike:
+        worktree: fork
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+      bug:
+        prompt_template: prompts/bug.md
+        result_note: "Read the output file for the full investigation report."
 
   # =========================================================================
   # Helper types — sub-task only, no continuations
