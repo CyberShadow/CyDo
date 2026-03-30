@@ -159,6 +159,7 @@ struct WsMessage
 	string project_path;
 	string after_uuid;
 	string task_type;
+	string entry_point;
 	string agent_type;
 	bool dry_run;
 	bool revert_conversation;
@@ -233,21 +234,29 @@ struct WorkspacesListMessage
 	WorkspaceInfo[] workspaces;
 }
 
-struct TaskTypeListEntry
+struct EntryPointEntry
+{
+	string name;         // entry point name
+	string task_type;    // resolved type name
+	string display_name; // from task type
+	string description;  // from entry point
+	string model_class;  // from task type
+	bool read_only;      // from task type
+	string icon;         // from task type
+}
+
+struct TypeInfoEntry
 {
 	string name;
 	string display_name;
-	string description;
-	string model_class;
-	bool read_only;
 	string icon;
-	bool user_visible;
 }
 
 struct TaskTypesListMessage
 {
 	string type = "task_types_list";
-	TaskTypeListEntry[] task_types;
+	EntryPointEntry[] entry_points;
+	TypeInfoEntry[] type_info;
 }
 
 struct AgentTypeListEntry

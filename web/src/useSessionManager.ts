@@ -61,14 +61,20 @@ export interface AgentTypeInfo {
   is_available?: boolean;
 }
 
-export interface TaskTypeInfo {
+export interface EntryPointInfo {
   name: string;
+  task_type: string;
   display_name?: string;
   description: string;
   model_class: string;
   read_only: boolean;
   icon?: string;
-  user_visible?: boolean;
+}
+
+export interface TypeInfo {
+  name: string;
+  display_name?: string;
+  icon?: string;
 }
 
 export interface TaskManager {
@@ -122,7 +128,8 @@ export interface TaskManager {
     hasMessages?: boolean;
   }>;
   workspaces: WorkspaceInfo[];
-  taskTypes: TaskTypeInfo[];
+  entryPoints: EntryPointInfo[];
+  typeInfo: TypeInfo[];
   agentTypes: AgentTypeInfo[];
   defaultAgentType: string;
   activeWorkspace: string | null;
@@ -157,7 +164,8 @@ export function useTaskManager(): TaskManager {
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
-  const [taskTypes, setTaskTypes] = useState<TaskTypeInfo[]>([]);
+  const [entryPoints, setEntryPoints] = useState<EntryPointInfo[]>([]);
+  const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
   const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
   const [authEnabled, setAuthEnabled] = useState(true);
@@ -499,7 +507,8 @@ export function useTaskManager(): TaskManager {
         break;
       }
       case "task_types_list": {
-        setTaskTypes(msg.task_types);
+        setEntryPoints(msg.entry_points);
+        setTypeInfo(msg.type_info);
         break;
       }
       case "agent_types_list": {
@@ -1701,7 +1710,8 @@ export function useTaskManager(): TaskManager {
     draftRenderKey,
     sidebarTasks,
     workspaces,
-    taskTypes,
+    entryPoints,
+    typeInfo,
     agentTypes,
     defaultAgentType,
     activeWorkspace,

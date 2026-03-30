@@ -61,6 +61,25 @@
 #   - creatable_tasks: modal sub-tasks (agent stays alive, gets results back)
 #   - continuations: exec-style successors (agent is done, next task takes over)
 #   - requires_approval: all stewards must approve before successor spawns
+#
+# User entry points are defined in the user_entry_points section below.
+# They are edges from the user to a task type, carrying their own description,
+# prompt_template, and optional worktree config. All user-visible task creation
+# flows through entry points.
+
+user_entry_points:
+  conversation:
+    task_type: conversation
+    description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
+    prompt_template: prompts/conversation.md
+  write:
+    task_type: write_mode
+    description: "Hands-on session — read-write access, edit and iterate directly"
+    prompt_template: prompts/write_mode.md
+  blank:
+    task_type: blank
+    description: "Raw agent session with no prompt wrapping or tool restrictions"
+    prompt_template: prompts/blank.md
 
 task_types:
   # =========================================================================
@@ -73,19 +92,14 @@ task_types:
   # =========================================================================
 
   blank:
-    description: "Raw agent session with no prompt wrapping or tool restrictions"
     icon: blank
-    prompt_template: prompts/blank.md
     model_class: large
     output_type: []
     allow_native_subagents: true
-    user_visible: true
 
   conversation:
     display_name: agentic
-    description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
     icon: conversation
-    prompt_template: prompts/conversation.md
     model_class: large
     read_only: true
     output_type: []
@@ -121,10 +135,8 @@ task_types:
         task_type: write_mode
         keep_context: true
         prompt_template: prompts/enter_write_mode.md
-    user_visible: true
 
   plan_mode:
-    description: "Interactive planning mode — explore, plan, get approval, then implement"
     icon: plan-mode
     agent_description: >
       Interactive planning mode. Delegates plan drafting to a plan sub-task,
@@ -176,10 +188,8 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_plan.md
-    user_visible: false
 
   bug_mode:
-    description: "Interactive bug investigation — reproduce, diagnose, then fix"
     icon: bug-mode
     agent_description: >
       Interactive bug investigation mode. Delegates investigation to a bug
@@ -234,11 +244,9 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_bug.md
-    user_visible: false
 
   write_mode:
     display_name: direct
-    description: "Hands-on session — read-write access, edit and iterate directly"
     icon: write-mode
     agent_description: >
       Write mode grants read-write access to the main checkout. Use when:
@@ -255,7 +263,6 @@ task_types:
       "apply those changes", "fix that typo", or otherwise explicitly consents
       to modifying the main checkout. Always confirm what you're about to
       cherry-pick or edit before switching.
-    prompt_template: prompts/write_mode.md
     model_class: large
     output_type: []
     creatable_tasks:
@@ -270,7 +277,6 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
-    user_visible: true
 
   # =========================================================================
   # Helper types — sub-task only, no continuations
@@ -280,7 +286,6 @@ task_types:
   # =========================================================================
 
   plan:
-    description: "Create a detailed implementation plan"
     icon: plan
     agent_description: >
       Software architect agent for designing implementation plans. Reads the
@@ -308,10 +313,8 @@ task_types:
         worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
-    user_visible: false
 
   quick_research:
-    description: "Targeted codebase lookup — find a specific file, function, or pattern"
     icon: quick-research
     agent_description: >
       Fast read-only agent for targeted codebase lookups. Use when: you need
@@ -327,10 +330,8 @@ task_types:
     model_class: small
     read_only: true
     output_type: [report]
-    user_visible: false
 
   deep_research:
-    description: "Thorough investigation — explore broadly, spawn sub-tasks"
     icon: research
     agent_description: >
       Thorough read-only agent for broad codebase exploration. Use when: you
@@ -355,10 +356,8 @@ task_types:
         worktree: fork
         prompt_template: prompts/spike.md
         result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
-    user_visible: false
 
   bug:
-    description: "Investigate a bug report — reproduce, find root cause, report findings"
     icon: bug
     agent_description: >
       Use for investigating bugs as a sub-task. The agent reproduces the issue,
@@ -384,10 +383,8 @@ task_types:
         worktree: fork
         prompt_template: prompts/reproduce.md
         result_note: "Read the output file for findings. The worktree path contains the failing test."
-    user_visible: false
 
   reproduce:
-    description: "Build a minimal reproduction of a bug using the project's test framework"
     icon: reproduce
     agent_description: >
       Use to reproduce a bug as a failing test case. Runs in its own worktree
@@ -408,10 +405,8 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    user_visible: false
 
   spike:
-    description: "Test a theory or prototype an approach in an isolated worktree"
     icon: spike
     agent_description: >
       Use when you need to test a theory, prototype an approach, or verify
@@ -438,17 +433,14 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    user_visible: false
 
   test:
-    description: "Write or fix tests for implemented changes"
     icon: test
     agent_description: >
       Use to add test coverage for new or changed code. Works on the same
       tree as the parent implementation task.
     model_class: medium
     output_type: []
-    user_visible: false
 
   # =========================================================================
   # Autonomous pipeline — state machine with recursive decomposition
@@ -459,7 +451,6 @@ task_types:
   # =========================================================================
 
   triage:
-    description: "Execute a plan — implement directly or decompose into sub-tasks"
     icon: triage
     agent_description: >
       Execute a plan. Reads the plan and decides: implement directly
@@ -483,10 +474,8 @@ task_types:
         requires_approval: true
         keep_context: true
         prompt_template: prompts/enter_decompose.md
-    user_visible: false
 
   decompose:
-    description: "Break a plan into smaller sub-tasks"
     icon: decompose
     agent_description: >
       Use when a plan is too large or ambiguous for a single implementation
@@ -513,10 +502,8 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
-    user_visible: false
 
   implement:
-    description: "Execute a specific, pre-planned coding task"
     icon: implement
     agent_description: >
       Use for well-scoped coding tasks with a clear plan. The agent works in its
@@ -541,10 +528,8 @@ task_types:
       review:
         prompt_template: prompts/review.md
         result_note: "Read the output file for the full review."
-    user_visible: false
 
   verify:
-    description: "Run the code and verify the implementation actually works"
     icon: verify
     agent_description: >
       Adversarial verification agent. Runs builds, test suites, linters, and
@@ -555,10 +540,8 @@ task_types:
       the project's test framework.
     model_class: medium
     output_type: [report]
-    user_visible: false
 
   review:
-    description: "Review code changes for correctness and quality"
     icon: review
     agent_description: >
       Code review agent. Verifies the implementation matches the plan and is
@@ -567,14 +550,12 @@ task_types:
     model_class: large
     read_only: true
     output_type: [report]
-    user_visible: false
 
   # =========================================================================
   # Stewards — stateful review agents that gate approval
   # =========================================================================
 
   steward_quality:
-    description: "Review artifacts for code quality and project conventions"
     icon: steward-quality
     prompt_template: prompts/steward_quality.md
     steward: true
@@ -587,10 +568,8 @@ task_types:
     output_type: [report]
     serial: true
     knowledge_base: .cydo/stewards/quality/
-    user_visible: false
 
   steward_security:
-    description: "Review artifacts for security vulnerabilities"
     icon: steward-security
     prompt_template: prompts/steward_security.md
     steward: true
@@ -602,4 +581,3 @@ task_types:
     output_type: [report]
     serial: true
     knowledge_base: .cydo/stewards/security/
-    user_visible: false

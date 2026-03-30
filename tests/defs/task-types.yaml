@@ -4,10 +4,22 @@
 # splits, or restructuring don't break the e2e test suite. Only the types
 # and references actually exercised by tests are included.
 
-task_types:
+user_entry_points:
+  conversation:
+    task_type: conversation
+    description: "Orchestrated session"
+    prompt_template: prompts/conversation.md
+  write:
+    task_type: write_mode
+    description: "Hands-on session with read-write access"
+    prompt_template: prompts/write_mode.md
   blank:
+    task_type: blank
     description: "Raw agent session"
     prompt_template: prompts/blank.md
+
+task_types:
+  blank:
     model_class: large
     output_type: []
     continuations:
@@ -15,13 +27,10 @@ task_types:
         task_type: plan_mode
         keep_context: true
         prompt_template: prompts/enter_plan_mode.md
-    user_visible: true
 
   conversation:
     display_name: agentic
-    description: "Orchestrated session"
     icon: conversation
-    prompt_template: prompts/conversation.md
     model_class: large
     read_only: true
     output_type: []
@@ -48,10 +57,8 @@ task_types:
         task_type: write_mode
         keep_context: true
         prompt_template: prompts/enter_write_mode.md
-    user_visible: true
 
   plan_mode:
-    description: "Interactive planning mode"
     icon: plan-mode
     model_class: large
     read_only: true
@@ -61,13 +68,10 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_plan.md
-    user_visible: false
 
   write_mode:
     display_name: direct
-    description: "Hands-on session with read-write access"
     icon: write-mode
-    prompt_template: prompts/write_mode.md
     model_class: large
     output_type: []
     continuations:
@@ -75,38 +79,28 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
-    user_visible: true
 
   research:
-    description: "Investigate a topic, gather information"
     icon: research
     model_class: small
     read_only: true
     output_type: []
-    user_visible: false
 
   spike:
-    description: "Test a theory or prototype in an isolated worktree"
     icon: spike
     model_class: large
     output_type: []
-    user_visible: false
 
   test_handoff:
-    description: "Test type with non-keep_context continuation"
-    prompt_template: prompts/blank.md
     model_class: small
     output_type: []
     continuations:
       done:
         task_type: blank
-    user_visible: false
+        prompt_template: prompts/blank.md
 
   test_on_yield:
-    description: "Test type with on_yield continuation"
-    prompt_template: prompts/blank.md
     model_class: small
     output_type: []
     on_yield:
       task_type: blank
-    user_visible: false

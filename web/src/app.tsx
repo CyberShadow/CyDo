@@ -41,7 +41,8 @@ function AppContent() {
     draftRenderKey,
     sidebarTasks,
     workspaces,
-    taskTypes,
+    entryPoints,
+    typeInfo,
     agentTypes,
     defaultAgentType,
     activeWorkspace,
@@ -113,7 +114,7 @@ function AppContent() {
   const searchPopup = showSearch && (
     <SearchPopup
       tasks={tasks}
-      taskTypes={taskTypes}
+      taskTypes={typeInfo}
       onSelect={handleSearchSelect}
       onClose={handleSearchClose}
     />
@@ -129,7 +130,7 @@ function AppContent() {
               workspaces={workspaces}
               tasks={tasks}
               attention={attention}
-              taskTypes={taskTypes}
+              taskTypes={typeInfo}
               authEnabled={authEnabled}
               onSelectTask={handleSearchSelect}
               onNavigateToProject={navigateToProject}
@@ -312,7 +313,7 @@ function AppContent() {
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}
-          taskTypes={taskTypes}
+          taskTypes={typeInfo}
           visible={sidebarOpen}
           onOpenSearch={handleOpenSearch}
           onArchive={handleSidebarArchive}
@@ -373,8 +374,8 @@ function AppContent() {
                   onSetArchived={setArchived}
                   onAskUserResponse={sendAskUserResponse}
                   onEditMessage={editMessage}
-                  taskTypes={
-                    task.renderKey === draftRenderKey ? taskTypes : undefined
+                  entryPoints={
+                    task.renderKey === draftRenderKey ? entryPoints : undefined
                   }
                   agentTypes={
                     task.renderKey === draftRenderKey ? agentTypes : undefined

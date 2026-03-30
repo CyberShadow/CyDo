@@ -1,9 +1,9 @@
 import { RefObject } from "preact";
-import type { TaskTypeInfo } from "../useSessionManager";
+import type { EntryPointInfo } from "../useSessionManager";
 import { ensureIconStyles } from "./TaskTypeIcon";
 
 interface Props {
-  taskTypes: TaskTypeInfo[];
+  entryPoints: EntryPointInfo[];
   selected: string;
   onTaskTypeChange: (taskType: string) => void;
   pickerRef?: RefObject<HTMLDivElement>;
@@ -12,7 +12,7 @@ interface Props {
 }
 
 export function SessionConfig({
-  taskTypes,
+  entryPoints,
   selected,
   onTaskTypeChange,
   pickerRef,
@@ -20,10 +20,9 @@ export function SessionConfig({
   onType,
 }: Props) {
   ensureIconStyles();
-  const visibleTypes = taskTypes.filter((t) => t.user_visible !== false);
-  if (visibleTypes.length === 0) return null;
+  if (entryPoints.length === 0) return null;
 
-  const selectedIdx = visibleTypes.findIndex((t) => t.name === selected);
+  const selectedIdx = entryPoints.findIndex((t) => t.name === selected);
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (
@@ -36,8 +35,8 @@ export function SessionConfig({
       e.preventDefault();
       const dir = e.key === "ArrowDown" ? 1 : -1;
       const next =
-        (selectedIdx + dir + visibleTypes.length) % visibleTypes.length;
-      onTaskTypeChange(visibleTypes[next]!.name);
+        (selectedIdx + dir + entryPoints.length) % entryPoints.length;
+      onTaskTypeChange(entryPoints[next]!.name);
     } else if (e.key === "Enter") {
       e.preventDefault();
       onConfirm?.();
@@ -54,7 +53,7 @@ export function SessionConfig({
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
-      {visibleTypes.map((t) => (
+      {entryPoints.map((t) => (
         <button
           key={t.name}
           class={`task-type-row ${t.name === selected ? "selected" : ""}`}

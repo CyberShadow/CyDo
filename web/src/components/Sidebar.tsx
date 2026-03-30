@@ -1,6 +1,6 @@
 import { memo } from "preact/compat";
 import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
-import type { TaskTypeInfo } from "../useSessionManager";
+import type { TypeInfo } from "../useSessionManager";
 import { ensureIconStyles } from "./TaskTypeIcon";
 import relSubtaskIcon from "../icons/rel-subtask.svg?raw";
 import relForkIcon from "../icons/rel-fork.svg?raw";
@@ -294,7 +294,7 @@ function computeStatusClass(t: SidebarTask): string {
 function flattenTree(
   tree: TreeNode[],
   activeTaskId: string | null,
-  taskTypes: TaskTypeInfo[],
+  taskTypes: TypeInfo[],
 ): FlatItem[] {
   const items: FlatItem[] = [];
 
@@ -482,7 +482,7 @@ interface Props {
   showBackButton?: boolean;
   onBack?: () => void;
   projectName?: string;
-  taskTypes: TaskTypeInfo[];
+  taskTypes: TypeInfo[];
   visible?: boolean;
   onOpenSearch?: () => void;
   onArchive?: (tid: number) => void;

@@ -393,14 +393,19 @@ export interface WorkspacesListMessage {
 }
 export interface TaskTypesListMessage {
   type: "task_types_list";
-  task_types: {
+  entry_points: {
     name: string;
+    task_type: string;
     display_name?: string;
     description: string;
     model_class: string;
     read_only: boolean;
     icon?: string;
-    user_visible?: boolean;
+  }[];
+  type_info: {
+    name: string;
+    display_name?: string;
+    icon?: string;
   }[];
 }
 export interface AgentTypesListMessage {

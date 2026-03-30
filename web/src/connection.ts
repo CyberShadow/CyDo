@@ -130,7 +130,7 @@ export class Connection {
   createTask(
     workspace?: string,
     projectPath?: string,
-    taskType?: string,
+    entryPoint?: string,
     content?: ContentBlock[],
     agentType?: string,
     correlationId?: string,
@@ -140,7 +140,7 @@ export class Connection {
         type: "create_task",
         workspace: workspace ?? "",
         project_path: projectPath ?? "",
-        task_type: taskType ?? "",
+        entry_point: entryPoint ?? "",
         content: content ?? [],
         agent_type: agentType ?? "",
         correlation_id: correlationId ?? "",

@@ -1,4 +1,4 @@
-import type { TaskTypeInfo } from "../useSessionManager";
+import type { TypeInfo } from "../useSessionManager";
 
 import blankIcon from "../icons/blank.svg?raw";
 import conversationIcon from "../icons/conversation.svg?raw";
@@ -82,7 +82,7 @@ export function ensureIconStyles() {
 /** Check whether a task type has a known icon (matches TaskTypeIcon's fallback logic). */
 export function hasTaskTypeIcon(
   taskType: string | undefined,
-  taskTypes: TaskTypeInfo[],
+  taskTypes: TypeInfo[],
 ): boolean {
   if (!taskType) return false;
   const typeInfo = taskTypes.find((tt) => tt.name === taskType);
@@ -92,7 +92,7 @@ export function hasTaskTypeIcon(
 
 interface TaskTypeIconProps {
   taskType?: string;
-  taskTypes: TaskTypeInfo[];
+  taskTypes: TypeInfo[];
   class?: string;
 }
 

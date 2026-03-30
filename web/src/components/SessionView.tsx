@@ -11,7 +11,7 @@ import type { TaskState } from "../types";
 import type { Theme } from "../useTheme";
 import type {
   ImageAttachment,
-  TaskTypeInfo,
+  EntryPointInfo,
   AgentTypeInfo,
 } from "../useSessionManager";
 import { SystemBanner } from "./SystemBanner";
@@ -55,7 +55,7 @@ interface Props {
   onToggleSidebar: () => void;
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
-  taskTypes?: TaskTypeInfo[];
+  entryPoints?: EntryPointInfo[];
   agentTypes?: AgentTypeInfo[];
   defaultAgentType?: string;
   onContentStart?: (taskType: string) => void;
@@ -86,7 +86,7 @@ function SessionViewInner({
   onToggleSidebar,
   onSetArchived,
   onEditMessage,
-  taskTypes,
+  entryPoints,
   agentTypes,
   defaultAgentType,
   onContentStart,
@@ -103,9 +103,12 @@ function SessionViewInner({
     !task.isProcessing;
 
   // Task type picker state (only used in draft mode)
-  const [selectedTaskType, setSelectedTaskType] = useState(
-    task.taskType || "conversation",
-  );
+  // Initialize with entry point name matching the task's type, or the first entry point
+  const initialEntryPoint =
+    entryPoints?.find((e) => e.task_type === task.taskType)?.name ??
+    entryPoints?.[0]?.name ??
+    "conversation";
+  const [selectedTaskType, setSelectedTaskType] = useState(initialEntryPoint);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
   // Agent picker state (only used in draft mode)
@@ -118,9 +121,13 @@ function SessionViewInner({
   const handleTaskTypeChange = useCallback(
     (taskType: string) => {
       setSelectedTaskType(taskType);
-      if (isDraft && task.tid > 0) onSetTaskType?.(task.tid, taskType);
+      if (isDraft && task.tid > 0) {
+        // Pass the resolved task type name (not the entry point name)
+        const ep = entryPoints?.find((e) => e.name === taskType);
+        onSetTaskType?.(task.tid, ep?.task_type ?? taskType);
+      }
     },
-    [isDraft, task.tid, onSetTaskType],
+    [isDraft, task.tid, onSetTaskType, entryPoints],
   );
 
   const handleAgentChange = useCallback(
@@ -384,7 +391,7 @@ function SessionViewInner({
           <span>Loading session…</span>
         </div>
       ) : task.messages.length === 0 && !task.isProcessing ? (
-        isDraft && taskTypes ? (
+        isDraft && entryPoints ? (
           <div class="message-list welcome-prompt">
             <div class="session-empty-inner">
               <div class="welcome-page-header">
@@ -407,7 +414,7 @@ function SessionViewInner({
                 <h1>CyDo</h1>
               </div>
               <SessionConfig
-                taskTypes={taskTypes}
+                entryPoints={entryPoints}
                 selected={selectedTaskType}
                 onTaskTypeChange={handleTaskTypeChange}
                 pickerRef={taskTypePickerRef}
@@ -502,7 +509,7 @@ function SessionViewInner({
           onSubmit={handleAskUserSubmit}
           onAbort={handleAskUserAbort}
         />
-      ) : isDraft && taskTypes ? null : (
+      ) : isDraft && entryPoints ? null : (
         <InputBox
           onSend={handleSend}
           onInterrupt={onInterrupt}

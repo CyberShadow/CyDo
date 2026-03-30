@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { TaskState } from "../types";
-import type { WorkspaceInfo, TaskTypeInfo } from "../useSessionManager";
+import type { WorkspaceInfo, TypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
@@ -9,7 +9,7 @@ interface Props {
   attention: Set<number>;
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
-  taskTypes: TaskTypeInfo[];
+  taskTypes: TypeInfo[];
   authEnabled: boolean;
   onRefreshWorkspaces: () => void;
 }

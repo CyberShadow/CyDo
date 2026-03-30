@@ -38,6 +38,7 @@ struct ContinuationDef
 	bool keep_context;
 	@Optional WorktreeMode worktree;
 	@Optional string prompt_template;
+	@Optional string description;
 }
 
 struct CreatableTaskDef
@@ -47,8 +48,23 @@ struct CreatableTaskDef
 	@Optional WorktreeMode worktree;
 	@Optional string prompt_template;
 	@Optional string result_note;
+	@Optional string description;
 
 	/// Resolve the actual task type (task_type field, or name if unset).
+	string resolvedType() const
+	{
+		return task_type.length > 0 ? task_type : name;
+	}
+}
+
+struct UserEntryPointDef
+{
+	string name; // from YAML mapping key
+	@Optional string task_type; // defaults to name
+	string description; // required — shown in UI
+	@Optional string prompt_template;
+	@Optional WorktreeMode worktree;
+
 	string resolvedType() const
 	{
 		return task_type.length > 0 ? task_type : name;
@@ -61,7 +77,6 @@ struct TaskTypeDef
 	string name;
 
 	// Identity
-	string description;
 	@Optional string display_name;
 	@Optional string icon;
 	@Optional string agent_description;
@@ -82,7 +97,6 @@ struct TaskTypeDef
 
 	// Execution
 	@Optional bool serial;
-	bool user_visible = true;
 	@Optional uint max_turns;
 
 	// Steward
@@ -95,6 +109,14 @@ struct TaskTypeDef
 struct TaskTypesFile
 {
 	@Key("name") TaskTypeDef[] task_types;
+	@Optional @Key("name") UserEntryPointDef[] user_entry_points;
+}
+
+/// Combined result of loading task types (types + entry points).
+struct TaskTypeConfig
+{
+	TaskTypeDef[] types;
+	UserEntryPointDef[] entryPoints;
 }
 
 /// Look up a task type by name. Returns a pointer into the array, or null.
@@ -115,9 +137,18 @@ inout(CreatableTaskDef)* byName(inout CreatableTaskDef[] defs, string name)
 	return null;
 }
 
+/// Look up a user entry point def by name.
+inout(UserEntryPointDef)* byName(inout UserEntryPointDef[] defs, string name)
+{
+	foreach (ref d; defs)
+		if (d.name == name)
+			return &d;
+	return null;
+}
+
 /// Returns the "interactive cluster": the set of types reachable from any
-/// user_visible type via keep_context continuations.
-bool[string] interactiveTypeSet(TaskTypeDef[] types)
+/// entry point type via keep_context continuations.
+bool[string] interactiveTypeSet(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 {
 	bool[string] result;
 	void walk(string name)
@@ -132,17 +163,16 @@ bool[string] interactiveTypeSet(TaskTypeDef[] types)
 			if (c.keep_context)
 				walk(c.task_type);
 	}
-	foreach (ref def; types)
-		if (def.user_visible)
-			walk(def.name);
+	foreach (ref ep; entryPoints)
+		walk(ep.resolvedType);
 	return result;
 }
 
 /// Returns true if the given type name is in the interactive cluster.
 /// These types are all permitted to call AskUserQuestion.
-bool isInteractive(TaskTypeDef[] types, string typeName)
+bool isInteractive(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string typeName)
 {
-	return (typeName in types.interactiveTypeSet) !is null;
+	return (typeName in interactiveTypeSet(types, entryPoints)) !is null;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +183,7 @@ import dyaml.node : Node, NodeID;
 
 /// Load task types from one or more YAML files, merging them in order
 /// (later files override earlier ones at the YAML level).
-TaskTypeDef[] loadTaskTypes(string[] paths...)
+TaskTypeConfig loadTaskTypes(string[] paths...)
 {
 	import configy.read : parseConfig, CLIArgs;
 	import dyaml.loader : Loader;
@@ -180,7 +210,7 @@ TaskTypeDef[] loadTaskTypes(string[] paths...)
 		throw new Exception("No task type files found in: " ~ paths.join(", "));
 
 	auto result = parseConfig!TaskTypesFile(CLIArgs(paths[0]), root);
-	return result.task_types;
+	return TaskTypeConfig(result.task_types, result.user_entry_points);
 }
 
 /// Deep-merge two YAML nodes. For mappings, keys from `overlay` are merged
@@ -212,7 +242,7 @@ private Node deepMerge(Node base, Node overlay)
 // Validator
 // ---------------------------------------------------------------------------
 
-string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
+string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string typesDir = "")
 {
 	import std.file : exists;
 	import std.path : buildPath;
@@ -322,10 +352,9 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			}
 		}
 
-		// Seed from all user-visible types with hasWorktree=false.
-		foreach (ref def; types)
-			if (def.user_visible)
-				enqueue(def.name, false, "", "");
+		// Seed from all entry point types with hasWorktree from the entry point config.
+		foreach (ref ep; entryPoints)
+			enqueue(ep.resolvedType, ep.worktree != WorktreeMode.inherit, "", "");
 
 		while (queue.length > 0)
 		{
@@ -389,7 +418,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 
 	// Interactive types must have empty output_type (they produce no structured output)
 	{
-		auto interactive = types.interactiveTypeSet;
+		auto interactive = interactiveTypeSet(types, entryPoints);
 		foreach (ref def; types)
 		{
 			if (def.name in interactive && def.output_type.length > 0)
@@ -398,12 +427,12 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 		}
 	}
 
-	// Interactive session integrity: types reachable from user_visible
-	// types via keep_context must not have !keep_context continuations,
+	// Interactive session integrity: types reachable from entry point types
+	// via keep_context must not have !keep_context continuations,
 	// because a Handoff would complete the interactive task and orphan
 	// the user's session.
 	{
-		auto interactive = types.interactiveTypeSet;
+		auto interactive = interactiveTypeSet(types, entryPoints);
 
 		// Check that interactive types only have keep_context continuations
 		foreach (ref def; types)
@@ -414,43 +443,54 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 			{
 				if (!cont.keep_context)
 					errors ~= format("%s: continuation '%s' is !keep_context but '%s' is "
-						~ "reachable from a user_visible type via keep_context — "
+						~ "reachable from an entry point type via keep_context — "
 						~ "Handoff would orphan the interactive session",
 						def.name, cname, def.name);
 			}
 			if (def.on_yield.task_type.length > 0)
 				errors ~= format("%s: on_yield is not allowed on interactive types "
-					~ "(reachable from user_visible via keep_context)", def.name);
+					~ "(reachable from entry point via keep_context)", def.name);
 		}
 	}
 
 	// Prompt template invariant:
-	// - user_visible types MUST have node-level prompt_template (user creates them directly)
-	// - non-user_visible, non-steward types MUST NOT have node-level prompt_template
+	// - Entry points MUST have description and prompt_template
+	// - Non-steward types MUST NOT have node-level prompt_template
 	//   (prompt comes from the edge that spawns them)
-	// - edges to non-user_visible targets MUST carry prompt_template
+	// - Edges to types without node-level prompt_template MUST carry prompt_template
 	{
+		// Build a set of all type names that have node-level prompt_template
+		// (only stewards after refactoring)
+		foreach (ref ep; entryPoints)
+		{
+			if (ep.description.length == 0)
+				errors ~= format("entry_point '%s': missing required description", ep.name);
+			if (ep.prompt_template.length == 0)
+				errors ~= format("entry_point '%s': missing required prompt_template", ep.name);
+			if (types.byName(ep.resolvedType) is null)
+				errors ~= format("entry_point '%s': references unknown type '%s'", ep.name, ep.resolvedType);
+			checkTemplateFile(format("entry_point '%s'", ep.name), ep.prompt_template);
+		}
+
 		foreach (ref def; types)
 		{
 			if (def.steward)
 				continue;
-
-			if (def.user_visible && def.prompt_template.length == 0)
-				errors ~= format("%s: user_visible type has no prompt_template", def.name);
-			if (!def.user_visible && def.prompt_template.length > 0)
-				errors ~= format("%s: non-user_visible type has node-level prompt_template"
-					~ " — prompt should be on the edges that reference it", def.name);
+			if (def.prompt_template.length > 0)
+				errors ~= format("%s: non-steward type has node-level prompt_template"
+					~ " — prompt should be on the edges or entry points that reference it", def.name);
 		}
 
-		// Every edge to a non-user_visible target must carry prompt_template
+		// Every edge to a target without node-level prompt_template must carry prompt_template
 		foreach (ref def; types)
 		{
 			foreach (ref edge; def.creatable_tasks)
 			{
 				auto target = types.byName(edge.resolvedType);
-				if (target !is null && !target.user_visible && edge.prompt_template.length == 0)
-					errors ~= format("%s: creatable_tasks '%s' targets non-user_visible type"
-						~ " but has no prompt_template", def.name, edge.name);
+				if (target !is null && !target.steward && target.prompt_template.length == 0
+					&& edge.prompt_template.length == 0)
+					errors ~= format("%s: creatable_tasks '%s' targets type without node-level"
+						~ " prompt_template but has no prompt_template", def.name, edge.name);
 			}
 
 			foreach (cname, ref cont; def.continuations)
@@ -458,9 +498,10 @@ string[] validateTaskTypes(TaskTypeDef[] types, string typesDir = "")
 				if (cont.keep_context)
 					continue;
 				auto target = types.byName(cont.task_type);
-				if (target !is null && !target.user_visible && cont.prompt_template.length == 0)
-					errors ~= format("%s: continuation '%s' targets non-user_visible type '%s'"
-						~ " but has no prompt_template", def.name, cname, cont.task_type);
+				if (target !is null && !target.steward && target.prompt_template.length == 0
+					&& cont.prompt_template.length == 0)
+					errors ~= format("%s: continuation '%s' targets type '%s' without node-level"
+						~ " prompt_template but has no prompt_template", def.name, cname, cont.task_type);
 			}
 		}
 	}
@@ -585,8 +626,12 @@ private string detectCycle(TaskTypeDef[] types, string current, string[] visited
 // Printer
 // ---------------------------------------------------------------------------
 
-void printTypes(TaskTypeDef[] types)
+void printTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 {
+	bool[string] entryPointTargets;
+	foreach (ref ep; entryPoints)
+		entryPointTargets[ep.resolvedType] = true;
+
 	writeln("=== Task Type Definitions ===\n");
 	foreach (ref def; types)
 	{
@@ -599,15 +644,14 @@ void printTypes(TaskTypeDef[] types)
 			def.read_only ? "  [ro]" : "",
 			def.steward ? "  [steward]" : "",
 			def.serial ? "  [serial]" : "",
-			def.user_visible ? "" : "  [hidden]",
+			def.name in entryPointTargets ? "  [entry-point]" : "",
 		);
 	}
 
 	// Summary
 	auto stewards = types.filter!(d => d.steward).array;
-	auto visible = types.filter!(d => d.user_visible).array;
-	writefln("\n  %d types total, %d user-visible, %d stewards",
-		types.length, visible.length, stewards.length);
+	writefln("\n  %d types total, %d entry points, %d stewards",
+		types.length, entryPoints.length, stewards.length);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,20 +668,20 @@ private struct SimTask
 	string chosenContinuation;
 }
 
-void simulateWorkflow(TaskTypeDef[] types)
+void simulateWorkflow(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 {
 	writeln("=== Workflow Simulator ===\n");
 
 	auto stewardNames = types.filter!(d => d.steward).map!(d => d.name).array;
-	auto visibleNames = types.filter!(d => d.user_visible).map!(d => d.name).array;
+	auto epNames = entryPoints.map!(ep => ep.name).array;
 
-	if (visibleNames.length == 0)
+	if (epNames.length == 0)
 	{
-		writeln("No user-visible task types defined.");
+		writeln("No user entry points defined.");
 		return;
 	}
 
-	writefln("User-visible types: %s", visibleNames.join(", "));
+	writefln("User entry points: %s", epNames.join(", "));
 	if (stewardNames.length > 0)
 		writefln("Active stewards: %s", stewardNames.join(", "));
 	writeln();
@@ -664,13 +708,17 @@ void simulateWorkflow(TaskTypeDef[] types)
 		return line.chomp.strip;
 	}
 
-	// Pick starting type
-	write("> Start type: ");
-	auto startType = prompt();
-	if (eof || types.byName(startType) is null)
+	// Pick starting entry point (or type name for non-entry-point types)
+	write("> Start entry point: ");
+	auto startInput = prompt();
+	if (eof)
+		return;
+	// Resolve entry point name to type name
+	auto epDef = entryPoints.byName(startInput);
+	auto startType = epDef !is null ? epDef.resolvedType : startInput;
+	if (types.byName(startType) is null)
 	{
-		if (!eof)
-			writefln("Unknown type '%s'", startType);
+		writefln("Unknown entry point or type '%s'", startInput);
 		return;
 	}
 
@@ -1025,6 +1073,16 @@ string indentLines(string text, string prefix)
 	return result;
 }
 
+/// Get description for an edge: edge description, then first line of target's
+/// agent_description, then target's name.
+private string edgeDesc(string contDesc, TaskTypeDef* targetDef)
+{
+	if (contDesc.length > 0) return contDesc;
+	if (targetDef !is null && targetDef.agent_description.length > 0)
+		return targetDef.agent_description.strip.lineSplitter.front.to!string;
+	return targetDef !is null ? targetDef.name : "";
+}
+
 /// Format a description of keep_context continuations for a given task type.
 /// Used to fill the {{switchmodes}} placeholder in the SwitchMode tool description.
 string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
@@ -1039,7 +1097,7 @@ string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
 		if (!cont.keep_context)
 			continue;
 		auto targetDef = allTypes.byName(cont.task_type);
-		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
+		auto desc = edgeDesc(cont.description, targetDef);
 		result ~= format("- %s: switches to '%s' — %s\n", cname, cont.task_type, desc);
 		if (targetDef !is null && targetDef.agent_description.length > 0)
 			result ~= indentLines(targetDef.agent_description.strip, "  ");
@@ -1064,7 +1122,7 @@ string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
 		if (cont.keep_context)
 			continue;
 		auto targetDef = allTypes.byName(cont.task_type);
-		auto desc = targetDef !is null ? targetDef.description : cont.task_type;
+		auto desc = edgeDesc(cont.description, targetDef);
 		result ~= format("- %s: hands off to '%s' — %s\n", cname, cont.task_type, desc);
 		result ~= "\n";
 	}
@@ -1085,7 +1143,8 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 		auto def = allTypes.byName(edge.resolvedType);
 		if (def is null)
 			continue;
-		result ~= format("- %s: %s\n", edge.name, def.description);
+		auto desc = edgeDesc(edge.description, def);
+		result ~= format("- %s: %s\n", edge.name, desc);
 		if (def.agent_description.length > 0)
 			result ~= indentLines(def.agent_description.strip, "  ");
 		if (def.tool_guidance.length > 0)
@@ -1099,9 +1158,14 @@ string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
 // Dot (Graphviz) Generator
 // ---------------------------------------------------------------------------
 
-void generateDot(TaskTypeDef[] types)
+void generateDot(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 {
 	auto stewardNames = types.filter!(d => d.steward).map!(d => d.name).array;
+
+	// Build a set of entry point target types for coloring
+	bool[string] entryPointTargets;
+	foreach (ref ep; entryPoints)
+		entryPointTargets[ep.resolvedType] = true;
 
 	writeln("digraph task_types {");
 	writeln("    rankdir=LR;");
@@ -1111,9 +1175,9 @@ void generateDot(TaskTypeDef[] types)
 
 	// User node
 	writeln("    user [label=\"user\" shape=house style=\"filled\" fillcolor=\"#cce5ff\"];");
-	foreach (ref def; types)
-		if (def.user_visible)
-			writefln("    user -> %s [style=dashed arrowhead=open label=\"creates\"];", def.name);
+	foreach (ref ep; entryPoints)
+		writefln("    user -> %s [style=dashed arrowhead=open label=\"%s\"];",
+			ep.resolvedType, ep.name);
 	writeln();
 
 	// Node definitions with shape/color by category
@@ -1126,7 +1190,7 @@ void generateDot(TaskTypeDef[] types)
 			shape = "octagon";
 			fillcolor = "#fff3cd";
 		}
-		else if (def.user_visible)
+		else if (def.name in entryPointTargets)
 		{
 			shape = "box";
 			fillcolor = "#d4edda";
@@ -1223,7 +1287,7 @@ void generateDot(TaskTypeDef[] types)
 	writeln("    subgraph cluster_legend {");
 	writeln("        label=\"Legend\" style=dashed fontname=\"Helvetica\" fontsize=10;");
 	writeln("        node [shape=plaintext fontsize=9];");
-	writeln("        leg1 [label=\"Green = user-visible\\lGray = agent-initiated\\lYellow = steward\\l\"];");
+	writeln("        leg1 [label=\"Green = user entry point\\lGray = agent-initiated\\lYellow = steward\\l\"];");
 	writeln("        leg2 [label=\"Solid arrow = continuation\\lDashed arrow = creates sub-task\\lBold arrow = requires approval\\lDotted diamond = steward review\\l⟳ = keep context (session fork)\\l⎘ = fork worktree\\l⎘? = require worktree\\l\"];");
 	writeln("    }");
 
@@ -1235,11 +1299,11 @@ void generateDot(TaskTypeDef[] types)
 // ---------------------------------------------------------------------------
 
 /// Load and validate task types from a YAML file, returning null on error.
-private TaskTypeDef[] loadAndValidate(string path)
+private TaskTypeConfig* loadAndValidate(string path)
 {
-	TaskTypeDef[] types;
+	TaskTypeConfig config;
 	try
-		types = loadTaskTypes(path);
+		config = loadTaskTypes(path);
 	catch (Exception e)
 	{
 		stderr.writefln("Error loading %s: %s", path, e.msg);
@@ -1247,7 +1311,7 @@ private TaskTypeDef[] loadAndValidate(string path)
 	}
 
 	import std.path : dirName;
-	auto errors = validateTaskTypes(types, dirName(path));
+	auto errors = validateTaskTypes(config.types, config.entryPoints, dirName(path));
 	if (errors.length > 0)
 	{
 		writeln("=== Validation Errors ===\n");
@@ -1256,27 +1320,27 @@ private TaskTypeDef[] loadAndValidate(string path)
 		writeln();
 	}
 
-	return types;
+	return new TaskTypeConfig(config.types, config.entryPoints);
 }
 
 void runSimulator(string path)
 {
-	auto types = loadAndValidate(path);
-	if (types is null)
+	auto config = loadAndValidate(path);
+	if (config is null)
 		return;
 
-	printTypes(types);
+	printTypes(config.types, config.entryPoints);
 	writeln();
-	simulateWorkflow(types);
+	simulateWorkflow(config.types, config.entryPoints);
 }
 
 void runDot(string path)
 {
-	auto types = loadAndValidate(path);
-	if (types is null)
+	auto config = loadAndValidate(path);
+	if (config is null)
 		return;
 
-	generateDot(types);
+	generateDot(config.types, config.entryPoints);
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,22 +1353,25 @@ void runDumpContext(string path, string typeName)
 
 	auto typesDir = dirName(path);
 
-	TaskTypeDef[] types;
+	TaskTypeConfig config;
 	try
-		types = loadTaskTypes(path);
+		config = loadTaskTypes(path);
 	catch (Exception e)
 	{
 		stderr.writefln("Error loading %s: %s", path, e.msg);
 		return;
 	}
 
-	auto errors = validateTaskTypes(types, typesDir);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, typesDir);
 	if (errors.length > 0)
 	{
 		foreach (e; errors)
 			stderr.writefln("  WARN: %s", e);
 		stderr.writeln();
 	}
+
+	auto types = config.types;
+	auto entryPoints = config.entryPoints;
 
 	auto defp = types.byName(typeName);
 	if (defp is null)
@@ -1320,14 +1387,21 @@ void runDumpContext(string path, string typeName)
 	writefln("=== Agent Context for '%s' ===\n", typeName);
 
 	// Task type metadata
-	writefln("Description:    %s", def.description);
+	{
+		auto firstLine = def.agent_description.length > 0
+			? def.agent_description.strip.lineSplitter.front.to!string : "—";
+		writefln("Description:    %s", firstLine);
+	}
 	writefln("Model:          %s", def.model_class);
 	writefln("Output:         %s", def.output_type.length == 0 ? "—"
 		: def.output_type.map!(o => cast(string) o).join("+"));
 	writefln("Read-only:      %s", def.read_only);
 	auto treeRO = computeTreeReadOnly(types);
 	writefln("Tree-read-only: %s", typeName in treeRO ? treeRO[typeName] : false);
-	writefln("User-visible:   %s", def.user_visible);
+	{
+		auto epNames = entryPoints.filter!(ep => ep.resolvedType == typeName).map!(ep => ep.name).join(", ");
+		writefln("Entry points:   %s", epNames.length > 0 ? epNames : "—");
+	}
 	if (def.steward)
 	{
 		writefln("Steward:        true");
@@ -1401,7 +1475,7 @@ void runDumpContext(string path, string typeName)
 	if (ct.length > 0) includeTools ~= "Task";
 	if (sm.length > 0) includeTools ~= "SwitchMode";
 	if (ho.length > 0) includeTools ~= "Handoff";
-	if (types.isInteractive(typeName)) includeTools ~= "AskUserQuestion";
+	if (isInteractive(types, entryPoints, typeName)) includeTools ~= "AskUserQuestion";
 
 	auto toolsJson = buildToolsListJson!CydoTools([
 		"creatable_task_types": ct,

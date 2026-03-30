@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect, useMemo } from "preact/hooks";
 import type { TaskState } from "../types";
-import type { TaskTypeInfo } from "../useSessionManager";
+import type { TypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
   tasks: Map<number, TaskState>;
   onSelect: (tid: number) => void;
   onClose: () => void;
-  taskTypes: TaskTypeInfo[];
+  taskTypes: TypeInfo[];
 }
 
 export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {

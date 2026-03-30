@@ -38,7 +38,7 @@ import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
+import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt;
 import cydo.task;
@@ -156,6 +156,7 @@ class App : ToolsBackend
 	private Agent[string] agentsByType;
 	// Task type definitions loaded from YAML
 	private TaskTypeDef[] taskTypesCache;
+	private UserEntryPointDef[] entryPointsCache;
 	private enum taskTypesDir = "defs";
 	private enum taskTypesPath = "defs/task-types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
@@ -197,11 +198,12 @@ class App : ToolsBackend
 		try
 		{
 			auto userTypesPath = buildPath(expandTilde("~/.config/cydo"), "task-types.yaml");
-			auto types = loadTaskTypes(taskTypesPath, userTypesPath);
-			auto errors = validateTaskTypes(types, taskTypesDir);
+			auto config = loadTaskTypes(taskTypesPath, userTypesPath);
+			auto errors = validateTaskTypes(config.types, config.entryPoints, taskTypesDir);
 			foreach (e; errors)
 				warningf("task type: %s", e);
-			taskTypesCache = types;
+			taskTypesCache = config.types;
+			entryPointsCache = config.entryPoints;
 			return taskTypesCache;
 		}
 		catch (Exception e)
@@ -209,6 +211,11 @@ class App : ToolsBackend
 			warningf("task types file changed but failed to parse, keeping previous version: %s", e.msg);
 			return taskTypesCache;
 		}
+	}
+
+	private UserEntryPointDef[] getEntryPoints()
+	{
+		return entryPointsCache;
 	}
 
 	void start()
@@ -929,11 +936,11 @@ class App : ToolsBackend
 		if (tdp is null)
 			return resolve(McpResult("Task not found", true));
 
-		// Gate: only types in the interactive cluster (user_visible or reachable
-		// from user_visible via keep_context continuations).
+		// Gate: only types in the interactive cluster (reachable from entry points
+		// via keep_context continuations).
 		auto taskTypes = getTaskTypes();
 		auto typeDef = taskTypes.byName(tdp.taskType);
-		if (typeDef is null || !taskTypes.isInteractive(tdp.taskType))
+		if (typeDef is null || !taskTypes.isInteractive(getEntryPoints(), tdp.taskType))
 			return resolve(McpResult(
 				"AskUserQuestion is only available for interactive tasks. "
 				~ "This task type (" ~ tdp.taskType ~ ") is not interactive.", true));
@@ -1167,10 +1174,25 @@ class App : ToolsBackend
 	{
 		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
 		auto tid = createTask(json.workspace, json.project_path, at);
-		if (json.task_type.length > 0 && getTaskTypes().byName(json.task_type) !is null)
+		// Resolve task type: entry_point takes precedence over task_type.
+		// Call getTaskTypes() first to ensure entryPointsCache is populated.
+		auto taskTypes = getTaskTypes();
+		auto entryPoints = getEntryPoints();
+		string resolvedType = json.task_type;
+		string epTemplate;
+		if (json.entry_point.length > 0)
 		{
-			tasks[tid].taskType = json.task_type;
-			persistence.setTaskType(tid, json.task_type);
+			auto ep = entryPoints.byName(json.entry_point);
+			if (ep !is null)
+			{
+				resolvedType = ep.resolvedType;
+				epTemplate = ep.prompt_template;
+			}
+		}
+		if (resolvedType.length > 0 && taskTypes.byName(resolvedType) !is null)
+		{
+			tasks[tid].taskType = resolvedType;
+			persistence.setTaskType(tid, resolvedType);
 		}
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
@@ -1185,14 +1207,14 @@ class App : ToolsBackend
 		if (blocks.length > 0)
 		{
 			auto td = &tasks[tid];
-			auto typeDef = getTaskTypes().byName(td.taskType);
+			auto typeDef = taskTypes.byName(td.taskType);
 			auto textContent = extractContentText(blocks);
 			auto messageToSend = blocks;
 			if (typeDef !is null)
 			{
 				import std.algorithm : filter;
 				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
+				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath, epTemplate);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
@@ -2259,7 +2281,7 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "SwitchMode";
 		if (sessionConfig.handoffs.length > 0)
 			sessionConfig.includeTools ~= "Handoff";
-		if (getTaskTypes().isInteractive(td.taskType))
+		if (getTaskTypes().isInteractive(getEntryPoints(), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
 
 		if (typeDef !is null && typeDef.allow_native_subagents)
@@ -3879,10 +3901,29 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : toJson;
 
-		TaskTypeListEntry[] entries;
-		foreach (ref def; getTaskTypes())
-			entries ~= TaskTypeListEntry(def.name, def.display_name, def.description, def.model_class, def.read_only, def.icon, def.user_visible);
-		return toJson(TaskTypesListMessage("task_types_list", entries));
+		auto types = getTaskTypes();
+		auto entryPoints = getEntryPoints();
+		EntryPointEntry[] eps;
+		foreach (ref ep; entryPoints)
+		{
+			auto typeDef = types.byName(ep.resolvedType);
+			EntryPointEntry entry;
+			entry.name = ep.name;
+			entry.task_type = ep.resolvedType;
+			entry.description = ep.description;
+			if (typeDef !is null)
+			{
+				entry.display_name = typeDef.display_name;
+				entry.model_class = typeDef.model_class;
+				entry.read_only = typeDef.read_only;
+				entry.icon = typeDef.icon;
+			}
+			eps ~= entry;
+		}
+		TypeInfoEntry[] typeInfo;
+		foreach (ref def; types)
+			typeInfo ~= TypeInfoEntry(def.name, def.display_name, def.icon);
+		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo));
 	}
 
 	private string buildAgentTypesList()
