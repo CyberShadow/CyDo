@@ -2291,7 +2291,9 @@ function hasReadOnlyCommandActions(result?: ToolResult): boolean {
         action != null &&
         typeof action === "object" &&
         !Array.isArray(action) &&
-        (action as Record<string, unknown>).type === "read",
+        ((action as Record<string, unknown>).type === "read" ||
+          (action as Record<string, unknown>).type === "listFiles" ||
+          (action as Record<string, unknown>).type === "search"),
     )
   );
 }
