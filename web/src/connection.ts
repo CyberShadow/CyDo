@@ -101,6 +101,12 @@ export class Connection {
     );
   }
 
+  setEntryPoint(tid: number, entryPoint: string) {
+    this.send(
+      JSON.stringify({ type: "set_entry_point", tid, entry_point: entryPoint }),
+    );
+  }
+
   setAgentType(tid: number, agentType: string) {
     this.send(
       JSON.stringify({ type: "set_agent_type", tid, agent_type: agentType }),

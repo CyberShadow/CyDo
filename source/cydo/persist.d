@@ -91,6 +91,8 @@ struct Persistence
 			// (0 = no worktree, tid = owns worktree, other tid = shares worktree)
 			"ALTER TABLE tasks ADD COLUMN worktree_tid INTEGER NOT NULL DEFAULT 0;" ~
 			"UPDATE tasks SET worktree_tid = tid WHERE has_worktree = 1;",
+			// Migration 16: persist selected entry point for user-facing tasks
+			"ALTER TABLE tasks ADD COLUMN entry_point TEXT NOT NULL DEFAULT '';",
 		]);
 	}
 
@@ -136,10 +138,11 @@ struct Persistence
 		return 0;
 	}
 
-	int createTask(string workspace = "", string projectPath = "", string agentType = "claude")
+	int createTask(string workspace = "", string projectPath = "", string agentType = "claude",
+		string entryPoint = "")
 	{
 		import std.datetime : Clock;
-		db.stmt!"INSERT INTO tasks (workspace, project_path, agent_type, created_at) VALUES (?, ?, ?, ?)".exec(workspace, projectPath, agentType, Clock.currStdTime);
+		db.stmt!"INSERT INTO tasks (workspace, project_path, agent_type, created_at, entry_point) VALUES (?, ?, ?, ?, ?)".exec(workspace, projectPath, agentType, Clock.currStdTime, entryPoint);
 		return cast(int) db.db.lastInsertRowID;
 	}
 
@@ -166,6 +169,11 @@ struct Persistence
 	void setTaskType(int tid, string taskType)
 	{
 		db.stmt!"UPDATE tasks SET task_type = ? WHERE tid = ?".exec(taskType, tid);
+	}
+
+	void setEntryPoint(int tid, string entryPoint)
+	{
+		db.stmt!"UPDATE tasks SET entry_point = ? WHERE tid = ?".exec(entryPoint, tid);
 	}
 
 	void setAgentType(int tid, string agentType)
@@ -212,6 +220,7 @@ struct Persistence
 		string resultText;
 		long createdAt;
 		long lastActive;
+		string entryPoint;
 	}
 
 	TaskRow[] loadTasks()
@@ -220,10 +229,10 @@ struct Persistence
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string title, string status, string agentType, int archived, string draft,
-			string resultText, long createdAt, long lastActive;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0) FROM tasks".iterate())
+			string resultText, long createdAt, long lastActive, string entryPoint;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,'') FROM tasks".iterate())
 		{
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, title, status, agentType, archived != 0, draft, resultText, createdAt, lastActive);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, title, status, agentType, archived != 0, draft, resultText, createdAt, lastActive, entryPoint);
 		}
 		return result;
 	}

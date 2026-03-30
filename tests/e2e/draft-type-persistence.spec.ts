@@ -1,4 +1,4 @@
-import { test, expect, enterSession } from "./fixtures";
+import { test, expect, enterSession, responseTimeout } from "./fixtures";
 import type { Page } from "./fixtures";
 
 async function snapshotTids(page: Page): Promise<Set<string>> {
@@ -27,7 +27,7 @@ async function waitForNewTid(
   return newTid!;
 }
 
-test("sidebar icon updates when task type changed on draft", async ({
+test("sidebar icon updates when entry point changed on draft", async ({
   page,
 }) => {
   await enterSession(page);
@@ -52,14 +52,14 @@ test("sidebar icon updates when task type changed on draft", async ({
     ),
   ).toBeVisible({ timeout: 2_000 });
 
-  // Change task type to "blank" via the picker
+  // Change entry point to "blank" via the picker
   await page.locator(".task-type-row", { hasText: "blank" }).click();
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
   ).toHaveText("blank");
 
   // BUG: sidebar icon should update to "blank" but stays as "conversation"
-  // because the task type change is not sent to the backend until send()
+  // because the selected entry point was not being persisted on the draft task
   await expect(
     page.locator(
       `.sidebar-item[data-tid="${draftTid}"] .task-type-icon-blank`,
@@ -67,7 +67,7 @@ test("sidebar icon updates when task type changed on draft", async ({
   ).toBeVisible({ timeout: 3_000 });
 });
 
-test("task type persists across page reload on draft", async ({ page }) => {
+test("entry point persists across page reload on draft", async ({ page }) => {
   await enterSession(page);
 
   const before = await snapshotTids(page);
@@ -75,7 +75,7 @@ test("task type persists across page reload on draft", async ({ page }) => {
   // Type something to create a draft task
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
-  await input.fill("task type reload test");
+  await input.fill("entry point reload test");
 
   // Wait for draft to appear in sidebar
   const draftTid = await waitForNewTid(page, before);
@@ -83,7 +83,7 @@ test("task type persists across page reload on draft", async ({ page }) => {
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible({ timeout: 2_000 });
 
-  // Change task type to "blank"
+  // Change entry point to "blank"
   await page.locator(".task-type-row", { hasText: "blank" }).click();
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
@@ -101,15 +101,43 @@ test("task type persists across page reload on draft", async ({ page }) => {
   ).toBeAttached({ timeout: 15_000 });
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
 
-  // Wait for the task type picker to be visible
+  // Wait for the entry-point picker to be visible
   await expect(page.locator(".task-type-picker")).toBeVisible({
     timeout: 5_000,
   });
 
-  // BUG: task type should still be "blank" but reverts to default "conversation"
+  // BUG: entry point should still be "blank" but reverts to default "agentic"
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
   ).toHaveText("blank");
+});
+
+test("sending from isolated draft applies the isolated entry-point prompt", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+
+  await page.locator(".task-type-row", { hasText: "isolated" }).click();
+  await expect(
+    page.locator(".task-type-row.selected .task-type-name"),
+  ).toHaveText("isolated");
+
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("isolated draft echo test");
+  await page.locator(".btn-send:visible").first().click();
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "hands-on coding assistant working in an isolated worktree",
+    }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "isolated draft echo test",
+    }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
 test("agent type persists across page reload on draft", async ({

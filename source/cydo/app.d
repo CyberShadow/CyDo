@@ -260,6 +260,7 @@ class App : ToolsBackend
 			auto td = TaskData(row.tid);
 			td.agentSessionId = row.agentSessionId;
 			td.description = row.description;
+			td.entryPoint = row.entryPoint;
 			td.taskType = row.taskType;
 			td.agentType = row.agentType;
 			td.parentTid = row.parentTid;
@@ -1139,6 +1140,7 @@ class App : ToolsBackend
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
+			case "set_entry_point":  handleSetEntryPointMsg(json); break;
 			case "set_agent_type":   handleSetAgentTypeMsg(json); break;
 			default: break;
 		}
@@ -1151,8 +1153,28 @@ class App : ToolsBackend
 		if (tasks[tid].alive) return; // can't change type of a running task
 		if (json.task_type.length == 0) return;
 		if (getTaskTypes().byName(json.task_type) is null) return;
+		tasks[tid].entryPoint = "";
+		persistence.setEntryPoint(tid, "");
+		clearPendingTaskWorktree(tid);
 		tasks[tid].taskType = json.task_type;
 		persistence.setTaskType(tid, json.task_type);
+		broadcastTaskUpdate(tid);
+	}
+
+	private void handleSetEntryPointMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks) return;
+		if (tasks[tid].alive) return; // can't change type of a running task
+		if (json.entry_point.length == 0) return;
+		auto ep = getEntryPoints().byName(json.entry_point);
+		if (ep is null) return;
+		auto td = &tasks[tid];
+		td.entryPoint = json.entry_point;
+		persistence.setEntryPoint(tid, td.entryPoint);
+		td.taskType = ep.resolvedType;
+		persistence.setTaskType(tid, td.taskType);
+		syncPendingTaskWorktree(tid, ep.worktree);
 		broadcastTaskUpdate(tid);
 	}
 
@@ -1175,7 +1197,7 @@ class App : ToolsBackend
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
-		auto tid = createTask(json.workspace, json.project_path, at);
+		auto tid = createTask(json.workspace, json.project_path, at, json.entry_point);
 		// Resolve task type: entry_point takes precedence over task_type.
 		// Call getTaskTypes() first to ensure entryPointsCache is populated.
 		auto taskTypes = getTaskTypes();
@@ -1195,6 +1217,8 @@ class App : ToolsBackend
 		}
 		if (resolvedType.length > 0 && taskTypes.byName(resolvedType) !is null)
 		{
+			tasks[tid].entryPoint = json.entry_point;
+			persistence.setEntryPoint(tid, json.entry_point);
 			tasks[tid].taskType = resolvedType;
 			persistence.setTaskType(tid, resolvedType);
 		}
@@ -1534,7 +1558,15 @@ class App : ToolsBackend
 			{
 				import std.algorithm : filter;
 				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath);
+				string entryPointTemplate;
+				if (td.entryPoint.length > 0)
+				{
+					auto ep = getEntryPoints().byName(td.entryPoint);
+					if (ep !is null)
+						entryPointTemplate = ep.prompt_template;
+				}
+				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir,
+					td.outputPath, entryPointTemplate);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
@@ -2033,13 +2065,15 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
-	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude")
+	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude",
+		string entryPoint = "")
 	{
-		auto tid = persistence.createTask(workspace, projectPath, agentType);
+		auto tid = persistence.createTask(workspace, projectPath, agentType, entryPoint);
 		auto td = TaskData(tid);
 		td.workspace = workspace;
 		td.projectPath = projectPath;
 		td.agentType = agentType;
+		td.entryPoint = entryPoint;
 		td.historyLoaded = true; // New tasks have no JSONL to load
 		import std.datetime : Clock;
 		td.createdAt = Clock.currStdTime;
@@ -2096,6 +2130,54 @@ class App : ToolsBackend
 				setupWorktreeFork(childTid, parentTid);
 				break;
 		}
+	}
+
+	/// Keep pending root-task drafts aligned with the selected entry point's worktree mode.
+	private void syncPendingTaskWorktree(int tid, WorktreeMode mode)
+	{
+		auto td = &tasks[tid];
+		if (td.alive || td.status != "pending")
+			return;
+
+		final switch (mode)
+		{
+			case WorktreeMode.inherit:
+				clearPendingTaskWorktree(tid);
+				break;
+			case WorktreeMode.require:
+				if (td.worktreeTid <= 0)
+					setupWorktreeRequire(tid, td.parentTid);
+				break;
+			case WorktreeMode.fork:
+				if (td.worktreeTid <= 0)
+					setupWorktreeFork(tid, td.parentTid);
+				break;
+		}
+	}
+
+	private void clearPendingTaskWorktree(int tid)
+	{
+		auto td = &tasks[tid];
+		if (td.worktreeTid <= 0)
+			return;
+
+		import std.file : exists;
+		import std.process : execute;
+
+		auto wtPath = td.worktreePath;
+		if (td.ownsWorktree() && wtPath.length > 0 && exists(wtPath))
+		{
+			auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
+			auto gitResult = execute(["git", "-C", workDir, "worktree", "remove", "--force", wtPath]);
+			if (gitResult.status != 0)
+			{
+				errorf("Failed to remove pending worktree for task %d: %s", tid, gitResult.output);
+				return;
+			}
+		}
+
+		td.worktreeTid = 0;
+		persistence.setWorktreeTid(tid, 0);
 	}
 
 	/// Inherit: if the parent has a worktree, the child shares it.
@@ -3904,7 +3986,7 @@ class App : ToolsBackend
 			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
 			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.agentType, td.archived, td.draft, td.error,
+			td.taskType, td.entryPoint, td.agentType, td.archived, td.draft, td.error,
 			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 	}
 

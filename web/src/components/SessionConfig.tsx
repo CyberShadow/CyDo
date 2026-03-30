@@ -5,7 +5,7 @@ import { ensureIconStyles } from "./TaskTypeIcon";
 interface Props {
   entryPoints: EntryPointInfo[];
   selected: string;
-  onTaskTypeChange: (taskType: string) => void;
+  onEntryPointChange: (entryPoint: string) => void;
   pickerRef?: RefObject<HTMLDivElement>;
   onConfirm?: () => void;
   onType?: () => void;
@@ -14,7 +14,7 @@ interface Props {
 export function SessionConfig({
   entryPoints,
   selected,
-  onTaskTypeChange,
+  onEntryPointChange,
   pickerRef,
   onConfirm,
   onType,
@@ -36,7 +36,7 @@ export function SessionConfig({
       const dir = e.key === "ArrowDown" ? 1 : -1;
       const next =
         (selectedIdx + dir + entryPoints.length) % entryPoints.length;
-      onTaskTypeChange(entryPoints[next]!.name);
+      onEntryPointChange(entryPoints[next]!.name);
     } else if (e.key === "Enter") {
       e.preventDefault();
       onConfirm?.();
@@ -62,7 +62,7 @@ export function SessionConfig({
             e.preventDefault();
           }}
           onClick={() => {
-            onTaskTypeChange(t.name);
+            onEntryPointChange(t.name);
           }}
         >
           <div class="task-type-header">

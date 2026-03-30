@@ -32,7 +32,7 @@ function AppContent() {
     clearInputDraft,
     setArchived,
     saveDraft,
-    setTaskType,
+    setEntryPoint,
     setAgentType,
     sendAskUserResponse,
     editMessage,
@@ -272,8 +272,8 @@ function AppContent() {
   );
 
   const handleDraftContentStart = useCallback(
-    (taskType: string) => {
-      createDraftTask(taskType);
+    (entryPointName: string) => {
+      createDraftTask(entryPointName);
     },
     [createDraftTask],
   );
@@ -366,7 +366,7 @@ function AppContent() {
                   onUndoDismiss={undoDismiss}
                   onClearInputDraft={clearInputDraft}
                   onSaveDraft={saveDraft}
-                  onSetTaskType={setTaskType}
+                  onSetEntryPoint={setEntryPoint}
                   onSetAgentType={setAgentType}
                   theme={theme}
                   onToggleTheme={toggleTheme}

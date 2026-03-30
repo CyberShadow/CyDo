@@ -27,11 +27,11 @@ async function waitForNewTid(
   return newTid!;
 }
 
-test("changing task type after draft creation updates backend", async ({
+test("changing entry point after draft creation updates backend", async ({
   page,
   agentType,
 }) => {
-  // Capture task_updated broadcasts to verify backend task type
+  // Capture task_updated broadcasts to verify the derived backend task type
   const taskUpdatedEvents: Array<{
     tid: number;
     task_type: string;
@@ -52,14 +52,14 @@ test("changing task type after draft creation updates backend", async ({
 
   await enterSession(page);
 
-  // Task type picker should be visible in draft mode
+  // Entry-point picker should be visible in draft mode
   await expect(page.locator(".task-type-picker")).toBeVisible({
     timeout: 5_000,
   });
 
   const before = await snapshotTids(page);
 
-  // Type something to create a draft task (with default "conversation" type)
+  // Type something to create a draft task (with default "agentic" entry point)
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
   await input.fill('reply with "type-change-test"');
@@ -70,7 +70,7 @@ test("changing task type after draft creation updates backend", async ({
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible({ timeout: 2_000 });
 
-  // Click a different task type ("blank")
+  // Click a different entry point ("blank")
   await page.locator(".task-type-row", { hasText: "blank" }).click();
   await expect(
     page.locator(".task-type-row.selected .task-type-name"),
@@ -86,7 +86,7 @@ test("changing task type after draft creation updates backend", async ({
     }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
-  // Verify the backend task has task_type "blank" (not "conversation")
+  // Verify the backend task has task_type "blank" (not the default conversation type)
   const tid = parseInt(draftTid);
   const finalUpdate = taskUpdatedEvents.filter((e) => e.tid === tid).pop();
   expect(finalUpdate).toBeTruthy();

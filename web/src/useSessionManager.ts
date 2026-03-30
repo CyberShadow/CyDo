@@ -84,7 +84,7 @@ export interface TaskManager {
   send: (
     text: string,
     images?: ImageAttachment[],
-    taskType?: string,
+    entryPointName?: string,
     agentType?: string,
   ) => void;
   interrupt: () => void;
@@ -104,11 +104,11 @@ export interface TaskManager {
   clearInputDraft: (tid: number) => void;
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
-  setTaskType: (tid: number, taskType: string) => void;
+  setEntryPoint: (tid: number, entryPoint: string) => void;
   setAgentType: (tid: number, agentType: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
-  createDraftTask: (taskType?: string) => void;
+  createDraftTask: (entryPointName?: string) => void;
   deleteDraftTask: () => void;
   draftRenderKey: string | null;
   sidebarTasks: Array<{
@@ -338,7 +338,7 @@ export function useTaskManager(): TaskManager {
     return renderKey;
   }, []);
 
-  const createDraftTask = useCallback((taskType?: string) => {
+  const createDraftTask = useCallback((entryPointName?: string) => {
     if (
       draftTidRef.current !== null ||
       pendingDraftCorrelation.current !== null ||
@@ -359,7 +359,7 @@ export function useTaskManager(): TaskManager {
       connRef.current?.createTask(
         ws,
         projPath || "",
-        taskType,
+        entryPointName,
         undefined,
         undefined,
         correlationId,
@@ -715,6 +715,7 @@ export function useTaskManager(): TaskManager {
                 entry.created_at || undefined,
                 entry.last_active || undefined,
                 entry.agent_type || undefined,
+                entry.entry_point || undefined,
               ),
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
@@ -744,6 +745,7 @@ export function useTaskManager(): TaskManager {
               relationType: entry.relation_type || existing.relationType,
               status: entry.status || existing.status,
               taskType: entry.task_type || existing.taskType,
+              entryPoint: entry.entry_point || existing.entryPoint,
               agentType: entry.agent_type || existing.agentType,
               suggestions:
                 entry.isProcessing && !existing.isProcessing
@@ -796,6 +798,7 @@ export function useTaskManager(): TaskManager {
               entry.created_at || undefined,
               entry.last_active || undefined,
               entry.agent_type || undefined,
+              entry.entry_point || undefined,
             ),
             serverDraft: entry.draft || undefined,
             error: entry.error || undefined,
@@ -820,6 +823,7 @@ export function useTaskManager(): TaskManager {
             relationType: entry.relation_type || existing.relationType,
             status: entry.status || existing.status,
             taskType: entry.task_type || existing.taskType,
+            entryPoint: entry.entry_point || existing.entryPoint,
             agentType: entry.agent_type || existing.agentType,
             suggestions:
               entry.isProcessing && !existing.isProcessing
@@ -1311,13 +1315,9 @@ export function useTaskManager(): TaskManager {
       // Check for virtual draft with real tid
       const draftTid = draftTidRef.current;
       if (draftTid !== null && draftTid > 0) {
-        // Draft task exists — update task type if changed, then send message
+        // Draft task exists — update entry point if changed, then send message
         if (entryPointName) {
-          const ep = entryPoints.find((e) => e.name === entryPointName);
-          connRef.current?.setTaskType(
-            draftTid,
-            ep?.task_type ?? entryPointName,
-          );
+          connRef.current?.setEntryPoint(draftTid, entryPointName);
         }
         if (agentType) {
           connRef.current?.setAgentType(draftTid, agentType);
@@ -1568,8 +1568,8 @@ export function useTaskManager(): TaskManager {
     connRef.current?.setArchived(tid, archived);
   }, []);
 
-  const setTaskType = useCallback((tid: number, taskType: string) => {
-    connRef.current?.setTaskType(tid, taskType);
+  const setEntryPoint = useCallback((tid: number, entryPoint: string) => {
+    connRef.current?.setEntryPoint(tid, entryPoint);
   }, []);
 
   const setAgentType = useCallback((tid: number, agentType: string) => {
@@ -1703,7 +1703,7 @@ export function useTaskManager(): TaskManager {
     clearInputDraft,
     setArchived,
     saveDraft,
-    setTaskType,
+    setEntryPoint,
     setAgentType,
     sendAskUserResponse,
     editMessage,

@@ -17,6 +17,7 @@ struct TaskData
 	int tid;
 	string agentSessionId;
 	string description;
+	string entryPoint;
 	string taskType = "conversation";
 	string agentType = "claude";
 	int parentTid;
@@ -207,6 +208,7 @@ struct TaskListEntry
 	string relation_type;
 	string status;
 	string task_type;
+	string entry_point;
 	string agent_type;
 	bool archived;
 	string draft;

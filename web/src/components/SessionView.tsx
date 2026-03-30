@@ -29,7 +29,7 @@ interface Props {
   onSend: (
     text: string,
     images?: ImageAttachment[],
-    taskType?: string,
+    entryPointName?: string,
     agentType?: string,
   ) => void;
   onInterrupt: () => void;
@@ -47,7 +47,7 @@ interface Props {
   onUndoDismiss: (tid: number) => void;
   onClearInputDraft: (tid: number) => void;
   onSaveDraft?: (tid: number, draft: string) => void;
-  onSetTaskType?: (tid: number, taskType: string) => void;
+  onSetEntryPoint?: (tid: number, entryPoint: string) => void;
   onSetAgentType?: (tid: number, agentType: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
   theme: Theme;
@@ -58,7 +58,7 @@ interface Props {
   entryPoints?: EntryPointInfo[];
   agentTypes?: AgentTypeInfo[];
   defaultAgentType?: string;
-  onContentStart?: (taskType: string) => void;
+  onContentStart?: (entryPointName: string) => void;
   onContentEnd?: () => void;
 }
 
@@ -78,7 +78,7 @@ function SessionViewInner({
   onUndoDismiss,
   onClearInputDraft,
   onSaveDraft,
-  onSetTaskType,
+  onSetEntryPoint,
   onSetAgentType,
   onAskUserResponse,
   theme,
@@ -102,33 +102,29 @@ function SessionViewInner({
     task.messages.length === 0 &&
     !task.isProcessing;
 
-  // Task type picker state (only used in draft mode)
-  // Initialize with entry point name matching the task's type, or the first entry point
+  // Entry point picker state (only used in draft mode)
   const initialEntryPoint =
+    task.entryPoint ??
     entryPoints?.find((e) => e.task_type === task.taskType)?.name ??
     entryPoints?.[0]?.name ??
     "agentic";
   const [selectedEntryPoint, setSelectedEntryPoint] =
     useState(initialEntryPoint);
-  const taskTypePickerRef = useRef<HTMLDivElement>(null);
+  const entryPointPickerRef = useRef<HTMLDivElement>(null);
 
   // Agent picker state (only used in draft mode)
   const [selectedAgent, setSelectedAgent] = useState(task.agentType ?? "");
 
   const focusTaskTypePicker = useCallback(() => {
-    taskTypePickerRef.current?.focus();
+    entryPointPickerRef.current?.focus();
   }, []);
 
   const handleTaskTypeChange = useCallback(
-    (taskType: string) => {
-      setSelectedEntryPoint(taskType);
-      if (isDraft && task.tid > 0) {
-        // Pass the resolved task type name (not the entry point name)
-        const ep = entryPoints?.find((e) => e.name === taskType);
-        onSetTaskType?.(task.tid, ep?.task_type ?? taskType);
-      }
+    (entryPoint: string) => {
+      setSelectedEntryPoint(entryPoint);
+      if (isDraft && task.tid > 0) onSetEntryPoint?.(task.tid, entryPoint);
     },
-    [isDraft, task.tid, onSetTaskType, entryPoints],
+    [isDraft, task.tid, onSetEntryPoint],
   );
 
   const handleAgentChange = useCallback(
@@ -162,6 +158,14 @@ function SessionViewInner({
   const handleContentStart = useCallback(() => {
     onContentStart?.(selectedEntryPoint);
   }, [onContentStart, selectedEntryPoint]);
+
+  useEffect(() => {
+    if (isDraft) setSelectedEntryPoint(initialEntryPoint);
+  }, [isDraft, initialEntryPoint]);
+
+  useEffect(() => {
+    if (isDraft) setSelectedAgent(task.agentType ?? "");
+  }, [isDraft, task.agentType]);
 
   const [fileViewerState, setFileViewerState] = useState<{
     open: boolean;
@@ -211,13 +215,13 @@ function SessionViewInner({
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
-  // Auto-focus input box, resume button, or task type picker when session becomes active.
+  // Auto-focus input box, resume button, or entry-point picker when session becomes active.
   // Skip on touch devices to avoid opening the virtual keyboard.
   useEffect(() => {
     if (!isActive) return;
     if (matchMedia("(pointer: coarse)").matches) return;
     if (isDraft) {
-      taskTypePickerRef.current?.focus();
+      entryPointPickerRef.current?.focus();
     } else if (task.resumable || task.status === "importable") {
       resumeRef.current?.focus();
     } else {
@@ -417,8 +421,8 @@ function SessionViewInner({
               <SessionConfig
                 entryPoints={entryPoints}
                 selected={selectedEntryPoint}
-                onTaskTypeChange={handleTaskTypeChange}
-                pickerRef={taskTypePickerRef}
+                onEntryPointChange={handleTaskTypeChange}
+                pickerRef={entryPointPickerRef}
                 onConfirm={handleSessionConfigFocus}
                 onType={handleSessionConfigFocus}
               />

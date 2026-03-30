@@ -197,6 +197,8 @@ export interface TaskState {
   forkableUuids: Set<string>;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;
+  /** Current user-facing entry point (e.g. "agentic", "direct", "isolated"). */
+  entryPoint?: string;
   /** Current agent type (e.g. "claude", "codex"). */
   agentType?: string;
   archived?: boolean;
@@ -249,6 +251,7 @@ export function makeTaskState(
   createdAt?: number,
   lastActive?: number,
   agentType?: string,
+  entryPoint?: string,
 ): TaskState {
   return {
     tid,
@@ -270,6 +273,7 @@ export function makeTaskState(
     relationType,
     forkableUuids: new Set(),
     taskType,
+    entryPoint,
     agentType,
     archived,
     createdAt: createdAt || undefined,
