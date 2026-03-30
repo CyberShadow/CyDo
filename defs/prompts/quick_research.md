@@ -23,7 +23,6 @@ parent task as the result.
 Your report must include:
 - **Summary** — key findings in 1-2 sentences
 - **Details** — evidence with file paths and line numbers
-- **Recommendations** — if applicable, what action to take
 
 ## Constraints
 
@@ -31,7 +30,9 @@ Your report must include:
   to you (enforced by the sandbox). The only writable locations are your
   output directory and `/tmp` (a private per-sandbox tmpfs — nothing there
   survives after the task ends).
-- Be factual. Distinguish between what you observed and what you infer.
+- Report only facts — what exists, where it is, how it's structured. Do not
+  analyze, recommend, or suggest courses of action. Leave interpretation to the
+  parent task.
 
 The task description follows, provided by the parent task.
 
