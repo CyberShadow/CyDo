@@ -459,8 +459,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	//   (prompt comes from the edge that spawns them)
 	// - Edges to types without node-level prompt_template MUST carry prompt_template
 	{
-		// Build a set of all type names that have node-level prompt_template
-		// (only stewards after refactoring)
+		// Validate entry points
 		foreach (ref ep; entryPoints)
 		{
 			if (ep.description.length == 0)
