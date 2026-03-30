@@ -2242,8 +2242,12 @@ class App : ToolsBackend
 			// Downgrade project directory to read-only
 			td.sandbox.paths[workDir] = PathMode.ro;
 
-			// Add git dir and git common dir as writable for git operations
+			// The worktree itself must be writable
 			auto wtPath = td.worktreePath;
+			if (wtPath.length > 0)
+				td.sandbox.paths[wtPath] = PathMode.rw;
+
+			// Add git dir and git common dir as writable for git operations
 			if (wtPath.length > 0)
 			{
 				auto gitDirResult = execute(["git", "-C", wtPath, "rev-parse", "--git-dir"]);
