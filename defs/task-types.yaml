@@ -106,7 +106,7 @@ task_types:
       execute:
         task_type: triage
         worktree: require
-        prompt_template: prompts/execute.md
+        prompt_template: prompts/triage.md
         result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
     continuations:
       plan:
@@ -498,7 +498,7 @@ task_types:
     creatable_tasks:
       execute:
         task_type: triage
-        prompt_template: prompts/execute.md
+        prompt_template: prompts/triage.md
         result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
       plan:
         prompt_template: prompts/plan.md
