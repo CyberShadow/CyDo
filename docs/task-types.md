@@ -12,7 +12,8 @@ Concrete definitions are in [task-types.yaml](../defs/task-types.yaml).
 name: string                          # unique key (the YAML map key)
 description: string                   # human-readable comment
 agent_description: string             # LLM-visible; explains when to use this type
-prompt_template: string | path        # system prompt wrapping the task description
+prompt_template: string | path        # template used to wrap the task description in the rendered task prompt
+system_prompt_template: string | path # optional startup system/developer prompt for agents that support it
 model_class: small | medium | large   # maps to haiku / sonnet / opus
 read_only: bool                   # sandbox mounts project dir as ro (default false)
 output_type: [commit | worktree | report]  # what the task produces (empty = no output)

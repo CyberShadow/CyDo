@@ -64,8 +64,8 @@
 #
 # User entry points are defined in the user_entry_points section below.
 # They are edges from the user to a task type, carrying their own description,
-# prompt_template, and optional worktree config. All user-visible task creation
-# flows through entry points.
+# prompt_template for the rendered task prompt, and optional worktree config.
+# All user-visible task creation flows through entry points.
 
 user_entry_points:
   blank:
