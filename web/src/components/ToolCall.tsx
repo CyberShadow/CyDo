@@ -1615,6 +1615,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "command",
     "cwd",
     "processId",
+    "commandActions",
   ]),
   local_shell_call: new Set([]),
   exec_command: new Set([]),
@@ -2276,6 +2277,31 @@ const defaultExpandedResults = new Set([
   "TaskStop",
 ]);
 
+function hasReadOnlyCommandActions(result?: ToolResult): boolean {
+  const toolResult =
+    result?.toolResult != null && typeof result.toolResult === "object"
+      ? (result.toolResult as Record<string, unknown>)
+      : null;
+  const commandActions = toolResult?.commandActions;
+  return (
+    Array.isArray(commandActions) &&
+    commandActions.length > 0 &&
+    commandActions.every(
+      (action) =>
+        action != null &&
+        typeof action === "object" &&
+        !Array.isArray(action) &&
+        (action as Record<string, unknown>).type === "read",
+    )
+  );
+}
+
+function defaultResultExpanded(name: string, result?: ToolResult): boolean {
+  if (name === "commandExecution" && hasReadOnlyCommandActions(result))
+    return false;
+  return defaultExpandedResults.has(name);
+}
+
 const askToolNames = new Set(["AskUserQuestion"]);
 
 export function ToolCall({
@@ -2297,9 +2323,10 @@ export function ToolCall({
   useEffect(() => {
     if (isAsk && result) setInputOpen(true);
   }, [isAsk, !!result]);
-  const [resultOpen, setResultOpen] = useState(
-    defaultExpandedResults.has(name),
+  const [resultOpenOverride, setResultOpenOverride] = useState<boolean | null>(
+    null,
   );
+  const resultOpen = resultOpenOverride ?? defaultResultExpanded(name, result);
   const subtitle = getHeaderSubtitle(name, toolServer, input);
   const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
 
@@ -2450,7 +2477,7 @@ export function ToolCall({
           <div
             class="tool-result-header"
             onClick={() => {
-              setResultOpen(!resultOpen);
+              setResultOpenOverride(!resultOpen);
             }}
           >
             {resultOpen ? "\u25BC" : "\u25B6"} Result

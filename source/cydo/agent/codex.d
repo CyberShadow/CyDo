@@ -1868,6 +1868,13 @@ class CodexSession : AgentSession
 					tr ~= `"processId":` ~ toJson(params.item.processId);
 					trFirst = false;
 				}
+				if (params.item.commandActions.json !is null &&
+					params.item.commandActions.json.length > 0)
+				{
+					if (!trFirst) tr ~= `,`;
+					tr ~= `"commandActions":` ~ params.item.commandActions.json;
+					trFirst = false;
+				}
 				tr ~= `}`;
 				if (!trFirst)
 					resEv.tool_result = JSONFragment(tr.data);
