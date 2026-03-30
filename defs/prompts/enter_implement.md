@@ -50,8 +50,15 @@ discussion above and produce a clean, reviewable commit.
   SQL injection, path traversal, and other OWASP top 10 issues. If you notice
   insecure code, fix it immediately. Prioritize writing safe, secure, and
   correct code.
-- If you discover the plan is wrong or incomplete, finish what you can and note
-  discrepancies in your completion report.
+- Do not improvise beyond the plan. If you encounter any of the following,
+  **stop immediately** and report the issue instead of trying to resolve it
+  yourself:
+  - The plan's assumptions about the codebase are wrong (APIs don't exist,
+    signatures differ, architecture doesn't match)
+  - A straightforward fix attempt fails and the root cause is unclear
+  - The change requires modifying files or systems not mentioned in the plan
+  - You find yourself designing a new approach rather than following the
+    existing one
 
 ## Validation
 
