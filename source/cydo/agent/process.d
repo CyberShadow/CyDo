@@ -44,8 +44,8 @@ class AgentProcess
 
 	/// Spawn a child process with the given arguments and optional environment/workdir.
 	/// If noStdin is true, stdin is redirected from /dev/null (no Duplex needed).
-	/// If logName is non-empty, a LoggingAdapter is inserted below the framing adapter
-	/// to trace-log raw I/O at the trace level.
+	/// If logName is non-empty, a LoggingAdapter is inserted above the framing adapter
+	/// to trace-log logical messages at the trace level.
 	this(string[] args, string[string] env = null, string workDir = null, bool noStdin = false,
 		FramingMode mode = FramingMode.ndjson, string logName = null,
 		bool waitForPipeDrain = true)
@@ -94,13 +94,14 @@ class AgentProcess
 			// Duplex for stdin (write) / stdout (read)
 			duplex = new Duplex(stdoutConn, stdinConn);
 
-			// Optionally log raw bytes below the framing adapter
-			IConnection rawConn = logName.length ? new LoggingAdapter(duplex, logName) : cast(IConnection) duplex;
-
+			ConnectionAdapter framedConn;
 			if (mode == FramingMode.contentLength)
-				stdoutLines = new ContentLengthAdapter(rawConn);
+				framedConn = new ContentLengthAdapter(duplex);
 			else
-				stdoutLines = new LineBufferedAdapter(rawConn, "\n");
+				framedConn = new LineBufferedAdapter(duplex, "\n");
+
+			// Optionally log logical messages above the framing adapter.
+			stdoutLines = logName.length ? new LoggingAdapter(framedConn, logName) : framedConn;
 		}
 		else
 		{
@@ -112,13 +113,14 @@ class AgentProcess
 
 			auto stdoutConn = new FileConnection(stdoutFd);
 
-			// Optionally log raw bytes below the framing adapter
-			IConnection rawConn = logName.length ? new LoggingAdapter(stdoutConn, logName) : cast(IConnection) stdoutConn;
-
+			ConnectionAdapter framedConn;
 			if (mode == FramingMode.contentLength)
-				stdoutLines = new ContentLengthAdapter(rawConn);
+				framedConn = new ContentLengthAdapter(stdoutConn);
 			else
-				stdoutLines = new LineBufferedAdapter(rawConn, "\n");
+				framedConn = new LineBufferedAdapter(stdoutConn, "\n");
+
+			// Optionally log logical messages above the framing adapter.
+			stdoutLines = logName.length ? new LoggingAdapter(framedConn, logName) : framedConn;
 		}
 
 		auto stderrConn = new FileConnection(stderrFd);
@@ -250,8 +252,8 @@ class AgentProcess
 
 }
 
-/// Wraps an IConnection to trace-log all data passing through it.
-/// Use `<` prefix for inbound data and `>` for outbound data.
+/// Wraps a framed connection to trace-log logical messages passing through it.
+/// Use `<` prefix for inbound messages and `>` for outbound messages.
 class LoggingAdapter : ConnectionAdapter
 {
 	string name;
