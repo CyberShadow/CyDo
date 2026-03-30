@@ -95,7 +95,8 @@ struct TurnStartParams
 struct TurnSteerParams
 {
 	string threadId;
-	string instructions;
+	TurnStartInput[] input;
+	string expectedTurnId;
 }
 
 @RPCFlatten @JSONPartial
@@ -174,6 +175,19 @@ struct TerminalInteractionParams
 struct ThreadIdParams
 {
 	string threadId;
+}
+
+@JSONPartial
+struct TurnRef
+{
+	string id;
+}
+
+@RPCFlatten @JSONPartial
+struct TurnStartedParams
+{
+	string threadId;
+	TurnRef turn;
 }
 
 @RPCFlatten @JSONPartial
@@ -263,6 +277,12 @@ struct ThreadStartResult
 }
 
 @JSONPartial
+struct TurnStartResult
+{
+	TurnRef turn;
+}
+
+@JSONPartial
 struct ApprovalDecision
 {
 	string decision;
@@ -322,7 +342,7 @@ private interface ICodexServer
 	Promise!void threadStatusChanged(IgnoredParams params);
 
 	@RPCName("turn/started")
-	Promise!void turnStarted(IgnoredParams params);
+	Promise!void turnStarted(TurnStartedParams params);
 
 	@RPCName("turn/diff/updated")
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params);
@@ -446,7 +466,12 @@ private class CodexServerRouter : ICodexServer
 
 	Promise!void threadStarted(IgnoredParams params) { return resolve(); }
 	Promise!void threadStatusChanged(IgnoredParams params) { return resolve(); }
-	Promise!void turnStarted(IgnoredParams params) { return resolve(); }
+	Promise!void turnStarted(TurnStartedParams params)
+	{
+		routeToSession(params.threadId,
+			(s) => s.handleTurnStarted(params.turn));
+		return resolve();
+	}
 	Promise!void itemReasoningSummaryPartAdded(IgnoredParams) { return resolve(); }
 	Promise!void turnDiffUpdated(TurnDiffUpdatedParams params) { return resolve(); }
 	Promise!void threadTokenUsageUpdated(TokenUsageUpdatedParams params)
@@ -1418,10 +1443,23 @@ class CodexSession : AgentSession
 			outputHandler_(initEvent);
 
 		// Drain queued messages now that the thread is ready.
+		drainPendingMessages();
+	}
+
+	private void drainPendingMessages()
+	{
 		auto queued = pendingMessages;
 		pendingMessages = null;
 		foreach (msg; queued)
 			sendMessage(msg);
+	}
+
+	package void handleTurnStarted(TurnRef turn)
+	{
+		if (turn.id.length == 0)
+			return;
+		activeTurnId_ = turn.id;
+		drainPendingMessages();
 	}
 
 	/// Called when the app-server process dies.
@@ -1460,8 +1498,16 @@ class CodexSession : AgentSession
 
 		if (turnInProgress)
 		{
+			if (activeTurnId_.length == 0)
+			{
+				pendingMessages ~= content.dup;
+				return;
+			}
 			server.sendRequest("turn/steer",
-				JSONFragment(toJson(TurnSteerParams(threadId, text))));
+				JSONFragment(toJson(TurnSteerParams(
+					threadId,
+					[TurnStartInput("text", text)],
+					activeTurnId_))));
 		}
 		else
 		{
@@ -1475,7 +1521,18 @@ class CodexSession : AgentSession
 				JSONFragment(toJson(TurnStartParams(
 					threadId,
 					[TurnStartInput("text", text)],
-					SandboxPolicy("externalSandbox", "enabled")))));
+					SandboxPolicy("externalSandbox", "enabled")))))
+				.then((JsonRpcResponse resp) {
+				try
+				{
+					auto result = resp.getResult!TurnStartResult();
+					handleTurnStarted(result.turn);
+				}
+				catch (Exception e)
+				{
+					warningf("turn/start error: %s", e.msg);
+				}
+			});
 		}
 	}
 
@@ -2308,6 +2365,16 @@ private string getCodexBinName()
 
 unittest
 {
+	auto steerJson = toJson(TurnSteerParams(
+		"thread-steer",
+		[TurnStartInput("text", "stage and nix flake check")],
+		"turn-steer",
+	));
+	assert(
+		steerJson == `{"threadId":"thread-steer","input":[{"type":"text","text":"stage and nix flake check"}],"expectedTurnId":"turn-steer"}`,
+		"turn/steer payload must use input + expectedTurnId for Codex v2; actual=" ~ steerJson,
+	);
+
 	@JSONPartial
 	struct StartedNotification
 	{
