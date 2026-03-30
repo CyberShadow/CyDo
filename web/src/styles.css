@@ -2034,6 +2034,11 @@ body,
   margin-bottom: 6px;
 }
 
+.init-meta code {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
 .init-details {
   margin: 3px 0;
   font-size: 12px;

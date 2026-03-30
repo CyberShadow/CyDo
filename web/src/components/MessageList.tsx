@@ -243,6 +243,11 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
       </div>
       <div class="init-meta">
         {raw.model && <span>Model: {raw.model}</span>}
+        {raw.cwd && (
+          <span>
+            cwd: <code>{raw.cwd}</code>
+          </span>
+        )}
         {raw.agent_version && <span>v{raw.agent_version}</span>}
         {raw.permission_mode && <span>{raw.permission_mode}</span>}
       </div>
