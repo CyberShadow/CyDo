@@ -72,10 +72,6 @@ user_entry_points:
     task_type: blank
     description: "Raw agent session with no prompt wrapping or tool restrictions"
     prompt_template: prompts/blank.md
-  agentic:
-    task_type: conversation
-    description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
-    prompt_template: prompts/conversation.md
   direct:
     task_type: write_mode
     description: "Hands-on session — read-write access, edit and iterate directly"
@@ -85,6 +81,10 @@ user_entry_points:
     worktree: require
     description: "Own worktree with sub-agent support — changes stay isolated until you pull them"
     prompt_template: prompts/isolated.md
+  agentic:
+    task_type: conversation
+    description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
+    prompt_template: prompts/conversation.md
 
 task_types:
   # =========================================================================
