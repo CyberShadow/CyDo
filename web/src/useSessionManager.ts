@@ -314,7 +314,7 @@ export function useTaskManager(): TaskManager {
   // Sent to the real task when task_created arrives instead of creating a zombie.
   const pendingFirstMessage = useRef<{
     text: string;
-    taskType?: string;
+    entryPointName?: string;
     images?: ImageAttachment[];
   } | null>(null);
 
@@ -1306,7 +1306,7 @@ export function useTaskManager(): TaskManager {
     (
       text: string,
       images?: ImageAttachment[],
-      taskType?: string,
+      entryPointName?: string,
       agentType?: string,
     ) => {
       const content = buildContentBlocks(text, images);
@@ -1314,8 +1314,12 @@ export function useTaskManager(): TaskManager {
       const draftTid = draftTidRef.current;
       if (draftTid !== null && draftTid > 0) {
         // Draft task exists — update task type if changed, then send message
-        if (taskType) {
-          connRef.current?.setTaskType(draftTid, taskType);
+        if (entryPointName) {
+          const ep = entryPoints.find((e) => e.name === entryPointName);
+          connRef.current?.setTaskType(
+            draftTid,
+            ep?.task_type ?? entryPointName,
+          );
         }
         if (agentType) {
           connRef.current?.setAgentType(draftTid, agentType);
@@ -1362,7 +1366,7 @@ export function useTaskManager(): TaskManager {
         // hasn't arrived yet. Store the message for task_created to deliver —
         // no zombie task is created.
         if (pendingDraftCorrelation.current !== null) {
-          pendingFirstMessage.current = { text, taskType, images };
+          pendingFirstMessage.current = { text, entryPointName, images };
           return;
         }
 
@@ -1393,7 +1397,7 @@ export function useTaskManager(): TaskManager {
           connRef.current?.createTask(
             ws,
             projPath || "",
-            taskType,
+            entryPointName,
             content,
             agentType,
             correlationId,
@@ -1402,7 +1406,7 @@ export function useTaskManager(): TaskManager {
           connRef.current?.createTask(
             undefined,
             undefined,
-            taskType,
+            entryPointName,
             content,
             agentType,
             correlationId,
@@ -1426,7 +1430,7 @@ export function useTaskManager(): TaskManager {
         });
       }
     },
-    [activeTaskId, setTasks],
+    [activeTaskId, setTasks, entryPoints],
   );
 
   const interrupt = useCallback(() => {
