@@ -189,19 +189,11 @@ test(
       const repoScopedWorktree = `${repoDir}/.cydo/tasks/${spikeTid}/worktree`;
 
       await expect
-        .poll(
-          () =>
-            existsSync(taskScopedWorktree) ? taskScopedWorktree :
-            existsSync(repoScopedWorktree) ? repoScopedWorktree :
-            "",
-          { timeout: 30_000 },
-        )
-        .not.toBe("");
+        .poll(() => existsSync(repoScopedWorktree), { timeout: 30_000 })
+        .toBe(true);
+      expect(existsSync(taskScopedWorktree)).toBe(false);
 
-      const worktreeDir = existsSync(taskScopedWorktree)
-        ? taskScopedWorktree
-        : repoScopedWorktree;
-      const expectedCwd = `${worktreeDir}/project`;
+      const expectedCwd = `${repoScopedWorktree}/project`;
 
       const expectedHistoryDir = `${claudeDir}/projects/${mangleClaudePath(expectedCwd)}`;
       await expect

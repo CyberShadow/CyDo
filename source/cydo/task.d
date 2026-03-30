@@ -31,13 +31,29 @@ struct TaskData
 	long createdAt;    // StdTime; 0 = not set
 	long lastActive;   // StdTime; 0 = not set
 
-	/// Per-task directory: .cydo/tasks/<tid>/
-	@property string taskDir() const
+	/// Git repository root for the selected project.
+	/// Falls back to projectPath if git resolution fails.
+	@property string repoPath() const
 	{
 		if (projectPath.length == 0)
 			return "";
+		import std.process : execute;
+		import std.string : strip;
+		auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
+		if (repoResult.status != 0)
+			return projectPath;
+		auto repoRoot = repoResult.output.strip();
+		return repoRoot.length > 0 ? repoRoot : projectPath;
+	}
+
+	/// Per-task directory: .cydo/tasks/<tid>/
+	@property string taskDir() const
+	{
+		auto repoRoot = repoPath;
+		if (repoRoot.length == 0)
+			return "";
 		import std.path : buildPath;
-		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(tid));
+		return buildPath(repoRoot, ".cydo", "tasks", format!"%d"(tid));
 	}
 
 	/// Worktree path: .cydo/tasks/{worktree_tid}/worktree
@@ -47,7 +63,7 @@ struct TaskData
 		if (worktreeTid <= 0)
 			return "";
 		import std.path : buildPath;
-		return buildPath(projectPath, ".cydo", "tasks", format!"%d"(worktreeTid), "worktree");
+		return buildPath(repoPath, ".cydo", "tasks", format!"%d"(worktreeTid), "worktree");
 	}
 
 	/// Output file path: .cydo/tasks/<tid>/output.md
@@ -70,14 +86,8 @@ struct TaskData
 			return wtPath;
 
 		import std.path : buildPath, relativePath;
-		import std.process : execute;
-		import std.string : strip;
 
-		auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
-		if (repoResult.status != 0)
-			return wtPath;
-
-		auto repoRoot = repoResult.output.strip();
+		auto repoRoot = repoPath;
 		if (repoRoot.length == 0 || repoRoot == projectPath)
 			return wtPath;
 
