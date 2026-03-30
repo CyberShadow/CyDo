@@ -68,6 +68,10 @@
 # flows through entry points.
 
 user_entry_points:
+  blank:
+    task_type: blank
+    description: "Raw agent session with no prompt wrapping or tool restrictions"
+    prompt_template: prompts/blank.md
   agentic:
     task_type: conversation
     description: "Orchestrated session — plans, delegates, and reviews via sub-agents"
@@ -76,10 +80,6 @@ user_entry_points:
     task_type: write_mode
     description: "Hands-on session — read-write access, edit and iterate directly"
     prompt_template: prompts/write_mode.md
-  blank:
-    task_type: blank
-    description: "Raw agent session with no prompt wrapping or tool restrictions"
-    prompt_template: prompts/blank.md
 
 task_types:
   # =========================================================================
