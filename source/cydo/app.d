@@ -40,7 +40,7 @@ import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDi
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
-	loadSystemPrompt;
+	loadSystemPrompt, computeReachesWorktree;
 import cydo.task;
 import cydo.worktree;
 
@@ -157,6 +157,7 @@ class App : ToolsBackend
 	// Task type definitions loaded from YAML
 	private TaskTypeDef[] taskTypesCache;
 	private UserEntryPointDef[] entryPointsCache;
+	private bool[string] reachesWorktreeCache;
 	private enum taskTypesDir = "defs";
 	private enum taskTypesPath = "defs/task-types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
@@ -204,6 +205,7 @@ class App : ToolsBackend
 				warningf("task type: %s", e);
 			taskTypesCache = config.types;
 			entryPointsCache = config.entryPoints;
+			reachesWorktreeCache = computeReachesWorktree(config.types);
 			return taskTypesCache;
 		}
 		catch (Exception e)
@@ -2262,6 +2264,30 @@ class App : ToolsBackend
 					auto gitCommonDir = gitCommonResult.output.strip.absolutePath(wtPath);
 					td.sandbox.paths[gitCommonDir] = PathMode.rw;
 				}
+			}
+		}
+
+		// Git dirs writable for types that can reach a worktree: they may need
+		// to cherry-pick or merge results from child worktrees.  Use always_rw
+		// so this survives the read_only downgrade.
+		if (workDir.length > 0 && td.taskType in reachesWorktreeCache
+			&& reachesWorktreeCache[td.taskType])
+		{
+			import std.process : execute;
+			import std.string : strip;
+			import std.path : absolutePath;
+
+			auto gitDirResult = execute(["git", "-C", workDir, "rev-parse", "--git-dir"]);
+			if (gitDirResult.status == 0)
+			{
+				auto gitDir = gitDirResult.output.strip.absolutePath(workDir);
+				td.sandbox.paths[gitDir] = PathMode.always_rw;
+			}
+			auto gitCommonResult = execute(["git", "-C", workDir, "rev-parse", "--git-common-dir"]);
+			if (gitCommonResult.status == 0)
+			{
+				auto gitCommonDir = gitCommonResult.output.strip.absolutePath(workDir);
+				td.sandbox.paths[gitCommonDir] = PathMode.always_rw;
 			}
 		}
 

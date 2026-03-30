@@ -595,6 +595,63 @@ bool[string] computeTreeReadOnly(TaskTypeDef[] types)
 	return cache;
 }
 
+/// Compute which task types can transitively reach a worktree (require or fork)
+/// via any edge (creatable_tasks, continuations, on_yield). Types that reach a
+/// worktree need writable git dirs in their sandbox so they can integrate
+/// worktree results (cherry-pick, merge).
+bool[string] computeReachesWorktree(TaskTypeDef[] types)
+{
+	bool[string] cache;
+	bool[string] inProgress;
+
+	bool reaches(string typeName)
+	{
+		if (auto p = typeName in cache)
+			return *p;
+		if (typeName in inProgress)
+			return false; // pessimistic for cycles
+
+		inProgress[typeName] = true;
+		scope(exit) inProgress.remove(typeName);
+
+		auto def = types.byName(typeName);
+		if (def is null)
+		{
+			cache[typeName] = false;
+			return false;
+		}
+
+		foreach (ref edge; def.creatable_tasks)
+			if (edge.worktree != WorktreeMode.inherit || reaches(edge.resolvedType))
+			{
+				cache[typeName] = true;
+				return true;
+			}
+
+		foreach (cname, ref cont; def.continuations)
+			if (cont.worktree != WorktreeMode.inherit || reaches(cont.task_type))
+			{
+				cache[typeName] = true;
+				return true;
+			}
+
+		if (def.on_yield.task_type.length > 0)
+			if (def.on_yield.worktree != WorktreeMode.inherit || reaches(def.on_yield.task_type))
+			{
+				cache[typeName] = true;
+				return true;
+			}
+
+		cache[typeName] = false;
+		return false;
+	}
+
+	foreach (ref def; types)
+		reaches(def.name);
+
+	return cache;
+}
+
 /// Detect unconditional cycles in continuation chains.
 /// A cycle is only problematic if every type in the loop has exactly one
 /// continuation (no agent decision). Types with multiple continuations
@@ -1407,6 +1464,8 @@ void runDumpContext(string path, string typeName)
 	writefln("Read-only:      %s", def.read_only);
 	auto treeRO = computeTreeReadOnly(types);
 	writefln("Tree-read-only: %s", typeName in treeRO ? treeRO[typeName] : false);
+	auto reachesWt = computeReachesWorktree(types);
+	writefln("Reaches worktree: %s", typeName in reachesWt ? reachesWt[typeName] : false);
 	{
 		auto epNames = entryPoints.filter!(ep => ep.resolvedType == typeName).map!(ep => ep.name).join(", ");
 		writefln("Entry points:   %s", epNames.length > 0 ? epNames : "—");
