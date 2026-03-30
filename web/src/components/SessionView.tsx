@@ -108,7 +108,8 @@ function SessionViewInner({
     entryPoints?.find((e) => e.task_type === task.taskType)?.name ??
     entryPoints?.[0]?.name ??
     "conversation";
-  const [selectedTaskType, setSelectedTaskType] = useState(initialEntryPoint);
+  const [selectedEntryPoint, setSelectedEntryPoint] =
+    useState(initialEntryPoint);
   const taskTypePickerRef = useRef<HTMLDivElement>(null);
 
   // Agent picker state (only used in draft mode)
@@ -120,7 +121,7 @@ function SessionViewInner({
 
   const handleTaskTypeChange = useCallback(
     (taskType: string) => {
-      setSelectedTaskType(taskType);
+      setSelectedEntryPoint(taskType);
       if (isDraft && task.tid > 0) {
         // Pass the resolved task type name (not the entry point name)
         const ep = entryPoints?.find((e) => e.name === taskType);
@@ -144,14 +145,14 @@ function SessionViewInner({
         onSend(
           text,
           images,
-          selectedTaskType,
+          selectedEntryPoint,
           selectedAgent || defaultAgentType || "claude",
         );
       } else {
         onSend(text, images);
       }
     },
-    [onSend, isDraft, selectedTaskType, selectedAgent, defaultAgentType],
+    [onSend, isDraft, selectedEntryPoint, selectedAgent, defaultAgentType],
   );
 
   const handlePromote = useCallback(() => {
@@ -159,8 +160,8 @@ function SessionViewInner({
   }, [onPromote, task.tid]);
 
   const handleContentStart = useCallback(() => {
-    onContentStart?.(selectedTaskType);
-  }, [onContentStart, selectedTaskType]);
+    onContentStart?.(selectedEntryPoint);
+  }, [onContentStart, selectedEntryPoint]);
 
   const [fileViewerState, setFileViewerState] = useState<{
     open: boolean;
@@ -415,7 +416,7 @@ function SessionViewInner({
               </div>
               <SessionConfig
                 entryPoints={entryPoints}
-                selected={selectedTaskType}
+                selected={selectedEntryPoint}
                 onTaskTypeChange={handleTaskTypeChange}
                 pickerRef={taskTypePickerRef}
                 onConfirm={handleSessionConfigFocus}
