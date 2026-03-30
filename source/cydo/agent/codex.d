@@ -158,6 +158,8 @@ struct ItemStartedParams
 struct DeltaParams
 {
 	string threadId;
+	@JSONOptional string itemId;
+	@JSONOptional string turnId;
 	string delta;
 }
 
@@ -1710,20 +1712,23 @@ class CodexSession : AgentSession
 	/// Handle any delta notification (text, thinking, or command output).
 	package void handleDelta(DeltaParams params, string deltaType, string rawNotification)
 	{
-		if (activeItemId_.length == 0 || outputHandler_ is null)
+		if (outputHandler_ is null)
+			return;
+		auto itemId = params.itemId.length > 0 ? params.itemId : activeItemId_;
+		if (itemId.length == 0)
 			return;
 
 		// Accumulate text deltas for result extraction.
 		if (deltaType == "text_delta")
 		{
-			auto pType = activeItemId_ in activeItemTypes_;
+			auto pType = itemId in activeItemTypes_;
 			if (pType !is null && *pType == "text")
 				lastResultText_ ~= params.delta;
 		}
 
 		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
 		ItemDeltaEvent ev;
-		ev.item_id = activeItemId_;
+		ev.item_id = itemId;
 		ev.delta_type = deltaType;
 		ev.content = params.delta;
 		outputHandler_(injectRawField(toJson(ev), rawNotification));
@@ -2431,6 +2436,21 @@ unittest
 	}
 
 	@JSONPartial
+	struct DeltaNotification
+	{
+		DeltaParams params;
+	}
+
+	@JSONPartial
+	struct EmittedDeltaEvent
+	{
+		string type;
+		string item_id;
+		string delta_type;
+		string content;
+	}
+
+	@JSONPartial
 	struct TextContentBlock
 	{
 		string type;
@@ -2483,6 +2503,22 @@ unittest
 		inputOk && resultOk,
 		"expected Codex mcpToolCall AskUserQuestion payload to survive translation; "
 			~ "actual input=" ~ actualInput ~ " actual result=" ~ actualResult,
+	);
+
+	enum lateDeltaPayload =
+		`{"jsonrpc":"2.0","method":"item/commandExecution/outputDelta","params":{"threadId":"thread-ask","turnId":"turn-ask","itemId":"mcp-call-ask","delta":"late-output-marker\n"}}`;
+
+	auto lateDelta = jsonParse!DeltaNotification(lateDeltaPayload);
+	session.handleTurnCompleted(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-ask"}}`);
+	session.handleDelta(lateDelta.params, "output_delta", lateDeltaPayload);
+
+	auto lateDeltaEvent = jsonParse!EmittedDeltaEvent(emitted[$ - 1]);
+	assert(
+		lateDeltaEvent.type == "item/delta"
+			&& lateDeltaEvent.item_id == "mcp-call-ask"
+			&& lateDeltaEvent.delta_type == "output_delta"
+			&& lateDeltaEvent.content == "late-output-marker\n",
+		"expected late Codex output_delta to keep its itemId after turn completion",
 	);
 }
 
