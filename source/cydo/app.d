@@ -1195,29 +1195,31 @@ class App : ToolsBackend
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
-		auto tid = createTask(json.workspace, json.project_path, at, json.entry_point);
-		// Resolve task type: entry_point takes precedence over task_type.
-		// Call getTaskTypes() first to ensure entryPointsCache is populated.
-		auto taskTypes = getTaskTypes();
+		// Top-level user task creation must always come through a concrete entry point.
+		// Internal tasks (subtasks, continuations, imports) are created through other paths.
 		auto entryPoints = getEntryPoints();
-		string resolvedType = json.task_type;
-		string epTemplate;
-		if (json.entry_point.length > 0)
+		if (json.entry_point.length == 0)
 		{
-			auto ep = entryPoints.byName(json.entry_point);
-			if (ep !is null)
-			{
-				resolvedType = ep.resolvedType;
-				epTemplate = ep.prompt_template;
-			}
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Top-level task creation requires an entry point")).representation));
+			return;
 		}
-		if (resolvedType.length > 0 && taskTypes.byName(resolvedType) !is null)
+		auto ep = entryPoints.byName(json.entry_point);
+		if (ep is null)
 		{
-			tasks[tid].entryPoint = json.entry_point;
-			persistence.setEntryPoint(tid, json.entry_point);
-			tasks[tid].taskType = resolvedType;
-			persistence.setTaskType(tid, resolvedType);
+			ws.send(Data(toJson(ErrorMessage("error",
+				"Unknown entry point: " ~ json.entry_point)).representation));
+			return;
 		}
+		auto epTemplate = ep.prompt_template;
+		auto tid = createTask(json.workspace, json.project_path, at, json.entry_point);
+		// Call getTaskTypes() after getEntryPoints() so the cache is populated.
+		auto taskTypes = getTaskTypes();
+		tasks[tid].entryPoint = json.entry_point;
+		persistence.setEntryPoint(tid, json.entry_point);
+		tasks[tid].taskType = ep.resolvedType;
+		if (taskTypes.byName(ep.resolvedType) !is null)
+			persistence.setTaskType(tid, ep.resolvedType);
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));

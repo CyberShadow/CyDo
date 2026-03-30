@@ -149,6 +149,7 @@ test("suggestion one-shot rejection keeps session responsive", async ({
       type: "create_task",
       workspace: "local",
       project_path: "/tmp/cydo-test-workspace",
+      entry_point: "agentic",
       correlation_id: "repro",
     }),
   );
@@ -181,5 +182,32 @@ test("suggestion one-shot rejection keeps session responsive", async ({
     await resultPromise;
   }
 
+  ws.close();
+});
+
+test("top-level task creation rejects missing entry point", async ({
+  backend,
+}) => {
+  const ws = new WebSocket(`${backend.baseURL.replace("http", "ws")}/ws`);
+  await waitForOpen(ws);
+
+  const errorPromise = waitForMessage(
+    ws,
+    (data) =>
+      data.type === "error" &&
+      data.message === "Top-level task creation requires an entry point",
+    10_000,
+  );
+
+  ws.send(
+    JSON.stringify({
+      type: "create_task",
+      workspace: "local",
+      project_path: "/tmp/cydo-test-workspace",
+      correlation_id: "missing-entry-point",
+    }),
+  );
+
+  await errorPromise;
   ws.close();
 });
