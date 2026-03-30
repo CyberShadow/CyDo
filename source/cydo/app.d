@@ -2276,8 +2276,9 @@ class App : ToolsBackend
 			mkdirRecurse(td.taskDir);
 		}
 
-		// Use worktree path as chdir if available; sandbox covers project dir (rw)
-		auto chdir = td.hasWorktree ? td.worktreePath : workDir;
+		// When a project is a subdirectory inside a git repo, keep that relative
+		// path inside the worktree instead of dropping tasks at the repo root.
+		auto chdir = td.effectiveCwd.length > 0 ? td.effectiveCwd : workDir;
 
 		// Resolve sandbox config: agent defaults + global + per-agent + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);

@@ -62,7 +62,30 @@ struct TaskData
 	/// Effective working directory: worktree path if set, otherwise project path.
 	@property string effectiveCwd() const
 	{
-		return worktreeTid > 0 ? worktreePath : projectPath;
+		if (worktreeTid <= 0)
+			return projectPath;
+
+		auto wtPath = worktreePath;
+		if (wtPath.length == 0 || projectPath.length == 0)
+			return wtPath;
+
+		import std.path : buildPath, relativePath;
+		import std.process : execute;
+		import std.string : strip;
+
+		auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
+		if (repoResult.status != 0)
+			return wtPath;
+
+		auto repoRoot = repoResult.output.strip();
+		if (repoRoot.length == 0 || repoRoot == projectPath)
+			return wtPath;
+
+		auto relProjectPath = relativePath(projectPath, repoRoot);
+		if (relProjectPath.length == 0 || relProjectPath == ".")
+			return wtPath;
+
+		return buildPath(wtPath, relProjectPath);
 	}
 
 	/// Returns true if this task owns its worktree (worktreeTid == own tid).
