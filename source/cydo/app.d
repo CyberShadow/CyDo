@@ -1155,7 +1155,6 @@ class App : ToolsBackend
 		if (getTaskTypes().byName(json.task_type) is null) return;
 		tasks[tid].entryPoint = "";
 		persistence.setEntryPoint(tid, "");
-		clearPendingTaskWorktree(tid);
 		tasks[tid].taskType = json.task_type;
 		persistence.setTaskType(tid, json.task_type);
 		broadcastTaskUpdate(tid);
@@ -1174,7 +1173,6 @@ class App : ToolsBackend
 		persistence.setEntryPoint(tid, td.entryPoint);
 		td.taskType = ep.resolvedType;
 		persistence.setTaskType(tid, td.taskType);
-		syncPendingTaskWorktree(tid, ep.worktree);
 		broadcastTaskUpdate(tid);
 	}
 
@@ -1204,7 +1202,6 @@ class App : ToolsBackend
 		auto entryPoints = getEntryPoints();
 		string resolvedType = json.task_type;
 		string epTemplate;
-		WorktreeMode epWorktree = WorktreeMode.inherit;
 		if (json.entry_point.length > 0)
 		{
 			auto ep = entryPoints.byName(json.entry_point);
@@ -1212,7 +1209,6 @@ class App : ToolsBackend
 			{
 				resolvedType = ep.resolvedType;
 				epTemplate = ep.prompt_template;
-				epWorktree = ep.worktree;
 			}
 		}
 		if (resolvedType.length > 0 && taskTypes.byName(resolvedType) !is null)
@@ -1222,8 +1218,6 @@ class App : ToolsBackend
 			tasks[tid].taskType = resolvedType;
 			persistence.setTaskType(tid, resolvedType);
 		}
-		if (epWorktree != WorktreeMode.inherit)
-			setupWorktreeForEdge(tid, 0, epWorktree);
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));
@@ -1237,6 +1231,7 @@ class App : ToolsBackend
 		if (blocks.length > 0)
 		{
 			auto td = &tasks[tid];
+			materializePendingTask(tid);
 			auto typeDef = taskTypes.byName(td.taskType);
 			auto textContent = extractContentText(blocks);
 			auto messageToSend = blocks;
@@ -1553,6 +1548,7 @@ class App : ToolsBackend
 		auto messageToSend = blocks;
 		if (td.description.length == 0)
 		{
+			materializePendingTask(tid);
 			auto typeDef = getTaskTypes().byName(td.taskType);
 			if (typeDef !is null)
 			{
@@ -2132,52 +2128,24 @@ class App : ToolsBackend
 		}
 	}
 
-	/// Keep pending root-task drafts aligned with the selected entry point's worktree mode.
-	private void syncPendingTaskWorktree(int tid, WorktreeMode mode)
+	/// Finalize pending task runtime state right before the first message starts it.
+	/// This keeps draft tasks cheap and defers worktree creation until the task
+	/// is actually materialized by the first send.
+	private void materializePendingTask(int tid)
 	{
 		auto td = &tasks[tid];
-		if (td.alive || td.status != "pending")
+		if (td.alive || td.status != "pending" || td.description.length > 0)
 			return;
 
-		final switch (mode)
-		{
-			case WorktreeMode.inherit:
-				clearPendingTaskWorktree(tid);
-				break;
-			case WorktreeMode.require:
-				if (td.worktreeTid <= 0)
-					setupWorktreeRequire(tid, td.parentTid);
-				break;
-			case WorktreeMode.fork:
-				if (td.worktreeTid <= 0)
-					setupWorktreeFork(tid, td.parentTid);
-				break;
-		}
-	}
-
-	private void clearPendingTaskWorktree(int tid)
-	{
-		auto td = &tasks[tid];
-		if (td.worktreeTid <= 0)
+		if (td.entryPoint.length == 0)
 			return;
 
-		import std.file : exists;
-		import std.process : execute;
-
-		auto wtPath = td.worktreePath;
-		if (td.ownsWorktree() && wtPath.length > 0 && exists(wtPath))
-		{
-			auto workDir = td.projectPath.length > 0 ? td.projectPath : null;
-			auto gitResult = execute(["git", "-C", workDir, "worktree", "remove", "--force", wtPath]);
-			if (gitResult.status != 0)
-			{
-				errorf("Failed to remove pending worktree for task %d: %s", tid, gitResult.output);
-				return;
-			}
-		}
-
-		td.worktreeTid = 0;
-		persistence.setWorktreeTid(tid, 0);
+		auto ep = getEntryPoints().byName(td.entryPoint);
+		if (ep is null)
+			return;
+		if (td.worktreeTid > 0 || ep.worktree == WorktreeMode.inherit)
+			return;
+		setupWorktreeForEdge(tid, td.parentTid, ep.worktree);
 	}
 
 	/// Inherit: if the parent has a worktree, the child shares it.
