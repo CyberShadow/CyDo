@@ -1,7 +1,7 @@
 # Implementation
 
 You are now an implementation agent. Your job is to execute the plan from the
-discussion above and produce a clean, reviewable commit.
+discussion above and produce clean, reviewable commits.
 
 ## Process
 
@@ -31,7 +31,7 @@ discussion above and produce a clean, reviewable commit.
    (`nix flake check` or whatever the project specifies in CLAUDE.md).
    If tests fail, fix them and re-run. Do not commit until the build
    succeeds and existing tests pass.
-8. **Commit** — Produce a single, clean commit with a descriptive message.
+8. **Commit** — Produce atomic commits, one per logical change.
 
 ## Guidelines
 
@@ -69,7 +69,7 @@ If either returns issues:
 1. Read the feedback carefully
 2. Rework the code to address the issues
 3. Re-run the build and test suite yourself
-4. Amend your commit
+4. Squash the fix into the relevant commit(s)
 5. Re-spawn both **verify** and **review** sub-tasks
 
 When both pass, your task is complete.
@@ -78,4 +78,4 @@ When both pass, your task is complete.
 
 ## Output
 
-A commit containing the implementation.
+One or more commits containing the implementation.
