@@ -619,13 +619,15 @@ class CopilotAgent : Agent
 		return "File revert is not supported for Copilot sessions";
 	}
 
-	OneShotHandle completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass,
+		string[] cmdPrefix = null, string workDir = "")
 	{
 		auto p = new Promise!string;
 		auto session = new OneShotCopilotSession(p);
 
 		auto model = modelClass.length > 0 ? resolveModelAlias(modelClass) : "";
-		auto cwd = sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".";
+		auto cwd = workDir.length > 0 ? workDir
+			: (sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".");
 
 		import std.uuid : randomUUID;
 		auto sessionId = randomUUID().toString();
@@ -634,7 +636,8 @@ class CopilotAgent : Agent
 		void startOwnProcess()
 		{
 			string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
-			auto srv = new SdkProcess(copilotArgs, null, null, "copilot");
+			string[] args = cmdPrefix !is null ? cmdPrefix ~ copilotArgs : copilotArgs;
+			auto srv = new SdkProcess(args, null, null, "copilot");
 
 			// Set cleanup callback before registering
 			session.onFulfill_ = () {

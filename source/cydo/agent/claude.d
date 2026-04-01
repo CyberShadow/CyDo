@@ -503,7 +503,8 @@ class ClaudeCodeAgent : Agent
 		return null;
 	}
 
-	OneShotHandle completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass,
+		string[] cmdPrefix = null, string workDir = "")
 	{
 		import std.path : buildPath;
 		import std.process : environment;
@@ -511,6 +512,7 @@ class ClaudeCodeAgent : Agent
 		import ae.utils.promise : Promise;
 
 		auto promise = new Promise!string;
+		auto _ = workDir;
 
 		auto claudeBinDir = resolveClaudeBinary();
 		auto binName = getClaudeBinName();
@@ -523,9 +525,9 @@ class ClaudeCodeAgent : Agent
 			"HOME": environment.get("HOME", ""),
 		];
 
-		AgentProcess proc;
-		try
-			proc = new AgentProcess([
+		string[] args;
+		if (cmdPrefix !is null)
+			args = cmdPrefix ~ [
 				claudeBin,
 				"-p", prompt,
 				"--output-format", "text",
@@ -533,7 +535,23 @@ class ClaudeCodeAgent : Agent
 				"--max-turns", "1",
 				"--tools", "",
 				"--no-session-persistence",
-			], env, noStdin: true, logName: "claude-oneshot");
+			];
+		else
+			args = [
+				claudeBin,
+				"-p", prompt,
+				"--output-format", "text",
+				"--model", resolveModelAlias(modelClass),
+				"--max-turns", "1",
+				"--tools", "",
+				"--no-session-persistence",
+			];
+
+		auto procEnv = cmdPrefix is null ? env : null;
+
+		AgentProcess proc;
+		try
+			proc = new AgentProcess(args, procEnv, noStdin: true, logName: "claude-oneshot");
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn claude: %s", e.msg);

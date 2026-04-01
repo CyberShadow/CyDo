@@ -4010,7 +4010,9 @@ class App : ToolsBackend
 		if (prompt.length == 0)
 			return;
 
-		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		auto workDir = td.effectiveCwd;
+		auto cmdPrefix = buildCommandPrefix(td.sandbox, workDir);
+		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small", cmdPrefix, workDir);
 		td.titleGenHandle = titleHandle.promise;
 		td.titleGenKill = titleHandle.cancel;
 		td.titleGenHandle.then((string title) {
@@ -4208,7 +4210,9 @@ class App : ToolsBackend
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
 
-		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small");
+		auto workDir = td.effectiveCwd;
+		auto cmdPrefix = buildCommandPrefix(td.sandbox, workDir);
+		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small", cmdPrefix, workDir);
 		td.suggestGenHandle = suggestHandle.promise;
 		td.suggestGenKill = suggestHandle.cancel;
 		td.suggestGenHandle.then((string result) {

@@ -348,6 +348,7 @@ EOF
               chmod -R u+w /tmp/tests
               chmod +x /tmp/tests/extra-fields-wrapper.sh
               chmod +x /tmp/tests/suggestion-one-shot-fail-wrapper.sh
+              chmod +x /tmp/tests/title-one-shot-env-wrapper.sh
               cd /tmp/tests
               playwright test ${testMatch} --workers=1 || TEST_RESULT=$?
 

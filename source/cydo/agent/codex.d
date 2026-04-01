@@ -1384,25 +1384,31 @@ class CodexAgent : Agent
 
 	string matchProject(string sessionId, const string[] knownProjectPaths) { return ""; }
 
-	OneShotHandle completeOneShot(string prompt, string modelClass)
+	OneShotHandle completeOneShot(string prompt, string modelClass,
+		string[] cmdPrefix = null, string workDir = "")
 	{
 		import std.string : strip;
 
 		auto promise = new Promise!string;
+		auto _ = workDir;
+
+		string[] args = [
+			getCodexBinName(), "exec",
+			"--ephemeral",
+			"--skip-git-repo-check",
+			"-m", resolveModelAlias(modelClass),
+			prompt,
+		];
+		if (cmdPrefix !is null)
+			args = cmdPrefix ~ args;
 
 		AgentProcess proc;
 		try
-			// Pass null env to inherit the full parent environment, matching
-			// how AppServerProcess spawns the main codex session.
+			// When sandboxed, cmdPrefix carries the resolved env/cwd. Otherwise
+			// inherit the parent environment, matching AppServerProcess.
 			// --skip-git-repo-check avoids the "not inside a trusted directory"
 			// error when the process CWD is not a git repo root.
-			proc = new AgentProcess([
-				getCodexBinName(), "exec",
-				"--ephemeral",
-				"--skip-git-repo-check",
-				"-m", resolveModelAlias(modelClass),
-				prompt,
-			], noStdin: true, logName: "codex-oneshot"); // noStdin
+			proc = new AgentProcess(args, noStdin: true, logName: "codex-oneshot");
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn codex: %s", e.msg);

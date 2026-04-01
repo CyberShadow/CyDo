@@ -158,9 +158,12 @@ interface Agent
 	/// Must be safe to call from a background thread (no shared mutable state).
 	string matchProject(string sessionId, const string[] knownProjectPaths);
 
-	/// Run a one-shot LLM completion. Returns a Promise that resolves with
-	/// the raw response text, or rejects on failure/non-zero exit.
-	OneShotHandle completeOneShot(string prompt, string modelClass);
+	/// Run a one-shot LLM completion. cmdPrefix should match the task session's
+	/// sandbox/workdir prefix when the caller needs one-shot requests to honor
+	/// sandbox env and cwd. workDir is provided separately for agents whose
+	/// protocol requires an explicit cwd in addition to process-level chdir.
+	OneShotHandle completeOneShot(string prompt, string modelClass,
+		string[] cmdPrefix = null, string workDir = "");
 }
 
 /// Handle returned by completeOneShot, containing the result promise and a
