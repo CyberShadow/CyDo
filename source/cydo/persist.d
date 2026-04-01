@@ -342,6 +342,19 @@ struct ForkResult
 	string agentSessionId;
 }
 
+int createForkTask(ref Persistence persistence, int sourceTid, string agentSessionId,
+	string projectPath, string workspace, string title,
+	string description = "", string taskType = "", string agentType = "claude")
+{
+	import std.datetime : Clock;
+	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
+	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type, agent_type, created_at, last_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		.exec(agentSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed",
+			description, taskType.length > 0 ? taskType : "conversation", agentType,
+			Clock.currStdTime, Clock.currStdTime);
+	return cast(int) persistence.db.db.lastInsertRowID;
+}
+
 /// Fork a task by truncating its JSONL after the given fork ID.
 /// Creates a new JSONL file with a fresh session ID and a corresponding DB row.
 /// historyPathFn computes the JSONL file path for a given session ID.
@@ -409,11 +422,8 @@ ForkResult forkTask(ref Persistence persistence, int sourceTid, string sourceSes
 	write(destPath, output);
 
 	// Create DB entry with the new agent session ID
-	import std.datetime : Clock;
-	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
-	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type, agent_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-		.exec(newSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed", description, taskType.length > 0 ? taskType : "conversation", agentType, Clock.currStdTime);
-	return ForkResult(cast(int) persistence.db.db.lastInsertRowID, newSessionId);
+	return ForkResult(createForkTask(persistence, sourceTid, newSessionId, projectPath,
+		workspace, title, description, taskType, agentType), newSessionId);
 }
 
 /// Edit a message in a JSONL file by replacing its content.
@@ -452,6 +462,43 @@ bool editJsonlMessage(string jsonlPath, string targetId,
 		return false;
 
 	write(jsonlPath, output);
+	return true;
+}
+
+bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
+	bool delegate(string line, int lineNum, string forkId) matchFn)
+{
+	import std.file : exists, mkdirRecurse, readText, write;
+	import std.path : dirName;
+	import std.string : lineSplitter;
+
+	if (sourcePath.length == 0 || !exists(sourcePath))
+		return false;
+
+	string output;
+	bool found = false;
+	int lineNum = 0;
+	foreach (line; readText(sourcePath).lineSplitter)
+	{
+		lineNum++;
+		if (line.length == 0)
+			continue;
+
+		output ~= line ~ "\n";
+		if (matchFn(line, lineNum, afterForkId))
+		{
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
+		return false;
+
+	auto destDir = dirName(destPath);
+	if (destDir.length > 0)
+		mkdirRecurse(destDir);
+	write(destPath, output);
 	return true;
 }
 

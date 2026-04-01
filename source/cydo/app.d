@@ -34,8 +34,8 @@ import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
-import cydo.persist : ForkResult, Persistence, countLinesAfterForkId,
-	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl;
+import cydo.persist : ForkResult, Persistence, countLinesAfterForkId, createForkTask,
+	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
@@ -1787,6 +1787,7 @@ class App : ToolsBackend
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
+		import cydo.agent.codex : CodexAgent, ThreadForkOutcome;
 
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
@@ -1799,6 +1800,86 @@ class App : ToolsBackend
 		}
 
 		auto ta = agentForTask(tid);
+		if (auto ca = cast(CodexAgent) ta)
+		{
+			auto sourcePath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+			if (sourcePath.length == 0)
+			{
+				ws.send(Data(toJson(ErrorMessage("error",
+					"Fork failed: task history file not found", tid)).representation));
+				return;
+			}
+
+			auto childTid = createForkTask(persistence, tid, "", td.projectPath, td.workspace,
+				td.title, td.description, td.taskType, td.agentType);
+
+			auto newTd = TaskData(childTid);
+			newTd.workspace = td.workspace;
+			newTd.projectPath = td.projectPath;
+			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
+			newTd.parentTid = tid;
+			newTd.relationType = "fork";
+			newTd.status = "completed";
+			newTd.agentType = td.agentType;
+			newTd.description = td.description;
+			newTd.taskType = td.taskType;
+			import std.datetime : Clock;
+			newTd.createdAt = Clock.currStdTime;
+			newTd.lastActive = newTd.createdAt;
+			tasks[childTid] = move(newTd);
+
+			auto childAgent = agentForTask(childTid);
+			auto childTypeDef = getTaskTypes().byName(tasks[childTid].taskType);
+			auto launch = prepareTaskSessionLaunch(childTid, childAgent, childTypeDef);
+
+			import std.file : exists, remove;
+			import std.path : baseName, buildPath, dirName;
+			import std.uuid : randomUUID;
+			auto forkSourcePath = buildPath(dirName(sourcePath),
+				"fork-source-" ~ randomUUID().toString() ~ "-" ~ baseName(sourcePath));
+			if (!writeJsonlPrefix(sourcePath, forkSourcePath, json.after_uuid, &ta.forkIdMatchesLine))
+			{
+				tasks.remove(childTid);
+				persistence.deleteTask(childTid);
+				ws.send(Data(toJson(ErrorMessage("error",
+					"Fork failed: message UUID not found in task history", tid)).representation));
+				return;
+			}
+
+			ca.forkSession(childTid, td.agentSessionId, launch.cmdPrefix, launch.sessionConfig,
+				forkSourcePath)
+				.then((ThreadForkOutcome outcome) {
+					try
+					{
+						if (exists(forkSourcePath))
+							remove(forkSourcePath);
+					}
+					catch (Exception)
+					{
+					}
+					if (!outcome.ok)
+					{
+						tasks.remove(childTid);
+						persistence.deleteTask(childTid);
+						ws.send(Data(toJson(ErrorMessage("error",
+							"Fork failed: " ~ outcome.error, tid)).representation));
+						return;
+					}
+
+					tasks[childTid].agentSessionId = outcome.threadId;
+					persistence.setAgentSessionId(childTid, outcome.threadId);
+					tasks[childTid].processQueue = new StateQueue!ProcessState(
+						(ProcessState goal) => processTransition(childTid, goal),
+						ProcessState.Dead,
+					);
+
+					broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
+						td.projectPath, tid, "fork")));
+					broadcastTaskUpdate(childTid);
+				});
+			return;
+		}
+
 		auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
 			td.projectPath, td.workspace, td.title,
 			// Source JSONL lives under the worktree path (effectiveCwd);
@@ -2243,16 +2324,16 @@ class App : ToolsBackend
 			errorf("Failed to create fork worktree for task %d: %s", childTid, gitResult.output);
 	}
 
-	private void spawnTaskSession(int tid)
+	private struct TaskSessionLaunch
+	{
+		SessionConfig sessionConfig;
+		string[] cmdPrefix;
+	}
+
+	private TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
+		TaskTypeDef* typeDef)
 	{
 		auto td = &tasks[tid];
-		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
-		td.wasKilledByUser = false;
-
-		// Look up the correct agent for this task's agent type
-		auto taskAgent = agentForTask(tid);
-
-		auto typeDef = getTaskTypes().byName(td.taskType);
 
 		// Derive session config from task type definition
 		SessionConfig sessionConfig;
@@ -2327,7 +2408,7 @@ class App : ToolsBackend
 		}
 
 		// Git dirs writable for types that can reach a worktree: they may need
-		// to cherry-pick or merge results from child worktrees.  Use always_rw
+		// to cherry-pick or merge results from child worktrees. Use always_rw
 		// so this survives the read_only downgrade.
 		if (workDir.length > 0 && td.taskType in reachesWorktreeCache
 			&& reachesWorktreeCache[td.taskType])
@@ -2357,9 +2438,6 @@ class App : ToolsBackend
 		// Set up shared /tmp: all tasks in a tree share the same host-backed directory
 		td.sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
 
-		auto cmdPrefix = buildCommandPrefix(td.sandbox, chdir);
-
-		// Pass workspace and working directory for agents that need them (Codex).
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
 		if (taskAgent.needsBash())
@@ -2372,11 +2450,25 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "Handoff";
 		if (getTaskTypes().isInteractive(getEntryPoints(), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
-
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
-		td.session = taskAgent.createSession(tid, td.agentSessionId, cmdPrefix, sessionConfig);
+		return TaskSessionLaunch(sessionConfig, buildCommandPrefix(td.sandbox, chdir));
+	}
+
+	private void spawnTaskSession(int tid)
+	{
+		auto td = &tasks[tid];
+		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
+		td.wasKilledByUser = false;
+
+		// Look up the correct agent for this task's agent type
+		auto taskAgent = agentForTask(tid);
+
+		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
+		td.session = taskAgent.createSession(tid, td.agentSessionId,
+			launch.cmdPrefix, launch.sessionConfig);
 		persistence.clearLastActive(tid);
 
 		// Track MCP config temp file for cleanup

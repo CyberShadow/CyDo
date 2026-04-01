@@ -70,6 +70,27 @@ struct ThreadResumeParams
 }
 
 @RPCFlatten @JSONPartial
+struct ThreadForkParams
+{
+	string threadId;
+	@JSONOptional string path;
+	@JSONOptional string model;
+	@JSONOptional string cwd;
+	@JSONOptional string approvalPolicy;
+	@JSONOptional string sandbox;
+	@JSONOptional string developerInstructions;
+	@JSONOptional JSONFragment config;
+}
+
+struct ThreadForkOutcome
+{
+	bool ok;
+	string threadId;
+	string rawResultJson;
+	string error;
+}
+
+@RPCFlatten @JSONPartial
 struct TurnStartInput
 {
 	string type;
@@ -710,7 +731,7 @@ class AppServerProcess
 		state_ = State.initializing;
 		sendRequest("initialize", JSONFragment(toJson(InitializeParams(
 			InitializeParams.ClientInfo("cydo", "0.1.0"),
-			JSONFragment("{}")
+			JSONFragment(`{"experimentalApi":true}`)
 		)))).then((JsonRpcResponse result) {
 			sendLogin();
 		});
@@ -825,6 +846,17 @@ class CodexAgent : Agent
 		return workspace ~ "\n" ~ prefixSig;
 	}
 
+	private static string buildDeveloperInstructions(string appendSystemPrompt)
+	{
+		string devInstructions = appendSystemPrompt;
+		if (devInstructions.length > 0)
+			devInstructions ~= "\n\n";
+		devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
+			~ "spawn_agent,update_plan,request_user_input"
+			~ ". If you attempt to use them, they will fail.";
+		return devInstructions;
+	}
+
 	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
 		SessionConfig config = SessionConfig.init)
 	{
@@ -835,14 +867,7 @@ class CodexAgent : Agent
 
 		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
 		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
-
-		// Build developerInstructions: system prompt + disallowedTools restriction.
-		string devInstructions = config.appendSystemPrompt;
-		if (devInstructions.length > 0)
-			devInstructions ~= "\n\n";
-		devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
-			~ "spawn_agent,update_plan,request_user_input"
-			~ ". If you attempt to use them, they will fail.";
+		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
 
 		// Build config override (reasoning summary + MCP tools).
 		auto configOverride = buildConfigOverride(tid,
@@ -916,6 +941,57 @@ class CodexAgent : Agent
 		});
 
 		return session;
+	}
+
+	Promise!ThreadForkOutcome forkSession(int tid, string sourceThreadId,
+		string[] cmdPrefix, SessionConfig config = SessionConfig.init,
+		string sourcePath = null)
+	{
+		auto outcome = new Promise!ThreadForkOutcome;
+		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
+		auto server = getOrCreateServer(serverPoolKey(workspace, cmdPrefix), cmdPrefix);
+		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
+		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
+		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
+		auto configOverride = buildConfigOverride(tid,
+			config.creatableTaskTypes, config.switchModes, config.handoffs,
+			config.includeTools, config.mcpSocketPath);
+
+		server.onReady(() {
+			ThreadForkParams tfp;
+			tfp.threadId = sourceThreadId;
+			if (sourcePath.length > 0)
+				tfp.path = sourcePath;
+			tfp.model = model;
+			tfp.cwd = workDir;
+			tfp.approvalPolicy = "never";
+			tfp.sandbox = "danger-full-access";
+			if (devInstructions.length > 0)
+				tfp.developerInstructions = devInstructions;
+			tfp.config = JSONFragment(configOverride);
+
+			server.sendRequest("thread/fork", JSONFragment(toJson(tfp)))
+				.then((JsonRpcResponse resp) {
+					ThreadStartResult result;
+					try
+						result = resp.getResult!ThreadStartResult();
+					catch (Exception e)
+					{
+						outcome.fulfill(ThreadForkOutcome(false, "", "", e.msg));
+						return;
+					}
+					if (result.thread.id.length == 0)
+					{
+						outcome.fulfill(ThreadForkOutcome(false, "", resp.result.json,
+							"thread/fork returned empty thread id"));
+						return;
+					}
+					outcome.fulfill(ThreadForkOutcome(true, result.thread.id,
+						resp.result.json, ""));
+				});
+		});
+
+		return outcome;
 	}
 
 	private AppServerProcess getOrCreateServer(string poolKey, string[] cmdPrefix)
@@ -2377,6 +2453,21 @@ private string getCodexBinName()
 
 unittest
 {
+	ThreadForkParams tfp;
+	tfp.threadId = "thread-parent";
+	tfp.path = "/tmp/fork-source.jsonl";
+	tfp.model = "gpt-5.3-codex";
+	tfp.cwd = "/tmp/worktree";
+	tfp.approvalPolicy = "never";
+	tfp.sandbox = "danger-full-access";
+	tfp.developerInstructions = "dev-instructions";
+	tfp.config = JSONFragment(`{"mcp_servers.cydo":{"command":"cydo"}}`);
+	auto forkJson = toJson(tfp);
+	assert(
+		forkJson == `{"threadId":"thread-parent","path":"/tmp/fork-source.jsonl","model":"gpt-5.3-codex","cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":"danger-full-access","developerInstructions":"dev-instructions","config":{"mcp_servers.cydo":{"command":"cydo"}}}`,
+		"thread/fork payload must preserve the source thread id/path; actual=" ~ forkJson,
+	);
+
 	auto steerJson = toJson(TurnSteerParams(
 		"thread-steer",
 		[TurnStartInput("text", "stage and nix flake check")],
