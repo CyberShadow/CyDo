@@ -379,6 +379,7 @@ function SessionViewInner({
         <FileViewer
           trackedFiles={task.trackedFiles}
           blocks={task.blocks}
+          itemIdMap={task.itemIdMap}
           selectedFile={fileViewerState.selectedFile}
           selectedEditIndex={fileViewerState.selectedEditIndex}
           viewMode={fileViewerState.viewMode}

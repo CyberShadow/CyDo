@@ -158,6 +158,33 @@ test("codex update fixture shows patch preview", async ({ page, agentType }) => 
   await expect(page.locator(".file-viewer")).toContainText("codex-fileviewer-create.txt");
   // Edit history should show the Patch entry tracked from the second fileChange
   await expect(page.locator(".file-viewer")).toContainText(/Patch/);
+
+  const contentViewer = page.locator(".file-viewer .content-viewer");
+  await expect(contentViewer.locator(".file-viewer-source")).toContainText(
+    "hello from update fixture",
+  );
+  await expect(contentViewer.locator(".file-viewer-source")).not.toContainText(
+    "*** Begin Patch",
+  );
+  await expect(contentViewer.locator(".file-viewer-source")).not.toContainText(
+    "@@",
+  );
+
+  await contentViewer.getByRole("button", { name: "Diff" }).click();
+  await expect(contentViewer.locator(".diff-view")).toContainText(
+    "- hello from create fixture",
+  );
+  await expect(contentViewer.locator(".diff-view")).toContainText(
+    "+ hello from update fixture",
+  );
+
+  await contentViewer.getByRole("button", { name: "Cumulative" }).click();
+  await expect(contentViewer.locator(".diff-view")).toContainText(
+    "+ hello from update fixture",
+  );
+  await expect(contentViewer.locator(".diff-view")).not.toContainText(
+    "- hello from create fixture",
+  );
 });
 
 test("codex delete fixture shows deleted state", async ({ page, agentType }) => {
