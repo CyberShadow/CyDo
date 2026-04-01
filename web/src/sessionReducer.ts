@@ -32,6 +32,7 @@ import type {
   ItemResultEvent,
   TurnStopEvent,
   TurnDeltaEvent,
+  StderrMessage,
 } from "./protocol";
 
 function getExtras(
@@ -1224,7 +1225,32 @@ export function reduceTurnStop(
   return s;
 }
 
-export function reduceStderr(s: SessionState, text: string): SessionState {
+export function reduceStderr(
+  s: SessionState,
+  event: StderrMessage,
+): SessionState {
+  const lastMessage = s.messages[s.messages.length - 1];
+  if (lastMessage?.type === "system" && lastMessage.subtype === "stderr") {
+    const messages = s.messages.slice();
+    const updated = { ...lastMessage };
+    const priorText = updated.content
+      .filter(
+        (block): block is { type: "text"; text: string } =>
+          block.type === "text",
+      )
+      .map((block) => block.text)
+      .join("\n");
+    updated.content = [
+      {
+        type: "text" as const,
+        text: priorText.length > 0 ? `${priorText}\n${event.text}` : event.text,
+      },
+    ];
+    appendRawSource(updated, event);
+    messages[messages.length - 1] = updated;
+    return { ...s, messages };
+  }
+
   const id = `stderr-${++s.msgIdCounter}`;
   return {
     ...s,
@@ -1234,8 +1260,9 @@ export function reduceStderr(s: SessionState, text: string): SessionState {
         id,
         type: "system" as const,
         subtype: "stderr" as const,
-        content: [{ type: "text" as const, text }],
-        rawSource: text,
+        content: [{ type: "text" as const, text: event.text }],
+        rawSource: event,
+        seq: getSeq(event),
       },
     ],
   };
@@ -1341,7 +1368,7 @@ export function reduceMessage(
       return reduceExit(s);
 
     case "process/stderr":
-      return reduceStderr(s, msg.text);
+      return reduceStderr(s, msg);
 
     case "agent/unrecognized": {
       // If mid-turn, embed in the streaming message to preserve temporal order.
