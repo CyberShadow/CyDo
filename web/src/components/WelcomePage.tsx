@@ -9,9 +9,26 @@ interface Props {
   attention: Set<number>;
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
+  getProjectHref: (workspace: string, projectName: string) => string;
+  getTaskHref: (id: string) => string;
   taskTypes: TypeInfo[];
   authEnabled: boolean;
   onRefreshWorkspaces: () => void;
+}
+
+function isPlainLeftClick(e: MouseEvent): boolean {
+  return (
+    e.button === 0 &&
+    !e.defaultPrevented &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.shiftKey &&
+    !e.altKey
+  );
+}
+
+function openInNewTab(href: string): void {
+  window.open(href, "_blank", "noopener");
 }
 
 export function WelcomePage({
@@ -20,6 +37,8 @@ export function WelcomePage({
   attention,
   onSelectTask,
   onNavigateToProject,
+  getProjectHref,
+  getTaskHref,
   taskTypes,
   authEnabled,
   onRefreshWorkspaces,
@@ -163,6 +182,22 @@ export function WelcomePage({
     );
   }
 
+  function handleProjectNewTaskClick(
+    e: MouseEvent,
+    workspace: string,
+    projectName: string,
+  ) {
+    const href = getProjectHref(workspace, projectName);
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      openInNewTab(href);
+      return;
+    }
+    if (!isPlainLeftClick(e)) return;
+    e.preventDefault();
+    onNavigateToProject(workspace, projectName);
+  }
+
   return (
     <div class="welcome-page">
       <header class="welcome-page-header">
@@ -242,10 +277,13 @@ export function WelcomePage({
                   return (
                     <div class="project-card" key={proj.path}>
                       <div class="project-card-header">
-                        <span
+                        <a
+                          href={getProjectHref(ws.name, proj.name)}
                           class="project-card-title"
                           title={proj.name}
-                          onClick={() => {
+                          onClick={(e: MouseEvent) => {
+                            if (!isPlainLeftClick(e)) return;
+                            e.preventDefault();
                             onNavigateToProject(ws.name, proj.name);
                           }}
                         >
@@ -263,11 +301,16 @@ export function WelcomePage({
                               </>
                             );
                           })()}
-                        </span>
+                        </a>
                         <button
                           class="sidebar-new-btn"
-                          onClick={() => {
-                            onNavigateToProject(ws.name, proj.name);
+                          onClick={(e: MouseEvent) => {
+                            handleProjectNewTaskClick(e, ws.name, proj.name);
+                          }}
+                          onAuxClick={(e: MouseEvent) => {
+                            if (e.button !== 1) return;
+                            e.preventDefault();
+                            openInNewTab(getProjectHref(ws.name, proj.name));
                           }}
                           title="New task"
                         >
@@ -279,12 +322,15 @@ export function WelcomePage({
                           <div class="project-card-empty">No tasks yet</div>
                         ) : (
                           projTasks.map((t) => (
-                            <div
+                            <a
                               key={t.tid}
+                              href={getTaskHref(String(t.tid))}
                               class={`sidebar-item${
                                 attention.has(t.tid) ? " attention" : ""
                               }`}
-                              onClick={() => {
+                              onClick={(e: MouseEvent) => {
+                                if (!isPlainLeftClick(e)) return;
+                                e.preventDefault();
                                 onSelectTask(t.tid);
                               }}
                             >
@@ -299,7 +345,7 @@ export function WelcomePage({
                               >
                                 {t.title || `Task ${t.tid}`}
                               </span>
-                            </div>
+                            </a>
                           ))
                         )}
                       </div>
@@ -332,12 +378,15 @@ export function WelcomePage({
                 </div>
                 <div class="project-card-sessions">
                   {filteredUngrouped.map((t) => (
-                    <div
+                    <a
                       key={t.tid}
+                      href={getTaskHref(String(t.tid))}
                       class={`sidebar-item${
                         attention.has(t.tid) ? " attention" : ""
                       }`}
-                      onClick={() => {
+                      onClick={(e: MouseEvent) => {
+                        if (!isPlainLeftClick(e)) return;
+                        e.preventDefault();
                         onSelectTask(t.tid);
                       }}
                     >
@@ -352,7 +401,7 @@ export function WelcomePage({
                       >
                         {t.title || `Task ${t.tid}`}
                       </span>
-                    </div>
+                    </a>
                   ))}
                 </div>
               </div>

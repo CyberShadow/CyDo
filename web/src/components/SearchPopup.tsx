@@ -8,9 +8,27 @@ interface Props {
   onSelect: (tid: number) => void;
   onClose: () => void;
   taskTypes: TypeInfo[];
+  getTaskHref: (tid: number) => string;
 }
 
-export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
+function isPlainLeftClick(e: MouseEvent): boolean {
+  return (
+    e.button === 0 &&
+    !e.defaultPrevented &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.shiftKey &&
+    !e.altKey
+  );
+}
+
+export function SearchPopup({
+  tasks,
+  onSelect,
+  onClose,
+  taskTypes,
+  getTaskHref,
+}: Props) {
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,12 +117,15 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
             else if (t.status === "failed") statusClass = "failed";
             const hasIcon = hasTaskTypeIcon(t.taskType, taskTypes);
             return (
-              <div
+              <a
                 key={t.tid}
+                href={getTaskHref(t.tid)}
                 class={`search-result-item${
                   i === selectedIdx ? " selected" : ""
                 }`}
-                onClick={() => {
+                onClick={(e: MouseEvent) => {
+                  if (!isPlainLeftClick(e)) return;
+                  e.preventDefault();
                   onSelect(t.tid);
                   onClose();
                 }}
@@ -131,7 +152,7 @@ export function SearchPopup({ tasks, onSelect, onClose, taskTypes }: Props) {
                 {t.workspace && (
                   <span class="search-result-meta">{t.workspace}</span>
                 )}
-              </div>
+              </a>
             );
           })}
           {filtered.length === 0 && (

@@ -135,6 +135,8 @@ export interface TaskManager {
   authEnabled: boolean;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
+  getProjectHref: (workspace: string, projectName: string) => string;
+  getTaskHref: (id: string) => string;
   refreshWorkspaces: () => void;
 }
 
@@ -156,6 +158,25 @@ function parseTaskId(id: string | null): number | null {
   if (id === null) return null;
   const n = parseInt(id, 10);
   return String(n) === id ? n : null;
+}
+
+function encodeProjectName(projectName: string): string {
+  return projectName.replace(/\//g, ":");
+}
+
+function buildProjectHref(workspace: string, projectName: string): string {
+  return `/${workspace}/${encodeProjectName(projectName)}`;
+}
+
+function buildScopedHref(
+  workspace: string | null,
+  projectName: string | null,
+  suffix: string,
+): string {
+  if (workspace && projectName) {
+    return `${buildProjectHref(workspace, projectName)}${suffix}`;
+  }
+  return suffix;
 }
 
 export function useTaskManager(): TaskManager {
@@ -208,22 +229,8 @@ export function useTaskManager(): TaskManager {
   const activeProjectRef = useRef(activeProject);
   activeProjectRef.current = activeProject;
 
-  const setActiveTaskId = useCallback((id: string) => {
-    // Helper: build a URL with optional workspace/project prefix
-    const buildUrl = (
-      ws: string | null,
-      proj: string | null,
-      suffix: string,
-    ) => {
-      if (ws && proj) {
-        const enc = proj.replace(/\//g, ":");
-        return `/${ws}/${enc}${suffix}`;
-      }
-      return suffix;
-    };
-
-    // Helper: find workspace/project for a numeric task ID
-    const taskContext = (tid: number): [string | null, string | null] => {
+  const taskContext = useCallback(
+    (tid: number): [string | null, string | null] => {
       const t = liveStates.get(tid);
       if (!t || !t.workspace || !t.projectPath) return [null, null];
       const projName = findProjectName(
@@ -232,49 +239,60 @@ export function useTaskManager(): TaskManager {
         t.projectPath,
       );
       return projName ? [t.workspace, projName] : [null, null];
-    };
+    },
+    [],
+  );
 
-    // Archive nodes: route to /archive or /:ws/:proj/archive/:parentTid
-    if (id === "archive") {
-      routeRef.current(
-        buildUrl(
+  const getProjectHref = useCallback(
+    (workspace: string, projectName: string) =>
+      buildProjectHref(workspace, projectName),
+    [],
+  );
+
+  const getTaskHref = useCallback(
+    (id: string) => {
+      if (id === "archive") {
+        return buildScopedHref(
           activeWorkspaceRef.current,
           activeProjectRef.current,
           "/archive",
-        ),
-      );
-      return;
-    }
-    const archiveMatch = id.match(/^archive:(\d+)$/);
-    if (archiveMatch) {
-      const parentTid = parseInt(archiveMatch[1]!, 10);
-      const [ws, proj] = taskContext(parentTid);
-      routeRef.current(buildUrl(ws, proj, `/archive/${parentTid}`));
-      return;
-    }
-
-    if (id === "import") {
-      routeRef.current(
-        buildUrl(
+        );
+      }
+      const archiveMatch = id.match(/^archive:(\d+)$/);
+      if (archiveMatch) {
+        const parentTid = parseInt(archiveMatch[1]!, 10);
+        const [ws, proj] = taskContext(parentTid);
+        return buildScopedHref(ws, proj, `/archive/${parentTid}`);
+      }
+      if (id === "import") {
+        return buildScopedHref(
           activeWorkspaceRef.current,
           activeProjectRef.current,
           "/import",
-        ),
-      );
-      return;
-    }
+        );
+      }
 
-    // Regular task: look up workspace/project from task state
-    const tid = parseInt(id, 10);
-    if (!isNaN(tid)) {
-      activeTaskIdRef.current = id;
-      const [ws, proj] = taskContext(tid);
-      routeRef.current(buildUrl(ws, proj, `/task/${id}`));
-      return;
-    }
+      const tid = parseInt(id, 10);
+      if (!isNaN(tid)) {
+        const [ws, proj] = taskContext(tid);
+        return buildScopedHref(ws, proj, `/task/${id}`);
+      }
 
-    routeRef.current("/");
-  }, []);
+      return "/";
+    },
+    [taskContext],
+  );
+
+  const setActiveTaskId = useCallback(
+    (id: string) => {
+      const tid = parseInt(id, 10);
+      if (!isNaN(tid)) {
+        activeTaskIdRef.current = id;
+      }
+      routeRef.current(getTaskHref(id));
+    },
+    [getTaskHref],
+  );
 
   const navigateHome = useCallback(() => {
     routeRef.current("/");
@@ -282,8 +300,7 @@ export function useTaskManager(): TaskManager {
 
   const navigateToProject = useCallback(
     (workspace: string, projectName: string) => {
-      const encodedProject = projectName.replace(/\//g, ":");
-      routeRef.current(`/${workspace}/${encodedProject}`);
+      routeRef.current(buildProjectHref(workspace, projectName));
     },
     [],
   );
@@ -1721,6 +1738,8 @@ export function useTaskManager(): TaskManager {
     authEnabled,
     navigateHome,
     navigateToProject,
+    getProjectHref,
+    getTaskHref,
     refreshWorkspaces: () => connRef.current?.refreshWorkspaces(),
   };
 }

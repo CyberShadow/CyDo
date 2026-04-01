@@ -291,6 +291,7 @@ body,
   font-weight: bold;
   font-size: 14px;
   color: var(--text-dim);
+  text-decoration: none;
   text-transform: uppercase;
   letter-spacing: 1px;
   overflow: hidden;
@@ -324,6 +325,7 @@ body,
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  text-decoration: none;
 }
 
 .sidebar-new-btn:hover {
@@ -345,9 +347,11 @@ body,
   gap: 8px;
   min-height: 31px;
   padding: 0 16px;
+  color: inherit;
   cursor: pointer;
   font-size: 13px;
   border-left: 3px solid transparent;
+  text-decoration: none;
 }
 
 .tree-connectors {
@@ -2673,6 +2677,7 @@ pre.extra-field-value {
   overflow: hidden;
   white-space: nowrap;
   min-width: 0;
+  text-decoration: none;
 }
 
 .project-card-prefix {
@@ -2972,8 +2977,10 @@ pre.extra-field-value {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
+  color: inherit;
   cursor: pointer;
   font-size: 13px;
+  text-decoration: none;
 }
 
 .search-result-item:hover,

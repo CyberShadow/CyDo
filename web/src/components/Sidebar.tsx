@@ -41,6 +41,17 @@ const COL_WIDTH = 20;
 const LINE_X = 8;
 const JUNCTION_Y = ROW_HEIGHT / 2;
 
+function isPlainLeftClick(e: MouseEvent): boolean {
+  return (
+    e.button === 0 &&
+    !e.defaultPrevented &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.shiftKey &&
+    !e.altKey
+  );
+}
+
 function TreeGuide({ hasLine }: { hasLine: boolean }) {
   return (
     <svg
@@ -374,6 +385,7 @@ const SidebarItem = memo(function SidebarItem({
   isActive,
   hasAttention,
   hasPendingQuestion,
+  href,
   onSelect,
   onArchive,
 }: {
@@ -388,6 +400,7 @@ const SidebarItem = memo(function SidebarItem({
   isActive: boolean;
   hasAttention: boolean;
   hasPendingQuestion: boolean;
+  href: string;
   onSelect: (id: string) => void;
   onArchive?: (tid: number) => void;
 }) {
@@ -406,12 +419,15 @@ const SidebarItem = memo(function SidebarItem({
 
   if (isArchive) {
     return (
-      <div
+      <a
+        href={href}
         class={`sidebar-item sidebar-archive-node${isActive ? " active" : ""}${
           depth === 0 ? " top-level" : ""
         }`}
         data-tid={id}
-        onClick={() => {
+        onClick={(e: MouseEvent) => {
+          if (!isPlainLeftClick(e)) return;
+          e.preventDefault();
           onSelect(id);
         }}
       >
@@ -424,12 +440,13 @@ const SidebarItem = memo(function SidebarItem({
           }`}
         />
         <span class="sidebar-label">{title}</span>
-      </div>
+      </a>
     );
   }
 
   return (
-    <div
+    <a
+      href={href}
       class={`sidebar-item${isActive ? " active" : ""}${
         hasPendingQuestion ? " asking" : hasAttention ? " attention" : ""
       }${depth === 0 ? " top-level" : ""}`}
@@ -438,9 +455,11 @@ const SidebarItem = memo(function SidebarItem({
         if (e.altKey && onArchive) {
           e.preventDefault();
           onArchive(parseInt(id, 10));
-        } else {
-          onSelect(id);
+          return;
         }
+        if (!isPlainLeftClick(e)) return;
+        e.preventDefault();
+        onSelect(id);
       }}
     >
       {treeConnectors}
@@ -467,7 +486,7 @@ const SidebarItem = memo(function SidebarItem({
       >
         {title}
       </span>
-    </div>
+    </a>
   );
 });
 
@@ -479,9 +498,12 @@ interface Props {
   attention: Set<number>;
   onSelectTask: (id: string) => void;
   onNewTask: () => void;
+  newTaskHref: string;
   showBackButton?: boolean;
   onBack?: () => void;
   projectName?: string;
+  projectHref?: string;
+  getTaskHref: (id: string) => string;
   taskTypes: TypeInfo[];
   visible?: boolean;
   onOpenSearch?: () => void;
@@ -494,9 +516,12 @@ export const Sidebar = memo(function Sidebar({
   attention,
   onSelectTask,
   onNewTask,
+  newTaskHref,
   showBackButton,
   onBack,
   projectName,
+  projectHref,
+  getTaskHref,
   taskTypes,
   visible,
   onOpenSearch,
@@ -577,19 +602,52 @@ export const Sidebar = memo(function Sidebar({
             </button>
           )}
         </div>
-        <span class="sidebar-title" title={projectName || "Tasks"}>
-          {(() => {
-            const name = projectName || "Tasks";
-            const slash = name.lastIndexOf("/");
-            if (slash === -1) return name;
-            return (
-              <>
-                <span class="sidebar-title-prefix">{name.slice(0, slash)}</span>
-                <span class="sidebar-title-leaf">/{name.slice(slash + 1)}</span>
-              </>
-            );
-          })()}
-        </span>
+        {projectHref ? (
+          <a
+            href={projectHref}
+            class="sidebar-title"
+            title={projectName || "Tasks"}
+            onClick={(e: MouseEvent) => {
+              if (!isPlainLeftClick(e)) return;
+              e.preventDefault();
+              onNewTask();
+            }}
+          >
+            {(() => {
+              const name = projectName || "Tasks";
+              const slash = name.lastIndexOf("/");
+              if (slash === -1) return name;
+              return (
+                <>
+                  <span class="sidebar-title-prefix">
+                    {name.slice(0, slash)}
+                  </span>
+                  <span class="sidebar-title-leaf">
+                    /{name.slice(slash + 1)}
+                  </span>
+                </>
+              );
+            })()}
+          </a>
+        ) : (
+          <span class="sidebar-title" title={projectName || "Tasks"}>
+            {(() => {
+              const name = projectName || "Tasks";
+              const slash = name.lastIndexOf("/");
+              if (slash === -1) return name;
+              return (
+                <>
+                  <span class="sidebar-title-prefix">
+                    {name.slice(0, slash)}
+                  </span>
+                  <span class="sidebar-title-leaf">
+                    /{name.slice(slash + 1)}
+                  </span>
+                </>
+              );
+            })()}
+          </span>
+        )}
         <div class="sidebar-header-right">
           {onOpenSearch && (
             <button
@@ -615,15 +673,20 @@ export const Sidebar = memo(function Sidebar({
         </div>
       </div>
       <div class="sidebar-list" ref={listRef}>
-        <div
+        <a
+          href={newTaskHref}
           class={`sidebar-item sidebar-new-task${
             activeTaskId === null ? " active" : ""
           }`}
-          onClick={onNewTask}
+          onClick={(e: MouseEvent) => {
+            if (!isPlainLeftClick(e)) return;
+            e.preventDefault();
+            onNewTask();
+          }}
         >
           <span class="task-type-icon task-type-icon-plus" />
           <span class="sidebar-label">New Task</span>
-        </div>
+        </a>
         {flatItems
           .map((item) => (
             <SidebarItem
@@ -639,6 +702,7 @@ export const Sidebar = memo(function Sidebar({
               isActive={item.id === activeTaskId}
               hasAttention={attention.has(item.tid)}
               hasPendingQuestion={item.hasPendingQuestion}
+              href={getTaskHref(item.id)}
               onSelect={handleSelect}
               onArchive={handleArchive}
             />

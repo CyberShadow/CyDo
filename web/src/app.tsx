@@ -50,6 +50,8 @@ function AppContent() {
     authEnabled,
     navigateHome,
     navigateToProject,
+    getProjectHref,
+    getTaskHref,
     refreshWorkspaces,
   } = useTaskManager();
 
@@ -117,6 +119,7 @@ function AppContent() {
       taskTypes={typeInfo}
       onSelect={handleSearchSelect}
       onClose={handleSearchClose}
+      getTaskHref={(tid) => getTaskHref(String(tid))}
     />
   );
 
@@ -134,6 +137,8 @@ function AppContent() {
               authEnabled={authEnabled}
               onSelectTask={handleSearchSelect}
               onNavigateToProject={navigateToProject}
+              getProjectHref={getProjectHref}
+              getTaskHref={getTaskHref}
               onRefreshWorkspaces={refreshWorkspaces}
             />
           ) : (
@@ -310,9 +315,20 @@ function AppContent() {
           attention={attention}
           onSelectTask={handleSidebarSelect}
           onNewTask={handleSidebarNewTask}
+          newTaskHref={
+            activeWorkspace && activeProject
+              ? getProjectHref(activeWorkspace, activeProject)
+              : "/"
+          }
           showBackButton={true}
           onBack={navigateHome}
           projectName={activeProject || undefined}
+          projectHref={
+            activeWorkspace && activeProject
+              ? getProjectHref(activeWorkspace, activeProject)
+              : undefined
+          }
+          getTaskHref={getTaskHref}
           taskTypes={typeInfo}
           visible={sidebarOpen}
           onOpenSearch={handleOpenSearch}
@@ -445,6 +461,7 @@ export function App() {
   return (
     <ErrorBoundary>
       <Router>
+        <Route path="/task/:tid" component={AppContent} />
         <Route path="/:workspace/:project/task/:tid" component={AppContent} />
         <Route
           path="/:workspace/:project/archive/:parentTid"
