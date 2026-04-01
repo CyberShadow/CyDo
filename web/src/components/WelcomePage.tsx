@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
@@ -27,6 +27,7 @@ export function WelcomePage({
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const filterRef = useRef<HTMLInputElement>(null);
+  const filterLower = filter.toLowerCase();
 
   function toggleCollapsed(name: string) {
     setCollapsed((prev) => {
@@ -56,41 +57,82 @@ export function WelcomePage({
     };
   }, []);
 
-  // Group top-level tasks by workspace+projectPath
-  const tasksByProject = new Map<string, TaskState[]>();
-  for (const t of tasks.values()) {
-    if (t.parentTid) continue;
-    const key = `${t.workspace || ""}:${t.projectPath || ""}`;
-    const list = tasksByProject.get(key) || [];
-    list.push(t);
-    tasksByProject.set(key, list);
-  }
+  const { filteredWorkspaces, filteredUngrouped } = useMemo(() => {
+    const tasksByProject = new Map<string, TaskState[]>();
+    for (const t of tasks.values()) {
+      if (t.parentTid) continue;
+      const key = `${t.workspace || ""}:${t.projectPath || ""}`;
+      const list = tasksByProject.get(key);
+      if (list) list.push(t);
+      else tasksByProject.set(key, [t]);
+    }
 
-  // Check for ungrouped tasks (no workspace/projectPath)
-  const ungrouped = (tasksByProject.get(":") || []).sort(
-    (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
-  );
+    const projectStats = new Map<
+      string,
+      { tasks: TaskState[]; active: boolean; maxLastActive: number }
+    >();
+    for (const [key, projectTasks] of tasksByProject) {
+      projectTasks.sort(
+        (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
+      );
+      let active = false;
+      let maxLastActive = 0;
+      for (const task of projectTasks) {
+        if (!active && (task.isProcessing || task.alive)) active = true;
+        const lastActive = task.lastActive ?? 0;
+        if (lastActive > maxLastActive) maxLastActive = lastActive;
+      }
+      projectStats.set(key, { tasks: projectTasks, active, maxLastActive });
+    }
 
-  const filterLower = filter.toLowerCase();
+    const filteredWorkspaces = workspaces
+      .map((ws) => {
+        const matchingProjects = (
+          filterLower
+            ? ws.projects.filter((p) =>
+                p.name.toLowerCase().includes(filterLower),
+              )
+            : ws.projects
+        )
+          .map((project) => ({
+            project,
+            ...(projectStats.get(`${ws.name}:${project.path}`) || {
+              tasks: [],
+              active: false,
+              maxLastActive: 0,
+            }),
+          }))
+          .sort((a, b) => {
+            if (a.active !== b.active) return a.active ? -1 : 1;
+            if (a.maxLastActive !== b.maxLastActive) {
+              return b.maxLastActive - a.maxLastActive;
+            }
+            return a.project.name.localeCompare(b.project.name);
+          });
 
-  const filteredUngrouped = filterLower
-    ? ungrouped.filter((t) =>
-        (t.title || `Task ${t.tid}`).toLowerCase().includes(filterLower),
-      )
-    : ungrouped;
+        return { workspace: ws, projects: matchingProjects };
+      })
+      .filter((ws) => ws.projects.length > 0);
+
+    const ungrouped = projectStats.get(":")?.tasks || [];
+    const filteredUngrouped = filterLower
+      ? ungrouped.filter((t) =>
+          (t.title || `Task ${t.tid}`).toLowerCase().includes(filterLower),
+        )
+      : ungrouped;
+
+    return { filteredWorkspaces, filteredUngrouped };
+  }, [workspaces, tasks, filterLower]);
 
   function handleFilterKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter") {
-      for (const ws of workspaces) {
-        const projs = filterLower
-          ? ws.projects.filter((p) =>
-              p.name.toLowerCase().includes(filterLower),
-            )
-          : ws.projects;
-        if (projs.length > 0) {
-          onNavigateToProject(ws.name, projs[0]!.name);
-          return;
-        }
+      const firstWorkspace = filteredWorkspaces[0];
+      const firstProject = firstWorkspace?.projects[0];
+      if (firstWorkspace && firstProject) {
+        onNavigateToProject(
+          firstWorkspace.workspace.name,
+          firstProject.project.name,
+        );
       }
     }
   }
@@ -179,35 +221,7 @@ export function WelcomePage({
           ↻
         </button>
       </div>
-      {workspaces.map((ws) => {
-        const filteredProjects = filterLower
-          ? ws.projects.filter((p) =>
-              p.name.toLowerCase().includes(filterLower),
-            )
-          : ws.projects;
-        if (filteredProjects.length === 0) return null;
-        const sortedProjects = [...filteredProjects].sort((a, b) => {
-          const aKey = `${ws.name}:${a.path}`;
-          const bKey = `${ws.name}:${b.path}`;
-          const aTasks = tasksByProject.get(aKey) || [];
-          const bTasks = tasksByProject.get(bKey) || [];
-
-          const aActive = aTasks.some((t) => t.isProcessing || t.alive);
-          const bActive = bTasks.some((t) => t.isProcessing || t.alive);
-          if (aActive !== bActive) return aActive ? -1 : 1;
-
-          const aMaxActive =
-            aTasks.length > 0
-              ? Math.max(...aTasks.map((t) => t.lastActive ?? 0))
-              : 0;
-          const bMaxActive =
-            bTasks.length > 0
-              ? Math.max(...bTasks.map((t) => t.lastActive ?? 0))
-              : 0;
-          if (aMaxActive !== bMaxActive) return bMaxActive - aMaxActive;
-
-          return a.name.localeCompare(b.name);
-        });
+      {filteredWorkspaces.map(({ workspace: ws, projects }) => {
         const isCollapsed = collapsed.has(ws.name);
         return (
           <section class="workspace-group" key={ws.name}>
@@ -224,13 +238,7 @@ export function WelcomePage({
             </h2>
             {!isCollapsed && (
               <div class="project-cards">
-                {sortedProjects.map((proj) => {
-                  const key = `${ws.name}:${proj.path}`;
-                  const projTasks = (tasksByProject.get(key) || []).sort(
-                    (a, b) =>
-                      (b.lastActive ?? 0) - (a.lastActive ?? 0) ||
-                      b.tid - a.tid,
-                  );
+                {projects.map(({ project: proj, tasks: projTasks }) => {
                   return (
                     <div class="project-card" key={proj.path}>
                       <div class="project-card-header">
