@@ -11,6 +11,11 @@ import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorToast } from "./components/ErrorToast";
 
+function shortProjectName(projectName: string): string {
+  const slash = projectName.lastIndexOf("/");
+  return slash === -1 ? projectName : projectName.slice(slash + 1);
+}
+
 function AppContent() {
   const {
     tasks,
@@ -76,11 +81,16 @@ function AppContent() {
   useEffect(() => {
     const count = attention.size;
     const prefix = count > 0 ? `(${count}) ` : "";
-    document.title = active?.title
-      ? `${prefix}${active.title} — CyDo`
+    const scopedTitle = active?.title
+      ? active.title
+      : activeTaskId === null && activeProject
+        ? shortProjectName(activeProject)
+        : null;
+    document.title = scopedTitle
+      ? `${prefix}${scopedTitle} — CyDo`
       : `${prefix}CyDo`;
     if ("setAppBadge" in navigator) void navigator.setAppBadge(count);
-  }, [active?.title, attention.size]);
+  }, [active?.title, activeProject, activeTaskId, attention.size]);
 
   // Ctrl+K: open search popup
   useEffect(() => {

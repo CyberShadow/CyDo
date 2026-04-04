@@ -183,6 +183,7 @@ test(
       await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
         timeout: 15_000,
       });
+      await expect(page).toHaveTitle("project — CyDo");
 
       await page.locator(".input-textarea:visible").first().fill(
         "call task spike verify current directory",
