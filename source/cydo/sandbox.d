@@ -1,9 +1,12 @@
 module cydo.sandbox;
 
-import std.file : exists, isSymlink, readLink, readText;
+import std.file : exists, isFile, isSymlink, readLink, readText;
 import std.path : buildPath, dirName, expandTilde;
 import std.process : environment;
 import std.logger : tracef, warningf;
+import std.algorithm : splitter, startsWith;
+import std.string : toStringz;
+import core.sys.posix.unistd : X_OK, access;
 
 import configy.attributes : SetInfo;
 
@@ -43,6 +46,17 @@ struct ResolvedSandbox
 	@property bool useBwrap() const { return isolate_filesystem || isolate_processes; }
 }
 
+/// Prepared process launch for a task-scoped subprocess.
+/// Carries the resolved sandbox, effective working directory, and the
+/// fully materialized command prefix used to enforce that sandbox.
+struct ProcessLaunch
+{
+	ResolvedSandbox sandbox;
+	string workDir;
+	string[] cmdPrefix;
+	string executablePath;
+}
+
 /// Merge sandbox config layers: global config → per-agent config → default
 /// workspace/project mounts → per-workspace config → agent defaults.
 /// When readOnly is true, all config/workspace/project paths are downgraded
@@ -78,7 +92,14 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 			if (mode == PathMode.rw)
 				mode = PathMode.ro;
 
+	// Merge env: global, then per-agent, then workspace overrides
+	mergeEnv(result.env, global.env);
+	mergeEnv(result.env, agentTypeConfig.env);
+	mergeEnv(result.env, workspace.env);
+
 	// Layer 3: agent-declared paths/env (last — always rw for agent state)
+	// Agent sandbox setup sees the merged config env so binary/path resolution
+	// can honor sandbox.env overrides such as PATH.
 	agent.configureSandbox(result.paths, result.env);
 
 	// Expand ~ in all path keys and filter non-existent
@@ -92,11 +113,6 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 			warningf("sandbox: skipping non-existent path: %s", resolved);
 	}
 	result.paths = expanded;
-
-	// Merge env: global, then per-agent, then workspace overrides
-	mergeEnv(result.env, global.env);
-	mergeEnv(result.env, agentTypeConfig.env);
-	mergeEnv(result.env, workspace.env);
 
 	// Expand ~ in env values (replace all occurrences, not just leading ~)
 	auto home = environment.get("HOME", "");
@@ -136,6 +152,66 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	overrideBool(result.isolate_environment, workspace.isolate_environment);
 
 	return result;
+}
+
+/// Look up an env value from the prepared launch environment, falling back to
+/// the backend process environment when the sandbox did not override it.
+string effectiveEnvValue(const string[string] env, string key, string fallback = "")
+{
+	if (auto value = key in env)
+		return *value;
+	return environment.get(key, fallback);
+}
+
+/// Resolve an executable using the effective launch PATH.
+/// Returns an absolute path, or "" when it cannot be found/executed.
+string resolveExecutablePath(string executable, const string[string] env)
+{
+	if (executable.length == 0)
+		return "";
+
+	auto requested = expandTilde(executable);
+	if (requested.startsWith("/"))
+		return isExecutableFile(requested) ? requested : "";
+
+	auto pathVar = effectiveEnvValue(env, "PATH", "");
+	foreach (dir; pathVar.splitter(':'))
+	{
+		if (dir.length == 0)
+			continue;
+		auto candidate = buildPath(expandTilde(dir), requested);
+		if (isExecutableFile(candidate))
+			return candidate;
+	}
+	return "";
+}
+
+/// Return directories that must be mounted for an executable path.
+/// Includes both the requested path's directory and the final symlink target's
+/// directory when they differ.
+string[] executableMountPaths(string executablePath)
+{
+	if (executablePath.length == 0)
+		return null;
+
+	string[] mounts;
+	bool[string] seen;
+
+	void addMount(string path)
+	{
+		if (path.length == 0)
+			return;
+		if (path in seen)
+			return;
+		seen[path] = true;
+		mounts ~= path;
+	}
+
+	addMount(dirName(executablePath));
+	auto resolved = resolveSymlinkChain(executablePath);
+	if (resolved != executablePath)
+		addMount(dirName(resolved));
+	return mounts;
 }
 
 /// Resolve sandbox for project discovery (no agent layer).
@@ -399,6 +475,65 @@ string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir)
 	return args;
 }
 
+/// Materialize a reusable process launch from a resolved sandbox and cwd.
+ProcessLaunch prepareProcessLaunch(ResolvedSandbox sandbox, string workDir,
+	string executable = "")
+{
+	ProcessLaunch launch;
+	launch.sandbox = sandbox;
+	launch.workDir = workDir;
+	launch.executablePath = resolveExecutablePath(executable, launch.sandbox.env);
+	launch.cmdPrefix = buildCommandPrefix(launch.sandbox, workDir);
+	return launch;
+}
+
+unittest
+{
+	ResolvedSandbox sandbox;
+	sandbox.isolate_filesystem = false;
+	sandbox.isolate_processes = false;
+	sandbox.isolate_environment = false;
+	sandbox.env["CYDO_TEST_TOKEN"] = "value";
+
+	auto launch = prepareProcessLaunch(sandbox, "/tmp/cydo-launch");
+	assert(launch.workDir == "/tmp/cydo-launch");
+	assert(launch.cmdPrefix == [
+		"env",
+		"-C", "/tmp/cydo-launch",
+		"CYDO_TEST_TOKEN=value",
+	]);
+
+	// Preparing a launch should not mutate the caller's sandbox state.
+	assert(sandbox.tempFiles.length == 0);
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import std.file : mkdirRecurse, remove;
+	import std.process : execute;
+
+	auto binDir = buildPath("/tmp", "cydo-launch-bin");
+	auto binPath = buildPath(binDir, "cydo-test-exec");
+	mkdirRecurse(binDir);
+	scope(exit)
+	{
+		if (exists(binPath))
+			remove(binPath);
+	}
+
+	import std.file : write;
+	write(binPath, "#!/bin/sh\nexit 0\n");
+	execute(["chmod", "+x", binPath]);
+
+	ResolvedSandbox sandbox;
+	sandbox.env["PATH"] = binDir;
+
+	auto launch = prepareProcessLaunch(sandbox, "", "cydo-test-exec");
+	assert(launch.executablePath == binPath);
+	assert(executableMountPaths(binPath).canFind(binDir));
+}
+
 /// Remove temp files created during sandbox setup.
 void cleanup(ref ResolvedSandbox sandbox)
 {
@@ -435,6 +570,24 @@ string runtimeDir()
 }
 
 private:
+
+bool isExecutableFile(string path)
+{
+	return exists(path) && isFile(path) && access(toStringz(path), X_OK) == 0;
+}
+
+string resolveSymlinkChain(string path)
+{
+	auto current = path;
+	for (int i = 0; i < 32 && exists(current) && isSymlink(current); i++)
+	{
+		auto target = readLink(current);
+		if (!target.startsWith("/"))
+			target = buildPath(dirName(current), target);
+		current = target;
+	}
+	return current;
+}
 
 /// Override dest with source value if source was explicitly set in config.
 void overrideBool(ref bool dest, SetInfo!bool source)

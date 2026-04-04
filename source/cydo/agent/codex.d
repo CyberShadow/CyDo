@@ -20,6 +20,8 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
+import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+	executableMountPaths, resolveExecutablePath;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC param/result structs for the Codex app-server protocol.
@@ -809,17 +811,19 @@ class CodexAgent : Agent
 		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
 		paths[codexHome] = PathMode.rw;
 
-		auto codexBinary = resolveCodexBinary();
-		if (codexBinary == home ~ "/.npm-packages/bin")
+		auto codexPath = resolveExecutablePath(executableName(env), env);
+		foreach (path; executableMountPaths(codexPath))
+			addIfNotRw(path, PathMode.ro);
+		if (dirName(codexPath) == home ~ "/.npm-packages/bin")
 			addIfNotRw(home ~ "/.npm-packages", PathMode.ro);
-		else
-			addIfNotRw(resolveCodexBinary(), PathMode.ro);
 
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 
 		// Pass through Codex-required env vars so they survive --clearenv
 		void passthrough(string key)
 		{
+			if (key in env)
+				return;
 			auto val = environment.get(key, "");
 			if (val.length > 0)
 				env[key] = val;
@@ -835,15 +839,19 @@ class CodexAgent : Agent
 	@property string gitName() { return "Codex CLI"; }
 	@property string gitEmail() { return "noreply@openai.com"; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
+	string executableName(string[string] env)
+	{
+		return effectiveEnvValue(env, "CYDO_CODEX_BIN", "codex");
+	}
 
-	private string serverPoolKey(string workspace, string[] cmdPrefix)
+	private string serverPoolKey(string workspace, ProcessLaunch launch)
 	{
 		import std.regex : regex, replaceAll;
-		auto prefixSig = cmdPrefix is null ? "[]" : toJson(cmdPrefix);
+		auto prefixSig = launch.cmdPrefix is null ? "[]" : toJson(launch.cmdPrefix);
 		// Task-local scratch paths differ by tid but are safe to share across
 		// Codex threads in the same workspace; ignore only that variance.
 		prefixSig = replaceAll(prefixSig, regex(`/\.cydo\/tasks\/\d+/`), "/.cydo/tasks/*");
-		return workspace ~ "\n" ~ prefixSig;
+		return workspace ~ "\n" ~ launch.executablePath ~ "\n" ~ prefixSig;
 	}
 
 	private static string buildDeveloperInstructions(string appendSystemPrompt)
@@ -857,16 +865,18 @@ class CodexAgent : Agent
 		return devInstructions;
 	}
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, ProcessLaunch launch,
 		SessionConfig config = SessionConfig.init)
 	{
 		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
-		auto server = getOrCreateServer(serverPoolKey(workspace, cmdPrefix), cmdPrefix);
+		auto server = getOrCreateServer(serverPoolKey(workspace, launch), launch);
 		auto session = new CodexSession(server, tid, config);
 		server.registerSessionByTid(tid, session);
 
 		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
-		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
+		auto workDir = launch.workDir.length > 0
+			? launch.workDir
+			: (config.workDir.length > 0 ? config.workDir : ".");
 		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
 
 		// Build config override (reasoning summary + MCP tools).
@@ -944,14 +954,16 @@ class CodexAgent : Agent
 	}
 
 	Promise!ThreadForkOutcome forkSession(int tid, string sourceThreadId,
-		string[] cmdPrefix, SessionConfig config = SessionConfig.init,
+		ProcessLaunch launch, SessionConfig config = SessionConfig.init,
 		string sourcePath = null)
 	{
 		auto outcome = new Promise!ThreadForkOutcome;
 		auto workspace = config.workspace.length > 0 ? config.workspace : "default";
-		auto server = getOrCreateServer(serverPoolKey(workspace, cmdPrefix), cmdPrefix);
+		auto server = getOrCreateServer(serverPoolKey(workspace, launch), launch);
 		auto model = config.model.length > 0 ? config.model : "codex-mini-latest";
-		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
+		auto workDir = launch.workDir.length > 0
+			? launch.workDir
+			: (config.workDir.length > 0 ? config.workDir : ".");
 		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
 		auto configOverride = buildConfigOverride(tid,
 			config.creatableTaskTypes, config.switchModes, config.handoffs,
@@ -994,16 +1006,19 @@ class CodexAgent : Agent
 		return outcome;
 	}
 
-	private AppServerProcess getOrCreateServer(string poolKey, string[] cmdPrefix)
+	private AppServerProcess getOrCreateServer(string poolKey, ProcessLaunch launch)
 	{
 		if (auto existing = poolKey in serverPool)
 			if (!existing.dead)
 				return *existing;
 
-		string[] codexArgs = [getCodexBinName(), "app-server", "--listen", "stdio://"];
+		auto codexBin = launch.executablePath.length > 0
+			? launch.executablePath
+			: executableName(launch.sandbox.env);
+		string[] codexArgs = [codexBin, "app-server", "--listen", "stdio://"];
 		string[] args;
-		if (cmdPrefix !is null)
-			args = cmdPrefix ~ codexArgs;
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ codexArgs;
 		else
 			args = codexArgs;
 
@@ -1385,22 +1400,24 @@ class CodexAgent : Agent
 	string matchProject(string sessionId, const string[] knownProjectPaths) { return ""; }
 
 	OneShotHandle completeOneShot(string prompt, string modelClass,
-		string[] cmdPrefix = null, string workDir = "")
+		ProcessLaunch launch = ProcessLaunch.init)
 	{
 		import std.string : strip;
 
 		auto promise = new Promise!string;
-		auto _ = workDir;
 
 		string[] args = [
-			getCodexBinName(), "exec",
+			launch.executablePath.length > 0
+				? launch.executablePath
+				: executableName(launch.sandbox.env),
+			"exec",
 			"--ephemeral",
 			"--skip-git-repo-check",
 			"-m", resolveModelAlias(modelClass),
 			prompt,
 		];
-		if (cmdPrefix !is null)
-			args = cmdPrefix ~ args;
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ args;
 
 		AgentProcess proc;
 		try
@@ -2449,14 +2466,6 @@ string extractCommandInput(JSONFragment action)
 	{ tracef("extractBashInput: parse error: %s", e.msg); return `{}`; }
 }
 
-/// Get the codex binary name/path.
-/// If CYDO_CODEX_BIN is set, use it (can be absolute path); else "codex".
-private string getCodexBinName()
-{
-	import std.process : environment;
-	return environment.get("CYDO_CODEX_BIN", "codex");
-}
-
 unittest
 {
 	ThreadForkParams tfp;
@@ -2617,38 +2626,4 @@ unittest
 			&& lateDeltaEvent.content == "late-output-marker\n",
 		"expected late Codex output_delta to keep its itemId after turn completion",
 	);
-}
-
-/// Resolve the codex binary path by searching PATH.
-package string resolveCodexBinary()
-{
-	import std.algorithm : splitter, startsWith;
-	import std.file : exists, isFile;
-	import std.process : environment;
-
-	auto binName = getCodexBinName();
-	if (binName.startsWith("/"))
-		return dirName(binName);
-
-	auto pathVar = environment.get("PATH", "");
-	foreach (dir; pathVar.splitter(':'))
-	{
-		auto candidate = buildPath(dir, binName);
-		if (exists(candidate) && isFile(candidate))
-			return dir; // return the directory, not the binary itself
-	}
-	return "";
-}
-
-/// Absolute path to the cydo binary, cached at module init.
-immutable string cydoBinaryPath;
-shared static this()
-{
-	import std.file : thisExePath;
-	cydoBinaryPath = thisExePath();
-}
-
-string cydoBinaryDir()
-{
-	return cydoBinaryPath.length > 0 ? dirName(cydoBinaryPath) : "";
 }

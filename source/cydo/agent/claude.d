@@ -13,7 +13,8 @@ import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
-import cydo.sandbox : cydoBinaryDir, cydoBinaryPath;
+import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+	executableMountPaths, resolveExecutablePath;
 
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent
@@ -43,23 +44,16 @@ class ClaudeCodeAgent : Agent
 		paths[expandTilde("~/.claude.json")]         = PathMode.rw;
 		paths[expandTilde("~/.local/share/claude")]  = PathMode.ro;
 
-		// resolve the claude binary and add its directory as ro;
-		// claude's self-updater installs versions under ~/.local/share/claude/versions/
-		// and symlinks ~/.local/bin/claude to the active version, so the symlink target
-		// directory must also be mounted for execvp to find the actual binary
-		auto claudeBinDir = resolveClaudeBinary();
-		addIfNotRw(claudeBinDir, PathMode.ro);
+		foreach (path; executableMountPaths(resolveExecutablePath(executableName(env), env)))
+			addIfNotRw(path, PathMode.ro);
 
 		// Add the cydo binary's directory so the MCP server can be spawned inside the sandbox
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 
-		// Prepend the claude binary dir to PATH so it survives --clearenv
+		if ("PATH" !in env)
 		{
-			import std.process : environment;
-			auto hostPath = environment.get("PATH", "");
-			if (claudeBinDir.length > 0)
-				env["PATH"] = hostPath.length > 0 ? claudeBinDir ~ ":" ~ hostPath : claudeBinDir;
-			else if (hostPath.length > 0)
+			auto hostPath = effectiveEnvValue(env, "PATH", "");
+			if (hostPath.length > 0)
 				env["PATH"] = hostPath;
 		}
 
@@ -69,6 +63,10 @@ class ClaudeCodeAgent : Agent
 	}
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
+	string executableName(string[string] env)
+	{
+		return effectiveEnvValue(env, "CYDO_CLAUDE_BIN", "claude");
+	}
 
 	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
@@ -77,12 +75,16 @@ class ClaudeCodeAgent : Agent
 
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, ProcessLaunch launch,
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
 			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
-		return new ClaudeCodeSession(resumeSessionId, cmdPrefix, lastMcpConfigPath_, config);
+		auto claudeBin = launch.executablePath.length > 0
+			? launch.executablePath
+			: executableName(launch.sandbox.env);
+		return new ClaudeCodeSession(claudeBin, resumeSessionId, launch.cmdPrefix,
+			lastMcpConfigPath_, config);
 	}
 
 	string parseSessionId(string line)
@@ -479,11 +481,14 @@ class ClaudeCodeAgent : Agent
 	{
 		import std.process : Config, environment, execute;
 
+		auto claudeBin = resolveExecutablePath(executableName(null), null);
+		if (claudeBin.length == 0)
+			claudeBin = executableName(null);
 		string[string] env = [
 			"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
 			"PATH": environment.get("PATH", ""),
 			"HOME": environment.get("HOME", ""),
-			"CLAUDE_BIN": getClaudeBinName(),
+			"CLAUDE_BIN": claudeBin,
 		];
 		auto result = execute([
 			"bash", "-c",
@@ -504,7 +509,7 @@ class ClaudeCodeAgent : Agent
 	}
 
 	OneShotHandle completeOneShot(string prompt, string modelClass,
-		string[] cmdPrefix = null, string workDir = "")
+		ProcessLaunch launch = ProcessLaunch.init)
 	{
 		import std.path : buildPath;
 		import std.process : environment;
@@ -512,13 +517,9 @@ class ClaudeCodeAgent : Agent
 		import ae.utils.promise : Promise;
 
 		auto promise = new Promise!string;
-		auto _ = workDir;
-
-		auto claudeBinDir = resolveClaudeBinary();
-		auto binName = getClaudeBinName();
-		import std.algorithm : startsWith;
-		auto claudeBin = claudeBinDir.length > 0 && !binName.startsWith("/")
-			? buildPath(claudeBinDir, binName) : binName;
+		auto claudeBin = launch.executablePath.length > 0
+			? launch.executablePath
+			: executableName(launch.sandbox.env);
 
 		string[string] env = [
 			"PATH": environment.get("PATH", ""),
@@ -526,8 +527,8 @@ class ClaudeCodeAgent : Agent
 		];
 
 		string[] args;
-		if (cmdPrefix !is null)
-			args = cmdPrefix ~ [
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ [
 				claudeBin,
 				"-p", prompt,
 				"--output-format", "text",
@@ -547,7 +548,7 @@ class ClaudeCodeAgent : Agent
 				"--no-session-persistence",
 			];
 
-		auto procEnv = cmdPrefix is null ? env : null;
+		auto procEnv = launch.cmdPrefix is null ? env : null;
 
 		AgentProcess proc;
 		try
@@ -601,12 +602,14 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
+	private string executablePath_;
 
-	this(string resumeSessionId = null, string[] cmdPrefix = null,
+	this(string executablePath, string resumeSessionId = null, string[] cmdPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
+		executablePath_ = executablePath;
 		string[] claudeArgs = [
-			getClaudeBinName(),
+			executablePath_.length > 0 ? executablePath_ : "claude",
 			"-p",
 			"--input-format", "stream-json",
 			"--output-format", "stream-json",
@@ -1217,36 +1220,6 @@ string escapeJsonString(string s)
 {
 	import std.array : replace;
 	return s.replace(`\`, `\\`).replace(`"`, `\"`).replace("\n", `\n`).replace("\r", `\r`).replace("\t", `\t`);
-}
-
-/// Get the claude binary name/path.
-/// If CYDO_CLAUDE_BIN is set, use it (can be absolute path); else "claude".
-private string getClaudeBinName()
-{
-	import std.process : environment;
-	return environment.get("CYDO_CLAUDE_BIN", "claude");
-}
-
-/// Resolve the claude binary path by searching PATH.
-package string resolveClaudeBinary()
-{
-	import std.algorithm : splitter, startsWith;
-	import std.file : exists, isFile;
-	import std.path : buildPath;
-	import std.process : environment;
-
-	auto binName = getClaudeBinName();
-	if (binName.startsWith("/"))
-		return dirName(binName);
-
-	auto pathVar = environment.get("PATH", "");
-	foreach (dir; pathVar.splitter(':'))
-	{
-		auto candidate = buildPath(dir, binName);
-		if (exists(candidate) && isFile(candidate))
-			return dir; // return the directory, not the binary itself
-	}
-	return "";
 }
 
 /// Build a Claude-wire-format content array from agnostic ContentBlock[].

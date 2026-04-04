@@ -13,9 +13,11 @@ test("sub-task result text delivered to parent", async ({ page }) => {
 
   // Wait for the marker text to appear in the message list.
   // Scoped to the active task view ([style*="display: contents"]) to avoid
-  // matching hidden tasks that share the same text. Use exact:true to avoid
-  // matching the user message.
+  // matching hidden tasks that share the same text. Codex can briefly render
+  // both a streaming and finalized copy, so wait for the newest visible match.
   await expect(
-    page.locator('[style*="display: contents"] .message-list').getByText("subtask-result-marker", { exact: true }),
+    page.locator('[style*="display: contents"] .message-list')
+      .getByText("subtask-result-marker", { exact: true })
+      .last(),
   ).toBeVisible({ timeout: 90_000 });
 });

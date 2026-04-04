@@ -15,6 +15,8 @@ import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
+import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
 
 // Callback type for dispatching custom tool calls.
@@ -62,12 +64,15 @@ class CopilotAgent : Agent
 		auto copilotHome = environment.get("COPILOT_HOME", buildPath(home, ".copilot"));
 		paths[copilotHome] = PathMode.rw;
 
-		addIfNotRw(resolveCopilotBinary(), PathMode.ro);
+		foreach (path; executableMountPaths(resolveExecutablePath(executableName(env), env)))
+			addIfNotRw(path, PathMode.ro);
 		addIfNotRw(cydoBinaryDir(), PathMode.ro);
 
 		// Pass through Copilot-required env vars so they survive --clearenv
 		void passthrough(string key)
 		{
+			if (key in env)
+				return;
 			auto val = environment.get(key, "");
 			if (val.length > 0)
 				env[key] = val;
@@ -86,12 +91,18 @@ class CopilotAgent : Agent
 	@property string gitName() { return "GitHub Copilot"; }
 	@property string gitEmail() { return "noreply@github.com"; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
+	string executableName(string[string] env)
+	{
+		return effectiveEnvValue(env, "CYDO_COPILOT_BIN", "copilot");
+	}
 
-	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, ProcessLaunch launch,
 		SessionConfig config = SessionConfig.init)
 	{
 		auto model = config.model.length > 0 ? resolveModelAlias(config.model) : "";
-		auto workDir = config.workDir.length > 0 ? config.workDir : ".";
+		auto workDir = launch.workDir.length > 0
+			? launch.workDir
+			: (config.workDir.length > 0 ? config.workDir : ".");
 
 		// Generate MCP config file if a socket path was provided.
 		string mcpConfigPath = null;
@@ -103,13 +114,16 @@ class CopilotAgent : Agent
 		}
 
 		// Build CLI args: copilot --headless --no-auto-update --stdio [--additional-mcp-config @<path>]
-		string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
+		auto copilotBin = launch.executablePath.length > 0
+			? launch.executablePath
+			: executableName(launch.sandbox.env);
+		string[] copilotArgs = [copilotBin, "--headless", "--no-auto-update", "--stdio"];
 		if (mcpConfigPath !is null)
 			copilotArgs ~= ["--additional-mcp-config", "@" ~ mcpConfigPath];
 
 		string[] args;
-		if (cmdPrefix !is null)
-			args = cmdPrefix ~ copilotArgs;
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ copilotArgs;
 		else
 			args = copilotArgs;
 
@@ -120,7 +134,7 @@ class CopilotAgent : Agent
 		auto server = new SdkProcess(args, null, null, "copilot");
 		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
-		auto session = new CopilotSession(server, tid, sessionId, model, workDir, cmdPrefix, toolDispatch_);
+		auto session = new CopilotSession(server, tid, sessionId, model, workDir, launch.cmdPrefix, toolDispatch_);
 
 		// Register before sending create/resume so events can be routed immediately.
 		server.registerSession(sessionId, session);
@@ -620,13 +634,13 @@ class CopilotAgent : Agent
 	}
 
 	OneShotHandle completeOneShot(string prompt, string modelClass,
-		string[] cmdPrefix = null, string workDir = "")
+		ProcessLaunch launch = ProcessLaunch.init)
 	{
 		auto p = new Promise!string;
 		auto session = new OneShotCopilotSession(p);
 
 		auto model = modelClass.length > 0 ? resolveModelAlias(modelClass) : "";
-		auto cwd = workDir.length > 0 ? workDir
+		auto cwd = launch.workDir.length > 0 ? launch.workDir
 			: (sharedWorkDir_.length > 0 ? sharedWorkDir_ : ".");
 
 		import std.uuid : randomUUID;
@@ -635,8 +649,11 @@ class CopilotAgent : Agent
 		// Spawn and wire up our own one-shot SdkProcess.
 		void startOwnProcess()
 		{
-			string[] copilotArgs = [getCopilotBinName(), "--headless", "--no-auto-update", "--stdio"];
-			string[] args = cmdPrefix !is null ? cmdPrefix ~ copilotArgs : copilotArgs;
+			auto copilotBin = launch.executablePath.length > 0
+				? launch.executablePath
+				: executableName(launch.sandbox.env);
+			string[] copilotArgs = [copilotBin, "--headless", "--no-auto-update", "--stdio"];
+			string[] args = launch.cmdPrefix !is null ? launch.cmdPrefix ~ copilotArgs : copilotArgs;
 			auto srv = new SdkProcess(args, null, null, "copilot");
 
 			// Set cleanup callback before registering
@@ -1431,48 +1448,6 @@ private final class OneShotCopilotSession : SdkSessionHandler
 // ---------------------------------------------------------------------------
 
 private:
-
-/// Get the copilot binary name/path.
-string getCopilotBinName()
-{
-	import std.process : environment;
-	return environment.get("CYDO_COPILOT_BIN", "copilot");
-}
-
-/// Resolve the copilot binary directory by searching PATH.
-package string resolveCopilotBinary()
-{
-	import std.algorithm : startsWith;
-	import std.file : exists, isFile;
-	import std.process : environment;
-
-	auto binName = getCopilotBinName();
-	if (binName.startsWith("/"))
-		return dirName(binName);
-
-	auto pathVar = environment.get("PATH", "");
-	import std.algorithm : splitter;
-	foreach (dir; pathVar.splitter(':'))
-	{
-		auto candidate = buildPath(dir, binName);
-		if (exists(candidate) && isFile(candidate))
-			return dir;
-	}
-	return "";
-}
-
-/// Absolute path to the cydo binary, cached at module init.
-immutable string cydoBinaryPath;
-shared static this()
-{
-	import std.file : thisExePath;
-	cydoBinaryPath = thisExePath();
-}
-
-string cydoBinaryDir()
-{
-	return cydoBinaryPath.length > 0 ? dirName(cydoBinaryPath) : "";
-}
 
 /// Build tool definitions JSON array for session.create params.
 /// Only includes tools if an MCP socket is configured (tools backend is available).

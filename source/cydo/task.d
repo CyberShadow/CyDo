@@ -8,7 +8,7 @@ import ae.utils.promise : Promise;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.session : AgentSession;
-import cydo.sandbox : ResolvedSandbox;
+import cydo.sandbox : ProcessLaunch;
 
 enum ProcessState : bool { Dead = false, Alive = true }
 
@@ -114,7 +114,7 @@ struct TaskData
 
 	// Runtime state (not persisted)
 	AgentSession session;
-	ResolvedSandbox sandbox;
+	ProcessLaunch launch;
 	DataVec history;          // unified: JSONL file events + live stdout events
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	@property bool alive() { return session !is null && session.alive; }

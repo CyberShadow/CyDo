@@ -36,7 +36,8 @@ import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId, createForkTask,
 	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
-import cydo.sandbox : ResolvedSandbox, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+	prepareProcessLaunch, resolveExecutablePath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
@@ -1846,7 +1847,7 @@ class App : ToolsBackend
 				return;
 			}
 
-			ca.forkSession(childTid, td.agentSessionId, launch.cmdPrefix, launch.sessionConfig,
+			ca.forkSession(childTid, td.agentSessionId, launch.processLaunch, launch.sessionConfig,
 				forkSourcePath)
 				.then((ThreadForkOutcome outcome) {
 					try
@@ -2326,8 +2327,8 @@ class App : ToolsBackend
 
 	private struct TaskSessionLaunch
 	{
+		ProcessLaunch processLaunch;
 		SessionConfig sessionConfig;
-		string[] cmdPrefix;
 	}
 
 	private TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
@@ -2366,12 +2367,12 @@ class App : ToolsBackend
 		auto wsRoot = findWorkspaceRoot(td.workspace);
 		auto agentTypeSandbox = findAgentTypeSandbox(td.agentType);
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		td.sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox,
+		auto sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox,
 			taskAgent, workDir, wsRoot, readOnly);
 
 		// Task directory is always writable (even for read-only tasks)
 		if (td.taskDir.length > 0)
-			td.sandbox.paths[td.taskDir] = PathMode.rw;
+			sandbox.paths[td.taskDir] = PathMode.rw;
 
 		// Worktree sandbox restriction: when a task has a worktree and is not
 		// read-only, downgrade the project directory to ro and add git dirs as rw.
@@ -2382,12 +2383,12 @@ class App : ToolsBackend
 			import std.path : absolutePath;
 
 			// Downgrade project directory to read-only
-			td.sandbox.paths[workDir] = PathMode.ro;
+			sandbox.paths[workDir] = PathMode.ro;
 
 			// The worktree itself must be writable
 			auto wtPath = td.worktreePath;
 			if (wtPath.length > 0)
-				td.sandbox.paths[wtPath] = PathMode.rw;
+				sandbox.paths[wtPath] = PathMode.rw;
 
 			// Add git dir and git common dir as writable for git operations
 			if (wtPath.length > 0)
@@ -2396,13 +2397,13 @@ class App : ToolsBackend
 				if (gitDirResult.status == 0)
 				{
 					auto gitDir = gitDirResult.output.strip.absolutePath(wtPath);
-					td.sandbox.paths[gitDir] = PathMode.rw;
+					sandbox.paths[gitDir] = PathMode.rw;
 				}
 				auto gitCommonResult = execute(["git", "-C", wtPath, "rev-parse", "--git-common-dir"]);
 				if (gitCommonResult.status == 0)
 				{
 					auto gitCommonDir = gitCommonResult.output.strip.absolutePath(wtPath);
-					td.sandbox.paths[gitCommonDir] = PathMode.rw;
+					sandbox.paths[gitCommonDir] = PathMode.rw;
 				}
 			}
 		}
@@ -2421,22 +2422,24 @@ class App : ToolsBackend
 			if (gitDirResult.status == 0)
 			{
 				auto gitDir = gitDirResult.output.strip.absolutePath(workDir);
-				td.sandbox.paths[gitDir] = PathMode.always_rw;
+				sandbox.paths[gitDir] = PathMode.always_rw;
 			}
 			auto gitCommonResult = execute(["git", "-C", workDir, "rev-parse", "--git-common-dir"]);
 			if (gitCommonResult.status == 0)
 			{
 				auto gitCommonDir = gitCommonResult.output.strip.absolutePath(workDir);
-				td.sandbox.paths[gitCommonDir] = PathMode.always_rw;
+				sandbox.paths[gitCommonDir] = PathMode.always_rw;
 			}
 		}
 
 		// MCP socket must be accessible inside the sandbox
 		if (mcpSocketPath.length > 0)
-			td.sandbox.paths[mcpSocketPath] = PathMode.ro;
+			sandbox.paths[mcpSocketPath] = PathMode.ro;
 
 		// Set up shared /tmp: all tasks in a tree share the same host-backed directory
-		td.sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
+		sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
+		td.launch = prepareProcessLaunch(sandbox, chdir,
+			taskAgent.executableName(sandbox.env));
 
 		sessionConfig.workspace = td.workspace;
 		sessionConfig.workDir = chdir !is null ? chdir : "";
@@ -2453,7 +2456,7 @@ class App : ToolsBackend
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
-		return TaskSessionLaunch(sessionConfig, buildCommandPrefix(td.sandbox, chdir));
+		return TaskSessionLaunch(td.launch, sessionConfig);
 	}
 
 	private void spawnTaskSession(int tid)
@@ -2468,12 +2471,12 @@ class App : ToolsBackend
 		auto typeDef = getTaskTypes().byName(td.taskType);
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td.session = taskAgent.createSession(tid, td.agentSessionId,
-			launch.cmdPrefix, launch.sessionConfig);
+			launch.processLaunch, launch.sessionConfig);
 		persistence.clearLastActive(tid);
 
 		// Track MCP config temp file for cleanup
 		if (taskAgent.lastMcpConfigPath.length > 0)
-			td.sandbox.tempFiles ~= taskAgent.lastMcpConfigPath;
+			td.launch.sandbox.tempFiles ~= taskAgent.lastMcpConfigPath;
 
 		// Start watching the JSONL file for forkable UUIDs.
 		// For resumed tasks agentSessionId is already set; for new tasks
@@ -2566,7 +2569,7 @@ class App : ToolsBackend
 			tasks[tid].isProcessing = false;
 			if (exitCode != 0)
 				tasks[tid].error = lastStderr;
-			cleanup(tasks[tid].sandbox);
+			cleanup(tasks[tid].launch.sandbox);
 			jsonlTracker.stopJsonlWatch(tid);
 
 			// Fulfill pending AskUserQuestion promise with error if session dies
@@ -3970,6 +3973,7 @@ class App : ToolsBackend
 				a.setModelAliases(null);
 		}
 		discoverAllWorkspaces();
+		broadcast(buildAgentTypesList());
 		broadcast(buildWorkspacesList());
 		infof("Config reloaded successfully");
 	}
@@ -4010,9 +4014,7 @@ class App : ToolsBackend
 		if (prompt.length == 0)
 			return;
 
-		auto workDir = td.effectiveCwd;
-		auto cmdPrefix = buildCommandPrefix(td.sandbox, workDir);
-		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small", cmdPrefix, workDir);
+		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small", td.launch);
 		td.titleGenHandle = titleHandle.promise;
 		td.titleGenKill = titleHandle.cancel;
 		td.titleGenHandle.then((string title) {
@@ -4120,10 +4122,21 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : toJson;
 		import cydo.agent.registry : agentRegistry;
+		import std.path : expandTilde;
 
 		AgentTypeListEntry[] entries;
 		foreach (ref entry; agentRegistry)
-			entries ~= AgentTypeListEntry(entry.name, entry.displayName, entry.resolveBinary().length > 0);
+		{
+			auto agent = entry.create();
+			string[string] env;
+			foreach (k, v; config.sandbox.env)
+				env[k] = expandTilde(v);
+			auto agentSandbox = findAgentTypeSandbox(entry.name);
+			foreach (k, v; agentSandbox.env)
+				env[k] = expandTilde(v);
+			auto available = resolveExecutablePath(agent.executableName(env), env).length > 0;
+			entries ~= AgentTypeListEntry(entry.name, entry.displayName, available);
+		}
 		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
 	}
 
@@ -4210,9 +4223,7 @@ class App : ToolsBackend
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
 
-		auto workDir = td.effectiveCwd;
-		auto cmdPrefix = buildCommandPrefix(td.sandbox, workDir);
-		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small", cmdPrefix, workDir);
+		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small", td.launch);
 		td.suggestGenHandle = suggestHandle.promise;
 		td.suggestGenKill = suggestHandle.cancel;
 		td.suggestGenHandle.then((string result) {

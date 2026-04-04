@@ -4,6 +4,7 @@ import ae.utils.promise : Promise;
 
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
+import cydo.sandbox : ProcessLaunch;
 
 /// Per-session configuration passed to createSession.
 struct SessionConfig
@@ -51,10 +52,15 @@ interface Agent
 	/// ditto
 	@property string gitEmail();
 
+	/// Resolve the executable name/path to launch for this agent using the
+	/// effective sandbox environment (including config-provided overrides).
+	string executableName(string[string] env);
+
 	/// Create a new session (or resume an existing one).
-	/// cmdPrefix is the full command prefix (bwrap or env) including workdir handling.
+	/// launch carries the full process launch context, including the command
+	/// prefix used to enforce sandbox policy and the effective working directory.
 	/// tid identifies the task for MCP tool routing.
-	AgentSession createSession(int tid, string resumeSessionId, string[] cmdPrefix,
+	AgentSession createSession(int tid, string resumeSessionId, ProcessLaunch launch,
 		SessionConfig config = SessionConfig.init);
 
 	/// Try to extract the agent session ID from an output line.
@@ -158,12 +164,10 @@ interface Agent
 	/// Must be safe to call from a background thread (no shared mutable state).
 	string matchProject(string sessionId, const string[] knownProjectPaths);
 
-	/// Run a one-shot LLM completion. cmdPrefix should match the task session's
-	/// sandbox/workdir prefix when the caller needs one-shot requests to honor
-	/// sandbox env and cwd. workDir is provided separately for agents whose
-	/// protocol requires an explicit cwd in addition to process-level chdir.
+	/// Run a one-shot LLM completion using the same task-scoped process launch
+	/// context as the parent session when the caller needs sandbox env/cwd parity.
 	OneShotHandle completeOneShot(string prompt, string modelClass,
-		string[] cmdPrefix = null, string workDir = "");
+		ProcessLaunch launch = ProcessLaunch.init);
 }
 
 /// Handle returned by completeOneShot, containing the result promise and a
