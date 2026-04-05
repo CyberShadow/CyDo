@@ -137,7 +137,7 @@ struct DiscoverExpr
 
 			// String scalar: check for variable reference
 			string s = node.as!string;
-			if (s.length > 0 && s[0] == '$')
+			if (s.length > 4 && s[0..2] == "{{" && s[$-2..$] == "}}")
 				return parseVariable(s, path);
 
 			return DiscoverExpr(Kind.string_literal, s);
@@ -183,10 +183,10 @@ struct DiscoverExpr
 	{
 		switch (s)
 		{
-			case "$depth":         return DiscoverExpr(Kind.var_depth);
-			case "$relative_path": return DiscoverExpr(Kind.var_relative_path);
-			case "$name":          return DiscoverExpr(Kind.var_name);
-			case "$is_project":    return DiscoverExpr(Kind.var_is_project);
+			case "{{depth}}":         return DiscoverExpr(Kind.var_depth);
+			case "{{relative_path}}": return DiscoverExpr(Kind.var_relative_path);
+			case "{{name}}":          return DiscoverExpr(Kind.var_name);
+			case "{{is_project}}":    return DiscoverExpr(Kind.var_is_project);
 			default:
 				throw new Exception("unknown variable '" ~ s ~ "' at " ~ path);
 		}
@@ -224,10 +224,10 @@ struct DiscoverExpr
 			case Kind.false_:         return JSONValue(false);
 			case Kind.int_literal:    return JSONValue(intValue);
 			case Kind.string_literal: return JSONValue(["literal": JSONValue(value)]);
-			case Kind.var_depth:         return JSONValue("$depth");
-			case Kind.var_relative_path: return JSONValue("$relative_path");
-			case Kind.var_name:          return JSONValue("$name");
-			case Kind.var_is_project:    return JSONValue("$is_project");
+			case Kind.var_depth:         return JSONValue("{{depth}}");
+			case Kind.var_relative_path: return JSONValue("{{relative_path}}");
+			case Kind.var_name:          return JSONValue("{{name}}");
+			case Kind.var_is_project:    return JSONValue("{{is_project}}");
 			case Kind.has_file:  return JSONValue(["has_file":  JSONValue(value)]);
 			case Kind.has_dir:   return JSONValue(["has_dir":   JSONValue(value)]);
 			case Kind.has_entry: return JSONValue(["has_entry": JSONValue(value)]);
@@ -337,7 +337,7 @@ struct DiscoverExpr
 			case Kind.var_relative_path: return ExprValue(ctx.relativePath);
 			case Kind.var_name:          return ExprValue(ctx.dirName);
 			case Kind.var_is_project:
-				assert(ctx.isProjectAvailable, "$is_project not available in this context");
+				assert(ctx.isProjectAvailable, "{{is_project}} not available in this context");
 				return ExprValue(ctx.isProjectValue);
 			case Kind.has_file:
 			{
@@ -440,7 +440,7 @@ struct ProjectDiscoveryConfig
 			case K.var_is_project:
 				if (!allowIsProject)
 					throw new Exception(
-						format("%s: $is_project is only valid in recurse_when", ctx));
+						format("%s: {{is_project}} is only valid in recurse_when", ctx));
 				break;
 			case K.not_:
 				validateExpr(expr.operands[0], ctx, allowIsProject);
@@ -542,7 +542,7 @@ DiscoveredProject[] discoverProjects(
 		: DiscoverExpr(DiscoverExpr.Kind.has_entry, ".git");
 
 	// Resolve recurse_when expression
-	// Default: and: [not: $is_project, less_than: [$depth, 3]]
+	// Default: and: [not: {{is_project}}, less_than: [{{depth}}, 3]]
 	DiscoverExpr recurseWhenExpr;
 	if (pdConfig.recurse_when.isConfigured)
 		recurseWhenExpr = pdConfig.recurse_when;
@@ -620,7 +620,7 @@ private void scanDir(string dir, string wsRoot, uint depth,
 			if (isProj)
 				results ~= DiscoveredProject(wsName, entry.name, relPath);
 
-			// Evaluate recurse_when (with $is_project available)
+			// Evaluate recurse_when (with {{is_project}} available)
 			ctx.isProjectAvailable = true;
 			ctx.isProjectValue = isProj;
 			if (recurseWhenExpr.evaluateBool(ctx))

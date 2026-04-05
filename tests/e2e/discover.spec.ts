@@ -452,7 +452,7 @@ test(
 );
 
 // ---------------------------------------------------------------------------
-// Test 7: hard-coded project list using equals: [$relative_path, ...]
+// Test 7: hard-coded project list using equals: [{{relative_path}}, ...]
 // ---------------------------------------------------------------------------
 
 test(
@@ -481,8 +481,8 @@ test(
         "    project_discovery:",
         "      is_project:",
         "        or:",
-        "          - equals: [$relative_path, alpha]",
-        "          - equals: [$relative_path, gamma]",
+        '          - equals: ["{{relative_path}}", alpha]',
+        '          - equals: ["{{relative_path}}", gamma]',
       ].join("\n") + "\n",
     );
 
@@ -540,7 +540,7 @@ test(
         "      is_project:",
         "        has_entry: .git",
         "      recurse_when:",
-        "        less_than: [$depth, 2]",
+        '        less_than: ["{{depth}}", 2]',
       ].join("\n") + "\n",
     );
 
@@ -565,7 +565,7 @@ test(
           "      is_project:",
           "        has_entry: .git",
           "      recurse_when:",
-          "        less_than: [$depth, 4]",
+          '        less_than: ["{{depth}}", 4]',
         ].join("\n") + "\n",
       );
 

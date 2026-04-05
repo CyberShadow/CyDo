@@ -102,11 +102,11 @@ function setupMonorepo(workerHome: string, wsRoot: string): {
       "    project_discovery:",
       "      is_project:",
       "        equals:",
-      "          - $relative_path",
+      '          - "{{relative_path}}"',
       "          - monorepo/project",
       "      recurse_when:",
       "        less_than:",
-      "          - $depth",
+      '          - "{{depth}}"',
       "          - 3",
     ].join("\n") + "\n",
   );
