@@ -309,11 +309,7 @@ class ClaudeCodeAgent : Agent
 		auto dirName_ = baseName(dirName(*pathp));
 		foreach (known; knownProjectPaths)
 		{
-			auto buf = known.dup;
-			foreach (ref c; buf)
-				if (c == '/' || c == '.')
-					c = '-';
-			if (buf == dirName_)
+			if (mangleProjectPath(known) == dirName_)
 				return known;
 		}
 		return "";
@@ -347,14 +343,7 @@ class ClaudeCodeAgent : Agent
 		auto claudeDir = environment.get("CLAUDE_CONFIG_DIR", buildPath(home, ".claude"));
 		auto cwd = projectPath.length > 0 ? projectPath : getcwd();
 
-		// Mangle cwd: replace / and . with -
-		auto buf = cwd.dup;
-		foreach (ref c; buf)
-			if (c == '/' || c == '.')
-				c = '-';
-		string mangledCwd = buf.idup;
-
-		return buildPath(claudeDir, "projects", mangledCwd, sessionId ~ ".jsonl");
+		return buildPath(claudeDir, "projects", mangleProjectPath(cwd), sessionId ~ ".jsonl");
 	}
 
 	string[] translateHistoryLine(string line, int lineNum)
@@ -1179,6 +1168,17 @@ struct ClaudeInputMessage
 {
 	string role;
 	JSONFragment content;  // string or content block array (JSONFragment serializes as-is)
+}
+
+/// Mangle a project path the same way Claude CLI does: replace every
+/// non-alphanumeric character with '-'.
+private string mangleProjectPath(string path)
+{
+	auto buf = path.dup;
+	foreach (ref c; buf)
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
+			c = '-';
+	return buf.idup;
 }
 
 /// Generate a temporary MCP config file pointing to the cydo binary.
