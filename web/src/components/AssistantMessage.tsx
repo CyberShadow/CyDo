@@ -4,6 +4,7 @@ import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
 import { hasAnsi, renderAnsi } from "../ansi";
+import { StickyScrollPre } from "./StickyScrollPre";
 
 /** Best-effort parse of an incomplete JSON string by closing open delimiters.
  *
@@ -199,16 +200,18 @@ export function AssistantMessage({
                   onViewFile={onViewFile}
                 >
                   {block.stdin && (
-                    <pre class="tool-result streaming-stdin">{block.stdin}</pre>
+                    <StickyScrollPre class="tool-result streaming-stdin">
+                      {block.stdin}
+                    </StickyScrollPre>
                   )}
                   {typeof block.output === "string" &&
                     block.output &&
                     !block.result && (
-                      <pre class="tool-result streaming-output">
+                      <StickyScrollPre class="tool-result streaming-output">
                         {hasAnsi(block.output)
                           ? renderAnsi(block.output)
                           : block.output}
-                      </pre>
+                      </StickyScrollPre>
                     )}
                   {nested && nested.length > 0 && block.completed && (
                     <div class="sub-agent-messages">
