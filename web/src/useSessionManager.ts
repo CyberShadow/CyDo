@@ -1630,12 +1630,26 @@ export function useTaskManager(): TaskManager {
 
   const saveDraft = useCallback((tid: number, draft: string) => {
     connRef.current?.saveDraft(tid, draft);
-    // Derive sidebar title from draft text for pending tasks with no messages
     const t = liveStates.get(tid);
-    if (t && t.status === "pending" && t.messages.length === 0) {
-      const firstLine = draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
-      if (firstLine !== t.title) {
-        const updated = { ...t, title: firstLine };
+    if (t) {
+      let updated: typeof t | null = null;
+      // When draft is cleared (message sent), clear serverDraft so InputBox doesn't
+      // restore a stale value on remount (e.g. after the welcome→active view transition).
+      // We only clear on empty — non-empty updates are intentionally skipped to avoid
+      // triggering the serverDraft effect in InputBox, which would corrupt lastServerDraftRef
+      // and break the "don't overwrite local typing from broadcast" protection.
+      if (!draft && t.serverDraft !== undefined) {
+        updated = { ...t, serverDraft: undefined };
+      }
+      // Derive sidebar title from draft text for pending tasks with no messages
+      if (t.status === "pending" && t.messages.length === 0) {
+        const firstLine =
+          draft.trim().split("\n")[0]?.slice(0, 100) || undefined;
+        if (firstLine !== (updated ?? t).title) {
+          updated = { ...(updated ?? t), title: firstLine };
+        }
+      }
+      if (updated) {
         liveStates.set(tid, updated);
         setTasks((prev) => {
           const next = new Map(prev);
