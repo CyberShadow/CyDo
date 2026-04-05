@@ -916,6 +916,7 @@ export function useTaskManager(): TaskManager {
           resumable: t.resumable,
           preReloadDrafts:
             textsToRecover.length > 0 ? textsToRecover : undefined,
+          undoResult: t.undoResult,
         };
         liveStates.set(tid, reset);
         setTasks((prev) => {
