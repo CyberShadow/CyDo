@@ -14,7 +14,7 @@ import {
 import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
 import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
-import type { TaskState } from "./types";
+import type { CydoMeta, TaskState } from "./types";
 import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
 import { drafts as inputDrafts } from "./components/InputBox";
@@ -453,7 +453,7 @@ export function useTaskManager(): TaskManager {
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
   const handleUnconfirmedUserMessage = useCallback(
-    (tid: number, msg: AgnosticEvent) => {
+    (tid: number, msg: AgnosticEvent, meta: CydoMeta | undefined) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
       const content = ((msg as Record<string, unknown>).content as
@@ -471,6 +471,7 @@ export function useTaskManager(): TaskManager {
             type: "user" as const,
             content,
             pending: true,
+            cydoMeta: meta,
           },
         ],
       };
@@ -1125,7 +1126,12 @@ export function useTaskManager(): TaskManager {
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
       | { kind: "task"; tid: number; msg: AgnosticEvent }
-      | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
+      | {
+          kind: "unconfirmed";
+          tid: number;
+          msg: AgnosticEvent;
+          meta: CydoMeta | undefined;
+        }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
@@ -1142,7 +1148,7 @@ export function useTaskManager(): TaskManager {
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
-          handleUnconfirmedUserMessage(item.tid, item.msg);
+          handleUnconfirmedUserMessage(item.tid, item.msg, item.meta);
         else handleTaskMessage(item.tid, item.msg);
       }
     };
@@ -1214,8 +1220,8 @@ export function useTaskManager(): TaskManager {
       buffer.push({ kind: "task", tid, msg });
       scheduleFlush();
     };
-    conn.onUnconfirmedUserMessage = (tid, msg) => {
-      buffer.push({ kind: "unconfirmed", tid, msg });
+    conn.onUnconfirmedUserMessage = (tid, msg, meta) => {
+      buffer.push({ kind: "unconfirmed", tid, msg, meta });
       scheduleFlush();
     };
     conn.onControlMessage = (msg) => {

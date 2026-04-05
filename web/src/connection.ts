@@ -1,4 +1,5 @@
 import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
+import type { CydoMeta } from "./types";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.
@@ -10,8 +11,9 @@ export class Connection {
   private disposed = false;
 
   onTaskMessage: ((tid: number, msg: AgnosticEvent) => void) | null = null;
-  onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
-    null;
+  onUnconfirmedUserMessage:
+    | ((tid: number, msg: AgnosticEvent, meta: CydoMeta | undefined) => void)
+    | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -64,6 +66,7 @@ export class Connection {
             this.onUnconfirmedUserMessage?.(
               raw.tid,
               raw.unconfirmedUserEvent as AgnosticEvent,
+              raw.meta as CydoMeta | undefined,
             );
           } else if ("event" in raw) {
             const event = raw.event as AgnosticEvent;

@@ -5,6 +5,14 @@
 
 import type { AssistantContentBlock, AskUserQuestionItem } from "./protocol";
 
+/** Metadata for system-generated user messages (prompt templates, nudges). */
+export interface CydoMeta {
+  label: string;
+  vars?: Record<string, string>;
+  bodyVar?: string;
+  bodyMarkdown?: boolean;
+}
+
 export interface DisplayMessage {
   id: string;
   type:
@@ -81,6 +89,9 @@ export interface DisplayMessage {
   extraFields?: Record<string, unknown>;
   /** Claude Code message UUID — drives fork/undo/edit buttons. */
   uuid?: string;
+  /** Metadata for system-generated user messages. Present only for messages
+   *  sent by CyDo on behalf of the user (prompt templates, nudges). */
+  cydoMeta?: CydoMeta;
 }
 
 export type ToolResultContent =

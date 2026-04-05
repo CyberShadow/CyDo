@@ -820,8 +820,9 @@ class App : ToolsBackend
 
 		// Configure and spawn child agent
 		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
+		auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-			broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedPrompt)]);
+			broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedPrompt)], subtaskMeta);
 			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)]);
 		}).ignoreResult();
 
@@ -1251,8 +1252,11 @@ class App : ToolsBackend
 			// for queue-operation:remove lines (same as handleUserMessage does).
 			td.pendingSteeringTexts ~= textContent;
 			auto msgContent = blocks;
+			auto msgMeta = typeDef !is null
+				? buildCydoMeta(json.entry_point, ["task_description": textContent], "task_description", false)
+				: null;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(tid, msgContent);
+				broadcastUnconfirmedUserMessage(tid, msgContent, msgMeta);
 				sendTaskMessage(tid, messageToSend);
 			}).ignoreResult();
 
@@ -1546,6 +1550,7 @@ class App : ToolsBackend
 
 		// Wrap first message in prompt template (e.g. conversation.md)
 		auto messageToSend = blocks;
+		string userMsgMeta;
 		if (td.description.length == 0)
 		{
 			materializePendingTask(tid);
@@ -1566,10 +1571,13 @@ class App : ToolsBackend
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
+				// Attach metadata so the frontend can render this as a collapsible system message.
+				auto label = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				userMsgMeta = buildCydoMeta(label, ["task_description": textContent], "task_description", false);
 			}
 		}
 		td.lastSuggestions = null;
-		broadcastUnconfirmedUserMessage(tid, blocks);
+		broadcastUnconfirmedUserMessage(tid, blocks, userMsgMeta);
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
 			if (td.status == "alive")
@@ -2824,8 +2832,10 @@ class App : ToolsBackend
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", taskTypesDir,
 				["result_text": resultText, "output_dir": td.taskDir]);
+			auto contMeta = buildCydoMeta("continuation prompt",
+				["result_text": resultText], "result_text", true);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
+				broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], contMeta);
 				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
 				broadcastTaskUpdate(tid);
 			}).ignoreResult();
@@ -2880,8 +2890,10 @@ class App : ToolsBackend
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
 				taskTypesDir, childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
+			auto handoffMeta = buildCydoMeta("handoff prompt",
+				["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)]);
+				broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)], handoffMeta);
 				sendTaskMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)]);
 			}).ignoreResult();
 
@@ -3196,10 +3208,12 @@ class App : ToolsBackend
 			auto td = &tasks[tid];
 			if (td.session is null || !td.session.alive)
 				return;
-			sendTaskMessage(tid, [ContentBlock("text",
-				"[SYSTEM: Your session was interrupted by a backend restart. "
+			enum nudgeText = "[SYSTEM: Your session was interrupted by a backend restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
-				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]")]);
+				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]";
+			auto nudgeMeta = buildCydoMeta("restart nudge");
+			broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", nudgeText)], nudgeMeta);
+			sendTaskMessage(tid, [ContentBlock("text", nudgeText)]);
 		});
 	}
 
@@ -3419,9 +3433,33 @@ class App : ToolsBackend
 				(*subs).remove(tid);
 	}
 
+	/// Build metadata JSON for a system-generated user message.
+	/// The result is a JSON string (or null) to be injected as "meta" in the
+	/// unconfirmed-user-event envelope. NOT sent to the agent.
+	private string buildCydoMeta(string label, string[string] vars = null,
+		string bodyVar = null, bool bodyMarkdown = false)
+	{
+		import ae.utils.json : JSONOptional, toJson;
+		struct CydoMeta {
+			string label;
+			@JSONOptional string[string] vars;
+			@JSONOptional string bodyVar;
+			@JSONOptional bool bodyMarkdown;
+		}
+		CydoMeta m;
+		m.label = label;
+		m.vars = vars;
+		m.bodyVar = bodyVar;
+		m.bodyMarkdown = bodyMarkdown;
+		return toJson(m);
+	}
+
 	/// Broadcast an unconfirmed user message to all clients.
 	/// This is shown as pending until Claude echoes it back with is_replay.
-	private void broadcastUnconfirmedUserMessage(int tid, const(ContentBlock)[] content)
+	/// cydoMeta is an optional JSON string injected as "meta" in the envelope;
+	/// it is NOT sent to the agent.
+	private void broadcastUnconfirmedUserMessage(int tid, const(ContentBlock)[] content,
+		string cydoMeta = null)
 	{
 		import ae.utils.json : toJson;
 		import cydo.agent.protocol : ItemStartedEvent;
@@ -3434,7 +3472,9 @@ class App : ToolsBackend
 		ev.pending   = true;
 		auto userEvent = toJson(ev);
 		string injected = `{"tid":` ~ format!"%d"(tid)
-			~ `,"unconfirmedUserEvent":` ~ userEvent ~ `}`;
+			~ `,"unconfirmedUserEvent":` ~ userEvent
+			~ (cydoMeta.length > 0 ? `,"meta":` ~ cydoMeta : ``)
+			~ `}`;
 
 		auto data = Data(injected.representation);
 

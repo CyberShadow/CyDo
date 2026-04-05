@@ -3235,3 +3235,83 @@ pre.extra-field-value {
   display: block;
   margin-bottom: 4px;
 }
+
+/* System user message (collapsed) — divider-style bar */
+.result-divider.system-user-message {
+  gap: 8px;
+}
+
+.system-user-icon {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.system-user-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* System user message (template-style default view) */
+.message.system-user-message {
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid var(--border);
+}
+
+/* System user message (nudge expanded view) */
+.system-user-expanded {
+  padding: 10px 16px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid var(--border);
+}
+
+.system-user-pre {
+  margin-top: 4px;
+  padding: 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+}
+
+.system-user-header {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.system-user-body {
+  margin-bottom: 8px;
+}
+
+.system-user-vars {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.system-user-var {
+  margin-bottom: 2px;
+}
+
+.system-user-full-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+
+.system-user-full-text pre {
+  margin-top: 4px;
+  padding: 8px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+}

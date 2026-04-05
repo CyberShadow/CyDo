@@ -912,6 +912,10 @@ function reduceItemStartedUserMessage(
     (b) => (b.type === "text" && b.text.trim().length > 0) || b.type !== "text",
   );
   if (hasContent) {
+    // Carry cydoMeta from the pending placeholder to the confirmed message.
+    const pendingMsg = state.messages.find(
+      (m) => m.pending && m.type === "user",
+    );
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
@@ -927,6 +931,7 @@ function reduceItemStartedUserMessage(
       rawSource: event,
       seq: getSeq(event),
       uuid: event.uuid,
+      cydoMeta: pendingMsg?.cydoMeta,
     };
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),

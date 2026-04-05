@@ -187,6 +187,93 @@ function CompactBoundaryMessageView({ message }: { message: DisplayMessage }) {
   );
 }
 
+function SystemUserMessage({ message }: { message: DisplayMessage }) {
+  const meta = message.cydoMeta!;
+  // Messages without vars (nudges) start collapsed; messages with vars show them by default.
+  const [showFull, setShowFull] = useState(false);
+
+  const text = message.content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+
+  const hasVars = meta.vars && Object.keys(meta.vars).length > 0;
+
+  if (!hasVars) {
+    // Nudge-style: collapsed divider or expanded full text
+    if (!showFull) {
+      return (
+        <div
+          class={`result-divider system-user-message${message.pending ? " pending" : ""}`}
+          onClick={() => {
+            setShowFull(true);
+          }}
+        >
+          <hr />
+          <span class="result-divider-icon system-user-icon">{"⚙"}</span>
+          <span class="system-user-label">{meta.label}</span>
+          <hr />
+        </div>
+      );
+    }
+    return (
+      <div
+        class={`message system-user-expanded${message.pending ? " pending" : ""}`}
+        onClick={() => {
+          setShowFull(false);
+        }}
+      >
+        <div class="system-user-header">{meta.label}</div>
+        <pre class="system-user-pre">{text}</pre>
+      </div>
+    );
+  }
+
+  // Template-style: default view shows label + vars (task_description etc.)
+  // Keep "user-message" class for backward compatibility with existing selectors.
+  const bodyVar = meta.bodyVar;
+  const bodyValue = bodyVar && meta.vars ? meta.vars[bodyVar] : undefined;
+  const otherVars = meta.vars
+    ? Object.entries(meta.vars).filter(([k]) => k !== bodyVar)
+    : [];
+
+  return (
+    <div
+      class={`message user-message system-user-message${message.pending ? " pending" : ""}`}
+    >
+      <div class="system-user-header">{meta.label}</div>
+      {bodyValue !== undefined && (
+        <div class="system-user-body">
+          {meta.bodyMarkdown ? (
+            <Markdown text={bodyValue} />
+          ) : (
+            <div class="user-text">{bodyValue}</div>
+          )}
+        </div>
+      )}
+      {otherVars.length > 0 && (
+        <div class="system-user-vars">
+          {otherVars.map(([k, v]) => (
+            <div key={k} class="system-user-var">
+              <span class="field-label">{k}:</span>{" "}
+              <span class="field-value">{v}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <details
+        class="system-user-full-text"
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <summary>Full rendered text</summary>
+        <pre>{text}</pre>
+      </details>
+    </div>
+  );
+}
+
 function InitDetailList({ label, items }: { label: string; items: unknown[] }) {
   return (
     <details class="init-details">
@@ -702,7 +789,11 @@ export function MessageList({
           let inner;
           switch (msg.type) {
             case "user":
-              inner = <UserMessage message={msg} />;
+              inner = msg.cydoMeta ? (
+                <SystemUserMessage message={msg} />
+              ) : (
+                <UserMessage message={msg} />
+              );
               break;
             case "assistant":
               inner = (
