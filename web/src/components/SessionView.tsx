@@ -230,7 +230,7 @@ function SessionViewInner({
     } else {
       inputRef.current?.focus();
     }
-  }, [isActive, task.resumable, task.status, isDraft]);
+  }, [isActive, task.status, isDraft]);
 
   const handleSaveDraft = useCallback(
     (draft: string) => onSaveDraft?.(task.tid, draft),
