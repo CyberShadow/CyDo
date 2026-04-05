@@ -57,6 +57,45 @@ test("agent type dropdown not reset when typing first character", async ({
   await input.fill("");
 });
 
+test("agent type dropdown not reset when typing then deleting", async ({
+  page,
+  agentType,
+}) => {
+  const targetAgent = agentType === "codex" ? "claude" : "codex";
+
+  await enterSession(page);
+
+  await expect(page.locator(".agent-picker")).toBeVisible({ timeout: 5_000 });
+
+  const before = await snapshotTids(page);
+
+  // Select a non-default agent type
+  await page.locator(".agent-picker").selectOption(targetAgent);
+  await expect(page.locator(".agent-picker")).toHaveValue(targetAgent);
+
+  // Type a character — creates a draft task
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("x");
+
+  // Wait for draft to appear
+  const draftTid = await waitForNewTid(page, before);
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
+  ).toBeVisible({ timeout: 2_000 });
+
+  // Delete the character — triggers deleteDraftTask
+  await input.fill("");
+
+  // Draft should be removed from sidebar
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
+  ).not.toBeAttached({ timeout: 5_000 });
+
+  // Agent picker should still show the selected value, not reset to default
+  await expect(page.locator(".agent-picker")).toHaveValue(targetAgent);
+});
+
 test("task type dropdown not reset when typing then deleting", async ({
   page,
 }) => {
