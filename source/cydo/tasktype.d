@@ -209,6 +209,27 @@ TaskTypeConfig loadTaskTypes(string[] paths...)
 		throw new Exception("No task type files found in: " ~ paths.join(", "));
 
 	auto result = parseConfig!TaskTypesFile(CLIArgs(paths[0]), root);
+
+	// Ensure "blank" type always exists even if not in any config file.
+	if (result.task_types.byName("blank") is null)
+	{
+		TaskTypeDef blank;
+		blank.name = "blank";
+		blank.icon = "blank";
+		blank.model_class = "large";
+		blank.allow_native_subagents = true;
+		result.task_types = blank ~ result.task_types;
+	}
+	if (result.user_entry_points.byName("blank") is null)
+	{
+		UserEntryPointDef ep;
+		ep.name = "blank";
+		ep.task_type = "blank";
+		ep.description = "Raw agent session with no prompt wrapping or tool restrictions";
+		ep.prompt_template = "prompts/blank.md";
+		result.user_entry_points = ep ~ result.user_entry_points;
+	}
+
 	return TaskTypeConfig(result.task_types, result.user_entry_points);
 }
 

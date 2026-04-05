@@ -38,7 +38,7 @@ struct Persistence
 			"    tid INTEGER PRIMARY KEY AUTOINCREMENT," ~
 			"    claude_session_id TEXT," ~
 			"    description TEXT NOT NULL DEFAULT ''," ~
-			"    task_type TEXT NOT NULL DEFAULT 'conversation'," ~
+			"    task_type TEXT NOT NULL DEFAULT 'blank'," ~
 			"    parent_tid INTEGER," ~
 			"    relation_type TEXT NOT NULL DEFAULT ''," ~
 			"    workspace TEXT NOT NULL DEFAULT ''," ~
@@ -230,7 +230,7 @@ struct Persistence
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string title, string status, string agentType, int archived, string draft,
 			string resultText, long createdAt, long lastActive, string entryPoint;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'conversation'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,'') FROM tasks".iterate())
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,'') FROM tasks".iterate())
 		{
 			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, title, status, agentType, archived != 0, draft, resultText, createdAt, lastActive, entryPoint);
 		}
@@ -350,7 +350,7 @@ int createForkTask(ref Persistence persistence, int sourceTid, string agentSessi
 	auto forkTitle = title.length > 0 ? title ~ " (fork)" : "(fork)";
 	persistence.db.stmt!"INSERT INTO tasks (agent_session_id, title, workspace, project_path, parent_tid, relation_type, status, description, task_type, agent_type, created_at, last_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 		.exec(agentSessionId, forkTitle, workspace, projectPath, sourceTid, "fork", "completed",
-			description, taskType.length > 0 ? taskType : "conversation", agentType,
+			description, taskType.length > 0 ? taskType : "blank", agentType,
 			Clock.currStdTime, Clock.currStdTime);
 	return cast(int) persistence.db.db.lastInsertRowID;
 }

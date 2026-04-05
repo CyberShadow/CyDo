@@ -107,7 +107,7 @@ function SessionViewInner({
     task.entryPoint ??
     entryPoints?.find((e) => e.task_type === task.taskType)?.name ??
     entryPoints?.[0]?.name ??
-    "agentic";
+    "blank";
   const [selectedEntryPoint, setSelectedEntryPoint] =
     useState(initialEntryPoint);
   const entryPointPickerRef = useRef<HTMLDivElement>(null);

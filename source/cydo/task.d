@@ -18,7 +18,7 @@ struct TaskData
 	string agentSessionId;
 	string description;
 	string entryPoint;
-	string taskType = "conversation";
+	string taskType = "blank";
 	string agentType = "claude";
 	int parentTid;
 	string relationType;
