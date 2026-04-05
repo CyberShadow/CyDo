@@ -4278,7 +4278,7 @@ class App : ToolsBackend
 			{
 				import std.file : write;
 				write(debugDir ~ "/input.txt", prompt);
-				write(debugDir ~ "/output.txt", e.msg);
+				write(debugDir ~ "/error.txt", e.msg);
 			}
 		}).ignoreResult();
 
