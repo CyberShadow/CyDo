@@ -200,7 +200,7 @@ test("idle task is not nudged after resume + restart", async ({
 
   // Click the Resume button (this is where the bug was: handleResumeMsg
   // set status to "active" even though the session is idle).
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
@@ -266,7 +266,7 @@ test("MCP tools work after backend restart", async ({
   await page.locator(".sidebar-item .sidebar-label", { hasText: "mcp-ready" }).click();
 
   // Resume if needed
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
@@ -323,7 +323,7 @@ test("active task receives nudge and continues after restart", async ({
   await page.locator(".sidebar-item").first().click();
 
   // Resume if needed
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
@@ -373,7 +373,7 @@ test("sub-task result delivered to parent after backend restart", async ({
   await taskItems.last().click();
 
   // Resume if necessary
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
@@ -428,7 +428,7 @@ test("waiting parent receives batch results after restart", async ({
   await taskItems.last().click();
 
   // Resume if needed.
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn
     .isVisible({ timeout: 5_000 })
     .catch(() => false);
@@ -510,7 +510,7 @@ test("waiting parent with completed children gets results after restart", async 
 
   // The parent was "waiting" so it gets auto-resumed by resumeInFlightTasks.
   // If the UI shows a resume button (auto-resume hasn't completed yet), click it.
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();

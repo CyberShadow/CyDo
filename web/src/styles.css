@@ -578,6 +578,20 @@ body,
   color: var(--accent);
 }
 
+.btn-banner-resume {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.btn-banner-resume:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .sidebar-archive-node {
   color: var(--text-dim);
   font-style: italic;

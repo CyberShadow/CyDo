@@ -16,6 +16,8 @@ interface Props {
   onToggleSidebar?: () => void;
   archived?: boolean;
   onSetArchived?: () => void;
+  resumable?: boolean;
+  onResume?: () => void;
 }
 
 export function SystemBanner({
@@ -32,6 +34,8 @@ export function SystemBanner({
   onToggleSidebar,
   archived,
   onSetArchived,
+  resumable,
+  onResume,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -86,6 +90,15 @@ export function SystemBanner({
               Kill
             </button>
           </>
+        )}
+        {!alive && resumable && onResume && (
+          <button
+            class="btn-banner-resume"
+            onClick={onResume}
+            title="Resume session"
+          >
+            Resume
+          </button>
         )}
         {!alive && onSetArchived && (
           <button

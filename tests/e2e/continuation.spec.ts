@@ -34,9 +34,9 @@ test("unsent steer is either recovered into input box or shown in history after 
   await sendMessage(page, "this should be recovered");
 
   await page.locator(".btn-banner-stop").click();
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".btn-banner-resume")).toBeVisible({ timeout: 10_000 });
 
-  await page.locator(".btn-resume").click();
+  await page.locator(".btn-banner-resume").click();
   await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
 
   const input = page.locator(".input-textarea:visible").first();

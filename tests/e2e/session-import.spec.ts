@@ -308,7 +308,7 @@ test("importable session appears on startup, history loads, Import Session promo
 
     // The promoted session is now a regular resumable task in the sidebar.
     await expect(
-      page.locator(".btn-resume", { hasText: "Resume Session" }),
+      page.locator(".btn-banner-resume"),
     ).toBeVisible({ timeout: 5_000 });
   } finally {
     await killBackend(proc);

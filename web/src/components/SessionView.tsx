@@ -225,7 +225,7 @@ function SessionViewInner({
     if (matchMedia("(pointer: coarse)").matches) return;
     if (isDraft) {
       entryPointPickerRef.current?.focus();
-    } else if (task.resumable || task.status === "importable") {
+    } else if (task.status === "importable") {
       resumeRef.current?.focus();
     } else {
       inputRef.current?.focus();
@@ -377,6 +377,8 @@ function SessionViewInner({
         onToggleSidebar={onToggleSidebar}
         archived={task.archived}
         onSetArchived={onSetArchived ? handleSetArchived : undefined}
+        resumable={task.resumable}
+        onResume={onResume}
       />
       {fileViewerState && (
         <FileViewer
@@ -498,16 +500,32 @@ function SessionViewInner({
           </button>
         </div>
       ) : task.resumable ? (
-        <div class="resume-bar">
+        <>
           {task.error && (
-            <span class="session-failed-label">
-              Session failed: {task.error}
-            </span>
+            <div class="resume-bar">
+              <span class="session-failed-label">
+                Session failed: {task.error}
+              </span>
+            </div>
           )}
-          <button ref={resumeRef} class="btn btn-resume" onClick={onResume}>
-            Resume Session
-          </button>
-        </div>
+          <InputBox
+            onSend={handleSend}
+            onInterrupt={onInterrupt}
+            isProcessing={task.isProcessing}
+            disabled={!connected}
+            sessionId={task.tid}
+            inputDraft={task.inputDraft}
+            onInputDraftConsumed={handleInputDraftConsumed}
+            serverDraft={task.serverDraft}
+            onSaveDraft={
+              task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
+            }
+            inputRef={inputRef}
+            insertTextRef={insertTextRef}
+            pasteTextRef={pasteTextRef}
+            suggestions={task.suggestions}
+          />
+        </>
       ) : task.error && !task.alive ? (
         <div class="resume-bar">
           <span class="session-failed-label">Session failed: {task.error}</span>

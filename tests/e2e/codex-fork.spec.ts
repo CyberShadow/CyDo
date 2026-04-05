@@ -27,7 +27,7 @@ async function waitForNewTid(
 }
 
 async function resumeIfNeeded(page: Parameters<typeof sendMessage>[0]) {
-  const resumeBtn = page.locator(".btn-resume:visible").first();
+  const resumeBtn = page.locator(".btn-banner-resume:visible").first();
   const visible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
   if (visible) {
     await resumeBtn.click();

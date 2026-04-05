@@ -1533,9 +1533,6 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
-		// Resumable tasks (completed with agentSessionId) require explicit "resume".
-		if (td.agentSessionId.length > 0 && (td.session is null || !td.session.alive))
-			return; // resumable but not resumed — ignore
 
 		ContentBlock[] blocks;
 		if (json.content.json !is null)

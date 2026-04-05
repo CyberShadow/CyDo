@@ -206,9 +206,9 @@ test("killing one codex task also interrupts sibling session on pooled server", 
     .locator(".sidebar-item:not(.active):not(.sidebar-new-task)")
     .first();
   await siblingTask.click({ timeout: 15_000 });
-  await expect(page.locator(".btn-resume")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".btn-banner-resume")).toBeVisible({ timeout: 30_000 });
 
-  await page.locator(".btn-resume").click();
+  await page.locator(".btn-banner-resume").click();
   await sendMessage(page, 'Please reply with "sibling-resumed"');
   await expect(
     page.locator(".message.assistant-message .text-content", { hasText: "sibling-resumed" }),

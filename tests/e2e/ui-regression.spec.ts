@@ -116,7 +116,7 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
 
   // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
-  await expect(page.locator(".btn-resume:visible").first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".btn-banner-resume:visible").first()).toBeVisible({ timeout: 5_000 });
 });
 
 test("assistant messages do not render literal undefined", async ({

@@ -118,7 +118,7 @@ function AppContent() {
     // Re-focus the input box or resume button after dismissing search
     requestAnimationFrame(() => {
       const input = document.querySelector(".input-textarea");
-      const resume = document.querySelector(".btn-resume");
+      const resume = document.querySelector(".btn-banner-resume");
       ((input ?? resume) as HTMLElement | null)?.focus();
     });
   }, []);

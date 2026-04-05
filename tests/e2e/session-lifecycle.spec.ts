@@ -62,7 +62,7 @@ test("session stop shows resume button", async ({ page, agentType }) => {
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   await killSession(page, agentType);
-  await expect(page.locator(".btn-resume")).toBeVisible();
+  await expect(page.locator(".btn-banner-resume")).toBeVisible();
 });
 
 test("session resume continues conversation", async ({ page, agentType }) => {
@@ -75,7 +75,7 @@ test("session resume continues conversation", async ({ page, agentType }) => {
 
   await killSession(page, agentType);
 
-  await page.locator(".btn-resume").click();
+  await page.locator(".btn-banner-resume").click();
 
   const bannerTimeout = agentType === "codex" ? 30_000 : 15_000;
   await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: bannerTimeout });

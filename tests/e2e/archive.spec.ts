@@ -195,7 +195,7 @@ test("archived task cannot be resumed without unarchiving", async ({
   await createCompletedTask(page, "arch-no-resume", agentType);
 
   // Resume button must be visible before archiving
-  await expect(page.locator(".btn-resume")).toBeVisible();
+  await expect(page.locator(".btn-banner-resume")).toBeVisible();
 
   // Archive the task
   await page.locator(".btn-banner-archive").click();
@@ -212,7 +212,7 @@ test("archived task cannot be resumed without unarchiving", async ({
   await noResumeLabel.click();
 
   // If the resume button is visible, click it and verify the task stays non-alive
-  const resumeBtn = page.locator(".btn-resume");
+  const resumeBtn = page.locator(".btn-banner-resume");
   if (await resumeBtn.isVisible()) {
     await resumeBtn.click();
     // The task must NOT become alive (stop button must not appear)
