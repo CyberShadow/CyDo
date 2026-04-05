@@ -2189,7 +2189,9 @@ function formatTaskOutputResult(
 
   return formatGenericInput(
     fields,
-    output ? <pre class="field-value-block">{output}</pre> : undefined,
+    output ? (
+      <ResultPre content={output} class="field-value-block" />
+    ) : undefined,
   );
 }
 
