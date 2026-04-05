@@ -1608,7 +1608,7 @@ class CodexSession : AgentSession
 				JSONFragment(toJson(TurnSteerParams(
 					threadId,
 					[TurnStartInput("text", text)],
-					activeTurnId_))));
+					activeTurnId_)))).ignoreResult();
 		}
 		else
 		{
@@ -1644,7 +1644,7 @@ class CodexSession : AgentSession
 		if (!alive_ || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
 			return;
 		server.sendRequest("turn/interrupt",
-			JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_))));
+			JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_)))).ignoreResult();
 	}
 
 	void sigint()
