@@ -104,6 +104,7 @@ const test = base.extend<WorkerFixtures>({
           CYDO_CLAUDE_BIN: wrapperPath,
           CYDO_REAL_CLAUDE_BIN: realClaudeBin,
           CODEX_HOME: codexHome,
+          XDG_DATA_HOME: `${workDir}/data`,
         },
         stdio: ["ignore", "inherit", "inherit"],
       });

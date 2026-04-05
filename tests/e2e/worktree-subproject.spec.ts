@@ -47,6 +47,7 @@ function spawnBackend(workDir: string, workerHome: string): ChildProcess {
     env: {
       ...process.env,
       HOME: workerHome,
+      XDG_DATA_HOME: `${workDir}/data`,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });

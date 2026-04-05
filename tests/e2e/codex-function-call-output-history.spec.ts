@@ -70,6 +70,7 @@ function spawnBackend(
       ...process.env,
       HOME: workerHome,
       CODEX_HOME: codexHome,
+      XDG_DATA_HOME: `${workDir}/data`,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });

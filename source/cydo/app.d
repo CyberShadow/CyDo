@@ -224,8 +224,22 @@ class App : ToolsBackend
 	void start()
 	{
 		initLogLevel();
-		persistence = Persistence("data/cydo.db");
-		createPidFile("cydo.pid", "data/");
+		{
+			import ae.sys.paths : getDataDir;
+			import std.path : buildPath;
+			auto xdgDataDir = getDataDir("cydo");
+			auto xdgDbPath = buildPath(xdgDataDir, "cydo.db");
+			string dataDir;
+			if (exists("data/cydo.db"))
+			{
+				warningf("Warning: using legacy database at data/cydo.db — move it to %s to silence this warning", xdgDbPath);
+				dataDir = "data";
+			}
+			else
+				dataDir = xdgDataDir;
+			persistence = Persistence(buildPath(dataDir, "cydo.db"));
+			createPidFile("cydo.pid", dataDir);
+		}
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
 		if (auto ac = config.default_agent_type in config.agents)

@@ -64,6 +64,7 @@ function spawnBackend(
     env: {
       ...process.env,
       HOME: workerHome,
+      XDG_DATA_HOME: `${workDir}/data`,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });

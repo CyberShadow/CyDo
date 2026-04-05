@@ -68,6 +68,7 @@ export const test = base.extend<TestFixtures>({
       cwd: workDir,
       env: {
         ...process.env,
+        XDG_DATA_HOME: `${workDir}/data`,
       },
       stdio: ["ignore", "inherit", "inherit"],
     });

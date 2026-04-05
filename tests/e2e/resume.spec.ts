@@ -69,6 +69,7 @@ function spawnBackend(workDir: string, workerHome: string, codexHome?: string): 
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
+      XDG_DATA_HOME: `${workDir}/data`,
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
     },
     stdio: ["ignore", "inherit", "inherit"],
@@ -490,7 +491,7 @@ test("waiting parent with completed children gets results after restart", async 
   // 1. Set parent (tid=1) status to "waiting"
   // 2. Create a fake completed child task (tid=2)
   // 3. Insert task_deps row linking parent to child
-  const dbPath = `${restartableBackend.workDir}/data/cydo.db`;
+  const dbPath = `${restartableBackend.workDir}/data/cydo/cydo.db`;
   execSync(
     `sqlite3 "${dbPath}" "` +
       `UPDATE tasks SET status='waiting' WHERE tid=1; ` +

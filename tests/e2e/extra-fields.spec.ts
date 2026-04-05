@@ -44,6 +44,7 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
           ...process.env,
           CYDO_CLAUDE_BIN: wrapperPath,
           CYDO_REAL_CLAUDE_BIN: "claude",
+          XDG_DATA_HOME: `${workDir}/data`,
         },
         stdio: ["ignore", "inherit", "inherit"],
       });

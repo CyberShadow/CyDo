@@ -74,6 +74,7 @@ function spawnBackend(
       ...process.env,
       HOME: workerHome,
       CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
+      XDG_DATA_HOME: `${workDir}/data`,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
