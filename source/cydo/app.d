@@ -238,7 +238,8 @@ class App : ToolsBackend
 			else
 				dataDir = xdgDataDir;
 			persistence = Persistence(buildPath(dataDir, "cydo.db"));
-			createPidFile("cydo.pid", dataDir);
+			import cydo.sandbox : runtimeDir;
+			createPidFile("cydo.pid", runtimeDir());
 		}
 		config = loadConfig();
 		agent = createAgent(config.default_agent_type);
@@ -625,17 +626,18 @@ class App : ToolsBackend
 
 	private void startMcpSocket()
 	{
-		import std.file : mkdirRecurse, remove;
-		import std.path : absolutePath, buildPath;
+		import std.file : remove;
+		import std.path : buildPath;
 		import std.socket : AddressFamily, AddressInfo, ProtocolType, SocketType, UnixAddress;
 
-		mcpSocketPath = absolutePath(buildPath("data", "mcp.sock"));
+		{
+			import cydo.sandbox : runtimeDir;
+			mcpSocketPath = buildPath(runtimeDir(), "mcp.sock");
+		}
 
 		// Remove stale socket file from previous run
 		if (exists(mcpSocketPath))
 			remove(mcpSocketPath);
-
-		mkdirRecurse("data");
 
 		mcpServer = new HttpServer();
 		mcpServer.handleRequest = (HttpRequest request, HttpServerConnection conn) {
