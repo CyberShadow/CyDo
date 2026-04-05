@@ -35,7 +35,7 @@ import cydo.agent.protocol : ContentBlock, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, Persistence, countLinesAfterForkId, createForkTask,
-	editJsonlMessage, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
+	editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	prepareProcessLaunch, resolveExecutablePath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
@@ -1983,19 +1983,32 @@ class App : ToolsBackend
 
 			// 1. Revert file changes via one-shot --rewind-files invocation
 			// (done first so that on failure we haven't modified anything yet)
-			// Skip for synthetic enqueue UUIDs: they have no file checkpoints.
-			import std.algorithm : startsWith;
+			import std.algorithm : canFind, startsWith;
 			string rewindOutput;
-			if (json.revert_files && ta.supportsFileRevert()
-				&& !json.after_uuid.startsWith("enqueue-"))
+			if (json.revert_files && ta.supportsFileRevert())
 			{
-				auto rewindResult = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
-				if (!rewindResult.success)
+				// Synthetic enqueue-N UUIDs don't have file checkpoints, but the
+				// next real type:"user" message in the JSONL does.  Find it.
+				string rewindUuid = json.after_uuid;
+				if (rewindUuid.startsWith("enqueue-"))
 				{
-					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
-					return;
+					rewindUuid = findNextUserUuid(
+						ta.historyPath(td.agentSessionId, td.effectiveCwd),
+						json.after_uuid, &ta.forkIdMatchesLine);
 				}
-				rewindOutput = rewindResult.output;
+
+				if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
+				{
+					auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, td.effectiveCwd);
+					if (rewindResult.success)
+						rewindOutput = rewindResult.output;
+					else if (!rewindResult.output.canFind("No file checkpoint found"))
+					{
+						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
+						return;
+					}
+					// "No file checkpoint found" → no checkpoint for this message, skip silently
+				}
 			}
 
 			// 2. Back up pre-undo state as a child task

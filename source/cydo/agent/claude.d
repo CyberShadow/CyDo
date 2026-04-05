@@ -469,6 +469,8 @@ class ClaudeCodeAgent : Agent
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
 	{
 		import std.process : Config, environment, execute;
+		import std.logger : tracef;
+		tracef("rewindFiles: sessionId=%s afterUuid=%s cwd=%s", sessionId, afterUuid, cwd);
 
 		auto claudeBin = resolveExecutablePath(executableName(null), null);
 		if (claudeBin.length == 0)
@@ -492,6 +494,7 @@ class ClaudeCodeAgent : Agent
 			env, Config.none, size_t.max,
 			cwd.length > 0 ? cwd : null);
 
+		tracef("rewindFiles: exit status=%d output=%s", result.status, result.output);
 		if (result.status != 0)
 		{
 			auto msg = result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
@@ -1774,6 +1777,15 @@ private string normalizeTurnResult(string rawLine)
 	{
 		@JSONOptional int input_tokens;
 		@JSONOptional int output_tokens;
+		// Known Claude usage fields — listed so they are not captured as extras.
+		@JSONOptional int cache_creation_input_tokens;
+		@JSONOptional int cache_read_input_tokens;
+		@JSONOptional JSONFragment server_tool_use;
+		@JSONOptional string service_tier;
+		@JSONOptional JSONFragment cache_creation;
+		@JSONOptional string inference_geo;
+		@JSONOptional JSONFragment iterations;
+		@JSONOptional string speed;
 		JSONExtras _extras;
 	}
 

@@ -616,6 +616,43 @@ string lastForkIdInJsonl(string jsonlPath, string[] delegate(string content, int
 	return ids.length > 0 ? ids[$ - 1] : null;
 }
 
+/// Find the UUID of the first type:"user" message appearing after the line
+/// matching forkId.  Returns null if not found.
+string findNextUserUuid(string jsonlPath, string forkId,
+	bool delegate(string line, int lineNum, string forkId) matchFn)
+{
+	import std.file : exists, readText;
+	import std.string : lineSplitter;
+
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
+		return null;
+
+	bool pastTarget = false;
+	int lineNum = 0;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+		lineNum++;
+
+		if (!pastTarget)
+		{
+			if (matchFn(line, lineNum, forkId))
+				pastTarget = true;
+			continue;
+		}
+
+		// Past the anchor line — look for the first type:"user" with a uuid
+		if (line.extractJsonField(`"type":"`) == "user")
+		{
+			auto uuid = line.extractJsonField(`"uuid":"`);
+			if (uuid.length > 0)
+				return uuid;
+		}
+	}
+	return null;
+}
+
 /// Returns true if this JSONL line is a queue-operation, file-history-snapshot,
 /// or progress event — lines that are "run-up" to a steered user message and
 /// should be stripped together with it on undo.
