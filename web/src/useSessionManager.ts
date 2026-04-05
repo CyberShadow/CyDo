@@ -425,6 +425,7 @@ export function useTaskManager(): TaskManager {
           renderKey,
           entryPoint: existing?.entryPoint,
           taskType: existing?.taskType,
+          agentType: existing?.agentType,
         };
         // Clear stale in-memory draft from the virtual slot so the InputBox
         // starts fresh on the next cycle (avoids wasEmpty=false blocking onContentStart).
