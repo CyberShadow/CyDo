@@ -93,6 +93,24 @@ test("session resume continues conversation", async ({ page, agentType }) => {
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
+test("sending message to stopped session auto-resumes it", async ({ page, agentType }) => {
+  await enterSession(page);
+  await sendMessage(page, 'Please reply with "before-auto"');
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "before-auto" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  await killSession(page, agentType);
+
+  // Instead of clicking Resume, send a message directly via the input box
+  await sendMessage(page, 'Please reply with "after-auto"');
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "after-auto" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+});
+
 test("codex reload replays apply_patch tool call", async ({ page, agentType }) => {
   test.skip(agentType !== "codex", "codex-only test");
 
