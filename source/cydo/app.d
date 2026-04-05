@@ -4220,6 +4220,21 @@ class App : ToolsBackend
 		}
 		tracef("generateSuggestions[%d]: spawning one-shot (history.length=%d)", tid, history.length);
 
+		string debugDir;
+		{
+			import std.process : environment;
+			if (environment.get("CYDO_DEBUG_SUGGESTIONS", "") == "1")
+			{
+				import std.datetime : Clock;
+				auto now = Clock.currTime;
+				debugDir = format("data/suggestion-debug/%04d-%02d-%02dT%02d:%02d:%02d-%d",
+					now.year, cast(int)now.month, now.day,
+					now.hour, now.minute, now.second, tid);
+				import std.file : mkdirRecurse;
+				mkdirRecurse(debugDir);
+			}
+		}
+
 		td.suggestGeneration++;
 		auto capturedGen = td.suggestGeneration;
 
@@ -4234,6 +4249,12 @@ class App : ToolsBackend
 			tasks[tid].suggestGenHandle = null;
 			tasks[tid].suggestGenKill = null;
 
+			if (debugDir.length)
+			{
+				import std.file : write;
+				write(debugDir ~ "/input.txt", prompt);
+				write(debugDir ~ "/output.txt", result);
+			}
 
 				import ae.utils.json : jsonParse;
 				string[] suggestionList;
@@ -4253,6 +4274,12 @@ class App : ToolsBackend
 				return;
 			tasks[tid].suggestGenHandle = null;
 			tasks[tid].suggestGenKill = null;
+			if (debugDir.length)
+			{
+				import std.file : write;
+				write(debugDir ~ "/input.txt", prompt);
+				write(debugDir ~ "/output.txt", e.msg);
+			}
 		}).ignoreResult();
 
 	}
