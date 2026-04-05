@@ -2384,6 +2384,30 @@ export function ToolCall({
     ? formatBashResult(result.toolResult as Record<string, unknown>)
     : null;
 
+  const hasResultContent =
+    result != null &&
+    (() => {
+      if (resultText != null && resultText.length > 0) return true;
+      if (result.toolResult != null && typeof result.toolResult === "object") {
+        if (
+          Array.isArray(result.toolResult)
+            ? result.toolResult.length > 0
+            : Object.keys(result.toolResult).length > 0
+        )
+          return true;
+      }
+      if (typeof result.content === "string" && result.content.length > 0)
+        return true;
+      if (Array.isArray(result.content) && result.content.length > 0)
+        return true;
+      if (cydoTaskItems) return true;
+      if (taskOutputElement) return true;
+      if (taskStopElement) return true;
+      if (commandExecutionElement) return true;
+      if (bashElement) return true;
+      return false;
+    })();
+
   return (
     <div
       id={toolUseId ? `tool-${toolUseId}` : undefined}
@@ -2474,7 +2498,7 @@ export function ToolCall({
         )}
       {inputOpen && formatInput(name, toolServer, input, result)}
       {children}
-      {result && (
+      {result && hasResultContent && (
         <div class="tool-result-section">
           <div
             class="tool-result-header"
