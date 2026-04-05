@@ -287,8 +287,8 @@ function AppContent() {
   );
 
   const handleDraftContentStart = useCallback(
-    (entryPointName: string) => {
-      createDraftTask(entryPointName);
+    (entryPointName: string, agentType: string) => {
+      createDraftTask(entryPointName, agentType);
     },
     [createDraftTask],
   );

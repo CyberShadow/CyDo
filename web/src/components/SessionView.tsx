@@ -58,7 +58,7 @@ interface Props {
   entryPoints?: EntryPointInfo[];
   agentTypes?: AgentTypeInfo[];
   defaultAgentType?: string;
-  onContentStart?: (entryPointName: string) => void;
+  onContentStart?: (entryPointName: string, agentType: string) => void;
   onContentEnd?: () => void;
 }
 
@@ -156,8 +156,11 @@ function SessionViewInner({
   }, [onPromote, task.tid]);
 
   const handleContentStart = useCallback(() => {
-    onContentStart?.(selectedEntryPoint);
-  }, [onContentStart, selectedEntryPoint]);
+    onContentStart?.(
+      selectedEntryPoint,
+      selectedAgent || defaultAgentType || "claude",
+    );
+  }, [onContentStart, selectedEntryPoint, selectedAgent, defaultAgentType]);
 
   useEffect(() => {
     if (isDraft) setSelectedEntryPoint(initialEntryPoint);

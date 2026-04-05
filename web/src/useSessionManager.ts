@@ -108,7 +108,7 @@ export interface TaskManager {
   setAgentType: (tid: number, agentType: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
-  createDraftTask: (entryPointName?: string) => void;
+  createDraftTask: (entryPointName?: string, agentType?: string) => void;
   deleteDraftTask: () => void;
   draftRenderKey: string | null;
   sidebarTasks: Array<{
@@ -355,34 +355,37 @@ export function useTaskManager(): TaskManager {
     return renderKey;
   }, []);
 
-  const createDraftTask = useCallback((entryPointName?: string) => {
-    if (
-      draftTidRef.current !== null ||
-      pendingDraftCorrelation.current !== null ||
-      draftCreateTimerRef.current !== null
-    )
-      return;
-    const ws = activeWorkspaceRef.current;
-    const proj = activeProjectRef.current;
-    if (!ws || !proj) return;
-    // Debounce: delay sending create_task so that rapid fill()+click()
-    // sequences (common in Playwright tests) don't create zombie tasks.
-    draftCreateTimerRef.current = setTimeout(() => {
-      draftCreateTimerRef.current = null;
-      draftCancelled.current = false;
-      const projPath = findProjectPath(workspacesRef.current, ws, proj);
-      const correlationId = crypto.randomUUID();
-      pendingDraftCorrelation.current = correlationId;
-      connRef.current?.createTask(
-        ws,
-        projPath || "",
-        entryPointName,
-        undefined,
-        undefined,
-        correlationId,
-      );
-    }, 16);
-  }, []);
+  const createDraftTask = useCallback(
+    (entryPointName?: string, agentType?: string) => {
+      if (
+        draftTidRef.current !== null ||
+        pendingDraftCorrelation.current !== null ||
+        draftCreateTimerRef.current !== null
+      )
+        return;
+      const ws = activeWorkspaceRef.current;
+      const proj = activeProjectRef.current;
+      if (!ws || !proj) return;
+      // Debounce: delay sending create_task so that rapid fill()+click()
+      // sequences (common in Playwright tests) don't create zombie tasks.
+      draftCreateTimerRef.current = setTimeout(() => {
+        draftCreateTimerRef.current = null;
+        draftCancelled.current = false;
+        const projPath = findProjectPath(workspacesRef.current, ws, proj);
+        const correlationId = crypto.randomUUID();
+        pendingDraftCorrelation.current = correlationId;
+        connRef.current?.createTask(
+          ws,
+          projPath || "",
+          entryPointName,
+          undefined,
+          agentType,
+          correlationId,
+        );
+      }, 16);
+    },
+    [],
+  );
 
   const deleteDraftTask = useCallback(() => {
     // Cancel pending debounced create — create_task was never sent
@@ -393,6 +396,9 @@ export function useTaskManager(): TaskManager {
     }
     const tid = draftTidRef.current;
     if (tid !== null && tid > 0) {
+      // Capture entry point / task type before deleting so the reset virtual
+      // draft can preserve the user's selection.
+      const existing = liveStates.get(tid);
       // Real backend task — delete it
       deletedDraftTids.current.add(tid);
       inputDrafts.delete(tid);
@@ -417,6 +423,8 @@ export function useTaskManager(): TaskManager {
         const t: TaskState = {
           ...makeTaskState(0, false, false, undefined, true, ws, projPath),
           renderKey,
+          entryPoint: existing?.entryPoint,
+          taskType: existing?.taskType,
         };
         // Clear stale in-memory draft from the virtual slot so the InputBox
         // starts fresh on the next cycle (avoids wasEmpty=false blocking onContentStart).
