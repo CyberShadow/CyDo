@@ -8,7 +8,7 @@ import std.logger : errorf, tracef, warningf;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
-import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
@@ -466,7 +466,7 @@ class ClaudeCodeAgent : Agent
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return true; }
 
-	string rewindFiles(string sessionId, string afterUuid, string cwd)
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
 	{
 		import std.process : Config, environment, execute;
 
@@ -479,6 +479,11 @@ class ClaudeCodeAgent : Agent
 			"HOME": environment.get("HOME", ""),
 			"CLAUDE_BIN": claudeBin,
 		];
+		// Pass through CLAUDE_CONFIG_DIR if set — without it, claude looks
+		// at $HOME/.claude which may differ from where sessions were created.
+		auto configDir = environment.get("CLAUDE_CONFIG_DIR", "");
+		if (configDir.length > 0)
+			env["CLAUDE_CONFIG_DIR"] = configDir;
 		auto result = execute([
 			"bash", "-c",
 			`exec 2>&1; exec "$CLAUDE_BIN" --resume "$1" --rewind-files "$2" `
@@ -488,13 +493,16 @@ class ClaudeCodeAgent : Agent
 			cwd.length > 0 ? cwd : null);
 
 		if (result.status != 0)
-			return result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
+		{
+			auto msg = result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
+			return RewindResult(false, msg);
+		}
 
 		import std.algorithm : canFind;
 		if (result.output.canFind("Error:"))
-			return result.output;
+			return RewindResult(false, result.output);
 
-		return null;
+		return RewindResult(true, result.output);
 	}
 
 	OneShotHandle completeOneShot(string prompt, string modelClass,

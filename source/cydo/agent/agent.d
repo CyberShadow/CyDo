@@ -21,6 +21,13 @@ struct SessionConfig
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
 }
 
+/// Result from a rewindFiles call.
+struct RewindResult
+{
+	bool success;
+	string output; /// stdout from --rewind-files; contains file list on success, error on failure
+}
+
 /// Lightweight info from directory scanning — no file reads.
 struct DiscoveredSession
 {
@@ -143,8 +150,7 @@ interface Agent
 
 	/// Revert files to the state after a given message UUID.
 	/// Only called when supportsFileRevert is true.
-	/// Returns null on success, or an error string on failure.
-	string rewindFiles(string sessionId, string afterUuid, string cwd);
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd);
 
 	/// Extract user message text from a raw event line.
 	string extractUserText(string line);

@@ -1388,7 +1388,8 @@ body,
 }
 
 .app.has-sidebar .resume-bar,
-.app.has-sidebar .ask-user-form {
+.app.has-sidebar .ask-user-form,
+.app.has-sidebar .undo-result-banner {
   grid-column: 2;
   grid-row: 4;
 }
@@ -1746,6 +1747,16 @@ body,
 .btn-undo:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.undo-result-banner {
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
+  border-top: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .edit-textarea {
@@ -2926,6 +2937,7 @@ pre.extra-field-value {
   .app.has-sidebar .input-box,
   .app.has-sidebar .resume-bar,
   .app.has-sidebar .ask-user-form,
+  .app.has-sidebar .undo-result-banner,
   .app.has-sidebar .session-loading,
   .app.has-sidebar .session-empty {
     grid-column: 1;

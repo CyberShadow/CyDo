@@ -11,7 +11,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkPermissionRequest, SdkPermissionResult,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
-import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -628,9 +628,9 @@ class CopilotAgent : Agent
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
 
-	string rewindFiles(string sessionId, string afterUuid, string cwd)
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
 	{
-		return "File revert is not supported for Copilot sessions";
+		return RewindResult(false, "File revert is not supported for Copilot sessions");
 	}
 
 	OneShotHandle completeOneShot(string prompt, string modelClass,

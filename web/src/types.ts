@@ -226,6 +226,8 @@ export interface TaskState {
     afterUuid: string;
     messagesRemoved: number;
   } | null;
+  /** Undo result output to display as a transient banner (null when not showing). */
+  undoResult?: string | null;
   /** Auto-generated reply suggestions, shown when it's the user's turn. */
   suggestions?: string[];
   /** Server-provided draft for initial hydration on page load. */

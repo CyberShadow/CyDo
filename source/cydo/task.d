@@ -355,6 +355,13 @@ struct UndoPreviewMessage
 	int messages_removed;
 }
 
+struct UndoResultMessage
+{
+	string type = "undo_result";
+	int tid;
+	string output;
+}
+
 struct DraftUpdatedMessage
 {
 	string type = "draft_updated";

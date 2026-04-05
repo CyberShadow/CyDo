@@ -432,6 +432,11 @@ export interface UndoPreviewMessage {
   tid: number;
   messages_removed: number;
 }
+export interface UndoResultMessage {
+  type: "undo_result";
+  tid: number;
+  output: string;
+}
 export interface SuggestionsUpdateMessage {
   type: "suggestions_update";
   tid: number;
@@ -482,6 +487,7 @@ export type ControlMessage =
   | ForkableUuidsMessage
   | ErrorMessage
   | UndoPreviewMessage
+  | UndoResultMessage
   | SuggestionsUpdateMessage
   | AskUserQuestionControlMessage
   | DraftUpdatedMessage

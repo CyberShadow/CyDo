@@ -1076,6 +1076,32 @@ export function useTaskManager(): TaskManager {
         });
         break;
       }
+      case "undo_result": {
+        const { tid, output } = msg;
+        const t = liveStates.get(tid);
+        if (!t) break;
+        if (output) {
+          const updated = { ...t, undoResult: output };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          setTimeout(() => {
+            const cur = liveStates.get(tid);
+            if (!cur) return;
+            const cleared = { ...cur, undoResult: null };
+            liveStates.set(tid, cleared);
+            setTasks((prev) => {
+              const next = new Map(prev);
+              next.set(tid, cleared);
+              return next;
+            });
+          }, 8000);
+        }
+        break;
+      }
       case "ask_user_question": {
         const { tid, tool_use_id, questions } = msg;
         const t = liveStates.get(tid);

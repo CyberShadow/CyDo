@@ -15,7 +15,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
@@ -1268,9 +1268,9 @@ class CodexAgent : Agent
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
 
-	string rewindFiles(string sessionId, string afterUuid, string cwd)
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
 	{
-		return "File revert is not supported for Codex sessions";
+		return RewindResult(false, "File revert is not supported for Codex sessions");
 	}
 
 	/// Currently unused — no callers in the codebase. Implement if a caller is added.

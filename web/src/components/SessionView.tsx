@@ -488,6 +488,9 @@ function SessionViewInner({
           onDismiss={handleUndoDismiss}
         />
       )}
+      {task.undoResult && (
+        <div class="undo-result-banner">{task.undoResult}</div>
+      )}
       <QuoteSelectionButton isActive={isActive} onQuote={quoteSelection} />
       {task.status === "importable" ? (
         <div class="resume-bar">

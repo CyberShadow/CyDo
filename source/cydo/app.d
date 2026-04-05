@@ -1985,15 +1985,17 @@ class App : ToolsBackend
 			// (done first so that on failure we haven't modified anything yet)
 			// Skip for synthetic enqueue UUIDs: they have no file checkpoints.
 			import std.algorithm : startsWith;
+			string rewindOutput;
 			if (json.revert_files && ta.supportsFileRevert()
 				&& !json.after_uuid.startsWith("enqueue-"))
 			{
-				auto err = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
-				if (err !is null)
+				auto rewindResult = ta.rewindFiles(td.agentSessionId, json.after_uuid, td.effectiveCwd);
+				if (!rewindResult.success)
 				{
-					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ err, tid)).representation));
+					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
 					return;
 				}
+				rewindOutput = rewindResult.output;
 			}
 
 			// 2. Back up pre-undo state as a child task
@@ -2069,6 +2071,9 @@ class App : ToolsBackend
 					}
 				}
 			}
+
+			// Send undo result to the requesting client
+			ws.send(Data(toJson(UndoResultMessage("undo_result", tid, rewindOutput)).representation));
 
 			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
 

@@ -54,6 +54,7 @@ export class Connection {
           raw.type === "forkable_uuids" ||
           raw.type === "error" ||
           raw.type === "undo_preview" ||
+          raw.type === "undo_result" ||
           raw.type === "suggestions_update" ||
           raw.type === "ask_user_question" ||
           raw.type === "draft_updated" ||
