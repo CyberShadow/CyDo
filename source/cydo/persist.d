@@ -631,9 +631,9 @@ string findNextUserUuid(string jsonlPath, string forkId,
 	int lineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
+		lineNum++;
 		if (line.length == 0)
 			continue;
-		lineNum++;
 
 		if (!pastTarget)
 		{
