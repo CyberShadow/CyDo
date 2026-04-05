@@ -673,7 +673,8 @@ const MessageView = memo(
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
     prev.onEdit === next.onEdit &&
-    prev.forkable === next.forkable,
+    prev.forkable === next.forkable &&
+    prev.children === next.children,
 );
 
 export function MessageList({

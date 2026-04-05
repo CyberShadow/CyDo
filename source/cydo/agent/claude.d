@@ -925,6 +925,8 @@ class ClaudeCodeSession : AgentSession
 
 	/// Translate an assistant NDJSON event to a turn/delta metadata event.
 	/// Content promotion is handled by content_block_stop → item/completed.
+	/// Exception: sub-agent messages (parent_tool_use_id set) arrive as complete
+	/// messages even in the live stream, so they are processed like history.
 	private void translateAssistantLive(string rawLine)
 	{
 		import cydo.agent.protocol : TurnDeltaEvent, UsageInfo, injectRawField;
@@ -976,6 +978,75 @@ class ClaudeCodeSession : AgentSession
 			raw = jsonParse!ClaudeAssistant(rawLine);
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
+
+		// Sub-agent messages arrive as complete messages with parent_tool_use_id
+		// set even in the live stream.  Emitting a TurnDeltaEvent for them would
+		// corrupt the main streaming turn (M_main) by setting its parentToolUseId.
+		// Process them like history messages instead (ItemStarted+Completed+TurnStop).
+		if (raw.parent_tool_use_id.length > 0)
+		{
+			import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent,
+				TurnStopEvent, decomposeToolName;
+
+			foreach (idx, ref b; raw.message.content)
+			{
+				auto itemId = b.type == "tool_use" && b.id.length > 0
+					? b.id : "cc-subagent-" ~ to!string(idx);
+
+				ItemStartedEvent startEv;
+				startEv.item_id              = itemId;
+				startEv.item_type            = b.type;
+				startEv.parent_tool_use_id   = raw.parent_tool_use_id;
+				startEv.is_sidechain         = raw.isSidechain;
+				if (b.type == "tool_use")
+				{
+					decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
+					startEv.input = b.input;
+				}
+				else
+				{
+					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+					startEv.text = text;
+				}
+				emitEvent(injectRawField(toJson(startEv), rawLine));
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = itemId;
+				if (b.type == "tool_use")
+					compEv.input = b.input;
+				else
+				{
+					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+					compEv.text = text;
+				}
+				compEv._extras = extrasToFragment(b._extras);
+				emitEvent(injectRawField(toJson(compEv), rawLine));
+			}
+
+			UsageInfo subUsage;
+			if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
+			{
+				@JSONPartial static struct UP2 { @JSONOptional int input_tokens; @JSONOptional int output_tokens; }
+				try
+				{
+					auto u = jsonParse!UP2(raw.message.usage.json);
+					subUsage.input_tokens  = u.input_tokens;
+					subUsage.output_tokens = u.output_tokens;
+				}
+				catch (Exception) {}
+			}
+
+			TurnStopEvent tsev;
+			tsev.model              = raw.message.model;
+			tsev.usage              = subUsage;
+			tsev.parent_tool_use_id = raw.parent_tool_use_id;
+			tsev.is_sidechain       = raw.isSidechain;
+			tsev.is_api_error       = raw.isApiErrorMessage;
+			tsev.uuid               = raw.uuid;
+			tsev._extras = extrasToFragment(collectAllExtras(raw));
+			emitEvent(injectRawField(toJson(tsev), rawLine));
+			return;
+		}
 
 		UsageInfo usage;
 		if (raw.message.usage.json !is null && raw.message.usage.json.length > 0)
@@ -1067,9 +1138,11 @@ class ClaudeCodeSession : AgentSession
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
 			ev.is_meta     = raw.isMeta;
-			ev.is_steering = raw.isSteering;
-			ev.pending     = raw.pending;
-			ev.uuid        = raw.uuid;
+			ev.is_steering        = raw.isSteering;
+			ev.pending            = raw.pending;
+			ev.uuid               = raw.uuid;
+			ev.parent_tool_use_id = raw.parent_tool_use_id;
+			ev.is_sidechain       = raw.isSidechain;
 			emitEvent(injectRawField(toJson(ev), rawLine));
 		}
 		else if (contentJson[0] == '[')
@@ -1145,9 +1218,11 @@ class ClaudeCodeSession : AgentSession
 				ev.is_replay   = raw.isReplay;
 				ev.is_synthetic = raw.isSynthetic;
 				ev.is_meta     = raw.isMeta;
-				ev.is_steering = raw.isSteering;
-				ev.pending     = raw.pending;
-				ev.uuid        = raw.uuid;
+				ev.is_steering        = raw.isSteering;
+				ev.pending            = raw.pending;
+				ev.uuid               = raw.uuid;
+				ev.parent_tool_use_id = raw.parent_tool_use_id;
+				ev.is_sidechain       = raw.isSidechain;
 				emitEvent(injectRawField(toJson(ev), rawLine));
 			}
 		}
@@ -1346,8 +1421,10 @@ private string[] translateAssistantHistory(string rawLine)
 			? b.id : "cc-hist-" ~ to!string(idx);
 
 		ItemStartedEvent startEv;
-		startEv.item_id   = itemId;
-		startEv.item_type = b.type;
+		startEv.item_id              = itemId;
+		startEv.item_type            = b.type;
+		startEv.parent_tool_use_id   = raw.parent_tool_use_id;
+		startEv.is_sidechain         = raw.isSidechain;
 		if (b.type == "tool_use")
 		{
 			decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
@@ -1452,9 +1529,11 @@ private string[] normalizeUserHistory(string rawLine)
 		ev.is_replay   = raw.isReplay;
 		ev.is_synthetic = raw.isSynthetic;
 		ev.is_meta     = raw.isMeta;
-		ev.is_steering = raw.isSteering;
-		ev.pending     = raw.pending;
-		ev.uuid        = raw.uuid;
+		ev.is_steering        = raw.isSteering;
+		ev.pending            = raw.pending;
+		ev.uuid               = raw.uuid;
+		ev.parent_tool_use_id = raw.parent_tool_use_id;
+		ev.is_sidechain       = raw.isSidechain;
 		events ~= injectRawField(toJson(ev), rawLine);
 	}
 	else if (contentJson[0] == '[')
@@ -1529,9 +1608,11 @@ private string[] normalizeUserHistory(string rawLine)
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
 			ev.is_meta     = raw.isMeta;
-			ev.is_steering = raw.isSteering;
-			ev.pending     = raw.pending;
-			ev.uuid        = raw.uuid;
+			ev.is_steering        = raw.isSteering;
+			ev.pending            = raw.pending;
+			ev.uuid               = raw.uuid;
+			ev.parent_tool_use_id = raw.parent_tool_use_id;
+			ev.is_sidechain       = raw.isSidechain;
 			events ~= injectRawField(toJson(ev), rawLine);
 		}
 	}

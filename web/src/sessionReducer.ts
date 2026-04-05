@@ -828,12 +828,45 @@ function insertBeforeStreaming(
   return [...messages, msg];
 }
 
-/** Find or create the in-progress assistant message for streaming blocks. */
-function getOrCreateStreamingMessage(s: SessionState): {
+/** Find or create the in-progress assistant message for streaming blocks.
+ *
+ * When parentToolUseId is provided (sub-agent context), we look for an
+ * existing streaming message with that same parentToolUseId, or create a
+ * new isolated placeholder.  This prevents sub-agent events from corrupting
+ * the main turn's streaming message (M_main). */
+function getOrCreateStreamingMessage(
+  s: SessionState,
+  parentToolUseId?: string,
+): {
   messages: DisplayMessage[];
   msgIdx: number;
 } {
   const messages = s.messages.slice();
+  if (parentToolUseId) {
+    // Find an existing streaming context for this sub-agent.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (
+        messages[i]!.type === "assistant" &&
+        messages[i]!.streaming &&
+        messages[i]!.parentToolUseId === parentToolUseId
+      ) {
+        messages[i] = { ...messages[i]! };
+        return { messages, msgIdx: i };
+      }
+    }
+    // No existing context — create an isolated placeholder for this sub-agent.
+    const placeholder: DisplayMessage = {
+      id: `streaming-${++s.msgIdCounter}`,
+      type: "assistant" as const,
+      content: [],
+      blockIds: [],
+      streaming: true,
+      nextCreationOrder: 0,
+      parentToolUseId,
+    };
+    messages.push(placeholder);
+    return { messages, msgIdx: messages.length - 1 };
+  }
   // Search backwards for an assistant message with active streaming
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]!.type === "assistant" && messages[i]!.streaming) {
@@ -963,7 +996,10 @@ export function reduceItemStarted(
     return reduceItemStartedUserMessage(s, event);
   }
 
-  const { messages, msgIdx } = getOrCreateStreamingMessage(s);
+  const { messages, msgIdx } = getOrCreateStreamingMessage(
+    s,
+    event.parent_tool_use_id,
+  );
   const msg = messages[msgIdx]!;
 
   const creationOrder = msg.nextCreationOrder ?? 0;
@@ -1160,6 +1196,12 @@ export function reduceTurnDelta(
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i]!;
     if (m.type === "assistant" && m.streaming === true) {
+      // Skip messages that belong to a different (sub-agent) context.
+      if (
+        event.parent_tool_use_id &&
+        m.parentToolUseId !== event.parent_tool_use_id
+      )
+        continue;
       const messages = s.messages.slice();
       const updated = { ...m };
       messages[i] = updated;
@@ -1189,6 +1231,12 @@ export function reduceTurnStop(
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i]!;
     if (m.type === "assistant" && m.streaming === true) {
+      // Skip messages that belong to a different (sub-agent) context.
+      if (
+        event.parent_tool_use_id &&
+        m.parentToolUseId !== event.parent_tool_use_id
+      )
+        continue;
       const messages = s.messages.slice();
       const updated = { ...m };
       messages[i] = updated;

@@ -108,6 +108,10 @@ export function matchPattern(userText) {
       },
     };
 
+  // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
+  match = userText.match(/spawn task (.*)/is);
+  if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };
+
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
