@@ -434,6 +434,14 @@ string[] buildCommandPrefix(ref ResolvedSandbox sandbox, string workDir)
 			sandbox.tempFiles ~= passwdTmp;
 		}
 
+		// /etc/group injection
+		auto groupTmp = createGroupTempFile();
+		if (groupTmp.length > 0)
+		{
+			args ~= ["--ro-bind", groupTmp, "/etc/group"];
+			sandbox.tempFiles ~= groupTmp;
+		}
+
 		// Git config injection
 		auto gitTmp = createGitConfigTempFile(sandbox.gitName, sandbox.gitEmail);
 		if (gitTmp.length > 0)
@@ -757,6 +765,56 @@ string createPasswdTempFile()
 	}
 
 	return "";
+}
+
+/// Create a temp file containing the current user's relevant /etc/group entries.
+/// Includes the user's primary group (matched by GID) and any supplementary
+/// groups where the username appears in the member list.
+string createGroupTempFile()
+{
+	import std.algorithm : canFind;
+	import std.conv : to;
+	import std.string : lineSplitter, split;
+	import core.sys.posix.unistd : getgid;
+
+	if (!exists("/etc/group"))
+		return "";
+
+	auto user = environment.get("USER", "");
+	if (user.length == 0)
+		return "";
+
+	auto primaryGid = to!string(getgid());
+	auto content = readText("/etc/group");
+
+	string result;
+	foreach (line; content.lineSplitter())
+	{
+		auto fields = line.split(":");
+		if (fields.length < 3)
+			continue;
+		// Primary group match by GID (field index 2)
+		if (fields[2] == primaryGid)
+		{
+			result ~= line ~ "\n";
+			continue;
+		}
+		// Supplementary group: user appears in member list (field index 3)
+		if (fields.length >= 4)
+		{
+			foreach (member; fields[3].split(","))
+				if (member == user)
+				{
+					result ~= line ~ "\n";
+					break;
+				}
+		}
+	}
+
+	if (result.length == 0)
+		return "";
+
+	return writeTempFile("cydo-group-", result);
 }
 
 /// Create a temp file with the host git config + identity overrides.
