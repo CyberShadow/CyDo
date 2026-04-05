@@ -119,6 +119,10 @@ export function matchPattern(userText) {
   match = userText.match(/run command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim() };
 
+  // "edit file <path> replace <old> with <new>"
+  match = userText.match(/edit file (\S+) replace (.+?) with (.+)/i);
+  if (match) return { type: "tool_call", name: "Edit", input: { file_path: match[1], old_string: match[2], new_string: match[3] } };
+
   // "create file <path> with content <text>"
   match = userText.match(/create file (\S+) with content (.+)/is);
   if (match) return { type: "tool_call", name: "write_file", input: { path: match[1], content: match[2] } };

@@ -744,10 +744,10 @@ function EditInput({
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      {Array.isArray(patchHunks) && patchHunks.length > 0 ? (
-        <PatchView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
-      ) : isMarkdown ? (
+      {isMarkdown ? (
         <MarkdownDiffView oldStr={oldString} newStr={newString} />
+      ) : Array.isArray(patchHunks) && patchHunks.length > 0 ? (
+        <PatchView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
       ) : (
         <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
       )}
