@@ -466,38 +466,57 @@ class ClaudeCodeAgent : Agent
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return true; }
 
-	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
+		ProcessLaunch launch = ProcessLaunch.init)
 	{
 		import std.process : Config, environment, execute;
-		import std.logger : tracef;
-		tracef("rewindFiles: sessionId=%s afterUuid=%s cwd=%s", sessionId, afterUuid, cwd);
 
-		auto claudeBin = resolveExecutablePath(executableName(null), null);
+		auto claudeBin = launch.executablePath.length > 0
+			? launch.executablePath
+			: resolveExecutablePath(executableName(null), null);
 		if (claudeBin.length == 0)
 			claudeBin = executableName(null);
-		string[string] env = [
-			"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
-			"PATH": environment.get("PATH", ""),
-			"HOME": environment.get("HOME", ""),
-			"CLAUDE_BIN": claudeBin,
+
+		// Pass claudeBin as positional $3 to avoid needing it in env.
+		// Use /bin/sh (absolute) so the shell is found even inside bwrap with --clearenv.
+		string[] shArgs = [
+			"/bin/sh", "-c",
+			`exec 2>&1; exec "$3" --resume "$1" --rewind-files "$2" ` ~
+				`--settings '{"fileCheckpointingEnabled": true}'`,
+			"--", sessionId, afterUuid, claudeBin,
 		];
-		// Pass through CLAUDE_CONFIG_DIR if set — without it, claude looks
-		// at $HOME/.claude which may differ from where sessions were created.
-		auto configDir = environment.get("CLAUDE_CONFIG_DIR", "");
-		if (configDir.length > 0)
-			env["CLAUDE_CONFIG_DIR"] = configDir;
-		auto result = execute([
-			"bash", "-c",
-			`exec 2>&1; exec "$CLAUDE_BIN" --resume "$1" --rewind-files "$2" `
-				~ `--settings '{"fileCheckpointingEnabled": true}'`,
-			"--", sessionId, afterUuid],
-			env, Config.none, size_t.max,
+
+		string[] args;
+		string[string] procEnv;
+		if (launch.cmdPrefix !is null)
+		{
+			// bwrap/env prefix handles env setup; inherit parent env here.
+			args = launch.cmdPrefix ~ shArgs;
+		}
+		else
+		{
+			args = shArgs;
+			procEnv = [
+				"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "1",
+				"PATH": environment.get("PATH", ""),
+				"HOME": environment.get("HOME", ""),
+			];
+			foreach (varName; ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY",
+					"ANTHROPIC_BASE_URL", "NODE_TLS_REJECT_UNAUTHORIZED", "HTTPS_PROXY"])
+			{
+				auto val = environment.get(varName, "");
+				if (val.length > 0)
+					procEnv[varName] = val;
+			}
+		}
+
+		auto result = execute(args, procEnv, Config.none, size_t.max,
 			cwd.length > 0 ? cwd : null);
 
-		tracef("rewindFiles: exit status=%d output=%s", result.status, result.output);
 		if (result.status != 0)
 		{
-			auto msg = result.output.length > 0 ? result.output : "Process exited with status " ~ format!"%d"(result.status);
+			auto msg = result.output.length > 0 ? result.output
+				: "Process exited with status " ~ format!"%d"(result.status);
 			return RewindResult(false, msg);
 		}
 

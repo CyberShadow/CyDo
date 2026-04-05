@@ -1999,7 +1999,7 @@ class App : ToolsBackend
 
 				if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
 				{
-					auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, td.effectiveCwd);
+					auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, td.effectiveCwd, td.launch);
 					if (rewindResult.success)
 						rewindOutput = rewindResult.output;
 					else if (!rewindResult.output.canFind("No file checkpoint found"))

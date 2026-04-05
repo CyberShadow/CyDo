@@ -150,7 +150,8 @@ interface Agent
 
 	/// Revert files to the state after a given message UUID.
 	/// Only called when supportsFileRevert is true.
-	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd);
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
+		ProcessLaunch launch = ProcessLaunch.init);
 
 	/// Extract user message text from a raw event line.
 	string extractUserText(string line);

@@ -1268,7 +1268,8 @@ class CodexAgent : Agent
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
 
-	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd)
+	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
+		ProcessLaunch launch = ProcessLaunch.init)
 	{
 		return RewindResult(false, "File revert is not supported for Codex sessions");
 	}
