@@ -34,7 +34,7 @@ test("sidebar icon updates when entry point changed on draft", async ({
 
   const before = await snapshotTids(page);
 
-  // Type something to create a draft task (default type is "conversation")
+  // Type something to create a draft task (default type is "conversation" in test env)
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
   await input.fill("sidebar icon test");
@@ -45,7 +45,7 @@ test("sidebar icon updates when entry point changed on draft", async ({
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible({ timeout: 2_000 });
 
-  // Default icon should be "conversation"
+  // Default icon should be "conversation" (agentic is the first entry point in test env)
   await expect(
     page.locator(
       `.sidebar-item[data-tid="${draftTid}"] .task-type-icon-conversation`,
