@@ -678,6 +678,7 @@ export const Sidebar = memo(function Sidebar({
           class={`sidebar-item sidebar-new-task${
             activeTaskId === null ? " active" : ""
           }`}
+          title="New Task (Ctrl+Shift+O)"
           onClick={(e: MouseEvent) => {
             if (!isPlainLeftClick(e)) return;
             e.preventDefault();
