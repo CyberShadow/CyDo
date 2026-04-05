@@ -266,6 +266,7 @@ EOF
             OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
             OPENAI_API_KEY = "test-key-mock";
             CODEX_HOME = "/tmp/codex-test-home";
+            CYDO_CODEX_COMPACT_LIMIT = "100";
 
             # Fixed port env vars — fixtures inherit these
             CYDO_LISTEN_PORT = "3940";

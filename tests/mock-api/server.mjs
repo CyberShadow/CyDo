@@ -71,7 +71,12 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
-function streamToolUseResponse(res, toolName, input, model = "claude-sonnet-4-20250514") {
+function streamToolUseResponse(
+  res,
+  toolName,
+  input,
+  model = "claude-sonnet-4-20250514",
+) {
   const msgId = nextMsgId();
   const toolId = nextToolId();
   sseEvent(res, "message_start", {
@@ -90,7 +95,13 @@ function streamToolUseResponse(res, toolName, input, model = "claude-sonnet-4-20
   sseEvent(res, "content_block_start", {
     type: "content_block_start",
     index: 0,
-    content_block: { type: "tool_use", id: toolId, name: toolName, input: {}, caller: { type: "direct" } },
+    content_block: {
+      type: "tool_use",
+      id: toolId,
+      name: toolName,
+      input: {},
+      caller: { type: "direct" },
+    },
   });
   sseEvent(res, "content_block_delta", {
     type: "content_block_delta",
@@ -110,7 +121,12 @@ function streamToolUseResponse(res, toolName, input, model = "claude-sonnet-4-20
   res.end();
 }
 
-function streamMultiToolUseResponse(res, toolNames, inputs, model = "claude-sonnet-4-20250514") {
+function streamMultiToolUseResponse(
+  res,
+  toolNames,
+  inputs,
+  model = "claude-sonnet-4-20250514",
+) {
   const msgId = nextMsgId();
   sseEvent(res, "message_start", {
     type: "message_start",
@@ -130,12 +146,21 @@ function streamMultiToolUseResponse(res, toolNames, inputs, model = "claude-sonn
     sseEvent(res, "content_block_start", {
       type: "content_block_start",
       index: i,
-      content_block: { type: "tool_use", id: toolId, name: toolNames[i], input: {}, caller: { type: "direct" } },
+      content_block: {
+        type: "tool_use",
+        id: toolId,
+        name: toolNames[i],
+        input: {},
+        caller: { type: "direct" },
+      },
     });
     sseEvent(res, "content_block_delta", {
       type: "content_block_delta",
       index: i,
-      delta: { type: "input_json_delta", partial_json: JSON.stringify(inputs[i]) },
+      delta: {
+        type: "input_json_delta",
+        partial_json: JSON.stringify(inputs[i]),
+      },
     });
     sseEvent(res, "content_block_stop", {
       type: "content_block_stop",
@@ -159,7 +184,7 @@ function oaiSseEvent(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function oaiStreamTextResponse(res, text) {
+function oaiStreamTextResponse(res, text, totalTokensOverride) {
   const respId = nextRespId();
   const msgId = nextMsgId();
   oaiSseEvent(res, "response.created", {
@@ -183,7 +208,13 @@ function oaiStreamTextResponse(res, text) {
     type: "response.completed",
     response: {
       id: respId,
-      usage: { input_tokens: 10, input_tokens_details: null, output_tokens: text.length, output_tokens_details: null, total_tokens: 10 + text.length },
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: text.length,
+        output_tokens_details: null,
+        total_tokens: totalTokensOverride ?? 10 + text.length,
+      },
     },
   });
   res.end();
@@ -209,7 +240,13 @@ function oaiStreamShellCallResponse(res, command) {
     type: "response.completed",
     response: {
       id: respId,
-      usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: 20,
+        output_tokens_details: null,
+        total_tokens: 30,
+      },
     },
   });
   res.end();
@@ -236,7 +273,13 @@ function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
       type: "response.completed",
       response: {
         id: respId,
-        usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+        usage: {
+          input_tokens: 10,
+          input_tokens_details: null,
+          output_tokens: 20,
+          output_tokens_details: null,
+          total_tokens: 30,
+        },
       },
     });
     res.end();
@@ -263,7 +306,13 @@ function oaiStreamFunctionCallResponse(res, name, args) {
     type: "response.completed",
     response: {
       id: respId,
-      usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: 20,
+        output_tokens_details: null,
+        total_tokens: 30,
+      },
     },
   });
   res.end();
@@ -273,9 +322,14 @@ function oaiStreamCustomToolCallResponse(res, name, input) {
   const respId = nextRespId();
   const callId = nextCallId();
   // Extract raw patch string from the pattern's input object
-  const rawInput = typeof input === 'object' && input !== null && typeof input.input === 'string'
-    ? input.input
-    : (typeof input === 'string' ? input : JSON.stringify(input));
+  const rawInput =
+    typeof input === "object" &&
+    input !== null &&
+    typeof input.input === "string"
+      ? input.input
+      : typeof input === "string"
+        ? input
+        : JSON.stringify(input);
 
   const itemId = `ctc_mock_${callId}`;
 
@@ -327,7 +381,13 @@ function oaiStreamCustomToolCallResponse(res, name, input) {
     type: "response.completed",
     response: {
       id: respId,
-      usage: { input_tokens: 10, input_tokens_details: null, output_tokens: 20, output_tokens_details: null, total_tokens: 30 },
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: 20,
+        output_tokens_details: null,
+        total_tokens: 30,
+      },
     },
   });
   res.end();
@@ -360,13 +420,15 @@ function hasToolOutput(input) {
       break;
     }
   }
-  return input.slice(lastUserIdx + 1).some(
-    (item) =>
-      item.type === "local_shell_call_output" ||
-      item.type === "function_call_output" ||
-      item.type === "custom_tool_call_output" ||
-      item.type === "mcp_tool_call_output",
-  );
+  return input
+    .slice(lastUserIdx + 1)
+    .some(
+      (item) =>
+        item.type === "local_shell_call_output" ||
+        item.type === "function_call_output" ||
+        item.type === "custom_tool_call_output" ||
+        item.type === "mcp_tool_call_output",
+    );
 }
 
 function handleResponses(req, res) {
@@ -387,7 +449,9 @@ function handleResponses(req, res) {
     const userText = extractLastUserTextFromInput(input);
     const isToolOutput = hasToolOutput(input);
     const intent = userText === null ? null : matchPattern(userText);
-    console.log(`[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} isToolOutput=${isToolOutput} inputLen=${input.length}`);
+    console.log(
+      `[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} isToolOutput=${isToolOutput} inputLen=${input.length}`,
+    );
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -402,7 +466,9 @@ function handleResponses(req, res) {
       // commands" and we've only sent one exec_command so far, send the second.
       const origText = extractLastUserTextFromInput(input);
       if (origText && /run two background commands/i.test(origText)) {
-        const fcOutputCount = input.filter((i) => i.type === "function_call_output").length;
+        const fcOutputCount = input.filter(
+          (i) => i.type === "function_call_output",
+        ).length;
         if (fcOutputCount < 2) {
           oaiStreamFunctionCallResponse(res, "exec_command", {
             cmd: "sleep 10",
@@ -420,8 +486,21 @@ function handleResponses(req, res) {
       return;
     }
 
+    // Detect compaction/summarization requests — Codex sends a summarization
+    // prompt containing "CONTEXT CHECKPOINT COMPACTION" when compacting.
+    if (userText.includes("CONTEXT CHECKPOINT COMPACTION")) {
+      console.log(
+        "[mock-api] [responses] detected compaction summarization request",
+      );
+      oaiStreamTextResponse(
+        res,
+        "Conversation summary: previous context compacted.",
+      );
+      return;
+    }
+
     if (intent.type === "text") {
-      oaiStreamTextResponse(res, intent.text);
+      oaiStreamTextResponse(res, intent.text, intent.totalTokens);
     } else if (intent.type === "quick_yield_shell") {
       oaiStreamFunctionCallResponse(res, "exec_command", {
         cmd: intent.command,
@@ -465,7 +544,10 @@ function extractLastUserText(messages) {
     if (Array.isArray(msg.content)) {
       // Find user text first — steering messages may appear alongside tool_results
       for (const block of msg.content) {
-        if (block.type === "text" && !block.text.trimStart().startsWith("<system-reminder>"))
+        if (
+          block.type === "text" &&
+          !block.text.trimStart().startsWith("<system-reminder>")
+        )
           return block.text;
       }
       // No user text found; signal tool_result if present
@@ -494,7 +576,9 @@ function hasToolResult(messages) {
     if (Array.isArray(msg.content)) {
       // Don't signal tool_result if there's also user text (e.g. a steering message)
       const hasUserText = msg.content.some(
-        (b) => b.type === "text" && !b.text.trimStart().startsWith("<system-reminder>"),
+        (b) =>
+          b.type === "text" &&
+          !b.text.trimStart().startsWith("<system-reminder>"),
       );
       if (hasUserText) return false;
       return msg.content.some((b) => b.type === "tool_result");
@@ -525,7 +609,9 @@ function handleMessages(req, res) {
     if (hasImages) {
       console.log(`[mock-api] image content detected`);
     }
-    console.log(`[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`);
+    console.log(
+      `[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`,
+    );
     const model = requestedModel;
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -547,7 +633,6 @@ function handleMessages(req, res) {
     const intent = matchPattern(userText);
     if (hasImages && intent.type === "text") {
       intent.text = "image received";
-
     }
 
     if (intent.type === "stall") {
@@ -571,10 +656,18 @@ function handleMessages(req, res) {
       streamTextResponse(res, intent.text, model);
     } else if (intent.type === "parallel_shell") {
       const toolNames = intent.commands.map(() => "Bash");
-      const inputs = intent.commands.map((cmd) => ({ command: cmd, description: "Running command" }));
+      const inputs = intent.commands.map((cmd) => ({
+        command: cmd,
+        description: "Running command",
+      }));
       streamMultiToolUseResponse(res, toolNames, inputs, model);
     } else if (intent.type === "shell" || intent.type === "background_shell") {
-      streamToolUseResponse(res, "Bash", { command: intent.command, description: "Running command" }, model);
+      streamToolUseResponse(
+        res,
+        "Bash",
+        { command: intent.command, description: "Running command" },
+        model,
+      );
     } else {
       // tool_call — map generic names to Anthropic tool names
       let toolName = intent.name;
@@ -614,17 +707,28 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Remote compact endpoint — Codex calls POST /v1/responses/compact when the
+  // context window is exceeded. Return a minimal compacted history so Codex proceeds.
+  if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
+    console.log("[mock-api] [responses/compact] remote compaction request");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ output: [] }));
+    return;
+  }
+
   // Models list — Codex calls GET /v1/models on startup
   if (url.pathname === "/v1/models" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      object: "list",
-      data: [
-        { id: "codex-mini-latest", object: "model", owned_by: "system" },
-        { id: "o3", object: "model", owned_by: "system" },
-        { id: "o4-mini", object: "model", owned_by: "system" },
-      ],
-    }));
+    res.end(
+      JSON.stringify({
+        object: "list",
+        data: [
+          { id: "codex-mini-latest", object: "model", owned_by: "system" },
+          { id: "o3", object: "model", owned_by: "system" },
+          { id: "o4-mini", object: "model", owned_by: "system" },
+        ],
+      }),
+    );
     return;
   }
 
@@ -646,5 +750,7 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   const actualPort = server.address().port;
-  console.log(`Mock API server (Anthropic + OpenAI) listening on http://127.0.0.1:${actualPort}`);
+  console.log(
+    `Mock API server (Anthropic + OpenAI) listening on http://127.0.0.1:${actualPort}`,
+  );
 });

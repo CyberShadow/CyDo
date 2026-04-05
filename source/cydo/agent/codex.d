@@ -1788,6 +1788,14 @@ class CodexSession : AgentSession
 				if (item.query.json !is null)
 					ev.input = JSONFragment(`{"query":` ~ item.query.json ~ `}`);
 				break;
+			case "contextCompaction":
+				activeItemTypes_[itemId] = "contextCompaction";
+				import cydo.agent.protocol : SessionStatusEvent;
+				SessionStatusEvent statusEv;
+				statusEv.status = "Compacting context...";
+				if (outputHandler_)
+					outputHandler_(injectRawField(toJson(statusEv), rawNotification));
+				return;  // Emit session/status instead of item/started
 			default:
 				activeItemTypes_[itemId] = "text";
 				ev.item_type = "text";
@@ -1859,6 +1867,19 @@ class CodexSession : AgentSession
 		if (pType is null)
 			return; // unknown item, skip
 		string itemType = *pType;
+
+		if (itemType == "contextCompaction")
+		{
+			// Clear the compacting status indicator and skip item/completed.
+			import cydo.agent.protocol : SessionStatusEvent, injectRawField;
+			SessionStatusEvent clearEv;
+			if (outputHandler_)
+				outputHandler_(injectRawField(toJson(clearEv), rawNotification));
+			activeItemTypes_.remove(itemId);
+			if (activeItemId_ == itemId)
+				activeItemId_ = null;
+			return;
+		}
 
 		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent, injectRawField;
 		ItemCompletedEvent ev;
@@ -2063,10 +2084,20 @@ string buildConfigOverride(int tid, string creatableTaskTypes,
 {
 	import std.array : join;
 
+	import std.process : environment;
+
 	JSONFragment[string] config;
 
 	// Always request reasoning summaries from the model.
 	config["model_reasoning_summary"] = JSONFragment(`"auto"`);
+
+	// If CYDO_CODEX_COMPACT_LIMIT is set (test-only), override compaction threshold.
+	auto compactLimit = environment.get("CYDO_CODEX_COMPACT_LIMIT", "");
+	if (compactLimit.length > 0)
+	{
+		config["model_auto_compact_token_limit"] = JSONFragment(compactLimit);
+		config["model_context_window"] = JSONFragment(compactLimit);
+	}
 
 	auto cydoBin = cydoBinaryPath;
 	if (cydoBin.length > 0)

@@ -44,7 +44,8 @@ export function matchPattern(userText) {
       type: "tool_call",
       name: "apply_patch",
       input: {
-        input: "*** Begin Patch\n*** Add File: tmp/codex-fileviewer-create.txt\n+hello from create fixture\n*** End Patch\n",
+        input:
+          "*** Begin Patch\n*** Add File: tmp/codex-fileviewer-create.txt\n+hello from create fixture\n*** End Patch\n",
       },
     };
   }
@@ -77,7 +78,11 @@ export function matchPattern(userText) {
     const prompt = match[3].trim();
     const tasks = [];
     for (let i = 0; i < count; i++) {
-      tasks.push({ task_type: type, prompt, description: `Test task ${i + 1}` });
+      tasks.push({
+        task_type: type,
+        prompt,
+        description: `Test task ${i + 1}`,
+      });
     }
     return {
       type: "tool_call",
@@ -88,7 +93,20 @@ export function matchPattern(userText) {
 
   // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
   match = userText.match(/call task (\S+) (.*)/is);
-  if (match) return { type: "tool_call", name: "mcp__cydo__Task", input: { tasks: [{ task_type: match[1].trim(), prompt: match[2].trim(), description: "Test task" }] } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: match[1].trim(),
+            prompt: match[2].trim(),
+            description: "Test task",
+          },
+        ],
+      },
+    };
 
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
@@ -99,7 +117,8 @@ export function matchPattern(userText) {
 
   // "run parallel commands" — two parallel tool_use blocks in a single response
   match = userText.match(/run parallel commands/i);
-  if (match) return { type: "parallel_shell", commands: ["echo one", "echo two"] };
+  if (match)
+    return { type: "parallel_shell", commands: ["echo one", "echo two"] };
 
   // "run quick-yield command <cmd>" — exec_command with yield_time_ms=1
   // (must come before "run background command" to avoid substring match)
@@ -125,23 +144,65 @@ export function matchPattern(userText) {
 
   // "create file <path> with content <text>"
   match = userText.match(/create file (\S+) with content (.+)/is);
-  if (match) return { type: "tool_call", name: "write_file", input: { path: match[1], content: match[2] } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "write_file",
+      input: { path: match[1], content: match[2] },
+    };
 
   // "read file <path>"
   match = userText.match(/read file (\S+)/i);
-  if (match) return { type: "tool_call", name: "read_file", input: { path: match[1] } };
+  if (match)
+    return { type: "tool_call", name: "read_file", input: { path: match[1] } };
 
   // "call switchmode <continuation>" → MCP SwitchMode tool call
   match = userText.match(/call switchmode (\S+)/i);
-  if (match) return { type: "tool_call", name: "mcp__cydo__SwitchMode", input: { continuation: match[1] } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__SwitchMode",
+      input: { continuation: match[1] },
+    };
 
   // "call handoff <continuation> <prompt>" → MCP Handoff tool call
   match = userText.match(/call handoff (\S+) (.*)/is);
-  if (match) return { type: "tool_call", name: "mcp__cydo__Handoff", input: { continuation: match[1].trim(), prompt: match[2].trim() } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Handoff",
+      input: { continuation: match[1].trim(), prompt: match[2].trim() },
+    };
 
   // "call askuserquestion <question>" → MCP AskUserQuestion tool call
   match = userText.match(/call askuserquestion (.*)/is);
-  if (match) return { type: "tool_call", name: "mcp__cydo__AskUserQuestion", input: { questions: [{ header: "Test", question: match[1].trim(), options: [{ label: "Yes", description: "Confirm" }, { label: "No", description: "Deny" }], multiSelect: false }] } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__AskUserQuestion",
+      input: {
+        questions: [
+          {
+            header: "Test",
+            question: match[1].trim(),
+            options: [
+              { label: "Yes", description: "Confirm" },
+              { label: "No", description: "Deny" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+    };
+
+  // "trigger compaction" — response with inflated totalTokens to exceed compact limit
+  if (/trigger compaction/i.test(userText)) {
+    return {
+      type: "text",
+      text: "Ready for compaction.",
+      totalTokens: 500_000,
+    };
+  }
 
   // Default: echo back
   return { type: "text", text: userText };
