@@ -5,6 +5,7 @@ import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { StickyScrollPre } from "./StickyScrollPre";
+import { useDevMode } from "../devMode";
 
 /** Best-effort parse of an incomplete JSON string by closing open delimiters.
  *
@@ -96,6 +97,7 @@ export function AssistantMessage({
   childrenByParent,
   onViewFile,
 }: Props) {
+  const devMode = useDevMode();
   const isStreaming = message.streaming === true;
   const isSynthetic = message.model === "<synthetic>";
   const blocksToRender =
@@ -130,7 +132,7 @@ export function AssistantMessage({
           delete blockExtras.caller;
         }
         const blockExtraEl =
-          Object.keys(blockExtras).length > 0 ? (
+          devMode && Object.keys(blockExtras).length > 0 ? (
             <div class="unknown-extra-fields">
               {Object.entries(blockExtras).map(([k, v]) => (
                 <div key={k} class="tool-input-field">
@@ -243,6 +245,7 @@ export function AssistantMessage({
         }
 
         if (block.type === "unrecognized") {
+          if (!devMode) return null;
           return (
             <div key={itemId} class={`content-block ${block.type}`}>
               <div class="unknown-block">
@@ -254,6 +257,7 @@ export function AssistantMessage({
         }
 
         // Unknown block type
+        if (!devMode) return null;
         return (
           <div key={i} class="unknown-block">
             <div class="unknown-block-label">
@@ -264,19 +268,21 @@ export function AssistantMessage({
           </div>
         );
       })}
-      {message.extraFields && Object.keys(message.extraFields).length > 0 && (
-        <div class="unknown-extra-fields">
-          {Object.entries(message.extraFields).map(([k, v]) => (
-            <div key={k} class="tool-input-field">
-              <span class="field-label">{k}:</span>
-              <span class="field-value">
-                {" "}
-                {typeof v === "string" ? v : JSON.stringify(v)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      {devMode &&
+        message.extraFields &&
+        Object.keys(message.extraFields).length > 0 && (
+          <div class="unknown-extra-fields">
+            {Object.entries(message.extraFields).map(([k, v]) => (
+              <div key={k} class="tool-input-field">
+                <span class="field-label">{k}:</span>
+                <span class="field-value">
+                  {" "}
+                  {typeof v === "string" ? v : JSON.stringify(v)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
     </div>
   );
 }

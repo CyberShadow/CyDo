@@ -4,6 +4,7 @@ import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
 import { useErrorOverlay } from "./useErrorOverlay";
 import { useTheme, ThemeContext } from "./useTheme";
+import { DevModeContext } from "./devMode";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
@@ -53,6 +54,7 @@ function AppContent() {
     activeWorkspace,
     activeProject,
     authEnabled,
+    devMode,
     navigateHome,
     navigateToProject,
     getProjectHref,
@@ -136,34 +138,36 @@ function AppContent() {
   // Welcome page: no workspace selected (on /)
   if (activeWorkspace === null && activeTaskId === null) {
     return (
-      <ThemeContext.Provider value={theme}>
-        <div class="app welcome-page-container">
-          {connected ? (
-            <WelcomePage
-              workspaces={workspaces}
-              tasks={tasks}
-              attention={attention}
-              taskTypes={typeInfo}
-              authEnabled={authEnabled}
-              onSelectTask={handleSearchSelect}
-              onNavigateToProject={navigateToProject}
-              getProjectHref={getProjectHref}
-              getTaskHref={getTaskHref}
-              onRefreshWorkspaces={refreshWorkspaces}
+      <DevModeContext.Provider value={devMode}>
+        <ThemeContext.Provider value={theme}>
+          <div class="app welcome-page-container">
+            {connected ? (
+              <WelcomePage
+                workspaces={workspaces}
+                tasks={tasks}
+                attention={attention}
+                taskTypes={typeInfo}
+                authEnabled={authEnabled}
+                onSelectTask={handleSearchSelect}
+                onNavigateToProject={navigateToProject}
+                getProjectHref={getProjectHref}
+                getTaskHref={getTaskHref}
+                onRefreshWorkspaces={refreshWorkspaces}
+              />
+            ) : (
+              <div class="connection-overlay">
+                <span>Connecting…</span>
+              </div>
+            )}
+            {searchPopup}
+            <ErrorToast
+              errors={errors}
+              onDismiss={dismissError}
+              onClearAll={clearErrors}
             />
-          ) : (
-            <div class="connection-overlay">
-              <span>Connecting…</span>
-            </div>
-          )}
-          {searchPopup}
-          <ErrorToast
-            errors={errors}
-            onDismiss={dismissError}
-            onClearAll={clearErrors}
-          />
-        </div>
-      </ThemeContext.Provider>
+          </div>
+        </ThemeContext.Provider>
+      </DevModeContext.Provider>
     );
   }
 
@@ -309,151 +313,155 @@ function AppContent() {
   const hasDraftView = activeTaskId === null && draftRenderKey !== null;
 
   return (
-    <ThemeContext.Provider value={theme}>
-      <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
-        {sidebarOpen && (
-          <div class="sidebar-backdrop" onClick={handleCloseSidebar} />
-        )}
-        {!connected && (
-          <div class="connection-overlay">
-            <span>Connecting…</span>
-          </div>
-        )}
-        <Sidebar
-          tasks={sidebarTasks}
-          activeTaskId={activeTaskId}
-          attention={attention}
-          onSelectTask={handleSidebarSelect}
-          onNewTask={handleSidebarNewTask}
-          newTaskHref={
-            activeWorkspace && activeProject
-              ? getProjectHref(activeWorkspace, activeProject)
-              : "/"
-          }
-          showBackButton={true}
-          onBack={navigateHome}
-          projectName={activeProject || undefined}
-          projectHref={
-            activeWorkspace && activeProject
-              ? getProjectHref(activeWorkspace, activeProject)
-              : undefined
-          }
-          getTaskHref={getTaskHref}
-          taskTypes={typeInfo}
-          visible={sidebarOpen}
-          onOpenSearch={handleOpenSearch}
-          onArchive={handleSidebarArchive}
-        />
-        {Array.from(tasks.values())
-          .filter((t) => {
-            // Virtual drafts (tid=0) should only render in draft mode
-            if (t.tid === 0) {
-              return (
-                activeTaskId === null &&
-                draftRenderKey !== null &&
-                t.renderKey === draftRenderKey
-              );
+    <DevModeContext.Provider value={devMode}>
+      <ThemeContext.Provider value={theme}>
+        <div class={`app has-sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
+          {sidebarOpen && (
+            <div class="sidebar-backdrop" onClick={handleCloseSidebar} />
+          )}
+          {!connected && (
+            <div class="connection-overlay">
+              <span>Connecting…</span>
+            </div>
+          )}
+          <Sidebar
+            tasks={sidebarTasks}
+            activeTaskId={activeTaskId}
+            attention={attention}
+            onSelectTask={handleSidebarSelect}
+            onNewTask={handleSidebarNewTask}
+            newTaskHref={
+              activeWorkspace && activeProject
+                ? getProjectHref(activeWorkspace, activeProject)
+                : "/"
             }
-            // Also keep real draft tasks visible while user is still at project root
-            return (
-              t.historyLoaded ||
-              String(t.tid) === activeTaskId ||
-              String(t.tid) === activeTaskIdRef.current ||
-              (activeTaskId === null &&
-                draftRenderKey !== null &&
-                t.renderKey === draftRenderKey)
-            );
-          })
-          .map((task) => {
-            const isActive =
-              String(task.tid) === activeTaskId ||
-              String(task.tid) === activeTaskIdRef.current ||
-              (activeTaskId === null &&
-                draftRenderKey !== null &&
-                task.renderKey === draftRenderKey);
-            return (
-              <div
-                key={task.renderKey ?? String(task.tid)}
-                style={{ display: isActive ? "contents" : "none" }}
-              >
-                <SessionView
-                  task={task}
-                  connected={connected}
-                  isActive={isActive}
-                  onSend={send}
-                  onInterrupt={interrupt}
-                  onStop={stop}
-                  onCloseStdin={closeStdin}
-                  onResume={resume}
-                  onPromote={promote}
-                  onFork={fork}
-                  onUndo={undoPreview}
-                  onUndoConfirm={undoConfirm}
-                  onUndoDismiss={undoDismiss}
-                  onClearInputDraft={clearInputDraft}
-                  onSaveDraft={saveDraft}
-                  onSetEntryPoint={setEntryPoint}
-                  onSetAgentType={setAgentType}
-                  theme={theme}
-                  onToggleTheme={toggleTheme}
-                  onToggleSidebar={toggleSidebar}
-                  onSetArchived={setArchived}
-                  onAskUserResponse={sendAskUserResponse}
-                  onEditMessage={editMessage}
-                  entryPoints={
-                    task.renderKey === draftRenderKey ? entryPoints : undefined
-                  }
-                  agentTypes={
-                    task.renderKey === draftRenderKey ? agentTypes : undefined
-                  }
-                  defaultAgentType={
-                    task.renderKey === draftRenderKey
-                      ? effectiveDefaultAgent
-                      : undefined
-                  }
-                  onContentStart={
-                    task.renderKey === draftRenderKey
-                      ? handleDraftContentStart
-                      : undefined
-                  }
-                  onContentEnd={
-                    task.renderKey === draftRenderKey
-                      ? deleteDraftTask
-                      : undefined
-                  }
-                />
+            showBackButton={true}
+            onBack={navigateHome}
+            projectName={activeProject || undefined}
+            projectHref={
+              activeWorkspace && activeProject
+                ? getProjectHref(activeWorkspace, activeProject)
+                : undefined
+            }
+            getTaskHref={getTaskHref}
+            taskTypes={typeInfo}
+            visible={sidebarOpen}
+            onOpenSearch={handleOpenSearch}
+            onArchive={handleSidebarArchive}
+          />
+          {Array.from(tasks.values())
+            .filter((t) => {
+              // Virtual drafts (tid=0) should only render in draft mode
+              if (t.tid === 0) {
+                return (
+                  activeTaskId === null &&
+                  draftRenderKey !== null &&
+                  t.renderKey === draftRenderKey
+                );
+              }
+              // Also keep real draft tasks visible while user is still at project root
+              return (
+                t.historyLoaded ||
+                String(t.tid) === activeTaskId ||
+                String(t.tid) === activeTaskIdRef.current ||
+                (activeTaskId === null &&
+                  draftRenderKey !== null &&
+                  t.renderKey === draftRenderKey)
+              );
+            })
+            .map((task) => {
+              const isActive =
+                String(task.tid) === activeTaskId ||
+                String(task.tid) === activeTaskIdRef.current ||
+                (activeTaskId === null &&
+                  draftRenderKey !== null &&
+                  task.renderKey === draftRenderKey);
+              return (
+                <div
+                  key={task.renderKey ?? String(task.tid)}
+                  style={{ display: isActive ? "contents" : "none" }}
+                >
+                  <SessionView
+                    task={task}
+                    connected={connected}
+                    isActive={isActive}
+                    onSend={send}
+                    onInterrupt={interrupt}
+                    onStop={stop}
+                    onCloseStdin={closeStdin}
+                    onResume={resume}
+                    onPromote={promote}
+                    onFork={fork}
+                    onUndo={undoPreview}
+                    onUndoConfirm={undoConfirm}
+                    onUndoDismiss={undoDismiss}
+                    onClearInputDraft={clearInputDraft}
+                    onSaveDraft={saveDraft}
+                    onSetEntryPoint={setEntryPoint}
+                    onSetAgentType={setAgentType}
+                    theme={theme}
+                    onToggleTheme={toggleTheme}
+                    onToggleSidebar={toggleSidebar}
+                    onSetArchived={setArchived}
+                    onAskUserResponse={sendAskUserResponse}
+                    onEditMessage={editMessage}
+                    entryPoints={
+                      task.renderKey === draftRenderKey
+                        ? entryPoints
+                        : undefined
+                    }
+                    agentTypes={
+                      task.renderKey === draftRenderKey ? agentTypes : undefined
+                    }
+                    defaultAgentType={
+                      task.renderKey === draftRenderKey
+                        ? effectiveDefaultAgent
+                        : undefined
+                    }
+                    onContentStart={
+                      task.renderKey === draftRenderKey
+                        ? handleDraftContentStart
+                        : undefined
+                    }
+                    onContentEnd={
+                      task.renderKey === draftRenderKey
+                        ? deleteDraftTask
+                        : undefined
+                    }
+                  />
+                </div>
+              );
+            })}
+          {!active &&
+            !hasDraftView &&
+            (activeTaskId?.startsWith("archive") ? (
+              <div class="session-empty">
+                <div class="session-empty-inner">
+                  <span class="archive-placeholder">Archived tasks</span>
+                </div>
               </div>
-            );
-          })}
-        {!active &&
-          !hasDraftView &&
-          (activeTaskId?.startsWith("archive") ? (
-            <div class="session-empty">
-              <div class="session-empty-inner">
-                <span class="archive-placeholder">Archived tasks</span>
+            ) : activeTaskId === "import" ? (
+              <div class="session-empty">
+                <div class="session-empty-inner">
+                  <span class="archive-placeholder">Importable sessions</span>
+                </div>
               </div>
-            </div>
-          ) : activeTaskId === "import" ? (
-            <div class="session-empty">
-              <div class="session-empty-inner">
-                <span class="archive-placeholder">Importable sessions</span>
+            ) : (
+              <div class="session-empty">
+                <div class="session-empty-inner">
+                  <span>Loading task…</span>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div class="session-empty">
-              <div class="session-empty-inner">
-                <span>Loading task…</span>
-              </div>
-            </div>
-          ))}
-        {searchPopup}
-        <ErrorToast
-          errors={errors}
-          onDismiss={dismissError}
-          onClearAll={clearErrors}
-        />
-      </div>
-    </ThemeContext.Provider>
+            ))}
+          {searchPopup}
+          <ErrorToast
+            errors={errors}
+            onDismiss={dismissError}
+            onClearAll={clearErrors}
+          />
+        </div>
+      </ThemeContext.Provider>
+    </DevModeContext.Provider>
   );
 }
 

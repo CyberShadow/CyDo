@@ -4012,6 +4012,7 @@ class App : ToolsBackend
 		discoverAllWorkspaces();
 		broadcast(buildAgentTypesList());
 		broadcast(buildWorkspacesList());
+		broadcast(buildServerStatus());
 		infof("Config reloaded successfully");
 	}
 
@@ -4180,7 +4181,11 @@ class App : ToolsBackend
 	private string buildServerStatus()
 	{
 		import ae.utils.json : toJson;
-		return toJson(ServerStatusMessage("server_status", authUser.length > 0 || authPass.length > 0));
+		return toJson(ServerStatusMessage(
+			"server_status",
+			authUser.length > 0 || authPass.length > 0,
+			config.dev_mode,
+		));
 	}
 
 	private void removeClient(WebSocketAdapter ws)

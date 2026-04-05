@@ -463,6 +463,7 @@ export interface DraftUpdatedMessage {
 export interface ServerStatusMessage {
   type: "server_status";
   auth_enabled: boolean;
+  dev_mode?: boolean;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";

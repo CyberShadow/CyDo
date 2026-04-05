@@ -310,6 +310,7 @@ struct ServerStatusMessage
 {
 	string type = "server_status";
 	bool auth_enabled;
+	bool dev_mode;
 }
 
 struct TaskReloadMessage

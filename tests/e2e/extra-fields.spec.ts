@@ -1,7 +1,7 @@
 import { test as base, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { spawn } from "child_process";
-import { mkdirSync, cpSync, symlinkSync } from "fs";
+import { mkdirSync, cpSync, symlinkSync, appendFileSync } from "fs";
 import * as path from "path";
 import { enterSession, sendMessage, responseTimeout } from "./fixtures";
 
@@ -30,6 +30,12 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
       symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
 
       const wrapperPath = path.join(__dirname, "..", "extra-fields-wrapper.sh");
+
+      mkdirSync(path.join(process.env.HOME!, ".config", "cydo"), { recursive: true });
+      appendFileSync(
+        path.join(process.env.HOME!, ".config", "cydo", "config.yaml"),
+        "dev_mode: true\n",
+      );
 
       const proc = spawn(process.env.CYDO_BIN!, [], {
         detached: true,

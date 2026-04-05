@@ -48,6 +48,7 @@ struct CydoConfig
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent_type = "claude";
 	@Optional AgentConfig[string] agents;
+	@Optional bool dev_mode;
 }
 
 string configPath()

@@ -13,6 +13,7 @@ import { useHighlight, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
+import { useDevMode } from "../devMode";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import editIcon from "../icons/edit.svg?raw";
@@ -33,6 +34,7 @@ interface Props {
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
+  const devMode = useDevMode();
   const d = message.resultData!;
   const durationSec = d.durationMs ? Math.floor(d.durationMs / 1000) : 0;
   const apiSec = d.durationApiMs ? Math.floor(d.durationApiMs / 1000) : 0;
@@ -113,19 +115,21 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         </details>
       )}
       {d.result && <div class="result-text">{d.result}</div>}
-      {message.extraFields && Object.keys(message.extraFields).length > 0 && (
-        <div class="unknown-extra-fields">
-          {Object.entries(message.extraFields).map(([k, v]) => (
-            <div key={k} class="tool-input-field">
-              <span class="field-label">{k}:</span>
-              <span class="field-value">
-                {" "}
-                {typeof v === "string" ? v : JSON.stringify(v)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      {devMode &&
+        message.extraFields &&
+        Object.keys(message.extraFields).length > 0 && (
+          <div class="unknown-extra-fields">
+            {Object.entries(message.extraFields).map(([k, v]) => (
+              <div key={k} class="tool-input-field">
+                <span class="field-label">{k}:</span>
+                <span class="field-value">
+                  {" "}
+                  {typeof v === "string" ? v : JSON.stringify(v)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
     </div>
   );
 }
@@ -682,6 +686,7 @@ export function MessageList({
   forkableUuids,
   onViewFile,
 }: Props) {
+  const devMode = useDevMode();
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
     () =>
@@ -843,7 +848,7 @@ export function MessageList({
                     </pre>
                   </div>
                 );
-              } else {
+              } else if (msg.subtype !== "parse_error" || devMode) {
                 const text = msg.content
                   .filter(
                     (b): b is { type: "text"; text: string } =>
