@@ -38,13 +38,11 @@ test("undo with file revert removes file created by agent", async ({ page, backe
   await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
   await page.locator(".btn-undo").click();
 
-  // 6. Wait for reload to complete — the input box should appear
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeVisible({ timeout: 15_000 });
+  // 6. Wait for the undo to complete — the result banner confirms rewindFiles finished
+  await expect(page.locator(".undo-result-banner")).toBeVisible({ timeout: 15_000 });
 
   // 7. Verify the file was reverted (should no longer exist since it didn't
   //    exist before the undone message)
-  await page.waitForTimeout(1_000);
   expect(
     existsSync(testFile),
     `File should have been removed by undo file revert: ${testFile}`,
