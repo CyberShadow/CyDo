@@ -13,7 +13,7 @@ test("new system prompt is present after keep_context mode switch", async ({ pag
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "context-check-passed",
-    }),
+    }).first(),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
@@ -29,6 +29,6 @@ test("old system prompt is absent after keep_context mode switch", async ({ page
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "context-check-failed",
-    }),
+    }).first(),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });

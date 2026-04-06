@@ -15,9 +15,11 @@ test("system_prompt_template is sent to the LLM API", async ({ page, agentType }
 
   // The sub-task result should contain "context-check-passed" if the system
   // prompt template was correctly sent to the LLM API.
+  // Use .first() because the result text may also appear in nested sub-agent
+  // messages (loaded asynchronously), causing a strict mode violation.
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "context-check-passed",
-    }),
+    }).first(),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
