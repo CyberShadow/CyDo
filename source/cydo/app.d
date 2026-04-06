@@ -1,6 +1,7 @@
 module cydo.app;
 
 import core.lifetime : move;
+import core.time : seconds;
 
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
@@ -2651,6 +2652,7 @@ class App : ToolsBackend
 				{
 					td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 					td.session.closeStdin();
+					td.session.killAfterTimeout(5.seconds);
 				}
 				else
 				{

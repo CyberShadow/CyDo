@@ -1,5 +1,7 @@
 module cydo.agent.copilot;
 
+import core.time : Duration;
+
 import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
@@ -890,6 +892,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		gracefulShutdown_ = true;
 		server.shutdown();
 	}
+
+	void killAfterTimeout(Duration timeout) {} // no-op: server.shutdown handles graceful exit
 
 	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }

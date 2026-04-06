@@ -1,5 +1,7 @@
 module cydo.agent.codex;
 
+import core.time : Duration;
+
 import std.conv : to;
 import std.logger : errorf, tracef, warningf;
 import std.path : buildPath, dirName;
@@ -1677,6 +1679,8 @@ class CodexSession : AgentSession
 		if (cb)
 			cb(0); // zero = clean close
 	}
+
+	void killAfterTimeout(Duration timeout) {} // no-op: closeStdin fires exit immediately
 
 	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }

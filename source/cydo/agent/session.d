@@ -1,5 +1,7 @@
 module cydo.agent.session;
 
+import core.time : Duration;
+
 import cydo.agent.protocol : ContentBlock;
 
 /// Abstract agent session interface.
@@ -23,6 +25,9 @@ interface AgentSession
 
 	/// Close stdin to signal EOF — agent exits gracefully.
 	void closeStdin();
+
+	/// Force-kill the agent if it has not exited within `timeout` (SIGTERM, then SIGKILL after 2s).
+	void killAfterTimeout(Duration timeout);
 
 	/// Callback: called for each line of output from the agent.
 	@property void onOutput(void delegate(string line) dg);

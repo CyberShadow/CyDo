@@ -673,6 +673,13 @@ function handleMessages(req, res) {
         description: "Running command",
       }));
       streamMultiToolUseResponse(res, toolNames, inputs, model);
+    } else if (intent.type === "timed_shell") {
+      streamToolUseResponse(
+        res,
+        "Bash",
+        { command: intent.command, timeout: intent.timeout, description: "Running command" },
+        model,
+      );
     } else if (intent.type === "shell" || intent.type === "background_shell") {
       streamToolUseResponse(
         res,

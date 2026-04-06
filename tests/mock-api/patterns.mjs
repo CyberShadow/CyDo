@@ -149,6 +149,10 @@ export function matchPattern(userText) {
   match = userText.match(/run background command (.+)/i);
   if (match) return { type: "background_shell", command: match[1].trim() };
 
+  // "run command with timeout <N> <cmd>" — Bash tool call with timeout_ms
+  match = userText.match(/run command with timeout (\d+) (.+)/i);
+  if (match) return { type: "timed_shell", command: match[2].trim(), timeout: parseInt(match[1]) };
+
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);
   if (match) return { type: "shell", command: match[1].trim() };

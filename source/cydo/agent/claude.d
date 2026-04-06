@@ -1,5 +1,7 @@
 module cydo.agent.claude;
 
+import core.time : Duration;
+
 import std.conv : to;
 import std.format : format;
 import std.path : dirName, expandTilde;
@@ -727,6 +729,11 @@ class ClaudeCodeSession : AgentSession
 	void closeStdin()
 	{
 		process.closeStdin();
+	}
+
+	void killAfterTimeout(Duration timeout)
+	{
+		process.killAfterTimeout(timeout);
 	}
 
 	@property void onOutput(void delegate(string line) dg)

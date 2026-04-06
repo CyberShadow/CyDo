@@ -1,7 +1,8 @@
 module cydo.agent.process;
 
-import core.sys.posix.signal : SIGINT, SIGTERM;
+import core.sys.posix.signal : SIGINT, SIGKILL, SIGTERM;
 import core.sys.posix.unistd : dup;
+import core.time : Duration, seconds;
 
 import std.logger : tracef;
 import std.process : Pid, Pipe, Redirect, Config, spawnProcess, pipe, kill;
@@ -36,6 +37,8 @@ class AgentProcess
 	private bool disconnected;
 	private bool exitFired;
 	private TimerTask stderrDrainTimer;
+	private TimerTask killTimer;
+	private TimerTask killForcedTimer;
 	private bool waitForPipeDrain;
 
 	void delegate(string line) onStdoutLine;
@@ -181,6 +184,16 @@ class AgentProcess
 				stderrDrainTimer.cancel();
 				stderrDrainTimer = null;
 			}
+			if (killTimer !is null)
+			{
+				killTimer.cancel();
+				killTimer = null;
+			}
+			if (killForcedTimer !is null)
+			{
+				killForcedTimer.cancel();
+				killForcedTimer = null;
+			}
 			if (onExit)
 				onExit(exitStatus);
 		}
@@ -248,6 +261,26 @@ class AgentProcess
 	void terminate()
 	{
 		sendSignal(SIGTERM);
+	}
+
+	/// If the process has not exited within `timeout`, send SIGTERM.
+	/// If it still hasn't exited after another 2 seconds, send SIGKILL.
+	void killAfterTimeout(Duration timeout)
+	{
+		if (exitFired)
+			return;
+		killTimer = setTimeout({
+			killTimer = null;
+			if (exitFired)
+				return;
+			sendSignal(SIGTERM);
+			killForcedTimer = setTimeout({
+				killForcedTimer = null;
+				if (exitFired)
+					return;
+				sendSignal(SIGKILL);
+			}, 2.seconds);
+		}, timeout);
 	}
 
 }
