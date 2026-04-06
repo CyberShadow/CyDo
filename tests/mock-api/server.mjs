@@ -635,7 +635,20 @@ function handleMessages(req, res) {
       intent.text = "image received";
     }
 
-    if (intent.type === "stall") {
+    if (intent.type === "echo_system") {
+      // parsed.system can be a string or array of content blocks
+      let systemText = "";
+      if (typeof parsed.system === "string") {
+        systemText = parsed.system;
+      } else if (Array.isArray(parsed.system)) {
+        systemText = parsed.system
+          .filter(b => b.type === "text")
+          .map(b => b.text)
+          .join("\n");
+      }
+      streamTextResponse(res, systemText || "(no system prompt)", model);
+      return;
+    } else if (intent.type === "stall") {
       // Send message_start to begin the stream, then stall indefinitely.
       // The session stays alive (waiting for LLM) so tests can Kill it.
       sseEvent(res, "message_start", {

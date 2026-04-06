@@ -30,6 +30,10 @@ export function matchPattern(userText) {
     return { type: "text", text: "Done." };
   }
 
+  // "echo system prompt" — signal to echo parsed.system back as response text
+  if (/^echo system prompt\s*$/i.test(userText))
+    return { type: "echo_system" };
+
   let match;
 
   // Task-creation patterns must come before "reply with" and "run command"

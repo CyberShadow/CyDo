@@ -53,6 +53,8 @@ task_types:
         prompt_template: prompts/blank.md
       test_on_yield:
         prompt_template: prompts/blank.md
+      test_system_prompt:
+        prompt_template: prompts/blank.md
     continuations:
       plan:
         task_type: plan_mode
@@ -113,3 +115,8 @@ task_types:
     output_type: []
     on_yield:
       task_type: blank
+
+  test_system_prompt:
+    model_class: small
+    output_type: []
+    system_prompt_template: prompts/test_system_prompt.md
