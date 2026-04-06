@@ -4298,14 +4298,15 @@ class App : ToolsBackend
 
 		string debugDir;
 		{
-			import std.process : environment;
-			if (environment.get("CYDO_DEBUG_SUGGESTIONS", "") == "1")
+			if (config.dev_mode)
 			{
 				import std.datetime : Clock;
+				import std.path : buildPath;
+				import ae.sys.paths : getDataDir;
 				auto now = Clock.currTime;
-				debugDir = format("data/suggestion-debug/%04d-%02d-%02dT%02d:%02d:%02d-%d",
+				debugDir = buildPath(getDataDir("cydo"), format("suggestion-debug/%04d-%02d-%02dT%02d:%02d:%02d-%d",
 					now.year, cast(int)now.month, now.day,
-					now.hour, now.minute, now.second, tid);
+					now.hour, now.minute, now.second, tid));
 				import std.file : mkdirRecurse;
 				mkdirRecurse(debugDir);
 			}
