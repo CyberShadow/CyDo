@@ -214,7 +214,14 @@ EOF
                 --setenv) export "$2=$3"; shift 3 ;;
                 --chdir) chdir="$2"; shift 2 ;;
                 --clearenv) shift ;;
-                --bind|--ro-bind|--symlink|--dev|--proc|--tmpfs) shift 2 ;;
+                --symlink|--dev|--proc|--tmpfs) shift 2 ;;
+                --bind|--ro-bind)
+                  if [ ! -e "$2" ]; then
+                    echo "bwrap: Can't find source path $2: No such file or directory" >&2
+                    exit 1
+                  fi
+                  shift 2
+                  ;;
                 *) shift ;;
               esac
             done
