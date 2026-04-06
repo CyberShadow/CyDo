@@ -11,6 +11,7 @@ import cydo.agent.session : AgentSession;
 import cydo.sandbox : ProcessLaunch;
 
 enum ProcessState : bool { Dead = false, Alive = true }
+enum ArchiveState : bool { Unarchived = false, Archived = true }
 
 struct TaskData
 {
@@ -119,6 +120,8 @@ struct TaskData
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	@property bool alive() { return session !is null && session.alive; }
 	StateQueue!ProcessState* processQueue;
+	StateQueue!ArchiveState* archiveQueue;
+	bool archiving;  // true while an archive/unarchive transition is in progress
 	Promise!ProcessState killPromise;  // non-null during active Dead transition
 	bool isProcessing = false;
 	bool wasKilledByUser = false;  // set when user explicitly kills via stop button
@@ -244,6 +247,7 @@ struct TaskListEntry
 	string entry_point;
 	string agent_type;
 	bool archived;
+	bool archiving;  // true while an archive/unarchive transition is in progress
 	string draft;
 	string error;
 	long created_at;

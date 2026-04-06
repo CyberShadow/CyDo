@@ -376,6 +376,7 @@ function SessionViewInner({
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
         archived={task.archived}
+        archiving={task.archiving}
         onSetArchived={onSetArchived ? handleSetArchived : undefined}
         resumable={task.resumable}
         onResume={onResume}

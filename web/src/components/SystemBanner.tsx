@@ -18,6 +18,7 @@ interface Props {
   taskType?: string;
   onToggleSidebar?: () => void;
   archived?: boolean;
+  archiving?: boolean;
   onSetArchived?: () => void;
   resumable?: boolean;
   onResume?: () => void;
@@ -36,6 +37,7 @@ export function SystemBanner({
   taskType,
   onToggleSidebar,
   archived,
+  archiving,
   onSetArchived,
   resumable,
   onResume,
@@ -110,13 +112,22 @@ export function SystemBanner({
           <button
             class={`btn-banner-archive${archived ? " archived" : ""}`}
             onClick={onSetArchived}
+            disabled={archiving}
             title={
-              archived
-                ? "Unarchive task (Ctrl+Shift+A)"
-                : "Archive task (Ctrl+Shift+A)"
+              archiving
+                ? "Archive operation in progress…"
+                : archived
+                  ? "Unarchive task (Ctrl+Shift+A)"
+                  : "Archive task (Ctrl+Shift+A)"
             }
           >
-            {archived ? "Unarchive" : "Archive"}
+            {archiving
+              ? archived
+                ? "Archiving…"
+                : "Unarchiving…"
+              : archived
+                ? "Unarchive"
+                : "Archive"}
           </button>
         )}
         {totalCost > 0 && (

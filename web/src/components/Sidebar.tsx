@@ -131,6 +131,7 @@ export interface SidebarTask {
   relationType?: string;
   status?: string;
   archived?: boolean;
+  archiving?: boolean;
   isArchiveNode?: boolean;
   taskType?: string;
   hasPendingQuestion?: boolean;
@@ -280,6 +281,7 @@ interface FlatItem {
   iconName?: string;
   isArchive: boolean;
   hasPendingQuestion: boolean;
+  archiving: boolean;
 }
 
 export function computeStatusClass(t: SidebarTask): string {
@@ -317,6 +319,7 @@ function flattenTree(
         title: groupLabel,
         isArchive: true,
         hasPendingQuestion: false,
+        archiving: false,
       });
       const isExpanded =
         node.id === activeTaskId ||
@@ -346,6 +349,7 @@ function flattenTree(
       iconName: typeInfo?.icon ?? t.taskType,
       isArchive: false,
       hasPendingQuestion: !!t.hasPendingQuestion,
+      archiving: !!t.archiving,
     });
 
     for (let i = 0; i < node.children.length; i++) {
@@ -376,6 +380,7 @@ const SidebarItem = memo(function SidebarItem({
   isActive,
   hasAttention,
   hasPendingQuestion,
+  archiving,
   href,
   onSelect,
   onArchive,
@@ -391,6 +396,7 @@ const SidebarItem = memo(function SidebarItem({
   isActive: boolean;
   hasAttention: boolean;
   hasPendingQuestion: boolean;
+  archiving: boolean;
   href: string;
   onSelect: (id: string) => void;
   onArchive?: (tid: number) => void;
@@ -454,7 +460,9 @@ const SidebarItem = memo(function SidebarItem({
       }}
     >
       {treeConnectors}
-      {hasPendingQuestion ? (
+      {archiving ? (
+        <span class="task-type-icon spinner" />
+      ) : hasPendingQuestion ? (
         <span class="task-type-icon task-type-icon-question asking" />
       ) : hasAttention ? (
         <span class="task-type-icon task-type-icon-check alive" />
@@ -704,6 +712,7 @@ export const Sidebar = memo(function Sidebar({
               isActive={item.id === activeTaskId}
               hasAttention={attention.has(item.tid)}
               hasPendingQuestion={item.hasPendingQuestion}
+              archiving={item.archiving}
               href={getTaskHref(item.id)}
               onSelect={handleSelect}
               onArchive={handleArchive}

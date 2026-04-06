@@ -213,6 +213,7 @@ export interface TaskState {
   /** Current agent type (e.g. "claude", "codex"). */
   agentType?: string;
   archived?: boolean;
+  archiving?: boolean;
   /** Stable Preact key for draft tasks (UUID). */
   renderKey?: string;
   /** Last stderr text from non-zero exit; cleared on restart. */
@@ -265,6 +266,7 @@ export function makeTaskState(
   lastActive?: number,
   agentType?: string,
   entryPoint?: string,
+  archiving: boolean = false,
 ): TaskState {
   return {
     tid,
@@ -289,6 +291,7 @@ export function makeTaskState(
     entryPoint,
     agentType,
     archived,
+    archiving: archiving || false,
     createdAt: createdAt || undefined,
     lastActive: lastActive || undefined,
     trackedFiles: new Map(),

@@ -745,6 +745,7 @@ export function useTaskManager(): TaskManager {
                 entry.last_active || undefined,
                 entry.agent_type || undefined,
                 entry.entry_point || undefined,
+                entry.archiving || false,
               ),
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
@@ -781,6 +782,7 @@ export function useTaskManager(): TaskManager {
                   ? undefined
                   : existing.suggestions,
               archived: entry.archived || false,
+              archiving: entry.archiving || false,
               error: entry.error || undefined,
               createdAt: entry.created_at || existing.createdAt,
               lastActive: entry.last_active || existing.lastActive,
@@ -828,6 +830,7 @@ export function useTaskManager(): TaskManager {
               entry.last_active || undefined,
               entry.agent_type || undefined,
               entry.entry_point || undefined,
+              entry.archiving || false,
             ),
             serverDraft: entry.draft || undefined,
             error: entry.error || undefined,
@@ -859,6 +862,7 @@ export function useTaskManager(): TaskManager {
                 ? undefined
                 : existing.suggestions,
             archived: entry.archived || false,
+            archiving: entry.archiving || false,
             error: entry.error || undefined,
             createdAt: entry.created_at || existing.createdAt,
             lastActive: entry.last_active || existing.lastActive,
@@ -1742,6 +1746,7 @@ export function useTaskManager(): TaskManager {
         relationType: t.relationType,
         status: t.status,
         archived: t.archived,
+        archiving: t.archiving,
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
         lastActive: t.lastActive,
@@ -1763,6 +1768,7 @@ export function useTaskManager(): TaskManager {
           t.relationType === p.relationType &&
           t.status === p.status &&
           t.archived === p.archived &&
+          t.archiving === p.archiving &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
           t.lastActive === p.lastActive &&

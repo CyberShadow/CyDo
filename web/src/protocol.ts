@@ -339,6 +339,7 @@ export interface TasksListMessage {
     entry_point?: string;
     agent_type?: string;
     archived?: boolean;
+    archiving?: boolean;
     draft?: string;
     error?: string;
     created_at?: number;
@@ -365,6 +366,7 @@ export interface TaskUpdatedMessage {
     entry_point?: string;
     agent_type?: string;
     archived?: boolean;
+    archiving?: boolean;
     draft?: string;
     error?: string;
     created_at?: number;
