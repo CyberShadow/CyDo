@@ -803,7 +803,7 @@ body,
 .user-text {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.6;
+  line-height: 1.2;
 }
 
 .user-message.pending {
