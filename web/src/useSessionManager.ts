@@ -351,6 +351,44 @@ export function useTaskManager(): TaskManager {
     setDraftRenderKey((prev) => (prev === rk ? prev : rk));
   }, []);
 
+  /** Remove virtual draft (tid=0) from task map and input drafts. */
+  const teardownVirtualDraft = useCallback(() => {
+    liveStates.delete(0);
+    setTasks((prev) => {
+      if (!prev.has(0)) return prev;
+      const next = new Map(prev);
+      next.delete(0);
+      return next;
+    });
+    inputDrafts.delete(0);
+  }, []);
+
+  /** Clear draft state when navigating away. Handles all phases correctly. */
+  const clearDraftForNav = useCallback(
+    (opts: { teardownVirtual: boolean }) => {
+      const cur = draftRef.current;
+      if (cur.phase === "none") return;
+      if (cur.phase === "timer_pending") clearTimeout(cur.timerId);
+      if (opts.teardownVirtual) teardownVirtualDraft();
+      if (cur.phase === "create_pending") {
+        setDraft({
+          phase: "create_cancelled",
+          renderKey: cur.renderKey,
+          correlationId: cur.correlationId,
+        });
+      } else if (
+        !opts.teardownVirtual &&
+        (cur.phase === "create_cancelled" || cur.phase === "send_pending")
+      ) {
+        // navigate-to-task: leave these phases active so task_created can
+        // still clean up the zombie or deliver the pending message.
+      } else {
+        setDraft({ phase: "none" });
+      }
+    },
+    [setDraft, teardownVirtualDraft],
+  );
+
   const createVirtualDraft = useCallback(() => {
     const renderKey = crypto.randomUUID();
     const ws = activeWorkspaceRef.current ?? "";
@@ -548,143 +586,177 @@ export function useTaskManager(): TaskManager {
     });
   }, []);
 
-  const handleControlMessage = useCallback((msg: ControlMessage) => {
-    switch (msg.type) {
-      case "workspaces_list": {
-        setWorkspaces(msg.workspaces);
-        setConnected(true);
-        break;
-      }
-      case "task_types_list": {
-        setEntryPoints(msg.entry_points);
-        setTypeInfo(msg.type_info);
-        break;
-      }
-      case "agent_types_list": {
-        setAgentTypes(msg.agent_types);
-        if (msg.default_agent_type) setDefaultAgentType(msg.default_agent_type);
-        break;
-      }
-      case "task_created": {
-        const tid = msg.tid;
-        const workspace = msg.workspace || "";
-        const projectPath = msg.project_path || "";
-        const parentTid = msg.parent_tid || undefined;
-        const relationType = msg.relation_type || undefined;
-        const t = makeTaskState(
-          tid,
-          false,
-          false,
-          undefined,
-          false, // always request history; backend responds immediately for new tasks
-          workspace,
-          projectPath,
-          parentTid,
-          relationType,
-          "pending",
-        );
-        liveStates.set(tid, t);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(tid, t);
-          return next;
-        });
-
-        // Check if this is a draft task creation (no navigation)
-        const draft = draftRef.current;
-        const isDraftCreation =
-          (draft.phase === "create_pending" ||
-            draft.phase === "create_cancelled" ||
-            draft.phase === "send_pending") &&
-          draft.correlationId === msg.correlation_id;
-        if (isDraftCreation) {
-          if (draft.phase === "create_cancelled") {
-            // User navigated away before task_created arrived — delete zombie.
-            // Also clean up tid=0 if still present (it was already deleted in
-            // the welcome-page path but may still exist for other nav paths).
-            connRef.current?.deleteTask(tid);
-            liveStates.delete(tid);
-            liveStates.delete(0);
-            inputDrafts.delete(0);
-            setTasks((prev) => {
-              const hasRealTid = prev.has(tid);
-              const hasVirtual = prev.has(0);
-              if (!hasRealTid && !hasVirtual) return prev;
-              const next = new Map(prev);
-              if (hasRealTid) next.delete(tid);
-              if (hasVirtual) next.delete(0);
-              return next;
-            });
-            setDraft({ phase: "none" });
-            break;
-          }
-          const { renderKey } = draft;
-          const firstMsg =
-            draft.phase === "send_pending" ? draft.firstMessage : null;
-          // Copy in-memory draft from slot 0 to the real tid (only if not piggybacking)
-          if (firstMsg === null) {
-            const currentText = inputDrafts.get(0);
-            if (currentText !== undefined) {
-              inputDrafts.set(tid, currentText);
-            }
-          }
-          inputDrafts.delete(0);
-          // Transfer renderKey from virtual task (tid=0) to real task
-          liveStates.delete(0);
-          const realTask: TaskState = {
-            ...t,
-            historyLoaded: true,
-            renderKey,
-          };
-          liveStates.set(tid, realTask);
+  const handleControlMessage = useCallback(
+    (msg: ControlMessage) => {
+      switch (msg.type) {
+        case "workspaces_list": {
+          setWorkspaces(msg.workspaces);
+          setConnected(true);
+          break;
+        }
+        case "task_types_list": {
+          setEntryPoints(msg.entry_points);
+          setTypeInfo(msg.type_info);
+          break;
+        }
+        case "agent_types_list": {
+          setAgentTypes(msg.agent_types);
+          if (msg.default_agent_type)
+            setDefaultAgentType(msg.default_agent_type);
+          break;
+        }
+        case "task_created": {
+          const tid = msg.tid;
+          const workspace = msg.workspace || "";
+          const projectPath = msg.project_path || "";
+          const parentTid = msg.parent_tid || undefined;
+          const relationType = msg.relation_type || undefined;
+          const t = makeTaskState(
+            tid,
+            false,
+            false,
+            undefined,
+            false, // always request history; backend responds immediately for new tasks
+            workspace,
+            projectPath,
+            parentTid,
+            relationType,
+            "pending",
+          );
+          liveStates.set(tid, t);
           setTasks((prev) => {
             const next = new Map(prev);
-            next.delete(0);
-            next.set(tid, realTask);
+            next.set(tid, t);
             return next;
           });
-          // Subscribe to live events for the new task. The backend uses
-          // request_history as the subscription mechanism — without it,
-          // sendToSubscribed won't deliver agent messages to this client.
-          connRef.current?.requestHistory(tid);
-          requestedHistoryRef.current.add(tid);
-          if (firstMsg !== null) {
-            // Path (c): user sent before task_created arrived — send now.
-            // Navigate URL to reflect the real tid.
-            if (workspace && projectPath) {
-              const projName = findProjectName(
-                workspacesRef.current,
-                workspace,
-                projectPath,
-              );
-              if (projName) {
-                const encodedProject = projName.replace(/\//g, ":");
-                routeRef.current(
-                  `/${workspace}/${encodedProject}/task/${tid}`,
-                  true,
-                );
+
+          // Check if this is a draft task creation (no navigation)
+          const draft = draftRef.current;
+          const isDraftCreation =
+            (draft.phase === "create_pending" ||
+              draft.phase === "create_cancelled" ||
+              draft.phase === "send_pending") &&
+            draft.correlationId === msg.correlation_id;
+          if (isDraftCreation) {
+            if (draft.phase === "create_cancelled") {
+              // User navigated away before task_created arrived — delete zombie.
+              connRef.current?.deleteTask(tid);
+              liveStates.delete(tid);
+              teardownVirtualDraft();
+              setTasks((prev) => {
+                if (!prev.has(tid)) return prev;
+                const next = new Map(prev);
+                next.delete(tid);
+                return next;
+              });
+              setDraft({ phase: "none" });
+              break;
+            }
+            const { renderKey } = draft;
+            const firstMsg =
+              draft.phase === "send_pending" ? draft.firstMessage : null;
+            // Copy in-memory draft from slot 0 to the real tid (only if not piggybacking)
+            if (firstMsg === null) {
+              const currentText = inputDrafts.get(0);
+              if (currentText !== undefined) {
+                inputDrafts.set(tid, currentText);
               }
             }
-            connRef.current?.sendMessage(
-              tid,
-              buildContentBlocks(firstMsg.text, firstMsg.images),
-            );
-            setDraft({ phase: "none" });
+            inputDrafts.delete(0);
+            // Transfer renderKey from virtual task (tid=0) to real task
+            liveStates.delete(0);
+            const realTask: TaskState = {
+              ...t,
+              historyLoaded: true,
+              renderKey,
+            };
+            liveStates.set(tid, realTask);
             setTasks((prev) => {
-              const taskState = prev.get(tid);
-              if (!taskState) return prev;
               const next = new Map(prev);
-              next.set(tid, {
-                ...taskState,
-                isProcessing: true,
-                suggestions: undefined,
-              });
+              next.delete(0);
+              next.set(tid, realTask);
               return next;
             });
-          } else {
-            // User is still typing — navigate URL to reflect the real tid
-            // (replaceState so back button returns to "new task" view).
-            setDraft({ phase: "promoted", renderKey, tid });
+            // Subscribe to live events for the new task. The backend uses
+            // request_history as the subscription mechanism — without it,
+            // sendToSubscribed won't deliver agent messages to this client.
+            connRef.current?.requestHistory(tid);
+            requestedHistoryRef.current.add(tid);
+            if (firstMsg !== null) {
+              // Path (c): user sent before task_created arrived — send now.
+              // Navigate URL to reflect the real tid.
+              if (workspace && projectPath) {
+                const projName = findProjectName(
+                  workspacesRef.current,
+                  workspace,
+                  projectPath,
+                );
+                if (projName) {
+                  const encodedProject = projName.replace(/\//g, ":");
+                  routeRef.current(
+                    `/${workspace}/${encodedProject}/task/${tid}`,
+                    true,
+                  );
+                }
+              }
+              connRef.current?.sendMessage(
+                tid,
+                buildContentBlocks(firstMsg.text, firstMsg.images),
+              );
+              setDraft({ phase: "none" });
+              setTasks((prev) => {
+                const taskState = prev.get(tid);
+                if (!taskState) return prev;
+                const next = new Map(prev);
+                next.set(tid, {
+                  ...taskState,
+                  isProcessing: true,
+                  suggestions: undefined,
+                });
+                return next;
+              });
+            } else {
+              // User is still typing — navigate URL to reflect the real tid
+              // (replaceState so back button returns to "new task" view).
+              setDraft({ phase: "promoted", renderKey, tid });
+              if (workspace && projectPath) {
+                const projName = findProjectName(
+                  workspacesRef.current,
+                  workspace,
+                  projectPath,
+                );
+                if (projName) {
+                  const encodedProject = projName.replace(/\//g, ":");
+                  routeRef.current(
+                    `/${workspace}/${encodedProject}/task/${tid}`,
+                    true,
+                  );
+                }
+              }
+            }
+            break; // Skip normal navigation logic
+          }
+
+          // Navigate to the new task only if:
+          // - this client created it (top-level, correlation ID matches), or
+          // - its parent is currently focused (sub-task visible in context)
+          // Never auto-focus undo-backup tasks (they're invisible backups).
+          const correlationMatches =
+            pendingFocusId.current !== null &&
+            msg.correlation_id === pendingFocusId.current;
+          const shouldFocus =
+            relationType === "undo-backup"
+              ? false
+              : parentTid
+                ? activeTaskIdRef.current === String(parentTid)
+                : correlationMatches;
+          // Only consume the pending focus ID when the correlation actually
+          // matched.  Broadcast task_created messages (sub-tasks, forks,
+          // continuations) must not clear it — otherwise the unicast response
+          // to our own createTask would fail to navigate.
+          if (correlationMatches) pendingFocusId.current = null;
+          if (shouldFocus) {
+            activeTaskIdRef.current = String(tid);
             if (workspace && projectPath) {
               const projName = findProjectName(
                 workspacesRef.current,
@@ -693,65 +765,112 @@ export function useTaskManager(): TaskManager {
               );
               if (projName) {
                 const encodedProject = projName.replace(/\//g, ":");
-                routeRef.current(
-                  `/${workspace}/${encodedProject}/task/${tid}`,
-                  true,
-                );
+                routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
+              } else {
+                routeRef.current("/");
               }
-            }
-          }
-          break; // Skip normal navigation logic
-        }
-
-        // Navigate to the new task only if:
-        // - this client created it (top-level, correlation ID matches), or
-        // - its parent is currently focused (sub-task visible in context)
-        // Never auto-focus undo-backup tasks (they're invisible backups).
-        const correlationMatches =
-          pendingFocusId.current !== null &&
-          msg.correlation_id === pendingFocusId.current;
-        const shouldFocus =
-          relationType === "undo-backup"
-            ? false
-            : parentTid
-              ? activeTaskIdRef.current === String(parentTid)
-              : correlationMatches;
-        // Only consume the pending focus ID when the correlation actually
-        // matched.  Broadcast task_created messages (sub-tasks, forks,
-        // continuations) must not clear it — otherwise the unicast response
-        // to our own createTask would fail to navigate.
-        if (correlationMatches) pendingFocusId.current = null;
-        if (shouldFocus) {
-          activeTaskIdRef.current = String(tid);
-          if (workspace && projectPath) {
-            const projName = findProjectName(
-              workspacesRef.current,
-              workspace,
-              projectPath,
-            );
-            if (projName) {
-              const encodedProject = projName.replace(/\//g, ":");
-              routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
             } else {
               routeRef.current("/");
             }
-          } else {
-            routeRef.current("/");
           }
-        }
 
-        break;
-      }
-      case "tasks_list": {
-        const updates = new Map<number, TaskState>();
-        for (const entry of msg.tasks) {
-          // Skip recently deleted draft tasks
-          if (deletedDraftTid.current === entry.tid) continue;
+          break;
+        }
+        case "tasks_list": {
+          const updates = new Map<number, TaskState>();
+          for (const entry of msg.tasks) {
+            // Skip recently deleted draft tasks
+            if (deletedDraftTid.current === entry.tid) continue;
+            const workspace = entry.workspace || "";
+            const projectPath = entry.project_path || "";
+            const existing = liveStates.get(entry.tid);
+            if (!existing) {
+              const t = {
+                ...makeTaskState(
+                  entry.tid,
+                  entry.alive,
+                  entry.resumable,
+                  entry.title,
+                  false,
+                  workspace,
+                  projectPath,
+                  entry.parent_tid || undefined,
+                  entry.relation_type || undefined,
+                  entry.status || "pending",
+                  entry.isProcessing || false,
+                  entry.needsAttention || false,
+                  entry.hasPendingQuestion || false,
+                  entry.task_type || undefined,
+                  entry.archived || false,
+                  entry.created_at || undefined,
+                  entry.last_active || undefined,
+                  entry.agent_type || undefined,
+                  entry.entry_point || undefined,
+                  entry.archiving || false,
+                ),
+                serverDraft: entry.draft || undefined,
+                error: entry.error || undefined,
+              };
+              liveStates.set(entry.tid, t);
+              updates.set(entry.tid, t);
+            } else {
+              // If a task becomes resumable but has no messages loaded,
+              // reset historyLoaded so JSONL history gets requested
+              // (e.g. forked tasks with pre-existing JSONL).
+              const needsHistory =
+                entry.resumable &&
+                existing.messages.length === 0 &&
+                existing.historyLoaded;
+              const updated = {
+                ...existing,
+                alive: entry.alive,
+                resumable: entry.resumable,
+                isProcessing: entry.isProcessing || false,
+                needsAttention: entry.needsAttention || false,
+                hasPendingQuestion: entry.hasPendingQuestion || false,
+                historyLoaded: needsHistory ? false : existing.historyLoaded,
+                title: entry.title || existing.title,
+                workspace: workspace || existing.workspace,
+                projectPath: projectPath || existing.projectPath,
+                parentTid: entry.parent_tid || existing.parentTid,
+                relationType: entry.relation_type || existing.relationType,
+                status: entry.status || existing.status,
+                taskType: entry.task_type || existing.taskType,
+                entryPoint: entry.entry_point || existing.entryPoint,
+                agentType: entry.agent_type || existing.agentType,
+                suggestions:
+                  entry.isProcessing && !existing.isProcessing
+                    ? undefined
+                    : existing.suggestions,
+                archived: entry.archived || false,
+                archiving: entry.archiving || false,
+                error: entry.error || undefined,
+                createdAt: entry.created_at || existing.createdAt,
+                lastActive: entry.last_active || existing.lastActive,
+              };
+              liveStates.set(entry.tid, updated);
+              updates.set(entry.tid, updated);
+            }
+          }
+          setTasks((prev) => {
+            const next = new Map(prev);
+            for (const [tid, state] of updates) {
+              next.set(tid, state);
+            }
+            return next;
+          });
+          break;
+        }
+        case "task_updated": {
+          const entry = msg.task;
+          // Skip updates for recently deleted draft tasks
+          if (deletedDraftTid.current === entry.tid) break;
           const workspace = entry.workspace || "";
           const projectPath = entry.project_path || "";
           const existing = liveStates.get(entry.tid);
+          let taskUpdated: TaskState;
           if (!existing) {
-            const t = {
+            taskUpdated = {
               ...makeTaskState(
                 entry.tid,
                 entry.alive,
@@ -777,17 +896,12 @@ export function useTaskManager(): TaskManager {
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
             };
-            liveStates.set(entry.tid, t);
-            updates.set(entry.tid, t);
           } else {
-            // If a task becomes resumable but has no messages loaded,
-            // reset historyLoaded so JSONL history gets requested
-            // (e.g. forked tasks with pre-existing JSONL).
             const needsHistory =
               entry.resumable &&
               existing.messages.length === 0 &&
               existing.historyLoaded;
-            const updated = {
+            taskUpdated = {
               ...existing,
               alive: entry.alive,
               resumable: entry.resumable,
@@ -814,364 +928,286 @@ export function useTaskManager(): TaskManager {
               createdAt: entry.created_at || existing.createdAt,
               lastActive: entry.last_active || existing.lastActive,
             };
-            liveStates.set(entry.tid, updated);
-            updates.set(entry.tid, updated);
           }
+          liveStates.set(entry.tid, taskUpdated);
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.set(entry.tid, taskUpdated);
+            return next;
+          });
+          break;
         }
-        setTasks((prev) => {
-          const next = new Map(prev);
-          for (const [tid, state] of updates) {
-            next.set(tid, state);
-          }
-          return next;
-        });
-        break;
-      }
-      case "task_updated": {
-        const entry = msg.task;
-        // Skip updates for recently deleted draft tasks
-        if (deletedDraftTid.current === entry.tid) break;
-        const workspace = entry.workspace || "";
-        const projectPath = entry.project_path || "";
-        const existing = liveStates.get(entry.tid);
-        let taskUpdated: TaskState;
-        if (!existing) {
-          taskUpdated = {
+        case "task_reload": {
+          const { tid } = msg;
+          requestedHistoryRef.current.delete(tid);
+          const t = liveStates.get(tid);
+          if (!t) break;
+          // Collect user message texts to detect unsaved prompts after replay.
+          // Skip for edit-triggered reloads: the message was intentionally
+          // replaced, not removed, so old text should not become inputDraft.
+          const isEdit = msg.reason === "edit";
+          const userTexts = isEdit
+            ? []
+            : t.messages
+                .filter((m) => m.type === "user")
+                .map((m) =>
+                  m.content
+                    .filter((b) => b.type === "text")
+                    .map((b) => ("text" in b ? b.text : ""))
+                    .join(""),
+                )
+                .filter((t) => t.length > 0);
+          // When a session has already started (sessionInfo set), the first user
+          // message was rendered into the prompt template before being sent to
+          // the agent, so it is stored in JSONL as the full template text — not
+          // the raw user input.  Exact-match confirmation during replay therefore
+          // never fires for it, which would incorrectly keep it in inputDraft.
+          // Since the first message always starts the session (it was definitely
+          // delivered), exclude it from recovery tracking entirely.
+          const textsToRecover = t.sessionInfo ? userTexts.slice(1) : userTexts;
+          const reset = {
             ...makeTaskState(
-              entry.tid,
-              entry.alive,
-              entry.resumable,
-              entry.title,
+              tid,
               false,
-              workspace,
-              projectPath,
-              entry.parent_tid || undefined,
-              entry.relation_type || undefined,
-              entry.status || "pending",
-              entry.isProcessing || false,
-              entry.needsAttention || false,
-              entry.hasPendingQuestion || false,
-              entry.task_type || undefined,
-              entry.archived || false,
-              entry.created_at || undefined,
-              entry.last_active || undefined,
-              entry.agent_type || undefined,
-              entry.entry_point || undefined,
-              entry.archiving || false,
+              t.resumable,
+              t.title,
+              false,
+              t.workspace,
+              t.projectPath,
+              t.parentTid,
+              t.relationType,
+              t.status,
             ),
-            serverDraft: entry.draft || undefined,
-            error: entry.error || undefined,
+            resumable: t.resumable,
+            preReloadDrafts:
+              textsToRecover.length > 0 ? textsToRecover : undefined,
+            undoResult: t.undoResult,
           };
-        } else {
-          const needsHistory =
-            entry.resumable &&
-            existing.messages.length === 0 &&
-            existing.historyLoaded;
-          taskUpdated = {
-            ...existing,
-            alive: entry.alive,
-            resumable: entry.resumable,
-            isProcessing: entry.isProcessing || false,
-            needsAttention: entry.needsAttention || false,
-            hasPendingQuestion: entry.hasPendingQuestion || false,
-            historyLoaded: needsHistory ? false : existing.historyLoaded,
-            title: entry.title || existing.title,
-            workspace: workspace || existing.workspace,
-            projectPath: projectPath || existing.projectPath,
-            parentTid: entry.parent_tid || existing.parentTid,
-            relationType: entry.relation_type || existing.relationType,
-            status: entry.status || existing.status,
-            taskType: entry.task_type || existing.taskType,
-            entryPoint: entry.entry_point || existing.entryPoint,
-            agentType: entry.agent_type || existing.agentType,
-            suggestions:
-              entry.isProcessing && !existing.isProcessing
-                ? undefined
-                : existing.suggestions,
-            archived: entry.archived || false,
-            archiving: entry.archiving || false,
-            error: entry.error || undefined,
-            createdAt: entry.created_at || existing.createdAt,
-            lastActive: entry.last_active || existing.lastActive,
-          };
-        }
-        liveStates.set(entry.tid, taskUpdated);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(entry.tid, taskUpdated);
-          return next;
-        });
-        break;
-      }
-      case "task_reload": {
-        const { tid } = msg;
-        requestedHistoryRef.current.delete(tid);
-        const t = liveStates.get(tid);
-        if (!t) break;
-        // Collect user message texts to detect unsaved prompts after replay.
-        // Skip for edit-triggered reloads: the message was intentionally
-        // replaced, not removed, so old text should not become inputDraft.
-        const isEdit = msg.reason === "edit";
-        const userTexts = isEdit
-          ? []
-          : t.messages
-              .filter((m) => m.type === "user")
-              .map((m) =>
-                m.content
-                  .filter((b) => b.type === "text")
-                  .map((b) => ("text" in b ? b.text : ""))
-                  .join(""),
-              )
-              .filter((t) => t.length > 0);
-        // When a session has already started (sessionInfo set), the first user
-        // message was rendered into the prompt template before being sent to
-        // the agent, so it is stored in JSONL as the full template text — not
-        // the raw user input.  Exact-match confirmation during replay therefore
-        // never fires for it, which would incorrectly keep it in inputDraft.
-        // Since the first message always starts the session (it was definitely
-        // delivered), exclude it from recovery tracking entirely.
-        const textsToRecover = t.sessionInfo ? userTexts.slice(1) : userTexts;
-        const reset = {
-          ...makeTaskState(
-            tid,
-            false,
-            t.resumable,
-            t.title,
-            false,
-            t.workspace,
-            t.projectPath,
-            t.parentTid,
-            t.relationType,
-            t.status,
-          ),
-          resumable: t.resumable,
-          preReloadDrafts:
-            textsToRecover.length > 0 ? textsToRecover : undefined,
-          undoResult: t.undoResult,
-        };
-        liveStates.set(tid, reset);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, reset);
-          return next;
-        });
-        // Re-request history if this is the active task — the useEffect
-        // won't re-fire because activeTaskId hasn't changed.
-        if (String(tid) === activeTaskIdRef.current) {
-          if (connRef.current?.requestHistory(tid)) {
-            requestedHistoryRef.current.add(tid);
-          }
-        }
-        break;
-      }
-      case "task_history_end": {
-        const { tid } = msg;
-        let t = liveStates.get(tid);
-        if (!t) break;
-
-        // Compute inputDraft from confirmed drafts
-        let inputDraft: string | undefined;
-        if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
-          // Multiset subtraction: remove one confirmed occurrence per match
-          const confirmedCounts = new Map<string, number>();
-          for (const text of t.confirmedDuringReplay ?? []) {
-            confirmedCounts.set(text, (confirmedCounts.get(text) ?? 0) + 1);
-          }
-          const remaining: string[] = [];
-          for (const text of t.preReloadDrafts) {
-            const count = confirmedCounts.get(text) ?? 0;
-            if (count > 0) {
-              confirmedCounts.set(text, count - 1);
-            } else {
-              remaining.push(text);
+          liveStates.set(tid, reset);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, reset);
+            return next;
+          });
+          // Re-request history if this is the active task — the useEffect
+          // won't re-fire because activeTaskId hasn't changed.
+          if (String(tid) === activeTaskIdRef.current) {
+            if (connRef.current?.requestHistory(tid)) {
+              requestedHistoryRef.current.add(tid);
             }
           }
-          inputDraft =
-            remaining.length > 0 ? remaining.join("\n\n") : undefined;
+          break;
         }
+        case "task_history_end": {
+          const { tid } = msg;
+          let t = liveStates.get(tid);
+          if (!t) break;
 
-        // Finalize: mark loaded, clear transient state
-        t = {
-          ...t,
-          historyLoaded: true,
-          preReloadDrafts: undefined,
-          confirmedDuringReplay: undefined,
-          inputDraft,
-        };
-        liveStates.set(tid, t);
+          // Compute inputDraft from confirmed drafts
+          let inputDraft: string | undefined;
+          if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
+            // Multiset subtraction: remove one confirmed occurrence per match
+            const confirmedCounts = new Map<string, number>();
+            for (const text of t.confirmedDuringReplay ?? []) {
+              confirmedCounts.set(text, (confirmedCounts.get(text) ?? 0) + 1);
+            }
+            const remaining: string[] = [];
+            for (const text of t.preReloadDrafts) {
+              const count = confirmedCounts.get(text) ?? 0;
+              if (count > 0) {
+                confirmedCounts.set(text, count - 1);
+              } else {
+                remaining.push(text);
+              }
+            }
+            inputDraft =
+              remaining.length > 0 ? remaining.join("\n\n") : undefined;
+          }
 
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, t);
-          return next;
-        });
-        break;
-      }
-      case "title_update": {
-        const { tid, title } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        const updated = { ...t, title };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "suggestions_update": {
-        const { tid, suggestions } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        const updated = { ...t, suggestions };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "draft_updated": {
-        const { tid, new_draft } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        const updated = { ...t, serverDraft: new_draft };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "task_deleted": {
-        const { tid } = msg;
-        if (deletedDraftTid.current === tid) deletedDraftTid.current = null;
-        liveStates.delete(tid);
-        requestedHistoryRef.current.delete(tid);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.delete(tid);
-          return next;
-        });
-        break;
-      }
-      case "forkable_uuids": {
-        const { tid, uuids } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        const merged = new Set(t.forkableUuids);
-        for (const u of uuids) merged.add(u);
-        const updated = { ...t, forkableUuids: merged };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "undo_preview": {
-        const { tid, messages_removed } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        // Find the afterUuid from pending state — it was set optimistically
-        // when undoPreview was called.
-        const updated = {
-          ...t,
-          undoPending: {
-            afterUuid: t.undoPending?.afterUuid ?? "",
-            messagesRemoved: messages_removed,
-          },
-        };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          if (!prev.has(tid)) return prev;
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "undo_result": {
-        const { tid, output } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        if (output) {
-          const updated = { ...t, undoResult: output };
+          // Finalize: mark loaded, clear transient state
+          t = {
+            ...t,
+            historyLoaded: true,
+            preReloadDrafts: undefined,
+            confirmedDuringReplay: undefined,
+            inputDraft,
+          };
+          liveStates.set(tid, t);
+
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, t);
+            return next;
+          });
+          break;
+        }
+        case "title_update": {
+          const { tid, title } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          const updated = { ...t, title };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
+        case "suggestions_update": {
+          const { tid, suggestions } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          const updated = { ...t, suggestions };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
+        case "draft_updated": {
+          const { tid, new_draft } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          const updated = { ...t, serverDraft: new_draft };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
+        case "task_deleted": {
+          const { tid } = msg;
+          if (deletedDraftTid.current === tid) deletedDraftTid.current = null;
+          liveStates.delete(tid);
+          requestedHistoryRef.current.delete(tid);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.delete(tid);
+            return next;
+          });
+          break;
+        }
+        case "forkable_uuids": {
+          const { tid, uuids } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          const merged = new Set(t.forkableUuids);
+          for (const u of uuids) merged.add(u);
+          const updated = { ...t, forkableUuids: merged };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
+        case "undo_preview": {
+          const { tid, messages_removed } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          // Find the afterUuid from pending state — it was set optimistically
+          // when undoPreview was called.
+          const updated = {
+            ...t,
+            undoPending: {
+              afterUuid: t.undoPending?.afterUuid ?? "",
+              messagesRemoved: messages_removed,
+            },
+          };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
+        case "undo_result": {
+          const { tid, output } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          if (output) {
+            const updated = { ...t, undoResult: output };
+            liveStates.set(tid, updated);
+            setTasks((prev) => {
+              const next = new Map(prev);
+              next.set(tid, updated);
+              return next;
+            });
+            setTimeout(() => {
+              const cur = liveStates.get(tid);
+              if (!cur) return;
+              const cleared = { ...cur, undoResult: null };
+              liveStates.set(tid, cleared);
+              setTasks((prev) => {
+                const next = new Map(prev);
+                next.set(tid, cleared);
+                return next;
+              });
+            }, 8000);
+          }
+          break;
+        }
+        case "ask_user_question": {
+          const { tid, tool_use_id, questions } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          // Empty tool_use_id signals that the question was answered (clear the form)
+          const pendingAskUser = tool_use_id
+            ? { toolUseId: tool_use_id, questions }
+            : null;
+          const updated = { ...t, pendingAskUser };
           liveStates.set(tid, updated);
           setTasks((prev) => {
             const next = new Map(prev);
             next.set(tid, updated);
             return next;
           });
-          setTimeout(() => {
-            const cur = liveStates.get(tid);
-            if (!cur) return;
-            const cleared = { ...cur, undoResult: null };
-            liveStates.set(tid, cleared);
-            setTasks((prev) => {
-              const next = new Map(prev);
-              next.set(tid, cleared);
-              return next;
-            });
-          }, 8000);
+          break;
         }
-        break;
-      }
-      case "ask_user_question": {
-        const { tid, tool_use_id, questions } = msg;
-        const t = liveStates.get(tid);
-        if (!t) break;
-        // Empty tool_use_id signals that the question was answered (clear the form)
-        const pendingAskUser = tool_use_id
-          ? { toolUseId: tool_use_id, questions }
-          : null;
-        const updated = { ...t, pendingAskUser };
-        liveStates.set(tid, updated);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(tid, updated);
-          return next;
-        });
-        break;
-      }
-      case "server_status": {
-        setAuthEnabled(msg.auth_enabled);
-        setDevMode(msg.dev_mode ?? false);
-        break;
-      }
-      case "error": {
-        const errMsg = msg.message;
-        const errTid = msg.tid;
-        console.error("Server error:", errMsg, "tid:", errTid);
-        // Clear undoPending if this error is for a task with an active undo dialog
-        if (errTid !== undefined) {
-          const t = liveStates.get(errTid);
-          if (t?.undoPending) {
-            const updated = { ...t, undoPending: null };
-            liveStates.set(errTid, updated);
-            setTasks((prev) => {
-              const next = new Map(prev);
-              next.set(errTid, updated);
-              return next;
-            });
+        case "server_status": {
+          setAuthEnabled(msg.auth_enabled);
+          setDevMode(msg.dev_mode ?? false);
+          break;
+        }
+        case "error": {
+          const errMsg = msg.message;
+          const errTid = msg.tid;
+          console.error("Server error:", errMsg, "tid:", errTid);
+          // Clear undoPending if this error is for a task with an active undo dialog
+          if (errTid !== undefined) {
+            const t = liveStates.get(errTid);
+            if (t?.undoPending) {
+              const updated = { ...t, undoPending: null };
+              liveStates.set(errTid, updated);
+              setTasks((prev) => {
+                const next = new Map(prev);
+                next.set(errTid, updated);
+                return next;
+              });
+            }
           }
+          alert(errMsg);
+          break;
         }
-        alert(errMsg);
-        break;
       }
-    }
-  }, []);
+    },
+    [teardownVirtualDraft],
+  );
 
   useEffect(() => {
     const conn = new Connection();
@@ -1352,65 +1388,13 @@ export function useTaskManager(): TaskManager {
           }
           setDraft({ phase: "promoted", renderKey, tid });
         } else {
-          // Navigated to a non-draft task — clear stale draft tracking so
-          // send() doesn't accidentally target the previous draft.
-          // Fix Race 1: if timer_pending, cancel the timer before clearing.
-          // Fix Race 2: if create_pending, transition to create_cancelled so
-          // task_created can clean up the zombie.
-          const cur = draftRef.current;
-          if (cur.phase !== "none") {
-            if (cur.phase === "timer_pending") {
-              clearTimeout(cur.timerId);
-              setDraft({ phase: "none" });
-            } else if (cur.phase === "create_pending") {
-              setDraft({
-                phase: "create_cancelled",
-                renderKey: cur.renderKey,
-                correlationId: cur.correlationId,
-              });
-            } else if (cur.phase === "promoted" || cur.phase === "virtual") {
-              setDraft({ phase: "none" });
-            }
-          }
+          clearDraftForNav({ teardownVirtual: false });
         }
       }
       return;
     }
     if (activeWorkspace === null) {
-      // navigated to welcome page; tear down any virtual draft so tid=0
-      // doesn't leak into the welcome page task list as "Task 0"
-      const cur = draftRef.current;
-      if (cur.phase !== "none") {
-        if (cur.phase === "timer_pending") {
-          clearTimeout(cur.timerId);
-        } else if (cur.phase === "create_pending") {
-          // Keep correlationId so task_created can clean up the zombie.
-          // Still delete tid=0 immediately so it doesn't appear as "Task 0".
-          liveStates.delete(0);
-          setTasks((prev) => {
-            if (!prev.has(0)) return prev;
-            const next = new Map(prev);
-            next.delete(0);
-            return next;
-          });
-          inputDrafts.delete(0);
-          setDraft({
-            phase: "create_cancelled",
-            renderKey: cur.renderKey,
-            correlationId: cur.correlationId,
-          });
-          return;
-        }
-        liveStates.delete(0);
-        setTasks((prev) => {
-          if (!prev.has(0)) return prev;
-          const next = new Map(prev);
-          next.delete(0);
-          return next;
-        });
-        inputDrafts.delete(0);
-        setDraft({ phase: "none" });
-      }
+      clearDraftForNav({ teardownVirtual: true });
       return;
     }
     // Clear existing draft tracking when a real promoted draft task exists
@@ -1427,6 +1411,7 @@ export function useTaskManager(): TaskManager {
     activeWorkspace,
     createVirtualDraft,
     setDraft,
+    clearDraftForNav,
     activeTaskNeedsAdoption,
   ]);
 
@@ -1502,13 +1487,7 @@ export function useTaskManager(): TaskManager {
           clearTimeout(draft.timerId);
         }
         // Remove virtual draft (tid=0).
-        liveStates.delete(0);
-        setTasks((prev) => {
-          if (!prev.has(0)) return prev;
-          const next = new Map(prev);
-          next.delete(0);
-          return next;
-        });
+        teardownVirtualDraft();
         setDraft({ phase: "none" });
 
         // Atomic create+send
@@ -1554,7 +1533,7 @@ export function useTaskManager(): TaskManager {
         });
       }
     },
-    [activeTaskId, setTasks, entryPoints],
+    [activeTaskId, setTasks, entryPoints, teardownVirtualDraft],
   );
 
   const interrupt = useCallback(() => {
