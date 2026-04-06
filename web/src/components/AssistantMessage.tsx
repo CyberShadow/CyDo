@@ -1,4 +1,5 @@
 import { Fragment } from "preact";
+import { memo } from "preact/compat";
 import type { DisplayMessage, Block } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
@@ -6,6 +7,14 @@ import { UserMessage } from "./UserMessage";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { StickyScrollPre } from "./StickyScrollPre";
 import { useDevMode } from "../devMode";
+
+function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 
 /** Best-effort parse of an incomplete JSON string by closing open delimiters.
  *
@@ -84,57 +93,199 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
 
 interface Props {
   message: DisplayMessage;
-  blocks: Map<string, Block>;
-  resolvedBlocks?: Block[];
+  resolvedBlocks: Block[];
+  resolvedBlocksByMsg?: Map<string, Block[]>;
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
 }
 
-export function AssistantMessage({
-  message,
-  blocks,
-  resolvedBlocks,
-  childrenByParent,
-  onViewFile,
-}: Props) {
-  const devMode = useDevMode();
-  const isStreaming = message.streaming === true;
-  const isSynthetic = message.model === "<synthetic>";
-  const blocksToRender =
-    resolvedBlocks ??
-    ((message.blockIds ?? [])
-      .map((id) => blocks.get(id))
-      .filter(Boolean) as Block[]);
-  return (
-    <div
-      class={`message assistant-message${isStreaming ? " streaming" : ""}${
-        isSynthetic ? " synthetic-message" : ""
-      }`}
-    >
-      {(message.isSidechain || isSynthetic) && (
-        <div class="message-meta">
-          {message.isSidechain && (
-            <span class="meta-badge sidechain">sub-agent</span>
-          )}
-          {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
-        </div>
-      )}
-      {blocksToRender.map((block, i) => {
-        const itemId = block.itemId;
+export const AssistantMessage = memo(
+  function AssistantMessage({
+    message,
+    resolvedBlocks,
+    resolvedBlocksByMsg,
+    childrenByParent,
+    onViewFile,
+  }: Props) {
+    const devMode = useDevMode();
+    const isStreaming = message.streaming === true;
+    const isSynthetic = message.model === "<synthetic>";
+    const blocksToRender = resolvedBlocks;
+    return (
+      <div
+        class={`message assistant-message${isStreaming ? " streaming" : ""}${
+          isSynthetic ? " synthetic-message" : ""
+        }`}
+      >
+        {(message.isSidechain || isSynthetic) && (
+          <div class="message-meta">
+            {message.isSidechain && (
+              <span class="meta-badge sidechain">sub-agent</span>
+            )}
+            {isSynthetic && <span class="meta-badge synthetic">synthetic</span>}
+          </div>
+        )}
+        {blocksToRender.map((block, i) => {
+          const itemId = block.itemId;
 
-        const blockExtras = { ...(block._extras ?? {}) };
-        const caller = blockExtras.caller;
-        if (
-          caller &&
-          typeof caller === "object" &&
-          (caller as Record<string, unknown>).type === "direct"
-        ) {
-          delete blockExtras.caller;
-        }
-        const blockExtraEl =
-          devMode && Object.keys(blockExtras).length > 0 ? (
+          const blockExtras = { ...(block._extras ?? {}) };
+          const caller = blockExtras.caller;
+          if (
+            caller &&
+            typeof caller === "object" &&
+            (caller as Record<string, unknown>).type === "direct"
+          ) {
+            delete blockExtras.caller;
+          }
+          const blockExtraEl =
+            devMode && Object.keys(blockExtras).length > 0 ? (
+              <div class="unknown-extra-fields">
+                {Object.entries(blockExtras).map(([k, v]) => (
+                  <div key={k} class="tool-input-field">
+                    <span class="field-label">{k}:</span>
+                    <span class="field-value">
+                      {" "}
+                      {typeof v === "string" ? v : JSON.stringify(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null;
+
+          if (block.type === "thinking") {
+            return (
+              <Fragment key={itemId}>
+                <Markdown text={block.text} class="thinking-text" />
+                {blockExtraEl}
+              </Fragment>
+            );
+          }
+
+          if (block.type === "text") {
+            return (
+              <Fragment key={itemId}>
+                {block.completed ? (
+                  <Markdown text={block.text} class="text-content" />
+                ) : (
+                  <div class="text-content streaming-text">
+                    <Markdown text={block.text} />
+                    <span class="cursor" />
+                  </div>
+                )}
+                {blockExtraEl}
+              </Fragment>
+            );
+          }
+
+          if (block.type === "tool_use") {
+            if (!block.name && !block.completed) {
+              // Tool name not yet arrived
+              return (
+                <div key={itemId} class="tool-streaming">
+                  <span class="tool-label">Tool call building...</span>
+                  <pre>{block.text}</pre>
+                </div>
+              );
+            }
+            if (block.name) {
+              const nested = childrenByParent?.get(block.itemId);
+              return (
+                <Fragment key={itemId}>
+                  <ToolCall
+                    name={block.name}
+                    toolServer={block.toolServer}
+                    toolSource={block.toolSource}
+                    toolUseId={block.itemId}
+                    streaming={!block.completed}
+                    input={
+                      block.completed
+                        ? ((block.input as
+                            | Record<string, unknown>
+                            | undefined) ?? {})
+                        : ((block.input as
+                            | Record<string, unknown>
+                            | undefined) ?? tryParsePartialJson(block.text))
+                    }
+                    result={block.completed ? block.result : undefined}
+                    onViewFile={onViewFile}
+                  >
+                    {block.stdin && (
+                      <StickyScrollPre class="tool-result streaming-stdin">
+                        {block.stdin}
+                      </StickyScrollPre>
+                    )}
+                    {typeof block.output === "string" &&
+                      block.output &&
+                      !block.result && (
+                        <StickyScrollPre class="tool-result streaming-output">
+                          {hasAnsi(block.output)
+                            ? renderAnsi(block.output)
+                            : block.output}
+                        </StickyScrollPre>
+                      )}
+                    {nested && nested.length > 0 && block.completed && (
+                      <div class="sub-agent-messages">
+                        {nested.map((child) => {
+                          if (child.type === "assistant") {
+                            return (
+                              <AssistantMessage
+                                key={child.id}
+                                message={child}
+                                resolvedBlocks={
+                                  resolvedBlocksByMsg?.get(child.id) ?? []
+                                }
+                                resolvedBlocksByMsg={resolvedBlocksByMsg}
+                                childrenByParent={childrenByParent}
+                                onViewFile={onViewFile}
+                              />
+                            );
+                          }
+                          if (child.type === "user") {
+                            return (
+                              <UserMessage key={child.id} message={child} />
+                            );
+                          }
+                          return null;
+                        })}
+                      </div>
+                    )}
+                  </ToolCall>
+                  {blockExtraEl}
+                </Fragment>
+              );
+            }
+            return null;
+          }
+
+          if (block.type === "unrecognized") {
+            if (!devMode) return null;
+            return (
+              <div key={itemId} class={`content-block ${block.type}`}>
+                <div class="unknown-block">
+                  <div class="unknown-block-label">Unrecognized agent data</div>
+                  <pre>{block.text}</pre>
+                </div>
+              </div>
+            );
+          }
+
+          // Unknown block type
+          if (!devMode) return null;
+          return (
+            <div key={i} class="unknown-block">
+              <div class="unknown-block-label">
+                Unknown block type: {block.type}
+              </div>
+              <pre>{JSON.stringify(block, null, 2)}</pre>
+              {blockExtraEl}
+            </div>
+          );
+        })}
+        {devMode &&
+          message.extraFields &&
+          Object.keys(message.extraFields).length > 0 && (
             <div class="unknown-extra-fields">
-              {Object.entries(blockExtras).map(([k, v]) => (
+              {Object.entries(message.extraFields).map(([k, v]) => (
                 <div key={k} class="tool-input-field">
                   <span class="field-label">{k}:</span>
                   <span class="field-value">
@@ -144,145 +295,14 @@ export function AssistantMessage({
                 </div>
               ))}
             </div>
-          ) : null;
-
-        if (block.type === "thinking") {
-          return (
-            <Fragment key={itemId}>
-              <Markdown text={block.text} class="thinking-text" />
-              {blockExtraEl}
-            </Fragment>
-          );
-        }
-
-        if (block.type === "text") {
-          return (
-            <Fragment key={itemId}>
-              {block.completed ? (
-                <Markdown text={block.text} class="text-content" />
-              ) : (
-                <div class="text-content streaming-text">
-                  <Markdown text={block.text} />
-                  <span class="cursor" />
-                </div>
-              )}
-              {blockExtraEl}
-            </Fragment>
-          );
-        }
-
-        if (block.type === "tool_use") {
-          if (!block.name && !block.completed) {
-            // Tool name not yet arrived
-            return (
-              <div key={itemId} class="tool-streaming">
-                <span class="tool-label">Tool call building...</span>
-                <pre>{block.text}</pre>
-              </div>
-            );
-          }
-          if (block.name) {
-            const nested = childrenByParent?.get(block.itemId);
-            return (
-              <Fragment key={itemId}>
-                <ToolCall
-                  name={block.name}
-                  toolServer={block.toolServer}
-                  toolSource={block.toolSource}
-                  toolUseId={block.itemId}
-                  streaming={!block.completed}
-                  input={
-                    block.completed
-                      ? ((block.input as Record<string, unknown> | undefined) ??
-                        {})
-                      : ((block.input as Record<string, unknown> | undefined) ??
-                        tryParsePartialJson(block.text))
-                  }
-                  result={block.completed ? block.result : undefined}
-                  onViewFile={onViewFile}
-                >
-                  {block.stdin && (
-                    <StickyScrollPre class="tool-result streaming-stdin">
-                      {block.stdin}
-                    </StickyScrollPre>
-                  )}
-                  {typeof block.output === "string" &&
-                    block.output &&
-                    !block.result && (
-                      <StickyScrollPre class="tool-result streaming-output">
-                        {hasAnsi(block.output)
-                          ? renderAnsi(block.output)
-                          : block.output}
-                      </StickyScrollPre>
-                    )}
-                  {nested && nested.length > 0 && block.completed && (
-                    <div class="sub-agent-messages">
-                      {nested.map((child) => {
-                        if (child.type === "assistant") {
-                          return (
-                            <AssistantMessage
-                              key={child.id}
-                              message={child}
-                              blocks={blocks}
-                              childrenByParent={childrenByParent}
-                              onViewFile={onViewFile}
-                            />
-                          );
-                        }
-                        if (child.type === "user") {
-                          return <UserMessage key={child.id} message={child} />;
-                        }
-                        return null;
-                      })}
-                    </div>
-                  )}
-                </ToolCall>
-                {blockExtraEl}
-              </Fragment>
-            );
-          }
-          return null;
-        }
-
-        if (block.type === "unrecognized") {
-          if (!devMode) return null;
-          return (
-            <div key={itemId} class={`content-block ${block.type}`}>
-              <div class="unknown-block">
-                <div class="unknown-block-label">Unrecognized agent data</div>
-                <pre>{block.text}</pre>
-              </div>
-            </div>
-          );
-        }
-
-        // Unknown block type
-        if (!devMode) return null;
-        return (
-          <div key={i} class="unknown-block">
-            <div class="unknown-block-label">
-              Unknown block type: {block.type}
-            </div>
-            <pre>{JSON.stringify(block, null, 2)}</pre>
-            {blockExtraEl}
-          </div>
-        );
-      })}
-      {devMode &&
-        message.extraFields &&
-        Object.keys(message.extraFields).length > 0 && (
-          <div class="unknown-extra-fields">
-            {Object.entries(message.extraFields).map(([k, v]) => (
-              <div key={k} class="tool-input-field">
-                <span class="field-label">{k}:</span>
-                <span class="field-value">
-                  {" "}
-                  {typeof v === "string" ? v : JSON.stringify(v)}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-    </div>
-  );
-}
+          )}
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.message === next.message &&
+    shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
+    prev.childrenByParent === next.childrenByParent &&
+    prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
+    prev.onViewFile === next.onViewFile,
+);

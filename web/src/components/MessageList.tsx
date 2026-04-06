@@ -1,4 +1,3 @@
-import { type ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import {
   useEffect,
@@ -540,21 +539,26 @@ const MessageView = memo(
     msg,
     tid,
     resolvedBlocks,
+    childrenByParent,
+    resolvedBlocksByMsg,
+    onViewFile,
     onFork,
     onUndo,
     onEdit,
     forkable,
-    children,
   }: {
     msg: DisplayMessage;
     tid: number;
     resolvedBlocks: Block[];
+    childrenByParent: Map<string, DisplayMessage[]>;
+    resolvedBlocksByMsg: Map<string, Block[]>;
+    onViewFile?: (filePath: string) => void;
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     onEdit?: (uuid: string, content: string) => void;
     forkable?: boolean;
-    children: ComponentChildren;
   }) {
+    const devMode = useDevMode();
     const [showSource, setShowSource] = useState(false);
     const [editing, setEditing] = useState(false);
     const [editText, setEditText] = useState("");
@@ -581,6 +585,89 @@ const MessageView = memo(
       if (uuid && onEdit) onEdit(uuid, editText);
       setEditing(false);
     }, [uuid, onEdit, editText]);
+
+    let inner;
+    switch (msg.type) {
+      case "user":
+        inner = msg.cydoMeta ? (
+          <SystemUserMessage message={msg} />
+        ) : (
+          <UserMessage message={msg} />
+        );
+        break;
+      case "assistant":
+        inner = (
+          <AssistantMessage
+            message={msg}
+            resolvedBlocks={resolvedBlocks}
+            resolvedBlocksByMsg={resolvedBlocksByMsg}
+            childrenByParent={childrenByParent}
+            onViewFile={onViewFile}
+          />
+        );
+        break;
+      case "result":
+        inner = <ResultMessageView message={msg} />;
+        break;
+      case "summary":
+        inner = <SummaryMessageView message={msg} />;
+        break;
+      case "rate_limit":
+        inner = <RateLimitMessageView message={msg} />;
+        break;
+      case "compact_boundary":
+        inner = <CompactBoundaryMessageView message={msg} />;
+        break;
+      case "system": {
+        if (msg.subtype === "init") {
+          inner = <SystemInitView message={msg} />;
+        } else if (msg.subtype === "status") {
+          inner = <SystemStatusMessageView message={msg} />;
+        } else if (msg.subtype === "task_lifecycle") {
+          inner = <TaskLifecycleView message={msg} />;
+        } else if (msg.subtype === "control_response") {
+          inner = <ControlResponseView message={msg} />;
+        } else if (msg.subtype === "stderr") {
+          const text = msg.content
+            .filter(
+              (b): b is { type: "text"; text: string } => b.type === "text",
+            )
+            .map((b) => b.text)
+            .join("\n");
+          inner = (
+            <div class="message stderr-message">
+              <span class="stderr-badge">stderr</span>
+              <pre class="stderr-content">
+                {hasAnsi(text) ? renderAnsi(text) : text}
+              </pre>
+            </div>
+          );
+        } else if (msg.subtype !== "parse_error" || devMode) {
+          const text = msg.content
+            .filter(
+              (b): b is { type: "text"; text: string } => b.type === "text",
+            )
+            .map((b) => b.text)
+            .join("\n");
+          inner = (
+            <div class="message system-message">
+              <pre>{text}</pre>
+            </div>
+          );
+        }
+        break;
+      }
+      default:
+        inner = (
+          <div class="message system-message">
+            <pre>
+              Unknown display type: {msg.type}
+              {"\n"}
+              {JSON.stringify(msg, null, 2)}
+            </pre>
+          </div>
+        );
+    }
 
     return (
       <div
@@ -650,7 +737,7 @@ const MessageView = memo(
         ) : showSource ? (
           <SourceView msg={msg} tid={tid} />
         ) : (
-          children
+          inner
         )}
         {uuid && forkable && (onFork || onUndo) && (
           <div class="message-actions message-actions-bottom">
@@ -691,11 +778,13 @@ const MessageView = memo(
     prev.msg === next.msg &&
     shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.tid === next.tid &&
+    prev.childrenByParent === next.childrenByParent &&
+    prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
+    prev.onViewFile === next.onViewFile &&
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
     prev.onEdit === next.onEdit &&
-    prev.forkable === next.forkable &&
-    prev.children === next.children,
+    prev.forkable === next.forkable,
 );
 
 export function MessageList({
@@ -708,7 +797,6 @@ export function MessageList({
   forkableUuids,
   onViewFile,
 }: Props) {
-  const devMode = useDevMode();
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
     () =>
@@ -768,40 +856,90 @@ export function MessageList({
 
   // Partition messages: top-level vs nested under a parent tool_use_id
   const prevChildrenRef = useRef(new Map<string, DisplayMessage[]>());
-  const { childrenByParent, topLevelMessages } = useMemo(() => {
-    const newMap = new Map<string, DisplayMessage[]>();
-    const topLevelMessages: DisplayMessage[] = [];
-    for (const msg of messages) {
-      if (msg.parentToolUseId) {
-        let list = newMap.get(msg.parentToolUseId);
-        if (!list) {
-          list = [];
-          newMap.set(msg.parentToolUseId, list);
+  const prevResolvedBlocksRef = useRef(new Map<string, Block[]>());
+  const { childrenByParent, topLevelMessages, resolvedBlocksByMsg } =
+    useMemo(() => {
+      const newMap = new Map<string, DisplayMessage[]>();
+      const topLevelMessages: DisplayMessage[] = [];
+      for (const msg of messages) {
+        if (msg.parentToolUseId) {
+          let list = newMap.get(msg.parentToolUseId);
+          if (!list) {
+            list = [];
+            newMap.set(msg.parentToolUseId, list);
+          }
+          list.push(msg);
+        } else {
+          topLevelMessages.push(msg);
         }
-        list.push(msg);
-      } else {
-        topLevelMessages.push(msg);
       }
-    }
 
-    // Stabilize: reuse previous entry arrays when content hasn't changed
-    // (same length and same item references). This prevents AssistantMessage
-    // from doing unnecessary VDOM work when its parent re-renders.
-    const prev = prevChildrenRef.current;
-    for (const [key, arr] of newMap) {
-      const prevArr = prev.get(key);
+      // Stabilize arrays: reuse previous entry arrays when content hasn't changed
+      // (same length and same item references). This prevents AssistantMessage
+      // from doing unnecessary VDOM work when its parent re-renders.
+      const prev = prevChildrenRef.current;
+      for (const [key, arr] of newMap) {
+        const prevArr = prev.get(key);
+        if (
+          prevArr &&
+          prevArr.length === arr.length &&
+          prevArr.every((m, i) => m === arr[i])
+        ) {
+          newMap.set(key, prevArr);
+        }
+      }
+      // Stabilize the Map itself: if keys and values are unchanged, reuse the
+      // previous Map object so MessageView's `===` comparator can skip re-renders.
+      let stableChildrenMap: Map<string, DisplayMessage[]>;
       if (
-        prevArr &&
-        prevArr.length === arr.length &&
-        prevArr.every((m, i) => m === arr[i])
+        newMap.size === prev.size &&
+        [...newMap].every(([k, v]) => prev.get(k) === v)
       ) {
-        newMap.set(key, prevArr);
+        stableChildrenMap = prev;
+      } else {
+        stableChildrenMap = newMap;
       }
-    }
-    prevChildrenRef.current = newMap;
+      prevChildrenRef.current = stableChildrenMap;
 
-    return { childrenByParent: newMap, topLevelMessages };
-  }, [messages]);
+      // Pre-resolve blocks for nested assistant messages so AssistantMessage
+      // doesn't need the full blocks Map (which changes on every streaming delta).
+      const newResolvedMap = new Map<string, Block[]>();
+      for (const [, children] of stableChildrenMap) {
+        for (const child of children) {
+          if (child.type === "assistant" && child.blockIds) {
+            const resolved = child.blockIds
+              .map((id) => blocks.get(id))
+              .filter(Boolean) as Block[];
+            newResolvedMap.set(child.id, resolved);
+          }
+        }
+      }
+      // Stabilize arrays
+      const prevResolved = prevResolvedBlocksRef.current;
+      for (const [key, arr] of newResolvedMap) {
+        const prevArr = prevResolved.get(key);
+        if (prevArr && shallowArrayEqual(prevArr, arr)) {
+          newResolvedMap.set(key, prevArr);
+        }
+      }
+      // Stabilize the Map itself
+      let stableResolvedMap: Map<string, Block[]>;
+      if (
+        newResolvedMap.size === prevResolved.size &&
+        [...newResolvedMap].every(([k, v]) => prevResolved.get(k) === v)
+      ) {
+        stableResolvedMap = prevResolved;
+      } else {
+        stableResolvedMap = newResolvedMap;
+      }
+      prevResolvedBlocksRef.current = stableResolvedMap;
+
+      return {
+        childrenByParent: stableChildrenMap,
+        topLevelMessages,
+        resolvedBlocksByMsg: stableResolvedMap,
+      };
+    }, [messages, blocks]);
 
   return (
     <div class="message-list" ref={containerRef}>
@@ -813,90 +951,6 @@ export function MessageList({
                   .map((id) => blocks.get(id))
                   .filter(Boolean) as Block[])
               : [];
-          let inner;
-          switch (msg.type) {
-            case "user":
-              inner = msg.cydoMeta ? (
-                <SystemUserMessage message={msg} />
-              ) : (
-                <UserMessage message={msg} />
-              );
-              break;
-            case "assistant":
-              inner = (
-                <AssistantMessage
-                  message={msg}
-                  resolvedBlocks={resolvedBlocks}
-                  blocks={blocks}
-                  childrenByParent={childrenByParent}
-                  onViewFile={onViewFile}
-                />
-              );
-              break;
-            case "result":
-              inner = <ResultMessageView message={msg} />;
-              break;
-            case "summary":
-              inner = <SummaryMessageView message={msg} />;
-              break;
-            case "rate_limit":
-              inner = <RateLimitMessageView message={msg} />;
-              break;
-            case "compact_boundary":
-              inner = <CompactBoundaryMessageView message={msg} />;
-              break;
-            case "system": {
-              if (msg.subtype === "init") {
-                inner = <SystemInitView message={msg} />;
-              } else if (msg.subtype === "status") {
-                inner = <SystemStatusMessageView message={msg} />;
-              } else if (msg.subtype === "task_lifecycle") {
-                inner = <TaskLifecycleView message={msg} />;
-              } else if (msg.subtype === "control_response") {
-                inner = <ControlResponseView message={msg} />;
-              } else if (msg.subtype === "stderr") {
-                const text = msg.content
-                  .filter(
-                    (b): b is { type: "text"; text: string } =>
-                      b.type === "text",
-                  )
-                  .map((b) => b.text)
-                  .join("\n");
-                inner = (
-                  <div class="message stderr-message">
-                    <span class="stderr-badge">stderr</span>
-                    <pre class="stderr-content">
-                      {hasAnsi(text) ? renderAnsi(text) : text}
-                    </pre>
-                  </div>
-                );
-              } else if (msg.subtype !== "parse_error" || devMode) {
-                const text = msg.content
-                  .filter(
-                    (b): b is { type: "text"; text: string } =>
-                      b.type === "text",
-                  )
-                  .map((b) => b.text)
-                  .join("\n");
-                inner = (
-                  <div class="message system-message">
-                    <pre>{text}</pre>
-                  </div>
-                );
-              }
-              break;
-            }
-            default:
-              inner = (
-                <div class="message system-message">
-                  <pre>
-                    Unknown display type: {msg.type}
-                    {"\n"}
-                    {JSON.stringify(msg, null, 2)}
-                  </pre>
-                </div>
-              );
-          }
           const msgUuid = msg.uuid;
           const isForkable =
             !!msgUuid && !!forkableUuids && forkableUuids.has(msgUuid);
@@ -906,13 +960,14 @@ export function MessageList({
               msg={msg}
               tid={sessionId}
               resolvedBlocks={resolvedBlocks}
+              childrenByParent={childrenByParent}
+              resolvedBlocksByMsg={resolvedBlocksByMsg}
+              onViewFile={onViewFile}
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               onEdit={msg.type === "user" ? handleEditMessage : undefined}
               forkable={isForkable}
-            >
-              {inner}
-            </MessageView>
+            />
           );
         })}
       </div>

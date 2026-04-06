@@ -1,4 +1,5 @@
 import { h, Fragment, ComponentChildren } from "preact";
+import { memo } from "preact/compat";
 import { useState, useMemo, useEffect } from "preact/hooks";
 import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import HtmlDiff from "htmldiff-js";
@@ -2308,301 +2309,322 @@ function defaultResultExpanded(name: string, result?: ToolResult): boolean {
 
 const askToolNames = new Set(["AskUserQuestion"]);
 
-export function ToolCall({
-  name,
-  toolServer,
-  toolUseId,
-  input,
-  result,
-  streaming,
-  children,
-  onViewFile,
-}: Props) {
-  // Collapse pending AskUserQuestion input — the interactive form shows the same content
-  const isAsk = askToolNames.has(name);
-  const [inputOpen, setInputOpen] = useState(
-    isAsk ? !!result : defaultExpandedTools.has(name),
-  );
-  // Auto-expand when result arrives for ask tools
-  useEffect(() => {
-    if (isAsk && result) setInputOpen(true);
-  }, [isAsk, !!result]);
-  const [resultOpenOverride, setResultOpenOverride] = useState<boolean | null>(
-    null,
-  );
-  const resultOpen = resultOpenOverride ?? defaultResultExpanded(name, result);
-  const subtitle = getHeaderSubtitle(name, toolServer, input);
-  const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
+export const ToolCall = memo(
+  function ToolCall({
+    name,
+    toolServer,
+    toolUseId,
+    input,
+    result,
+    streaming,
+    children,
+    onViewFile,
+  }: Props) {
+    // Collapse pending AskUserQuestion input — the interactive form shows the same content
+    const isAsk = askToolNames.has(name);
+    const [inputOpen, setInputOpen] = useState(
+      isAsk ? !!result : defaultExpandedTools.has(name),
+    );
+    // Auto-expand when result arrives for ask tools
+    useEffect(() => {
+      if (isAsk && result) setInputOpen(true);
+    }, [isAsk, !!result]);
+    const [resultOpenOverride, setResultOpenOverride] = useState<
+      boolean | null
+    >(null);
+    const resultOpen =
+      resultOpenOverride ?? defaultResultExpanded(name, result);
+    const subtitle = getHeaderSubtitle(name, toolServer, input);
+    const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
 
-  const filePath = typeof input.file_path === "string" ? input.file_path : null;
-  const resultText = result ? extractResultText(result.content) : null;
-  const cydoTaskItems =
-    name === "Task" &&
-    toolServer === "cydo" &&
-    resultText != null &&
-    !result!.isError
-      ? parseCydoTaskResult(resultText)
+    const filePath =
+      typeof input.file_path === "string" ? input.file_path : null;
+    const resultText = result ? extractResultText(result.content) : null;
+    const cydoTaskItems =
+      name === "Task" &&
+      toolServer === "cydo" &&
+      resultText != null &&
+      !result!.isError
+        ? parseCydoTaskResult(resultText)
+        : null;
+    const useReadHighlight =
+      name === "Read" && filePath && resultText != null && !result!.isError;
+    const useExecCommandResult =
+      name === "exec_command" && resultText != null && !result!.isError;
+    const useWebSearchResult =
+      name === "WebSearch" && resultText != null && !result!.isError;
+    const useWebFetchResult =
+      name === "WebFetch" && resultText != null && !result!.isError;
+    const useTaskOutputResult =
+      name === "TaskOutput" &&
+      result &&
+      !result.isError &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const useTaskStopResult =
+      name === "TaskStop" &&
+      result &&
+      !result.isError &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const useCommandExecutionResult =
+      name === "commandExecution" &&
+      result != null &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const useBashResult =
+      name === "Bash" &&
+      result != null &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const taskOutputElement = useTaskOutputResult
+      ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;
-  const useReadHighlight =
-    name === "Read" && filePath && resultText != null && !result!.isError;
-  const useExecCommandResult =
-    name === "exec_command" && resultText != null && !result!.isError;
-  const useWebSearchResult =
-    name === "WebSearch" && resultText != null && !result!.isError;
-  const useWebFetchResult =
-    name === "WebFetch" && resultText != null && !result!.isError;
-  const useTaskOutputResult =
-    name === "TaskOutput" &&
-    result &&
-    !result.isError &&
-    result.toolResult != null &&
-    typeof result.toolResult === "object";
-  const useTaskStopResult =
-    name === "TaskStop" &&
-    result &&
-    !result.isError &&
-    result.toolResult != null &&
-    typeof result.toolResult === "object";
-  const useCommandExecutionResult =
-    name === "commandExecution" &&
-    result != null &&
-    result.toolResult != null &&
-    typeof result.toolResult === "object";
-  const useBashResult =
-    name === "Bash" &&
-    result != null &&
-    result.toolResult != null &&
-    typeof result.toolResult === "object";
-  const taskOutputElement = useTaskOutputResult
-    ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
-    : null;
-  const taskStopElement = useTaskStopResult
-    ? formatTaskStopResult(result.toolResult as Record<string, unknown>)
-    : null;
-  const commandExecutionElement = useCommandExecutionResult
-    ? formatCommandExecutionResult(result.toolResult as Record<string, unknown>)
-    : null;
-  const bashElement = useBashResult
-    ? formatBashResult(result.toolResult as Record<string, unknown>)
-    : null;
-
-  const hasResultContent =
-    result != null &&
-    (() => {
-      if (resultText != null && resultText.length > 0) return true;
-      if (result.toolResult != null && typeof result.toolResult === "object") {
-        if (
-          Array.isArray(result.toolResult)
-            ? result.toolResult.length > 0
-            : Object.keys(result.toolResult).length > 0
+    const taskStopElement = useTaskStopResult
+      ? formatTaskStopResult(result.toolResult as Record<string, unknown>)
+      : null;
+    const commandExecutionElement = useCommandExecutionResult
+      ? formatCommandExecutionResult(
+          result.toolResult as Record<string, unknown>,
         )
-          return true;
-      }
-      if (typeof result.content === "string" && result.content.length > 0)
-        return true;
-      if (Array.isArray(result.content) && result.content.length > 0)
-        return true;
-      if (cydoTaskItems) return true;
-      if (taskOutputElement) return true;
-      if (taskStopElement) return true;
-      if (commandExecutionElement) return true;
-      if (bashElement) return true;
-      return false;
-    })();
+      : null;
+    const bashElement = useBashResult
+      ? formatBashResult(result.toolResult as Record<string, unknown>)
+      : null;
 
-  return (
-    <div
-      id={toolUseId ? `tool-${toolUseId}` : undefined}
-      class={`tool-call${streaming ? " streaming" : ""}${result?.isError ? " tool-error" : ""}`}
-    >
+    const hasResultContent =
+      result != null &&
+      (() => {
+        if (resultText != null && resultText.length > 0) return true;
+        if (
+          result.toolResult != null &&
+          typeof result.toolResult === "object"
+        ) {
+          if (
+            Array.isArray(result.toolResult)
+              ? result.toolResult.length > 0
+              : Object.keys(result.toolResult).length > 0
+          )
+            return true;
+        }
+        if (typeof result.content === "string" && result.content.length > 0)
+          return true;
+        if (Array.isArray(result.content) && result.content.length > 0)
+          return true;
+        if (cydoTaskItems) return true;
+        if (taskOutputElement) return true;
+        if (taskStopElement) return true;
+        if (commandExecutionElement) return true;
+        if (bashElement) return true;
+        return false;
+      })();
+
+    return (
       <div
-        class="tool-header"
-        onClick={() => {
-          setInputOpen(!inputOpen);
-        }}
+        id={toolUseId ? `tool-${toolUseId}` : undefined}
+        class={`tool-call${streaming ? " streaming" : ""}${result?.isError ? " tool-error" : ""}`}
       >
-        <span class="tool-icon">
-          {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
-        </span>
-        {toolServer === "cydo" && (
-          <svg
-            class="cydo-tool-logo"
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke-width="2"
-            stroke-linecap="round"
-          >
-            <path
-              style={{ stroke: "var(--success)" }}
-              d="M5.5 12L10.5 4L13 8l-2.5 4"
-            />
-            <path
-              style={{ stroke: "var(--processing)" }}
-              d="M5.5 4L3 8l2.5 4"
-            />
-          </svg>
-        )}
-        <span class="tool-name">{name}</span>
-        {subtitle}
-        {!result && <span class="tool-spinner" />}
-        {(name === "Edit" ||
-          name === "apply_patch" ||
-          fileWriteToolNames.has(name)) &&
-          viewPaths.length > 0 &&
-          onViewFile && (
-            <button
-              class="tool-view-file"
-              onClick={(e) => {
-                e.stopPropagation();
-                onViewFile(viewPaths[0]!);
-              }}
-              title="View file"
+        <div
+          class="tool-header"
+          onClick={() => {
+            setInputOpen(!inputOpen);
+          }}
+        >
+          <span class="tool-icon">
+            {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
+          </span>
+          {toolServer === "cydo" && (
+            <svg
+              class="cydo-tool-logo"
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke-width="2"
+              stroke-linecap="round"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
+              <path
+                style={{ stroke: "var(--success)" }}
+                d="M5.5 12L10.5 4L13 8l-2.5 4"
+              />
+              <path
+                style={{ stroke: "var(--processing)" }}
+                d="M5.5 4L3 8l2.5 4"
+              />
+            </svg>
           )}
-      </div>
-      {inputOpen &&
-        name !== "fileChange" &&
-        viewPaths.length > 1 &&
-        onViewFile && (
-          <div class="tool-input-formatted">
-            {viewPaths.map((path) => (
-              <div key={path} class="tool-input-field">
-                <span class="field-label">file:</span>
-                <button
-                  class="tool-subtitle-path"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onViewFile(path);
-                  }}
-                  type="button"
+          <span class="tool-name">{name}</span>
+          {subtitle}
+          {!result && <span class="tool-spinner" />}
+          {(name === "Edit" ||
+            name === "apply_patch" ||
+            fileWriteToolNames.has(name)) &&
+            viewPaths.length > 0 &&
+            onViewFile && (
+              <button
+                class="tool-view-file"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewFile(viewPaths[0]!);
+                }}
+                title="View file"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
                 >
-                  {path}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      {inputOpen && formatInput(name, toolServer, input, result)}
-      {children}
-      {result && hasResultContent && (
-        <div class="tool-result-section">
-          <div
-            class="tool-result-header"
-            onClick={() => {
-              setResultOpenOverride(!resultOpen);
-            }}
-          >
-            {resultOpen ? "\u25BC" : "\u25B6"} Result
-          </div>
-          {resultOpen && (
-            <>
-              {cydoTaskItems ? (
-                <div class="tool-input-formatted">
-                  {cydoTaskItems.map((item, i) => {
-                    if (
-                      typeof item !== "object" ||
-                      item === null ||
-                      Array.isArray(item)
-                    ) {
-                      const fallbackText =
-                        typeof item === "string" ? item : String(item);
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            )}
+        </div>
+        {inputOpen &&
+          name !== "fileChange" &&
+          viewPaths.length > 1 &&
+          onViewFile && (
+            <div class="tool-input-formatted">
+              {viewPaths.map((path) => (
+                <div key={path} class="tool-input-field">
+                  <span class="field-label">file:</span>
+                  <button
+                    class="tool-subtitle-path"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onViewFile(path);
+                    }}
+                    type="button"
+                  >
+                    {path}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        {inputOpen && formatInput(name, toolServer, input, result)}
+        {children}
+        {result && hasResultContent && (
+          <div class="tool-result-section">
+            <div
+              class="tool-result-header"
+              onClick={() => {
+                setResultOpenOverride(!resultOpen);
+              }}
+            >
+              {resultOpen ? "\u25BC" : "\u25B6"} Result
+            </div>
+            {resultOpen && (
+              <>
+                {cydoTaskItems ? (
+                  <div class="tool-input-formatted">
+                    {cydoTaskItems.map((item, i) => {
+                      if (
+                        typeof item !== "object" ||
+                        item === null ||
+                        Array.isArray(item)
+                      ) {
+                        const fallbackText =
+                          typeof item === "string" ? item : String(item);
+                        return (
+                          <div key={i} class="cydo-task-spec">
+                            <div class="tool-input-field">
+                              <span class="field-label">result:</span>
+                              <span class="field-value"> {fallbackText}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      const { fields, text } = formatCydoTaskResultItem(
+                        item as Record<string, unknown>,
+                      );
+                      const taskType =
+                        typeof fields.task_type === "string"
+                          ? fields.task_type
+                          : null;
+                      const desc =
+                        typeof fields.description === "string"
+                          ? fields.description
+                          : null;
+                      const { task_type, description, ...rest } = fields;
                       return (
                         <div key={i} class="cydo-task-spec">
                           <div class="tool-input-field">
-                            <span class="field-label">result:</span>
-                            <span class="field-value"> {fallbackText}</span>
+                            {taskType && (
+                              <span class="tool-subtitle-tag">{taskType}</span>
+                            )}
+                            {desc && <span class="field-value"> {desc}</span>}
                           </div>
+                          {Object.keys(rest).length > 0 &&
+                            Object.entries(rest).map(([k, v]) => (
+                              <div key={k} class="tool-input-field">
+                                <span class="field-label">{k}:</span>
+                                <span class="field-value"> {String(v)}</span>
+                              </div>
+                            ))}
+                          {text && (
+                            <Markdown text={text} class="text-content" />
+                          )}
                         </div>
                       );
-                    }
-                    const { fields, text } = formatCydoTaskResultItem(
-                      item as Record<string, unknown>,
-                    );
-                    const taskType =
-                      typeof fields.task_type === "string"
-                        ? fields.task_type
-                        : null;
-                    const desc =
-                      typeof fields.description === "string"
-                        ? fields.description
-                        : null;
-                    const { task_type, description, ...rest } = fields;
-                    return (
-                      <div key={i} class="cydo-task-spec">
-                        <div class="tool-input-field">
-                          {taskType && (
-                            <span class="tool-subtitle-tag">{taskType}</span>
-                          )}
-                          {desc && <span class="field-value"> {desc}</span>}
-                        </div>
-                        {Object.keys(rest).length > 0 &&
-                          Object.entries(rest).map(([k, v]) => (
-                            <div key={k} class="tool-input-field">
-                              <span class="field-label">{k}:</span>
-                              <span class="field-value"> {String(v)}</span>
-                            </div>
-                          ))}
-                        {text && <Markdown text={text} class="text-content" />}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : useExecCommandResult ? (
-                <ExecCommandResult content={resultText} />
-              ) : useReadHighlight ? (
-                <ReadResult content={resultText} filePath={filePath} />
-              ) : useWebSearchResult ? (
-                <WebSearchResult content={resultText} />
-              ) : useWebFetchResult ? (
-                <div class="tool-result-blocks">
-                  <Markdown text={resultText} class="text-content" />
-                </div>
-              ) : taskOutputElement ? (
-                taskOutputElement
-              ) : taskStopElement ? (
-                taskStopElement
-              ) : useBashResult ? (
-                (result.toolResult as Record<string, unknown>).stdout ? (
-                  <ResultPre
-                    content={
-                      (result.toolResult as Record<string, unknown>)
-                        .stdout as string
-                    }
-                    isError={result.isError}
-                  />
-                ) : null
-              ) : (
-                renderResultContent(result.content, result.isError)
-              )}
-              {commandExecutionElement}
-              {bashElement}
-              {result.toolResult != null &&
-                typeof result.toolResult === "object" &&
-                formatToolUseResult(
-                  name,
-                  toolServer,
-                  result.toolResult as Record<string, unknown> | unknown[],
+                    })}
+                  </div>
+                ) : useExecCommandResult ? (
+                  <ExecCommandResult content={resultText} />
+                ) : useReadHighlight ? (
+                  <ReadResult content={resultText} filePath={filePath} />
+                ) : useWebSearchResult ? (
+                  <WebSearchResult content={resultText} />
+                ) : useWebFetchResult ? (
+                  <div class="tool-result-blocks">
+                    <Markdown text={resultText} class="text-content" />
+                  </div>
+                ) : taskOutputElement ? (
+                  taskOutputElement
+                ) : taskStopElement ? (
+                  taskStopElement
+                ) : useBashResult ? (
+                  (result.toolResult as Record<string, unknown>).stdout ? (
+                    <ResultPre
+                      content={
+                        (result.toolResult as Record<string, unknown>)
+                          .stdout as string
+                      }
+                      isError={result.isError}
+                    />
+                  ) : null
+                ) : (
+                  renderResultContent(result.content, result.isError)
                 )}
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+                {commandExecutionElement}
+                {bashElement}
+                {result.toolResult != null &&
+                  typeof result.toolResult === "object" &&
+                  formatToolUseResult(
+                    name,
+                    toolServer,
+                    result.toolResult as Record<string, unknown> | unknown[],
+                  )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.name === next.name &&
+    prev.toolServer === next.toolServer &&
+    prev.toolSource === next.toolSource &&
+    prev.toolUseId === next.toolUseId &&
+    prev.input === next.input &&
+    prev.result === next.result &&
+    prev.streaming === next.streaming &&
+    prev.children === next.children &&
+    prev.onViewFile === next.onViewFile,
+);
