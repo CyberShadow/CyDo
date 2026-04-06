@@ -3246,8 +3246,8 @@ pre.extra-field-value {
   font-size: 16px;
 }
 
-/* Error toast overlay */
-.error-toast-container {
+/* Toast overlay */
+.toast-container {
   position: fixed;
   bottom: 16px;
   right: 16px;
@@ -3260,7 +3260,7 @@ pre.extra-field-value {
   font-size: 12px;
 }
 
-.error-toast-header {
+.toast-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -3271,7 +3271,7 @@ pre.extra-field-value {
   font-weight: 600;
 }
 
-.error-toast-clear {
+.toast-clear {
   background: none;
   border: 1px solid var(--error);
   color: var(--error);
@@ -3280,12 +3280,12 @@ pre.extra-field-value {
   cursor: pointer;
 }
 
-.error-toast-clear:hover {
+.toast-clear:hover {
   background: var(--error);
   color: var(--bg);
 }
 
-.error-toast-item {
+.toast-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -3295,7 +3295,20 @@ pre.extra-field-value {
   border-left: 3px solid var(--error);
 }
 
-.error-toast-message {
+.toast-item-error,
+.toast-item-alert {
+  border-left-color: var(--error);
+}
+
+.toast-item-warning {
+  border-left-color: var(--warn);
+}
+
+.toast-item-info {
+  border-left-color: var(--info);
+}
+
+.toast-message {
   flex: 1;
   margin: 0;
   color: var(--text);
@@ -3305,7 +3318,7 @@ pre.extra-field-value {
   overflow-y: auto;
 }
 
-.error-toast-dismiss {
+.toast-dismiss {
   background: none;
   border: none;
   color: var(--text-dim);
@@ -3315,17 +3328,17 @@ pre.extra-field-value {
   flex-shrink: 0;
 }
 
-.error-toast-dismiss:hover {
+.toast-dismiss:hover {
   color: var(--error);
 }
 
-.error-toast-dismiss .action-icon {
+.toast-dismiss .action-icon {
   display: block;
   width: 14px;
   height: 14px;
 }
 
-.error-toast-dismiss .action-icon > svg {
+.toast-dismiss .action-icon > svg {
   display: block;
   width: 100%;
   height: 100%;

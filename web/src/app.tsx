@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { Router, Route } from "preact-iso";
 import { useTaskManager } from "./useSessionManager";
 import { useNotifications } from "./useNotifications";
-import { useErrorOverlay } from "./useErrorOverlay";
+import { useToast } from "./useToast";
+import { useErrorCapture } from "./useErrorOverlay";
 import { useTheme, ThemeContext } from "./useTheme";
 import { DevModeContext } from "./devMode";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
@@ -10,7 +11,7 @@ import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { ErrorToast } from "./components/ErrorToast";
+import { Toast } from "./components/Toast";
 
 function shortProjectName(projectName: string): string {
   const slash = projectName.lastIndexOf("/");
@@ -64,7 +65,8 @@ function AppContent() {
 
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
-  const { errors, dismissError, clearErrors } = useErrorOverlay();
+  const { toasts, addToast, dismissToast, clearToasts } = useToast();
+  useErrorCapture(addToast);
 
   const effectiveDefaultAgent = useMemo(() => {
     const ws = workspaces.find((w) => w.name === activeWorkspace);
@@ -160,10 +162,10 @@ function AppContent() {
               </div>
             )}
             {searchPopup}
-            <ErrorToast
-              errors={errors}
-              onDismiss={dismissError}
-              onClearAll={clearErrors}
+            <Toast
+              toasts={toasts}
+              onDismiss={dismissToast}
+              onClearAll={clearToasts}
             />
           </div>
         </ThemeContext.Provider>
@@ -455,10 +457,10 @@ function AppContent() {
               </div>
             ))}
           {searchPopup}
-          <ErrorToast
-            errors={errors}
-            onDismiss={dismissError}
-            onClearAll={clearErrors}
+          <Toast
+            toasts={toasts}
+            onDismiss={dismissToast}
+            onClearAll={clearToasts}
           />
         </div>
       </ThemeContext.Provider>
