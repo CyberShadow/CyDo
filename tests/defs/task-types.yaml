@@ -55,6 +55,8 @@ task_types:
         prompt_template: prompts/blank.md
       test_system_prompt:
         prompt_template: prompts/blank.md
+      test_sysprompt_mode_a:
+        prompt_template: prompts/blank.md
     continuations:
       plan:
         task_type: plan_mode
@@ -128,3 +130,22 @@ task_types:
   test_wt_child:
     model_class: small
     output_type: [report]
+
+  test_sysprompt_mode_a:
+    model_class: small
+    output_type: []
+    system_prompt_template: prompts/test_system_prompt_a.md
+    continuations:
+      check_new:
+        task_type: test_sysprompt_mode_b
+        keep_context: true
+        prompt_template: prompts/test_sysprompt_check_b.md
+      check_old_absent:
+        task_type: test_sysprompt_mode_b
+        keep_context: true
+        prompt_template: prompts/test_sysprompt_check_a.md
+
+  test_sysprompt_mode_b:
+    model_class: small
+    output_type: []
+    system_prompt_template: prompts/test_system_prompt_b.md
