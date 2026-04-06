@@ -17,7 +17,11 @@ export function matchPattern(userText) {
     // Extract the [Session: ...] header so tests can assert on its content.
     const headerMatch = userText.match(/\[Session: [^\]]*\]/);
     const header = headerMatch ? headerMatch[0] : "no session header";
-    return { type: "text", text: JSON.stringify(["run the tests", header]) };
+    // Extract the conversation body (everything after "Conversation:\n")
+    // so tests can assert on assistant entries (A: ...) too.
+    const convStart = userText.indexOf("Conversation:\n");
+    const convBody = convStart >= 0 ? userText.slice(convStart + "Conversation:\n".length).trim() : "";
+    return { type: "text", text: JSON.stringify(["run the tests", header, convBody]) };
   }
 
   // Title generation subprocess — extract a recognizable title from the prompt.

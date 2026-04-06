@@ -4578,7 +4578,8 @@ class App : ToolsBackend
 				else
 					continue;
 			}
-			else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`))
+			else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`) ||
+			         (event.canFind(`"item/delta"`) && event.canFind(`"text_delta"`)))
 			{
 				auto text = extractMessageText(event);
 				if (text.length == 0)
@@ -4655,6 +4656,30 @@ class App : ToolsBackend
 			auto probe = jsonParse!TopTextProbe(event);
 			if (probe.text.length > 0 && !probe.pending)
 				return probe.text;
+		}
+		catch (Exception) {}
+
+		// Try result field (turn/result events — Codex emits the assistant text here)
+		@JSONPartial
+		static struct ResultFieldProbe { string result; }
+
+		try
+		{
+			auto probe = jsonParse!ResultFieldProbe(event);
+			if (probe.result.length > 0)
+				return probe.result;
+		}
+		catch (Exception) {}
+
+		// Try top-level string content (item/delta text_delta merged events)
+		@JSONPartial
+		static struct FlatStringProbe { string content; string delta_type; }
+
+		try
+		{
+			auto probe = jsonParse!FlatStringProbe(event);
+			if (probe.delta_type == "text_delta" && probe.content.length > 0)
+				return probe.content;
 		}
 		catch (Exception) {}
 

@@ -35,3 +35,36 @@ test("suggestion header reports correct user message count", async ({ page, agen
   const userMsgCount = parseInt(msgCountMatch![1], 10);
   expect(userMsgCount, `User message count should be >= 1 but was ${userMsgCount}`).toBeGreaterThanOrEqual(1);
 });
+
+// Regression test: buildAbbreviatedHistory must include assistant text entries.
+// Bug: item/completed events from live streaming don't carry the text field,
+// so extractMessageText() returns empty and assistant entries are skipped.
+// The abbreviated history should contain "A: ..." entries for assistant responses.
+test("suggestion history includes assistant text entries", async ({ page, agentType }) => {
+  await enterSession(page);
+  await sendMessage(page, 'Please reply with "done"');
+
+  // Wait for agent response
+  await expect(
+    page.locator(".message.assistant-message .text-content", { hasText: "done" }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  // Wait for suggestions to appear (the mock echoes the conversation body as third suggestion)
+  const suggestions = page.locator(".btn-suggestion");
+  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+
+  // Collect all suggestion texts
+  const count = await suggestions.count();
+  const texts: string[] = [];
+  for (let i = 0; i < count; i++) {
+    texts.push(await suggestions.nth(i).innerText());
+  }
+
+  // The third suggestion should contain the conversation body
+  // which must include at least one "A: " entry for the assistant response.
+  const convBody = texts.length >= 3 ? texts[2] : "";
+  expect(
+    convBody,
+    `Conversation body should contain assistant entry "A: ...", got suggestions: ${texts.join(" | ")}`,
+  ).toContain("A: ");
+});
