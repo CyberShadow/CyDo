@@ -8,7 +8,6 @@ import { sanitizeHtml } from "../sanitize";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
-import { useDevMode } from "../devMode";
 import { Markdown } from "./Markdown";
 import { CodePre } from "./CopyButton";
 
@@ -2319,7 +2318,6 @@ export function ToolCall({
   children,
   onViewFile,
 }: Props) {
-  const devMode = useDevMode();
   // Collapse pending AskUserQuestion input — the interactive form shows the same content
   const isAsk = askToolNames.has(name);
   const [inputOpen, setInputOpen] = useState(
@@ -2596,7 +2594,6 @@ export function ToolCall({
               {bashElement}
               {result.toolResult != null &&
                 typeof result.toolResult === "object" &&
-                devMode &&
                 formatToolUseResult(
                   name,
                   toolServer,
