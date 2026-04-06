@@ -1,4 +1,4 @@
-import { test, expect, enterSession, sendMessage } from "./fixtures";
+import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
 test("first message renders as collapsed system-user-message with entry point label", async ({
   page,
@@ -36,4 +36,35 @@ test("first message renders as collapsed system-user-message with entry point la
   // The full rendered text for the "blank" template is just the task_description
   const pre = details.locator("pre");
   await expect(pre).toContainText(messageText);
+});
+
+test("system-user-message persists after agent confirms the message", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType === "codex", "agent-agnostic, runs in claude project only");
+
+  await enterSession(page);
+
+  const messageText = 'Please reply with "system-msg-confirm-test"';
+  await sendMessage(page, messageText);
+
+  // Wait for the agent to respond — this means the is_replay confirmation echo
+  // has replaced the pending message, which is where the cydoMeta bug triggers.
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "system-msg-confirm-test",
+    }),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+
+  // After the agent has responded, the user message must still render as a
+  // system-user-message with a label and the original text.
+  const userMsg = page.locator(".message.user-message.system-user-message").first();
+  await expect(userMsg).toBeVisible();
+
+  const headerText = await userMsg.locator(".system-user-header").innerText();
+  expect(headerText.trim().length).toBeGreaterThan(0);
+
+  const body = userMsg.locator(".system-user-body, .user-text");
+  await expect(body.first()).toContainText(messageText);
 });

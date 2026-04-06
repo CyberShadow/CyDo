@@ -908,6 +908,10 @@ function reduceItemStartedUserMessage(
   const text = event.text ?? "";
   const content = event.content ?? [{ type: "text" as const, text }];
 
+  // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
+  // removes it from the message list.
+  const pendingMsg = s.messages.find((m) => m.pending && m.type === "user");
+
   let state = s;
 
   if (event.is_replay) {
@@ -945,10 +949,6 @@ function reduceItemStartedUserMessage(
     (b) => (b.type === "text" && b.text.trim().length > 0) || b.type !== "text",
   );
   if (hasContent) {
-    // Carry cydoMeta from the pending placeholder to the confirmed message.
-    const pendingMsg = state.messages.find(
-      (m) => m.pending && m.type === "user",
-    );
     const id = `user-echo-${++state.msgIdCounter}`;
     const echoMsg: DisplayMessage = {
       id,
