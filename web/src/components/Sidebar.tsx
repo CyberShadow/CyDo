@@ -2,6 +2,7 @@ import { memo } from "preact/compat";
 import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import type { TypeInfo } from "../useSessionManager";
 import { ensureIconStyles } from "./TaskTypeIcon";
+import { isPlainLeftClick } from "../utils";
 import relSubtaskIcon from "../icons/rel-subtask.svg?raw";
 import relForkIcon from "../icons/rel-fork.svg?raw";
 import relUndoBackupIcon from "../icons/rel-undo-backup.svg?raw";
@@ -40,17 +41,6 @@ const ROW_HEIGHT = 31;
 const COL_WIDTH = 20;
 const LINE_X = 8;
 const JUNCTION_Y = ROW_HEIGHT / 2;
-
-function isPlainLeftClick(e: MouseEvent): boolean {
-  return (
-    e.button === 0 &&
-    !e.defaultPrevented &&
-    !e.metaKey &&
-    !e.ctrlKey &&
-    !e.shiftKey &&
-    !e.altKey
-  );
-}
 
 function TreeGuide({ hasLine }: { hasLine: boolean }) {
   return (
@@ -291,7 +281,7 @@ interface FlatItem {
   hasPendingQuestion: boolean;
 }
 
-function computeStatusClass(t: SidebarTask): string {
+export function computeStatusClass(t: SidebarTask): string {
   if (t.isProcessing) return t.status === "waiting" ? "waiting" : "processing";
   if (t.alive) return "alive";
   if (t.status === "failed") return "failed";

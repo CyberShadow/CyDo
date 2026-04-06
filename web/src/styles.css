@@ -2800,6 +2800,68 @@ pre.extra-field-value {
   color: var(--text);
 }
 
+.active-sessions-table {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  display: block;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.active-sessions-table tbody {
+  display: table;
+  width: 100%;
+}
+
+.active-sessions-row {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.active-sessions-row:hover {
+  background: var(--hover);
+}
+
+.active-sessions-row td {
+  padding: 6px 6px;
+  white-space: nowrap;
+}
+
+.active-sessions-row td:first-child {
+  padding-left: 12px;
+  width: 20px;
+}
+
+.active-sessions-row td:last-child {
+  padding-right: 12px;
+}
+
+.active-sessions-row + .active-sessions-row {
+  border-top: 1px solid var(--border);
+}
+
+.active-sessions-title {
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-sessions-workspace,
+.active-sessions-project {
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.active-sessions-time {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 /* Sidebar back button */
 .sidebar-back-btn {
   width: 28px;

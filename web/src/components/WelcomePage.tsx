@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
+import { computeStatusClass } from "./Sidebar";
+import { isPlainLeftClick, relativeTime } from "../utils";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -16,19 +18,114 @@ interface Props {
   onRefreshWorkspaces: () => void;
 }
 
-function isPlainLeftClick(e: MouseEvent): boolean {
-  return (
-    e.button === 0 &&
-    !e.defaultPrevented &&
-    !e.metaKey &&
-    !e.ctrlKey &&
-    !e.shiftKey &&
-    !e.altKey
-  );
-}
-
 function openInNewTab(href: string): void {
   window.open(href, "_blank", "noopener");
+}
+
+function ActiveSessions({
+  tasks,
+  filter,
+  attention,
+  taskTypes,
+  workspaces,
+  getTaskHref,
+  onSelectTask,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  tasks: Map<number, TaskState>;
+  filter: string;
+  attention: Set<number>;
+  taskTypes: TypeInfo[];
+  workspaces: WorkspaceInfo[];
+  getTaskHref: (id: string) => string;
+  onSelectTask: (tid: number) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  const filterLower = filter.toLowerCase();
+  const activeTasks = useMemo(() => {
+    const result: TaskState[] = [];
+    for (const t of tasks.values()) {
+      if (!t.alive && !t.isProcessing) continue;
+      if (filterLower) {
+        const title = (t.title || `Task ${t.tid}`).toLowerCase();
+        const ws = (t.workspace || "").toLowerCase();
+        const proj = (t.projectPath || "").toLowerCase();
+        if (
+          !title.includes(filterLower) &&
+          !ws.includes(filterLower) &&
+          !proj.includes(filterLower)
+        )
+          continue;
+      }
+      result.push(t);
+    }
+    result.sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0));
+    return result;
+  }, [tasks, filterLower]);
+
+  if (activeTasks.length === 0) return null;
+
+  return (
+    <section class="workspace-group">
+      <h2 class="workspace-group-title" onClick={onToggleCollapsed}>
+        <span class="workspace-group-chevron">{collapsed ? "▶" : "▼"}</span>
+        Active Sessions ({activeTasks.length})
+      </h2>
+      {!collapsed && (
+        <table class="active-sessions-table">
+          <tbody>
+            {activeTasks.map((t) => {
+              const title = t.title || `Task ${t.tid}`;
+              const statusClass = computeStatusClass(t);
+              const projName =
+                workspaces
+                  .find((w) => w.name === t.workspace)
+                  ?.projects.find((p) => p.path === t.projectPath)?.name ||
+                t.projectPath ||
+                "";
+              return (
+                <tr
+                  key={t.tid}
+                  class="active-sessions-row"
+                  onClick={(e: MouseEvent) => {
+                    if (!isPlainLeftClick(e)) return;
+                    e.preventDefault();
+                    onSelectTask(t.tid);
+                  }}
+                >
+                  <td class="active-sessions-icon">
+                    {attention.has(t.tid) ? (
+                      <span class="task-type-icon task-type-icon-check alive" />
+                    ) : hasTaskTypeIcon(t.taskType, taskTypes) ? (
+                      <TaskTypeIcon
+                        taskType={t.taskType}
+                        taskTypes={taskTypes}
+                        class={statusClass || undefined}
+                      />
+                    ) : (
+                      <span
+                        class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+                      />
+                    )}
+                  </td>
+                  <td class="active-sessions-title" title={title}>
+                    {title}
+                  </td>
+                  <td class="active-sessions-workspace">{t.workspace || ""}</td>
+                  <td class="active-sessions-project">{projName}</td>
+                  <td class="active-sessions-time">
+                    {relativeTime(t.lastActive ?? Date.now())}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
 }
 
 export function WelcomePage({
@@ -157,13 +254,7 @@ export function WelcomePage({
   }
 
   function renderTaskDot(t: TaskState) {
-    let statusClass = "";
-    if (t.isProcessing)
-      statusClass = t.status === "waiting" ? "waiting" : "processing";
-    else if (t.alive) statusClass = "alive";
-    else if (t.status === "failed") statusClass = "failed";
-    else if (t.resumable) statusClass = "resumable";
-    else if (t.status === "completed") statusClass = "completed";
+    const statusClass = computeStatusClass(t);
     if (hasTaskTypeIcon(t.taskType, taskTypes)) {
       return (
         <TaskTypeIcon
@@ -256,6 +347,19 @@ export function WelcomePage({
           ↻
         </button>
       </div>
+      <ActiveSessions
+        tasks={tasks}
+        filter={filter}
+        attention={attention}
+        taskTypes={taskTypes}
+        workspaces={workspaces}
+        getTaskHref={getTaskHref}
+        onSelectTask={onSelectTask}
+        collapsed={collapsed.has("Active Sessions")}
+        onToggleCollapsed={() => {
+          toggleCollapsed("Active Sessions");
+        }}
+      />
       {filteredWorkspaces.map(({ workspace: ws, projects }) => {
         const isCollapsed = collapsed.has(ws.name);
         return (
