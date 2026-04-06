@@ -266,14 +266,6 @@ test("MCP tools work after backend restart", async ({
   await waitForSidebarTask(page, "mcp-ready");
   await page.locator(".sidebar-item .sidebar-label", { hasText: "mcp-ready" }).click();
 
-  // Resume if needed
-  const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (isResumeVisible) {
-    await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
-  }
-
   // Send a message that triggers an MCP tool call (Task tool).
   // If the MCP socket is broken, this will fail with "Backend connection failed".
   const input2 = page.locator(".input-textarea:visible").first();
@@ -323,14 +315,6 @@ test("active task receives nudge and continues after restart", async ({
   // Click on the task
   await page.locator(".sidebar-item").first().click();
 
-  // Resume if needed
-  const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (isResumeVisible) {
-    await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
-  }
-
   // The nudge message and the agent's reply should appear
   // After nudge, the agent retries and eventually responds with "Done."
   await expect(
@@ -372,14 +356,6 @@ test("sub-task result delivered to parent after backend restart", async ({
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
   await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
   await taskItems.last().click();
-
-  // Resume if necessary
-  const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (isResumeVisible) {
-    await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
-  }
 
   // The parent should eventually process the sub-task result and respond with "Done."
   await expect(
@@ -427,18 +403,6 @@ test("waiting parent receives batch results after restart", async ({
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
   await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
   await taskItems.last().click();
-
-  // Resume if needed.
-  const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn
-    .isVisible({ timeout: 5_000 })
-    .catch(() => false);
-  if (isResumeVisible) {
-    await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({
-      timeout: 15_000,
-    });
-  }
 
   // Wait for the parent to respond to the batch delivery.
   await expect(
@@ -508,15 +472,6 @@ test("waiting parent with completed children gets results after restart", async 
   await page.goto("/");
   await waitForSidebarTask(page, "parent-ready");
   await page.locator(".sidebar-item .sidebar-label", { hasText: "parent-ready" }).click();
-
-  // The parent was "waiting" so it gets auto-resumed by resumeInFlightTasks.
-  // If the UI shows a resume button (auto-resume hasn't completed yet), click it.
-  const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (isResumeVisible) {
-    await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
-  }
 
   // The parent should receive the [SYSTEM: Session resumed] message with
   // task_results and respond with "Done." (mock API handles [SYSTEM: messages).
