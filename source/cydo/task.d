@@ -317,6 +317,22 @@ struct ServerStatusMessage
 	bool dev_mode;
 }
 
+enum NoticeLevel { info, warning, alert }
+
+struct Notice
+{
+	NoticeLevel level;
+	string description;
+	string impact;
+	string action;
+}
+
+struct NoticesListMessage
+{
+	string type = "notices_list";
+	Notice[string] notices;
+}
+
 struct TaskReloadMessage
 {
 	string type = "task_reload";

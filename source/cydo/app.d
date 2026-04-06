@@ -22,6 +22,7 @@ import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, resolve, reject;
+import std.typecons : Nullable;
 import ae.utils.promise.concurrency : threadAsync;
 import ae.utils.statequeue : StateQueue;
 
@@ -178,6 +179,8 @@ class App : ToolsBackend
 	// HTTP basic auth credentials (from environment)
 	private string authUser;
 	private string authPass;
+	// Active notices keyed by notice ID
+	private Notice[string] activeNotices;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -402,6 +405,12 @@ class App : ToolsBackend
 		if (userEnv is null && generatedCredentials)
 			warningf("CYDO_AUTH_USER not set — defaulting to 'user'.");
 
+		if (authUser.length == 0 && authPass.length == 0)
+			setNotice("auth_disabled", Nullable!Notice(Notice(NoticeLevel.warning,
+				"Authentication is disabled.",
+				"Anyone with network access can view and control all sessions.",
+				"Set CYDO_AUTH_PASS to enable authentication.")));
+
 		server.handleRequest = &handleRequest;
 
 		auto listenSocket = environment.get("CYDO_LISTEN_SOCKET", null);
@@ -620,6 +629,7 @@ class App : ToolsBackend
 		ws.send(Data(buildAgentTypesList().representation));
 		ws.send(Data(buildTasksList().representation));
 		ws.send(Data(buildServerStatus().representation));
+		ws.send(Data(buildNoticesList().representation));
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -4341,6 +4351,36 @@ class App : ToolsBackend
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 		));
+	}
+
+	private string buildNoticesList()
+	{
+		import ae.utils.json : toJson;
+		return toJson(NoticesListMessage("notices_list", activeNotices));
+	}
+
+	private void setNotice(string id, Nullable!Notice n)
+	{
+		if (!n.isNull)
+		{
+			auto newNotice = n.get();
+			auto existing = id in activeNotices;
+			if (existing !is null && *existing == newNotice)
+				return;
+			activeNotices[id] = newNotice;
+			if (newNotice.level == NoticeLevel.alert || newNotice.level == NoticeLevel.warning)
+				warningf("NOTICE [%s]: %s — %s — %s", id, newNotice.description, newNotice.impact, newNotice.action);
+			else
+				infof("NOTICE [%s]: %s", id, newNotice.description);
+			broadcast(buildNoticesList());
+		}
+		else
+		{
+			if (id !in activeNotices)
+				return;
+			activeNotices.remove(id);
+			broadcast(buildNoticesList());
+		}
 	}
 
 	private void removeClient(WebSocketAdapter ws)
