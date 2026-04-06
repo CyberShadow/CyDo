@@ -93,6 +93,15 @@ struct Persistence
 			"UPDATE tasks SET worktree_tid = tid WHERE has_worktree = 1;",
 			// Migration 16: persist selected entry point for user-facing tasks
 			"ALTER TABLE tasks ADD COLUMN entry_point TEXT NOT NULL DEFAULT '';",
+			// Migration 17: track whether sessions have user messages (filter ghost sessions)
+			// Default 1 so existing cached entries are assumed to have messages.
+			"ALTER TABLE session_meta_cache ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 1;",
+			// Migration 18: purge ghost importable tasks (hex-prefix titles from sessions
+			// with no user messages) and their cache entries so they get re-scanned.
+			"DELETE FROM tasks WHERE status = 'importable'" ~
+			"  AND title GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]…';" ~
+			"DELETE FROM session_meta_cache" ~
+			"  WHERE title GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]…';",
 		]);
 	}
 
@@ -275,24 +284,25 @@ struct Persistence
 		long mtime;
 		string projectPath;
 		string title;
+		bool hasMessages;
 	}
 
 	CacheRow[] loadSessionMetaCache()
 	{
 		CacheRow[] result;
-		foreach (string agentType, string sessionId, long mtime, string projectPath, string title;
-			db.stmt!"SELECT agent_type, session_id, mtime, project_path, title FROM session_meta_cache".iterate())
+		foreach (string agentType, string sessionId, long mtime, string projectPath, string title, int hasMessages;
+			db.stmt!"SELECT agent_type, session_id, mtime, project_path, title, has_messages FROM session_meta_cache".iterate())
 		{
-			result ~= CacheRow(agentType, sessionId, mtime, projectPath, title);
+			result ~= CacheRow(agentType, sessionId, mtime, projectPath, title, hasMessages != 0);
 		}
 		return result;
 	}
 
 	void upsertSessionMetaCache(string agentType, string sessionId, long mtime,
-		string projectPath, string title)
+		string projectPath, string title, bool hasMessages)
 	{
-		db.stmt!"INSERT OR REPLACE INTO session_meta_cache (agent_type, session_id, mtime, project_path, title) VALUES (?, ?, ?, ?, ?)"
-			.exec(agentType, sessionId, mtime, projectPath, title);
+		db.stmt!"INSERT OR REPLACE INTO session_meta_cache (agent_type, session_id, mtime, project_path, title, has_messages) VALUES (?, ?, ?, ?, ?, ?)"
+			.exec(agentType, sessionId, mtime, projectPath, title, hasMessages ? 1 : 0);
 	}
 
 	void deleteSessionMetaCacheEntry(string agentType, string sessionId)

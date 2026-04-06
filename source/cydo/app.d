@@ -192,6 +192,7 @@ class App : ToolsBackend
 		string title;
 		string projectPath;
 		bool fromCache;
+		bool hasMessages = true; // false for ghost sessions (no user messages)
 	}
 
 	private TaskTypeDef[] getTaskTypes()
@@ -3907,6 +3908,7 @@ class App : ToolsBackend
 					{
 						dr.title = cachedp.title;
 						dr.projectPath = cachedp.projectPath;
+						dr.hasMessages = cachedp.hasMessages;
 						dr.fromCache = true;
 					}
 					else
@@ -3916,6 +3918,7 @@ class App : ToolsBackend
 							auto meta = agent.readSessionMeta(ds.sessionId);
 							dr.title = meta.title;
 							dr.projectPath = meta.projectPath;
+							dr.hasMessages = meta.hasMessages;
 						}
 						catch (Exception e)
 							warningf("enumerateSessions: error reading meta for %s/%s: %s",
@@ -3957,18 +3960,25 @@ class App : ToolsBackend
 					continue;
 
 				string finalProjectPath = r.projectPath.length > 0 ? r.projectPath : r.enumProjectPath;
+
+				if (!r.hasMessages)
+				{
+					// Ghost session: no user messages. Cache the result so we don't re-read it.
+					if (!r.fromCache)
+						persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
+							finalProjectPath, r.title, false);
+					continue;
+				}
+
 				string finalTitle;
 				if (r.title.length > 0)
 					finalTitle = r.title;
 				else
-				{
-					import std.algorithm : min;
-					finalTitle = r.sessionId[0 .. min(8, $)] ~ "…";
-				}
+					finalTitle = "(untitled)"; // safety net — should not happen for sessions with messages
 
 				if (!r.fromCache)
 					persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
-						finalProjectPath, finalTitle);
+						finalProjectPath, finalTitle, true);
 
 				// Match workspace by project path
 				string workspace = "";

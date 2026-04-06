@@ -41,6 +41,7 @@ struct SessionMeta
 {
 	string title;       /// First user message text (truncated)
 	string projectPath; /// Working directory from init/meta event (empty if not found)
+	bool hasMessages;   /// Whether the session contains any user messages
 }
 
 /// Describes an agent type: its sandbox requirements, git identity,
