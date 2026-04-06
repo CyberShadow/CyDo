@@ -20,6 +20,10 @@ import editIcon from "../icons/edit.svg?raw";
 import viewSourceIcon from "../icons/view-source.svg?raw";
 import forkIcon from "../icons/fork.svg?raw";
 import undoIcon from "../icons/undo.svg?raw";
+import gearIcon from "../icons/gear.svg?raw";
+import sunIcon from "../icons/sun.svg?raw";
+import checkIcon from "../icons/check.svg?raw";
+import errorIcon from "../icons/error.svg?raw";
 
 interface Props {
   sessionId: number;
@@ -51,7 +55,14 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
         }}
       >
         <hr />
-        <span class="result-divider-icon">{d.isError ? "!" : "\u2713"}</span>
+        <span class="result-divider-icon">
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{
+              __html: d.isError ? errorIcon : checkIcon,
+            }}
+          />
+        </span>
         <hr />
       </div>
     );
@@ -214,7 +225,12 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
           }}
         >
           <hr />
-          <span class="result-divider-icon system-user-icon">{"⚙"}</span>
+          <span class="result-divider-icon system-user-icon">
+            <span
+              class="action-icon"
+              dangerouslySetInnerHTML={{ __html: gearIcon }}
+            />
+          </span>
           <span class="system-user-label">{meta.label}</span>
           <hr />
         </div>
@@ -316,7 +332,12 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
         }}
       >
         <hr />
-        <span class="result-divider-icon">{"☀"}</span>
+        <span class="result-divider-icon">
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{ __html: sunIcon }}
+          />
+        </span>
         <hr />
       </div>
     );

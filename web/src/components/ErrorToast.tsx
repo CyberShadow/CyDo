@@ -1,3 +1,5 @@
+import closeIcon from "../icons/close.svg?raw";
+
 interface ErrorEntry {
   id: number;
   message: string;
@@ -30,7 +32,10 @@ export function ErrorToast({ errors, onDismiss, onClearAll }: Props) {
               onDismiss(err.id);
             }}
           >
-            &times;
+            <span
+              class="action-icon"
+              dangerouslySetInnerHTML={{ __html: closeIcon }}
+            />
           </button>
         </div>
       ))}

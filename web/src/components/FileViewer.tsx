@@ -3,6 +3,7 @@ import type { CSSProperties, PointerEventHandler } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { applyPatch, structuredPatch } from "diff";
+import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import type { ThemedToken } from "../highlight";
@@ -708,7 +709,10 @@ export function FileViewer({
       <div class="file-viewer-header">
         <span>Files</span>
         <button class="file-viewer-close" onClick={onClose} title="Close">
-          ✕
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{ __html: closeIcon }}
+          />
         </button>
       </div>
       <div class="file-viewer-content">

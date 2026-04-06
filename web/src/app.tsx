@@ -337,6 +337,7 @@ function AppContent() {
             }
             showBackButton={true}
             onBack={navigateHome}
+            backHref="/"
             projectName={activeProject || undefined}
             projectHref={
               activeWorkspace && activeProject

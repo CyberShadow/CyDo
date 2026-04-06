@@ -1,6 +1,9 @@
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
 import type { Theme } from "../useTheme";
+import sunIcon from "../icons/sun.svg?raw";
+import moonIcon from "../icons/moon.svg?raw";
+import hamburgerIcon from "../icons/hamburger.svg?raw";
 
 interface Props {
   sessionInfo: SessionInfo | null;
@@ -48,7 +51,10 @@ export function SystemBanner({
             onClick={onToggleSidebar}
             title="Toggle sidebar"
           >
-            &#9776;
+            <span
+              class="action-icon"
+              dangerouslySetInnerHTML={{ __html: hamburgerIcon }}
+            />
           </button>
         )}
         <span class="banner-title">CyDo</span>
@@ -126,7 +132,12 @@ export function SystemBanner({
           onClick={onToggleTheme}
           title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
         >
-          {theme === "dark" ? "\u2600" : "\u263E"}
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{
+              __html: theme === "dark" ? sunIcon : moonIcon,
+            }}
+          />
         </button>
       </div>
       {detailsOpen && sessionInfo && (

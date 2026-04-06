@@ -45,7 +45,6 @@ function ActiveSessions({
   attention,
   taskTypes,
   workspaces,
-  getTaskHref,
   onSelectTask,
   collapsed,
   onToggleCollapsed,
@@ -55,7 +54,6 @@ function ActiveSessions({
   attention: Set<number>;
   taskTypes: TypeInfo[];
   workspaces: WorkspaceInfo[];
-  getTaskHref: (id: string) => string;
   onSelectTask: (tid: number) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -370,7 +368,6 @@ export function WelcomePage({
         attention={attention}
         taskTypes={taskTypes}
         workspaces={workspaces}
-        getTaskHref={getTaskHref}
         onSelectTask={onSelectTask}
         collapsed={collapsed.has("Active Sessions")}
         onToggleCollapsed={() => {

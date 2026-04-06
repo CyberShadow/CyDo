@@ -611,7 +611,6 @@ body,
   background: none;
   border: 1px solid var(--border);
   color: var(--text-dim);
-  font-size: 14px;
   width: 28px;
   height: 28px;
   cursor: pointer;
@@ -623,6 +622,18 @@ body,
 .theme-toggle:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+.theme-toggle .action-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.theme-toggle .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .banner-status {
@@ -1426,12 +1437,23 @@ body,
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 3px;
-  font-size: 12px;
 }
 
 .file-viewer-close:hover {
   background: var(--overlay-light);
   color: var(--text);
+}
+
+.file-viewer-close .action-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.file-viewer-close .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .file-viewer-content {
@@ -1913,8 +1935,19 @@ body,
 }
 
 .result-divider-icon {
-  font-size: 20px;
   line-height: 1;
+}
+
+.result-divider-icon .action-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.result-divider-icon .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .result-divider.init-message .result-divider-icon {
@@ -2870,18 +2903,30 @@ pre.extra-field-value {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text);
-  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  text-decoration: none;
 }
 
 .sidebar-back-btn:hover {
   background: var(--bg-tertiary);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.sidebar-back-btn .action-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar-back-btn .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .sidebar-header-left,
@@ -2963,7 +3008,6 @@ pre.extra-field-value {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text);
-  font-size: 18px;
   cursor: pointer;
   align-items: center;
   justify-content: center;
@@ -2974,6 +3018,18 @@ pre.extra-field-value {
   background: var(--bg-tertiary);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.hamburger-btn .action-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.hamburger-btn .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .hamburger-floating {
@@ -3243,7 +3299,6 @@ pre.extra-field-value {
   background: none;
   border: none;
   color: var(--text-dim);
-  font-size: 16px;
   cursor: pointer;
   padding: 0 4px;
   line-height: 1;
@@ -3252,6 +3307,18 @@ pre.extra-field-value {
 
 .error-toast-dismiss:hover {
   color: var(--error);
+}
+
+.error-toast-dismiss .action-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.error-toast-dismiss .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .image-previews {
@@ -3324,8 +3391,19 @@ pre.extra-field-value {
 }
 
 .system-user-icon {
-  font-size: 14px;
   color: var(--text-dim);
+}
+
+.system-user-icon .action-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.system-user-icon .action-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .system-user-label {

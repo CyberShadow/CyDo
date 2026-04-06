@@ -7,6 +7,7 @@ import relSubtaskIcon from "../icons/rel-subtask.svg?raw";
 import relForkIcon from "../icons/rel-fork.svg?raw";
 import relUndoBackupIcon from "../icons/rel-undo-backup.svg?raw";
 import relContinuationIcon from "../icons/rel-continuation.svg?raw";
+import cydoIcon from "../icons/cydo.svg?raw";
 
 const relationIcons: Record<string, string> = {
   subtask: relSubtaskIcon,
@@ -491,6 +492,7 @@ interface Props {
   newTaskHref: string;
   showBackButton?: boolean;
   onBack?: () => void;
+  backHref?: string;
   projectName?: string;
   projectHref?: string;
   getTaskHref: (id: string) => string;
@@ -509,6 +511,7 @@ export const Sidebar = memo(function Sidebar({
   newTaskHref,
   showBackButton,
   onBack,
+  backHref,
   projectName,
   projectHref,
   getTaskHref,
@@ -582,14 +585,22 @@ export const Sidebar = memo(function Sidebar({
     <div class="sidebar">
       <div class="sidebar-header">
         <div class="sidebar-header-left">
-          {showBackButton && onBack && (
-            <button
+          {showBackButton && onBack && backHref && (
+            <a
+              href={backHref}
               class="sidebar-back-btn"
-              onClick={onBack}
-              title="Back to home"
+              onClick={(e: MouseEvent) => {
+                if (!isPlainLeftClick(e)) return;
+                e.preventDefault();
+                onBack();
+              }}
+              title="Home"
             >
-              ←
-            </button>
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: cydoIcon }}
+              />
+            </a>
           )}
         </div>
         {projectHref ? (
