@@ -13,7 +13,12 @@ import {
 } from "preact/hooks";
 import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
-import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
+import type {
+  AgnosticEvent,
+  ControlMessage,
+  ContentBlock,
+  Notice,
+} from "./protocol";
 import type { CydoMeta, TaskState } from "./types";
 import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
@@ -156,7 +161,7 @@ export interface TaskManager {
   defaultAgentType: string;
   activeWorkspace: string | null;
   activeProject: string | null;
-  authEnabled: boolean;
+  notices: Record<string, Notice>;
   devMode: boolean;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -204,7 +209,12 @@ function buildScopedHref(
   return suffix;
 }
 
-export function useTaskManager(): TaskManager {
+export function useTaskManager(
+  addToast: (
+    level: "info" | "warning" | "error" | "alert",
+    message: string,
+  ) => void,
+): TaskManager {
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
@@ -212,8 +222,12 @@ export function useTaskManager(): TaskManager {
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
   const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
-  const [authEnabled, setAuthEnabled] = useState(true);
+  const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [devMode, setDevMode] = useState(false);
+  const addToastRef = useRef(addToast);
+  addToastRef.current = addToast;
+  const prevNoticeIdsRef = useRef<Set<string>>(new Set());
+  const initialNoticeLoadRef = useRef(true);
   const { route } = useLocation();
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -1184,8 +1198,25 @@ export function useTaskManager(): TaskManager {
           break;
         }
         case "server_status": {
-          setAuthEnabled(msg.auth_enabled);
           setDevMode(msg.dev_mode ?? false);
+          break;
+        }
+        case "notices_list": {
+          setNotices(msg.notices);
+          if (!initialNoticeLoadRef.current) {
+            const newIds = Object.keys(msg.notices).filter(
+              (id) => !prevNoticeIdsRef.current.has(id),
+            );
+            for (const id of newIds) {
+              const notice = msg.notices[id]!;
+              addToastRef.current(
+                notice.level === "alert" ? "error" : notice.level,
+                notice.description,
+              );
+            }
+          }
+          prevNoticeIdsRef.current = new Set(Object.keys(msg.notices));
+          initialNoticeLoadRef.current = false;
           break;
         }
         case "error": {
@@ -1296,6 +1327,8 @@ export function useTaskManager(): TaskManager {
         setDraft({ phase: "none" });
         deletedDraftTid.current = null;
         setTasks(new Map());
+      } else {
+        initialNoticeLoadRef.current = true;
       }
     };
 
@@ -1838,7 +1871,7 @@ export function useTaskManager(): TaskManager {
     defaultAgentType,
     activeWorkspace,
     activeProject,
-    authEnabled,
+    notices,
     devMode,
     navigateHome,
     navigateToProject,

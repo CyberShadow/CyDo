@@ -476,6 +476,16 @@ export interface TaskDeletedMessage {
   type: "task_deleted";
   tid: number;
 }
+export interface Notice {
+  level: "info" | "warning" | "alert";
+  description: string;
+  impact: string;
+  action: string;
+}
+export interface NoticesListMessage {
+  type: "notices_list";
+  notices: Record<string, Notice>;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -494,4 +504,5 @@ export type ControlMessage =
   | AskUserQuestionControlMessage
   | DraftUpdatedMessage
   | ServerStatusMessage
-  | TaskDeletedMessage;
+  | TaskDeletedMessage
+  | NoticesListMessage;

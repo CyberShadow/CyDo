@@ -484,24 +484,39 @@ body,
   font-size: 12px;
 }
 
-.auth-notice {
-  padding: 12px;
-  border: 1px solid #e6a700;
-  color: #e6a700;
-  font-size: 13px;
-  line-height: 1.4;
-  margin-bottom: 16px;
+.notice-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px;
 }
 
-.auth-notice code {
-  background: var(--overlay-dark);
-  padding: 1px 4px;
-  border-radius: 3px;
+.notice-item {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  line-height: 1.5;
+  border-left: 4px solid;
 }
 
-[data-theme="light"] .auth-notice {
-  border-color: #b38600;
-  color: #7a5c00;
+.notice-warning {
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.notice-alert {
+  border-left-color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.notice-info {
+  border-left-color: var(--info);
+  background: color-mix(in srgb, var(--info) 10%, transparent);
+}
+
+.notice-impact,
+.notice-action {
+  opacity: 0.85;
 }
 
 /* Banner */

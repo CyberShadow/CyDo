@@ -9,6 +9,7 @@ import { DevModeContext } from "./devMode";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
+import { NoticeBar } from "./components/NoticeBar";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toast } from "./components/Toast";
@@ -19,6 +20,7 @@ function shortProjectName(projectName: string): string {
 }
 
 function AppContent() {
+  const { toasts, addToast, dismissToast, clearToasts } = useToast();
   const {
     tasks,
     activeTaskId,
@@ -54,18 +56,17 @@ function AppContent() {
     defaultAgentType,
     activeWorkspace,
     activeProject,
-    authEnabled,
+    notices,
     devMode,
     navigateHome,
     navigateToProject,
     getProjectHref,
     getTaskHref,
     refreshWorkspaces,
-  } = useTaskManager();
+  } = useTaskManager(addToast);
 
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
-  const { toasts, addToast, dismissToast, clearToasts } = useToast();
   useErrorCapture(addToast);
 
   const effectiveDefaultAgent = useMemo(() => {
@@ -149,7 +150,7 @@ function AppContent() {
                 tasks={tasks}
                 attention={attention}
                 taskTypes={typeInfo}
-                authEnabled={authEnabled}
+                notices={notices}
                 onSelectTask={handleSearchSelect}
                 onNavigateToProject={navigateToProject}
                 getProjectHref={getProjectHref}
@@ -352,6 +353,7 @@ function AppContent() {
             onOpenSearch={handleOpenSearch}
             onArchive={handleSidebarArchive}
           />
+          <NoticeBar notices={notices} />
           {Array.from(tasks.values())
             .filter((t) => {
               // Virtual drafts (tid=0) should only render in draft mode

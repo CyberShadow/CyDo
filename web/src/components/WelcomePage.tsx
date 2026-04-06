@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { TaskState } from "../types";
 import type { WorkspaceInfo, TypeInfo } from "../useSessionManager";
+import type { Notice } from "../protocol";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 import { computeStatusClass } from "./Sidebar";
 import { isPlainLeftClick, relativeTime } from "../utils";
+import { NoticeBar } from "./NoticeBar";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -14,7 +16,7 @@ interface Props {
   getProjectHref: (workspace: string, projectName: string) => string;
   getTaskHref: (id: string) => string;
   taskTypes: TypeInfo[];
-  authEnabled: boolean;
+  notices: Record<string, Notice>;
   onRefreshWorkspaces: () => void;
 }
 
@@ -152,7 +154,7 @@ export function WelcomePage({
   getProjectHref,
   getTaskHref,
   taskTypes,
-  authEnabled,
+  notices,
   onRefreshWorkspaces,
 }: Props) {
   const [filter, setFilter] = useState("");
@@ -322,14 +324,7 @@ export function WelcomePage({
         </svg>
         <h1>CyDo</h1>
       </header>
-      {!authEnabled && (
-        <div class="auth-notice">
-          <strong>Authentication is disabled.</strong> Anyone with network
-          access to this server can view and control all agent sessions. Set{" "}
-          <code>CYDO_AUTH_PASS</code> to a non-empty value to enable
-          authentication, or leave it unset to auto-generate a password.
-        </div>
-      )}
+      <NoticeBar notices={notices} />
       <div class="welcome-filter-row">
         <div class="welcome-filter-wrapper">
           <input
