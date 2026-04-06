@@ -117,7 +117,7 @@ export function InputBox({
     if (!insertTextRef) return;
     insertTextRef.current = (quoted: string) => {
       const prev = textRef.current;
-      handleChange(prev ? `${prev}\n\n${quoted}` : quoted);
+      handleChange(prev ? `${prev.trimEnd()}\n\n${quoted}` : quoted);
       textareaRef.current?.focus();
     };
     return () => {
