@@ -108,7 +108,7 @@ body,
 .app.has-sidebar {
   display: grid;
   grid-template-columns: minmax(240px, 0.2fr) minmax(0, 1fr);
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
 }
 
 .app.has-sidebar .sidebar {
@@ -116,25 +116,30 @@ body,
   grid-column: 1;
 }
 
-.app.has-sidebar .system-banner {
+.app.has-sidebar .notice-bar {
   grid-column: 2;
   grid-row: 1;
 }
 
-.app.has-sidebar .file-viewer {
+.app.has-sidebar .system-banner {
   grid-column: 2;
   grid-row: 2;
 }
 
-.app.has-sidebar .message-list {
+.app.has-sidebar .file-viewer {
   grid-column: 2;
   grid-row: 3;
+}
+
+.app.has-sidebar .message-list {
+  grid-column: 2;
+  grid-row: 4;
   min-height: 0;
 }
 
 .app.has-sidebar .input-box {
   grid-column: 2;
-  grid-row: 4;
+  grid-row: 5;
 }
 
 /* Welcome prompt (empty session with sidebar) */
@@ -1426,7 +1431,7 @@ body,
 .app.has-sidebar .resume-bar,
 .app.has-sidebar .ask-user-form {
   grid-column: 2;
-  grid-row: 4;
+  grid-row: 5;
 }
 
 .session-failed-label {
@@ -3083,6 +3088,7 @@ pre.extra-field-value {
     display: none;
   }
 
+  .app.has-sidebar .notice-bar,
   .app.has-sidebar .system-banner,
   .app.has-sidebar .file-viewer,
   .app.has-sidebar .message-list,
