@@ -2670,7 +2670,8 @@ pre.extra-field-value {
 
 .workspace-group-chevron {
   margin-right: 6px;
-  font-size: 12px;
+  flex-shrink: 0;
+  vertical-align: -1px;
 }
 
 .refresh-workspaces-btn {

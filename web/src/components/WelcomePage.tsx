@@ -18,6 +18,23 @@ interface Props {
   onRefreshWorkspaces: () => void;
 }
 
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      class="workspace-group-chevron"
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+    >
+      {open ? (
+        <path d="M2 4L6 9L10 4" fill="currentColor" />
+      ) : (
+        <path d="M4 2L9 6L4 10" fill="currentColor" />
+      )}
+    </svg>
+  );
+}
+
 function openInNewTab(href: string): void {
   window.open(href, "_blank", "noopener");
 }
@@ -70,7 +87,7 @@ function ActiveSessions({
   return (
     <section class="workspace-group">
       <h2 class="workspace-group-title" onClick={onToggleCollapsed}>
-        <span class="workspace-group-chevron">{collapsed ? "▶" : "▼"}</span>
+        <Chevron open={!collapsed} />
         Active Sessions ({activeTasks.length})
       </h2>
       {!collapsed && (
@@ -370,9 +387,7 @@ export function WelcomePage({
                 toggleCollapsed(ws.name);
               }}
             >
-              <span class="workspace-group-chevron">
-                {isCollapsed ? "▶" : "▼"}
-              </span>
+              <Chevron open={!isCollapsed} />
               {ws.name}
             </h2>
             {!isCollapsed && (
@@ -469,9 +484,7 @@ export function WelcomePage({
               toggleCollapsed("Ungrouped");
             }}
           >
-            <span class="workspace-group-chevron">
-              {collapsed.has("Ungrouped") ? "▶" : "▼"}
-            </span>
+            <Chevron open={!collapsed.has("Ungrouped")} />
             Ungrouped
           </h2>
           {!collapsed.has("Ungrouped") && (
