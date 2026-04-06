@@ -2152,6 +2152,22 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
+/** Render an inline SVG preview when the result text is SVG markup. */
+function renderSvgPreview(resultText: string | null): h.JSX.Element | null {
+  if (!resultText) return null;
+  // strip cat -n line number prefixes to get raw content
+  const raw = resultText.replace(/^\s*\d+[\u2192\t]/gm, "").trim();
+  if (!raw.startsWith("<svg") && !raw.startsWith("<?xml")) return null;
+  // must contain an <svg tag somewhere (for <?xml ... ?><svg ...> case)
+  if (!raw.includes("<svg")) return null;
+  const dataUri = `data:image/svg+xml,${encodeURIComponent(raw)}`;
+  return (
+    <div class="tool-result-images">
+      <img src={dataUri} alt="SVG preview" class="tool-result-image" />
+    </div>
+  );
+}
+
 /** Extract and render image blocks from tool result content. */
 function renderResultImages(
   content: ToolResultContent | null | undefined,
@@ -2382,9 +2398,20 @@ function defaultResultExpanded(name: string, result?: ToolResult): boolean {
   if (name === "commandExecution" && hasReadOnlyCommandActions(result))
     return false;
   if (defaultExpandedResults.has(name)) return true;
-  // auto-expand when the result contains image blocks
+  // auto-expand when the result contains image blocks or SVG content
   if (result && Array.isArray(result.content))
     for (const b of result.content) if (b.type === "image") return true;
+  if (result) {
+    const text = extractResultText(result.content);
+    if (text) {
+      const raw = text.replace(/^\s*\d+[\u2192\t]/gm, "").trim();
+      if (
+        raw.startsWith("<svg") ||
+        (raw.startsWith("<?xml") && raw.includes("<svg"))
+      )
+        return true;
+    }
+  }
   return false;
 }
 
@@ -2603,6 +2630,7 @@ export const ToolCall = memo(
             {resultOpen && (
               <>
                 {renderResultImages(result.content)}
+                {renderSvgPreview(resultText)}
                 {cydoTaskItems ? (
                   <div class="tool-input-formatted">
                     {cydoTaskItems.map((item, i) => {
