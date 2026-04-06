@@ -90,6 +90,10 @@ task_types:
     icon: crate
     model_class: large
     output_type: []
+    creatable_tasks:
+      test_wt_child:
+        worktree: inherit
+        prompt_template: prompts/blank.md
 
   research:
     icon: research
@@ -120,3 +124,7 @@ task_types:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt.md
+
+  test_wt_child:
+    model_class: small
+    output_type: [report]

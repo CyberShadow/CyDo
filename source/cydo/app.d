@@ -41,7 +41,7 @@ import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
-	loadSystemPrompt, computeReachesWorktree;
+	loadSystemPrompt, computeReachesWorktree, computeTreeReadOnly;
 import cydo.task;
 import cydo.worktree;
 
@@ -159,6 +159,7 @@ class App : ToolsBackend
 	private TaskTypeDef[] taskTypesCache;
 	private UserEntryPointDef[] entryPointsCache;
 	private bool[string] reachesWorktreeCache;
+	private bool[string] treeReadOnlyCache;
 	private enum taskTypesDir = "defs";
 	private enum taskTypesPath = "defs/task-types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
@@ -208,6 +209,7 @@ class App : ToolsBackend
 			taskTypesCache = config.types;
 			entryPointsCache = config.entryPoints;
 			reachesWorktreeCache = computeReachesWorktree(config.types);
+			treeReadOnlyCache = computeTreeReadOnly(config.types);
 			return taskTypesCache;
 		}
 		catch (Exception e)
@@ -747,8 +749,11 @@ class App : ToolsBackend
 	}
 
 	/// Handle Task — returns a promise that resolves when the child task completes.
+	/// writerSpawned tracks whether a non-fork non-tree-read-only child has already
+	/// been dispatched in this batch, preventing concurrent writers on a shared worktree.
 	Promise!McpResult handleCreateTask(string callerTid,
-		string description, string taskType, string prompt)
+		string description, string taskType, string prompt,
+		bool* writerSpawned = null)
 	{
 		import ae.utils.json : toJson;
 		import std.algorithm : canFind, map;
@@ -793,6 +798,28 @@ class App : ToolsBackend
 		auto childTypeDef = getTaskTypes().byName(resolvedTaskType);
 		if (childTypeDef is null)
 			return resolve(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
+
+		// Worktree write conflict: only one non-fork non-tree-read-only child
+		// per batch to prevent concurrent writers on a shared worktree.
+		if (writerSpawned !is null)
+		{
+			WorktreeMode edgeMode = WorktreeMode.fork;
+			if (parentTypeDef !is null)
+				if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
+					edgeMode = edge.worktree;
+
+			if (edgeMode != WorktreeMode.fork)
+			{
+				auto childRO = resolvedTaskType in treeReadOnlyCache;
+				if (childRO is null || !(*childRO))
+				{
+					if (*writerSpawned)
+						return resolve(structuredTaskError(
+							"Cannot spawn non-read-only task: worktree is in use by another writer"));
+					*writerSpawned = true;
+				}
+			}
+		}
 
 		// Create child task
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, parentTd.agentType);

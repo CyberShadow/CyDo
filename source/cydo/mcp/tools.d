@@ -156,7 +156,8 @@ import ae.utils.promise : Promise;
 interface ToolsBackend
 {
 	Promise!McpResult handleCreateTask(string callerTid,
-		string description, string taskType, string prompt);
+		string description, string taskType, string prompt,
+		bool* writerSpawned = null);
 	McpResult handleSwitchMode(string callerTid, string continuation);
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
@@ -212,10 +213,14 @@ class CydoToolsImpl : CydoTools
 		if (tasks.length == 0)
 			return McpResult("No tasks provided", true);
 
-		// Launch all tasks — each returns a promise
+		// Launch all tasks — each returns a promise.
+		// writerSpawned prevents multiple non-fork non-tree-read-only children
+		// in the same batch from writing to the same shared worktree.
+		bool writerSpawned;
 		auto promises = new Promise!McpResult[tasks.length];
 		foreach (i, ref spec; tasks)
-			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
+			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt,
+				&writerSpawned);
 
 		McpResult[] results = all(promises).await();
 		// Status transition (waiting → active) and dep cleanup handled

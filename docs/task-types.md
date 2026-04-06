@@ -27,7 +27,6 @@ continuations:                        # successors on completion (exec-style)
     requires_approval: bool           # all stewards must approve first
 
 # Execution
-parallelizable: bool                  # multiple instances can run concurrently
 serial: bool                          # one at a time, queued (steward pattern)
 max_turns: int?                       # resource limit
 
@@ -63,6 +62,12 @@ but filesystem writes to the project tree are denied by the kernel. A writable
 This enforces role discipline (plan agents don't accidentally implement, review
 agents don't make fixes) while still allowing agents to run commands, compile
 code, or write throwaway test programs to verify theories.
+
+A task type is **tree-read-only** if `read_only: true` and every non-forking
+descendant type is also read-only. CyDo uses this to enforce worktree safety:
+spawning a non-tree-read-only sub-task on a worktree that already has an alive
+writer is rejected with an error. Fork edges are always safe (they create an
+isolated worktree).
 
 ## Flow Control
 

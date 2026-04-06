@@ -38,6 +38,8 @@ export function matchPattern(userText) {
   // Task-creation patterns must come before "reply with" and "run command"
   // because a task prompt like "call task research reply with X" contains
   // "reply with" as a substring, which would otherwise match first.
+  // "call task" (singular) must come before "call N tasks" (plural) so that
+  // nested prompts like "call task X call 2 tasks Y Z" match correctly.
 
   // Codex file-viewer deterministic fixtures
   // Keep these before broad "call task ..." matching because codex prompts
@@ -73,6 +75,24 @@ export function matchPattern(userText) {
     };
   }
 
+  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
+  // Checked before "call N tasks" so "call task X call 2 tasks Y Z" nests correctly.
+  match = userText.match(/call task (\S+) (.*)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: match[1].trim(),
+            prompt: match[2].trim(),
+            description: "Test task",
+          },
+        ],
+      },
+    };
+
   // "call N tasks <type> <prompt>" → MCP Task tool call (create multiple sub-tasks)
   match = userText.match(/call (\d+) tasks (\S+) (.*)/is);
   if (match) {
@@ -93,23 +113,6 @@ export function matchPattern(userText) {
       input: { tasks },
     };
   }
-
-  // "call task <type> <prompt>" → MCP Task tool call (create sub-task)
-  match = userText.match(/call task (\S+) (.*)/is);
-  if (match)
-    return {
-      type: "tool_call",
-      name: "mcp__cydo__Task",
-      input: {
-        tasks: [
-          {
-            task_type: match[1].trim(),
-            prompt: match[2].trim(),
-            description: "Test task",
-          },
-        ],
-      },
-    };
 
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
