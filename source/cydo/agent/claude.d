@@ -15,7 +15,8 @@ import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
-import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+import cydo.sandbox : ProcessLaunch, ResolvedSandbox, buildCommandPrefix, cleanup,
+	cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 
 /// Agent descriptor for Claude Code CLI.
@@ -491,10 +492,13 @@ class ClaudeCodeAgent : Agent
 
 		string[] args;
 		string[string] procEnv;
+		ResolvedSandbox freshSandbox;
 		if (launch.cmdPrefix !is null)
 		{
-			// bwrap/env prefix handles env setup; inherit parent env here.
-			args = launch.cmdPrefix ~ shArgs;
+			// Regenerate a fresh command prefix with new temp files,
+			// since the original ones were cleaned up after session exit.
+			freshSandbox = launch.sandbox;
+			args = buildCommandPrefix(freshSandbox, cwd) ~ shArgs;
 		}
 		else
 		{
@@ -515,6 +519,10 @@ class ClaudeCodeAgent : Agent
 
 		auto result = execute(args, procEnv, Config.none, size_t.max,
 			cwd.length > 0 ? cwd : null);
+
+		// Clean up temp files created by buildCommandPrefix above.
+		if (freshSandbox.tempFiles.length > 0)
+			cleanup(freshSandbox);
 
 		if (result.status != 0)
 		{
