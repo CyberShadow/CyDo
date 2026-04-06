@@ -162,7 +162,18 @@ function handleChatCompletions(socket, body) {
   const intent = userText !== null ? matchPattern(userText) : { type: "text", text: "Done." };
   const chatId = nextChatId();
 
-  if (intent.type === "text") {
+  if (intent.type === "check_context") {
+    const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
+    const haystack = JSON.stringify(parsed);
+    const found = haystack.includes(needle);
+    const resultText = found ? "context-check-passed" : "context-check-failed";
+    sendSse(socket, [
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: resultText }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      "[DONE]",
+    ]);
+  } else if (intent.type === "text") {
     sendSse(socket, [
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: intent.text }, finish_reason: null }] },

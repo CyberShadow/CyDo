@@ -499,7 +499,13 @@ function handleResponses(req, res) {
       return;
     }
 
-    if (intent.type === "text") {
+    if (intent.type === "check_context") {
+      const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
+      const haystack = JSON.stringify(parsed);
+      const found = haystack.includes(needle);
+      oaiStreamTextResponse(res, found ? "context-check-passed" : "context-check-failed");
+      return;
+    } else if (intent.type === "text") {
       oaiStreamTextResponse(res, intent.text, intent.totalTokens);
     } else if (intent.type === "quick_yield_shell") {
       oaiStreamFunctionCallResponse(res, "exec_command", {
@@ -635,18 +641,11 @@ function handleMessages(req, res) {
       intent.text = "image received";
     }
 
-    if (intent.type === "echo_system") {
-      // parsed.system can be a string or array of content blocks
-      let systemText = "";
-      if (typeof parsed.system === "string") {
-        systemText = parsed.system;
-      } else if (Array.isArray(parsed.system)) {
-        systemText = parsed.system
-          .filter(b => b.type === "text")
-          .map(b => b.text)
-          .join("\n");
-      }
-      streamTextResponse(res, systemText || "(no system prompt)", model);
+    if (intent.type === "check_context") {
+      const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
+      const haystack = JSON.stringify(parsed);
+      const found = haystack.includes(needle);
+      streamTextResponse(res, found ? "context-check-passed" : "context-check-failed", model);
       return;
     } else if (intent.type === "stall") {
       // Send message_start to begin the stream, then stall indefinitely.

@@ -30,10 +30,6 @@ export function matchPattern(userText) {
     return { type: "text", text: "Done." };
   }
 
-  // "echo system prompt" — signal to echo parsed.system back as response text
-  if (/^echo system prompt\s*$/i.test(userText))
-    return { type: "echo_system" };
-
   let match;
 
   // Task-creation patterns must come before "reply with" and "run command"
@@ -115,6 +111,11 @@ export function matchPattern(userText) {
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
   if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };
+
+  // "check context contains <base64>" — check if decoded string appears in request
+  match = userText.match(/check context contains ([A-Za-z0-9+/]+=*)/i);
+  if (match)
+    return { type: "check_context", needle: match[1] };
 
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
