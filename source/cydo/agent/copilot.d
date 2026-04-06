@@ -735,6 +735,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	}
 	private ActiveItem activeItem;
 	private string lastResultText;  // last completed text content, for turn/result
+	private string currentRawJson_; // raw event data.json from handleEvent, for _raw injection
 
 	private bool sessionReady_; // true after session.create/resume response
 
@@ -785,8 +786,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		initEv.permission_mode = "dangerously-skip-permissions";
 		initEv.agent           = "copilot";
 
-		if (outputHandler_)
-			outputHandler_(toJson(initEv));
+		emitEvent(toJson(initEv));
 
 		// Drain queued messages now that the session is ready.
 		auto queued = pendingMessages;
@@ -831,9 +831,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			activeItem = ActiveItem.init;
 
 			// Emit user message item so the frontend confirms the pending placeholder.
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ escaped ~ `"}`);
+			emitEvent(
+				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ escaped ~ `"}`);
 
 			// SDK session.send returns immediately with messageId.
 			// Turn completion comes via session.idle event.
@@ -906,6 +905,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (replayMode)
 			return;
 
+		currentRawJson_ = event.data.json;
 		switch (event.type)
 		{
 			case "assistant.turn_start":
@@ -961,10 +961,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				break;
 			default:
 				import cydo.agent.protocol : makeUnrecognizedEvent;
-				if (outputHandler_)
-					outputHandler_(makeUnrecognizedEvent(
-						"unknown copilot event: " ~ event.type,
-						event.data.json));
+				emitEvent(makeUnrecognizedEvent(
+					"unknown copilot event: " ~ event.type,
+					event.data.json), currentRawJson_);
 				break;
 		}
 	}
@@ -1057,27 +1056,24 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		{
 			finalizeActiveItem();
 			activeItem = ActiveItem("cp-ext-" ~ req.requestId, "tool_use", displayName, inputJson, "", true);
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
-					~ (isCydo ? `","tool_server":"cydo","tool_source":"mcp` : "")
-					~ `","input":` ~ inputJson ~ `}`);
+			emitEvent(
+				`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
+				~ (isCydo ? `","tool_server":"cydo","tool_source":"mcp` : "")
+				~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
 		}
 		auto itemId = activeItem.id;
 
 		toolDispatch_(dispatchName, to!string(tid), req.arguments)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
-			if (outputHandler_)
-			{
-				outputHandler_(
-					`{"type":"item/completed","item_id":"` ~ cpEscape(itemId)
-					~ `","input":` ~ inputJson ~ `}`);
-				outputHandler_(
-					`{"type":"item/result","item_id":"` ~ cpEscape(itemId)
-					~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`);
-			}
+			emitEvent(
+				`{"type":"item/completed","item_id":"` ~ cpEscape(itemId)
+				~ `","input":` ~ inputJson ~ `}`);
+			emitEvent(
+				`{"type":"item/result","item_id":"` ~ cpEscape(itemId)
+				~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`);
+
 			auto resultType = mcpResult.isError ? "failure" : "success";
 			auto escaped = cpEscape(mcpResult.text);
 			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
@@ -1113,6 +1109,20 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	// ----- Event handlers -----
 
+	private void emitEvent(string translated, string rawJson = null)
+	{
+		if (outputHandler_)
+		{
+			if (rawJson.length > 0)
+			{
+				import cydo.agent.protocol : injectRawField;
+				outputHandler_(injectRawField(translated, rawJson));
+			}
+			else
+				outputHandler_(translated);
+		}
+	}
+
 	private void handleTurnStart(JSONFragment data)
 	{
 		turnInProgress = true;
@@ -1136,18 +1146,17 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			finalizeActiveItem();
 			auto id = "cp-text-" ~ to!string(nextItemIndex++);
 			activeItem = ActiveItem(id, "text", "", "", "");
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/started","item_id":"` ~ cpEscape(id)
-					~ `","item_type":"text"}`);
+			emitEvent(
+				`{"type":"item/started","item_id":"` ~ cpEscape(id)
+				~ `","item_type":"text"}`, currentRawJson_);
 		}
 
 		activeItem.text ~= text;
 
-		if (outputHandler_ && text.length > 0)
-			outputHandler_(
+		if (text.length > 0)
+			emitEvent(
 				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`);
+				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
 	}
 
 	private void handleReasoningDelta(JSONFragment data)
@@ -1165,18 +1174,17 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			finalizeActiveItem();
 			auto id = "cp-think-" ~ to!string(nextItemIndex++);
 			activeItem = ActiveItem(id, "thinking", "", "", "");
-			if (outputHandler_)
-				outputHandler_(
-					`{"type":"item/started","item_id":"` ~ cpEscape(id)
-					~ `","item_type":"thinking"}`);
+			emitEvent(
+				`{"type":"item/started","item_id":"` ~ cpEscape(id)
+				~ `","item_type":"thinking"}`, currentRawJson_);
 		}
 
 		activeItem.text ~= text;
 
-		if (outputHandler_ && text.length > 0)
-			outputHandler_(
+		if (text.length > 0)
+			emitEvent(
 				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`);
+				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
 	}
 
 	private void handleToolExecutionStart(JSONFragment data)
@@ -1218,19 +1226,18 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		activeItem = ActiveItem(id, "tool_use", name, inputJson, "");
 
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"item/started","item_id":"` ~ cpEscape(id)
-				~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
-				~ (toolServer.length > 0 ? `","tool_server":"cydo","tool_source":"mcp` : "")
-				~ `","input":` ~ inputJson ~ `}`);
+		emitEvent(
+			`{"type":"item/started","item_id":"` ~ cpEscape(id)
+			~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
+			~ (toolServer.length > 0 ? `","tool_server":"cydo","tool_source":"mcp` : "")
+			~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
 
 		// Emit the full input as a single input_json_delta so the UI can
 		// display it during streaming.
-		if (outputHandler_ && inputJson.length > 0 && inputJson != "{}")
-			outputHandler_(
+		if (inputJson.length > 0 && inputJson != "{}")
+			emitEvent(
 				`{"type":"item/delta","item_id":"` ~ cpEscape(id)
-				~ `","delta_type":"input_json_delta","content":"` ~ cpEscape(inputJson) ~ `"}`);
+				~ `","delta_type":"input_json_delta","content":"` ~ cpEscape(inputJson) ~ `"}`, currentRawJson_);
 	}
 
 	private void handleToolExecutionComplete(JSONFragment data)
@@ -1248,15 +1255,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			activeItem.text = tc.result;
 
 		// Emit item/completed with final input.
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
+		emitEvent(
+			`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+			~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`, currentRawJson_);
 		// Emit item/result with accumulated output.
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
+		emitEvent(
+			`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
+			~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
 		activeItem = ActiveItem.init;
 	}
 
@@ -1290,9 +1295,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		SessErr se;
 		try se = jsonParse!SessErr(data.json);
 		catch (Exception) {}
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"process/stderr","text":"Copilot error: ` ~ cpEscape(se.message) ~ `"}`);
+		emitEvent(
+			`{"type":"process/stderr","text":"Copilot error: ` ~ cpEscape(se.message) ~ `"}`, currentRawJson_);
 	}
 
 	// ----- Turn completion -----
@@ -1305,8 +1309,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		turnInProgress = false;
 
 		// 1. turn/stop
-		if (outputHandler_)
-			outputHandler_(`{"type":"turn/stop","model":"` ~ cpEscape(model) ~ `"}`);
+		emitEvent(`{"type":"turn/stop","model":"` ~ cpEscape(model) ~ `"}`, currentRawJson_);
 
 		// 2. turn/result
 		string subtype;
@@ -1317,12 +1320,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			default:          subtype = "unknown";   break;
 		}
 		// Include the last text item as "result" so extractResultText can retrieve it.
-		if (outputHandler_)
-			outputHandler_(
-				`{"type":"turn/result","subtype":"` ~ subtype ~ `"`
-				~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-				~ (lastResultText.length > 0 ? `,"result":"` ~ cpEscape(lastResultText) ~ `"` : "")
-				~ `,"usage":{"input_tokens":0,"output_tokens":0}}`);
+		emitEvent(
+			`{"type":"turn/result","subtype":"` ~ subtype ~ `"`
+			~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
+			~ (lastResultText.length > 0 ? `,"result":"` ~ cpEscape(lastResultText) ~ `"` : "")
+			~ `,"usage":{"input_tokens":0,"output_tokens":0}}`, currentRawJson_);
 		lastResultText = null;
 
 		// Drain pending messages (steering).
@@ -1348,27 +1350,24 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 		}
 
-		if (outputHandler_)
+		if (activeItem.type == "tool_use")
 		{
-			if (activeItem.type == "tool_use")
-			{
-				// Tool: emit completed with input, and result with accumulated output.
-				outputHandler_(
-					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`);
-				outputHandler_(
-					`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`);
-			}
-			else
-			{
-				// Text/thinking: emit completed with accumulated text.
-				if (activeItem.type == "text")
-					lastResultText = activeItem.text;
-				outputHandler_(
-					`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-					~ `","text":"` ~ cpEscape(activeItem.text) ~ `"}`);
-			}
+			// Tool: emit completed with input, and result with accumulated output.
+			emitEvent(
+				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`, currentRawJson_);
+			emitEvent(
+				`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
+		}
+		else
+		{
+			// Text/thinking: emit completed with accumulated text.
+			if (activeItem.type == "text")
+				lastResultText = activeItem.text;
+			emitEvent(
+				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
+				~ `","text":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
 		}
 
 		activeItem = ActiveItem.init;
