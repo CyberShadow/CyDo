@@ -14,7 +14,10 @@ export function matchPattern(userText) {
   // Uses includes() because Copilot prepends <current_datetime>...</current_datetime>
   // before the actual content, so startsWith() would fail.
   if (userText.includes("[SUGGESTION MODE:")) {
-    return { type: "text", text: '["run the tests", "commit this"]' };
+    // Extract the [Session: ...] header so tests can assert on its content.
+    const headerMatch = userText.match(/\[Session: [^\]]*\]/);
+    const header = headerMatch ? headerMatch[0] : "no session header";
+    return { type: "text", text: JSON.stringify(["run the tests", header]) };
   }
 
   // Title generation subprocess — extract a recognizable title from the prompt.

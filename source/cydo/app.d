@@ -4471,7 +4471,7 @@ class App : ToolsBackend
 			if (event.length == 0)
 				continue;
 			import std.algorithm : canFind;
-			if (event.canFind(`"message/user"`))
+			if (event.canFind(`"user_message"`))
 				userMsgCount++;
 			if (event.canFind(`"tool_use"`))
 				toolUseCount++;
@@ -4497,7 +4497,7 @@ class App : ToolsBackend
 
 			string entry;
 
-			if (event.canFind(`"message/user"`))
+			if (event.canFind(`"user_message"`))
 			{
 				auto text = extractMessageText(event);
 				if (text.length > 0)
@@ -4509,7 +4509,7 @@ class App : ToolsBackend
 				else
 					continue;
 			}
-			else if (event.canFind(`"message/assistant"`) || event.canFind(`"turn/result"`))
+			else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`))
 			{
 				auto text = extractMessageText(event);
 				if (text.length == 0)
@@ -4571,13 +4571,25 @@ class App : ToolsBackend
 		return header ~ entries.join("\n\n");
 	}
 
-	/// Extract text content from a translated protocol event (message/user,
-	/// message/assistant, turn/result). Handles both string and array content.
+	/// Extract text content from a translated protocol event. Handles agnostic
+	/// protocol (item/started user_message, item/completed) and legacy formats.
 	private static string extractMessageText(string event)
 	{
 		import ae.utils.json : jsonParse, JSONPartial;
 
-		// Try string content first (user messages)
+		// Try top-level text field first (item/started user_message, item/completed text items)
+		@JSONPartial
+		static struct TopTextProbe { string text; bool pending; }
+
+		try
+		{
+			auto probe = jsonParse!TopTextProbe(event);
+			if (probe.text.length > 0 && !probe.pending)
+				return probe.text;
+		}
+		catch (Exception) {}
+
+		// Try string content (legacy user messages)
 		@JSONPartial
 		static struct StringMsg { string content; }
 		@JSONPartial
