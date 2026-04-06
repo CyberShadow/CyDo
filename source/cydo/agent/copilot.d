@@ -1067,16 +1067,17 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
 		}
 		auto itemId = activeItem.id;
+		auto rawJson = currentRawJson_; // capture before async dispatch
 
 		toolDispatch_(dispatchName, to!string(tid), req.arguments)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
 			emitEvent(
 				`{"type":"item/completed","item_id":"` ~ cpEscape(itemId)
-				~ `","input":` ~ inputJson ~ `}`);
+				~ `","input":` ~ inputJson ~ `}`, rawJson);
 			emitEvent(
 				`{"type":"item/result","item_id":"` ~ cpEscape(itemId)
-				~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`);
+				~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`, rawJson);
 
 			auto resultType = mcpResult.isError ? "failure" : "success";
 			auto escaped = cpEscape(mcpResult.text);
