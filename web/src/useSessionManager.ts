@@ -1320,7 +1320,24 @@ export function useTaskManager(): TaskManager {
       }
       return;
     }
-    if (activeWorkspace === null) return; // on welcome page, no draft
+    if (activeWorkspace === null) {
+      // navigated to welcome page; tear down any virtual draft so tid=0
+      // doesn't leak into the welcome page task list as "Task 0"
+      if (draftRenderKeyRef.current !== null || draftTidRef.current !== null) {
+        liveStates.delete(0);
+        setTasks((prev) => {
+          if (!prev.has(0)) return prev;
+          const next = new Map(prev);
+          next.delete(0);
+          return next;
+        });
+        inputDrafts.delete(0);
+        draftTidRef.current = null;
+        draftRenderKeyRef.current = null;
+        setDraftRenderKey(null);
+      }
+      return;
+    }
     // Clear existing draft tracking when a real draft task exists
     if (draftTidRef.current !== null) {
       draftTidRef.current = null;
