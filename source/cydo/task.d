@@ -2,6 +2,8 @@ module cydo.task;
 
 import std.format : format;
 
+private string[string] repoPathCache;
+
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial;
 import ae.utils.promise : Promise;
@@ -38,13 +40,15 @@ struct TaskData
 	{
 		if (projectPath.length == 0)
 			return "";
-		import std.process : execute;
-		import std.string : strip;
-		auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
-		if (repoResult.status != 0)
-			return projectPath;
-		auto repoRoot = repoResult.output.strip();
-		return repoRoot.length > 0 ? repoRoot : projectPath;
+		return repoPathCache.require(projectPath, {
+			import std.process : execute;
+			import std.string : strip;
+			auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
+			if (repoResult.status != 0)
+				return projectPath;
+			auto repoRoot = repoResult.output.strip();
+			return repoRoot.length > 0 ? repoRoot : projectPath;
+		}());
 	}
 
 	/// Per-task directory: .cydo/tasks/<tid>/
