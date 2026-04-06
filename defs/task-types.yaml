@@ -114,6 +114,9 @@ task_types:
       deep_research:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
+      plan:
+        prompt_template: prompts/plan.md
+        result_note: "Read the output file for full findings. `cp` it to {{output_dir}} so you can edit it during iteration with the user."
       spike:
         worktree: fork
         prompt_template: prompts/spike.md
