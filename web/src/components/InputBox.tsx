@@ -203,8 +203,9 @@ export function InputBox({
   };
 
   const handleDragOver = (e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
     e.preventDefault();
-    e.dataTransfer!.dropEffect = "copy";
+    e.dataTransfer.dropEffect = "copy";
     setIsDragging(true);
   };
 
@@ -213,10 +214,10 @@ export function InputBox({
   };
 
   const handleDrop = (e: DragEvent) => {
-    e.preventDefault();
     setIsDragging(false);
     const files = e.dataTransfer?.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
+    e.preventDefault();
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file) processFile(file);
