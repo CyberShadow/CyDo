@@ -3418,8 +3418,21 @@ pre.extra-field-value {
 
 .system-user-label {
   font-size: 12px;
+  line-height: 1;
   color: var(--text-dim);
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* On collapsed dividers, the top and bottom action bars overlap because the
+   wrapper is very thin.  Shift them apart vertically so they don't collide. */
+.message-wrapper:has(.result-divider.system-user-message) > .message-actions {
+  transform: translateY(calc(-50% - 6px));
+}
+.message-wrapper:has(.result-divider.system-user-message)
+  > .message-actions-bottom {
+  transform: translateY(calc(50% + 5px));
 }
 
 /* System user message (nudge expanded view) */
@@ -3439,12 +3452,21 @@ pre.extra-field-value {
 }
 
 .system-user-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 12px;
   font-weight: bold;
   color: var(--text-dim);
   margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.system-user-header .cydo-tool-logo {
+  align-self: center;
+  position: relative;
+  top: -1px;
 }
 
 .system-user-body {

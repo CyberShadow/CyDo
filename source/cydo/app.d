@@ -3572,7 +3572,7 @@ class App : ToolsBackend
 
 	/// Broadcast an unconfirmed user message to all clients.
 	/// This is shown as pending until Claude echoes it back with is_replay.
-	/// cydoMeta is an optional JSON string injected as "meta" in the envelope;
+	/// cydoMeta is an optional JSON string injected as "meta" on the event;
 	/// it is NOT sent to the agent.
 	private void broadcastUnconfirmedUserMessage(int tid, const(ContentBlock)[] content,
 		string cydoMeta = null)
@@ -3587,9 +3587,11 @@ class App : ToolsBackend
 		ev.content   = content.dup;
 		ev.pending   = true;
 		auto userEvent = toJson(ev);
+		// Inject meta directly into the event JSON (before the closing brace).
+		if (cydoMeta.length > 0)
+			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
 		string injected = `{"tid":` ~ format!"%d"(tid)
 			~ `,"unconfirmedUserEvent":` ~ userEvent
-			~ (cydoMeta.length > 0 ? `,"meta":` ~ cydoMeta : ``)
 			~ `}`;
 
 		auto data = Data(injected.representation);

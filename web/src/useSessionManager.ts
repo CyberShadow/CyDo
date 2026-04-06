@@ -515,9 +515,12 @@ export function useTaskManager(): TaskManager {
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
   const handleUnconfirmedUserMessage = useCallback(
-    (tid: number, msg: AgnosticEvent, meta: CydoMeta | undefined) => {
+    (tid: number, msg: AgnosticEvent) => {
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
+      const meta = (msg as Record<string, unknown>).meta as
+        | CydoMeta
+        | undefined;
       const content = ((msg as Record<string, unknown>).content as
         | ContentBlock[]
         | undefined) ?? [
@@ -534,6 +537,7 @@ export function useTaskManager(): TaskManager {
             content,
             pending: true,
             cydoMeta: meta,
+            rawSource: msg,
           },
         ],
       };
@@ -1217,12 +1221,7 @@ export function useTaskManager(): TaskManager {
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
       | { kind: "task"; tid: number; msg: AgnosticEvent }
-      | {
-          kind: "unconfirmed";
-          tid: number;
-          msg: AgnosticEvent;
-          meta: CydoMeta | undefined;
-        }
+      | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
@@ -1239,7 +1238,7 @@ export function useTaskManager(): TaskManager {
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
-          handleUnconfirmedUserMessage(item.tid, item.msg, item.meta);
+          handleUnconfirmedUserMessage(item.tid, item.msg);
         else handleTaskMessage(item.tid, item.msg);
       }
     };
@@ -1304,8 +1303,8 @@ export function useTaskManager(): TaskManager {
       buffer.push({ kind: "task", tid, msg });
       scheduleFlush();
     };
-    conn.onUnconfirmedUserMessage = (tid, msg, meta) => {
-      buffer.push({ kind: "unconfirmed", tid, msg, meta });
+    conn.onUnconfirmedUserMessage = (tid, msg) => {
+      buffer.push({ kind: "unconfirmed", tid, msg });
       scheduleFlush();
     };
     conn.onControlMessage = (msg) => {
