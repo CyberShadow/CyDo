@@ -130,7 +130,7 @@ test("sending from isolated draft applies the isolated entry-point prompt", asyn
 
   await expect(
     page.locator(".message.assistant-message .text-content", {
-      hasText: "hands-on coding assistant working in an isolated worktree",
+      hasText: "The user's request follows",
     }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
   await expect(

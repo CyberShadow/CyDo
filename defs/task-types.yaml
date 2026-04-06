@@ -104,6 +104,7 @@ task_types:
 
   conversation:
     icon: conversation
+    system_prompt_template: system_prompts/conversation.md
     model_class: large
     read_only: true
     output_type: []
@@ -145,6 +146,7 @@ task_types:
 
   plan_mode:
     icon: plan-mode
+    system_prompt_template: system_prompts/plan_mode.md
     agent_description: >
       Interactive planning mode. Delegates plan drafting to a plan sub-task,
       then lets the user iterate on the result. When the plan is approved,
@@ -198,6 +200,7 @@ task_types:
 
   bug_mode:
     icon: bug-mode
+    system_prompt_template: system_prompts/bug_mode.md
     agent_description: >
       Interactive bug investigation mode. Delegates investigation to a bug
       sub-task, then lets the user iterate on findings. When the diagnosis
@@ -254,6 +257,7 @@ task_types:
 
   write_mode:
     icon: write-mode
+    system_prompt_template: system_prompts/write_mode.md
     agent_description: >
       Write mode grants read-write access to the main checkout. Use when:
 
@@ -296,6 +300,7 @@ task_types:
 
   isolated:
     icon: crate
+    system_prompt_template: system_prompts/isolated.md
     model_class: large
     output_type: []
     creatable_tasks:
@@ -325,6 +330,7 @@ task_types:
 
   plan:
     icon: plan
+    system_prompt_template: system_prompts/plan.md
     agent_description: >
       Software architect agent for designing implementation plans. Reads the
       codebase, identifies critical files, considers trade-offs, and returns a
@@ -354,6 +360,7 @@ task_types:
 
   quick_research:
     icon: quick-research
+    system_prompt_template: system_prompts/quick_research.md
     agent_description: >
       Fast read-only agent for targeted codebase lookups. Use when: you need
       to find a specific file, function, or pattern, answer a scoped question
@@ -371,6 +378,7 @@ task_types:
 
   deep_research:
     icon: research
+    system_prompt_template: system_prompts/deep_research.md
     agent_description: >
       Thorough read-only agent for broad codebase exploration. Use when: you
       need to understand how a subsystem works before modifying it, you need
@@ -397,6 +405,7 @@ task_types:
 
   bug:
     icon: bug
+    system_prompt_template: system_prompts/bug.md
     agent_description: >
       Use for investigating bugs as a sub-task. The agent reproduces the issue,
       identifies the root cause, and reports findings back to the parent.
@@ -424,6 +433,7 @@ task_types:
 
   reproduce:
     icon: reproduce
+    system_prompt_template: system_prompts/reproduce.md
     agent_description: >
       Use to reproduce a bug as a failing test case. Runs in its own worktree
       and writes a test using the project's test runner that demonstrates the
@@ -446,6 +456,7 @@ task_types:
 
   spike:
     icon: spike
+    system_prompt_template: system_prompts/spike.md
     agent_description: >
       Use when you need to test a theory, prototype an approach, or verify
       feasibility before committing to a plan. Runs in its own worktree so
@@ -474,6 +485,7 @@ task_types:
 
   test:
     icon: test
+    system_prompt_template: system_prompts/test.md
     agent_description: >
       Use to add test coverage for new or changed code. Works on the same
       tree as the parent implementation task.
@@ -490,6 +502,7 @@ task_types:
 
   triage:
     icon: triage
+    system_prompt_template: system_prompts/triage.md
     agent_description: >
       Execute a plan. Reads the plan and decides: implement directly
       (small, single-commit change) or decompose into sub-tasks.
@@ -515,6 +528,7 @@ task_types:
 
   decompose:
     icon: decompose
+    system_prompt_template: system_prompts/decompose.md
     agent_description: >
       Use when a plan is too large or ambiguous for a single implementation
       task. Clarifies unknowns via research/spike, then splits the work into
@@ -543,6 +557,7 @@ task_types:
 
   implement:
     icon: implement
+    system_prompt_template: system_prompts/implement.md
     agent_description: >
       Use for well-scoped coding tasks with a clear plan. The agent works in its
       own isolated worktree and produces a commit. Use when: you have a clear
@@ -569,6 +584,7 @@ task_types:
 
   verify:
     icon: verify
+    system_prompt_template: system_prompts/verify.md
     agent_description: >
       Adversarial verification agent. Runs builds, test suites, linters, and
       probes to confirm the implementation works correctly. Tries to break the
@@ -581,6 +597,7 @@ task_types:
 
   review:
     icon: review
+    system_prompt_template: system_prompts/review.md
     agent_description: >
       Code review agent. Verifies the implementation matches the plan and is
       ready to land. Checks for correctness, plan alignment, and adherence to
