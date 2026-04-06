@@ -625,7 +625,7 @@ class CopilotAgent : Agent
 		return line.canFind(`"type":"user.message"`) || line.canFind(`"type":"assistant.message"`);
 	}
 
-	@property bool needsBash() { return false; }
+	@property bool needsBash() { return true; }
 	@property bool supportsFileRevert() { return false; }
 
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,

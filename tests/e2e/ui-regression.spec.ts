@@ -62,7 +62,6 @@ test("auto-scroll stays at bottom for new messages", async ({ page, agentType })
 });
 
 test("tool result with Bash output renders correctly", async ({ page, agentType }) => {
-  test.skip(agentType === "copilot", "MCP Bash tool not yet reliable in test sandbox");
   await enterSession(page);
   await sendMessage(page, "Please run command echo tool-result-test");
 
