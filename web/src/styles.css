@@ -3455,6 +3455,18 @@ pre.extra-field-value {
   margin-bottom: 4px;
 }
 
+.tool-result-images {
+  margin-bottom: 8px;
+}
+
+.tool-result-image {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: 4px;
+  display: block;
+  margin-bottom: 4px;
+}
+
 /* System user message (collapsed) — divider-style bar */
 .result-divider.system-user-message {
   gap: 8px;

@@ -2152,6 +2152,43 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
+/** Extract and render image blocks from tool result content. */
+function renderResultImages(
+  content: ToolResultContent | null | undefined,
+): h.JSX.Element | null {
+  if (!Array.isArray(content)) return null;
+  const images: Array<{ data: string; mediaType: string }> = [];
+  for (const block of content) {
+    if (block.type !== "image") continue;
+    const b = block as Record<string, unknown>;
+    const src = b.source as Record<string, unknown> | undefined;
+    if (
+      src &&
+      typeof src.data === "string" &&
+      typeof src.media_type === "string"
+    )
+      images.push({ data: src.data, mediaType: src.media_type });
+    else if (typeof b.data === "string" && typeof b.media_type === "string")
+      images.push({
+        data: b.data,
+        mediaType: b.media_type,
+      });
+  }
+  if (images.length === 0) return null;
+  return (
+    <div class="tool-result-images">
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={`data:${img.mediaType};base64,${img.data}`}
+          alt="Tool result image"
+          class="tool-result-image"
+        />
+      ))}
+    </div>
+  );
+}
+
 function renderResultContent(
   content: ToolResultContent | null | undefined,
   isError?: boolean,
@@ -2344,7 +2381,11 @@ function hasReadOnlyCommandActions(result?: ToolResult): boolean {
 function defaultResultExpanded(name: string, result?: ToolResult): boolean {
   if (name === "commandExecution" && hasReadOnlyCommandActions(result))
     return false;
-  return defaultExpandedResults.has(name);
+  if (defaultExpandedResults.has(name)) return true;
+  // auto-expand when the result contains image blocks
+  if (result && Array.isArray(result.content))
+    for (const b of result.content) if (b.type === "image") return true;
+  return false;
 }
 
 const askToolNames = new Set(["AskUserQuestion"]);
@@ -2561,6 +2602,7 @@ export const ToolCall = memo(
             </div>
             {resultOpen && (
               <>
+                {renderResultImages(result.content)}
                 {cydoTaskItems ? (
                   <div class="tool-input-formatted">
                     {cydoTaskItems.map((item, i) => {
