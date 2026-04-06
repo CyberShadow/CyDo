@@ -21,10 +21,9 @@ test("AskUserQuestion works from plan_mode after keep_context mode switch", asyn
   // Switch to plan_mode via a keep_context continuation.
   await sendMessage(page, "call switchmode plan");
 
-  // Wait for the mode switch to complete: plan_mode injects its prompt
-  // template as a user message starting with "Planning Mode".
+  // Wait for the mode switch to complete: visible as a divider labelled "Mode switch: plan_mode".
   await expect(
-    page.locator(".message.user-message", { hasText: "Planning Mode" }),
+    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   // Wait for the agent to finish processing so the input is active.

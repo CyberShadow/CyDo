@@ -1594,7 +1594,7 @@ class App : ToolsBackend
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
 				// Attach metadata so the frontend can render this as a collapsible system message.
-				auto label = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				auto label = "Session start: " ~ (td.entryPoint.length > 0 ? td.entryPoint : td.taskType);
 				userMsgMeta = buildCydoMeta(label, ["task_description": textContent], "task_description", false);
 			}
 		}
@@ -2927,8 +2927,7 @@ class App : ToolsBackend
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", taskTypesDir,
 				["result_text": resultText, "output_dir": td.taskDir]);
-			auto contMeta = buildCydoMeta("continuation prompt",
-				["result_text": resultText], "result_text", true);
+			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], contMeta);
 				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
@@ -2985,7 +2984,7 @@ class App : ToolsBackend
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
 				taskTypesDir, childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
-			auto handoffMeta = buildCydoMeta("handoff prompt",
+			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
 				["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)], handoffMeta);

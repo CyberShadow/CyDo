@@ -11,7 +11,7 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
   ).toBeVisible({ timeout: 30_000 });
 
   await expect(
-    page.locator(".message.user-message", { hasText: "Planning Mode" }),
+    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
   ).toBeVisible({ timeout: 30_000 });
 });
 
@@ -216,7 +216,7 @@ test("input box stays empty after mode switch", async ({ page, agentType }) => {
   await sendMessage(page, "call switchmode plan");
 
   await expect(
-    page.locator(".message.user-message", { hasText: "Planning Mode" }),
+    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
   ).toBeVisible({ timeout: 30_000 });
 
   const input = page.locator(".input-textarea:visible").first();

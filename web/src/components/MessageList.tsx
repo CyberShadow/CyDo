@@ -19,7 +19,6 @@ import editIcon from "../icons/edit.svg?raw";
 import viewSourceIcon from "../icons/view-source.svg?raw";
 import forkIcon from "../icons/fork.svg?raw";
 import undoIcon from "../icons/undo.svg?raw";
-import gearIcon from "../icons/gear.svg?raw";
 import sunIcon from "../icons/sun.svg?raw";
 import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
@@ -224,12 +223,24 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
           }}
         >
           <hr />
-          <span class="result-divider-icon system-user-icon">
-            <span
-              class="action-icon"
-              dangerouslySetInnerHTML={{ __html: gearIcon }}
+          <svg
+            class="result-divider-icon system-user-icon cydo-tool-logo"
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke-width="2"
+            stroke-linecap="round"
+          >
+            <path
+              style={{ stroke: "var(--success)" }}
+              d="M5.5 12L10.5 4L13 8l-2.5 4"
             />
-          </span>
+            <path
+              style={{ stroke: "var(--processing)" }}
+              d="M5.5 4L3 8l2.5 4"
+            />
+          </svg>
           <span class="system-user-label">{meta.label}</span>
           <hr />
         </div>
@@ -237,7 +248,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
     }
     return (
       <div
-        class={`message system-user-expanded${message.pending ? " pending" : ""}`}
+        class={`message user-message system-user-expanded${message.pending ? " pending" : ""}`}
         onClick={() => {
           setShowFull(false);
         }}
@@ -260,7 +271,24 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
     <div
       class={`message user-message system-user-message${message.pending ? " pending" : ""}`}
     >
-      <div class="system-user-header">{meta.label}</div>
+      <div class="system-user-header">
+        <svg
+          class="cydo-tool-logo"
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke-width="2"
+          stroke-linecap="round"
+        >
+          <path
+            style={{ stroke: "var(--success)" }}
+            d="M5.5 12L10.5 4L13 8l-2.5 4"
+          />
+          <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
+        </svg>
+        {meta.label}
+      </div>
       {bodyValue !== undefined && (
         <div class="system-user-body">
           {meta.bodyMarkdown ? (

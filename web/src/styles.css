@@ -3422,19 +3422,10 @@ pre.extra-field-value {
   white-space: nowrap;
 }
 
-/* System user message (template-style default view) */
-.message.system-user-message {
-  padding: 10px 16px;
-  background: rgba(255, 255, 255, 0.02);
-  border-left: 2px solid var(--border);
-}
-
 /* System user message (nudge expanded view) */
 .system-user-expanded {
   padding: 10px 16px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.02);
-  border-left: 2px solid var(--border);
 }
 
 .system-user-pre {
