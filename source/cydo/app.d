@@ -3092,6 +3092,24 @@ class App : ToolsBackend
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
 					|| tid in taskDeps || hasOnYield)
 				{
+					// For non-continuation subtasks, deliver the result immediately
+					// so the parent doesn't wait for process exit.
+					if (auto pending = tid in pendingSubTasks)
+					{
+						if (td.pendingContinuation.length == 0 && !hasOnYield)
+						{
+							td.status = "completed";
+							persistence.setStatus(tid, "completed");
+							persistence.setResultText(tid, td.resultText);
+							auto taskResult = buildTaskResult(tid);
+							auto resultJson = toJson(taskResult);
+							pending.fulfill(McpResult(resultJson, false, JSONFragment(resultJson)));
+							pendingSubTasks.remove(tid);
+							// taskDeps is left intact — onToolCallDelivered() handles
+							// the cleanup and the parent "waiting"→"active" transition.
+						}
+					}
+
 					// Check for unanswered child questions before closing stdin
 					auto batch = tid in activeBatches;
 					bool hasUnansweredQuestions = false;
@@ -3320,7 +3338,8 @@ class App : ToolsBackend
 					warningf("Output enforcement: tid=%d still missing outputs after retry: %s", tid, missing);
 			}
 
-			tasks[tid].status = exitCode == 0 ? "completed" : "failed";
+			if (tasks[tid].status != "completed")
+				tasks[tid].status = exitCode == 0 ? "completed" : "failed";
 			persistence.setStatus(tid, tasks[tid].status);
 			persistence.setResultText(tid, tasks[tid].resultText);
 
