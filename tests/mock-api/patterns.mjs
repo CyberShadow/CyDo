@@ -227,6 +227,10 @@ export function matchPattern(userText) {
     };
   }
 
+  // "use builtin view <path>" → Copilot built-in view tool (triggers permission.requested)
+  match = userText.match(/use builtin view (\S+)/i);
+  if (match) return { type: "builtin_tool", name: "view", input: { path: match[1] } };
+
   // Default: echo back
   return { type: "text", text: userText };
 }

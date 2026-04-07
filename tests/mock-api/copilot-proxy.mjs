@@ -205,6 +205,16 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
     ]);
+  } else if (intent.type === "builtin_tool") {
+    // Built-in tool call — use bare tool name so Copilot handles it internally.
+    // This triggers the permission.requested event flow.
+    const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
+    sendSse(socket, [
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: callId, type: "function", function: { name: intent.name, arguments: "" } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(intent.input) } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    ]);
   } else {
     // tool_call — translate mcp__cydo__Foo → cydo-Foo for copilot's MCP tool registry
     let toolName = intent.name;

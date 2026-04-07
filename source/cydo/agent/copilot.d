@@ -948,6 +948,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "external_tool.requested":
 				handleExternalToolRequested(event.data);
 				break;
+			case "permission.requested":
+				handlePermissionRequested(event.data);
+				break;
 			case "plan":
 			case "available_commands_update":
 			case "config_option_update":
@@ -1093,6 +1096,34 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				~ `","error":"` ~ escaped ~ `"}`;
 			server.sendRequest("session.tools.handlePendingToolCall", params);
 		});
+	}
+
+	/// Handle permission.requested session event (protocol v3).
+	/// Copilot broadcasts permission requests as events instead of the older
+	/// permission.request JSON-RPC method.  Auto-approve all requests.
+	private void handlePermissionRequested(JSONFragment data)
+	{
+		@JSONPartial static struct PermReq
+		{
+			string requestId;
+			bool resolvedByHook;
+		}
+
+		PermReq req;
+		try req = jsonParse!PermReq(data.json);
+		catch (Exception) return;
+
+		if (req.requestId.length == 0)
+			return;
+
+		// Already resolved by a hook — no response needed.
+		if (req.resolvedByHook)
+			return;
+
+		auto params = `{"sessionId":"` ~ cpEscape(sessionId)
+			~ `","requestId":"` ~ cpEscape(req.requestId)
+			~ `","result":{"kind":"approved"}}`;
+		server.sendRequest("session.permissions.handlePendingPermissionRequest", params);
 	}
 
 	void handleStderr(string line)
@@ -1413,6 +1444,8 @@ private final class OneShotCopilotSession : SdkSessionHandler
 					promise_.fulfill(text_);
 				}
 				break;
+			case "permission.requested":
+				break; // One-shot sessions can't respond; tools are not used.
 			default:
 				break;
 		}
