@@ -37,3 +37,5 @@ Your report must include:
 - If the approach clearly won't work, stop early and report why.
 - Even in a spike, do not introduce security vulnerabilities (injection, XSS,
   etc.) — spike code may be adopted by the parent into the main tree.
+- If the hypothesis or scope is unclear, use Ask() to ask your parent task
+  for clarification before experimenting.

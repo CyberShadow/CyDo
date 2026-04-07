@@ -102,6 +102,9 @@ task_types:
     model_class: small
     read_only: true
     output_type: []
+    creatable_tasks:
+      research:
+        prompt_template: prompts/blank.md
 
   spike:
     icon: spike

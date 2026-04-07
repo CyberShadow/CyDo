@@ -88,7 +88,12 @@ interface CydoTools
 		~ "do research, since it is not aware of your broader context.\n"
 		~ "- Avoid duplicating work that sub-tasks are already doing.\n"
 		~ "- The agent's outputs should generally be trusted.\n\n"
-		~ "Available task types:\n\n{{creatable_task_types}}"
+		~ "Available task types:\n\n{{creatable_task_types}}\n\n"
+		~ "## Follow-up\n"
+		~ "- Each result includes a `tid` field identifying the sub-task\n"
+		~ "- Use Ask(message, tid) to ask follow-up questions to completed sub-tasks\n"
+		~ "- If a sub-task asks you a question, the Task/Ask call returns early with "
+		~ "a question result including a `qid`. Answer with Answer(qid, answer).\n"
 	)
 	@McpName("Task")
 	McpResult createTasks(
@@ -147,6 +152,44 @@ interface CydoTools
 	    @Description("Array of questions to ask the user")
 	    AskQuestion[] questions
 	);
+
+	@Description(
+	    "Ask a question to a related task and wait for the answer.\n\n"
+	    ~ "## Ask your parent (tid omitted)\n"
+	    ~ "Call Ask(message) to ask your parent task a question. Your execution "
+	    ~ "pauses until the parent answers with Answer(qid, response).\n\n"
+	    ~ "## Ask a completed sub-task (follow-up)\n"
+	    ~ "After a Task call completes, use Ask(message, tid) to ask a follow-up "
+	    ~ "question. The sub-task is resumed with your question and must answer "
+	    ~ "with Answer(qid, response).\n\n"
+	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
+	    ~ "If a sub-task has a pending question, use Answer instead of Ask."
+	)
+	@McpName("Ask")
+	McpResult ask(
+	    @Description("The question to ask")
+	    string message,
+	    @Description("Target task ID. Omit to ask your parent task. "
+	        ~ "Required when asking a sub-task (tid from Task/Ask results).")
+	    int tid = -1
+	);
+
+	@Description(
+	    "Answer a question from a related task.\n\n"
+	    ~ "When a sub-task asks you a question (returned from Task or Ask with "
+	    ~ "a qid), use Answer(qid, message) to respond.\n\n"
+	    ~ "When your parent asks you a follow-up question (delivered with a qid), "
+	    ~ "use Answer(qid, message) to respond.\n\n"
+	    ~ "After answering a sub-task's question, this call blocks until the "
+	    ~ "batch completes or another question arrives."
+	)
+	@McpName("Answer")
+	McpResult answer(
+	    @Description("The question ID to answer (from the question result)")
+	    int qid,
+	    @Description("Your answer")
+	    string message
+	);
 }
 
 import ae.utils.promise : Promise;
@@ -162,6 +205,9 @@ interface ToolsBackend
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 	Promise!McpResult handleBash(string callerTid, string command);
+	Promise!McpResult registerBatchAndAwait(string callerTid, Promise!McpResult[] childPromises);
+	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
+	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
 }
 
 /// Tool implementation — constructed per MCP call with the calling App and task ID.
@@ -207,7 +253,7 @@ class CydoToolsImpl : CydoTools
 	McpResult createTasks(TaskSpec[] tasks)
 	{
 		import ae.utils.json : JSONFragment, toJson;
-		import ae.utils.promise : Promise, all;
+		import ae.utils.promise : Promise;
 		import ae.utils.promise.await : await;
 
 		if (tasks.length == 0)
@@ -222,26 +268,9 @@ class CydoToolsImpl : CydoTools
 			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt,
 				&writerSpawned);
 
-		McpResult[] results = all(promises).await();
-		// Status transition (waiting → active) and dep cleanup handled
-		// by onToolCallDelivered() after MCP delivery is confirmed.
-
-		// Collect into a JSON array
-		bool anyError;
-		JSONFragment[] items;
-		foreach (ref result; results)
-		{
-			if (result.structuredContent)
-				items ~= result.structuredContent;
-			else
-				items ~= JSONFragment(toJson(result.text));
-			if (result.isError)
-				anyError = true;
-		}
-		auto arrayJson = toJson(items);
-		auto wrappedJson = `{"tasks":` ~ arrayJson ~ `}`;
-
-		return McpResult(arrayJson, anyError, JSONFragment(wrappedJson));
+		// Register batch state and enter the event-driven wait loop.
+		// Returns when all children complete or a child asks a question.
+		return app.registerBatchAndAwait(callerTid, promises).await();
 	}
 
 	McpResult switchMode(string continuation)
@@ -258,5 +287,17 @@ class CydoToolsImpl : CydoTools
 	{
 		import ae.utils.promise.await : await;
 		return app.handleAskUserQuestion(callerTid, questions).await();
+	}
+
+	McpResult ask(string message, int tid = -1)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleAsk(callerTid, message, tid).await();
+	}
+
+	McpResult answer(int qid, string message)
+	{
+		import ae.utils.promise.await : await;
+		return app.handleAnswer(callerTid, qid, message).await();
 	}
 }

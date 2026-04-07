@@ -1514,6 +1514,12 @@ string buildToolDefinitions(SessionConfig config)
 		~ `,{"name":"cydo-AskUserQuestion","description":"Ask the user one or more questions","parameters":`
 		~ `{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}}`
 		~ `,"required":["questions"]},"skipPermission":true}`
+		~ `,{"name":"cydo-Ask","description":"Ask a question to a related task and wait for the answer","parameters":`
+		~ `{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}}`
+		~ `,"required":["message"]},"skipPermission":true}`
+		~ `,{"name":"cydo-Answer","description":"Answer a question from a related task","parameters":`
+		~ `{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}}`
+		~ `,"required":["qid","message"]},"skipPermission":true}`
 		~ `]`;
 }
 

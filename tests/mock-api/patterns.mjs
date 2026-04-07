@@ -118,6 +118,71 @@ export function matchPattern(userText) {
     };
   }
 
+  // "call ask <tid> <message>" → Ask with specific tid
+  // Must come before "call ask <message>" to avoid capturing tid as message text.
+  match = userText.match(/call ask (\d+) (.+)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Ask",
+      input: { message: match[2].trim(), tid: parseInt(match[1]) },
+    };
+
+  // "call ask <message>" → Ask parent (no tid)
+  match = userText.match(/call ask (.+)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Ask",
+      input: { message: match[1].trim() },
+    };
+
+  // "call answer <qid> <message>" → Answer a question
+  match = userText.match(/call answer (\d+) (.+)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Answer",
+      input: { qid: parseInt(match[1]), message: match[2].trim() },
+    };
+
+  // Follow-up from parent task (injected by backend as resume message with qid)
+  // Extract qid and respond with Answer tool call
+  match = userText.match(/\[Follow-up question from parent task \(qid=(\d+)\)\]/);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Answer",
+      input: { qid: parseInt(match[1]), message: "follow-up-answered" },
+    };
+
+  // "call mixed batch <type>" → two tasks with different behavior
+  match = userText.match(/call mixed batch (\S+)/i);
+  if (match)
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          { task_type: match[1], prompt: 'reply with "normal-child-done"', description: "Normal child" },
+          { task_type: match[1], prompt: "call ask what approach should I use?", description: "Questioning child" },
+        ],
+      },
+    };
+
+  // "call active-child-test" → one stalling child + one questioning child
+  if (/call active-child-test/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          { task_type: "research", prompt: "stall session", description: "Stalling child" },
+          { task_type: "research", prompt: "call ask am I doing this right?", description: "Questioning child" },
+        ],
+      },
+    };
+
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
   if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };

@@ -6,11 +6,43 @@ private string[string] repoPathCache;
 
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial;
-import ae.utils.promise : Promise;
+import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.session : AgentSession;
+import cydo.mcp : McpResult;
 import cydo.sandbox : ProcessLaunch;
+
+/// Signal type for batch event queue: child completion or child question.
+struct BatchSignal
+{
+	enum Kind { childDone, question }
+	Kind kind;
+	int childTid;
+	McpResult result;      // populated for childDone
+	string questionText;   // populated for question
+
+	static BatchSignal childDone(int tid, McpResult r)
+	{
+		BatchSignal s;
+		s.kind = Kind.childDone;
+		s.childTid = tid;
+		s.result = r;
+		return s;
+	}
+
+	int qid;            // question ID for question signals
+
+	static BatchSignal question(int tid, string text, int qid)
+	{
+		BatchSignal s;
+		s.kind = Kind.question;
+		s.childTid = tid;
+		s.questionText = text;
+		s.qid = qid;
+		return s;
+	}
+}
 
 enum ProcessState : bool { Dead = false, Alive = true }
 enum ArchiveState : bool { Unarchived = false, Archived = true }
@@ -153,6 +185,9 @@ struct TaskData
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
+	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
+	string pendingAskQuestion;             // question text from child
+	int pendingAskQid;                     // qid allocated for this question
 	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 
@@ -418,6 +453,8 @@ struct TaskResult
 	@JSONOptional string worktree;    // path to worktree, if any
 	@JSONOptional string note;        // contextual guidance for the parent agent
 	@JSONOptional string error;       // canonical per-task error message
+	@JSONOptional int tid;            // child task ID for follow-up via Ask
+	@JSONOptional int qid;            // question ID, present when status=="question"
 }
 
 struct McpContentItem

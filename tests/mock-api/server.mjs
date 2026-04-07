@@ -505,6 +505,14 @@ function handleResponses(req, res) {
       const found = haystack.includes(needle);
       oaiStreamTextResponse(res, found ? "context-check-passed" : "context-check-failed");
       return;
+    } else if (intent.type === "stall") {
+      // Send response.created to begin the stream, then stall indefinitely.
+      // The session stays alive (waiting for LLM) so tests can kill it.
+      oaiSseEvent(res, "response.created", {
+        type: "response.created",
+        response: { id: nextRespId() },
+      });
+      // Do NOT call res.end() — connection stays open until the process is killed.
     } else if (intent.type === "text") {
       oaiStreamTextResponse(res, intent.text, intent.totalTokens);
     } else if (intent.type === "quick_yield_shell") {

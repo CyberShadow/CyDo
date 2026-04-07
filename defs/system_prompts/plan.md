@@ -87,5 +87,7 @@ Your plan must include:
 - Do not over-engineer. Propose the minimum viable change.
 - Follow existing project conventions — don't introduce new patterns unless
   there is a clear reason.
+- If you need clarification about the task scope or requirements, use Ask()
+  to ask your parent task before investing effort in the wrong direction.
 
 **Remember: You are in read-only mode. Explore and plan — do not write code.**

@@ -38,3 +38,6 @@ Your report must include:
 - **Scope** — small fix (few lines, 1-3 files) or needs planning (many files,
   design decisions required)
 - **Proposed fix** — what should change and why
+
+If the bug description is ambiguous or you need clarification, use Ask() to
+ask your parent task before spending time on a reproduction.

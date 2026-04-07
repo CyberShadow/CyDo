@@ -50,3 +50,5 @@ Your report must include:
   survives after the task ends).
 - Be factual. Distinguish between what you observed and what you infer.
 - Include file paths and line numbers so the caller can verify your findings.
+- If the task scope is unclear, use Ask() to ask your parent task for
+  clarification before proceeding.

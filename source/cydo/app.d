@@ -22,7 +22,7 @@ import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
 import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
-import ae.utils.promise : Promise, resolve, reject;
+import ae.utils.promise : Promise, PromiseQueue, resolve, reject;
 import std.typecons : Nullable;
 import ae.utils.promise.concurrency : threadAsync;
 import ae.utils.statequeue : StateQueue;
@@ -31,6 +31,7 @@ mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, ToolsBackend;
+import cydo.task : BatchSignal;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock, extractContentText;
@@ -262,6 +263,22 @@ class App : ToolsBackend
 	private int[int] taskDeps;
 	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
 	private Promise!(McpResult)[int] pendingAskUserQuestions;
+	// Per-parent batch state, keyed by parent tid
+	private BatchState[int] activeBatches;
+	// App-global question ID counter and registry
+	private int nextQid = 1;
+	private Promise!McpResult[int] pendingQuestions;  // qid → promise waiting for answer
+	private int[int] questionToTask;                   // qid → tid of the task that asked
+
+	private struct BatchState
+	{
+		McpResult[] results;
+		bool[] done;
+		size_t completed;
+		size_t totalChildren;
+		int[] childTids;                   // ordered child tids
+		PromiseQueue!BatchSignal eventQueue;
+	}
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// inotify watches for config file hot-reload
@@ -989,6 +1006,102 @@ class App : ToolsBackend
 		return promise;
 	}
 
+	/// Set up batch event stream and enter the wait loop.
+	/// Called from createTasks — parent fiber blocks here.
+	Promise!McpResult registerBatchAndAwait(string callerTidStr,
+		Promise!McpResult[] childPromises)
+	{
+		import std.conv : to;
+		int parentTid = to!int(callerTidStr);
+
+		// Map each promise to its child tid by reverse-lookup in pendingSubTasks.
+		// (taskDeps iteration order is non-deterministic, but pendingSubTasks allows
+		//  matching each promise to the exact child that produced it.)
+		int[] childTids = new int[childPromises.length];
+		foreach (i, p; childPromises)
+		{
+			childTids[i] = -1;
+			foreach (childTid, subProm; pendingSubTasks)
+				if (subProm is p) { childTids[i] = childTid; break; }
+		}
+
+		BatchState batch;
+		batch.totalChildren = childPromises.length;
+		batch.results = new McpResult[childPromises.length];
+		batch.done = new bool[childPromises.length];
+		batch.childTids = childTids;
+
+		// Set up .then() handlers ONCE — they feed into the event queue.
+		foreach (i, p; childPromises)
+		{
+			int cTid = childTids[i];
+			p.then((McpResult r) {
+				if (parentTid in activeBatches)
+					activeBatches[parentTid].eventQueue.fulfillOne(
+						BatchSignal.childDone(cTid, r));
+			});
+		}
+
+		activeBatches[parentTid] = batch;
+		return awaitBatchLoop(parentTid);
+	}
+
+	/// Enter (or re-enter) the batch wait loop for a parent.
+	/// Blocks until all children complete or a child asks a question.
+	private Promise!McpResult awaitBatchLoop(int parentTid)
+	{
+		import ae.utils.json : JSONFragment, toJson;
+		import ae.utils.promise.await : await;
+
+		if ((parentTid in activeBatches) is null)
+			return resolve(McpResult("No active batch", true));
+
+		while (activeBatches[parentTid].completed < activeBatches[parentTid].totalChildren)
+		{
+			// Re-fetch pointer after each await() — AA may rehash during suspension.
+			auto sig = activeBatches[parentTid].eventQueue.waitOne().await();
+
+			if (sig.kind == BatchSignal.Kind.childDone)
+			{
+				foreach (i, cTid; activeBatches[parentTid].childTids)
+				{
+					if (cTid == sig.childTid)
+					{
+						activeBatches[parentTid].results[i] = sig.result;
+						activeBatches[parentTid].done[i] = true;
+						break;
+					}
+				}
+				activeBatches[parentTid].completed++;
+			}
+			else // question
+			{
+				// Return question to parent agent — parent answers via Answer,
+				// which re-enters this loop.
+				return resolve(buildQuestionResult(sig.childTid));
+			}
+		}
+
+		// All children done — assemble results and clean up
+		auto results = activeBatches[parentTid].results.dup;
+		activeBatches.remove(parentTid);
+
+		bool anyError;
+		JSONFragment[] items;
+		foreach (ref result; results)
+		{
+			if (result.structuredContent)
+				items ~= result.structuredContent;
+			else
+				items ~= JSONFragment(toJson(result.text));
+			if (result.isError)
+				anyError = true;
+		}
+		auto arrayJson = toJson(items);
+		auto wrappedJson = `{"tasks":` ~ arrayJson ~ `}`;
+		return resolve(McpResult(arrayJson, anyError, JSONFragment(wrappedJson)));
+	}
+
 	/// Handle SwitchMode tool — validate and store continuation choice (keep_context).
 	/// The actual transition happens in onExit after the session ends.
 	McpResult handleSwitchMode(string callerTid, string continuation)
@@ -1149,6 +1262,234 @@ class App : ToolsBackend
 		return promise;
 	}
 
+	Promise!McpResult handleAsk(string callerTidStr, string message, int targetTid)
+	{
+		import std.conv : to;
+		int callerTidInt;
+		try callerTidInt = to!int(callerTidStr);
+		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
+
+		auto callerTd = callerTidInt in tasks;
+		if (callerTd is null) return resolve(McpResult("Task not found", true));
+
+		// Resolve tid: -1 means "ask parent"
+		if (targetTid == -1)
+		{
+			if (callerTd.parentTid <= 0)
+				return resolve(McpResult("No parent task — tid is required", true));
+			targetTid = callerTd.parentTid;
+		}
+
+		auto targetTd = targetTid in tasks;
+		if (targetTd is null)
+			return resolve(McpResult("Target task not found: " ~ to!string(targetTid), true));
+
+		// Direction 1: caller is parent of target (ask completed child for follow-up)
+		if (targetTd.parentTid == callerTidInt)
+			return handleAskChild(callerTidInt, targetTid, message);
+
+		// Direction 2: target is caller's parent (ask parent)
+		if (callerTd.parentTid == targetTid)
+			return handleAskParent(callerTidInt, targetTid, message);
+
+		return resolve(McpResult(
+			"Ask target must be a sub-task or parent task (tid="
+			~ to!string(targetTid) ~ " is neither)", true));
+	}
+
+	private Promise!McpResult handleAskChild(int parentTid, int childTid, string message)
+	{
+		import std.conv : to;
+		auto childTd = &tasks[childTid];
+
+		// Child has a pending question — tell parent to use Answer instead
+		if (childTd.pendingAskPromise !is null)
+		{
+			return resolve(McpResult(
+				"Sub-task has a pending question (qid=" ~ to!string(childTd.pendingAskQid)
+				~ "). Use Answer(qid, message) instead.", true));
+		}
+
+		// Child completed/failed → resume for follow-up
+		if (childTd.status == "completed" || childTd.status == "failed")
+		{
+			int qid = nextQid++;
+			auto promise = new Promise!McpResult;
+			pendingQuestions[qid] = promise;
+			questionToTask[qid] = parentTid;
+
+			auto subTaskPromise = new Promise!McpResult;
+			pendingSubTasks[childTid] = subTaskPromise;
+			taskDeps[childTid] = parentTid;
+			persistence.addTaskDep(parentTid, childTid);
+
+			tasks[parentTid].status = "waiting";
+			persistence.setStatus(parentTid, "waiting");
+			broadcastTaskUpdate(parentTid);
+
+			childTd.status = "active";
+			persistence.setStatus(childTid, "active");
+			broadcastTaskUpdate(childTid);
+
+			// Register a single-child batch so we can reuse awaitBatchLoop
+			BatchState batch;
+			batch.totalChildren = 1;
+			batch.results = new McpResult[1];
+			batch.done = new bool[1];
+			batch.childTids = [childTid];
+			activeBatches[parentTid] = batch;
+
+			// Hook the promise into the event queue
+			subTaskPromise.then((McpResult r) {
+				if (parentTid in activeBatches)
+					activeBatches[parentTid].eventQueue.fulfillOne(
+						BatchSignal.childDone(childTid, r));
+			});
+
+			// Resume child process and send follow-up message with qid
+			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
+				auto msg = "[Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")]\n\n"
+					~ message
+					~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+				sendTaskMessage(childTid, [ContentBlock("text", msg)]);
+			}).ignoreResult();
+
+			// When child calls Answer(qid, ...), the promise is fulfilled directly.
+			// We still need to await the batch in case child exits without answering.
+			// The Answer handler will fulfill pendingQuestions[qid] which resolves promise.
+			// We return the promise that's fulfilled when child answers.
+			// But we must also enter awaitBatchLoop so the parent waits properly.
+			// Wire: when promise is fulfilled (child answers), deliver to parent via awaitBatchLoop.
+			promise.then((McpResult r) {
+				// Child answered the follow-up — deliver as batch result
+				if (parentTid in activeBatches)
+					activeBatches[parentTid].eventQueue.fulfillOne(
+						BatchSignal.childDone(childTid, r));
+				pendingQuestions.remove(qid);
+				questionToTask.remove(qid);
+			});
+
+			return awaitBatchLoop(parentTid);
+		}
+
+		// Child is active/busy
+		return resolve(McpResult(
+			"Cannot Ask active sub-task (tid=" ~ to!string(childTid)
+			~ ", status=" ~ childTd.status ~ "). "
+			~ "Ask to children is only supported for completed/failed tasks.", true));
+	}
+
+	private Promise!McpResult handleAskParent(int childTid, int parentTid, string message)
+	{
+		import std.conv : to;
+		auto childTd = &tasks[childTid];
+
+		// Allocate a qid for this question
+		int qid = nextQid++;
+		auto promise = new Promise!McpResult;
+		childTd.pendingAskPromise = promise;
+		childTd.pendingAskQuestion = message;
+		childTd.pendingAskQid = qid;
+		pendingQuestions[qid] = promise;
+		questionToTask[qid] = childTid;
+
+		// Inject question into parent's batch event queue
+		if (auto batch = parentTid in activeBatches)
+			batch.eventQueue.fulfillOne(BatchSignal.question(childTid, message, qid));
+
+		// Update child status
+		childTd.status = "waiting";
+		childTd.notificationBody = "Asking parent: " ~ truncateTitle(message, 100);
+		persistence.setStatus(childTid, "waiting");
+		broadcastTaskUpdate(childTid);
+
+		return promise;
+	}
+
+	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
+	{
+		import std.conv : to;
+		int callerTidInt;
+		try callerTidInt = to!int(callerTidStr);
+		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
+
+		if (callerTidInt !in tasks)
+			return resolve(McpResult("Task not found", true));
+
+		auto questionPromise = qid in pendingQuestions;
+		if (questionPromise is null)
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+
+		auto askingTaskTid = qid in questionToTask;
+		if (askingTaskTid is null)
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+
+		int askTid = *askingTaskTid;
+		auto askTd = askTid in tasks;
+
+		// Determine direction:
+		// - Parent answering child's question: askTid is a child of callerTidInt
+		// - Child answering parent's follow-up: askTid is the parent of callerTidInt
+		bool parentAnsweringChild = askTd !is null && askTd.parentTid == callerTidInt;
+		bool childAnsweringParent = askTd !is null && tasks[callerTidInt].parentTid == askTid;
+
+		if (parentAnsweringChild)
+		{
+			// Fulfill child's blocking Ask call with the answer
+			(*questionPromise).fulfill(McpResult(message, false));
+
+			// Clean up child state
+			if (askTd.pendingAskPromise !is null)
+			{
+				askTd.pendingAskPromise = null;
+				askTd.pendingAskQuestion = null;
+				askTd.pendingAskQid = 0;
+			}
+			pendingQuestions.remove(qid);
+			questionToTask.remove(qid);
+
+			// Update child status
+			askTd.status = "active";
+			askTd.notificationBody = "";
+			persistence.setStatus(askTid, "active");
+			broadcastTaskUpdate(askTid);
+
+			// Re-enter the batch wait loop — blocks until next event
+			return awaitBatchLoop(callerTidInt);
+		}
+		else if (childAnsweringParent)
+		{
+			// Child answering parent's follow-up question
+			// Fulfill the promise — handleAskChild's .then() handler delivers to batch
+			(*questionPromise).fulfill(McpResult(message, false));
+			// Note: pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
+
+			// Return simple success to the child
+			return resolve(McpResult("Answer delivered.", false));
+		}
+		else
+		{
+			return resolve(McpResult(
+				"Unknown question ID: " ~ to!string(qid), true));
+		}
+	}
+
+	private McpResult buildQuestionResult(int childTid)
+	{
+		import ae.utils.json : toJson;
+		import std.conv : to;
+		auto childTd = &tasks[childTid];
+		auto questionJson = `{"status":"question","tid":` ~ to!string(childTid)
+			~ `,"qid":` ~ to!string(childTd.pendingAskQid)
+			~ `,"title":` ~ toJson(childTd.title)
+			~ `,"question":` ~ toJson(childTd.pendingAskQuestion) ~ `}`;
+		return McpResult(
+			"Sub-task \"" ~ childTd.title ~ "\" is asking (qid=" ~ to!string(childTd.pendingAskQid) ~ "): " ~ childTd.pendingAskQuestion,
+			false,
+			JSONFragment(questionJson)
+		);
+	}
+
 	/// Called after an MCP tool call result is successfully sent back to the
 	/// agent's MCP proxy. Cleans up sub-task deps (if any) and transitions
 	/// the parent from "waiting" to "active".
@@ -1160,6 +1501,10 @@ class App : ToolsBackend
 		catch (Exception) return;
 
 		if (tid !in tasks)
+			return;
+
+		// Don't clean up deps if there's an active batch (Answer will re-enter)
+		if (tid in activeBatches)
 			return;
 
 		// Clean up deps for completed children (no-op for non-Task tools)
@@ -2684,6 +3029,11 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "Handoff";
 		if (getTaskTypes().isInteractive(getEntryPoints(), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
+		if (sessionConfig.creatableTaskTypes.length > 0 || td.parentTid > 0)
+		{
+			sessionConfig.includeTools ~= "Ask";
+			sessionConfig.includeTools ~= "Answer";
+		}
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
@@ -2742,9 +3092,49 @@ class App : ToolsBackend
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
 					|| tid in taskDeps || hasOnYield)
 				{
-					td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-					td.session.closeStdin();
-					td.session.killAfterTimeout(5.seconds);
+					// Check for unanswered child questions before closing stdin
+					auto batch = tid in activeBatches;
+					bool hasUnansweredQuestions = false;
+					if (batch !is null)
+					{
+						foreach (cTid; batch.childTids)
+						{
+							if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+							{
+								hasUnansweredQuestions = true;
+								break;
+							}
+						}
+					}
+
+					if (hasUnansweredQuestions)
+					{
+						import std.conv : to;
+						string reminder;
+						foreach (cTid; batch.childTids)
+						{
+							if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+							{
+								auto childTd = &tasks[cTid];
+								reminder = "[SYSTEM: Sub-task \"" ~ childTd.title ~ "\" (tid="
+									~ to!string(cTid) ~ ") is waiting for your answer (qid="
+									~ to!string(childTd.pendingAskQid) ~ ").]\n\n"
+									~ "Question: " ~ childTd.pendingAskQuestion ~ "\n\n"
+									~ "Use Answer(" ~ to!string(childTd.pendingAskQid)
+									~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
+								break;
+							}
+						}
+						auto reminderBlocks = [ContentBlock("text", reminder)];
+						broadcastUnconfirmedUserMessage(tid, reminderBlocks);
+						sendTaskMessage(tid, reminderBlocks);
+					}
+					else
+					{
+						td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+						td.session.closeStdin();
+						td.session.killAfterTimeout(5.seconds);
+					}
 				}
 				else
 				{
@@ -2795,6 +3185,19 @@ class App : ToolsBackend
 			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
 			if (cleanExit && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
 				ev.is_continuation = true;
+			// Suppress auto-navigation when yield enforcement is active:
+			// if a child has an unanswered Ask question, the process was
+			// restarted by yield enforcement and will restart again.
+			if (!ev.is_continuation)
+			{
+				if (auto batch = tid in activeBatches)
+					foreach (cTid; batch.childTids)
+						if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+						{
+							ev.is_continuation = true;
+							break;
+						}
+			}
 			broadcastTask(tid, toJson(ev));
 			if (tid !in tasks)
 				return;
@@ -2814,6 +3217,19 @@ class App : ToolsBackend
 				tasks[tid].needsAttention = false;
 				tasks[tid].hasPendingQuestion = false;
 				tasks[tid].notificationBody = "";
+			}
+
+			// Fulfill pending Ask promise with error if child exits while waiting
+			if (tasks[tid].pendingAskPromise !is null)
+			{
+				int qid = tasks[tid].pendingAskQid;
+				tasks[tid].pendingAskPromise.fulfill(
+					McpResult("Session ended while waiting for Ask response", true));
+				tasks[tid].pendingAskPromise = null;
+				tasks[tid].pendingAskQuestion = null;
+				tasks[tid].pendingAskQid = 0;
+				pendingQuestions.remove(qid);
+				questionToTask.remove(qid);
 			}
 
 			// Kill any in-flight one-shot subprocesses (title/suggestion generation).
@@ -3242,25 +3658,29 @@ class App : ToolsBackend
 
 	private TaskResult buildTaskResult(int tid)
 	{
+		import std.conv : to;
 		import std.file : exists;
 		auto td = &tasks[tid];
 		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
+		auto talkNote = " Use Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
 		string note;
 		if (hasOutput && hasWorktree)
-			note = "Read the output file for full findings. The worktree path is included for adopting changes.";
+			note = "Read the output file for full findings. The worktree path is included for adopting changes." ~ talkNote;
 		else if (hasOutput)
-			note = "Read the output file for full findings.";
+			note = "Read the output file for full findings." ~ talkNote;
 		else if (hasWorktree)
-			note = "The worktree contains the implementation.";
-		return TaskResult(
+			note = "The worktree contains the implementation." ~ talkNote;
+		auto result = TaskResult(
 			td.resultText,
 			hasOutput ? td.outputPath : null,
 			hasWorktree ? td.worktreePath : null,
 			note.length > 0 ? note : td.resultNote,
 			isFailed ? td.resultText : null,
 		);
+		result.tid = tid;
+		return result;
 	}
 
 	private void deliverBatchResults(int parentTid)

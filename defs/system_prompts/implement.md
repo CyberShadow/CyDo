@@ -50,6 +50,9 @@ clean, reviewable commits.
   SQL injection, path traversal, and other OWASP top 10 issues. If you notice
   insecure code, fix it immediately. Prioritize writing safe, secure, and
   correct code.
+- If the plan is ambiguous or you need clarification, use the Ask tool
+  (call Ask with just your question, no tid) to ask your parent task.
+  Your execution pauses until the parent answers.
 - Do not improvise beyond the plan. If you encounter any of the following,
   **stop immediately** and report the issue instead of trying to resolve it
   yourself:

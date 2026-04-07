@@ -1712,7 +1712,35 @@ const knownResultFields: Record<string, Set<string>> = {
   EnterPlanMode: new Set(["message"]),
   ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
   NotebookEdit: new Set([]),
-  "cydo:Task": new Set(["tasks", "content", "structuredContent"]),
+  "cydo:Task": new Set([
+    "tasks",
+    "content",
+    "structuredContent",
+    "status",
+    "tid",
+    "title",
+    "question",
+  ]),
+  "cydo:Ask": new Set([
+    "tasks",
+    "content",
+    "structuredContent",
+    "status",
+    "tid",
+    "qid",
+    "title",
+    "question",
+  ]),
+  "cydo:Answer": new Set([
+    "tasks",
+    "content",
+    "structuredContent",
+    "status",
+    "tid",
+    "qid",
+    "title",
+    "question",
+  ]),
   "cydo:SwitchMode": new Set(["message"]),
   "cydo:Handoff": new Set(["message"]),
 };
@@ -2049,6 +2077,14 @@ function formatInput(
     return formatGenericInput(remaining);
   }
   // --- CyDo MCP tools ---
+  if (
+    (name === "Ask" || name === "Answer") &&
+    toolServer === "cydo" &&
+    typeof input.message === "string"
+  ) {
+    const { message, ...remaining } = input;
+    return formatGenericInput(remaining, <Markdown text={message} />);
+  }
   if (name === "Task" && toolServer === "cydo" && Array.isArray(input.tasks)) {
     return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
   }
@@ -2264,6 +2300,8 @@ const defaultExpandedTools = new Set([
   "AskUserQuestion",
   "WebFetch",
   "Task",
+  "Ask",
+  "Answer",
   "Handoff",
   "SendMessage",
   "TaskCreate",
@@ -2274,6 +2312,8 @@ const defaultExpandedResults = new Set([
   "local_shell_call",
   "exec_command",
   "Task",
+  "Ask",
+  "Answer",
   "WebSearch",
   "WebFetch",
   "TaskOutput",
@@ -2341,7 +2381,7 @@ export const ToolCall = memo(
       typeof input.file_path === "string" ? input.file_path : null;
     const resultText = result ? extractResultText(result.content) : null;
     const cydoTaskItems =
-      name === "Task" &&
+      (name === "Task" || name === "Ask") &&
       toolServer === "cydo" &&
       resultText != null &&
       !result!.isError
