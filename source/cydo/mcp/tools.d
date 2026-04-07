@@ -74,7 +74,7 @@ interface CydoTools
 		~ "- Searching for a specific symbol or filename (use Grep or Glob directly)\n"
 		~ "- Trivial one-step work you are certain about\n\n"
 		~ "## How results work\n"
-		~ "- The sub-task runs to completion and returns a structured summary\n"
+		~ "- The sub-task writes to its own output file; you receive the path and can read it\n"
 		~ "- Results are also visible in the CyDo web UI task tree\n"
 		~ "- Sub-tasks are persisted and survive backend restarts\n\n"
 		~ "## Parallel execution\n"
