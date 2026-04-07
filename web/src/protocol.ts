@@ -396,7 +396,12 @@ export interface WorkspacesListMessage {
   type: "workspaces_list";
   workspaces: {
     name: string;
-    projects: { name: string; path: string }[];
+    projects: {
+      name: string;
+      path: string;
+      virtual?: boolean;
+      exists?: boolean;
+    }[];
     default_agent_type?: string;
     default_task_type?: string;
   }[];

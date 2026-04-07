@@ -297,6 +297,8 @@ struct ProjectInfo
 {
 	string name;      // relative path within workspace
 	string path;      // absolute path
+	bool virtual_;    // true = implied by tasks, not discovered
+	bool exists;      // false = directory no longer on disk (only meaningful when virtual_)
 }
 
 struct WorkspaceInfo

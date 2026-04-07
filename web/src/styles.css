@@ -2777,6 +2777,11 @@ pre.extra-field-value {
   flex-direction: column;
 }
 
+.project-card-virtual {
+  border-style: dashed;
+  opacity: 0.8;
+}
+
 .project-card-header {
   display: flex;
   align-items: center;

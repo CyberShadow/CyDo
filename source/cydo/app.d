@@ -4558,16 +4558,8 @@ class App : ToolsBackend
 					persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
 						finalProjectPath, finalTitle, true);
 
-				// Match workspace by project path
-				string workspace = "";
-				foreach (ref wi; workspacesInfo)
-					if (wi.projects !is null)
-						foreach (ref pi; wi.projects)
-							if (pi.path == finalProjectPath)
-							{ workspace = wi.name; break; }
-
-				// Create importable task row
-				auto tid = createTask(workspace, finalProjectPath, r.agentType);
+				// Create importable task row — workspace resolved at display time
+				auto tid = createTask("", finalProjectPath, r.agentType);
 				auto td = &tasks[tid];
 				td.status = "importable";
 				td.agentSessionId = r.sessionId;
@@ -4579,9 +4571,20 @@ class App : ToolsBackend
 				persistence.setTitle(tid, finalTitle);
 				persistence.setLastActive(tid, r.mtime);
 
-				broadcast(toJson(TaskCreatedMessage("task_created", tid, workspace, finalProjectPath, 0, "")));
+				broadcast(toJson(TaskCreatedMessage("task_created", tid, "", finalProjectPath, 0, "")));
 				broadcastTaskUpdate(tid);
 			}
+
+			// Refresh virtual projects now that importable tasks are known
+			{
+				import std.algorithm : filter;
+				import std.array : array;
+				foreach (ref wi; workspacesInfo)
+					wi.projects = wi.projects.filter!(p => !p.virtual_).array;
+				workspacesInfo = workspacesInfo.filter!(wi => wi.name != "" || wi.projects.length > 0).array;
+			}
+			injectVirtualProjects();
+			broadcast(buildWorkspacesList());
 		}).ignoreResult();
 	}
 
@@ -4631,7 +4634,7 @@ class App : ToolsBackend
 			{
 				auto json = parseJSON(result.output);
 				foreach (entry; json.array)
-					projInfos ~= ProjectInfo(entry["name"].str, entry["path"].str);
+					projInfos ~= ProjectInfo(entry["name"].str, entry["path"].str, false, true);
 			}
 			catch (Exception e)
 				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
@@ -4641,6 +4644,90 @@ class App : ToolsBackend
 			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
 			foreach (ref p; projInfos)
 				infof("  - %s (%s)", p.name, p.path);
+		}
+		injectVirtualProjects();
+	}
+
+	/// Inject virtual ProjectInfo entries for task projectPaths not already covered by
+	/// discovered projects. Must be called after workspacesInfo is populated.
+	private void injectVirtualProjects()
+	{
+		import std.algorithm : startsWith;
+		import std.path : relativePath;
+
+		// Collect all distinct projectPaths from all tasks
+		bool[string] seen;
+		string[] taskPaths;
+		foreach (ref td; tasks)
+			if (td.projectPath.length > 0 && td.projectPath !in seen)
+			{
+				seen[td.projectPath] = true;
+				taskPaths ~= td.projectPath;
+			}
+
+		// Build set of already-covered paths
+		bool[string] coveredPaths;
+		foreach (ref wi; workspacesInfo)
+			foreach (ref pi; wi.projects)
+				coveredPaths[pi.path] = true;
+
+		// For each uncovered path, find which workspace(s) it belongs to
+		string[] orphanedPaths;
+		foreach (projectPath; taskPaths)
+		{
+			if (projectPath in coveredPaths)
+				continue;
+
+			bool matched = false;
+			foreach (ref ws; config.workspaces)
+			{
+				auto wsRoot = ws.root;
+				if (projectPath == wsRoot ||
+				    projectPath.startsWith(wsRoot ~ "/"))
+				{
+					matched = true;
+					auto relName = relativePath(projectPath, wsRoot);
+					auto vp = ProjectInfo(relName, projectPath, true, exists(projectPath));
+					// Find WorkspaceInfo for this workspace
+					bool found = false;
+					foreach (ref wi; workspacesInfo)
+						if (wi.name == ws.name)
+						{
+							wi.projects ~= vp;
+							found = true;
+							break;
+						}
+					if (!found)
+						workspacesInfo ~= WorkspaceInfo(ws.name, [vp], ws.default_agent_type, ws.default_task_type);
+				}
+			}
+			if (!matched)
+				orphanedPaths ~= projectPath;
+		}
+
+		// Handle orphaned paths (not under any workspace root)
+		if (orphanedPaths.length > 0)
+		{
+			// Find or create synthetic workspace with name ""
+			WorkspaceInfo* synthWs = null;
+			foreach (ref wi; workspacesInfo)
+				if (wi.name == "")
+				{ synthWs = &wi; break; }
+
+			if (synthWs is null)
+			{
+				workspacesInfo ~= WorkspaceInfo("", null, "", "");
+				synthWs = &workspacesInfo[$ - 1];
+			}
+
+			// Re-check coverage (synthetic workspace may already have some paths)
+			bool[string] synthCovered;
+			foreach (ref pi; synthWs.projects)
+				synthCovered[pi.path] = true;
+
+			foreach (projectPath; orphanedPaths)
+				if (projectPath !in synthCovered)
+					synthWs.projects ~= ProjectInfo(projectPath, projectPath, true, exists(projectPath));
 		}
 	}
 

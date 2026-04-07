@@ -198,13 +198,40 @@ export function WelcomePage({
   }, []);
 
   const { filteredWorkspaces, filteredUngrouped } = useMemo(() => {
+    // Build path → workspace+project index from the workspaces list
+    const pathToProjects = new Map<
+      string,
+      { wsName: string; project: (typeof workspaces)[0]["projects"][0] }[]
+    >();
+    for (const ws of workspaces) {
+      for (const proj of ws.projects) {
+        const list = pathToProjects.get(proj.path);
+        if (list) list.push({ wsName: ws.name, project: proj });
+        else
+          pathToProjects.set(proj.path, [{ wsName: ws.name, project: proj }]);
+      }
+    }
+
+    // Group tasks by wsName:projectPath key; a task can appear in multiple workspaces
     const tasksByProject = new Map<string, TaskState[]>();
     for (const t of tasks.values()) {
       if (t.parentTid) continue;
-      const key = `${t.workspace || ""}:${t.projectPath || ""}`;
-      const list = tasksByProject.get(key);
-      if (list) list.push(t);
-      else tasksByProject.set(key, [t]);
+      const matches = t.projectPath
+        ? pathToProjects.get(t.projectPath)
+        : undefined;
+      if (matches && matches.length > 0) {
+        for (const m of matches) {
+          const key = `${m.wsName}:${m.project.path}`;
+          const list = tasksByProject.get(key);
+          if (list) list.push(t);
+          else tasksByProject.set(key, [t]);
+        }
+      } else {
+        const key = ":";
+        const list = tasksByProject.get(key);
+        if (list) list.push(t);
+        else tasksByProject.set(key, [t]);
+      }
     }
 
     const projectStats = new Map<
@@ -394,7 +421,10 @@ export function WelcomePage({
               <div class="project-cards">
                 {projects.map(({ project: proj, tasks: projTasks }) => {
                   return (
-                    <div class="project-card" key={proj.path}>
+                    <div
+                      class={`project-card${proj.virtual ? " project-card-virtual" : ""}`}
+                      key={proj.path}
+                    >
                       <div class="project-card-header">
                         <a
                           href={getProjectHref(ws.name, proj.name)}
@@ -423,6 +453,7 @@ export function WelcomePage({
                         </a>
                         <button
                           class="sidebar-new-btn"
+                          disabled={proj.virtual && proj.exists === false}
                           onClick={(e: MouseEvent) => {
                             handleProjectNewTaskClick(e, ws.name, proj.name);
                           }}
@@ -431,7 +462,11 @@ export function WelcomePage({
                             e.preventDefault();
                             openInNewTab(getProjectHref(ws.name, proj.name));
                           }}
-                          title="New task"
+                          title={
+                            proj.virtual && proj.exists === false
+                              ? "Project directory no longer exists"
+                              : "New task"
+                          }
                         >
                           +
                         </button>

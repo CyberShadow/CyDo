@@ -76,6 +76,8 @@ function buildContentBlocks(
 export interface ProjectInfo {
   name: string;
   path: string;
+  virtual?: boolean;
+  exists?: boolean;
 }
 
 export interface WorkspaceInfo {
@@ -1778,8 +1780,17 @@ export function useTaskManager(
   const sidebarTasks = useMemo(() => {
     let filtered = Array.from(tasks.values()).filter((t) => t.tid > 0); // Exclude virtual drafts
     if (activeWorkspace !== null && activeProject !== null) {
+      const activeProjectPath = findProjectPath(
+        workspaces,
+        activeWorkspace,
+        activeProject,
+      );
       filtered = filtered.filter((t) => {
-        if (!t.workspace || !t.projectPath) return false;
+        if (!t.projectPath) return false;
+        // Importable tasks have workspace="" — match by projectPath instead
+        if (!t.workspace) {
+          return t.projectPath === activeProjectPath;
+        }
         const projName = findProjectName(
           workspaces,
           t.workspace,
