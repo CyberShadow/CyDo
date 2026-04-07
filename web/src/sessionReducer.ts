@@ -1455,7 +1455,26 @@ export function reduceMessage(
         blocks.set(itemId, block);
         return { ...s, messages, blocks };
       }
-      return s;
+      // Not mid-turn: create a standalone assistant message with the error block.
+      const itemId = `error-${++s.msgIdCounter}`;
+      const block: Block = {
+        itemId,
+        type: "error",
+        text: `${errorText}${retryNote}`,
+        completed: true,
+        creationOrder: 0,
+      };
+      const blocks = new Map(s.blocks);
+      blocks.set(itemId, block);
+      const errorMsg: DisplayMessage = {
+        id: `error-msg-${s.msgIdCounter}`,
+        type: "assistant" as const,
+        content: [],
+        blockIds: [itemId],
+        streaming: false,
+        nextCreationOrder: 1,
+      };
+      return { ...s, messages: [...s.messages, errorMsg], blocks };
     }
 
     case "agent/unrecognized": {
