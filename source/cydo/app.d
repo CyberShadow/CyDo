@@ -115,6 +115,98 @@ static:
 		import cydo.discover : runDiscover;
 		runDiscover(root, name, isProjectJson, recurseWhenJson, cast(string[]) exclude);
 	}
+
+	@(`Replay suggestion generation from a debug dump directory.`)
+	void replaySuggestions(
+		Parameter!(string, "Path to suggestion debug dump directory.") dumpDir,
+	)
+	{
+		import std.file : exists, readText;
+		import std.path : buildPath;
+		import std.string : strip, splitLines;
+		import ae.utils.json : jsonParse, JSONPartial;
+		import cydo.agent.agent : Agent;
+		import cydo.agent.registry : agentRegistry;
+		import cydo.tasktype : substituteVars;
+
+		// Verify required files exist
+		auto metaPath = buildPath(dumpDir, "meta.json");
+		auto contextPath = buildPath(dumpDir, "context.jsonl");
+		if (!exists(metaPath))
+		{
+			stderr.writeln("Error: meta.json not found in ", dumpDir);
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+		if (!exists(contextPath))
+		{
+			stderr.writeln("Error: context.jsonl not found in ", dumpDir);
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+
+		// Parse meta.json
+		@JSONPartial
+		static struct ReplayMeta { string agentType; }
+		auto meta = jsonParse!ReplayMeta(readText(metaPath));
+
+		// Parse context.jsonl — one envelope per non-empty line
+		string[] envelopes;
+		foreach (line; readText(contextPath).splitLines())
+		{
+			auto s = line.strip();
+			if (s.length > 0)
+				envelopes ~= s;
+		}
+
+		// Build abbreviated history and prompt
+		auto history = buildAbbreviatedHistoryFromStrings(envelopes);
+		stderr.writeln("=== Abbreviated Context ===");
+		stderr.writeln(history);
+		stderr.writeln("===========================");
+
+		auto promptPath = buildPath("defs", "prompts/generate-suggestions.md");
+		if (!exists(promptPath))
+		{
+			stderr.writeln("Error: prompt file not found: ", promptPath);
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+		auto prompt = substituteVars(readText(promptPath), ["conversation": history]);
+
+		// Create agent from meta.json agentType, falling back to "claude"
+		Agent agent;
+		foreach (ref entry; agentRegistry)
+			if (entry.name == meta.agentType) { agent = entry.create(); break; }
+		if (agent is null)
+			foreach (ref entry; agentRegistry)
+				if (entry.name == "claude") { agent = entry.create(); break; }
+		if (agent is null)
+		{
+			stderr.writeln("Error: could not find agent");
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+
+		// Run the one-shot and print result to stdout
+		bool failed;
+		auto handle = agent.completeOneShot(prompt, "small");
+		handle.promise.then((string result) {
+			import std.stdio : writeln;
+			writeln(result);
+		}).except((Exception e) {
+			stderr.writeln("Error: ", e.msg);
+			failed = true;
+		}).ignoreResult();
+
+		socketManager.loop();
+
+		if (failed)
+		{
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+	}
 }
 
 void usageFun(string usage)
@@ -4478,8 +4570,19 @@ class App : ToolsBackend
 				debugDir = buildPath(getDataDir("cydo"), format("suggestion-debug/%04d-%02d-%02dT%02d:%02d:%02d-%d",
 					now.year, cast(int)now.month, now.day,
 					now.hour, now.minute, now.second, tid));
-				import std.file : mkdirRecurse;
+				import std.file : mkdirRecurse, write;
 				mkdirRecurse(debugDir);
+				// Write context.jsonl — one raw history envelope per line
+				string jsonlContent;
+				foreach (ref d; tasks[tid].history)
+					jsonlContent ~= cast(string) d.toGC() ~ "\n";
+				write(debugDir ~ "/context.jsonl", jsonlContent);
+				// Write meta.json
+				static struct DebugMeta { int tid; string agentType; string taskType; string timestamp; }
+				auto timestamp = format("%04d-%02d-%02dT%02d:%02d:%02d",
+					now.year, cast(int)now.month, now.day,
+					now.hour, now.minute, now.second);
+				write(debugDir ~ "/meta.json", DebugMeta(tid, td.agentType, td.taskType, timestamp).toJson);
 			}
 		}
 
@@ -4537,222 +4640,231 @@ class App : ToolsBackend
 	{
 		if (tid !in tasks)
 			return "";
-
-		// First pass: count stats for structured header
-		int userMsgCount = 0;
-		int toolUseCount = 0;
+		string[] envelopes;
 		foreach (ref d; tasks[tid].history)
+			envelopes ~= cast(string) d.toGC();
+		return buildAbbreviatedHistoryFromStrings(envelopes);
+	}
+
+}
+
+/// Extract text content from a translated protocol event. Handles agnostic
+/// protocol (item/started user_message, item/completed) and legacy formats.
+private string extractMessageText(string event)
+{
+	import ae.utils.json : jsonParse, JSONPartial;
+
+	// Try top-level text field first (item/started user_message, item/completed text items)
+	@JSONPartial
+	static struct TopTextProbe { string text; bool pending; }
+
+	try
+	{
+		auto probe = jsonParse!TopTextProbe(event);
+		if (probe.text.length > 0 && !probe.pending)
+			return probe.text;
+	}
+	catch (Exception) {}
+
+	// Try result field (turn/result events — Codex emits the assistant text here)
+	@JSONPartial
+	static struct ResultFieldProbe { string result; }
+
+	try
+	{
+		auto probe = jsonParse!ResultFieldProbe(event);
+		if (probe.result.length > 0)
+			return probe.result;
+	}
+	catch (Exception) {}
+
+	// Try top-level string content (item/delta text_delta merged events)
+	@JSONPartial
+	static struct FlatStringProbe { string content; string delta_type; }
+
+	try
+	{
+		auto probe = jsonParse!FlatStringProbe(event);
+		if (probe.delta_type == "text_delta" && probe.content.length > 0)
+			return probe.content;
+	}
+	catch (Exception) {}
+
+	// Try string content (legacy user messages)
+	@JSONPartial
+	static struct StringMsg { string content; }
+	@JSONPartial
+	static struct StringProbe { StringMsg message; bool pending; }
+
+	try
+	{
+		auto probe = jsonParse!StringProbe(event);
+		if (probe.message.content.length > 0 && !probe.pending)
+			return probe.message.content;
+	}
+	catch (Exception) {}
+
+	// Try flat array content (agnostic assistant messages: content at top level)
+	@JSONPartial
+	static struct Block { string type; string text; }
+	@JSONPartial
+	static struct FlatProbe { Block[] content; }
+
+	try
+	{
+		auto probe = jsonParse!FlatProbe(event);
+		string result;
+		foreach (ref block; probe.content)
+			if (block.type == "text")
+				result ~= block.text;
+		if (result.length > 0)
+			return result;
+	}
+	catch (Exception) {}
+
+	// Try wrapped array content (legacy format with message wrapper)
+	@JSONPartial
+	static struct ArrayMsg { Block[] content; }
+	@JSONPartial
+	static struct ArrayProbe { ArrayMsg message; }
+
+	try
+	{
+		auto probe = jsonParse!ArrayProbe(event);
+		string result;
+		foreach (ref block; probe.message.content)
+			if (block.type == "text")
+				result ~= block.text;
+		return result;
+	}
+	catch (Exception e)
+	{ tracef("extractAssistantText: all parse attempts failed: %s", e.msg); return ""; }
+}
+
+private string abbreviateText(string text, size_t threshold)
+{
+	import std.regex : replaceAll;
+	import ae.utils.regex : re;
+
+	text = text.replaceAll(re!`\s+`, " ");
+	if (text.length <= threshold)
+		return text;
+	auto keepEach = threshold / 2 - 3;
+	return text[0 .. keepEach] ~ " [...] " ~ text[$ - keepEach .. $];
+}
+
+/// Build an abbreviated conversation history string from raw history envelope strings.
+/// Performs two passes: first counting stats for the header, then building abbreviated
+/// entries walking history in reverse.
+private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
+{
+	// First pass: count stats for structured header
+	int userMsgCount = 0;
+	int toolUseCount = 0;
+	foreach (envelope; envelopes)
+	{
+		auto event = extractEventFromEnvelope(envelope);
+		if (event.length == 0)
+			continue;
+		import std.algorithm : canFind;
+		if (event.canFind(`"user_message"`))
+			userMsgCount++;
+		if (event.canFind(`"tool_use"`))
+			toolUseCount++;
+	}
+
+	// Second pass: build entries walking history in reverse
+	string[] entries;
+	size_t totalLen = 0;
+	enum maxLen = 2_500;
+	enum truncThreshold = 256;
+
+	bool seenAssistantText = false;
+	bool turnCollapsed = false;
+
+	foreach_reverse (envelope; envelopes)
+	{
+		auto event = extractEventFromEnvelope(envelope);
+		if (event.length == 0)
+			continue;
+
+		import std.algorithm : canFind;
+
+		string entry;
+
+		if (event.canFind(`"user_message"`))
 		{
-			auto envelope = cast(string) d.toGC();
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0)
+			auto text = extractMessageText(event);
+			if (text.length > 0)
+			{
+				seenAssistantText = false;
+				turnCollapsed = false;
+				entry = "USER: " ~ abbreviateText(text, truncThreshold);
+			}
+			else
 				continue;
-			import std.algorithm : canFind;
-			if (event.canFind(`"user_message"`))
-				userMsgCount++;
-			if (event.canFind(`"tool_use"`))
-				toolUseCount++;
 		}
-
-		// Second pass: build entries (same logic as before)
-		string[] entries;
-		size_t totalLen = 0;
-		enum maxLen = 2_500;
-		enum truncThreshold = 256;
-
-		bool seenAssistantText = false;
-		bool turnCollapsed = false;
-
-		foreach_reverse (ref d; tasks[tid].history)
+		else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`) ||
+		         (event.canFind(`"item/delta"`) && event.canFind(`"text_delta"`)))
 		{
-			auto envelope = cast(string) d.toGC();
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0)
+			auto text = extractMessageText(event);
+			if (text.length == 0)
 				continue;
 
-			import std.algorithm : canFind;
-
-			string entry;
-
-			if (event.canFind(`"user_message"`))
+			if (!seenAssistantText)
 			{
-				auto text = extractMessageText(event);
-				if (text.length > 0)
+				seenAssistantText = true;
+				entry = "A: " ~ abbreviateText(text, truncThreshold);
+			}
+			else
+			{
+				if (!turnCollapsed)
 				{
-					seenAssistantText = false;
-					turnCollapsed = false;
-					entry = "USER: " ~ abbreviateText(text, truncThreshold);
+					turnCollapsed = true;
+					entry = "[...]";
 				}
 				else
 					continue;
 			}
-			else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`) ||
-			         (event.canFind(`"item/delta"`) && event.canFind(`"text_delta"`)))
+		}
+		else if (event.canFind(`"tool_use"`) || event.canFind(`"tool_result"`))
+		{
+			if (seenAssistantText)
 			{
-				auto text = extractMessageText(event);
-				if (text.length == 0)
-					continue;
-
-				if (!seenAssistantText)
+				if (!turnCollapsed)
 				{
-					seenAssistantText = true;
-					entry = "A: " ~ abbreviateText(text, truncThreshold);
-				}
-				else
-				{
-					if (!turnCollapsed)
-					{
-						turnCollapsed = true;
-						entry = "[...]";
-					}
-					else
-						continue;
-				}
-			}
-			else if (event.canFind(`"tool_use"`) || event.canFind(`"tool_result"`))
-			{
-				if (seenAssistantText)
-				{
-					if (!turnCollapsed)
-					{
-						turnCollapsed = true;
-						entry = "[...]";
-					}
-					else
-						continue;
+					turnCollapsed = true;
+					entry = "[...]";
 				}
 				else
 					continue;
 			}
 			else
 				continue;
-
-			totalLen += entry.length;
-			if (totalLen > maxLen)
-				break;
-
-			entries ~= entry;
 		}
+		else
+			continue;
 
-		import std.algorithm : reverse;
-		entries.reverse();
+		totalLen += entry.length;
+		if (totalLen > maxLen)
+			break;
 
-		// Structured context: header + last 4 entries only
-		if (entries.length > 4)
-			entries = entries[$ - 4 .. $];
-
-		import std.conv : to;
-		import std.array : join;
-		string header = "[Session: " ~ userMsgCount.to!string ~ " user messages, "
-			~ toolUseCount.to!string ~ " tool uses]\n\n";
-
-		return header ~ entries.join("\n\n");
+		entries ~= entry;
 	}
 
-	/// Extract text content from a translated protocol event. Handles agnostic
-	/// protocol (item/started user_message, item/completed) and legacy formats.
-	private static string extractMessageText(string event)
-	{
-		import ae.utils.json : jsonParse, JSONPartial;
+	import std.algorithm : reverse;
+	entries.reverse();
 
-		// Try top-level text field first (item/started user_message, item/completed text items)
-		@JSONPartial
-		static struct TopTextProbe { string text; bool pending; }
+	// Structured context: header + last 4 entries only
+	if (entries.length > 4)
+		entries = entries[$ - 4 .. $];
 
-		try
-		{
-			auto probe = jsonParse!TopTextProbe(event);
-			if (probe.text.length > 0 && !probe.pending)
-				return probe.text;
-		}
-		catch (Exception) {}
+	import std.conv : to;
+	import std.array : join;
+	string header = "[Session: " ~ userMsgCount.to!string ~ " user messages, "
+		~ toolUseCount.to!string ~ " tool uses]\n\n";
 
-		// Try result field (turn/result events — Codex emits the assistant text here)
-		@JSONPartial
-		static struct ResultFieldProbe { string result; }
-
-		try
-		{
-			auto probe = jsonParse!ResultFieldProbe(event);
-			if (probe.result.length > 0)
-				return probe.result;
-		}
-		catch (Exception) {}
-
-		// Try top-level string content (item/delta text_delta merged events)
-		@JSONPartial
-		static struct FlatStringProbe { string content; string delta_type; }
-
-		try
-		{
-			auto probe = jsonParse!FlatStringProbe(event);
-			if (probe.delta_type == "text_delta" && probe.content.length > 0)
-				return probe.content;
-		}
-		catch (Exception) {}
-
-		// Try string content (legacy user messages)
-		@JSONPartial
-		static struct StringMsg { string content; }
-		@JSONPartial
-		static struct StringProbe { StringMsg message; bool pending; }
-
-		try
-		{
-			auto probe = jsonParse!StringProbe(event);
-			if (probe.message.content.length > 0 && !probe.pending)
-				return probe.message.content;
-		}
-		catch (Exception) {}
-
-		// Try flat array content (agnostic assistant messages: content at top level)
-		@JSONPartial
-		static struct Block { string type; string text; }
-		@JSONPartial
-		static struct FlatProbe { Block[] content; }
-
-		try
-		{
-			auto probe = jsonParse!FlatProbe(event);
-			string result;
-			foreach (ref block; probe.content)
-				if (block.type == "text")
-					result ~= block.text;
-			if (result.length > 0)
-				return result;
-		}
-		catch (Exception) {}
-
-		// Try wrapped array content (legacy format with message wrapper)
-		@JSONPartial
-		static struct ArrayMsg { Block[] content; }
-		@JSONPartial
-		static struct ArrayProbe { ArrayMsg message; }
-
-		try
-		{
-			auto probe = jsonParse!ArrayProbe(event);
-			string result;
-			foreach (ref block; probe.message.content)
-				if (block.type == "text")
-					result ~= block.text;
-			return result;
-		}
-		catch (Exception e)
-		{ tracef("extractAssistantText: all parse attempts failed: %s", e.msg); return ""; }
-	}
-
-	private static string abbreviateText(string text, size_t threshold)
-	{
-		import std.regex : replaceAll;
-		import ae.utils.regex : re;
-
-		text = text.replaceAll(re!`\s+`, " ");
-		if (text.length <= threshold)
-			return text;
-		auto keepEach = threshold / 2 - 3;
-		return text[0 .. keepEach] ~ " [...] " ~ text[$ - keepEach .. $];
-	}
+	return header ~ entries.join("\n\n");
 }
 
 /// Set globalLogLevel from CYDO_LOG_LEVEL env var (trace/info/warning/error).
