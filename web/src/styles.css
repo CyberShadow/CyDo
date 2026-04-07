@@ -2191,6 +2191,27 @@ body,
   padding: 4px 16px;
 }
 
+/* Agent error block (transient errors from agent, e.g. API disconnect) */
+.error-block {
+  margin: 8px 0;
+  padding: 8px;
+  background: var(--overlay-light);
+  border: 1px solid var(--error);
+}
+
+.error-block-label {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--error);
+  margin-bottom: 4px;
+}
+
+.error-block pre {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Unknown content block */
 .unknown-block {
   margin: 8px 0;

@@ -1423,6 +1423,41 @@ export function reduceMessage(
     case "process/stderr":
       return reduceStderr(s, msg);
 
+    case "agent/error": {
+      // Transient agent error (e.g. API disconnect). Display as a system
+      // banner in the streaming message if mid-turn.
+      let streamingMsgIdx = -1;
+      for (let i = s.messages.length - 1; i >= 0; i--) {
+        if (s.messages[i]!.type === "assistant" && s.messages[i]!.streaming) {
+          streamingMsgIdx = i;
+          break;
+        }
+      }
+      const errorText = msg.message || "Unknown error";
+      const retryNote = msg.willRetry ? " (retrying)" : "";
+      if (streamingMsgIdx >= 0) {
+        const messages = s.messages.slice();
+        const updated = { ...messages[streamingMsgIdx]! };
+        messages[streamingMsgIdx] = updated;
+        const creationOrder = updated.nextCreationOrder ?? 0;
+        updated.nextCreationOrder = creationOrder + 1;
+
+        const itemId = `error-${++s.msgIdCounter}`;
+        const block: Block = {
+          itemId,
+          type: "error",
+          text: `${errorText}${retryNote}`,
+          completed: false,
+          creationOrder,
+        };
+        updated.blockIds = [...(updated.blockIds || []), itemId];
+        const blocks = new Map(s.blocks);
+        blocks.set(itemId, block);
+        return { ...s, messages, blocks };
+      }
+      return s;
+    }
+
     case "agent/unrecognized": {
       // If mid-turn, embed in the streaming message to preserve temporal order.
       let streamingMsgIdx = -1;

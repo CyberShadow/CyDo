@@ -273,6 +273,12 @@ export interface SystemStopHookSummaryMessage {
   [key: string]: unknown;
 }
 
+export interface AgentErrorEvent {
+  type: "agent/error";
+  message: string;
+  willRetry?: boolean;
+}
+
 export interface AgentUnrecognizedEvent {
   type: "agent/unrecognized";
   reason: string;
@@ -305,6 +311,7 @@ export type AgnosticEvent =
   | ControlResponseMessage
   | ExitMessage
   | StderrMessage
+  | AgentErrorEvent
   | AgentUnrecognizedEvent;
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };

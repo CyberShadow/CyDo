@@ -234,6 +234,15 @@ struct IgnoredParams
 }
 
 @RPCFlatten @JSONPartial
+struct ErrorParams
+{
+	@JSONOptional string threadId;
+	@JSONOptional string turnId;
+	@JSONOptional bool willRetry;
+	@JSONOptional JSONFragment error;
+}
+
+@RPCFlatten @JSONPartial
 struct TokenUsageUpdatedParams
 {
 	string threadId;
@@ -394,6 +403,9 @@ private interface ICodexServer
 
 	@RPCName("item/fileChange/outputDelta")
 	Promise!void itemFileChangeOutputDelta(DeltaParams params);
+
+	@RPCName("error")
+	Promise!void error(ErrorParams params);
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +522,33 @@ private class CodexServerRouter : ICodexServer
 	}
 	Promise!void accountRateLimitsUpdated(IgnoredParams params) { return resolve(); }
 	Promise!void accountUpdated(IgnoredParams params) { return resolve(); }
+
+	Promise!void error(ErrorParams params)
+	{
+		import cydo.agent.protocol : AgentErrorEvent, injectRawField;
+		auto raw = buildRawNotification("error", toJson(params));
+		string message;
+		if (params.error)
+		{
+			@JSONPartial static struct ErrorInfo { @JSONOptional string message; }
+			try { message = jsonParse!ErrorInfo(params.error.json).message; }
+			catch (Exception) {}
+		}
+		AgentErrorEvent ev;
+		ev.message = message;
+		ev.willRetry = params.willRetry;
+		auto evJson = injectRawField(toJson(ev), raw);
+		if (params.threadId.length > 0)
+			routeToSession(params.threadId, (s) {
+				if (s.outputHandler_)
+					s.outputHandler_(evJson);
+			});
+		else
+			foreach (session; server.sessionsByTid)
+				if (session.outputHandler_)
+					session.outputHandler_(evJson);
+		return resolve();
+	}
 
 	Promise!void threadCompacted(ThreadIdParams params)
 	{
