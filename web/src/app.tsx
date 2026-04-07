@@ -54,6 +54,7 @@ function AppContent() {
     typeInfo,
     agentTypes,
     defaultAgentType,
+    defaultTaskType,
     activeWorkspace,
     activeProject,
     notices,
@@ -73,6 +74,10 @@ function AppContent() {
     const ws = workspaces.find((w) => w.name === activeWorkspace);
     return ws?.default_agent_type || defaultAgentType;
   }, [workspaces, activeWorkspace, defaultAgentType]);
+  const effectiveDefaultTaskType = useMemo(() => {
+    const ws = workspaces.find((w) => w.name === activeWorkspace);
+    return ws?.default_task_type || defaultTaskType;
+  }, [workspaces, activeWorkspace, defaultTaskType]);
   const [showSearch, setShowSearch] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -421,6 +426,11 @@ function AppContent() {
                     defaultAgentType={
                       task.renderKey === draftRenderKey
                         ? effectiveDefaultAgent
+                        : undefined
+                    }
+                    defaultTaskType={
+                      task.renderKey === draftRenderKey
+                        ? effectiveDefaultTaskType
                         : undefined
                     }
                     onContentStart={

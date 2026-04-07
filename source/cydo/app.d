@@ -3077,6 +3077,14 @@ class App : ToolsBackend
 		return config.default_agent_type;
 	}
 
+	private string defaultTaskType(string workspaceName)
+	{
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName && ws.default_task_type.length > 0)
+				return ws.default_task_type;
+		return config.default_task_type;
+	}
+
 	private SandboxConfig findWorkspaceSandbox(string workspaceName)
 	{
 		foreach (ref ws; config.workspaces)
@@ -4075,7 +4083,7 @@ class App : ToolsBackend
 			{
 				sandbox.cleanup();
 				warningf("Discovery subprocess failed for workspace '%s': %s", ws.name, e.msg);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type, ws.default_task_type);
 				continue;
 			}
 			sandbox.cleanup();
@@ -4083,7 +4091,7 @@ class App : ToolsBackend
 			if (result.status != 0)
 			{
 				warningf("Discovery failed for workspace '%s': exit %d", ws.name, result.status);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type, ws.default_task_type);
 				continue;
 			}
 
@@ -4097,7 +4105,7 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
 
-			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent_type);
+			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent_type, ws.default_task_type);
 
 			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
 			foreach (ref p; projInfos)
@@ -4320,7 +4328,7 @@ class App : ToolsBackend
 		TypeInfoEntry[] typeInfo;
 		foreach (ref def; types)
 			typeInfo ~= TypeInfoEntry(def.name, def.icon);
-		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo));
+		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo, config.default_task_type));
 	}
 
 	private string buildAgentTypesList()

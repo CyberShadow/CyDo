@@ -58,6 +58,7 @@ interface Props {
   entryPoints?: EntryPointInfo[];
   agentTypes?: AgentTypeInfo[];
   defaultAgentType?: string;
+  defaultTaskType?: string;
   onContentStart?: (entryPointName: string, agentType: string) => void;
   onContentEnd?: () => void;
 }
@@ -89,6 +90,7 @@ function SessionViewInner({
   entryPoints,
   agentTypes,
   defaultAgentType,
+  defaultTaskType,
   onContentStart,
   onContentEnd,
 }: Props) {
@@ -106,6 +108,11 @@ function SessionViewInner({
   const initialEntryPoint =
     task.entryPoint ??
     entryPoints?.find((e) => e.task_type === task.taskType)?.name ??
+    (defaultTaskType
+      ? entryPoints?.find(
+          (e) => e.name === defaultTaskType || e.task_type === defaultTaskType,
+        )?.name
+      : undefined) ??
     entryPoints?.[0]?.name ??
     "blank";
   const [selectedEntryPoint, setSelectedEntryPoint] =

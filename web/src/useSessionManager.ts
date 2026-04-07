@@ -82,6 +82,7 @@ export interface WorkspaceInfo {
   name: string;
   projects: ProjectInfo[];
   default_agent_type?: string;
+  default_task_type?: string;
 }
 
 export interface AgentTypeInfo {
@@ -159,6 +160,7 @@ export interface TaskManager {
   typeInfo: TypeInfo[];
   agentTypes: AgentTypeInfo[];
   defaultAgentType: string;
+  defaultTaskType: string;
   activeWorkspace: string | null;
   activeProject: string | null;
   notices: Record<string, Notice>;
@@ -222,6 +224,7 @@ export function useTaskManager(
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
   const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
+  const [defaultTaskType, setDefaultTaskType] = useState("");
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [devMode, setDevMode] = useState(false);
   const addToastRef = useRef(addToast);
@@ -615,6 +618,7 @@ export function useTaskManager(
         case "task_types_list": {
           setEntryPoints(msg.entry_points);
           setTypeInfo(msg.type_info);
+          if (msg.default_task_type) setDefaultTaskType(msg.default_task_type);
           break;
         }
         case "agent_types_list": {
@@ -1869,6 +1873,7 @@ export function useTaskManager(
     typeInfo,
     agentTypes,
     defaultAgentType,
+    defaultTaskType,
     activeWorkspace,
     activeProject,
     notices,

@@ -398,6 +398,7 @@ export interface WorkspacesListMessage {
     name: string;
     projects: { name: string; path: string }[];
     default_agent_type?: string;
+    default_task_type?: string;
   }[];
 }
 export interface TaskTypesListMessage {
@@ -414,6 +415,7 @@ export interface TaskTypesListMessage {
     name: string;
     icon?: string;
   }[];
+  default_task_type?: string;
 }
 export interface AgentTypesListMessage {
   type: "agent_types_list";

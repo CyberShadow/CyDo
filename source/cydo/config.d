@@ -39,6 +39,7 @@ struct WorkspaceConfig
 	@Optional SandboxConfig sandbox;
 	@Optional string task_types;
 	@Optional string default_agent_type;
+	@Optional string default_task_type;
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
@@ -47,6 +48,7 @@ struct CydoConfig
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent_type = "claude";
+	@Optional string default_task_type;
 	@Optional AgentConfig[string] agents;
 	@Optional bool dev_mode;
 }
