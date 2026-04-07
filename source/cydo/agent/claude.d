@@ -1025,6 +1025,17 @@ class ClaudeCodeSession : AgentSession
 		catch (Exception e)
 		{ tracef("translateAssistantLive: parse error: %s", e.msg); return; }
 
+		if (raw.isApiErrorMessage && raw.parent_tool_use_id.length == 0)
+		{
+			string errorText;
+			foreach (ref b; raw.message.content)
+				if (b.text.length > 0) errorText ~= b.text;
+			AgentErrorEvent ev;
+			ev.message = errorText;
+			emitEvent(injectRawField(toJson(ev), rawLine));
+			return;
+		}
+
 		// Sub-agent messages arrive as complete messages with parent_tool_use_id
 		// set even in the live stream.  Emitting a TurnDeltaEvent for them would
 		// corrupt the main streaming turn (M_main) by setting its parentToolUseId.
@@ -1087,7 +1098,6 @@ class ClaudeCodeSession : AgentSession
 			tsev.usage              = subUsage;
 			tsev.parent_tool_use_id = raw.parent_tool_use_id;
 			tsev.is_sidechain       = raw.isSidechain;
-			tsev.is_api_error       = raw.isApiErrorMessage;
 			tsev.uuid               = raw.uuid;
 			tsev._extras = extrasToFragment(collectAllExtras(raw));
 			emitEvent(injectRawField(toJson(tsev), rawLine));
@@ -1129,7 +1139,6 @@ class ClaudeCodeSession : AgentSession
 		ev.usage              = usage;
 		ev.parent_tool_use_id = raw.parent_tool_use_id;
 		ev.is_sidechain       = raw.isSidechain;
-		ev.is_api_error       = raw.isApiErrorMessage;
 		ev.uuid               = raw.uuid;
 		ev._extras            = extrasToFragment(raw._extras);
 		emitEvent(injectRawField(toJson(ev), rawLine));
@@ -1459,6 +1468,19 @@ private string[] translateAssistantHistory(string rawLine)
 	catch (Exception e)
 	{ tracef("translateAssistantHistory: parse error: %s", e.msg); return []; }
 
+	if (raw.isApiErrorMessage)
+	{
+		string errorText;
+		foreach (ref b; raw.message.content)
+		{
+			auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+			if (text.length > 0) errorText ~= text;
+		}
+		AgentErrorEvent ev;
+		ev.message = errorText;
+		return [injectRawField(toJson(ev), rawLine)];
+	}
+
 	string[] events;
 
 	foreach (idx, ref b; raw.message.content)
@@ -1515,7 +1537,6 @@ private string[] translateAssistantHistory(string rawLine)
 	tsev.usage             = usage;
 	tsev.parent_tool_use_id = raw.parent_tool_use_id;
 	tsev.is_sidechain      = raw.isSidechain;
-	tsev.is_api_error      = raw.isApiErrorMessage;
 	tsev.uuid              = raw.uuid;
 	tsev._extras = extrasToFragment(collectAllExtras(raw));
 	events ~= injectRawField(toJson(tsev), rawLine);

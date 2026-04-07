@@ -196,7 +196,6 @@ export interface TurnStopEvent {
   usage?: Usage;
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
-  is_api_error?: boolean;
   uuid?: string;
   _extras?: Record<string, unknown>;
   [key: string]: unknown;
@@ -208,7 +207,6 @@ export interface TurnDeltaEvent {
   usage?: Usage;
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
-  is_api_error?: boolean;
   uuid?: string;
   _extras?: Record<string, unknown>;
   [key: string]: unknown;

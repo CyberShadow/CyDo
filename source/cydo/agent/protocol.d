@@ -236,7 +236,6 @@ struct TurnStopEvent
 	@JSONOptional UsageInfo usage;
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
-	@JSONOptional bool is_api_error;
 	@JSONOptional string uuid;
 	@JSONOptional JSONFragment _extras;
 }
@@ -249,7 +248,6 @@ struct TurnDeltaEvent
 	@JSONOptional UsageInfo usage;
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
-	@JSONOptional bool is_api_error;
 	@JSONOptional string uuid;
 	@JSONOptional JSONFragment _extras;
 }
