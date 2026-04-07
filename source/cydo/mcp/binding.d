@@ -4,7 +4,7 @@
 /// definitions with UDAs, analogous to ae.net.jsonrpc.binding.
 module cydo.mcp.binding;
 
-import std.traits : FunctionTypeOf, isCallable, Parameters, ParameterIdentifierTuple, ReturnType;
+import std.traits : FunctionTypeOf, isCallable, Parameters, ParameterDefaults, ParameterIdentifierTuple, ReturnType;
 
 import ae.utils.json : JSONFragment, JSONOptional, jsonParse, toJson;
 import ae.utils.meta : hasAttribute, getAttribute;
@@ -151,6 +151,7 @@ SchemaObj generateInputSchema(I, string memberName)()
 	alias method = __traits(getMember, I, memberName);
 	alias Params = Parameters!method;
 	alias ParamNames = ParameterIdentifierTuple!method;
+	alias Defaults = ParameterDefaults!method;
 
 	SchemaObj s;
 	s.type = "object";
@@ -174,7 +175,8 @@ SchemaObj generateInputSchema(I, string memberName)()
 			}
 
 			s.properties[paramName] = propSchema;
-			s.required ~= paramName;
+			static if (is(Defaults[i] == void))  // no default → required
+				s.required ~= paramName;
 		}}
 	}
 
@@ -218,6 +220,7 @@ struct McpToolDispatcher(I) if (is(I == interface))
 		alias method = __traits(getMember, I, memberName);
 		alias Params = Parameters!method;
 		alias ParamNames = ParameterIdentifierTuple!method;
+		alias Defaults = ParameterDefaults!method;
 
 		static if (Params.length == 0)
 		{
@@ -241,11 +244,19 @@ struct McpToolDispatcher(I) if (is(I == interface))
 				enum paramName = ParamNames[i];
 				auto val = paramName in argsObj;
 				if (val is null)
-					return McpResult("Missing required parameter: " ~ paramName, true);
-				try
-					callArgs[i] = (*val).json.jsonParse!P;
-				catch (Exception e)
-					return McpResult("Invalid parameter '" ~ paramName ~ "': " ~ e.msg, true);
+				{
+					static if (!is(Defaults[i] == void))
+						callArgs[i] = Defaults[i];  // use default value
+					else
+						return McpResult("Missing required parameter: " ~ paramName, true);
+				}
+				else
+				{
+					try
+						callArgs[i] = (*val).json.jsonParse!P;
+					catch (Exception e)
+						return McpResult("Invalid parameter '" ~ paramName ~ "': " ~ e.msg, true);
+				}
 			}}
 
 			try
