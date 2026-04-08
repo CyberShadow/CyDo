@@ -1065,11 +1065,13 @@ void simulateWorkflow(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 /// Replace `{{key}}` placeholders in a string with values from the given map.
 string substituteVars(string text, string[string] vars)
 {
-	import std.string : replace;
+	import djinja.djinja : loadData;
+	import djinja.render : Render;
+	import uninode.serialization : serialize = serializeToUniNode;
 
-	foreach (key, value; vars)
-		text = text.replace("{{" ~ key ~ "}}", value);
-	return text;
+	auto tmpl = loadData(text);
+	auto renderer = new Render(tmpl);
+	return renderer.render(serialize(vars));
 }
 
 /// Render a prompt template by reading the template file and substituting

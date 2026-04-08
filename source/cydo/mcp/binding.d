@@ -281,12 +281,16 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 string buildToolsListJson(I)(string[string] vars, string[] includeTools)
 {
 	import std.algorithm : canFind;
-	import std.array : replace;
+	import djinja.djinja : loadData;
+	import djinja.render : Render;
+	import uninode.serialization : serialize = serializeToUniNode;
 
 	// Cache the template tool definitions (generated from interface on first call)
 	static ToolDef[] templateTools;
 	if (templateTools is null)
 		templateTools = mcpToolDefs!I();
+
+	auto data = serialize(vars);
 
 	ToolDef[] result;
 	foreach (ref tool; templateTools)
@@ -295,8 +299,11 @@ string buildToolsListJson(I)(string[string] vars, string[] includeTools)
 			continue;
 		// Shallow copy — only description is modified; schema references are safe to share
 		ToolDef copy = tool;
-		foreach (key, value; vars)
-			copy.description = copy.description.replace("{{" ~ key ~ "}}", value);
+		if (copy.description.length > 0)
+		{
+			auto tmpl = loadData(copy.description);
+			copy.description = (new Render(tmpl)).render(data);
+		}
 		result ~= copy;
 	}
 
