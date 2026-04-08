@@ -55,6 +55,7 @@ export class Connection {
           raw.type === "undo_result" ||
           raw.type === "suggestions_update" ||
           raw.type === "ask_user_question" ||
+          raw.type === "permission_prompt" ||
           raw.type === "draft_updated" ||
           raw.type === "server_status" ||
           raw.type === "task_deleted" ||
@@ -205,6 +206,12 @@ export class Connection {
 
   sendAskUserResponse(tid: number, content: string) {
     this.send(JSON.stringify({ type: "ask_user_response", tid, content }));
+  }
+
+  sendPermissionPromptResponse(tid: number, content: string) {
+    this.send(
+      JSON.stringify({ type: "permission_prompt_response", tid, content }),
+    );
   }
 
   editMessage(tid: number, uuid: string, content: string) {

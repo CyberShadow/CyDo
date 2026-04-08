@@ -185,6 +185,9 @@ struct TaskData
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
+	string pendingPermissionToolUseId;  // tool_use_id for pending PermissionPrompt, empty when none
+	string pendingPermissionToolName;   // tool name for pending PermissionPrompt
+	JSONFragment pendingPermissionInput; // input for pending PermissionPrompt (for late-join)
 	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
 	string pendingAskQuestion;             // question text from child
 	int pendingAskQid;                     // qid allocated for this question
@@ -445,6 +448,16 @@ struct AskUserQuestionMessage
 	string tool_use_id;
 	JSONFragment questions;  // serialized AskQuestion[]
 }
+
+struct PermissionPromptMessage
+{
+	string type = "permission_prompt";
+	int tid;
+	string tool_use_id;
+	string tool_name;
+	JSONFragment input;
+}
+
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {

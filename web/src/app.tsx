@@ -44,6 +44,7 @@ function AppContent() {
     setEntryPoint,
     setAgentType,
     sendAskUserResponse,
+    sendPermissionPromptResponse,
     editMessage,
     createDraftTask,
     deleteDraftTask,
@@ -409,6 +410,7 @@ function AppContent() {
                     onToggleSidebar={toggleSidebar}
                     onSetArchived={setArchived}
                     onAskUserResponse={sendAskUserResponse}
+                    onPermissionPromptResponse={sendPermissionPromptResponse}
                     onEditMessage={editMessage}
                     entryPoints={
                       task.renderKey === draftRenderKey

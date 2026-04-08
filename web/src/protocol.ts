@@ -474,6 +474,13 @@ export interface AskUserQuestionControlMessage {
   tool_use_id: string;
   questions: AskUserQuestionItem[];
 }
+export interface PermissionPromptControlMessage {
+  type: "permission_prompt";
+  tid: number;
+  tool_use_id: string;
+  tool_name: string;
+  input: Record<string, unknown>;
+}
 export interface DraftUpdatedMessage {
   type: "draft_updated";
   tid: number;
@@ -514,6 +521,7 @@ export type ControlMessage =
   | UndoResultMessage
   | SuggestionsUpdateMessage
   | AskUserQuestionControlMessage
+  | PermissionPromptControlMessage
   | DraftUpdatedMessage
   | ServerStatusMessage
   | TaskDeletedMessage

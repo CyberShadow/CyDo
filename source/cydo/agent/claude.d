@@ -647,9 +647,10 @@ class ClaudeCodeSession : AgentSession
 			"--verbose",
 			"--include-partial-messages",
 			"--replay-user-messages",
-			"--dangerously-skip-permissions",
 			"--settings", `{"fileCheckpointingEnabled": true}`,
 		];
+
+		claudeArgs ~= ["--dangerously-skip-permissions"];
 
 		if (config.permissionPolicy.length > 0)
 			claudeArgs ~= ["--permission-prompt-tool", "mcp__cydo__PermissionPrompt"];

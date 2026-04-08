@@ -264,6 +264,10 @@ class App : ToolsBackend
 	private int[int] taskDeps;
 	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
 	private Promise!(McpResult)[int] pendingAskUserQuestions;
+	// Pending PermissionPrompt promises (tid -> promise fulfilled when user responds)
+	private Promise!(McpResult)[int] pendingPermissionPrompts;
+	// Original input JSON per tid for building Allow response
+	private string[int] pendingPermissionInputs;
 	// Per-parent batch state, keyed by parent tid
 	private BatchState[int] activeBatches;
 	// App-global question ID counter and registry
@@ -1538,8 +1542,40 @@ class App : ToolsBackend
 		if (resolved == "allow")
 			return resolve(McpResult(makePermissionAllowJson(input.json), false));
 
-		// "ask" mode — interactive UI comes in commit 3; fall through to allow for now
-		return resolve(McpResult(makePermissionAllowJson(input.json), false));
+		// "ask" mode — prompt the user via WebSocket
+		return promptUserForPermission(callerTidInt, toolUseId, toolName, input);
+	}
+
+	private Promise!McpResult promptUserForPermission(int tid, string toolUseId,
+		string toolName, JSONFragment input)
+	{
+		// Only one pending permission prompt per task
+		if (tid in pendingPermissionPrompts)
+			return resolve(McpResult(makePermissionDenyJson("Another permission prompt is already pending"), false));
+
+		auto promise = new Promise!McpResult;
+		pendingPermissionPrompts[tid] = promise;
+		pendingPermissionInputs[tid] = input.json;
+
+		// Store fields for late-joining clients
+		auto tdp = &tasks[tid];
+		tdp.pendingPermissionToolUseId = toolUseId;
+		tdp.pendingPermissionToolName = toolName;
+		tdp.pendingPermissionInput = input;
+
+		// Broadcast to subscribed clients
+		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt", tid, toolUseId, toolName, input)).representation));
+
+		// Update task state for sidebar
+		tdp.needsAttention = true;
+		tdp.hasPendingQuestion = true;
+		tdp.notificationBody = "Permission requested";
+		tdp.isProcessing = false;
+		touchTask(tid);
+		persistence.setLastActive(tid, tasks[tid].lastActive);
+		broadcastTaskUpdate(tid);
+
+		return promise;
 	}
 
 	private McpResult buildQuestionResult(int childTid)
@@ -1680,6 +1716,62 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
+	private void handlePermissionPromptResponse(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+
+		auto pending = tid in pendingPermissionPrompts;
+		if (pending is null)
+			return;
+
+		auto td = &tasks[tid];
+		td.pendingPermissionToolUseId = null;
+		td.pendingPermissionToolName = null;
+		td.pendingPermissionInput = JSONFragment.init;
+		td.needsAttention = false;
+		td.hasPendingQuestion = false;
+		td.notificationBody = "";
+		td.isProcessing = true;
+
+		// json.content is JSON from the frontend:
+		//   {"behavior":"allow"} or {"behavior":"deny","message":"..."}
+		string rawContent = json.content.json !is null ? jsonParse!string(json.content.json) : "{}";
+		string resultText;
+		try
+		{
+			import std.json : parseJSON;
+			auto parsed = parseJSON(rawContent);
+			if (auto behavior = "behavior" in parsed)
+			{
+				if (behavior.str == "allow")
+					resultText = makePermissionAllowJson(pendingPermissionInputs[tid]);
+				else
+				{
+					string denyMsg = "User denied permission";
+					if (auto msg = "message" in parsed)
+						if (msg.str.length > 0)
+							denyMsg = msg.str;
+					resultText = makePermissionDenyJson(denyMsg);
+				}
+			}
+			else
+				resultText = makePermissionDenyJson("Invalid response");
+		}
+		catch (Exception)
+			resultText = makePermissionDenyJson("Invalid response");
+
+		pending.fulfill(McpResult(resultText, false));
+		pendingPermissionPrompts.remove(tid);
+		pendingPermissionInputs.remove(tid);
+
+		// Broadcast clear to all subscribed clients (empty tool_use_id signals clear)
+		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt", tid, "", "", JSONFragment("{}"))).representation));
+
+		broadcastTaskUpdate(tid);
+	}
+
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
 		import ae.utils.json : jsonParse;
@@ -1703,6 +1795,7 @@ class App : ToolsBackend
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": handleAskUserResponse(json); break;
+			case "permission_prompt_response": handlePermissionPromptResponse(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
@@ -2077,6 +2170,15 @@ class App : ToolsBackend
 		{
 			auto tdask = &tasks[tid];
 			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid, tdask.pendingAskToolUseId, tdask.pendingAskQuestions)).representation));
+		}
+
+		// Re-broadcast pending PermissionPrompt (client reconnect / tab switch)
+		if (tid in pendingPermissionPrompts && tasks[tid].pendingPermissionToolUseId.length > 0)
+		{
+			auto tdperm = &tasks[tid];
+			ws.send(Data(toJson(PermissionPromptMessage("permission_prompt", tid,
+				tdperm.pendingPermissionToolUseId, tdperm.pendingPermissionToolName,
+				tdperm.pendingPermissionInput)).representation));
 		}
 
 		// Subscribe client to live events for this task
@@ -3309,6 +3411,17 @@ class App : ToolsBackend
 				tasks[tid].needsAttention = false;
 				tasks[tid].hasPendingQuestion = false;
 				tasks[tid].notificationBody = "";
+			}
+
+			// Fulfill pending PermissionPrompt promise with deny if session dies
+			if (auto permPending = tid in pendingPermissionPrompts)
+			{
+				permPending.fulfill(McpResult(makePermissionDenyJson("Task exited"), false));
+				pendingPermissionPrompts.remove(tid);
+				pendingPermissionInputs.remove(tid);
+				tasks[tid].pendingPermissionToolUseId = null;
+				tasks[tid].pendingPermissionToolName = null;
+				tasks[tid].pendingPermissionInput = JSONFragment.init;
 			}
 
 			// Fulfill pending Ask promise with error if child exits while waiting

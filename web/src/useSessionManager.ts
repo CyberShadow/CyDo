@@ -139,6 +139,7 @@ export interface TaskManager {
   setEntryPoint: (tid: number, entryPoint: string) => void;
   setAgentType: (tid: number, agentType: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
+  sendPermissionPromptResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
   createDraftTask: (entryPointName?: string, agentType?: string) => void;
   deleteDraftTask: () => void;
@@ -1231,6 +1232,23 @@ export function useTaskManager(
           });
           break;
         }
+        case "permission_prompt": {
+          const { tid, tool_use_id, tool_name, input } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+          // Empty tool_use_id signals clear (prompt resolved)
+          const pendingPermission = tool_use_id
+            ? { toolUseId: tool_use_id, toolName: tool_name, input }
+            : null;
+          const updated = { ...t, pendingPermission };
+          liveStates.set(tid, updated);
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.set(tid, updated);
+            return next;
+          });
+          break;
+        }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
           break;
@@ -1794,6 +1812,24 @@ export function useTaskManager(
     }
   }, []);
 
+  const sendPermissionPromptResponse = useCallback(
+    (tid: number, content: string) => {
+      connRef.current?.sendPermissionPromptResponse(tid, content);
+      // Optimistically clear the pending permission prompt
+      const t = liveStates.get(tid);
+      if (t) {
+        const updated = { ...t, pendingPermission: null, isProcessing: true };
+        liveStates.set(tid, updated);
+        setTasks((prev) => {
+          const next = new Map(prev);
+          next.set(tid, updated);
+          return next;
+        });
+      }
+    },
+    [],
+  );
+
   const editMessage = useCallback(
     (tid: number, uuid: string, content: string) => {
       connRef.current?.editMessage(tid, uuid, content);
@@ -1902,6 +1938,7 @@ export function useTaskManager(
     setEntryPoint,
     setAgentType,
     sendAskUserResponse,
+    sendPermissionPromptResponse,
     editMessage,
     createDraftTask,
     deleteDraftTask,

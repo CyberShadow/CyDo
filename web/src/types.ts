@@ -238,6 +238,12 @@ export interface TaskState {
     toolUseId: string;
     questions: AskUserQuestionItem[];
   } | null;
+  /** Pending PermissionPrompt from the agent, waiting for Allow/Deny. */
+  pendingPermission?: {
+    toolUseId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  } | null;
   /** Files modified by the agent, keyed by absolute file path. */
   trackedFiles: Map<string, TrackedFile>;
   /** Flat block store keyed by unique block key — source of truth for assistant message content. */

@@ -20,6 +20,7 @@ import { InputBox } from "./InputBox";
 import { SessionConfig } from "./SessionConfig";
 import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
+import { PermissionPromptForm } from "./PermissionPromptForm";
 import { FileViewer } from "./FileViewer";
 
 interface Props {
@@ -50,6 +51,7 @@ interface Props {
   onSetEntryPoint?: (tid: number, entryPoint: string) => void;
   onSetAgentType?: (tid: number, agentType: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
+  onPermissionPromptResponse: (tid: number, content: string) => void;
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
@@ -82,6 +84,7 @@ function SessionViewInner({
   onSetEntryPoint,
   onSetAgentType,
   onAskUserResponse,
+  onPermissionPromptResponse,
   theme,
   onToggleTheme,
   onToggleSidebar,
@@ -304,6 +307,23 @@ function SessionViewInner({
       JSON.stringify({ error: "User refused to answer questions" }),
     );
   }, [onAskUserResponse, task.tid]);
+
+  const handlePermissionAllow = useCallback(() => {
+    onPermissionPromptResponse(task.tid, JSON.stringify({ behavior: "allow" }));
+  }, [onPermissionPromptResponse, task.tid]);
+
+  const handlePermissionDeny = useCallback(
+    (message?: string) => {
+      onPermissionPromptResponse(
+        task.tid,
+        JSON.stringify({
+          behavior: "deny",
+          ...(message ? { message } : {}),
+        }),
+      );
+    },
+    [onPermissionPromptResponse, task.tid],
+  );
 
   const quoteSelection = useCallback(() => {
     const sel = window.getSelection();
@@ -544,6 +564,13 @@ function SessionViewInner({
         <div class="resume-bar">
           <span class="session-failed-label">Session failed: {task.error}</span>
         </div>
+      ) : task.pendingPermission ? (
+        <PermissionPromptForm
+          toolName={task.pendingPermission.toolName}
+          input={task.pendingPermission.input}
+          onAllow={handlePermissionAllow}
+          onDeny={handlePermissionDeny}
+        />
       ) : task.pendingAskUser ? (
         <AskUserForm
           questions={task.pendingAskUser.questions}
