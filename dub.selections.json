@@ -2,9 +2,13 @@
 	"fileVersion": 1,
 	"versions": {
 		"ae": "0.0.3816",
+		"bolts": "1.7.0",
 		"configy": "2.2.0",
+		"djinja": {"version":"defccf8856402a78851e3dcd4871e162fb76876f","repository":"git+https://github.com/VPanteleev-sym/djinja.git"},
 		"dyaml": "0.10.0",
 		"openssl": "3.4.0",
-		"tinyendian": "0.2.0"
+		"silly": "1.0.2",
+		"tinyendian": "0.2.0",
+		"uninode": {"version":"2554007db03baaaff839d424c4f41cddf32a8866","repository":"git+https://github.com/milofon/uninode.git"}
 	}
 }

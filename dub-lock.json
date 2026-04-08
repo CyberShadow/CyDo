@@ -4,9 +4,18 @@
       "version": "0.0.3816",
       "sha256": "05gf1qdk0pw0nsz20vc2kcglkha9rcqm0dah79gc7wrpaigw5z78"
     },
+    "bolts": {
+      "version": "1.7.0",
+      "sha256": "02wcb22g09jd7yqi5fs9kcnh5n9qp2r54y2cb32s0hkrm9sna661"
+    },
     "configy": {
       "version": "2.2.0",
       "sha256": "0l461nflqc2kpv02y6abfnibcbw9jzbnp1pfkqlj6bifr8xbf1fi"
+    },
+    "djinja": {
+      "version": "defccf8856402a78851e3dcd4871e162fb76876f",
+      "repository": "https://github.com/VPanteleev-sym/djinja.git",
+      "sha256": "0a3xh22mfs89skv4n4faqwgf4n07ipkxpy5prhi430g8xpx5a090"
     },
     "dyaml": {
       "version": "0.10.0",
@@ -16,9 +25,18 @@
       "version": "3.4.0",
       "sha256": "0y71p03v05v797bkk0b3sbdkncqb5ch3a48nxaly6dxfdz4w247m"
     },
+    "silly": {
+      "version": "1.0.2",
+      "sha256": "19s0nz817zjd0v83y17xhzx1qqwjk3g672hxw6hxr9i2cyam0w89"
+    },
     "tinyendian": {
       "version": "0.2.0",
       "sha256": "0ipf6msrx80lsx81qqlwl0xladk79avv1rnzdlfzjc49wrsr9fia"
+    },
+    "uninode": {
+      "version": "2554007db03baaaff839d424c4f41cddf32a8866",
+      "repository": "https://github.com/milofon/uninode.git",
+      "sha256": "0l32dazniyd4829jn1fv0ss9pk3lbgp7j0ahikgl9ls5nc1ar80q"
     }
   }
 }
