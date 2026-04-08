@@ -9,7 +9,7 @@ import { sanitizeHtml } from "../sanitize";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
-import { Markdown } from "./Markdown";
+import { Markdown, sourceOnIcon, sourceOffIcon } from "./Markdown";
 import { CodePre } from "./CopyButton";
 
 /**
@@ -85,6 +85,82 @@ const fileWriteToolNames = new Set([
   "Write", // Claude Code
   "fileChange", // Codex live
 ]);
+
+/** Strip cat -n line number prefixes ("    1→" or "    1\t") from text. */
+function stripCatLineNumbers(text: string): string {
+  return text.replace(/^\s*\d+[\u2192\t]/gm, "");
+}
+
+/**
+ * Check if text content looks like a valid SVG document.
+ * Used for content-sniffing when no filePath is available.
+ */
+function looksLikeSvg(text: string): boolean {
+  const trimmed = text.trim();
+  const body = trimmed.startsWith("<?xml")
+    ? trimmed.slice(trimmed.indexOf("?>") + 2).trim()
+    : trimmed;
+  if (!body.startsWith("<svg")) return false;
+  if (!body.includes("</svg>")) return false;
+  return true;
+}
+
+/** Detected renderable file format. */
+type FileFormat = "markdown" | "svg" | null;
+
+/** Detect renderable format from file path, or content-sniff if no path. */
+function detectFormat(filePath?: string | null, content?: string): FileFormat {
+  if (filePath) {
+    const lang = langFromPath(filePath);
+    if (lang === "markdown" || lang === "mdx") return "markdown";
+    if (filePath.endsWith(".svg")) return "svg";
+  }
+  if (content && looksLikeSvg(stripCatLineNumbers(content).trim()))
+    return "svg";
+  return null;
+}
+
+/** Inline SVG rendered from raw SVG content string. */
+function SvgPreview({ content }: { content: string }) {
+  const dataUri = `data:image/svg+xml,${encodeURIComponent(content.trim())}`;
+  return (
+    <div class="tool-result-images">
+      <img src={dataUri} alt="SVG preview" class="tool-result-image" />
+    </div>
+  );
+}
+
+/** Toggle wrapper for source/rendered views. */
+function SourceRenderedToggle({
+  defaultSource,
+  sourceView,
+  renderedView,
+}: {
+  defaultSource: boolean;
+  sourceView: h.JSX.Element;
+  renderedView: h.JSX.Element;
+}) {
+  const [showSource, setShowSource] = useState(defaultSource);
+  return (
+    <div class="markdown-diff-wrap">
+      <button
+        class="markdown-toggle-btn"
+        onClick={() => {
+          setShowSource(!showSource);
+        }}
+        title={showSource ? "Show rendered" : "Show source"}
+      >
+        <span
+          class="action-icon"
+          dangerouslySetInnerHTML={{
+            __html: showSource ? sourceOnIcon : sourceOffIcon,
+          }}
+        />
+      </button>
+      {showSource ? sourceView : renderedView}
+    </div>
+  );
+}
 
 interface Props {
   name: string;
@@ -687,7 +763,6 @@ function MarkdownDiffView({
   oldStr: string;
   newStr: string;
 }) {
-  const [showSource, setShowSource] = useState(true);
   const diffHtml = useMemo(() => {
     const oldHtml = marked.parse(oldStr, { async: false });
     const newHtml = marked.parse(newStr, { async: false });
@@ -695,25 +770,61 @@ function MarkdownDiffView({
   }, [oldStr, newStr]);
 
   return (
-    <div class="markdown-diff-wrap">
-      <button
-        class="markdown-toggle-btn"
-        onClick={() => {
-          setShowSource(!showSource);
-        }}
-        title={showSource ? "Show rendered" : "Show source"}
-      >
-        {showSource ? "\u25C9" : "\u25CE"}
-      </button>
-      {showSource ? (
+    <SourceRenderedToggle
+      defaultSource={true}
+      sourceView={
         <DiffView oldStr={oldStr} newStr={newStr} filePath="diff.md" />
-      ) : (
+      }
+      renderedView={
         <div
           class="markdown markdown-diff"
           dangerouslySetInnerHTML={{ __html: diffHtml }}
         />
-      )}
-    </div>
+      }
+    />
+  );
+}
+
+function SvgDiffView({
+  oldStr,
+  newStr,
+  originalFile,
+}: {
+  oldStr: string;
+  newStr: string;
+  originalFile: string | null;
+}) {
+  const fullBefore = originalFile ?? oldStr;
+  const fullAfter = useMemo(() => {
+    if (!originalFile) return newStr;
+    const idx = originalFile.indexOf(oldStr);
+    if (idx < 0) return newStr;
+    return (
+      originalFile.slice(0, idx) +
+      newStr +
+      originalFile.slice(idx + oldStr.length)
+    );
+  }, [originalFile, oldStr, newStr]);
+
+  return (
+    <SourceRenderedToggle
+      defaultSource={true}
+      sourceView={
+        <DiffView oldStr={oldStr} newStr={newStr} filePath="diff.svg" />
+      }
+      renderedView={
+        <div class="svg-diff-preview">
+          <div class="svg-diff-side">
+            <div class="svg-diff-label">Before</div>
+            <SvgPreview content={fullBefore} />
+          </div>
+          <div class="svg-diff-side">
+            <div class="svg-diff-label">After</div>
+            <SvgPreview content={fullAfter} />
+          </div>
+        </div>
+      }
+    />
   );
 }
 
@@ -728,14 +839,18 @@ function EditInput({
   const newString = input.new_string as string;
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
-  const lang = filePath ? langFromPath(filePath) : null;
-  const isMarkdown = lang === "markdown" || lang === "mdx";
+  const format = detectFormat(filePath);
   const remaining = Object.entries(input).filter(
     ([k]) =>
       !["file_path", "old_string", "new_string", "replace_all"].includes(k),
   );
   const patchHunks = (result?.toolResult as Record<string, unknown> | undefined)
     ?.structuredPatch;
+  const originalFile =
+    typeof (result?.toolResult as Record<string, unknown> | undefined)
+      ?.originalFile === "string"
+      ? ((result!.toolResult as Record<string, unknown>).originalFile as string)
+      : null;
 
   return (
     <div class="tool-input-formatted">
@@ -745,8 +860,14 @@ function EditInput({
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      {isMarkdown ? (
+      {format === "markdown" ? (
         <MarkdownDiffView oldStr={oldString} newStr={newString} />
+      ) : format === "svg" ? (
+        <SvgDiffView
+          oldStr={oldString}
+          newStr={newString}
+          originalFile={originalFile}
+        />
       ) : Array.isArray(patchHunks) && patchHunks.length > 0 ? (
         <PatchView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
       ) : (
@@ -760,11 +881,17 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   const content = input.content as string;
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
+  const format = detectFormat(filePath);
   const lang = filePath ? langFromPath(filePath) : null;
-  const isMarkdown = lang === "markdown" || lang === "mdx";
-  const tokens = useHighlight(content, isMarkdown ? null : lang);
+  const tokens = useHighlight(content, format === "markdown" ? null : lang);
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "content"].includes(k),
+  );
+
+  const codeView = (
+    <CodePre class="write-content" copyText={content}>
+      {tokens ? renderTokenLines(tokens) : content}
+    </CodePre>
   );
 
   return (
@@ -775,12 +902,16 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      {isMarkdown ? (
+      {format === "svg" ? (
+        <SourceRenderedToggle
+          defaultSource={false}
+          sourceView={codeView}
+          renderedView={<SvgPreview content={content} />}
+        />
+      ) : format === "markdown" ? (
         <Markdown text={content} class="write-content-markdown" />
       ) : (
-        <CodePre class="write-content" copyText={content}>
-          {tokens ? renderTokenLines(tokens) : content}
-        </CodePre>
+        codeView
       )}
     </div>
   );
@@ -1192,6 +1323,9 @@ function ReadResult({
   content: string;
   filePath: string;
 }) {
+  const format = detectFormat(filePath);
+  const lang = langFromPath(filePath);
+
   const rawLines = content.split("\n");
   // Parse cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
   const parsed = rawLines.map((line) => {
@@ -1201,10 +1335,9 @@ function ReadResult({
   });
 
   const codeOnly = parsed.map((p) => p.code).join("\n");
-  const lang = langFromPath(filePath);
   const tokens = useHighlight(codeOnly, lang);
 
-  return (
+  const sourceView = (
     <CodePre class="tool-result" copyText={codeOnly}>
       {parsed.map((p, i) => (
         <Fragment key={i}>
@@ -1215,6 +1348,41 @@ function ReadResult({
       ))}
     </CodePre>
   );
+
+  const renderedMdHtml = useMemo(
+    () =>
+      format === "markdown"
+        ? sanitizeHtml(marked.parse(codeOnly, { async: false }))
+        : null,
+    [codeOnly, format],
+  );
+
+  if (format === "markdown") {
+    return (
+      <SourceRenderedToggle
+        defaultSource={false}
+        sourceView={sourceView}
+        renderedView={
+          <div
+            class="markdown"
+            dangerouslySetInnerHTML={{ __html: renderedMdHtml! }}
+          />
+        }
+      />
+    );
+  }
+
+  if (format === "svg") {
+    return (
+      <SourceRenderedToggle
+        defaultSource={false}
+        sourceView={sourceView}
+        renderedView={<SvgPreview content={codeOnly} />}
+      />
+    );
+  }
+
+  return sourceView;
 }
 
 interface TodoItem {
@@ -2152,22 +2320,6 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
-/** Render an inline SVG preview when the result text is SVG markup. */
-function renderSvgPreview(resultText: string | null): h.JSX.Element | null {
-  if (!resultText) return null;
-  // strip cat -n line number prefixes to get raw content
-  const raw = resultText.replace(/^\s*\d+[\u2192\t]/gm, "").trim();
-  if (!raw.startsWith("<svg") && !raw.startsWith("<?xml")) return null;
-  // must contain an <svg tag somewhere (for <?xml ... ?><svg ...> case)
-  if (!raw.includes("<svg")) return null;
-  const dataUri = `data:image/svg+xml,${encodeURIComponent(raw)}`;
-  return (
-    <div class="tool-result-images">
-      <img src={dataUri} alt="SVG preview" class="tool-result-image" />
-    </div>
-  );
-}
-
 /** Extract and render image blocks from tool result content. */
 function renderResultImages(
   content: ToolResultContent | null | undefined,
@@ -2205,6 +2357,44 @@ function renderResultImages(
   );
 }
 
+/**
+ * Content-aware result renderer with source/rendered toggle.
+ * Detects SVG via content sniffing and provides a rendered preview toggle.
+ * Falls through to plain ResultPre for unrecognized content.
+ */
+function SmartResultPre({
+  content,
+  isError,
+}: {
+  content: string;
+  isError?: boolean;
+}) {
+  const format = detectFormat(null, content);
+  const tokens = useHighlight(content, format === "svg" ? "xml" : null);
+
+  if (!format) {
+    return (
+      <ResultPre content={content} isError={isError}>
+        {hasAnsi(content) ? renderAnsi(content) : content}
+      </ResultPre>
+    );
+  }
+
+  return (
+    <SourceRenderedToggle
+      defaultSource={true}
+      sourceView={
+        <ResultPre content={content} isError={isError}>
+          {tokens ? renderTokenLines(tokens) : content}
+        </ResultPre>
+      }
+      renderedView={
+        <SvgPreview content={stripCatLineNumbers(content).trim()} />
+      }
+    />
+  );
+}
+
 function renderResultContent(
   content: ToolResultContent | null | undefined,
   isError?: boolean,
@@ -2234,7 +2424,7 @@ function renderResultContent(
     }
   }
 
-  return <ResultPre content={display} isError={isError} />;
+  return <SmartResultPre content={display} isError={isError} />;
 }
 
 /**
@@ -2403,14 +2593,7 @@ function defaultResultExpanded(name: string, result?: ToolResult): boolean {
     for (const b of result.content) if (b.type === "image") return true;
   if (result) {
     const text = extractResultText(result.content);
-    if (text) {
-      const raw = text.replace(/^\s*\d+[\u2192\t]/gm, "").trim();
-      if (
-        raw.startsWith("<svg") ||
-        (raw.startsWith("<?xml") && raw.includes("<svg"))
-      )
-        return true;
-    }
+    if (text && looksLikeSvg(stripCatLineNumbers(text).trim())) return true;
   }
   return false;
 }
@@ -2499,6 +2682,8 @@ export const ToolCall = memo(
     const bashElement = useBashResult
       ? formatBashResult(result.toolResult as Record<string, unknown>)
       : null;
+    const resultImagesElement =
+      !useReadHighlight && result ? renderResultImages(result.content) : null;
 
     const hasResultContent =
       result != null &&
@@ -2629,88 +2814,91 @@ export const ToolCall = memo(
             </div>
             {resultOpen && (
               <>
-                {renderResultImages(result.content)}
-                {renderSvgPreview(resultText)}
-                {cydoTaskItems ? (
-                  <div class="tool-input-formatted">
-                    {cydoTaskItems.map((item, i) => {
-                      if (
-                        typeof item !== "object" ||
-                        item === null ||
-                        Array.isArray(item)
-                      ) {
-                        const fallbackText =
-                          typeof item === "string" ? item : String(item);
+                <div class="tool-result-container">
+                  {!useReadHighlight && resultImagesElement}
+                  {cydoTaskItems ? (
+                    <div class="tool-input-formatted">
+                      {cydoTaskItems.map((item, i) => {
+                        if (
+                          typeof item !== "object" ||
+                          item === null ||
+                          Array.isArray(item)
+                        ) {
+                          const fallbackText =
+                            typeof item === "string" ? item : String(item);
+                          return (
+                            <div key={i} class="cydo-task-spec">
+                              <div class="tool-input-field">
+                                <span class="field-label">result:</span>
+                                <span class="field-value"> {fallbackText}</span>
+                              </div>
+                            </div>
+                          );
+                        }
+                        const { fields, text } = formatCydoTaskResultItem(
+                          item as Record<string, unknown>,
+                        );
+                        const taskType =
+                          typeof fields.task_type === "string"
+                            ? fields.task_type
+                            : null;
+                        const desc =
+                          typeof fields.description === "string"
+                            ? fields.description
+                            : null;
+                        const { task_type, description, ...rest } = fields;
                         return (
                           <div key={i} class="cydo-task-spec">
                             <div class="tool-input-field">
-                              <span class="field-label">result:</span>
-                              <span class="field-value"> {fallbackText}</span>
+                              {taskType && (
+                                <span class="tool-subtitle-tag">
+                                  {taskType}
+                                </span>
+                              )}
+                              {desc && <span class="field-value"> {desc}</span>}
                             </div>
+                            {Object.keys(rest).length > 0 &&
+                              Object.entries(rest).map(([k, v]) => (
+                                <div key={k} class="tool-input-field">
+                                  <span class="field-label">{k}:</span>
+                                  <span class="field-value"> {String(v)}</span>
+                                </div>
+                              ))}
+                            {text && (
+                              <Markdown text={text} class="text-content" />
+                            )}
                           </div>
                         );
-                      }
-                      const { fields, text } = formatCydoTaskResultItem(
-                        item as Record<string, unknown>,
-                      );
-                      const taskType =
-                        typeof fields.task_type === "string"
-                          ? fields.task_type
-                          : null;
-                      const desc =
-                        typeof fields.description === "string"
-                          ? fields.description
-                          : null;
-                      const { task_type, description, ...rest } = fields;
-                      return (
-                        <div key={i} class="cydo-task-spec">
-                          <div class="tool-input-field">
-                            {taskType && (
-                              <span class="tool-subtitle-tag">{taskType}</span>
-                            )}
-                            {desc && <span class="field-value"> {desc}</span>}
-                          </div>
-                          {Object.keys(rest).length > 0 &&
-                            Object.entries(rest).map(([k, v]) => (
-                              <div key={k} class="tool-input-field">
-                                <span class="field-label">{k}:</span>
-                                <span class="field-value"> {String(v)}</span>
-                              </div>
-                            ))}
-                          {text && (
-                            <Markdown text={text} class="text-content" />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : useExecCommandResult ? (
-                  <ExecCommandResult content={resultText} />
-                ) : useReadHighlight ? (
-                  <ReadResult content={resultText} filePath={filePath} />
-                ) : useWebSearchResult ? (
-                  <WebSearchResult content={resultText} />
-                ) : useWebFetchResult ? (
-                  <div class="tool-result-blocks">
-                    <Markdown text={resultText} class="text-content" />
-                  </div>
-                ) : taskOutputElement ? (
-                  taskOutputElement
-                ) : taskStopElement ? (
-                  taskStopElement
-                ) : useBashResult ? (
-                  (result.toolResult as Record<string, unknown>).stdout ? (
-                    <ResultPre
-                      content={
-                        (result.toolResult as Record<string, unknown>)
-                          .stdout as string
-                      }
-                      isError={result.isError}
-                    />
-                  ) : null
-                ) : (
-                  renderResultContent(result.content, result.isError)
-                )}
+                      })}
+                    </div>
+                  ) : useExecCommandResult ? (
+                    <ExecCommandResult content={resultText} />
+                  ) : useReadHighlight ? (
+                    <ReadResult content={resultText} filePath={filePath} />
+                  ) : useWebSearchResult ? (
+                    <WebSearchResult content={resultText} />
+                  ) : useWebFetchResult ? (
+                    <div class="tool-result-blocks">
+                      <Markdown text={resultText} class="text-content" />
+                    </div>
+                  ) : taskOutputElement ? (
+                    taskOutputElement
+                  ) : taskStopElement ? (
+                    taskStopElement
+                  ) : useBashResult ? (
+                    (result.toolResult as Record<string, unknown>).stdout ? (
+                      <SmartResultPre
+                        content={
+                          (result.toolResult as Record<string, unknown>)
+                            .stdout as string
+                        }
+                        isError={result.isError}
+                      />
+                    ) : null
+                  ) : resultImagesElement ? null : (
+                    renderResultContent(result.content, result.isError)
+                  )}
+                </div>
                 {commandExecutionElement}
                 {bashElement}
                 {result.toolResult != null &&

@@ -8,6 +8,7 @@ import { MdastRenderer } from "./MdastRenderer";
 import { CodePre } from "./CopyButton";
 import sourceOnIcon from "../icons/source-on.svg?raw";
 import sourceOffIcon from "../icons/source-off.svg?raw";
+export { sourceOnIcon, sourceOffIcon };
 
 interface Props {
   text: string;

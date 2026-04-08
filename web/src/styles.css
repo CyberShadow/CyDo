@@ -1036,6 +1036,14 @@ body,
 }
 
 .tool-input,
+.tool-result-container {
+  background: var(--overlay-dark);
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 .tool-result {
   padding: 8px 12px;
   font-size: 12px;
@@ -1047,6 +1055,15 @@ body,
   overflow-y: auto;
 }
 
+.tool-result-container .tool-result {
+  padding: 0;
+  margin: 0;
+  background: none;
+  border-top: none;
+  max-height: none;
+  overflow-y: visible;
+}
+
 .tool-result-blocks {
   padding: 8px 12px;
   font-size: 12px;
@@ -1054,6 +1071,20 @@ body,
   border-top: 1px solid var(--border);
   max-height: 400px;
   overflow-y: auto;
+}
+
+.tool-result-container .tool-result-blocks {
+  padding: 0;
+  background: none;
+  border-top: none;
+  max-height: none;
+  overflow-y: visible;
+}
+
+.tool-result-container .tool-input-formatted {
+  padding: 0;
+  background: none;
+  border-top: none;
 }
 
 .tool-result.error,
@@ -2355,7 +2386,7 @@ body,
   background: var(--overlay-faint);
 }
 
-/* Rendered Markdown diff */
+/* Source/rendered toggle wrapper — layout only, no container styling */
 .markdown-diff-wrap {
   position: relative;
   margin-top: 6px;
@@ -3459,12 +3490,39 @@ pre.extra-field-value {
   margin-bottom: 8px;
 }
 
+.tool-result-container .markdown-diff-wrap {
+  margin-top: 0;
+}
+
+.tool-result-container .markdown > :first-child {
+  margin-top: 0;
+}
+
 .tool-result-image {
   max-width: 100%;
   max-height: 400px;
   border-radius: 4px;
   display: block;
   margin-bottom: 4px;
+}
+
+.svg-diff-preview {
+  display: flex;
+  gap: 12px;
+}
+
+.svg-diff-side {
+  flex: 1;
+  min-width: 0;
+}
+
+.svg-diff-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* System user message (collapsed) — divider-style bar */
