@@ -277,9 +277,11 @@ test("MCP tools work after backend restart", async ({
 
   // The sub-task should be created and complete. Its result ("sub-task-done")
   // appears in the tool result display, proving the MCP socket works.
-  // Use exact: true to avoid matching the user message which also contains "sub-task-done".
+  // Scope to the tool result section to avoid matching duplicates elsewhere.
   await expect(
-    page.getByText("sub-task-done", { exact: true }),
+    page
+      .locator(".tool-result-section")
+      .getByText("sub-task-done", { exact: true }),
   ).toBeVisible({ timeout: 60_000 });
 });
 
