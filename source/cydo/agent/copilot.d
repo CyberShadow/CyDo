@@ -152,13 +152,11 @@ class CopilotAgent : Agent
 					if (resp.isError)
 					{
 						import std.logger : warningf;
-						warningf("session.resume error: %s; falling back to session.create",
-							resp.error.get.message);
-						server.sendRequest("session.create",
-							buildSessionCreateParams(sessionId, model, workDir, config))
-						.then((JsonRpcResponse createResp) {
-							session.onSessionStarted(model, workDir);
-						});
+						warningf("session.resume error: %s", resp.error.get.message);
+						session.replayMode = false;
+						session.emitEvent(
+							`{"type":"process/stderr","text":"session.resume error: `
+							~ cpEscape(resp.error.get.message) ~ `"}`);
 						return;
 					}
 					session.onSessionStarted(model, workDir);

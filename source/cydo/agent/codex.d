@@ -970,17 +970,18 @@ class CodexAgent : Agent
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
 					{
-						// Resume can fail when sandbox/workspace changes require a new
-						// app-server process that does not know the old thread ID.
-						// Fall back to a fresh thread so tools (MCP) are still available.
-						warningf("thread/resume error: %s; falling back to thread/start", e.msg);
-						startFreshThread();
+						warningf("thread/resume error: %s", e.msg);
+						if (session.outputHandler_)
+							session.outputHandler_(
+								`{"type":"process/stderr","text":` ~ toJson("thread/resume error: " ~ e.msg) ~ `}`);
 						return;
 					}
 					if (result.thread.id.length == 0)
 					{
-						warningf("thread/resume returned empty thread id; falling back to thread/start");
-						startFreshThread();
+						warningf("thread/resume returned empty thread id");
+						if (session.outputHandler_)
+							session.outputHandler_(
+								`{"type":"process/stderr","text":"thread/resume returned empty thread id"}`);
 						return;
 					}
 					session.onThreadStarted(result, resumeSessionId, model, workDir,
