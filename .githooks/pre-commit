@@ -5,10 +5,11 @@
 #
 # How it works:
 #   1. Creates an ephemeral commit from the index (no ref/worktree mutation)
-#   2. Evaluates nix to get derivation output paths for that tree
-#   3. Checks if all outputs exist in the nix store
+#   2. Evaluates nix to get derivation paths for that tree
+#   3. Uses nix-store --realise --dry-run to check if all outputs are
+#      available (locally or via substituter)
 #
-# If any check output is missing, the commit is rejected with a message
+# If any check output needs to be built, the commit is rejected with a message
 # to run `nix flake check` first.
 
 set -euo pipefail
@@ -20,30 +21,39 @@ COMMIT=$(git commit-tree "$TREE" -m 'pre-commit check')
 # Get system architecture
 SYSTEM=$(nix eval --raw --impure --expr 'builtins.currentSystem')
 
-# Evaluate derivation output paths (no building, just evaluation ~2s)
-PATHS=$(nix eval ".?rev=$COMMIT#checks.$SYSTEM" \
-  --apply 'builtins.mapAttrs (_: c: c.outPath)' --json 2>/dev/null) || {
+# Evaluate derivation paths (no building, just evaluation ~2s)
+DRVS=$(nix eval ".?rev=$COMMIT#checks.$SYSTEM" \
+  --apply 'builtins.mapAttrs (_: c: c.drvPath)' --json 2>/dev/null) || {
   echo "error: could not evaluate flake checks"
   exit 1
 }
 
-# Check all outputs exist in the nix store
-MISSING=()
+# Collect all drv paths
+DRV_PATHS=()
 while IFS= read -r path; do
-  if ! nix path-info "$path" >/dev/null 2>&1; then
-    MISSING+=("$path")
-  fi
-done < <(echo "$PATHS" | jq -r '.[]')
+  DRV_PATHS+=("$path")
+done < <(echo "$DRVS" | jq -r '.[]')
 
-if [[ ${#MISSING[@]} -gt 0 ]]; then
+if [[ ${#DRV_PATHS[@]} -eq 0 ]]; then
+  echo "error: no flake checks found"
+  exit 1
+fi
+
+# nix-store --realise --dry-run checks availability without building:
+#   - paths in local store: no output
+#   - paths on a substituter: "will be fetched"
+#   - paths not built anywhere: "will be built" (drv paths in output)
+DRY_OUTPUT=$(nix-store --realise --dry-run "${DRV_PATHS[@]}" 2>&1)
+
+# .drv paths in the output indicate derivations that need building
+NEEDS_BUILD=$(echo "$DRY_OUTPUT" | grep '\.drv$' || true)
+if [[ -n "$NEEDS_BUILD" ]]; then
   echo "nix flake check has not passed for this tree."
   echo ""
   echo "Run:"
   echo "  nix flake check"
   echo ""
-  echo "Missing outputs:"
-  for p in "${MISSING[@]}"; do
-    echo "  $p"
-  done
+  echo "Derivations that need building:"
+  echo "$NEEDS_BUILD" | sed 's/^/  /'
   exit 1
 fi
