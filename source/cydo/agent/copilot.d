@@ -456,6 +456,7 @@ class CopilotAgent : Agent
 					string toolCallId;
 					string toolName;
 					string mcpToolName;
+					string parentToolCallId;
 					JSONFragment arguments;
 				}
 				@JSONPartial static struct CpToolStartEvent { CpToolStart data; }
@@ -482,33 +483,28 @@ class CopilotAgent : Agent
 				else
 					startEv.name = toolName;
 				startEv.input     = JSONFragment(inputJson);
+				startEv.parent_tool_use_id = ev.data.parentToolCallId;
 
-				ItemCompletedEvent compEv;
-				compEv.item_id = toolId;
-				compEv.input   = JSONFragment(inputJson);
-
-				events = [toJson(startEv), toJson(compEv)];
+				events = [toJson(startEv)];
 				break;
 			}
 			case "tool.execution_complete":
 			{
-				@JSONPartial static struct CpResultInner { string text; }
-				@JSONPartial static struct CpResultContent { string type; CpResultInner content; }
-				@JSONPartial static struct CpToolComplete { string toolCallId; CpResultContent[] content; }
+				@JSONPartial static struct CpToolComplete { string toolCallId; JSONFragment result; }
 				@JSONPartial static struct CpToolCompleteEvent { CpToolComplete data; }
 				CpToolCompleteEvent ev;
 				try ev = jsonParse!CpToolCompleteEvent(line);
 				catch (Exception) {}
 				auto toolId = ev.data.toolCallId.length > 0 ? ev.data.toolCallId : base.id;
-				string outputText;
-				foreach (ref ci; ev.data.content)
-					if (ci.type == "content")
-						outputText ~= ci.content.text;
+				string outputText = .extractResultText(ev.data.result);
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = toolId;
 
 				ItemResultEvent resEv;
 				resEv.item_id = toolId;
 				resEv.content = JSONFragment(`[{"type":"text","text":"` ~ cpEscape(outputText) ~ `"}]`);
-				events = [toJson(resEv)];
+				events = [toJson(compEv), toJson(resEv)];
 				break;
 			}
 			case "assistant.turn_end":
@@ -516,6 +512,9 @@ class CopilotAgent : Agent
 					~ `,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`];
 				break;
+			case "subagent.started":
+			case "permission.completed":
+				return null;
 			default:
 				return null;
 		}
@@ -723,21 +722,31 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	// Streaming state: item tracking for item-based protocol.
 	private int nextItemIndex;
 
-	// Active item being streamed (text, thinking, or tool_use).
-	private struct ActiveItem
+	// Active streaming item for text/thinking (sequential — at most one at a time).
+	private struct ActiveTextItem
 	{
 		string id;    // item_id
-		string type;  // "text", "thinking", "tool_use"
-		string name;  // tool name (tool_use only)
-		string input; // tool input JSON (tool_use only)
-		string text;  // accumulated text/output
-		// Set true in handleExternalToolRequested after item/completed + item/result
-		// have been emitted, so handleToolExecutionStart knows to skip this item.
-		bool externallyHandled;
+		string type;  // "text" or "thinking"
+		string text;  // accumulated content
+		string parentToolCallId; // parent tool_use id for sub-agent nesting
 	}
-	private ActiveItem activeItem;
+	private ActiveTextItem activeTextItem;
+
+	// In-flight tool calls (parallel — multiple may be active simultaneously).
+	private struct ToolItem
+	{
+		string id;    // item_id (= toolCallId)
+		string name;  // tool name
+		string input; // tool input JSON
+		string text;  // accumulated output (currently unused for streaming)
+		string parentToolCallId; // parent tool_use id for sub-agent nesting
+		bool externallyHandled;  // completed by handleExternalToolRequested
+	}
+	private ToolItem[string] activeTools; // keyed by toolCallId
+
 	private string lastResultText;  // last completed text content, for turn/result
 	private string currentRawJson_; // raw event data.json from handleEvent, for _raw injection
+	private string currentSubagentParent_;  // toolCallId of current sub-agent parent (task tool)
 
 	private bool sessionReady_; // true after session.create/resume response
 
@@ -830,7 +839,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		{
 			turnInProgress = true;
 			nextItemIndex = 0;
-			activeItem = ActiveItem.init;
+			activeTextItem = ActiveTextItem.init;
+			activeTools = null;
 
 			// Emit user message item so the frontend confirms the pending placeholder.
 			emitEvent(
@@ -951,6 +961,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "permission.requested":
 				handlePermissionRequested(event.data);
 				break;
+			case "subagent.started":
+				handleSubagentStarted(event.data);
+				break;
 			case "plan":
 			case "available_commands_update":
 			case "config_option_update":
@@ -965,6 +978,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "assistant.streaming_delta":
 			case "assistant.usage":
 			case "external_tool.completed":
+			case "permission.completed":
 				break;
 			default:
 				import cydo.agent.protocol : makeUnrecognizedEvent;
@@ -1015,7 +1029,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	///
 	/// We also emit item/started here so the UI shows the tool call immediately.
 	/// After the tool resolves we emit item/completed + item/result and mark
-	/// activeItem.externallyHandled so that any subsequent tool.execution_start
+	/// the tool as externallyHandled so that any subsequent tool.execution_start
 	/// event (which Copilot fires for MCP tools after receiving the result) is
 	/// silently ignored instead of creating a duplicate UI entry.
 	private void handleExternalToolRequested(JSONFragment data)
@@ -1048,28 +1062,37 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (isCydo)
 			displayName = displayName[5 .. $];
 
-		// Set up an active item for UI rendering before the async dispatch.
-		// If handleToolExecutionStart already created an activeItem for the
+		// Set up a tool item for UI rendering before the async dispatch.
+		// If handleToolExecutionStart already created an entry for the
 		// same tool (race: events arrive via different I/O channels), reuse
 		// it instead of creating a duplicate.
 		string inputJson = req.arguments.json !is null && req.arguments.json.length > 0
 			? req.arguments.json : "{}";
-		if (activeItem.id.length > 0 && activeItem.name == displayName && !activeItem.externallyHandled)
+
+		// Look for an existing tool entry that matches (by name, not yet externally handled).
+		string itemId;
+		bool found;
+		foreach (ref tool; activeTools)
 		{
-			// handleToolExecutionStart already emitted item/started — just mark it.
-			activeItem.externallyHandled = true;
+			if (tool.name == displayName && !tool.externallyHandled)
+			{
+				tool.externallyHandled = true;
+				itemId = tool.id;
+				found = true;
+				break;
+			}
 		}
-		else
+		if (!found)
 		{
-			finalizeActiveItem();
-			activeItem = ActiveItem("cp-ext-" ~ req.requestId, "tool_use", displayName, inputJson, "", true);
+			finalizeActiveTextItem();
+			itemId = "cp-ext-" ~ req.requestId;
+			activeTools[itemId] = ToolItem(itemId, displayName, inputJson, "", "", true);
 			emitEvent(
-				`{"type":"item/started","item_id":"` ~ cpEscape(activeItem.id)
+				`{"type":"item/started","item_id":"` ~ cpEscape(itemId)
 				~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
 				~ (isCydo ? `","tool_server":"cydo","tool_source":"mcp` : "")
 				~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
 		}
-		auto itemId = activeItem.id;
 		auto rawJson = currentRawJson_; // capture before async dispatch
 
 		toolDispatch_(dispatchName, to!string(tid), req.arguments)
@@ -1126,6 +1149,23 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		server.sendRequest("session.permissions.handlePendingPermissionRequest", params);
 	}
 
+	/// Handle subagent.started — set the current sub-agent parent context
+	/// so subsequent text/thinking/tool events are nested under the parent
+	/// task tool call.
+	private void handleSubagentStarted(JSONFragment data)
+	{
+		@JSONPartial static struct SubagentStarted
+		{
+			string toolCallId;
+			string agentName;
+		}
+		SubagentStarted sa;
+		try sa = jsonParse!SubagentStarted(data.json);
+		catch (Exception) return;
+
+		currentSubagentParent_ = sa.toolCallId;
+	}
+
 	void handleStderr(string line)
 	{
 		if (stderrHandler_)
@@ -1163,8 +1203,10 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	{
 		turnInProgress = true;
 		nextItemIndex = 0;
-		activeItem = ActiveItem.init;
+		activeTextItem = ActiveTextItem.init;
+		activeTools = null;
 		lastResultText = null;
+		currentSubagentParent_ = null;
 	}
 
 	private void handleMessageDelta(JSONFragment data)
@@ -1177,21 +1219,23 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		auto text = d.deltaContent;
 
 		// Start a new text item if we don't have an active one.
-		if (activeItem.type != "text")
+		if (activeTextItem.type != "text")
 		{
-			finalizeActiveItem();
+			finalizeActiveTextItem();
 			auto id = "cp-text-" ~ to!string(nextItemIndex++);
-			activeItem = ActiveItem(id, "text", "", "", "");
+			activeTextItem = ActiveTextItem(id, "text", "", currentSubagentParent_);
+			string parentField = currentSubagentParent_.length > 0
+				? `","parent_tool_use_id":"` ~ cpEscape(currentSubagentParent_) : "";
 			emitEvent(
 				`{"type":"item/started","item_id":"` ~ cpEscape(id)
-				~ `","item_type":"text"}`, currentRawJson_);
+				~ `","item_type":"text` ~ parentField ~ `"}`, currentRawJson_);
 		}
 
-		activeItem.text ~= text;
+		activeTextItem.text ~= text;
 
 		if (text.length > 0)
 			emitEvent(
-				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
+				`{"type":"item/delta","item_id":"` ~ cpEscape(activeTextItem.id)
 				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
 	}
 
@@ -1205,21 +1249,23 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		auto text = d.deltaContent;
 
 		// Start a new thinking item if we don't have an active one.
-		if (activeItem.type != "thinking")
+		if (activeTextItem.type != "thinking")
 		{
-			finalizeActiveItem();
+			finalizeActiveTextItem();
 			auto id = "cp-think-" ~ to!string(nextItemIndex++);
-			activeItem = ActiveItem(id, "thinking", "", "", "");
+			activeTextItem = ActiveTextItem(id, "thinking", "", currentSubagentParent_);
+			string parentField = currentSubagentParent_.length > 0
+				? `","parent_tool_use_id":"` ~ cpEscape(currentSubagentParent_) : "";
 			emitEvent(
 				`{"type":"item/started","item_id":"` ~ cpEscape(id)
-				~ `","item_type":"thinking"}`, currentRawJson_);
+				~ `","item_type":"thinking` ~ parentField ~ `"}`, currentRawJson_);
 		}
 
-		activeItem.text ~= text;
+		activeTextItem.text ~= text;
 
 		if (text.length > 0)
 			emitEvent(
-				`{"type":"item/delta","item_id":"` ~ cpEscape(activeItem.id)
+				`{"type":"item/delta","item_id":"` ~ cpEscape(activeTextItem.id)
 				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
 	}
 
@@ -1229,6 +1275,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		{
 			string toolCallId;
 			string toolName;
+			string parentToolCallId;
 			JSONFragment arguments;
 		}
 		ToolStart ts;
@@ -1236,14 +1283,17 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		catch (Exception) return;
 
 		// Skip if this tool was already handled by handleExternalToolRequested.
-		if (activeItem.externallyHandled)
+		if (auto p = ts.toolCallId in activeTools)
 		{
-			activeItem = ActiveItem.init;
-			return;
+			if (p.externallyHandled)
+			{
+				activeTools.remove(ts.toolCallId);
+				return;
+			}
 		}
 
-		// Finalize any active text/thinking item.
-		finalizeActiveItem();
+		// Finalize any active text/thinking item (tools don't interrupt each other).
+		finalizeActiveTextItem();
 
 		import std.algorithm : startsWith;
 
@@ -1260,12 +1310,15 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		string inputJson = ts.arguments.json !is null && ts.arguments.json.length > 0
 			? ts.arguments.json : "{}";
 
-		activeItem = ActiveItem(id, "tool_use", name, inputJson, "");
+		activeTools[id] = ToolItem(id, name, inputJson, "", ts.parentToolCallId);
 
+		string parentField = ts.parentToolCallId.length > 0
+			? `","parent_tool_use_id":"` ~ cpEscape(ts.parentToolCallId) : "";
 		emitEvent(
 			`{"type":"item/started","item_id":"` ~ cpEscape(id)
 			~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
 			~ (toolServer.length > 0 ? `","tool_server":"cydo","tool_source":"mcp` : "")
+			~ parentField
 			~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
 
 		// Emit the full input as a single input_json_delta so the UI can
@@ -1278,27 +1331,30 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleToolExecutionComplete(JSONFragment data)
 	{
-		@JSONPartial static struct ToolComplete { string toolCallId; bool success; string result; }
+		@JSONPartial static struct ToolComplete { string toolCallId; bool success; JSONFragment result; }
 		ToolComplete tc;
 		try tc = jsonParse!ToolComplete(data.json);
 		catch (Exception) return;
 
-		// Skip if no active item or already completed by handleExternalToolRequested.
-		if (activeItem.id.length == 0 || activeItem.externallyHandled)
+		auto p = tc.toolCallId in activeTools;
+		if (p is null || p.externallyHandled)
 			return;
 
-		if (tc.result.length > 0)
-			activeItem.text = tc.result;
+		// Extract result text: may be a plain string or an object with a
+		// "content" / "detailedContent" field (e.g. bash tool results).
+		string resultText = extractResultText(tc.result);
+		if (resultText.length > 0)
+			p.text = resultText;
 
 		// Emit item/completed with final input.
 		emitEvent(
-			`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-			~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`, currentRawJson_);
-		// Emit item/result with accumulated output.
+			`{"type":"item/completed","item_id":"` ~ cpEscape(p.id)
+			~ `","input":` ~ (p.input.length > 0 ? p.input : `{}`) ~ `}`, currentRawJson_);
+		// Emit item/result with tool output.
 		emitEvent(
-			`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
-			~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
-		activeItem = ActiveItem.init;
+			`{"type":"item/result","item_id":"` ~ cpEscape(p.id)
+			~ `","content":"` ~ cpEscape(p.text) ~ `"}`, currentRawJson_);
+		activeTools.remove(tc.toolCallId);
 	}
 
 	private void handleAssistantMessage(JSONFragment data)
@@ -1339,8 +1395,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleTurnCompleted(string stopReason)
 	{
-		// Finalize any still-active item.
-		finalizeActiveItem();
+		// Finalize any still-active text/thinking item.
+		finalizeActiveTextItem();
+		// Finalize any remaining in-flight tools (shouldn't happen normally,
+		// but cleans up if turn ends before tool.execution_complete arrives).
+		finalizeAllTools();
 
 		turnInProgress = false;
 
@@ -1372,41 +1431,37 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		}
 	}
 
-	/// Finalize activeItem: emit item/completed (and item/result for tools).
-	/// No-op if there is no active item.
-	private void finalizeActiveItem()
+	/// Finalize the active text/thinking item: emit item/completed.
+	/// No-op if there is no active text item.
+	private void finalizeActiveTextItem()
 	{
-		if (activeItem.type.length == 0)
+		if (activeTextItem.type.length == 0)
 			return;
 
-		// If already completed by handleExternalToolRequested, just clear.
-		if (activeItem.externallyHandled)
-		{
-			activeItem = ActiveItem.init;
-			return;
-		}
+		if (activeTextItem.type == "text")
+			lastResultText = activeTextItem.text;
+		emitEvent(
+			`{"type":"item/completed","item_id":"` ~ cpEscape(activeTextItem.id)
+			~ `","text":"` ~ cpEscape(activeTextItem.text) ~ `"}`, currentRawJson_);
 
-		if (activeItem.type == "tool_use")
-		{
-			// Tool: emit completed with input, and result with accumulated output.
-			emitEvent(
-				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","input":` ~ (activeItem.input.length > 0 ? activeItem.input : `{}`) ~ `}`, currentRawJson_);
-			emitEvent(
-				`{"type":"item/result","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","content":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
-		}
-		else
-		{
-			// Text/thinking: emit completed with accumulated text.
-			if (activeItem.type == "text")
-				lastResultText = activeItem.text;
-			emitEvent(
-				`{"type":"item/completed","item_id":"` ~ cpEscape(activeItem.id)
-				~ `","text":"` ~ cpEscape(activeItem.text) ~ `"}`, currentRawJson_);
-		}
+		activeTextItem = ActiveTextItem.init;
+	}
 
-		activeItem = ActiveItem.init;
+	/// Finalize all remaining in-flight tools (at turn end).
+	private void finalizeAllTools()
+	{
+		foreach (ref tool; activeTools)
+		{
+			if (tool.externallyHandled)
+				continue;
+			emitEvent(
+				`{"type":"item/completed","item_id":"` ~ cpEscape(tool.id)
+				~ `","input":` ~ (tool.input.length > 0 ? tool.input : `{}`) ~ `}`, currentRawJson_);
+			emitEvent(
+				`{"type":"item/result","item_id":"` ~ cpEscape(tool.id)
+				~ `","content":"` ~ cpEscape(tool.text) ~ `"}`, currentRawJson_);
+		}
+		activeTools = null;
 	}
 }
 
@@ -1590,6 +1645,30 @@ string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 
 	write(configPath, config);
 	return configPath;
+}
+
+/// Extract plain text from a tool result JSONFragment.
+/// Handles both plain JSON strings and objects with a "content" or
+/// "detailedContent" field (e.g. bash tool results from Copilot SDK).
+string extractResultText(JSONFragment frag)
+{
+	if (frag.json.length == 0)
+		return "";
+	// Try as plain string first.
+	try return jsonParse!string(frag.json);
+	catch (Exception) {}
+	// Try as object with content/detailedContent fields.
+	@JSONPartial static struct ResultObj { string content; string detailedContent; }
+	try
+	{
+		auto obj = jsonParse!ResultObj(frag.json);
+		if (obj.content.length > 0)
+			return obj.content;
+		if (obj.detailedContent.length > 0)
+			return obj.detailedContent;
+	}
+	catch (Exception) {}
+	return "";
 }
 
 /// Escape a string for embedding in JSON.

@@ -75,6 +75,7 @@ function extractResultText(
 /** Tool names that represent shell command execution across agents/formats. */
 const shellToolNames = new Set([
   "Bash", // Claude Code
+  "bash", // Copilot
   "commandExecution", // Codex live
   "local_shell_call", // Codex rollout (OpenAI Responses API format)
   "exec_command", // Codex rollout (function_call format)
@@ -259,6 +260,9 @@ function getToolCallFilePaths(
   };
 
   addPath(typeof input.file_path === "string" ? input.file_path : null);
+  addPath(
+    name === "view" && typeof input.path === "string" ? input.path : null,
+  );
 
   if (name === "fileChange" && Array.isArray(input.changes)) {
     for (const change of input.changes) {
@@ -1327,9 +1331,11 @@ function ReadResult({
   const lang = langFromPath(filePath);
 
   const rawLines = content.split("\n");
-  // Parse cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
+  // Parse line-number prefixes:
+  //   cat -n format: "    1→code" (→ = U+2192) or "    1\tcode"
+  //   view format:   "1527. code"
   const parsed = rawLines.map((line) => {
-    const match = line.match(/^(\s*\d+[\u2192\t])(.*)/);
+    const match = line.match(/^(\s*\d+[\u2192\t]|\d+\.\s)(.*)/);
     if (match) return { prefix: match[1], code: match[2] };
     return { prefix: "", code: line };
   });
@@ -2011,7 +2017,25 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
+  if (name === "view" && typeof input.path === "string") {
+    const vr = Array.isArray(input.view_range) ? input.view_range : null;
+    const range =
+      vr && vr.length === 2
+        ? `(${vr[0]}\u2013${vr[1]})`
+        : vr && vr.length === 1
+          ? `(${vr[0]}\u2013)`
+          : null;
+    return (
+      <Fragment>
+        <span class="tool-subtitle-path">{input.path}</span>
+        {range && <span class="tool-subtitle">{range}</span>}
+      </Fragment>
+    );
+  }
+  if (
+    ["Glob", "Grep", "glob", "grep"].includes(name) &&
+    typeof input.pattern === "string"
+  ) {
     const glob = typeof input.glob === "string" ? input.glob : null;
     const path = typeof input.path === "string" ? input.path : null;
     return (
@@ -2060,14 +2084,24 @@ function getHeaderSubtitle(
   if (shellToolNames.has(name) && typeof input.description === "string") {
     return <span class="tool-subtitle">{input.description}</span>;
   }
-  if (name === "Task" && typeof input.description === "string") {
-    const prefix =
-      typeof input.subagent_type === "string" ? `${input.subagent_type}: ` : "";
+  if (name === "report_intent" && typeof input.intent === "string") {
+    return <span class="tool-subtitle">{input.intent}</span>;
+  }
+  if (
+    (name === "Task" || name === "task") &&
+    typeof input.description === "string"
+  ) {
+    const agentType =
+      typeof input.subagent_type === "string"
+        ? input.subagent_type
+        : typeof input.agent_type === "string"
+          ? input.agent_type
+          : null;
     return (
-      <span class="tool-subtitle">
-        {prefix}
-        {input.description}
-      </span>
+      <Fragment>
+        {agentType && <span class="tool-subtitle-tag">{agentType}</span>}
+        <span class="tool-subtitle">{input.description}</span>
+      </Fragment>
     );
   }
   // --- CyDo MCP tools ---
@@ -2215,8 +2249,19 @@ function formatInput(
     const { plan, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={plan} />);
   }
-  if (name === "Task" && typeof input.prompt === "string") {
-    const { prompt, description, subagent_type, ...remaining } = input;
+  if (
+    (name === "Task" || name === "task") &&
+    typeof input.prompt === "string"
+  ) {
+    const {
+      prompt,
+      description,
+      subagent_type,
+      agent_type,
+      name: taskName,
+      mode,
+      ...remaining
+    } = input;
     return formatGenericInput(remaining, <Markdown text={prompt} />);
   }
   if (name === "WebSearch" && typeof input.query === "string") {
@@ -2240,8 +2285,15 @@ function formatInput(
     const { file_path, offset, limit, ...remaining } = input;
     return formatGenericInput(remaining);
   }
-  if (["Glob", "Grep"].includes(name) && typeof input.pattern === "string") {
-    const { pattern, glob, path, ...remaining } = input;
+  if (name === "view" && typeof input.path === "string") {
+    const { path, view_range, ...remaining } = input;
+    return formatGenericInput(remaining);
+  }
+  if (
+    ["Glob", "Grep", "glob", "grep"].includes(name) &&
+    typeof input.pattern === "string"
+  ) {
+    const { pattern, glob, path, output_mode, ...remaining } = input;
     return formatGenericInput(remaining);
   }
   // --- CyDo MCP tools ---
@@ -2543,18 +2595,22 @@ const defaultExpandedTools = new Set([
   "AskUserQuestion",
   "WebFetch",
   "Task",
+  "task",
   "Ask",
   "Answer",
   "Handoff",
   "SendMessage",
   "TaskCreate",
+  "bash",
 ]);
 const defaultExpandedResults = new Set([
   "Bash",
+  "bash",
   "commandExecution",
   "local_shell_call",
   "exec_command",
   "Task",
+  "task",
   "Ask",
   "Answer",
   "WebSearch",
@@ -2629,7 +2685,11 @@ export const ToolCall = memo(
     const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
 
     const filePath =
-      typeof input.file_path === "string" ? input.file_path : null;
+      typeof input.file_path === "string"
+        ? input.file_path
+        : name === "view" && typeof input.path === "string"
+          ? input.path
+          : null;
     const resultText = result ? extractResultText(result.content) : null;
     const cydoTaskItems =
       (name === "Task" || name === "Ask") &&
@@ -2639,7 +2699,10 @@ export const ToolCall = memo(
         ? parseCydoTaskResult(resultText)
         : null;
     const useReadHighlight =
-      name === "Read" && filePath && resultText != null && !result!.isError;
+      (name === "Read" || name === "view") &&
+      filePath &&
+      resultText != null &&
+      !result!.isError;
     const useExecCommandResult =
       name === "exec_command" && resultText != null && !result!.isError;
     const useWebSearchResult =
