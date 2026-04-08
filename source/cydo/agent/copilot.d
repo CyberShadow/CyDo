@@ -149,6 +149,18 @@ class CopilotAgent : Agent
 				server.sendRequest("session.resume",
 					buildSessionResumeParams(sessionId, model, config))
 				.then((JsonRpcResponse resp) {
+					if (resp.isError)
+					{
+						import std.logger : warningf;
+						warningf("session.resume error: %s; falling back to session.create",
+							resp.error.get.message);
+						server.sendRequest("session.create",
+							buildSessionCreateParams(sessionId, model, workDir, config))
+						.then((JsonRpcResponse createResp) {
+							session.onSessionStarted(model, workDir);
+						});
+						return;
+					}
 					session.onSessionStarted(model, workDir);
 				});
 			}
@@ -852,7 +864,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 				`{"sessionId":"` ~ cpEscape(sessionId)
 				~ `","prompt":"` ~ escaped ~ `"}`)
 			.then((JsonRpcResponse resp) {
-				// ACK received — turn is in progress
+				if (resp.isError)
+					emitEvent(`{"type":"process/stderr","text":"session.send error: `
+						~ cpEscape(resp.error.get.message) ~ `"}`);
 			});
 		}
 	}
