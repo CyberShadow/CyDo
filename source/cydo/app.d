@@ -1517,6 +1517,20 @@ class App : ToolsBackend
 		}
 	}
 
+	Promise!McpResult handlePermissionPrompt(string callerTidStr, string toolUseId,
+		string toolName, JSONFragment input)
+	{
+		import std.conv : to;
+		int callerTidInt;
+		try callerTidInt = to!int(callerTidStr);
+		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
+
+		auto callerTd = callerTidInt in tasks;
+		if (callerTd is null) return resolve(McpResult("Task not found", true));
+
+		return resolve(McpResult(makePermissionAllowJson(input.json), false));
+	}
+
 	private McpResult buildQuestionResult(int childTid)
 	{
 		import ae.utils.json : toJson;
@@ -3080,6 +3094,8 @@ class App : ToolsBackend
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
+		sessionConfig.permissionPolicy = findWorkspacePermissionPolicy(td.workspace);
+
 		return TaskSessionLaunch(td.launch, sessionConfig);
 	}
 
@@ -3673,6 +3689,25 @@ class App : ToolsBackend
 			if (ws.name == workspaceName)
 				return ws.root;
 		return "";
+	}
+
+	private string findWorkspacePermissionPolicy(string workspaceName)
+	{
+		foreach (ref ws; config.workspaces)
+			if (ws.name == workspaceName && ws.permission_policy.length > 0)
+				return ws.permission_policy;
+		return "";
+	}
+
+	private static string makePermissionAllowJson(string inputJson)
+	{
+		return `{"behavior":"allow","updatedInput":` ~ inputJson ~ `}`;
+	}
+
+	private static string makePermissionDenyJson(string message)
+	{
+		import ae.utils.json : toJson;
+		return `{"behavior":"deny","message":` ~ toJson(message) ~ `}`;
 	}
 
 	private SandboxConfig findAgentTypeSandbox(string agentType)

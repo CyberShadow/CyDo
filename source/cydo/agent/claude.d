@@ -82,7 +82,8 @@ class ClaudeCodeAgent : Agent
 		SessionConfig config = SessionConfig.init)
 	{
 		lastMcpConfigPath_ = generateMcpConfig(tid, config.creatableTaskTypes,
-			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath);
+			config.switchModes, config.handoffs, config.includeTools, config.mcpSocketPath,
+			config.permissionPolicy);
 		auto claudeBin = launch.executablePath.length > 0
 			? launch.executablePath
 			: executableName(launch.sandbox.env);
@@ -649,6 +650,9 @@ class ClaudeCodeSession : AgentSession
 			"--dangerously-skip-permissions",
 			"--settings", `{"fileCheckpointingEnabled": true}`,
 		];
+
+		if (config.permissionPolicy.length > 0)
+			claudeArgs ~= ["--permission-prompt-tool", "mcp__cydo__PermissionPrompt"];
 
 		if (mcpConfigPath !is null)
 			claudeArgs ~= ["--mcp-config", mcpConfigPath];
@@ -1317,7 +1321,8 @@ private string mangleProjectPath(string path)
 /// handoffs is pre-formatted text describing available Handoff continuations.
 /// mcpSocketPath is the absolute path to the backend's UNIX socket for MCP calls.
 string generateMcpConfig(int tid, string creatableTaskTypes = "",
-	string switchModes = "", string handoffs = "", string[] includeTools = null, string mcpSocketPath = "")
+	string switchModes = "", string handoffs = "", string[] includeTools = null,
+	string mcpSocketPath = "", string permissionPolicy = "")
 {
 	import std.array : join;
 	import std.file : exists, mkdirRecurse, write;
@@ -1339,7 +1344,8 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
 		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
 		~ escapeJsonString(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
-		~ escapeJsonString(includeTools is null ? "" : includeTools.join(",")) ~ `"}}}}`;
+		~ escapeJsonString(includeTools is null ? "" : includeTools.join(",")) ~ `","CYDO_PERMISSION_POLICY":"`
+		~ escapeJsonString(permissionPolicy) ~ `"}}}}`;
 
 	write(configPath, config);
 	return configPath;

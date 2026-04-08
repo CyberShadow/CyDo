@@ -318,6 +318,7 @@ EOF
               CODEXCFG
 
               mkdir -p /tmp/cydo-test-workspace
+              mkdir -p /tmp/cydo-test-workspace/.claude
               cd /tmp/cydo-test-workspace
               ${pkgs.git}/bin/git init -q
               ${pkgs.git}/bin/git config user.email "test@test"

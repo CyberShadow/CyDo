@@ -19,6 +19,7 @@ struct SessionConfig
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
+	string permissionPolicy;   /// Permission policy from workspace config (empty = not configured)
 }
 
 /// Result from a rewindFiles call.

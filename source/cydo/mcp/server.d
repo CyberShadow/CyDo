@@ -57,6 +57,15 @@ string buildToolsListJson()
 	auto includeStr = environment.get("CYDO_INCLUDE_TOOLS", "");
 	string[] includeTools = includeStr.length > 0 ? includeStr.split(",") : null;
 
+	auto permissionPolicy = environment.get("CYDO_PERMISSION_POLICY", "");
+	if (permissionPolicy.length > 0)
+	{
+		if (includeTools is null)
+			includeTools = ["PermissionPrompt"];
+		else
+			includeTools ~= "PermissionPrompt";
+	}
+
 	return buildToolsListJson!CydoTools([
 		"creatable_task_types": environment.get("CYDO_CREATABLE_TYPES", ""),
 		"switchmodes": environment.get("CYDO_SWITCHMODES", ""),

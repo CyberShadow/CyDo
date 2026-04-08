@@ -296,6 +296,15 @@ export function matchPattern(userText) {
     };
   }
 
+  // "call permissiontool <toolname> <json>" → tool_use for a named tool (triggers permission prompt)
+  match = userText.match(/call permissiontool (\S+) (.*)/is);
+  if (match)
+    return {
+      type: "tool_call",
+      name: match[1].trim(),
+      input: JSON.parse(match[2].trim()),
+    };
+
   // "use builtin view <path>" → Copilot built-in view tool (triggers permission.requested)
   match = userText.match(/use builtin view (\S+)/i);
   if (match) return { type: "builtin_tool", name: "view", input: { path: match[1] } };
