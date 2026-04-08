@@ -281,7 +281,7 @@ McpToolDispatcher!I mcpToolDispatcher(I)(I impl) if (is(I == interface))
 string buildToolsListJson(I)(string[string] vars, string[] includeTools)
 {
 	import std.algorithm : canFind;
-	import djinja.djinja : loadData;
+	import djinja.djinja : loadData, JinjaConfig;
 	import djinja.render : Render;
 	import uninode.serialization : serialize = serializeToUniNode;
 
@@ -301,7 +301,8 @@ string buildToolsListJson(I)(string[string] vars, string[] includeTools)
 		ToolDef copy = tool;
 		if (copy.description.length > 0)
 		{
-			auto tmpl = loadData(copy.description);
+			enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
+			auto tmpl = loadData!conf(copy.description);
 			copy.description = (new Render(tmpl)).render(data);
 		}
 		result ~= copy;

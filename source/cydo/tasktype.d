@@ -1065,11 +1065,12 @@ void simulateWorkflow(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 /// Replace `{{key}}` placeholders in a string with values from the given map.
 string substituteVars(string text, string[string] vars)
 {
-	import djinja.djinja : loadData;
+	import djinja.djinja : loadData, JinjaConfig;
 	import djinja.render : Render;
 	import uninode.serialization : serialize = serializeToUniNode;
 
-	auto tmpl = loadData(text);
+    enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
+	auto tmpl = loadData!conf(text);
 	auto renderer = new Render(tmpl);
 	return renderer.render(serialize(vars));
 }

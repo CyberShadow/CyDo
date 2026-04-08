@@ -67,13 +67,14 @@ private bool evalExprBool(string expr, string dirPath,
 	uint depth, string relativePath, string dirName,
 	bool isProject = false)
 {
-	import djinja.djinja : loadData;
+	import djinja.djinja : JinjaConfig, loadData;
 	import djinja.render : Render, registerFunction;
 	import uninode.serialization : serialize = serializeToUniNode;
 
 	_evalDirPath = dirPath;
 
-	auto renderer = new Render(loadData(expr));
+	enum JinjaConfig conf = { cmntOpInline: "$$", stmtOpInline: "$$$" };
+	auto renderer = new Render(loadData!conf(expr));
 	registerFunction!has_entry(renderer);
 	registerFunction!has_file(renderer);
 	registerFunction!has_dir(renderer);
