@@ -1,1 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="4" fill="none"/><circle cx="8" cy="8" r="1.5"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" fill-rule="evenodd"/><circle cx="8" cy="8" r="2.75" fill="var(--bg-primary, #1e1e1e)" stroke="none"/></svg>
