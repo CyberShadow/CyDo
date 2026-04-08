@@ -1,12 +1,15 @@
-import { Fragment } from "preact";
+import { Fragment, h } from "preact";
 import { memo } from "preact/compat";
+import { useState } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
 import { Markdown } from "./Markdown";
 import { ToolCall } from "./ToolCall";
 import { UserMessage } from "./UserMessage";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { StickyScrollPre } from "./StickyScrollPre";
+import { SourceView } from "./SourceView";
 import { useDevMode } from "../devMode";
+import viewSourceIcon from "../icons/view-source.svg?raw";
 
 function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
@@ -91,12 +94,48 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
   return {};
 }
 
+/** Wrapper for nested subagent messages — adds a "view source" toggle
+ *  with full Raw/Agnostic tabs (same as top-level messages). */
+function NestedMessageWrapper({
+  msg,
+  tid,
+  children,
+}: {
+  msg: DisplayMessage;
+  tid: number;
+  children: h.JSX.Element;
+}) {
+  const [showSource, setShowSource] = useState(false);
+  const hasSource = msg.rawSource != null;
+  if (!hasSource) return children;
+  return (
+    <div class={`message-wrapper${showSource ? " show-source" : ""}`}>
+      <div class="message-actions">
+        <button
+          class="msg-action-btn view-source-btn"
+          onClick={() => {
+            setShowSource(!showSource);
+          }}
+          title="View source"
+        >
+          <span
+            class="action-icon"
+            dangerouslySetInnerHTML={{ __html: viewSourceIcon }}
+          />
+        </button>
+      </div>
+      {showSource ? <SourceView msg={msg} tid={tid} /> : children}
+    </div>
+  );
+}
+
 interface Props {
   message: DisplayMessage;
   resolvedBlocks: Block[];
   resolvedBlocksByMsg?: Map<string, Block[]>;
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
+  sessionId?: number;
 }
 
 export const AssistantMessage = memo(
@@ -106,6 +145,7 @@ export const AssistantMessage = memo(
     resolvedBlocksByMsg,
     childrenByParent,
     onViewFile,
+    sessionId,
   }: Props) {
     const devMode = useDevMode();
     const isStreaming = message.streaming === true;
@@ -228,21 +268,33 @@ export const AssistantMessage = memo(
                         {nested.map((child) => {
                           if (child.type === "assistant") {
                             return (
-                              <AssistantMessage
+                              <NestedMessageWrapper
                                 key={child.id}
-                                message={child}
-                                resolvedBlocks={
-                                  resolvedBlocksByMsg?.get(child.id) ?? []
-                                }
-                                resolvedBlocksByMsg={resolvedBlocksByMsg}
-                                childrenByParent={childrenByParent}
-                                onViewFile={onViewFile}
-                              />
+                                msg={child}
+                                tid={sessionId ?? 0}
+                              >
+                                <AssistantMessage
+                                  message={child}
+                                  resolvedBlocks={
+                                    resolvedBlocksByMsg?.get(child.id) ?? []
+                                  }
+                                  resolvedBlocksByMsg={resolvedBlocksByMsg}
+                                  childrenByParent={childrenByParent}
+                                  onViewFile={onViewFile}
+                                  sessionId={sessionId}
+                                />
+                              </NestedMessageWrapper>
                             );
                           }
                           if (child.type === "user") {
                             return (
-                              <UserMessage key={child.id} message={child} />
+                              <NestedMessageWrapper
+                                key={child.id}
+                                msg={child}
+                                tid={sessionId ?? 0}
+                              >
+                                <UserMessage message={child} />
+                              </NestedMessageWrapper>
                             );
                           }
                           return null;
@@ -315,5 +367,6 @@ export const AssistantMessage = memo(
     shallowArrayEqual(prev.resolvedBlocks, next.resolvedBlocks) &&
     prev.childrenByParent === next.childrenByParent &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
-    prev.onViewFile === next.onViewFile,
+    prev.onViewFile === next.onViewFile &&
+    prev.sessionId === next.sessionId,
 );

@@ -541,6 +541,7 @@ const MessageView = memo(
             resolvedBlocksByMsg={resolvedBlocksByMsg}
             childrenByParent={childrenByParent}
             onViewFile={onViewFile}
+            sessionId={tid}
           />
         );
         break;
