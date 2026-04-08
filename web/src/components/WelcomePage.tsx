@@ -47,6 +47,7 @@ function ActiveSessions({
   attention,
   taskTypes,
   workspaces,
+  getTaskHref,
   onSelectTask,
   collapsed,
   onToggleCollapsed,
@@ -56,6 +57,7 @@ function ActiveSessions({
   attention: Set<number>;
   taskTypes: TypeInfo[];
   workspaces: WorkspaceInfo[];
+  getTaskHref: (id: string) => string;
   onSelectTask: (tid: number) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -110,6 +112,11 @@ function ActiveSessions({
                     if (!isPlainLeftClick(e)) return;
                     e.preventDefault();
                     onSelectTask(t.tid);
+                  }}
+                  onAuxClick={(e: MouseEvent) => {
+                    if (e.button !== 1) return;
+                    e.preventDefault();
+                    openInNewTab(getTaskHref(String(t.tid)));
                   }}
                 >
                   <td class="active-sessions-icon">
@@ -363,6 +370,7 @@ export function WelcomePage({
         attention={attention}
         taskTypes={taskTypes}
         workspaces={workspaces}
+        getTaskHref={getTaskHref}
         onSelectTask={onSelectTask}
         collapsed={collapsed.has("Active Sessions")}
         onToggleCollapsed={() => {
