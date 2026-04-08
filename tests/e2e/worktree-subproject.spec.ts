@@ -101,14 +101,8 @@ function setupMonorepo(workerHome: string, wsRoot: string): {
       "  mono:",
       `    root: ${wsRoot}`,
       "    project_discovery:",
-      "      is_project:",
-      "        equals:",
-      '          - "{{relative_path}}"',
-      "          - monorepo/project",
-      "      recurse_when:",
-      "        less_than:",
-      '          - "{{depth}}"',
-      "          - 3",
+      "      is_project: \"{{ relative_path == 'monorepo/project' }}\"",
+      "      recurse_when: \"{{ depth < 3 }}\"",
     ].join("\n") + "\n",
   );
 

@@ -108,13 +108,13 @@ static:
 	void discover(
 		Parameter!(string, "Workspace root path.") root,
 		Parameter!(string, "Workspace name.") name,
-		Parameter!(string, "is_project expression (JSON).") isProjectJson,
-		Parameter!(string, "recurse_when expression (JSON).") recurseWhenJson,
+		Parameter!(string, "is_project expression (djinja).") isProjectExpr,
+		Parameter!(string, "recurse_when expression (djinja).") recurseWhenExpr,
 		Parameter!(immutable(string)[], "Patterns to exclude.") exclude = null,
 	)
 	{
 		import cydo.discover : runDiscover;
-		runDiscover(root, name, isProjectJson, recurseWhenJson, cast(string[]) exclude);
+		runDiscover(root, name, isProjectExpr, recurseWhenExpr, cast(string[]) exclude);
 	}
 
 	@(`Replay suggestion generation from a debug dump directory.`)
@@ -4600,14 +4600,10 @@ class App : ToolsBackend
 			auto sandbox = resolveSandboxForDiscovery(
 				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
 			auto cmdPrefix = buildCommandPrefix(sandbox, "/");
-			auto isProjectJson = ws.project_discovery.is_project.isConfigured
-				? ws.project_discovery.is_project.toJson().toString()
-				: "";
-			auto recurseWhenJson = ws.project_discovery.recurse_when.isConfigured
-				? ws.project_discovery.recurse_when.toJson().toString()
-				: "";
+			auto isProjectExpr = ws.project_discovery.is_project;
+			auto recurseWhenExpr = ws.project_discovery.recurse_when;
 			auto cmd = (cmdPrefix !is null ? cmdPrefix : []) ~ cydoBinaryPath
-				~ ["discover", ws.root, ws.name, isProjectJson, recurseWhenJson]
+				~ ["discover", ws.root, ws.name, isProjectExpr, recurseWhenExpr]
 				~ ws.exclude;
 
 			typeof(execute(cmd)) result;

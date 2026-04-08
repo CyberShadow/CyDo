@@ -367,10 +367,7 @@ test(
         "  testws:",
         `    root: ${wsRoot}`,
         "    project_discovery:",
-        "      is_project:",
-        "        or:",
-        "          - has_entry: .git",
-        "          - has_file: CLAUDE.md",
+        "      is_project: \"{{ has_entry('.git') or has_file('CLAUDE.md') }}\"",
       ].join("\n") + "\n",
     );
 
@@ -426,9 +423,8 @@ test(
         "  mono:",
         `    root: ${wsRoot}`,
         "    project_discovery:",
-        "      is_project:",
-        "        has_entry: .git",
-        "      recurse_when: true",
+        "      is_project: \"{{ has_entry('.git') }}\"",
+        "      recurse_when: \"{{ true }}\"",
       ].join("\n") + "\n",
     );
 
@@ -480,10 +476,7 @@ test(
         "  work:",
         `    root: ${wsRoot}`,
         "    project_discovery:",
-        "      is_project:",
-        "        or:",
-        '          - equals: ["{{relative_path}}", alpha]',
-        '          - equals: ["{{relative_path}}", gamma]',
+        "      is_project: \"{{ relative_path == 'alpha' or relative_path == 'gamma' }}\"",
       ].join("\n") + "\n",
     );
 
@@ -538,10 +531,8 @@ test(
         "  deep:",
         `    root: ${wsRoot}`,
         "    project_discovery:",
-        "      is_project:",
-        "        has_entry: .git",
-        "      recurse_when:",
-        '        less_than: ["{{depth}}", 2]',
+        "      is_project: \"{{ has_entry('.git') }}\"",
+        "      recurse_when: \"{{ depth < 2 }}\"",
       ].join("\n") + "\n",
     );
 
@@ -563,10 +554,8 @@ test(
           "  deep:",
           `    root: ${wsRoot}`,
           "    project_discovery:",
-          "      is_project:",
-          "        has_entry: .git",
-          "      recurse_when:",
-          '        less_than: ["{{depth}}", 4]',
+          "      is_project: \"{{ has_entry('.git') }}\"",
+          "      recurse_when: \"{{ depth < 4 }}\"",
         ].join("\n") + "\n",
       );
 

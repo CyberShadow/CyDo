@@ -5,7 +5,7 @@ import configy.read : parseConfigFileSimple;
 
 import std.typecons : Nullable;
 
-import cydo.discover : DiscoverExpr, ProjectDiscoveryConfig;
+import cydo.discover : ProjectDiscoveryConfig;
 
 enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
 
