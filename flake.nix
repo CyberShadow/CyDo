@@ -10,6 +10,28 @@
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
       pkgsFor = system: import nixpkgs {
         inherit system;
+        overlays = [(final: prev: {
+          claude-code = prev.claude-code.overrideAttrs (old: rec {
+            version = "2.1.97";
+            src = prev.fetchzip {
+              url = "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-${version}.tgz";
+              hash = "sha256-J92ILqBJmXyAueUPZ+HYZY0ls3OfN2EAhFyQHTOQF5A=";
+            };
+            npmDeps = prev.fetchNpmDeps {
+              name = "claude-code-${version}-npm-deps";
+              inherit src;
+              postPatch = ''
+                cp ${./nix/claude-code-package-lock.json} package-lock.json
+              '';
+              hash = "sha256-mCyWIb4RRoOuHUzrxFxvkL9oYTjzWihDO5uu7jOrBI8=";
+            };
+            postPatch = ''
+              cp ${./nix/claude-code-package-lock.json} package-lock.json
+              substituteInPlace cli.js \
+                    --replace-fail '#!/bin/sh' '#!/usr/bin/env sh'
+            '';
+          });
+        })];
         config = {
           allowUnfree = true;
           permittedInsecurePackages = [ "openssl-1.1.1w" ];
