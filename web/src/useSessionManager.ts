@@ -954,6 +954,29 @@ export function useTaskManager(
             };
           }
           liveStates.set(entry.tid, taskUpdated);
+          // Auto-navigate away from dying sub-tasks immediately on
+          // task_updated, rather than waiting for the delayed process/exit
+          // event. This closes a race window where the user could send
+          // messages to the wrong (dead) task.
+          if (
+            existing &&
+            existing.alive &&
+            !entry.alive &&
+            taskUpdated.parentTid &&
+            taskUpdated.relationType !== "fork" &&
+            activeTaskIdRef.current === String(entry.tid)
+          ) {
+            let targetTid = taskUpdated.parentTid;
+            while (targetTid) {
+              const t = liveStates.get(targetTid);
+              if (!t || !t.parentTid || t.alive) break;
+              targetTid = t.parentTid;
+            }
+            const target = liveStates.get(targetTid);
+            if (target) {
+              setActiveTaskId(String(targetTid));
+            }
+          }
           setTasks((prev) => {
             const next = new Map(prev);
             next.set(entry.tid, taskUpdated);
