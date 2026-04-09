@@ -586,6 +586,7 @@ export function useTaskManager(
     if (
       msg.type === "process/exit" &&
       !msg.is_continuation &&
+      prev.alive &&
       prev.parentTid &&
       prev.relationType !== "fork" &&
       activeTaskIdRef.current === String(tid)
