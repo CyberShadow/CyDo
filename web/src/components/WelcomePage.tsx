@@ -212,21 +212,38 @@ export function WelcomePage({
       }
     }
 
-    // Group tasks by wsName:projectPath key; a task can appear in multiple workspaces
+    // Group tasks by wsName:projectPath key.
+    // Tasks with a stored workspace are pinned to that workspace.
+    // Tasks without (importable/legacy) appear in all matching workspaces.
     const tasksByProject = new Map<string, TaskState[]>();
     for (const t of tasks.values()) {
       if (t.parentTid) continue;
-      const matches = t.projectPath
-        ? pathToProjects.get(t.projectPath)
-        : undefined;
-      if (matches && matches.length > 0) {
-        for (const m of matches) {
-          const key = `${m.wsName}:${m.project.path}`;
-          const list = tasksByProject.get(key);
-          if (list) list.push(t);
-          else tasksByProject.set(key, [t]);
+
+      let placed = false;
+
+      if (t.workspace && t.projectPath) {
+        // Task has a definitive workspace — pin to it
+        const key = `${t.workspace}:${t.projectPath}`;
+        const list = tasksByProject.get(key);
+        if (list) list.push(t);
+        else tasksByProject.set(key, [t]);
+        placed = true;
+      } else if (t.projectPath) {
+        // No workspace — resolve from project lists (may appear in multiple)
+        const matches = pathToProjects.get(t.projectPath);
+        if (matches && matches.length > 0) {
+          for (const m of matches) {
+            const key = `${m.wsName}:${m.project.path}`;
+            const list = tasksByProject.get(key);
+            if (list) list.push(t);
+            else tasksByProject.set(key, [t]);
+          }
+          placed = true;
         }
-      } else {
+      }
+
+      if (!placed) {
+        // Ungrouped
         const key = ":";
         const list = tasksByProject.get(key);
         if (list) list.push(t);
