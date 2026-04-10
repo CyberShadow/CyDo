@@ -1150,6 +1150,10 @@ export function useTaskManager(
           const { tid, uuids } = msg;
           const t = liveStates.get(tid);
           if (!t) break;
+          // Skip update if all UUIDs are already present — avoids
+          // creating a new TaskState reference that would break memo
+          // equality for MessageView components.
+          if (uuids.every((u: string) => t.forkableUuids.has(u))) break;
           const merged = new Set(t.forkableUuids);
           for (const u of uuids) merged.add(u);
           const updated = { ...t, forkableUuids: merged };
