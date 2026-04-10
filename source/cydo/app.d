@@ -626,8 +626,32 @@ class App : ToolsBackend
 		return true;
 	}
 
+	private static immutable pwaPublicFiles = [
+		"manifest.json",
+		"icon-192.png",
+		"icon-512.png",
+		"apple-touch-icon.png",
+		"favicon.svg",
+	];
+
 	private void handleRequest(HttpRequest request, HttpServerConnection conn)
 	{
+		// Serve PWA manifest and icons without auth — browsers fetch these
+		// without credentials and need them for Add to Home Screen.
+		auto resource = request.resource.length > 1 ? request.resource[1 .. $] : "";
+		foreach (pub; pwaPublicFiles)
+		{
+			if (resource == pub)
+			{
+				auto response = new HttpResponseEx();
+				response.serveFile(pub, "web/dist/");
+				if (pub == "manifest.json")
+					response.headers["Content-Type"] = "application/manifest+json";
+				conn.sendResponse(response);
+				return;
+			}
+		}
+
 		if (!checkAuth(request, conn))
 			return;
 
