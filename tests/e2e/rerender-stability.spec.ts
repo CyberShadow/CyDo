@@ -58,6 +58,13 @@ test("completed messages are not recreated when new messages arrive", async ({ p
     page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
   ).toBeVisible({ timeout });
   await expect(page.locator(".assistant-message.streaming")).toHaveCount(0, { timeout });
+  // Wait for forkable_uuids control message to arrive — under heavy CPU
+  // load, this can arrive in a separate render cycle after the turn completes,
+  // changing the `forkable` prop and causing spurious memo-breaking re-renders.
+  // The fork button is rendered (though hidden) for forkable messages.
+  await expect(
+    page.locator("[style*='display: contents'] .fork-btn"),
+  ).not.toHaveCount(0, { timeout: 5_000 });
 
   // Verify hook is working
   const totalCalls = await page.evaluate(
