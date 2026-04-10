@@ -3151,7 +3151,8 @@ class App : ToolsBackend
 					{
 						td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 						td.session.closeStdin();
-						td.session.killAfterTimeout(5.seconds);
+						if (td.pendingContinuation.length == 0 && !hasOnYield)
+							td.session.killAfterTimeout(5.seconds);
 					}
 				}
 				else

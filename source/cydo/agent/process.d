@@ -39,6 +39,7 @@ class AgentProcess
 	private TimerTask stderrDrainTimer;
 	private TimerTask killTimer;
 	private TimerTask killForcedTimer;
+	private TimerTask killStdoutDrainTimer;
 	private bool waitForPipeDrain;
 
 	void delegate(string line) onStdoutLine;
@@ -194,6 +195,11 @@ class AgentProcess
 				killForcedTimer.cancel();
 				killForcedTimer = null;
 			}
+			if (killStdoutDrainTimer !is null)
+			{
+				killStdoutDrainTimer.cancel();
+				killStdoutDrainTimer = null;
+			}
 			if (onExit)
 				onExit(exitStatus);
 		}
@@ -279,6 +285,21 @@ class AgentProcess
 				if (exitFired)
 					return;
 				sendSignal(SIGKILL);
+				import core.time : msecs;
+				killStdoutDrainTimer = setTimeout({
+					killStdoutDrainTimer = null;
+					if (exitFired)
+						return;
+					if (stdoutLines !is null)
+					{
+						auto lines = stdoutLines;
+						stdoutLines = null;
+						lines.disconnect("kill stdout drain timeout");
+					}
+					stdoutEOF = true;
+					stderrEOF = true;
+					tryFireExit();
+				}, 500.msecs);
 			}, 2.seconds);
 		}, timeout);
 	}
