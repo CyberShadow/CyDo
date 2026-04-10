@@ -430,11 +430,6 @@ export function WelcomePage({
                           href={getProjectHref(ws.name, proj.name)}
                           class="project-card-title"
                           title={proj.name}
-                          onClick={(e: MouseEvent) => {
-                            if (!isPlainLeftClick(e)) return;
-                            e.preventDefault();
-                            onNavigateToProject(ws.name, proj.name);
-                          }}
                         >
                           {(() => {
                             const slash = proj.name.lastIndexOf("/");
@@ -482,11 +477,6 @@ export function WelcomePage({
                               class={`sidebar-item${
                                 attention.has(t.tid) ? " attention" : ""
                               }`}
-                              onClick={(e: MouseEvent) => {
-                                if (!isPlainLeftClick(e)) return;
-                                e.preventDefault();
-                                onSelectTask(t.tid);
-                              }}
                             >
                               {attention.has(t.tid) ? (
                                 <span class="task-type-icon task-type-icon-check alive" />
@@ -536,11 +526,6 @@ export function WelcomePage({
                       class={`sidebar-item${
                         attention.has(t.tid) ? " attention" : ""
                       }`}
-                      onClick={(e: MouseEvent) => {
-                        if (!isPlainLeftClick(e)) return;
-                        e.preventDefault();
-                        onSelectTask(t.tid);
-                      }}
                     >
                       {attention.has(t.tid) ? (
                         <span class="task-type-icon task-type-icon-check alive" />

@@ -125,8 +125,6 @@ export function SearchPopup({
                 }`}
                 onClick={(e: MouseEvent) => {
                   if (!isPlainLeftClick(e)) return;
-                  e.preventDefault();
-                  onSelect(t.tid);
                   onClose();
                 }}
                 onMouseEnter={() => {

@@ -424,7 +424,6 @@ const SidebarItem = memo(function SidebarItem({
         data-tid={id}
         onClick={(e: MouseEvent) => {
           if (!isPlainLeftClick(e)) return;
-          e.preventDefault();
           onSelect(id);
         }}
       >
@@ -455,7 +454,6 @@ const SidebarItem = memo(function SidebarItem({
           return;
         }
         if (!isPlainLeftClick(e)) return;
-        e.preventDefault();
         onSelect(id);
       }}
     >
@@ -594,16 +592,7 @@ export const Sidebar = memo(function Sidebar({
       <div class="sidebar-header">
         <div class="sidebar-header-left">
           {showBackButton && onBack && backHref && (
-            <a
-              href={backHref}
-              class="sidebar-back-btn"
-              onClick={(e: MouseEvent) => {
-                if (!isPlainLeftClick(e)) return;
-                e.preventDefault();
-                onBack();
-              }}
-              title="Home"
-            >
+            <a href={backHref} class="sidebar-back-btn" title="Home">
               <span
                 class="action-icon"
                 dangerouslySetInnerHTML={{ __html: cydoIcon }}
@@ -618,7 +607,6 @@ export const Sidebar = memo(function Sidebar({
             title={projectName || "Tasks"}
             onClick={(e: MouseEvent) => {
               if (!isPlainLeftClick(e)) return;
-              e.preventDefault();
               onNewTask();
             }}
           >
@@ -690,7 +678,6 @@ export const Sidebar = memo(function Sidebar({
           title="New Task (Ctrl+Shift+O)"
           onClick={(e: MouseEvent) => {
             if (!isPlainLeftClick(e)) return;
-            e.preventDefault();
             onNewTask();
           }}
         >

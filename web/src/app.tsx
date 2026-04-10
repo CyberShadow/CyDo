@@ -305,18 +305,13 @@ function AppContent() {
     [createDraftTask],
   );
 
-  const handleSidebarSelect = useCallback(
-    (tid: string) => {
-      setActiveTaskId(tid);
-      setSidebarOpen(false);
-    },
-    [setActiveTaskId],
-  );
+  const handleSidebarSelect = useCallback(() => {
+    setSidebarOpen(false);
+  }, []);
 
   const handleSidebarNewTask = useCallback(() => {
-    handleNewTask();
     setSidebarOpen(false);
-  }, [handleNewTask]);
+  }, []);
 
   const hasDraftView = activeTaskId === null && draftRenderKey !== null;
 
