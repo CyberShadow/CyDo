@@ -244,6 +244,10 @@ export function matchPattern(userText) {
   if (match)
     return { type: "tool_call", name: "read_file", input: { path: match[1] } };
 
+  // "run orphan then switchmode" — timed bash (sleep 999) followed by switchmode
+  if (/run orphan then switchmode/i.test(userText))
+    return { type: "orphan_then_switchmode" };
+
   // "call switchmode <continuation>" → MCP SwitchMode tool call
   match = userText.match(/call switchmode (\S+)/i);
   if (match)

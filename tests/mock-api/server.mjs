@@ -602,6 +602,25 @@ function hasToolResult(messages) {
   return false;
 }
 
+// Find the original (first) user text in the conversation — used to detect
+// multi-step sequences when the last user message is a tool_result.
+function findOriginalUserText(messages) {
+  for (const msg of messages) {
+    if (msg.role !== "user") continue;
+    if (typeof msg.content === "string") return msg.content;
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (
+          block.type === "text" &&
+          !block.text.trimStart().startsWith("<system-reminder>")
+        )
+          return block.text;
+      }
+    }
+  }
+  return null;
+}
+
 function handleMessages(req, res) {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
@@ -633,8 +652,20 @@ function handleMessages(req, res) {
       Connection: "keep-alive",
     });
 
-    // If last message contains tool_result, respond with "Done."
+    // If last message contains tool_result, check for multi-step sequences
+    // before defaulting to "Done."
     if (isToolResult) {
+      const origText = findOriginalUserText(messages);
+      if (origText && /run orphan then switchmode/i.test(origText)) {
+        // Step 2: after the timed Bash command completes, call SwitchMode.
+        // Only do this on the first tool_result (3 messages: user, assistant/bash, user/result).
+        // Subsequent tool_results (from SwitchMode rejection etc.) get "Done."
+        // so Claude can yield its turn and attempt to exit.
+        if (messages.length <= 3) {
+          streamToolUseResponse(res, "mcp__cydo__SwitchMode", { continuation: "plan" }, model);
+          return;
+        }
+      }
       streamTextResponse(res, "Done.", model);
       return;
     }
@@ -681,6 +712,15 @@ function handleMessages(req, res) {
         description: "Running command",
       }));
       streamMultiToolUseResponse(res, toolNames, inputs, model);
+    } else if (intent.type === "orphan_then_switchmode") {
+      // Step 1: run sleep 999 with a short timeout — the timeout causes Claude
+      // to background the sleep, then the tool_result triggers step 2 (SwitchMode).
+      streamToolUseResponse(
+        res,
+        "Bash",
+        { command: "sleep 999", timeout: 2000, description: "Running command" },
+        model,
+      );
     } else if (intent.type === "timed_shell") {
       streamToolUseResponse(
         res,

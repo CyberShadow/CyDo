@@ -3194,8 +3194,7 @@ class App : ToolsBackend
 					{
 						td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 						td.session.closeStdin();
-						if (td.pendingContinuation.length == 0 && !hasOnYield)
-							td.session.killAfterTimeout(5.seconds);
+						td.session.killAfterTimeout(5.seconds);
 					}
 				}
 				else
@@ -3239,12 +3238,16 @@ class App : ToolsBackend
 				tid, exitCode, tid in tasks ? tasks[tid].status : "(gone)");
 			ProcessExitEvent ev;
 			ev.code = exitCode;
-			// Treat explicit user kill as non-clean exit for on_yield purposes.
-			// Claude Code may exit with code 0 on SIGTERM, but killing should never trigger on_yield.
-			auto cleanExit = exitCode == 0 && !tasks[tid].wasKilledByUser;
-			auto onYieldDef = (cleanExit && tasks[tid].pendingContinuation.length == 0)
+			// Compute hasOnYield from task type alone — independent of exit code,
+			// since killAfterTimeout may produce non-zero exits for valid continuations.
+			auto onYieldDef = (tasks[tid].pendingContinuation.length == 0)
 				? getTaskTypes().byName(tasks[tid].taskType) : null;
 			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
+			// Treat intentional kills as clean when there's a pending continuation
+			// or on_yield — we know we killed the process via killAfterTimeout.
+			// Explicit user kills are never clean regardless.
+			auto cleanExit = (exitCode == 0 || tasks[tid].pendingContinuation.length > 0 || hasOnYield)
+				&& !tasks[tid].wasKilledByUser;
 			if (cleanExit && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
 				ev.is_continuation = true;
 			// Suppress auto-navigation when yield enforcement is active:
@@ -3350,7 +3353,7 @@ class App : ToolsBackend
 			}
 
 			// on_yield: auto-continuation on clean exit without explicit SwitchMode/Handoff
-			if (hasOnYield)
+			if (hasOnYield && cleanExit)
 			{
 				infof("on_yield: tid=%d type=%s → %s",
 					tid, tasks[tid].taskType, onYieldDef.on_yield.task_type);
