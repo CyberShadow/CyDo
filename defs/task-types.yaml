@@ -536,7 +536,7 @@ task_types:
       smaller sub-tasks that are each executed recursively.
     model_class: large
     read_only: true
-    output_type: [report]
+    output_type: []
     creatable_tasks:
       execute:
         task_type: triage
