@@ -255,11 +255,15 @@ class App : ToolsBackend
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent; // default agent
 	private Agent[string] agentsByType;
-	// Task type definitions loaded from YAML
-	private TaskTypeDef[] taskTypesCache;
-	private UserEntryPointDef[] entryPointsCache;
-	private bool[string] reachesWorktreeCache;
-	private bool[string] treeReadOnlyCache;
+	// Task type definitions loaded from YAML, cached per project path ("" = global)
+	private struct ProjectTypeCache
+	{
+		TaskTypeDef[] types;
+		UserEntryPointDef[] entryPoints;
+		bool[string] reachesWorktree;
+		bool[string] treeReadOnly;
+	}
+	private ProjectTypeCache[string] taskTypesByProject;
 	private enum taskTypesDir = "defs";
 	private enum taskTypesPath = "defs/task-types.yaml";
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
@@ -318,32 +322,84 @@ class App : ToolsBackend
 		bool hasMessages = true; // false for ghost sessions (no user messages)
 	}
 
-	private TaskTypeDef[] getTaskTypes()
+	private string[] promptSearchPath(string projectPath)
+	{
+		import std.path : buildPath, expandTilde;
+		string[] dirs;
+		if (projectPath.length > 0)
+			dirs ~= buildPath(projectPath, ".cydo/defs");
+		dirs ~= buildPath(expandTilde("~/.config/cydo"), "defs");
+		dirs ~= taskTypesDir;
+		return dirs;
+	}
+
+	private TaskTypeDef[] getTaskTypesForProject(string projectPath)
 	{
 		import std.path : buildPath, expandTilde;
 		try
 		{
 			auto userTypesPath = buildPath(expandTilde("~/.config/cydo"), "task-types.yaml");
-			auto config = loadTaskTypes(taskTypesPath, userTypesPath);
-			auto errors = validateTaskTypes(config.types, config.entryPoints, taskTypesDir);
+			auto projectTypesPath = projectPath.length > 0
+				? buildPath(projectPath, ".cydo/task-types.yaml") : "";
+			auto config = loadTaskTypes(taskTypesPath, userTypesPath, projectTypesPath);
+			auto errors = validateTaskTypes(config.types, config.entryPoints, promptSearchPath(projectPath));
 			foreach (e; errors)
 				warningf("task type: %s", e);
-			taskTypesCache = config.types;
-			entryPointsCache = config.entryPoints;
-			reachesWorktreeCache = computeReachesWorktree(config.types);
-			treeReadOnlyCache = computeTreeReadOnly(config.types);
-			return taskTypesCache;
+			taskTypesByProject[projectPath] = ProjectTypeCache(
+				config.types,
+				config.entryPoints,
+				computeReachesWorktree(config.types),
+				computeTreeReadOnly(config.types),
+			);
+			return taskTypesByProject[projectPath].types;
 		}
 		catch (Exception e)
 		{
 			warningf("task types file changed but failed to parse, keeping previous version: %s", e.msg);
-			return taskTypesCache;
+			if (auto p = projectPath in taskTypesByProject)
+				return p.types;
+			return null;
 		}
+	}
+
+	private UserEntryPointDef[] getEntryPointsForProject(string projectPath)
+	{
+		if (auto p = projectPath in taskTypesByProject)
+			return p.entryPoints;
+		getTaskTypesForProject(projectPath);
+		if (auto p = projectPath in taskTypesByProject)
+			return p.entryPoints;
+		return null;
+	}
+
+	private TaskTypeDef[] getTaskTypes()
+	{
+		return getTaskTypesForProject("");
 	}
 
 	private UserEntryPointDef[] getEntryPoints()
 	{
-		return entryPointsCache;
+		return getEntryPointsForProject("");
+	}
+
+	private bool[string] reachesWorktreeFor(string projectPath)
+	{
+		if (projectPath.length > 0)
+			if (auto p = projectPath in taskTypesByProject)
+				return p.reachesWorktree;
+		if (auto p = "" in taskTypesByProject)
+			return p.reachesWorktree;
+		return null;
+	}
+
+	private bool[string] treeReadOnlyFor(string projectPath)
+	{
+		if (projectPath.length > 0)
+			if (auto p = projectPath in taskTypesByProject)
+				return p.treeReadOnly;
+		if (auto p = "" in taskTypesByProject)
+			return p.treeReadOnly;
+		return null;
 	}
 
 	void start()
@@ -943,7 +999,7 @@ class App : ToolsBackend
 			return resolve(structuredTaskError("Calling task not found"));
 
 		// Validate task_type against parent's creatable_tasks and resolve alias
-		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
+		auto parentTypeDef = getTaskTypesForProject(parentTd.projectPath).byName(parentTd.taskType);
 		string resolvedTaskType = taskType;
 		if (parentTypeDef !is null &&
 			parentTypeDef.creatable_tasks.length > 0)
@@ -960,7 +1016,7 @@ class App : ToolsBackend
 		}
 
 		// Validate child task type exists
-		auto childTypeDef = getTaskTypes().byName(resolvedTaskType);
+		auto childTypeDef = getTaskTypesForProject(parentTd.projectPath).byName(resolvedTaskType);
 		if (childTypeDef is null)
 			return resolve(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
 
@@ -1010,7 +1066,7 @@ class App : ToolsBackend
 		}
 
 		// Configure and spawn child agent
-		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
+		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
 		auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)], null, subtaskMeta);
@@ -1041,7 +1097,7 @@ class App : ToolsBackend
 		if (parentTd is null)
 			return false;
 
-		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
+		auto parentTypeDef = getTaskTypesForProject(parentTd.projectPath).byName(parentTd.taskType);
 		WorktreeMode edgeMode = WorktreeMode.fork;
 		string resolvedType = taskType;
 		if (parentTypeDef !is null)
@@ -1054,7 +1110,8 @@ class App : ToolsBackend
 		if (edgeMode == WorktreeMode.fork)
 			return false;
 
-		auto childRO = resolvedType in treeReadOnlyCache;
+		auto treeReadOnly = treeReadOnlyFor(parentTd.projectPath);
+		auto childRO = resolvedType in treeReadOnly;
 		return childRO is null || !(*childRO);
 	}
 
@@ -1176,7 +1233,7 @@ class App : ToolsBackend
 		if (td is null)
 			return McpResult("Calling task not found", true);
 
-		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		if (typeDef is null)
 			return McpResult("Unknown task type: " ~ td.taskType, true);
 
@@ -1218,7 +1275,7 @@ class App : ToolsBackend
 		if (td is null)
 			return McpResult("Calling task not found", true);
 
-		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		if (typeDef is null)
 			return McpResult("Unknown task type: " ~ td.taskType, true);
 
@@ -1263,9 +1320,9 @@ class App : ToolsBackend
 
 		// Gate: only types in the interactive cluster (reachable from entry points
 		// via keep_context continuations).
-		auto taskTypes = getTaskTypes();
+		auto taskTypes = getTaskTypesForProject(tdp.projectPath);
 		auto typeDef = taskTypes.byName(tdp.taskType);
-		if (typeDef is null || !taskTypes.isInteractive(getEntryPoints(), tdp.taskType))
+		if (typeDef is null || !taskTypes.isInteractive(getEntryPointsForProject(tdp.projectPath), tdp.taskType))
 			return resolve(McpResult(
 				"AskUserQuestion is only available for interactive tasks. "
 				~ "This task type (" ~ tdp.taskType ~ ") is not interactive.", true));
@@ -1808,6 +1865,7 @@ class App : ToolsBackend
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
 			case "set_entry_point":  handleSetEntryPointMsg(json); break;
 			case "set_agent_type":   handleSetAgentTypeMsg(json); break;
+			case "request_task_types": handleRequestTaskTypesMsg(ws, json); break;
 			default: break;
 		}
 	}
@@ -1818,7 +1876,7 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks) return;
 		if (tasks[tid].alive) return; // can't change type of a running task
 		if (json.task_type.length == 0) return;
-		if (getTaskTypes().byName(json.task_type) is null) return;
+		if (getTaskTypesForProject(tasks[tid].projectPath).byName(json.task_type) is null) return;
 		tasks[tid].entryPoint = "";
 		persistence.setEntryPoint(tid, "");
 		tasks[tid].taskType = json.task_type;
@@ -1832,7 +1890,7 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks) return;
 		if (tasks[tid].alive) return; // can't change type of a running task
 		if (json.entry_point.length == 0) return;
-		auto ep = getEntryPoints().byName(json.entry_point);
+		auto ep = getEntryPointsForProject(tasks[tid].projectPath).byName(json.entry_point);
 		if (ep is null) return;
 		auto td = &tasks[tid];
 		td.entryPoint = json.entry_point;
@@ -1863,7 +1921,7 @@ class App : ToolsBackend
 		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
 		// Top-level user task creation must always come through a concrete entry point.
 		// Internal tasks (subtasks, continuations, imports) are created through other paths.
-		auto entryPoints = getEntryPoints();
+		auto entryPoints = getEntryPointsForProject(json.project_path);
 		if (json.entry_point.length == 0)
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
@@ -1879,8 +1937,8 @@ class App : ToolsBackend
 		}
 		auto epTemplate = ep.prompt_template;
 		auto tid = createTask(json.workspace, json.project_path, at, json.entry_point);
-		// Call getTaskTypes() after getEntryPoints() so the cache is populated.
-		auto taskTypes = getTaskTypes();
+		// Call getTaskTypesForProject() after getEntryPointsForProject() so the cache is populated.
+		auto taskTypes = getTaskTypesForProject(json.project_path);
 		tasks[tid].entryPoint = json.entry_point;
 		persistence.setEntryPoint(tid, json.entry_point);
 		tasks[tid].taskType = ep.resolvedType;
@@ -1907,7 +1965,7 @@ class App : ToolsBackend
 			{
 				import std.algorithm : filter;
 				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir, td.outputPath, epTemplate);
+				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
@@ -2228,7 +2286,7 @@ class App : ToolsBackend
 		if (td.description.length == 0)
 		{
 			materializePendingTask(tid);
-			auto typeDef = getTaskTypes().byName(td.taskType);
+			auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 			if (typeDef !is null)
 			{
 				import std.algorithm : filter;
@@ -2236,11 +2294,11 @@ class App : ToolsBackend
 				string entryPointTemplate;
 				if (td.entryPoint.length > 0)
 				{
-					auto ep = getEntryPoints().byName(td.entryPoint);
+					auto ep = getEntryPointsForProject(td.projectPath).byName(td.entryPoint);
 					if (ep !is null)
 						entryPointTemplate = ep.prompt_template;
 				}
-				auto rendered = renderPrompt(*typeDef, textContent, taskTypesDir,
+				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath),
 					td.outputPath, entryPointTemplate);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
@@ -2547,7 +2605,7 @@ class App : ToolsBackend
 			tasks[childTid] = move(newTd);
 
 			auto childAgent = agentForTask(childTid);
-			auto childTypeDef = getTaskTypes().byName(tasks[childTid].taskType);
+			auto childTypeDef = getTaskTypesForProject(tasks[childTid].projectPath).byName(tasks[childTid].taskType);
 			auto launch = prepareTaskSessionLaunch(childTid, childAgent, childTypeDef);
 
 			import std.file : exists, remove;
@@ -3018,7 +3076,7 @@ class App : ToolsBackend
 		if (td.entryPoint.length == 0)
 			return;
 
-		auto ep = getEntryPoints().byName(td.entryPoint);
+		auto ep = getEntryPointsForProject(td.projectPath).byName(td.entryPoint);
 		if (ep is null)
 			return;
 		if (td.worktreeTid > 0 || ep.worktree == WorktreeMode.inherit)
@@ -3135,11 +3193,12 @@ class App : ToolsBackend
 		if (typeDef !is null)
 		{
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
-			sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef, taskTypesDir, td.outputPath);
+			sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), td.outputPath);
 		}
-		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(getTaskTypes(), td.taskType);
-		sessionConfig.switchModes = formatSwitchModes(getTaskTypes(), td.taskType);
-		sessionConfig.handoffs = formatHandoffs(getTaskTypes(), td.taskType);
+		auto taskTypes = getTaskTypesForProject(td.projectPath);
+		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
+		sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
+		sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
 		sessionConfig.mcpSocketPath = mcpSocketPath;
 
 		auto workDir = td.repoPath.length > 0 ? td.repoPath : null;
@@ -3205,8 +3264,9 @@ class App : ToolsBackend
 		// Git dirs writable for types that can reach a worktree: they may need
 		// to cherry-pick or merge results from child worktrees. Use always_rw
 		// so this survives the read_only downgrade.
-		if (workDir.length > 0 && td.taskType in reachesWorktreeCache
-			&& reachesWorktreeCache[td.taskType])
+		auto reachesWorktree = reachesWorktreeFor(td.projectPath);
+		if (workDir.length > 0 && td.taskType in reachesWorktree
+			&& reachesWorktree[td.taskType])
 		{
 			import std.process : execute;
 			import std.string : strip;
@@ -3245,7 +3305,7 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "SwitchMode";
 		if (sessionConfig.handoffs.length > 0)
 			sessionConfig.includeTools ~= "Handoff";
-		if (getTaskTypes().isInteractive(getEntryPoints(), td.taskType))
+		if (taskTypes.isInteractive(getEntryPointsForProject(td.projectPath), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
 		if (sessionConfig.creatableTaskTypes.length > 0 || td.parentTid > 0)
 		{
@@ -3269,7 +3329,7 @@ class App : ToolsBackend
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
 
-		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td.session = taskAgent.createSession(tid, td.agentSessionId,
 			launch.processLaunch, launch.sessionConfig);
@@ -3307,7 +3367,7 @@ class App : ToolsBackend
 				// Interactive tasks stay open for user input — flag for attention.
 				// Also check taskDeps for post-restart sub-tasks (no promise in pendingSubTasks).
 				// Also close stdin for tasks with on_yield (they auto-continue on exit).
-				auto onYieldTypeDef = getTaskTypes().byName(td.taskType);
+				auto onYieldTypeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
 					|| tid in taskDeps || hasOnYield)
@@ -3417,7 +3477,7 @@ class App : ToolsBackend
 			// Compute hasOnYield from task type alone — independent of exit code,
 			// since killAfterTimeout may produce non-zero exits for valid continuations.
 			auto onYieldDef = (tasks[tid].pendingContinuation.length == 0)
-				? getTaskTypes().byName(tasks[tid].taskType) : null;
+				? getTaskTypesForProject(tasks[tid].projectPath).byName(tasks[tid].taskType) : null;
 			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
 			// Treat intentional kills as clean when there's a pending continuation
 			// or on_yield — we know we killed the process via killAfterTimeout.
@@ -3697,7 +3757,7 @@ class App : ToolsBackend
 
 		auto td = &tasks[tid];
 
-		auto newTypeDef = getTaskTypes().byName(contDef.task_type);
+		auto newTypeDef = getTaskTypesForProject(td.projectPath).byName(contDef.task_type);
 		if (newTypeDef is null)
 		{
 			errorf("executeContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
@@ -3726,7 +3786,7 @@ class App : ToolsBackend
 
 			// Send the continuation's prompt template as first message to successor.
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
-				"Continue from where you left off.", taskTypesDir,
+				"Continue from where you left off.", promptSearchPath(td.projectPath),
 				["result_text": resultText, "output_dir": td.taskDir]);
 			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
@@ -3781,7 +3841,7 @@ class App : ToolsBackend
 
 			// Spawn the successor agent
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
-				taskTypesDir, childTd.outputPath, contDef.prompt_template,
+				promptSearchPath(childTd.projectPath), childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
 			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
 				["task_description": successorPrompt], "task_description", false);
@@ -3798,7 +3858,7 @@ class App : ToolsBackend
 	private void spawnContinuation(int tid)
 	{
 		auto td = &tasks[tid];
-		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		auto contKey = td.pendingContinuation;
 		auto hPrompt = td.handoffPrompt;
 		td.pendingContinuation = null;
@@ -3966,7 +4026,7 @@ class App : ToolsBackend
 		import std.file : exists;
 
 		auto td = &tasks[tid];
-		auto typeDef = getTaskTypes().byName(td.taskType);
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		if (typeDef is null || typeDef.output_type.length == 0)
 			return null;
 
@@ -5099,19 +5159,20 @@ class App : ToolsBackend
 		enumerateSessions();
 	}
 
-	/// Read a prompt template file from the task types directory and substitute variables.
-	private string readPromptFile(string relativePath, string[string] vars)
+	/// Read a prompt template file from the prompt search path and substitute variables.
+	private string readPromptFile(string relativePath, string projectPath, string[string] vars)
 	{
 		import std.file : exists, readText;
 		import std.path : buildPath;
 
-		auto path = buildPath(taskTypesDir, relativePath);
-		if (!exists(path))
+		foreach (dir; promptSearchPath(projectPath))
 		{
-			warningf("Prompt file not found: %s", path);
-			return "";
+			auto path = buildPath(dir, relativePath);
+			if (exists(path))
+				return substituteVars(readText(path), vars);
 		}
-		return substituteVars(readText(path), vars);
+		warningf("Prompt file not found: %s", relativePath);
+		return "";
 	}
 
 	/// Spawn a lightweight claude process to generate a concise title
@@ -5124,7 +5185,7 @@ class App : ToolsBackend
 			return;
 
 		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
-		auto prompt = readPromptFile("prompts/generate-title.md", ["user_message": msg]);
+		auto prompt = readPromptFile("prompts/generate-title.md", td.projectPath, ["user_message": msg]);
 		if (prompt.length == 0)
 			return;
 
@@ -5230,6 +5291,42 @@ class App : ToolsBackend
 		foreach (ref def; types)
 			typeInfo ~= TypeInfoEntry(def.name, def.icon);
 		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo, config.default_task_type));
+	}
+
+	private string buildTaskTypesListForProject(string projectPath)
+	{
+		import ae.utils.json : toJson;
+
+		auto types = getTaskTypesForProject(projectPath);
+		auto entryPoints = getEntryPointsForProject(projectPath);
+		EntryPointEntry[] eps;
+		foreach (ref ep; entryPoints)
+		{
+			auto typeDef = types.byName(ep.resolvedType);
+			EntryPointEntry entry;
+			entry.name = ep.name;
+			entry.task_type = ep.resolvedType;
+			entry.description = ep.description;
+			if (typeDef !is null)
+			{
+				entry.model_class = typeDef.model_class;
+				entry.read_only = typeDef.read_only;
+				entry.icon = typeDef.icon;
+			}
+			eps ~= entry;
+		}
+		TypeInfoEntry[] typeInfo;
+		foreach (ref def; types)
+			typeInfo ~= TypeInfoEntry(def.name, def.icon);
+		return toJson(ProjectTaskTypesListMessage("project_task_types_list", projectPath, eps, typeInfo));
+	}
+
+	private void handleRequestTaskTypesMsg(WebSocketAdapter ws, WsMessage json)
+	{
+		if (json.project_path.length == 0)
+			ws.send(Data(buildTaskTypesList().representation));
+		else
+			ws.send(Data(buildTaskTypesListForProject(json.project_path).representation));
 	}
 
 	private string buildAgentTypesList()
@@ -5360,7 +5457,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto prompt = readPromptFile("prompts/generate-suggestions.md", ["conversation": history]);
+		auto prompt = readPromptFile("prompts/generate-suggestions.md", td.projectPath, ["conversation": history]);
 		if (prompt.length == 0)
 		{
 			warningf("generateSuggestions[%d]: prompt file not found or empty", tid);

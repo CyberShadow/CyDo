@@ -37,7 +37,6 @@ struct WorkspaceConfig
 	string root;
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
-	@Optional string task_types;
 	@Optional string default_agent_type;
 	@Optional string default_task_type;
 	@Optional string permission_policy; /// Permission policy: "allow", "deny", "ask", or Djinja expression

@@ -262,7 +262,7 @@ private Node deepMerge(Node base, Node overlay)
 // Validator
 // ---------------------------------------------------------------------------
 
-string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string typesDir = "")
+string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string[] typesDirs = null)
 {
 	import std.file : exists;
 	import std.path : buildPath;
@@ -272,10 +272,12 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	/// Check that a prompt_template file exists on disk.
 	void checkTemplateFile(string context, string tmpl)
 	{
-		if (tmpl.length == 0 || typesDir.length == 0)
+		if (tmpl.length == 0 || typesDirs.length == 0)
 			return;
-		if (!exists(buildPath(typesDir, tmpl)))
-			errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
+		foreach (dir; typesDirs)
+			if (exists(buildPath(dir, tmpl)))
+				return;
+		errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
 	}
 
 	/// Validate a single ContinuationDef, returning any errors found.
@@ -1077,7 +1079,7 @@ string substituteVars(string text, string[string] vars)
 
 /// Render a prompt template by reading the template file and substituting
 /// placeholders. Returns the raw description if no template is defined.
-string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
+string renderPrompt(ref TaskTypeDef def, string description, string[] typesDirs,
 	string outputFile = "", string edgeTemplate = "", string[string] extraVars = null)
 {
 	import std.file : exists, readText;
@@ -1087,8 +1089,17 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 	if (templateName.length == 0)
 		return description;
 
-	auto templatePath = buildPath(typesDir, templateName);
-	if (!exists(templatePath))
+	string templatePath;
+	foreach (dir; typesDirs)
+	{
+		auto candidate = buildPath(dir, templateName);
+		if (exists(candidate))
+		{
+			templatePath = candidate;
+			break;
+		}
+	}
+	if (templatePath.length == 0)
 		return description;
 
 	string[string] vars;
@@ -1108,16 +1119,25 @@ string renderPrompt(ref TaskTypeDef def, string description, string typesDir,
 /// Load and render a system prompt template from disk. Returns null if the
 /// type has no system_prompt_template or the file does not exist.
 /// Substitutes {{output_file}}, {{output_dir}}, and {{knowledge_base}}.
-string loadSystemPrompt(ref TaskTypeDef def, string typesDir,
+string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	string outputFile = "", string[string] extraVars = null)
 {
 	import std.file : exists, readText;
 	import std.path : buildPath, dirName;
 
-	if (def.system_prompt_template.length == 0 || typesDir.length == 0)
+	if (def.system_prompt_template.length == 0 || typesDirs.length == 0)
 		return null;
-	auto path = buildPath(typesDir, def.system_prompt_template);
-	if (!exists(path))
+	string path;
+	foreach (dir; typesDirs)
+	{
+		auto candidate = buildPath(dir, def.system_prompt_template);
+		if (exists(candidate))
+		{
+			path = candidate;
+			break;
+		}
+	}
+	if (path.length == 0)
 		return null;
 	string[string] vars;
 	if (def.knowledge_base.length > 0)
@@ -1135,7 +1155,7 @@ string loadSystemPrompt(ref TaskTypeDef def, string typesDir,
 
 /// Render a continuation's prompt template. The continuation must have a
 /// prompt_template set (enforced by validation for keep_context continuations).
-string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string typesDir,
+string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string[] typesDirs,
 	string[string] extraVars = null)
 {
 	import std.file : exists, readText;
@@ -1144,8 +1164,17 @@ string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, st
 	if (contDef.prompt_template.length == 0)
 		return fallback;
 
-	auto templatePath = buildPath(typesDir, contDef.prompt_template);
-	assert(exists(templatePath), "Continuation prompt template not found: " ~ templatePath);
+	string templatePath;
+	foreach (dir; typesDirs)
+	{
+		auto candidate = buildPath(dir, contDef.prompt_template);
+		if (exists(candidate))
+		{
+			templatePath = candidate;
+			break;
+		}
+	}
+	assert(templatePath.length > 0, "Continuation prompt template not found: " ~ contDef.prompt_template);
 
 	auto text = readText(templatePath);
 	if (extraVars.length > 0)
@@ -1400,7 +1429,7 @@ private TaskTypeConfig* loadAndValidate(string path)
 	}
 
 	import std.path : dirName;
-	auto errors = validateTaskTypes(config.types, config.entryPoints, dirName(path));
+	auto errors = validateTaskTypes(config.types, config.entryPoints, [dirName(path)]);
 	if (errors.length > 0)
 	{
 		writeln("=== Validation Errors ===\n");
@@ -1451,7 +1480,7 @@ void runDumpContext(string path, string typeName)
 		return;
 	}
 
-	auto errors = validateTaskTypes(config.types, config.entryPoints, typesDir);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, [typesDir]);
 	if (errors.length > 0)
 	{
 		foreach (e; errors)
@@ -1513,7 +1542,7 @@ void runDumpContext(string path, string typeName)
 	// Rendered prompt
 	writeln("─── Rendered Prompt (with placeholder \"<task description>\") ───");
 	writeln();
-	auto rendered = renderPrompt(def, "<task description>", typesDir);
+	auto rendered = renderPrompt(def, "<task description>", [typesDir]);
 	writeln(rendered);
 	writeln();
 

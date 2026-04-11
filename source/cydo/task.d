@@ -342,6 +342,14 @@ struct TaskTypesListMessage
 	string default_task_type;
 }
 
+struct ProjectTaskTypesListMessage
+{
+	string type = "project_task_types_list";
+	string project_path;
+	EntryPointEntry[] entry_points;
+	TypeInfoEntry[] type_info;
+}
+
 struct AgentTypeListEntry
 {
 	string name;           // "claude", "codex", "copilot"
