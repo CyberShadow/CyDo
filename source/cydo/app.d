@@ -2030,15 +2030,7 @@ class App : ToolsBackend
 				if (op.operation == "enqueue")
 				{
 					hasQueueOps = true;
-					// Claude's JSONL enqueue lines have no content field.
-					// Use the text recorded at send time (pendingSteeringTexts),
-					// falling back to op.content (null) if unavailable.
 					string text = op.content;
-					if (td.pendingSteeringTexts.length > 0)
-					{
-						text = td.pendingSteeringTexts[0];
-						td.pendingSteeringTexts = td.pendingSteeringTexts[1 .. $];
-					}
 					steeringStash ~= text;
 					steeringEnqueueLineNums ~= lineNum;
 					steeringEnqueueRawLines ~= line;
