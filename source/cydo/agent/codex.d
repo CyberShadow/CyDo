@@ -1499,7 +1499,11 @@ class CodexAgent : Agent
 				promise.reject(new Exception(msg));
 			}
 			else
+			{
+				if (stderrText.length > 0)
+					warningf("codex oneshot stderr: %s", stderrText.strip());
 				promise.fulfill(responseText.strip());
+			}
 		};
 
 		void cancel() { proc.killAfterTimeout(0.seconds); }
