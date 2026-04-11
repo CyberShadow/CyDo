@@ -6,6 +6,7 @@ import std.string : representation;
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.sys.data : Data;
 import ae.sys.inotify : INotify;
+import ae.sys.timing : setTimeout, TimerTask;
 
 import cydo.agent.agent : Agent;
 import cydo.inotify : RefCountedINotify;
@@ -21,6 +22,7 @@ struct JsonlTracker
 	private RefCountedINotify.Handle[int] jsonlWatches;
 	private size_t[int] jsonlReadPos;
 	private int[int] jsonlLineCount;
+	private TimerTask[int] jsonlRetryTimers;
 
 	/// Start watching the JSONL file (or directory if file doesn't exist yet).
 	void startJsonlWatch(int tid)
@@ -38,7 +40,23 @@ struct JsonlTracker
 
 		auto jsonlPath = getAgent(tid).historyPath(td.agentSessionId, td.effectiveCwd);
 		if (jsonlPath.length == 0)
+		{
+			// File not discoverable yet (e.g. Codex — JSONL created asynchronously).
+			// Schedule a retry so the watch gets established once the file appears.
+			import core.time : seconds;
+			if (tid !in jsonlRetryTimers)
+				jsonlRetryTimers[tid] = setTimeout({
+					jsonlRetryTimers.remove(tid);
+					startJsonlWatch(tid);
+				}, 2.seconds);
 			return;
+		}
+
+		if (auto t = tid in jsonlRetryTimers)
+		{
+			(*t).cancel();
+			jsonlRetryTimers.remove(tid);
+		}
 
 		if (exists(jsonlPath))
 		{
@@ -119,11 +137,18 @@ struct JsonlTracker
 	{
 		foreach (tid; jsonlWatches.keys)
 			stopJsonlWatch(tid);
+		foreach (tid; jsonlRetryTimers.keys)
+			stopJsonlWatch(tid);
 	}
 
 	/// Stop watching the JSONL file for a task.
 	void stopJsonlWatch(int tid)
 	{
+		if (auto t = tid in jsonlRetryTimers)
+		{
+			(*t).cancel();
+			jsonlRetryTimers.remove(tid);
+		}
 		if (auto h = tid in jsonlWatches)
 		{
 			rcINotify.remove(*h);
