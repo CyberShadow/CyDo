@@ -226,6 +226,12 @@ export function useTaskManager(
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [entryPoints, setEntryPoints] = useState<EntryPointInfo[]>([]);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
+  const [projectEntryPoints, setProjectEntryPoints] = useState<
+    Map<string, EntryPointInfo[]>
+  >(new Map());
+  const [projectTypeInfo, setProjectTypeInfo] = useState<
+    Map<string, TypeInfo[]>
+  >(new Map());
   const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
   const [defaultTaskType, setDefaultTaskType] = useState("");
@@ -624,6 +630,20 @@ export function useTaskManager(
           setEntryPoints(msg.entry_points);
           setTypeInfo(msg.type_info);
           if (msg.default_task_type) setDefaultTaskType(msg.default_task_type);
+          break;
+        }
+        case "project_task_types_list": {
+          const { project_path, entry_points, type_info } = msg;
+          setProjectEntryPoints((prev) => {
+            const next = new Map(prev);
+            next.set(project_path, entry_points);
+            return next;
+          });
+          setProjectTypeInfo((prev) => {
+            const next = new Map(prev);
+            next.set(project_path, type_info);
+            return next;
+          });
           break;
         }
         case "agent_types_list": {
@@ -1418,6 +1438,19 @@ export function useTaskManager(
     }
   }, [connected, activeTaskId, tasks]);
 
+  // Request project-specific task types when the active project changes
+  useEffect(() => {
+    if (!activeWorkspace || !activeProject) return;
+    const projPath = findProjectPath(
+      workspacesRef.current,
+      activeWorkspace,
+      activeProject,
+    );
+    if (projPath) {
+      connRef.current?.requestTaskTypes(projPath);
+    }
+  }, [activeWorkspace, activeProject]);
+
   // True when the active task is a draft loaded from the backend (no renderKey
   // yet).  Used as a dep below so re-adopt runs when the task first appears
   // after page reload (activeTaskId is already set from the URL but liveStates
@@ -1838,6 +1871,36 @@ export function useTaskManager(
     [],
   );
 
+  const resolvedEntryPoints = useMemo(() => {
+    if (activeWorkspace && activeProject) {
+      const projPath = findProjectPath(
+        workspacesRef.current,
+        activeWorkspace,
+        activeProject,
+      );
+      if (projPath) {
+        const projectEps = projectEntryPoints.get(projPath);
+        if (projectEps) return projectEps;
+      }
+    }
+    return entryPoints;
+  }, [activeWorkspace, activeProject, entryPoints, projectEntryPoints]);
+
+  const resolvedTypeInfo = useMemo(() => {
+    if (activeWorkspace && activeProject) {
+      const projPath = findProjectPath(
+        workspacesRef.current,
+        activeWorkspace,
+        activeProject,
+      );
+      if (projPath) {
+        const projectTi = projectTypeInfo.get(projPath);
+        if (projectTi) return projectTi;
+      }
+    }
+    return typeInfo;
+  }, [activeWorkspace, activeProject, typeInfo, projectTypeInfo]);
+
   // Build sidebar task list filtered by active workspace/project and sorted by tid
   const prevSidebarTasksRef = useRef<
     import("./components/Sidebar").SidebarTask[]
@@ -1946,8 +2009,8 @@ export function useTaskManager(
     draftRenderKey,
     sidebarTasks,
     workspaces,
-    entryPoints,
-    typeInfo,
+    entryPoints: resolvedEntryPoints,
+    typeInfo: resolvedTypeInfo,
     agentTypes,
     defaultAgentType,
     defaultTaskType,

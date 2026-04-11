@@ -53,6 +53,7 @@ export class Connection {
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||
+          raw.type === "project_task_types_list" ||
           raw.type === "agent_types_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "error" ||
@@ -222,6 +223,12 @@ export class Connection {
   editMessage(tid: number, uuid: string, content: string) {
     this.send(
       JSON.stringify({ type: "edit_message", tid, after_uuid: uuid, content }),
+    );
+  }
+
+  requestTaskTypes(projectPath: string) {
+    this.send(
+      JSON.stringify({ type: "request_task_types", project_path: projectPath }),
     );
   }
 

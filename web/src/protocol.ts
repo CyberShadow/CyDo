@@ -424,6 +424,22 @@ export interface TaskTypesListMessage {
   }[];
   default_task_type?: string;
 }
+export interface ProjectTaskTypesListMessage {
+  type: "project_task_types_list";
+  project_path: string;
+  entry_points: {
+    name: string;
+    task_type: string;
+    description: string;
+    model_class: string;
+    read_only: boolean;
+    icon?: string;
+  }[];
+  type_info: {
+    name: string;
+    icon?: string;
+  }[];
+}
 export interface AgentTypesListMessage {
   type: "agent_types_list";
   agent_types: {
@@ -516,6 +532,7 @@ export type ControlMessage =
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage
+  | ProjectTaskTypesListMessage
   | AgentTypesListMessage
   | ForkableUuidsMessage
   | ErrorMessage
