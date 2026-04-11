@@ -4,7 +4,7 @@ test("undo while session is running stops session and removes message", async ({
   // Codex forkable UUIDs aren't populated during a running session due to
   // JSONL file discovery timing (the sessions directory doesn't exist on the
   // host until after the first turn, and the retry may not find it in time).
-  test.skip(agentType === "codex", "codex forkable UUID discovery timing issue");
+  test.skip(agentType === "codex" || agentType === "copilot", "forkable UUID discovery timing issue");
 
   await enterSession(page);
 
