@@ -1720,7 +1720,10 @@ function parseCydoTaskResult(content: string): unknown[] | null {
       ? parsed
       : Array.isArray(parsedObj?.tasks)
         ? parsedObj.tasks
-        : null;
+        : // Single-object result (e.g. question from Ask)
+          parsedObj != null
+          ? [parsedObj]
+          : null;
     return arr && arr.length > 0 ? arr : null;
   } catch {
     return null;
@@ -1734,12 +1737,20 @@ function formatCydoTaskResultItem(item: Record<string, unknown>): {
   const text =
     typeof item.error === "string"
       ? item.error
-      : typeof item.summary === "string"
-        ? item.summary
-        : typeof item.result === "string"
-          ? item.result
-          : null;
-  const { error: _error, summary, result: _result, ...rest } = item;
+      : typeof item.question === "string"
+        ? item.question
+        : typeof item.summary === "string"
+          ? item.summary
+          : typeof item.result === "string"
+            ? item.result
+            : null;
+  const {
+    error: _error,
+    question: _question,
+    summary,
+    result: _result,
+    ...rest
+  } = item;
   return { fields: rest, text };
 }
 
@@ -2692,7 +2703,7 @@ export const ToolCall = memo(
           : null;
     const resultText = result ? extractResultText(result.content) : null;
     const cydoTaskItems =
-      (name === "Task" || name === "Ask") &&
+      (name === "Task" || name === "Ask" || name === "Answer") &&
       toolServer === "cydo" &&
       resultText != null &&
       !result!.isError
