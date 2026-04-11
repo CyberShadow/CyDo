@@ -1837,7 +1837,7 @@ export function useTaskManager(
         title:
           t.title ||
           (t.status === "pending" && t.messages.length === 0 && t.serverDraft
-            ? t.serverDraft.trim().split("\n")[0]?.slice(0, 100)
+            ? t.serverDraft.replace(/\s+/g, " ").trim().slice(0, 100)
             : undefined),
         parentTid: t.parentTid,
         relationType: t.relationType,

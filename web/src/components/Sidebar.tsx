@@ -345,7 +345,7 @@ function flattenTree(
       guides,
       relationType: t.relationType,
       statusClass: computeStatusClass(t),
-      title: (t.title || "").replace(/\s+/g, " ").trim() || `Task ${t.tid}`,
+      title: t.title || `Task ${t.tid}`,
       iconName: typeInfo?.icon ?? t.taskType,
       isArchive: false,
       hasPendingQuestion: !!t.hasPendingQuestion,
