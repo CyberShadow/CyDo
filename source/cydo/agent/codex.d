@@ -2394,7 +2394,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 string[] translateRolloutToolUse(string callId, string toolName, string inputJson)
 {
 	import std.uuid : randomUUID;
-	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, decomposeToolName;
+	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo, decomposeToolName;
 
 	if (callId.length == 0)
 		callId = randomUUID().toString();
@@ -2411,7 +2411,9 @@ string[] translateRolloutToolUse(string callId, string toolName, string inputJso
 	if (inputJson.length > 0 && inputJson != `{}`)
 		compEv.input = JSONFragment(inputJson);
 
-	return [toJson(startEv), toJson(compEv)];
+	TurnStopEvent tsev;
+	tsev.usage = UsageInfo(0, 0);
+	return [toJson(startEv), toJson(compEv), toJson(tsev)];
 }
 
 /// Translate a tool_result response_item → item/result.

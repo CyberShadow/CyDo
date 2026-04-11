@@ -514,7 +514,8 @@ class CopilotAgent : Agent
 				ItemResultEvent resEv;
 				resEv.item_id = toolId;
 				resEv.content = JSONFragment(`[{"type":"text","text":"` ~ cpEscape(outputText) ~ `"}]`);
-				events = [toJson(compEv), toJson(resEv)];
+				TurnStopEvent tsEv;
+				events = [toJson(compEv), toJson(resEv), toJson(tsEv)];
 				break;
 			}
 			case "assistant.turn_end":

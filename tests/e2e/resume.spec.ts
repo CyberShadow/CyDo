@@ -423,8 +423,7 @@ test("waiting parent receives batch results after restart", async ({
 test("waiting parent with completed children gets results after restart", async ({
   page,
   restartableBackend,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "claude", "claude-only test");
+}) => {
   // This test exercises the resumeAndDeliverResults path: parent is "waiting",
   // all children are "completed", but task_deps rows still exist.
   //
