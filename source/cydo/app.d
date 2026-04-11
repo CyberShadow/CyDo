@@ -5417,13 +5417,14 @@ class App : ToolsBackend
 				try
 					suggestionList = jsonParse!(string[])(result);
 				catch (Exception e)
-				{ warningf("generateSuggestions: failed to parse result: %s", e.msg); return; }
+				{
+					warningf("generateSuggestions: failed to parse result: %s\n---\n%s\n---", e.msg, result);
+					broadcastSuggestionsUpdate(tid, []);
+					return;
+				}
 
-			if (suggestionList.length > 0)
-			{
-				tasks[tid].lastSuggestions = suggestionList;
-				broadcastSuggestionsUpdate(tid, suggestionList);
-			}
+			tasks[tid].lastSuggestions = suggestionList;
+			broadcastSuggestionsUpdate(tid, suggestionList);
 		}).except((Exception e) {
 			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
 			if (tid !in tasks)
