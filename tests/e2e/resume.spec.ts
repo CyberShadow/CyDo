@@ -242,8 +242,7 @@ test("idle task is not nudged after resume + restart", async ({
 test("MCP tools work after backend restart", async ({
   page,
   restartableBackend,
-}, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
+}) => {
   // Create a task and let it become idle
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
