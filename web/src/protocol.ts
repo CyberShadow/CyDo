@@ -280,7 +280,6 @@ export interface AgentErrorEvent {
 export interface AgentUnrecognizedEvent {
   type: "agent/unrecognized";
   reason: string;
-  raw_content: unknown;
 }
 
 // ---------------------------------------------------------------------------

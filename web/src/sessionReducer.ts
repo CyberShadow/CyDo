@@ -393,7 +393,10 @@ export function reduceParseError(
         content: [
           {
             type: "text" as const,
-            text: `${label}: ${detail}\n${JSON.stringify(raw, null, 2)}`,
+            text:
+              raw !== undefined
+                ? `${label}: ${detail}\n${JSON.stringify(raw, null, 2)}`
+                : `${label}: ${detail}`,
           },
         ],
         rawSource: rawSource ?? raw,
@@ -1497,7 +1500,7 @@ export function reduceMessage(
         const block: Block = {
           itemId,
           type: "unrecognized",
-          text: `${msg.reason}\n${JSON.stringify(msg.raw_content, null, 2)}`,
+          text: msg.reason,
           completed: false,
           creationOrder,
         };
@@ -1513,7 +1516,7 @@ export function reduceMessage(
         s,
         "Unrecognized agent data",
         msg.reason,
-        msg.raw_content,
+        undefined,
         msg,
       );
     }

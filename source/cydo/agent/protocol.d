@@ -272,18 +272,19 @@ struct AgentUnrecognizedEvent
 {
 	string type = "agent/unrecognized";
 	string reason;      // e.g. "unknown event type: foo", "unknown method: bar/baz", "non-JSON output"
-	JSONFragment raw_content; // the raw string from the agent (JSON or otherwise)
 }
 
 string makeUnrecognizedEvent(string reason, string rawContent)
 {
 	AgentUnrecognizedEvent ev;
 	ev.reason = reason;
+	string baseJson = toJson(ev);
 	// Embed rawContent as a JSON value if it's valid JSON; otherwise quote it
 	// as a string so the resulting event is always well-formed JSON.
-	try { ev.raw_content = jsonParse!JSONFragment(rawContent); }
-	catch (Exception) { ev.raw_content = JSONFragment(toJson(rawContent)); }
-	return toJson(ev);
+	string rawJson;
+	try { jsonParse!JSONFragment(rawContent); rawJson = rawContent; }
+	catch (Exception) { rawJson = toJson(rawContent); }
+	return injectRawField(baseJson, rawJson);
 }
 
 /// Inject `,"_raw":<rawJson>` before the final `}` of a JSON object string.
