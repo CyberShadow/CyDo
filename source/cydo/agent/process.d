@@ -17,7 +17,7 @@ import ae.utils.array : asBytes;
 import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
 
 /// Selects the framing mode for stdout of an AgentProcess.
-enum FramingMode { ndjson, contentLength }
+enum FramingMode { ndjson, contentLength, raw }
 
 /// Manages a child process with event-loop-integrated I/O.
 /// Uses FileConnection to wrap pipe fds, Duplex to combine stdin/stdout,
@@ -101,6 +101,8 @@ class AgentProcess
 			ConnectionAdapter framedConn;
 			if (mode == FramingMode.contentLength)
 				framedConn = new ContentLengthAdapter(duplex);
+			else if (mode == FramingMode.raw)
+				framedConn = new ConnectionAdapter(duplex);
 			else
 				framedConn = new LineBufferedAdapter(duplex, "\n");
 
@@ -120,6 +122,8 @@ class AgentProcess
 			ConnectionAdapter framedConn;
 			if (mode == FramingMode.contentLength)
 				framedConn = new ContentLengthAdapter(stdoutConn);
+			else if (mode == FramingMode.raw)
+				framedConn = new ConnectionAdapter(stdoutConn);
 			else
 				framedConn = new LineBufferedAdapter(stdoutConn, "\n");
 
