@@ -2670,144 +2670,158 @@ class App : ToolsBackend
 		}
 		else
 		{
-			// Require session to be stopped
 			if (td.session && td.session.alive)
 			{
-				ws.send(Data(toJson(ErrorMessage("error", "Stop the session before undoing", tid)).representation));
+				td.processQueue.setGoal(ProcessState.Dead).then(() {
+					performUndoExecution(ws, tid, json);
+				}).ignoreResult();
 				return;
 			}
 
-			// 1. Revert file changes via one-shot --rewind-files invocation
-			// (done first so that on failure we haven't modified anything yet)
-			import std.algorithm : canFind, startsWith;
-			string rewindOutput;
-			if (json.revert_files && ta.supportsFileRevert())
-			{
-				// Synthetic enqueue-N UUIDs don't have file checkpoints, but the
-				// next real type:"user" message in the JSONL does.  Find it.
-				string rewindUuid = json.after_uuid;
-				if (rewindUuid.startsWith("enqueue-"))
-				{
-					rewindUuid = findNextUserUuid(
-						ta.historyPath(td.agentSessionId, td.effectiveCwd),
-						json.after_uuid, &ta.forkIdMatchesLine);
-				}
+			performUndoExecution(ws, tid, json);
+		}
+	}
 
-				if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
-				{
-					auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, td.effectiveCwd, td.launch);
-					if (rewindResult.success)
-						rewindOutput = rewindResult.output;
-					else if (!rewindResult.output.canFind("No file checkpoint found"))
-					{
-						ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
-						return;
-					}
-					// "No file checkpoint found" → no checkpoint for this message, skip silently
-				}
+	private void performUndoExecution(WebSocketAdapter ws, int tid, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+
+		auto ta = agentForTask(tid);
+
+		// 1. Revert file changes via one-shot --rewind-files invocation
+		// (done first so that on failure we haven't modified anything yet)
+		import std.algorithm : canFind, startsWith;
+		string rewindOutput;
+		if (json.revert_files && ta.supportsFileRevert())
+		{
+			// Synthetic enqueue-N UUIDs don't have file checkpoints, but the
+			// next real type:"user" message in the JSONL does.  Find it.
+			string rewindUuid = json.after_uuid;
+			if (rewindUuid.startsWith("enqueue-"))
+			{
+				rewindUuid = findNextUserUuid(
+					ta.historyPath(td.agentSessionId, td.effectiveCwd),
+					json.after_uuid, &ta.forkIdMatchesLine);
 			}
 
-			// 2. Back up pre-undo state as a child task
-			if (json.revert_conversation)
+			if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
 			{
-				auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd),
-					&ta.extractForkableIds);
-				if (lastForkId.length > 0)
+				auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, td.effectiveCwd, td.launch);
+				if (rewindResult.success)
+					rewindOutput = rewindResult.output;
+				else if (!rewindResult.output.canFind("No file checkpoint found"))
 				{
-					auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
-						td.projectPath, td.workspace, td.title,
-						(string sid) => ta.historyPath(sid,
-							sid == td.agentSessionId ? td.effectiveCwd : td.projectPath),
-						&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-						td.description, td.taskType, td.agentType);
-					if (backup.tid >= 0)
-					{
-						auto bTd = TaskData(backup.tid);
-						bTd.workspace = td.workspace;
-						bTd.projectPath = td.projectPath;
-						bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
-						bTd.agentSessionId = backup.agentSessionId;
-						bTd.parentTid = tid;
-						bTd.relationType = "undo-backup";
-						bTd.status = "completed";
-						bTd.agentType = td.agentType;
-						bTd.description = td.description;
-						bTd.taskType = td.taskType;
-						import std.datetime : Clock;
-						bTd.createdAt = Clock.currStdTime;
-						bTd.lastActive = bTd.createdAt;
-						persistence.setRelationType(backup.tid, "undo-backup");
-						persistence.setTitle(backup.tid, bTd.title);
-						tasks[backup.tid] = move(bTd);
-						tasks[backup.tid].processQueue = new StateQueue!ProcessState(
-							(ProcessState goal) => processTransition(backup.tid, goal),
-							ProcessState.Dead,
-						);
-						tasks[backup.tid].archiveQueue = new StateQueue!ArchiveState(
-							(ArchiveState goal) => archiveTransition(backup.tid, goal),
-							ArchiveState.Unarchived,
-						);
-						broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
-						broadcastTaskUpdate(backup.tid);
-					}
-				}
-			}
-
-			// 3. Truncate conversation history
-			if (json.revert_conversation)
-			{
-				auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
-				if (removed < 0)
-				{
-					ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
+					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
 					return;
 				}
-				td.history = DataVec();
-				td.historyLoaded = false;
-				unsubscribeAll(tid);
-				// Clip pendingSteeringTexts to match remaining user messages in the
-				// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
-				// synthetics for messages that were intentionally undone.
-				if (td.pendingSteeringTexts.length > 0)
+				// "No file checkpoint found" → no checkpoint for this message, skip silently
+			}
+		}
+
+		// 2. Back up pre-undo state as a child task
+		if (json.revert_conversation)
+		{
+			auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd),
+				&ta.extractForkableIds);
+			if (lastForkId.length > 0)
+			{
+				auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
+					td.projectPath, td.workspace, td.title,
+					(string sid) => ta.historyPath(sid,
+						sid == td.agentSessionId ? td.effectiveCwd : td.projectPath),
+					&ta.rewriteSessionId, &ta.forkIdMatchesLine,
+					td.description, td.taskType, td.agentType);
+				if (backup.tid >= 0)
 				{
-					import std.file : readText, exists;
-					import std.string : splitLines;
-					auto histPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-					if (histPath.length > 0 && histPath.exists)
-					{
-						int remaining = 0;
-						foreach (line; readText(histPath).splitLines())
-							if (ta.isUserMessageLine(line))
-								remaining++;
-						if (remaining < cast(int)td.pendingSteeringTexts.length)
-							td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
-					}
+					auto bTd = TaskData(backup.tid);
+					bTd.workspace = td.workspace;
+					bTd.projectPath = td.projectPath;
+					bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
+					bTd.agentSessionId = backup.agentSessionId;
+					bTd.parentTid = tid;
+					bTd.relationType = "undo-backup";
+					bTd.status = "completed";
+					bTd.agentType = td.agentType;
+					bTd.description = td.description;
+					bTd.taskType = td.taskType;
+					import std.datetime : Clock;
+					bTd.createdAt = Clock.currStdTime;
+					bTd.lastActive = bTd.createdAt;
+					persistence.setRelationType(backup.tid, "undo-backup");
+					persistence.setTitle(backup.tid, bTd.title);
+					tasks[backup.tid] = move(bTd);
+					tasks[backup.tid].processQueue = new StateQueue!ProcessState(
+						(ProcessState goal) => processTransition(backup.tid, goal),
+						ProcessState.Dead,
+					);
+					tasks[backup.tid].archiveQueue = new StateQueue!ArchiveState(
+						(ArchiveState goal) => archiveTransition(backup.tid, goal),
+						ArchiveState.Unarchived,
+					);
+					broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+					broadcastTaskUpdate(backup.tid);
 				}
 			}
-
-			// Send undo result to the requesting client
-			ws.send(Data(toJson(UndoResultMessage("undo_result", tid, rewindOutput)).representation));
-
-			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
-
-			// 4. Auto-resume so the input box shows immediately
-			// (the user's undone message text is recovered via preReloadDrafts)
-			if (json.revert_conversation && td.agentSessionId.length > 0)
-			{
-				td.processQueue.setGoal(ProcessState.Alive).then(() {
-					auto td = &tasks[tid];
-					td.status = "active";
-					persistence.setStatus(tid, "active");
-					try
-						generateSuggestions(tid);
-					catch (Exception e)
-						warningf("Error generating suggestions: %s", e.msg);
-					broadcastTaskUpdate(tid);
-				}).ignoreResult();
-			}
-
-			broadcastTaskUpdate(tid);
 		}
+
+		// 3. Truncate conversation history
+		if (json.revert_conversation)
+		{
+			auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
+			if (removed < 0)
+			{
+				ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
+				return;
+			}
+			td.history = DataVec();
+			td.historyLoaded = false;
+			unsubscribeAll(tid);
+			// Clip pendingSteeringTexts to match remaining user messages in the
+			// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
+			// synthetics for messages that were intentionally undone.
+			if (td.pendingSteeringTexts.length > 0)
+			{
+				import std.file : readText, exists;
+				import std.string : splitLines;
+				auto histPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+				if (histPath.length > 0 && histPath.exists)
+				{
+					int remaining = 0;
+					foreach (line; readText(histPath).splitLines())
+						if (ta.isUserMessageLine(line))
+							remaining++;
+					if (remaining < cast(int)td.pendingSteeringTexts.length)
+						td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
+				}
+			}
+		}
+
+		// Send undo result to the requesting client
+		ws.send(Data(toJson(UndoResultMessage("undo_result", tid, rewindOutput)).representation));
+
+		broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+
+		// 4. Auto-resume so the input box shows immediately
+		// (the user's undone message text is recovered via preReloadDrafts)
+		if (json.revert_conversation && td.agentSessionId.length > 0)
+		{
+			td.processQueue.setGoal(ProcessState.Alive).then(() {
+				auto td = &tasks[tid];
+				td.status = "active";
+				persistence.setStatus(tid, "active");
+				try
+					generateSuggestions(tid);
+				catch (Exception e)
+					warningf("Error generating suggestions: %s", e.msg);
+				broadcastTaskUpdate(tid);
+			}).ignoreResult();
+		}
+
+		broadcastTaskUpdate(tid);
 	}
 
 	private void handleEditMessage(WebSocketAdapter ws, WsMessage json)
