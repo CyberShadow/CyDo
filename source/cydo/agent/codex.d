@@ -972,6 +972,7 @@ class CodexAgent : Agent
 						if (session.outputHandler_)
 							session.outputHandler_(
 								`{"type":"process/stderr","text":` ~ toJson("thread/resume error: " ~ e.msg) ~ `}`);
+						session.closeStdin();
 						return;
 					}
 					if (result.thread.id.length == 0)
@@ -980,6 +981,7 @@ class CodexAgent : Agent
 						if (session.outputHandler_)
 							session.outputHandler_(
 								`{"type":"process/stderr","text":"thread/resume returned empty thread id"}`);
+						session.closeStdin();
 						return;
 					}
 					session.onThreadStarted(result, resumeSessionId, model, workDir,

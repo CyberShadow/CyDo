@@ -157,6 +157,8 @@ class CopilotAgent : Agent
 						session.emitEvent(
 							`{"type":"process/stderr","text":"session.resume error: `
 							~ cpEscape(resp.error.get.message) ~ `"}`);
+						server.unregisterSession(sessionId);
+						session.handleExit(1);
 						return;
 					}
 					session.onSessionStarted(model, workDir);
