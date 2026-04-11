@@ -1009,8 +1009,7 @@ class App : ToolsBackend
 		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, taskTypesDir, childTd.outputPath, edgeTemplate);
 		auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-			broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedPrompt)], subtaskMeta);
-			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)]);
+			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)], null, subtaskMeta);
 		}).ignoreResult();
 
 		if (description.length == 0)
@@ -1913,8 +1912,7 @@ class App : ToolsBackend
 				? buildCydoMeta(json.entry_point, ["task_description": textContent], "task_description", false)
 				: null;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(tid, msgContent, msgMeta);
-				sendTaskMessage(tid, messageToSend);
+				sendTaskMessage(tid, messageToSend, msgContent, msgMeta);
 			}).ignoreResult();
 
 			td.description = textContent;
@@ -2245,7 +2243,6 @@ class App : ToolsBackend
 			}
 		}
 		td.lastSuggestions = null;
-		broadcastUnconfirmedUserMessage(tid, blocks, userMsgMeta);
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
 			if (td.status == "alive")
@@ -2253,7 +2250,7 @@ class App : ToolsBackend
 				td.status = "active";
 				persistence.setStatus(tid, "active");
 			}
-			sendTaskMessage(tid, messageToSend);
+			sendTaskMessage(tid, messageToSend, blocks, userMsgMeta);
 		}).ignoreResult();
 
 		// Store first message as task description
@@ -2862,18 +2859,47 @@ class App : ToolsBackend
 	/// writes the message to the agent's stdin and flips the task into the
 	/// "processing" state (yellow dot in the UI), which is later cleared when
 	/// the agent emits a `result` event or the process exits.
-	///
-	/// All code paths that deliver a message — WebSocket `create_task`,
-	/// WebSocket `message`, and MCP sub-task creation — must use this method
-	/// instead of calling `session.sendMessage` directly, so that processing
+	/// Broadcast an unconfirmed user message to all clients and send it to the
+	/// agent.  Every code path that delivers a message must use this method so
+	/// that (a) the UI sees a pending bubble immediately and (b) processing
 	/// state stays consistent.
-	private void sendTaskMessage(int tid, const(ContentBlock)[] content)
+	///
+	/// `broadcastContent` — if non-null, broadcast this to the UI instead of
+	/// `content`.  Use this when the agent receives a rendered prompt template
+	/// but the UI should display the user's original text.
+	private void sendTaskMessage(int tid, const(ContentBlock)[] content,
+		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null)
 	{
 		import std.algorithm : min, filter;
 		import std.array : array;
+		import cydo.agent.protocol : ItemStartedEvent;
+
 		auto td = &tasks[tid];
 		assert(td.taskType.length > 0, "Task must have a task_type when sending a message");
-		// Strip image blocks for agents that don't support them.
+
+		// --- broadcast unconfirmed user message to UI ---
+		auto uiContent = broadcastContent !is null ? broadcastContent : content;
+		ItemStartedEvent ev;
+		ev.item_id   = "cc-user-msg";
+		ev.item_type = "user_message";
+		ev.text      = extractContentText(uiContent);
+		ev.content   = uiContent.dup;
+		ev.pending   = true;
+		auto userEvent = toJson(ev);
+		if (cydoMeta.length > 0)
+			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
+		string injected = `{"tid":` ~ format!"%d"(tid)
+			~ `,"unconfirmedUserEvent":` ~ userEvent
+			~ `}`;
+		auto data = Data(injected.representation);
+		if (tid in tasks)
+		{
+			ensureHistoryLoaded(tid);
+			tasks[tid].history ~= data;
+		}
+		sendToSubscribed(tid, data);
+
+		// --- send to agent ---
 		const(ContentBlock)[] toSend = td.session.supportsImages
 			? content
 			: content.filter!(b => b.type != "image").array;
@@ -3316,7 +3342,6 @@ class App : ToolsBackend
 							}
 						}
 						auto reminderBlocks = [ContentBlock("text", reminder)];
-						broadcastUnconfirmedUserMessage(tid, reminderBlocks);
 						sendTaskMessage(tid, reminderBlocks);
 					}
 					else
@@ -3683,9 +3708,7 @@ class App : ToolsBackend
 				["result_text": resultText, "output_dir": td.taskDir]);
 			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], contMeta);
-				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)]);
-				broadcastTaskUpdate(tid);
+				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], null, contMeta);
 			}).ignoreResult();
 		}
 		else
@@ -3741,8 +3764,7 @@ class App : ToolsBackend
 			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
 				["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				broadcastUnconfirmedUserMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)], handoffMeta);
-				sendTaskMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)]);
+				sendTaskMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)], null, handoffMeta);
 			}).ignoreResult();
 
 			broadcastTaskUpdate(tid);
@@ -4164,8 +4186,7 @@ class App : ToolsBackend
 				~ "Continue from where you left off. If you had a tool call in progress "
 				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]";
 			auto nudgeMeta = buildCydoMeta("restart nudge");
-			broadcastUnconfirmedUserMessage(tid, [ContentBlock("text", nudgeText)], nudgeMeta);
-			sendTaskMessage(tid, [ContentBlock("text", nudgeText)]);
+			sendTaskMessage(tid, [ContentBlock("text", nudgeText)], null, nudgeMeta);
 		});
 	}
 
@@ -4426,41 +4447,6 @@ class App : ToolsBackend
 		m.bodyVar = bodyVar;
 		m.bodyMarkdown = bodyMarkdown;
 		return toJson(m);
-	}
-
-	/// Broadcast an unconfirmed user message to all clients.
-	/// This is shown as pending until Claude echoes it back with is_replay.
-	/// cydoMeta is an optional JSON string injected as "meta" on the event;
-	/// it is NOT sent to the agent.
-	private void broadcastUnconfirmedUserMessage(int tid, const(ContentBlock)[] content,
-		string cydoMeta = null)
-	{
-		import ae.utils.json : toJson;
-		import cydo.agent.protocol : ItemStartedEvent;
-
-		ItemStartedEvent ev;
-		ev.item_id   = "cc-user-msg";
-		ev.item_type = "user_message";
-		ev.text      = extractContentText(content);
-		ev.content   = content.dup;
-		ev.pending   = true;
-		auto userEvent = toJson(ev);
-		// Inject meta directly into the event JSON (before the closing brace).
-		if (cydoMeta.length > 0)
-			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		string injected = `{"tid":` ~ format!"%d"(tid)
-			~ `,"unconfirmedUserEvent":` ~ userEvent
-			~ `}`;
-
-		auto data = Data(injected.representation);
-
-		if (tid in tasks)
-		{
-			ensureHistoryLoaded(tid);
-			tasks[tid].history ~= data;
-		}
-
-		sendToSubscribed(tid, data);
 	}
 
 	private void broadcastTask(int tid, string rawLine)
