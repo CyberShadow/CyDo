@@ -199,8 +199,8 @@ import ae.utils.promise : Promise;
 interface ToolsBackend
 {
 	Promise!McpResult handleCreateTask(string callerTid,
-		string description, string taskType, string prompt,
-		bool* writerSpawned = null);
+		string description, string taskType, string prompt);
+	bool wouldBeWriter(string callerTid, string taskType);
 	McpResult handleSwitchMode(string callerTid, string continuation);
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
@@ -259,14 +259,20 @@ class CydoToolsImpl : CydoTools
 		if (tasks.length == 0)
 			return McpResult("No tasks provided", true);
 
+		// Pre-flight: reject batches with multiple writers to avoid worktree conflicts.
+		int writerCount;
+		foreach (ref spec; tasks)
+			if (app.wouldBeWriter(callerTid, spec.task_type))
+				writerCount++;
+		if (writerCount > 1)
+			return McpResult(
+				"Cannot run multiple non-read-only tasks in parallel: they would share the same worktree. Run them sequentially, or use fork worktrees.",
+				true);
+
 		// Launch all tasks — each returns a promise.
-		// writerSpawned prevents multiple non-fork non-tree-read-only children
-		// in the same batch from writing to the same shared worktree.
-		bool writerSpawned;
 		auto promises = new Promise!McpResult[tasks.length];
 		foreach (i, ref spec; tasks)
-			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt,
-				&writerSpawned);
+			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
 
 		// Register batch state and enter the event-driven wait loop.
 		// Returns when all children complete or a child asks a question.

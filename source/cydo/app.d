@@ -907,11 +907,8 @@ class App : ToolsBackend
 	}
 
 	/// Handle Task — returns a promise that resolves when the child task completes.
-	/// writerSpawned tracks whether a non-fork non-tree-read-only child has already
-	/// been dispatched in this batch, preventing concurrent writers on a shared worktree.
 	Promise!McpResult handleCreateTask(string callerTid,
-		string description, string taskType, string prompt,
-		bool* writerSpawned = null)
+		string description, string taskType, string prompt)
 	{
 		import ae.utils.json : toJson;
 		import std.algorithm : canFind, map;
@@ -956,28 +953,6 @@ class App : ToolsBackend
 		auto childTypeDef = getTaskTypes().byName(resolvedTaskType);
 		if (childTypeDef is null)
 			return resolve(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
-
-		// Worktree write conflict: only one non-fork non-tree-read-only child
-		// per batch to prevent concurrent writers on a shared worktree.
-		if (writerSpawned !is null)
-		{
-			WorktreeMode edgeMode = WorktreeMode.fork;
-			if (parentTypeDef !is null)
-				if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
-					edgeMode = edge.worktree;
-
-			if (edgeMode != WorktreeMode.fork)
-			{
-				auto childRO = resolvedTaskType in treeReadOnlyCache;
-				if (childRO is null || !(*childRO))
-				{
-					if (*writerSpawned)
-						return resolve(structuredTaskError(
-							"Cannot spawn non-read-only task: worktree is in use by another writer"));
-					*writerSpawned = true;
-				}
-			}
-		}
 
 		// Create child task
 		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, parentTd.agentType);
@@ -1042,6 +1017,36 @@ class App : ToolsBackend
 		infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
 		return promise;
+	}
+
+	bool wouldBeWriter(string callerTid, string taskType)
+	{
+		import std.conv : to;
+		int parentTid;
+		try
+			parentTid = to!int(callerTid);
+		catch (Exception)
+			return false;
+
+		auto parentTd = parentTid in tasks;
+		if (parentTd is null)
+			return false;
+
+		auto parentTypeDef = getTaskTypes().byName(parentTd.taskType);
+		WorktreeMode edgeMode = WorktreeMode.fork;
+		string resolvedType = taskType;
+		if (parentTypeDef !is null)
+			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
+			{
+				edgeMode = edge.worktree;
+				resolvedType = edge.resolvedType;
+			}
+
+		if (edgeMode == WorktreeMode.fork)
+			return false;
+
+		auto childRO = resolvedType in treeReadOnlyCache;
+		return childRO is null || !(*childRO);
 	}
 
 	/// Set up batch event stream and enter the wait loop.

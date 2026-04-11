@@ -1,7 +1,7 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test(
-  "Task tool rejects second non-read-only sibling on shared worktree",
+  "Task tool rejects batch with multiple non-read-only siblings on shared worktree",
   async ({ page, agentType }) => {
     test.skip(agentType === "codex", "codex does not use git worktrees");
 
@@ -32,8 +32,8 @@ test(
     // Send "call 2 tasks test_wt_child reply with hi" which the mock API
     // parses into a single mcp__cydo__Task call with 2 items in the array.
     // Both children use inherit edges, sharing the parent's worktree.
-    // Since test_wt_child is not tree-read-only, the second should be
-    // rejected by the write-conflict check.
+    // Since test_wt_child is not tree-read-only, the batch should be
+    // rejected upfront by the write-conflict check before any tasks are created.
     await enterSession(page);
     await page.locator(".task-type-row", { hasText: "isolated" }).click();
     await sendMessage(
@@ -41,19 +41,16 @@ test(
       "call 2 tasks test_wt_child reply with hi",
     );
 
-    // Wait for at least one child to be created, then verify only one was.
-    await expect(async () => {
-      const children = taskCreatedEvents.filter(
-        (e) => e.relation_type === "subtask",
-      );
-      expect(children.length).toBeGreaterThanOrEqual(1);
-    }).toPass({ timeout: 60_000 });
+    // Wait for the parent task to respond (mock returns "Done." after tool_result),
+    // confirming the Task call error was processed.
+    await expect(
+      page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+    ).toBeVisible({ timeout: 60_000 });
 
-    // Give a brief window for the second child to appear (it shouldn't).
-    await page.waitForTimeout(2_000);
+    // The entire batch must have been rejected: no children created.
     const children = taskCreatedEvents.filter(
       (e) => e.relation_type === "subtask",
     );
-    expect(children).toHaveLength(1);
+    expect(children).toHaveLength(0);
   },
 );
