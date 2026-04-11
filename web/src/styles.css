@@ -1950,7 +1950,8 @@ body,
 
 .user-message.meta-message,
 .user-message.steering-message,
-.assistant-message.synthetic-message {
+.assistant-message.synthetic-message,
+.user-message.synthetic-message {
   opacity: 0.7;
 }
 
