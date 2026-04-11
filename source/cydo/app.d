@@ -1086,12 +1086,16 @@ class App : ToolsBackend
 		// Set up .then() handlers ONCE — they feed into the event queue.
 		foreach (i, p; childPromises)
 		{
-			int cTid = childTids[i];
-			p.then((McpResult r) {
-				if (parentTid in activeBatches)
-					activeBatches[parentTid].eventQueue.fulfillOne(
-						BatchSignal.childDone(cTid, r));
-			});
+			// Immediately-invoked lambda to force per-iteration capture.
+			// D foreach closures share loop-local variables across iterations;
+			// see also makeProcessQueueSF() and resumeActiveTask() for the same pattern.
+			(int cTid, Promise!McpResult p) {
+				p.then((McpResult r) {
+					if (parentTid in activeBatches)
+						activeBatches[parentTid].eventQueue.fulfillOne(
+							BatchSignal.childDone(cTid, r));
+				});
+			}(childTids[i], p);
 		}
 
 		activeBatches[parentTid] = batch;
