@@ -299,6 +299,9 @@ class App : ToolsBackend
 	private INotify.WatchDescriptor configDirWatch;
 	private bool configFileWatchActive;
 	private bool configDirWatchActive;
+	// inotify watches for per-project config hot-reload (projectPath → watch)
+	private INotify.WatchDescriptor[string] projectDirWatches;
+	private INotify.WatchDescriptor[string] projectFileWatches;
 	// HTTP basic auth credentials (from environment)
 	private string authUser;
 	private string authPass;
@@ -691,6 +694,12 @@ class App : ToolsBackend
 			iNotify.remove(configDirWatch);
 			configDirWatchActive = false;
 		}
+		foreach (projectPath, wd; projectFileWatches)
+			iNotify.remove(wd);
+		projectFileWatches = null;
+		foreach (projectPath, wd; projectDirWatches)
+			iNotify.remove(wd);
+		projectDirWatches = null;
 	}
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
@@ -5152,6 +5161,47 @@ class App : ToolsBackend
 		infof("Config reloaded successfully");
 	}
 
+	private void ensureProjectWatch(string projectPath)
+	{
+		import std.path : buildPath;
+		if (projectPath in projectDirWatches)
+			return;  // already watching
+
+		auto cydoDir = buildPath(projectPath, ".cydo");
+		if (!exists(cydoDir))
+			return;  // nothing to watch yet
+
+		projectDirWatches[projectPath] = iNotify.add(
+			cydoDir,
+			INotify.Mask.closeWrite | INotify.Mask.create | INotify.Mask.movedTo,
+			(in char[] name, INotify.Mask mask, uint cookie)
+			{
+				if (name == "task-types.yaml" || name == "defs")
+					onProjectConfigChanged(projectPath);
+			}
+		);
+
+		auto typesFile = buildPath(cydoDir, "task-types.yaml");
+		if (exists(typesFile))
+		{
+			projectFileWatches[projectPath] = iNotify.add(
+				typesFile,
+				INotify.Mask.closeWrite,
+				(in char[] name, INotify.Mask mask, uint cookie)
+				{
+					onProjectConfigChanged(projectPath);
+				}
+			);
+		}
+	}
+
+	private void onProjectConfigChanged(string projectPath)
+	{
+		infof("Project config changed for %s, reloading task types...", projectPath);
+		taskTypesByProject.remove(projectPath);
+		broadcast(buildTaskTypesListForProject(projectPath));
+	}
+
 	private void handleRefreshWorkspacesMsg()
 	{
 		discoverAllWorkspaces();
@@ -5326,7 +5376,10 @@ class App : ToolsBackend
 		if (json.project_path.length == 0)
 			ws.send(Data(buildTaskTypesList().representation));
 		else
+		{
+			ensureProjectWatch(json.project_path);
 			ws.send(Data(buildTaskTypesListForProject(json.project_path).representation));
+		}
 	}
 
 	private string buildAgentTypesList()
