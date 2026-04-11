@@ -622,10 +622,10 @@ class AppServerProcess
 			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
 				{
-					import cydo.agent.protocol : makeUnrecognizedEvent;
+					import cydo.agent.protocol : makeUnrecognizedEvent, injectRawField;
 					auto rawJsonRpc = `{"jsonrpc":"2.0","method":"` ~ request.method ~ `","params":`
 						~ (request.params.json !is null ? request.params.json : "null") ~ `}`;
-					auto event = makeUnrecognizedEvent("unknown method: " ~ request.method, rawJsonRpc);
+					auto event = injectRawField(makeUnrecognizedEvent("unknown method: " ~ request.method), rawJsonRpc);
 					// Try to route to a specific session by threadId/conversationId.
 					string routedId;
 					if (request.params.json !is null)

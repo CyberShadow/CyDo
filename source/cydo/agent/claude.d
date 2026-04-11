@@ -804,8 +804,9 @@ class ClaudeCodeSession : AgentSession
 			probe = jsonParse!TypeProbe(rawLine);
 		catch (Exception)
 		{
-			import cydo.agent.protocol : makeUnrecognizedEvent;
-			emitEvent(makeUnrecognizedEvent("non-JSON output", rawLine));
+			import cydo.agent.protocol : makeUnrecognizedEvent, injectRawField;
+			import ae.utils.json : toJson;
+			emitEvent(injectRawField(makeUnrecognizedEvent("non-JSON output"), toJson(rawLine)));
 			return;
 		}
 
@@ -1731,7 +1732,7 @@ private string translateClaudeEventInner(string rawLine)
 	{
 		tracef("translateEvent: type probe parse error: %s", e.msg);
 		import cydo.agent.protocol : makeUnrecognizedEvent;
-		return makeUnrecognizedEvent("JSON parse error: " ~ e.msg, rawLine);
+		return makeUnrecognizedEvent("JSON parse error: " ~ e.msg);
 	}
 
 	switch (probe.type)
@@ -1757,7 +1758,7 @@ private string translateClaudeEventInner(string rawLine)
 			return null; // not used by frontend
 		default:
 			import cydo.agent.protocol : makeUnrecognizedEvent;
-			return makeUnrecognizedEvent("unknown event type: " ~ probe.type, rawLine);
+			return makeUnrecognizedEvent("unknown event type: " ~ probe.type);
 	}
 }
 

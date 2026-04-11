@@ -998,8 +998,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			default:
 				import cydo.agent.protocol : makeUnrecognizedEvent;
 				emitEvent(makeUnrecognizedEvent(
-					"unknown copilot event: " ~ event.type,
-					event.data.json), currentRawJson_);
+					"unknown copilot event: " ~ event.type), currentRawJson_);
 				break;
 		}
 	}
