@@ -197,6 +197,8 @@ static:
 		auto handle = agent.completeOneShot(prompt, "small");
 		handle.promise.then((string result) {
 			import std.stdio : writeln;
+			if (result.length == 0)
+				stderr.writeln("Warning: got empty response from agent");
 			writeln(result);
 		}).except((Exception e) {
 			stderr.writeln("Error: ", e.msg);

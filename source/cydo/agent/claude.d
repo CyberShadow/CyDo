@@ -604,6 +604,8 @@ class ClaudeCodeAgent : Agent
 		};
 
 		proc.onExit = (int status) {
+			tracef("claude oneshot exit: status=%d stdout=%d bytes stderr=%d bytes",
+				status, responseText.length, stderrText.length);
 			if (status != 0)
 			{
 				auto msg = "claude exited with status " ~ status.to!string;
