@@ -6,9 +6,9 @@ targetPath "build"
 
 sourcePaths "source"
 
-dependency "ae" version="~>0.0.3816"
-dependency "ae:sqlite" version="~>0.0.3816"
-dependency "ae:openssl" version="~>0.0.3816"
-dependency "ae:zlib" version="~>0.0.3816"
+dependency "ae" version="~>0.0.3817"
+dependency "ae:sqlite" version="~>0.0.3817"
+dependency "ae:openssl" version="~>0.0.3817"
+dependency "ae:zlib" version="~>0.0.3817"
 dependency "configy" version="~>2.2.0"
 dependency "djinja" repository="git+https://github.com/VPanteleev-sym/djinja.git" version="~master"

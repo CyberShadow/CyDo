@@ -1,7 +1,7 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"ae": "0.0.3816",
+		"ae": "0.0.3817",
 		"bolts": "1.7.0",
 		"configy": "2.2.0",
 		"djinja": {"version":"defccf8856402a78851e3dcd4871e162fb76876f","repository":"git+https://github.com/VPanteleev-sym/djinja.git"},
