@@ -405,6 +405,7 @@ task_types:
 
   bug:
     icon: bug
+    read_only: true
     system_prompt_template: system_prompts/bug.md
     agent_description: >
       Use for investigating bugs as a sub-task. The agent reproduces the issue,
