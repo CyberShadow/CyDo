@@ -583,7 +583,8 @@ class ClaudeCodeAgent : Agent
 
 		AgentProcess proc;
 		try
-			proc = new AgentProcess(args, procEnv, noStdin: true, logName: "claude-oneshot");
+			proc = new AgentProcess(args, procEnv, noStdin: true,
+				mode: FramingMode.raw, logName: "claude-oneshot");
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn claude: %s", e.msg);
@@ -594,8 +595,8 @@ class ClaudeCodeAgent : Agent
 		string responseText;
 		string stderrText;
 
-		proc.onStdoutLine = (string line) {
-			responseText ~= line;
+		proc.onStdoutLine = (string chunk) {
+			responseText ~= chunk;
 		};
 
 		proc.onStderrLine = (string line) {

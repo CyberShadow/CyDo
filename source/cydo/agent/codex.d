@@ -1468,7 +1468,8 @@ class CodexAgent : Agent
 			// inherit the parent environment, matching AppServerProcess.
 			// --skip-git-repo-check avoids the "not inside a trusted directory"
 			// error when the process CWD is not a git repo root.
-			proc = new AgentProcess(args, noStdin: true, logName: "codex-oneshot");
+			proc = new AgentProcess(args, noStdin: true,
+				mode: FramingMode.raw, logName: "codex-oneshot");
 		catch (Exception e)
 		{
 			errorf("completeOneShot: failed to spawn codex: %s", e.msg);
@@ -1481,8 +1482,8 @@ class CodexAgent : Agent
 		string responseText;
 		string stderrText;
 
-		proc.onStdoutLine = (string line) {
-			responseText ~= line;
+		proc.onStdoutLine = (string chunk) {
+			responseText ~= chunk;
 		};
 
 		proc.onStderrLine = (string line) {
