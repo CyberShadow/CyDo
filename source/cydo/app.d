@@ -2750,6 +2750,7 @@ class App : ToolsBackend
 				td.processQueue.setGoal(ProcessState.Dead).then(() {
 					performUndoExecution(ws, tid, json);
 				}).ignoreResult();
+				td.session.stop();
 				return;
 			}
 
