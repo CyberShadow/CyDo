@@ -240,6 +240,29 @@ class AgentProcess
 	/// The underlying process PID, for use with asyncWait.
 	@property Pid processId() { return pid; }
 
+	/// Force-disconnect all pipes (stdin, stdout, stderr).
+	/// Used after SIGKILL to unblock the event loop when orphaned grandchildren
+	/// hold pipe FDs open.
+	void forceClosePipes()
+	{
+		closeStdin();
+		if (stdoutLines !is null)
+		{
+			auto lines = stdoutLines;
+			stdoutLines = null;
+			lines.disconnect("force close after SIGKILL");
+		}
+		if (stderrLines !is null)
+		{
+			auto lines = stderrLines;
+			stderrLines = null;
+			lines.disconnect("force close after SIGKILL");
+		}
+		stdoutEOF = true;
+		stderrEOF = true;
+		tryFireExit();
+	}
+
 	/// Send a signal to the child process.
 	void sendSignal(int sig)
 	{
@@ -290,18 +313,13 @@ class AgentProcess
 					killStdoutDrainTimer = null;
 					if (exitFired)
 						return;
-					if (stdoutLines !is null)
-					{
-						auto lines = stdoutLines;
-						stdoutLines = null;
-						lines.disconnect("kill stdout drain timeout");
-					}
-					stdoutEOF = true;
-					stderrEOF = true;
-					tryFireExit();
+					forceClosePipes();
 				}, 500.msecs);
+				killStdoutDrainTimer.daemon = true;
 			}, 2.seconds);
+			killForcedTimer.daemon = true;
 		}, timeout);
+		killTimer.daemon = true;
 	}
 
 }

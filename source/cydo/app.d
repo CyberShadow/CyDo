@@ -61,13 +61,12 @@ static:
 		// On SIGTERM, terminate all agent sessions so child processes flush their
 		// persistent state before the backend exits.  ae.net.shutdown delivers the
 		// callback inside the event loop thread, so we can use normal async stop().
-		// Once children exit, their pipe FileConnections close and the event loop
-		// drains naturally.  alarm() is a safety net in case a child hangs.
+		// killAfterTimeout (daemon timers) escalates to SIGKILL after ~2s, then
+		// forceClosePipes() disconnects any lingering pipe FDs so the event loop
+		// drains cleanly without needing alarm().
 		import ae.net.shutdown : addShutdownHandler;
 		addShutdownHandler((scope const(char)[]) {
 			app.shutdown();
-			import core.sys.posix.unistd : alarm;
-			alarm(5);
 		});
 
 		socketManager.loop();
@@ -567,7 +566,11 @@ class App : ToolsBackend
 		foreach (ref td; tasks)
 		{
 			if (td.session && td.session.alive)
+			{
 				td.session.stop();
+				import core.time : seconds;
+				td.session.killAfterTimeout(0.seconds);
+			}
 			if (td.titleGenKill !is null)
 			{
 				td.titleGenKill();
@@ -579,6 +582,7 @@ class App : ToolsBackend
 				td.suggestGenKill = null;
 			}
 		}
+		jsonlTracker.stopAllWatches();
 		{
 			import cydo.agent.codex : CodexAgent;
 			foreach (a; agentsByType)
@@ -598,6 +602,16 @@ class App : ToolsBackend
 			}
 		}
 		server.close();
+		// server.close() only disconnects idle connections; force-close any
+		// remaining active ones (e.g. in-flight HTTP requests) so the event
+		// loop can drain.
+		{
+			import std.array : array;
+			import ae.net.asockets : disconnectable;
+			foreach (c; server.connections.iterator.array)
+				if (c.conn.state.disconnectable)
+					c.conn.disconnect("shutting down");
+		}
 		if (mcpServer)
 			mcpServer.close();
 		// Remove inotify watches so the event loop can exit.

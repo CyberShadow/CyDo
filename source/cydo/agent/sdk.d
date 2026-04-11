@@ -269,8 +269,15 @@ class SdkProcess
 		import ae.sys.timing : setTimeout;
 		import core.time : msecs;
 		asyncWait(process.processId, (int) { fireExit(); });
-		// Safety net: if asyncWait never fires (zombie), timeout after 3s.
-		setTimeout({ fireExit(); }, 3000.msecs);
+		// Safety net: if asyncWait never fires (zombie), SIGKILL and timeout after 3s.
+		setTimeout({
+			if (!process.dead)
+			{
+				import core.sys.posix.signal : SIGKILL;
+				process.sendSignal(SIGKILL);
+			}
+			fireExit();
+		}, 3000.msecs);
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if

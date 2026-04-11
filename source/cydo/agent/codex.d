@@ -1,6 +1,6 @@
 module cydo.agent.codex;
 
-import core.time : Duration;
+import core.time : Duration, seconds;
 
 import std.conv : to;
 import std.logger : errorf, tracef, warningf;
@@ -728,13 +728,10 @@ class AppServerProcess
 		// shutdown even when SIGTERM is not handled promptly.
 		process.closeStdin();
 		process.terminate();
-		import core.time : msecs;
-		import core.sys.posix.signal : SIGKILL;
-		import ae.sys.timing : setTimeout;
-		setTimeout({
-			if (!process.dead)
-				process.sendSignal(SIGKILL);
-		}, 1500.msecs);
+		// Use killAfterTimeout(0) — SIGTERM already sent above, so the
+		// first timer fires immediately (re-sends SIGTERM, harmless), then
+		// SIGKILL + force-close pipes after 2s.
+		process.killAfterTimeout(0.seconds);
 	}
 
 	@property bool dead() { return process.dead; }
@@ -750,6 +747,7 @@ class AppServerProcess
 		process.onExit = null;
 		process.closeStdin();
 		process.terminate();
+		process.killAfterTimeout(0.seconds);
 		state_ = State.dead;
 		foreach (session; sessionsByTid)
 			session.onServerExit(1);
@@ -1501,7 +1499,7 @@ class CodexAgent : Agent
 				promise.fulfill(responseText.strip());
 		};
 
-		void cancel() { proc.sendSignal(15); } // SIGTERM; no-op if already exited
+		void cancel() { proc.killAfterTimeout(0.seconds); }
 
 		return OneShotHandle(promise, &cancel);
 	}

@@ -114,6 +114,13 @@ struct JsonlTracker
 			broadcastForkableUuids(tid, uuids);
 	}
 
+	/// Stop all JSONL watches (used during shutdown).
+	void stopAllWatches()
+	{
+		foreach (tid; jsonlWatches.keys)
+			stopJsonlWatch(tid);
+	}
+
 	/// Stop watching the JSONL file for a task.
 	void stopJsonlWatch(int tid)
 	{

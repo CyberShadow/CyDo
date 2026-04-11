@@ -1,6 +1,6 @@
 module cydo.agent.claude;
 
-import core.time : Duration;
+import core.time : Duration, seconds;
 
 import std.conv : to;
 import std.format : format;
@@ -614,7 +614,7 @@ class ClaudeCodeAgent : Agent
 				promise.fulfill(responseText.strip());
 		};
 
-		void cancel() { proc.sendSignal(15); } // SIGTERM; no-op if already exited
+		void cancel() { proc.killAfterTimeout(0.seconds); }
 
 		return OneShotHandle(promise, &cancel);
 	}
