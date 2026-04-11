@@ -674,9 +674,12 @@ class ClaudeCodeSession : AgentSession
 		if (config.appendSystemPrompt.length > 0)
 			claudeArgs ~= ["--append-system-prompt", config.appendSystemPrompt];
 
+		// Monitor interacts poorly with batch execution: the agent may yield its
+		// turn (producing a result) after calling Monitor, expecting a ping when
+		// the command finishes, but the session is ended instead.
 		string disallowed = config.allowNativeSubagents
-			? "EnterPlanMode,ExitPlanMode,AskUserQuestion"
-			: "Task,EnterPlanMode,ExitPlanMode,AskUserQuestion";
+			? "Monitor,EnterPlanMode,ExitPlanMode,AskUserQuestion"
+			: "Task,Monitor,EnterPlanMode,ExitPlanMode,AskUserQuestion";
 		claudeArgs ~= ["--disallowedTools", disallowed];
 
 		// When sandboxed, cmdPrefix handles workDir via --chdir (bwrap) or -C (env)
