@@ -131,6 +131,8 @@ static:
 		import cydo.agent.registry : agentRegistry;
 		import cydo.tasktype : substituteVars;
 
+		initLogLevel();
+
 		// Verify required files exist
 		auto metaPath = buildPath(dumpDir, "meta.json");
 		auto contextPath = buildPath(dumpDir, "context.jsonl");
