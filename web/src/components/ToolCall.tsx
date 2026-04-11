@@ -2657,15 +2657,7 @@ function hasReadOnlyCommandActions(result?: ToolResult): boolean {
 function defaultResultExpanded(name: string, result?: ToolResult): boolean {
   if (name === "commandExecution" && hasReadOnlyCommandActions(result))
     return false;
-  if (defaultExpandedResults.has(name)) return true;
-  // auto-expand when the result contains image blocks or SVG content
-  if (result && Array.isArray(result.content))
-    for (const b of result.content) if (b.type === "image") return true;
-  if (result) {
-    const text = extractResultText(result.content);
-    if (text && looksLikeSvg(stripCatLineNumbers(text).trim())) return true;
-  }
-  return false;
+  return defaultExpandedResults.has(name);
 }
 
 const askToolNames = new Set(["AskUserQuestion"]);
