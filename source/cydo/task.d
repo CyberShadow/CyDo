@@ -226,7 +226,7 @@ string buildSyntheticUserEvent(string text,
 	string extra;
 	if (isSteering) extra ~= `,"is_steering":true`;
 	if (pending) extra ~= `,"pending":true`;
-	return `{"type":"item/started","item_id":"synthetic-user","item_type":"user_message","text":` ~ textJson ~ extra ~ `}`;
+	return `{"type":"item/started","item_id":"synthetic-user","item_type":"user_message","content":[{"type":"text","text":` ~ textJson ~ `}]` ~ extra ~ `}`;
 }
 
 struct WsMessage

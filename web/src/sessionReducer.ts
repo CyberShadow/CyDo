@@ -909,8 +909,13 @@ function reduceItemStartedUserMessage(
   s: SessionState,
   event: ItemStartedEvent,
 ): SessionState {
-  const text = event.text ?? "";
-  const content = event.content ?? [{ type: "text" as const, text }];
+  const content = event.content ?? [];
+  const text = content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+  const blocks =
+    content.length > 0 ? content : [{ type: "text" as const, text: "" }];
 
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
   // removes it from the message list.
@@ -930,7 +935,7 @@ function reduceItemStartedUserMessage(
     const echoMsg: DisplayMessage = {
       id,
       type: "user" as const,
-      content,
+      content: blocks,
       pending: true,
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,
@@ -949,7 +954,7 @@ function reduceItemStartedUserMessage(
     return { ...state, messages };
   }
 
-  const hasContent = content.some(
+  const hasContent = blocks.some(
     (b) => (b.type === "text" && b.text.trim().length > 0) || b.type !== "text",
   );
   if (hasContent) {
@@ -957,7 +962,7 @@ function reduceItemStartedUserMessage(
     const echoMsg: DisplayMessage = {
       id,
       type: "user" as const,
-      content,
+      content: blocks,
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,
       isMeta: event.is_meta || undefined,

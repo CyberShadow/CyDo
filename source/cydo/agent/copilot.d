@@ -429,10 +429,13 @@ class CopilotAgent : Agent
 				CpUserMsgEvent ev;
 				try ev = jsonParse!CpUserMsgEvent(line);
 				catch (Exception) {}
+				ContentBlock cb;
+				cb.type = "text";
+				cb.text = ev.data.content;
 				ItemStartedEvent startEv;
 				startEv.item_id   = "cp-user-" ~ (base.id.length > 0 ? base.id : randomUUID().toString());
 				startEv.item_type = "user_message";
-				startEv.text      = ev.data.content;
+				startEv.content   = [cb];
 				startEv.uuid      = base.id;
 				events = [toJson(startEv)];
 				break;
@@ -857,7 +860,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 			// Emit user message item so the frontend confirms the pending placeholder.
 			emitEvent(
-				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","text":"` ~ escaped ~ `"}`);
+				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","content":[{"type":"text","text":"` ~ escaped ~ `"}]}`);
 
 			// SDK session.send returns immediately with messageId.
 			// Turn completion comes via session.idle event.

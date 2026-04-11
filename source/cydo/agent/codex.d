@@ -1764,7 +1764,10 @@ class CodexSession : AgentSession
 				if (userText.length == 0)
 					userText = item.text;
 				ev.item_id = "codex-user-" ~ to!string(itemCounter_++);
-				ev.text = userText;
+				ContentBlock cb;
+				cb.type = "text";
+				cb.text = userText;
+				ev.content = [cb];
 				outputHandler_(injectRawField(toJson(ev), rawNotification));
 			}
 			return;
@@ -2387,10 +2390,13 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		}
 		catch (Exception) {}
 
+		ContentBlock cb;
+		cb.type = "text";
+		cb.text = userText;
 		ItemStartedEvent ev;
 		ev.item_id = "codex-user-hist";
 		ev.item_type = "user_message";
-		ev.text = userText;
+		ev.content = [cb];
 		if (forkId !is null)
 			ev.uuid = forkId;
 		return [toJson(ev)];

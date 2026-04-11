@@ -1204,7 +1204,6 @@ class ClaudeCodeSession : AgentSession
 			ItemStartedEvent ev;
 			ev.item_id   = "cc-user-msg";
 			ev.item_type = "user_message";
-			ev.text      = text;
 			ev.content   = [cb];
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
@@ -1280,11 +1279,9 @@ class ClaudeCodeSession : AgentSession
 
 			if (userBlocks.length > 0)
 			{
-				import cydo.agent.protocol : extractContentText;
 				ItemStartedEvent ev;
 				ev.item_id   = "cc-user-msg";
 				ev.item_type = "user_message";
-				ev.text      = extractContentText(userBlocks);
 				ev.content   = userBlocks;
 				ev.is_replay   = raw.isReplay;
 				ev.is_synthetic = raw.isSynthetic;
@@ -1609,7 +1606,6 @@ private string[] normalizeUserHistory(string rawLine)
 		ItemStartedEvent ev;
 		ev.item_id     = "cc-user-msg";
 		ev.item_type   = "user_message";
-		ev.text        = text;
 		ev.content     = [cb];
 		ev.is_replay   = raw.isReplay;
 		ev.is_synthetic = raw.isSynthetic;
@@ -1684,11 +1680,9 @@ private string[] normalizeUserHistory(string rawLine)
 
 		if (userBlocks.length > 0)
 		{
-			import cydo.agent.protocol : extractContentText;
 			ItemStartedEvent ev;
 			ev.item_id     = "cc-user-msg";
 			ev.item_type   = "user_message";
-			ev.text        = extractContentText(userBlocks);
 			ev.content     = userBlocks;
 			ev.is_replay   = raw.isReplay;
 			ev.is_synthetic = raw.isSynthetic;
