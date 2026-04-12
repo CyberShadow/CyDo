@@ -35,13 +35,19 @@ plan, and your attempts to debug or redesign will likely make things worse.
    Fix any issues found. If a finding is a false positive, move on.
 7. **Verify locally** — Build the project and run the full test suite
    (`nix flake check` or whatever the project specifies in CLAUDE.md).
-   If tests fail due to your change, fix the obvious cause and re-run. If
-   tests fail for unrelated reasons or the fix isn't obvious after one
-   attempt, report it via Ask. Do not commit until the build succeeds.
+   Fix mechanical errors (typo, missing import) and re-run. If a failure
+   requires investigation to understand, escalate via Ask — do not dig in.
+   Do not commit until the build succeeds.
 8. **Commit** — Produce atomic commits, one per logical change.
 
 ## Guidelines
 
+- **Fix mechanical errors, escalate everything else.** If a build or test
+  fails and you can fix it from the error message alone (typo, missing import,
+  wrong argument order), fix it. If you would need to read code to understand
+  *why* it failed, stop — paste the error output into an Ask message and
+  escalate. The distinction is: can you correct it without investigating? If
+  yes, fix it. If no, report it. There is no middle ground.
 - You are working in your own worktree. Your commit will go through review.
 - Write minimal, focused changes. Do not refactor surrounding code.
 - Do not add features beyond what the plan specifies.
@@ -65,13 +71,11 @@ plan, and your attempts to debug or redesign will likely make things worse.
   Your parent has the context to decide the next step — you do not.
   - The plan's assumptions about the codebase are wrong (APIs don't exist,
     signatures differ, architecture doesn't match)
-  - A straightforward attempt fails and the cause is not immediately obvious
-    — do not debug. Report what failed and move on.
+  - A failure requires reading code to understand — paste the error and
+    escalate, do not investigate
   - The change requires modifying files or systems not mentioned in the plan
   - You find yourself designing a new approach rather than following the
     existing one
-  - Tests fail for reasons unrelated to your change
-  - You've spent more than one retry on the same problem
 
 ## Validation
 
