@@ -1651,6 +1651,26 @@ string buildSessionResumeParams(string sessionId, string model, SessionConfig co
 		~ `}`;
 }
 
+private struct CopilotMcpConfigEnv
+{
+	string CYDO_TID;
+	string CYDO_SOCKET;
+	string CYDO_CREATABLE_TYPES;
+	string CYDO_SWITCHMODES;
+	string CYDO_HANDOFFS;
+	string CYDO_INCLUDE_TOOLS;
+}
+
+private struct CopilotMcpConfigServer
+{
+	string command;
+	string[] args;
+	CopilotMcpConfigEnv env;
+}
+
+private struct CopilotMcpConfigServers { CopilotMcpConfigServer cydo; }
+private struct CopilotMcpConfig { CopilotMcpConfigServers mcpServers; }
+
 /// Generate a temporary MCP config file for Copilot's --additional-mcp-config flag.
 string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 	string switchModes, string handoffs, string[] includeTools, string mcpSocketPath)
@@ -1671,16 +1691,19 @@ string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
-	auto config = `{"mcpServers":{"cydo":{"command":"`
-		~ cpEscape(cydoBin) ~ `","args":["mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_SOCKET":"`
-		~ cpEscape(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
-		~ cpEscape(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
-		~ cpEscape(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ cpEscape(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
-		~ cpEscape(includeTools is null ? "" : includeTools.join(",")) ~ `"}}}}`;
-
-	write(configPath, config);
+	auto cfg = CopilotMcpConfig(CopilotMcpConfigServers(CopilotMcpConfigServer(
+		cydoBin,
+		["mcp-server"],
+		CopilotMcpConfigEnv(
+			to!string(tid),
+			mcpSocketPath,
+			creatableTaskTypes,
+			switchModes,
+			handoffs,
+			includeTools is null ? "" : includeTools.join(","),
+		),
+	)));
+	write(configPath, toJson(cfg));
 	return configPath;
 }
 

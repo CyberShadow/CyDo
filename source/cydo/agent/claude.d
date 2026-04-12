@@ -1366,6 +1366,28 @@ private string mangleProjectPath(string path)
 	return buf.idup;
 }
 
+private struct McpConfigEnv
+{
+	string CYDO_TID;
+	string CYDO_SOCKET;
+	string CYDO_CREATABLE_TYPES;
+	string CYDO_SWITCHMODES;
+	string CYDO_HANDOFFS;
+	string CYDO_INCLUDE_TOOLS;
+	string CYDO_PERMISSION_POLICY;
+}
+
+private struct McpConfigServer
+{
+	string type = "stdio";
+	string command;
+	string[] args;
+	McpConfigEnv env;
+}
+
+private struct McpConfigServers { McpConfigServer cydo; }
+private struct McpConfig { McpConfigServers mcpServers; }
+
 /// Generate a temporary MCP config file pointing to the cydo binary.
 /// creatableTaskTypes is pre-formatted text describing available task types.
 /// switchModes is pre-formatted text describing available SwitchMode continuations.
@@ -1388,17 +1410,21 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 
 	// MCP config pointing to our binary in MCP server mode.
 	// CYDO_SOCKET tells the proxy to connect via UNIX socket (no auth needed).
-	auto config = `{"mcpServers":{"cydo":{"type":"stdio","command":"`
-		~ escapeJsonString(cydoBin) ~ `","args":["mcp-server"],"env":{"CYDO_TID":"`
-		~ to!string(tid) ~ `","CYDO_SOCKET":"`
-		~ escapeJsonString(mcpSocketPath) ~ `","CYDO_CREATABLE_TYPES":"`
-		~ escapeJsonString(creatableTaskTypes) ~ `","CYDO_SWITCHMODES":"`
-		~ escapeJsonString(switchModes) ~ `","CYDO_HANDOFFS":"`
-		~ escapeJsonString(handoffs) ~ `","CYDO_INCLUDE_TOOLS":"`
-		~ escapeJsonString(includeTools is null ? "" : includeTools.join(",")) ~ `","CYDO_PERMISSION_POLICY":"`
-		~ escapeJsonString(permissionPolicy) ~ `"}}}}`;
-
-	write(configPath, config);
+	auto cfg = McpConfig(McpConfigServers(McpConfigServer(
+		"stdio",
+		cydoBin,
+		["mcp-server"],
+		McpConfigEnv(
+			to!string(tid),
+			mcpSocketPath,
+			creatableTaskTypes,
+			switchModes,
+			handoffs,
+			includeTools is null ? "" : includeTools.join(","),
+			permissionPolicy,
+		),
+	)));
+	write(configPath, toJson(cfg));
 	return configPath;
 }
 
