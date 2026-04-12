@@ -19,7 +19,8 @@ import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
-import cydo.agent.protocol : ContentBlock, TranslatedEvent, extrasToFragment;
+import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
+	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
@@ -555,7 +556,7 @@ private class CodexServerRouter : ICodexServer
 		auto raw = buildRawNotification("thread/compacted", toJson(params));
 		routeToSession(params.threadId, (s) {
 			if (s.outputHandler_)
-				s.outputHandler_(TranslatedEvent(`{"type":"session/compacted"}`, raw));
+				s.outputHandler_(TranslatedEvent(toJson(SessionCompactedEvent()), raw));
 		});
 		return resolve();
 	}
@@ -969,8 +970,11 @@ class CodexAgent : Agent
 					{
 						warningf("thread/resume error: %s", e.msg);
 						if (session.outputHandler_)
-							session.outputHandler_(TranslatedEvent(
-								`{"type":"process/stderr","text":` ~ toJson("thread/resume error: " ~ e.msg) ~ `}`, null));
+						{
+							ProcessStderrEvent ev;
+							ev.text = "thread/resume error: " ~ e.msg;
+							session.outputHandler_(TranslatedEvent(toJson(ev), null));
+						}
 						session.closeStdin();
 						return;
 					}
@@ -978,8 +982,11 @@ class CodexAgent : Agent
 					{
 						warningf("thread/resume returned empty thread id");
 						if (session.outputHandler_)
-							session.outputHandler_(TranslatedEvent(
-								`{"type":"process/stderr","text":"thread/resume returned empty thread id"}`, null));
+						{
+							ProcessStderrEvent ev;
+							ev.text = "thread/resume returned empty thread id";
+							session.outputHandler_(TranslatedEvent(toJson(ev), null));
+						}
 						session.closeStdin();
 						return;
 					}
@@ -1619,7 +1626,11 @@ class CodexSession : AgentSession
 		if (threadId.length == 0)
 		{
 			if (outputHandler_)
-				outputHandler_(TranslatedEvent(`{"type":"process/stderr","text":"Failed to start Codex thread"}`, null));
+			{
+				ProcessStderrEvent ev;
+				ev.text = "Failed to start Codex thread";
+				outputHandler_(TranslatedEvent(toJson(ev), null));
+			}
 			return;
 		}
 

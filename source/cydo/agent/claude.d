@@ -775,10 +775,10 @@ class ClaudeCodeSession : AgentSession
 	void interrupt()
 	{
 		import std.uuid : randomUUID;
-		auto requestId = randomUUID().toString();
-		auto msg = `{"type":"control_request","request_id":"` ~ requestId
-			~ `","request":{"subtype":"interrupt"}}`;
-		process.sendMessage(msg);
+		ClaudeControlRequest req;
+		req.request_id = randomUUID().toString();
+		req.request.subtype = "interrupt";
+		process.sendMessage(toJson(req));
 	}
 
 	void sigint()
@@ -1341,6 +1341,18 @@ class ClaudeCodeSession : AgentSession
 
 private:
 
+struct ClaudeControlRequest
+{
+	string type = "control_request";
+	string request_id;
+	struct Req { string subtype; }
+	Req request;
+}
+
+struct ClaudeTextBlock { string type = "text"; string text; }
+struct ClaudeImageSource { string type = "base64"; string data; string media_type; }
+struct ClaudeImageBlock { string type = "image"; ClaudeImageSource source; }
+
 struct ClaudeInput
 {
 	string type;
@@ -1428,13 +1440,6 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	return configPath;
 }
 
-/// Escape a string for embedding in JSON.
-string escapeJsonString(string s)
-{
-	import std.array : replace;
-	return s.replace(`\`, `\\`).replace(`"`, `\"`).replace("\n", `\n`).replace("\r", `\r`).replace("\t", `\t`);
-}
-
 /// Build a Claude-wire-format content array from agnostic ContentBlock[].
 /// Returns a JSONFragment suitable for embedding in ClaudeInputMessage.content.
 private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
@@ -1447,12 +1452,16 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 		if (i > 0) json ~= ",";
 		if (b.type == "text")
 		{
-			json ~= `{"type":"text","text":` ~ toJson(b.text) ~ `}`;
+			ClaudeTextBlock tb;
+			tb.text = b.text;
+			json ~= toJson(tb);
 		}
 		else if (b.type == "image")
 		{
-			json ~= `{"type":"image","source":{"type":"base64","data":` ~ toJson(b.data)
-				~ `,"media_type":` ~ toJson(b.media_type) ~ `}}`;
+			ClaudeImageBlock ib;
+			ib.source.data = b.data;
+			ib.source.media_type = b.media_type;
+			json ~= toJson(ib);
 		}
 		else
 		{

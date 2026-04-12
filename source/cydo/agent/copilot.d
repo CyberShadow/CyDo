@@ -1856,14 +1856,3 @@ string extractResultText(JSONFragment frag)
 	return "";
 }
 
-/// Escape a string for embedding in JSON.
-string cpEscape(string s)
-{
-	import std.array : replace;
-	return s
-		.replace(`\`, `\\`)
-		.replace(`"`, `\"`)
-		.replace("\n", `\n`)
-		.replace("\r", `\r`)
-		.replace("\t", `\t`);
-}
