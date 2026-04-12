@@ -29,11 +29,11 @@ test("first message renders as collapsed system-user-message with entry point la
   await expect(details).toBeAttached();
   await expect(details).not.toHaveAttribute("open");
 
-  // Click the <details> to expand and verify the full rendered text
+  // Click the <details> to expand and verify the full message
   await details.locator("summary").click();
   await expect(details).toHaveAttribute("open", "");
 
-  // The full rendered text for the "blank" template is just the task_description
+  // The full message for the "blank" template is just the task_description
   const pre = details.locator("pre");
   await expect(pre).toContainText(messageText);
 });

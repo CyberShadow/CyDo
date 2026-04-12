@@ -313,7 +313,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
           e.stopPropagation();
         }}
       >
-        <summary>Full rendered text</summary>
+        <summary>Full message</summary>
         <pre>{text}</pre>
       </details>
     </div>
