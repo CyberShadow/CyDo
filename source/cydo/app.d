@@ -34,7 +34,9 @@ import cydo.mcp.tools : AskQuestion, ToolsBackend;
 import cydo.task : BatchSignal;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
-import cydo.agent.protocol : ContentBlock, TranslatedEvent, extractContentText;
+import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
+	QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
+	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask,
@@ -1217,7 +1219,7 @@ class App : ToolsBackend
 				anyError = true;
 		}
 		auto arrayJson = toJson(items);
-		auto wrappedJson = `{"tasks":` ~ arrayJson ~ `}`;
+		auto wrappedJson = toJson(BatchResultEnvelope(items));
 		return resolve(McpResult(arrayJson, anyError, JSONFragment(wrappedJson)));
 	}
 
@@ -1650,13 +1652,9 @@ class App : ToolsBackend
 
 	private McpResult buildQuestionResult(int childTid)
 	{
-		import ae.utils.json : toJson;
 		import std.conv : to;
 		auto childTd = &tasks[childTid];
-		auto questionJson = `{"status":"question","tid":` ~ to!string(childTid)
-			~ `,"qid":` ~ to!string(childTd.pendingAskQid)
-			~ `,"title":` ~ toJson(childTd.title)
-			~ `,"question":` ~ toJson(childTd.pendingAskQuestion) ~ `}`;
+		auto questionJson = toJson(QuestionResult("question", childTid, childTd.pendingAskQid, childTd.title, childTd.pendingAskQuestion));
 		return McpResult(
 			"Sub-task \"" ~ childTd.title ~ "\" is asking (qid=" ~ to!string(childTd.pendingAskQid) ~ "): " ~ childTd.pendingAskQuestion,
 			false,
@@ -2053,7 +2051,7 @@ class App : ToolsBackend
 					// (handles compacted back-to-back dequeues)
 					if (lastDequeuedText.length > 0)
 					{
-						result ~= TranslatedEvent(buildSyntheticUserEvent(lastDequeuedText),
+						result ~= TranslatedEvent(toJson(buildSyntheticUserEvent(lastDequeuedText)),
 							lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
 						lastDequeuedText = null;
 						lastDequeuedRawLine = null;
@@ -2074,10 +2072,9 @@ class App : ToolsBackend
 							// enqueue UUID for undo support), matching live-stream
 							// behaviour where remove → synthetic broadcast.
 							auto enqueueUuid = format!"enqueue-%d"(enqLineNum);
-							auto synthetic = buildSyntheticUserEvent(text, true);
-							synthetic = synthetic[0 .. $ - 1]
-								~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-							result ~= TranslatedEvent(synthetic,
+							auto synEv = buildSyntheticUserEvent(text, true);
+							synEv.uuid = enqueueUuid;
+							result ~= TranslatedEvent(toJson(synEv),
 								enqRaw.length > 0 ? enqRaw : null);
 						}
 						else
@@ -2113,22 +2110,13 @@ class App : ToolsBackend
 					auto ts = ta.translateHistoryLine(line, lineNum);
 					if (ts.length > 0)
 					{
-						import std.string : indexOf;
 						import std.format : format;
 						auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
-						enum uuidPrefix = `"uuid":"`;
-						// Inject UUID into the first event (item/started type=user_message).
-						auto t = ts[0].translated;
-						auto uIdx = t.indexOf(uuidPrefix);
-						if (uIdx >= 0)
-						{
-							auto vStart = uIdx + uuidPrefix.length;
-							auto vEnd = t.indexOf('"', vStart);
-							t = t[0 .. vStart] ~ enqueueUuid ~ t[vEnd .. $];
-						}
-						else
-							t = t[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-						return [TranslatedEvent(t, ts[0].raw)] ~ ts[1 .. $];
+						// Inject enqueue UUID into the first event (item/started type=user_message).
+						import cydo.agent.protocol : ItemStartedEvent;
+						auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+						ev.uuid = enqueueUuid;
+						return [TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $];
 					}
 					return [];
 				}
@@ -2138,8 +2126,9 @@ class App : ToolsBackend
 					// emit synthetic with enqueue UUID before the assistant line.
 					import std.format : format;
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
-					auto synthetic = buildSyntheticUserEvent(lastDequeuedText, true);
-					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
+					auto synEv = buildSyntheticUserEvent(lastDequeuedText, true);
+					synEv.uuid = enqueueUuid;
+					auto synthetic = toJson(synEv);
 					auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
@@ -2180,10 +2169,10 @@ class App : ToolsBackend
 						~ `","data":{"content":` ~ toJson(text) ~ `}}` ~ "\n");
 				}
 				// Emit synthetic into history with uuid for undo support.
-				auto synthetic = buildSyntheticUserEvent(text);
-				synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ uuid ~ `"}`;
+				auto synEv = buildSyntheticUserEvent(text);
+				synEv.uuid = uuid;
 				td.history ~= Data(
-					(format!`{"tid":%d,"event":%s}`(tid, synthetic)).representation);
+					toJson(TaskEventEnvelope(tid, JSONFragment(toJson(synEv)))).representation);
 				td.rawSource ~= cast(string) null;
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
@@ -2214,9 +2203,7 @@ class App : ToolsBackend
 				ws.send(msg);
 				continue;
 			}
-			string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
-				~ `,"seq":` ~ format!"%d"(i)
-				~ `,"event":` ~ event ~ `}`;
+			auto clientEnvelope = toJson(TaskEventSeqEnvelope(tid, cast(int) i, JSONFragment(event)));
 			ws.send(Data(clientEnvelope.representation));
 		}
 
@@ -2988,10 +2975,7 @@ class App : ToolsBackend
 		auto userEvent = toJson(ev);
 		if (cydoMeta.length > 0)
 			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		string injected = `{"tid":` ~ format!"%d"(tid)
-			~ `,"unconfirmedUserEvent":` ~ userEvent
-			~ `}`;
-		auto data = Data(injected.representation);
+		auto data = Data(toJson(UnconfirmedUserEventEnvelope(tid, JSONFragment(userEvent))).representation);
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
@@ -3955,13 +3939,12 @@ class App : ToolsBackend
 
 	private static string makePermissionAllowJson(string inputJson)
 	{
-		return `{"behavior":"allow","updatedInput":` ~ inputJson ~ `}`;
+		return toJson(PermissionAllow("allow", JSONFragment(inputJson)));
 	}
 
 	private static string makePermissionDenyJson(string message)
 	{
-		import ae.utils.json : toJson;
-		return `{"behavior":"deny","message":` ~ toJson(message) ~ `}`;
+		return toJson(PermissionDeny(message));
 	}
 
 	/// Convert a JSON string to a UniNode for use as a Djinja template context variable.
@@ -4594,10 +4577,8 @@ class App : ToolsBackend
 						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
 						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
-						auto steeringEvent = buildSyntheticUserEvent(text, true);
-						string injected = `{"tid":` ~ format!"%d"(tid)
-							~ `,"event":` ~ steeringEvent ~ `}`;
-						auto data = Data(injected.representation);
+						auto steeringEv = buildSyntheticUserEvent(text, true);
+						auto data = Data(toJson(TaskEventEnvelope(tid, JSONFragment(toJson(steeringEv)))).representation);
 						ensureHistoryLoaded(tid);
 						td.history ~= data;
 						td.rawSource ~= enqueueRaw.length > 0 ? enqueueRaw : null;
@@ -4613,8 +4594,7 @@ class App : ToolsBackend
 		{
 			ensureHistoryLoaded(tid);
 			// Store clean translated event in history; raw goes to rawSource.
-			string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ ev.translated ~ `}`;
-			auto historyData = Data(historyEnvelope.representation);
+			auto historyData = Data(toJson(TaskEventEnvelope(tid, JSONFragment(ev.translated))).representation);
 			// Merge adjacent item/delta events with matching item_id to keep
 			// history compact without reordering events.
 			if (!mergeStreamingDelta(tid, ev.translated, historyData))
@@ -4626,10 +4606,7 @@ class App : ToolsBackend
 
 		// Send to clients: add _seq.
 		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-		string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
-			~ `,"seq":` ~ format!"%d"(seq)
-			~ `,"event":` ~ ev.translated ~ `}`;
-		sendToSubscribed(tid, Data(clientEnvelope.representation));
+		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(tid, cast(int) seq, JSONFragment(ev.translated))).representation));
 	}
 
 	/// Try to merge an item/delta into the last history entry.
@@ -4667,7 +4644,7 @@ class App : ToolsBackend
 		// Reconstruct envelope from merged content.
 		import std.json : parseJSON;
 		auto mergedObj = parseJSON(merged);
-		string canonical = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ mergedObj["event"].toString() ~ `}`;
+		auto canonical = toJson(TaskEventEnvelope(tid, JSONFragment(mergedObj["event"].toString())));
 		(*history)[$ - 1] = Data(canonical.representation);
 		return true;
 	}

@@ -9,7 +9,9 @@ import ae.sys.data;
 import ae.sys.database : Database;
 import ae.sys.dataset : DataVec;
 
-import cydo.agent.protocol : TranslatedEvent;
+import ae.utils.json : JSONFragment, toJson;
+
+import cydo.agent.protocol : TaskEventEnvelope, TranslatedEvent;
 
 struct Persistence
 {
@@ -350,7 +352,7 @@ LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 		// Wrap each translated event with file-event envelope; store raw separately.
 		foreach (t; translated)
 		{
-			string injected = format!`{"tid":%d,"event":`(tid) ~ t.translated ~ `}`;
+			auto injected = toJson(TaskEventEnvelope(tid, JSONFragment(t.translated)));
 			result.history ~= Data(injected.representation);
 			result.rawSource ~= t.raw;
 		}

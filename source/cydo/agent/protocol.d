@@ -1,6 +1,6 @@
 module cydo.agent.protocol;
 
-import ae.utils.json : JSONFragment, JSONOptional, JSONExtras, jsonParse, toJson;
+import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONExtras, jsonParse, toJson;
 
 /// Convert a JSONExtras map to a JSONFragment wrapping it as a JSON object.
 /// Returns JSONFragment.init (null) if the extras map is empty.
@@ -288,6 +288,64 @@ struct TranslatedEvent
 	string raw;         // original agent output line (null for synthetic events)
 }
 
+
+// ── Envelope structs ───────────────────────────────────────────────────────
+
+/// Envelope wrapping a translated event with its task ID.
+struct TaskEventEnvelope
+{
+	int tid;
+	JSONFragment event;
+}
+
+/// Envelope wrapping a translated event with task ID and sequence number.
+struct TaskEventSeqEnvelope
+{
+	int tid;
+	int seq;
+	JSONFragment event;
+}
+
+/// Envelope for an unconfirmed user event broadcast.
+struct UnconfirmedUserEventEnvelope
+{
+	int tid;
+	@JSONName("unconfirmedUserEvent") JSONFragment unconfirmedUserEvent;
+}
+
+// ── Permission response structs ────────────────────────────────────────────
+
+/// Permission allow response sent to the agent.
+struct PermissionAllow
+{
+	string behavior = "allow";
+	JSONFragment updatedInput;
+}
+
+/// Permission deny response sent to the agent.
+struct PermissionDeny
+{
+	string behavior = "deny";
+	string message;
+}
+
+// ── MCP result structs ─────────────────────────────────────────────────────
+
+/// Structured content of a "question" MCP result returned to the parent agent.
+struct QuestionResult
+{
+	string status = "question";
+	int tid;
+	int qid;
+	string title;
+	string question;
+}
+
+/// Wrapper for batch task results.
+struct BatchResultEnvelope
+{
+	JSONFragment[] tasks;
+}
 
 /// Decompose a raw tool name (possibly `mcp__server__tool`) into structured fields.
 /// On return, `name` holds the canonical display name, `tool_server` and `tool_source`

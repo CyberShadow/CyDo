@@ -9,6 +9,8 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial;
 import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
+import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
+
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
 import cydo.sandbox : ProcessLaunch;
@@ -217,17 +219,18 @@ struct QueueOperationProbe
 	string content;
 }
 
-/// Build a synthetic item/started (type=user_message) JSON string with optional flags.
-string buildSyntheticUserEvent(string text,
+/// Build a synthetic item/started (type=user_message) struct with optional flags.
+/// Callers should set additional fields (e.g. uuid) and call toJson() to serialize.
+ItemStartedEvent buildSyntheticUserEvent(string text,
 	bool isSteering = false, bool pending = false)
 {
-	import ae.utils.json : toJson;
-	auto textJson = toJson(text);
-	// item_id for synthetic user messages — uses a fixed prefix so they're recognizable
-	string extra;
-	if (isSteering) extra ~= `,"is_steering":true`;
-	if (pending) extra ~= `,"pending":true`;
-	return `{"type":"item/started","item_id":"synthetic-user","item_type":"user_message","content":[{"type":"text","text":` ~ textJson ~ `}]` ~ extra ~ `}`;
+	ItemStartedEvent ev;
+	ev.item_id   = "synthetic-user";
+	ev.item_type = "user_message";
+	ev.content   = [ContentBlock("text", text)];
+	ev.is_steering = isSteering;
+	ev.pending     = pending;
+	return ev;
 }
 
 struct WsMessage
