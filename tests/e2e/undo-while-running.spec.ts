@@ -1,12 +1,6 @@
 import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
 
-test("undo while session is running stops session and removes message", async ({ page, agentType }) => {
-  // assign_uuids provides retroactive UUID assignment for Codex/Copilot, but
-  // relies on the JSONL watcher finding the history file via the retry timer
-  // (fired 2s after session start). During a "stall session" test the timer
-  // may not fire before the test checks for the undo button.
-  test.skip(agentType === "codex" || agentType === "copilot", "JSONL retry timer may not fire in time during stall");
-
+test("undo while session is running stops session and removes message", async ({ page }) => {
   await enterSession(page);
 
   await sendMessage(page, 'Please reply with "first-reply"');
