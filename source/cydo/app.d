@@ -34,10 +34,10 @@ import cydo.mcp.tools : AskQuestion, ToolsBackend;
 import cydo.task : BatchSignal;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
-import cydo.agent.protocol : ContentBlock, extractContentText;
+import cydo.agent.protocol : ContentBlock, TranslatedEvent, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
-import cydo.persist : ForkResult, Persistence, countLinesAfterForkId, createForkTask,
+import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask,
 	editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	prepareProcessLaunch, resolveExecutablePath,
@@ -777,7 +777,6 @@ class App : ToolsBackend
 
 	private void handleRawSourceRequest(HttpRequest request, HttpServerConnection conn)
 	{
-		import cydo.agent.protocol : extractRawField;
 		import cydo.task : extractEventFromEnvelope;
 		import std.conv : to, ConvException;
 
@@ -822,9 +821,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto envelope = cast(string) td.history[seq].toGC();
-		auto event = extractEventFromEnvelope(envelope);
-		auto raw = event.length > 0 ? extractRawField(event) : null;
+		auto raw = seq < td.rawSource.length ? td.rawSource[seq] : null;
 
 		response.headers["Content-Type"] = "application/json";
 		conn.sendResponse(response.serveData(raw !is null ? raw : "null"));
@@ -2026,7 +2023,7 @@ class App : ToolsBackend
 		string lastDequeuedText;
 		int lastDequeuedEnqueueLineNum;
 		string lastDequeuedRawLine;
-		td.history = loadTaskHistory(tid, jsonlPath, delegate string[](string line, int lineNum) {
+		auto loaded = loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
 			if (isQueueOperation(line))
 			{
 				import ae.utils.json : jsonParse;
@@ -2051,16 +2048,13 @@ class App : ToolsBackend
 				}
 				else if (op.operation == "dequeue" || op.operation == "remove")
 				{
-					import cydo.agent.protocol : injectRawField;
-					string[] result;
+					TranslatedEvent[] result;
 					// Flush any deferred synthetic from a prior dequeue/remove
 					// (handles compacted back-to-back dequeues)
 					if (lastDequeuedText.length > 0)
 					{
-						auto synthetic = buildSyntheticUserEvent(lastDequeuedText);
-						if (lastDequeuedRawLine.length > 0)
-							synthetic = injectRawField(synthetic, lastDequeuedRawLine);
-						result ~= synthetic;
+						result ~= TranslatedEvent(buildSyntheticUserEvent(lastDequeuedText),
+							lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
 						lastDequeuedText = null;
 						lastDequeuedRawLine = null;
 					}
@@ -2083,9 +2077,8 @@ class App : ToolsBackend
 							auto synthetic = buildSyntheticUserEvent(text, true);
 							synthetic = synthetic[0 .. $ - 1]
 								~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-							if (enqRaw.length > 0)
-								synthetic = injectRawField(synthetic, enqRaw);
-							result ~= synthetic;
+							result ~= TranslatedEvent(synthetic,
+								enqRaw.length > 0 ? enqRaw : null);
 						}
 						else
 						{
@@ -2125,7 +2118,7 @@ class App : ToolsBackend
 						auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
 						enum uuidPrefix = `"uuid":"`;
 						// Inject UUID into the first event (item/started type=user_message).
-						auto t = ts[0];
+						auto t = ts[0].translated;
 						auto uIdx = t.indexOf(uuidPrefix);
 						if (uIdx >= 0)
 						{
@@ -2135,7 +2128,7 @@ class App : ToolsBackend
 						}
 						else
 							t = t[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-						return [t] ~ ts[1 .. $];
+						return [TranslatedEvent(t, ts[0].raw)] ~ ts[1 .. $];
 					}
 					return [];
 				}
@@ -2144,17 +2137,15 @@ class App : ToolsBackend
 					// Compacted: assistant response appeared without preceding user echo —
 					// emit synthetic with enqueue UUID before the assistant line.
 					import std.format : format;
-					import cydo.agent.protocol : injectRawField;
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
 					auto synthetic = buildSyntheticUserEvent(lastDequeuedText, true);
 					synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ enqueueUuid ~ `"}`;
-					if (lastDequeuedRawLine.length > 0)
-						synthetic = injectRawField(synthetic, lastDequeuedRawLine);
+					auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
 					lastDequeuedRawLine = null;
 					auto ts = ta.translateHistoryLine(line, lineNum);
-					return [synthetic] ~ ts;
+					return [TranslatedEvent(synthetic, syntheticRaw)] ~ ts;
 				}
 				// Other lines (file-history-snapshot, progress, etc.) are translated/dropped;
 				// stay in deferred mode waiting for type:"user" or type:"assistant".
@@ -2164,6 +2155,9 @@ class App : ToolsBackend
 				userMsgFromJsonl++;
 			return ta.translateHistoryLine(line, lineNum);
 		});
+		import core.lifetime : move;
+		td.history = move(loaded.history);
+		td.rawSource = loaded.rawSource;
 		td.historyLoaded = true;
 		// For agents without queue-operations (e.g. Copilot), emit synthetics for
 		// user messages that were sent but not yet flushed to JSONL at kill time.
@@ -2190,6 +2184,7 @@ class App : ToolsBackend
 				synthetic = synthetic[0 .. $ - 1] ~ `,"uuid":"` ~ uuid ~ `"}`;
 				td.history ~= Data(
 					(format!`{"tid":%d,"event":%s}`(tid, synthetic)).representation);
+				td.rawSource ~= cast(string) null;
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -2207,8 +2202,7 @@ class App : ToolsBackend
 
 		ensureHistoryLoaded(tid);
 
-		// Send unified history to requesting client (strip _raw, add _seq)
-		import cydo.agent.protocol : stripRawField;
+		// Send unified history to requesting client (add _seq)
 		import cydo.task : extractEventFromEnvelope;
 		foreach (i, ref msg; td.history)
 		{
@@ -2220,10 +2214,9 @@ class App : ToolsBackend
 				ws.send(msg);
 				continue;
 			}
-			auto stripped = stripRawField(event);
 			string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
 				~ `,"seq":` ~ format!"%d"(i)
-				~ `,"event":` ~ stripped ~ `}`;
+				~ `,"event":` ~ event ~ `}`;
 			ws.send(Data(clientEnvelope.representation));
 		}
 
@@ -2869,6 +2862,7 @@ class App : ToolsBackend
 				return;
 			}
 			td.history = DataVec();
+			td.rawSource = null;
 			td.historyLoaded = false;
 			unsubscribeAll(tid);
 			// Clip pendingSteeringTexts to match remaining user messages in the
@@ -2951,6 +2945,7 @@ class App : ToolsBackend
 		}
 
 		td.history = DataVec();
+		td.rawSource = null;
 		td.historyLoaded = false;
 		unsubscribeAll(tid);
 
@@ -3375,10 +3370,10 @@ class App : ToolsBackend
 		if (td.agentSessionId.length > 0)
 			jsonlTracker.startJsonlWatch(tid);
 
-		td.session.onOutput = (string line) {
-			broadcastTask(tid, line);
+		td.session.onOutput = (TranslatedEvent ev) {
+			broadcastTask(tid, ev);
 
-			if (taskAgent.isTurnResult(line))
+			if (taskAgent.isTurnResult(ev.translated))
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
@@ -3391,7 +3386,7 @@ class App : ToolsBackend
 				jsonlTracker.broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
-				td.resultText = taskAgent.extractResultText(line);
+				td.resultText = taskAgent.extractResultText(ev.translated);
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
@@ -3487,7 +3482,7 @@ class App : ToolsBackend
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = line;
-			broadcastTask(tid, toJson(ev));
+			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			lastStderr = line;
 		};
 
@@ -3529,7 +3524,7 @@ class App : ToolsBackend
 							break;
 						}
 			}
-			broadcastTask(tid, toJson(ev));
+			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			if (tid !in tasks)
 				return;
 			tasks[tid].isProcessing = false;
@@ -3589,6 +3584,7 @@ class App : ToolsBackend
 			// Force JSONL reload on next request_history so that
 			// fork IDs from the file replace live-stream UUIDs.
 			tasks[tid].history = DataVec();
+			tasks[tid].rawSource = null;
 			tasks[tid].historyLoaded = false;
 			unsubscribeAll(tid);
 
@@ -4561,23 +4557,23 @@ class App : ToolsBackend
 		return toJson(m);
 	}
 
-	private void broadcastTask(int tid, string rawLine)
+	private void broadcastTask(int tid, TranslatedEvent ev)
 	{
-		// Extract agent session ID before translation (uses raw Claude format)
+		// Extract agent session ID from translated event
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
-			tryExtractAgentSessionId(tid, rawLine);
+			tryExtractAgentSessionId(tid, ev.translated);
 
 		// Intercept queue-operation events for steering message handling
-		if (isQueueOperation(rawLine))
+		if (isQueueOperation(ev.translated))
 		{
 			if (auto td = tid in tasks)
 			{
 				import ae.utils.json : jsonParse;
-				auto op = jsonParse!QueueOperationProbe(rawLine);
+				auto op = jsonParse!QueueOperationProbe(ev.translated);
 				if (op.operation == "enqueue")
 				{
 					td.enqueuedSteeringTexts ~= op.content;
-					td.enqueuedSteeringRawLines ~= rawLine;
+					td.enqueuedSteeringRawLines ~= ev.translated;
 					return; // already displayed via unconfirmedUserEvent
 				}
 				else if (op.operation == "dequeue")
@@ -4598,15 +4594,13 @@ class App : ToolsBackend
 						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
 						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
-						import cydo.agent.protocol : injectRawField;
 						auto steeringEvent = buildSyntheticUserEvent(text, true);
-						if (enqueueRaw.length > 0)
-							steeringEvent = injectRawField(steeringEvent, enqueueRaw);
 						string injected = `{"tid":` ~ format!"%d"(tid)
 							~ `,"event":` ~ steeringEvent ~ `}`;
 						auto data = Data(injected.representation);
 						ensureHistoryLoaded(tid);
 						td.history ~= data;
+						td.rawSource ~= enqueueRaw.length > 0 ? enqueueRaw : null;
 						sendToSubscribed(tid, data);
 					}
 					return;
@@ -4615,33 +4609,27 @@ class App : ToolsBackend
 			return; // unknown queue operation — consume silently
 		}
 
-		// Translate to agent-agnostic protocol (returns zero or more events).
-		auto translatedEvents = agentForTask(tid).translateLiveEvent(rawLine);
-
-		import cydo.agent.protocol : stripRawField;
-
-		foreach (translated; translatedEvents)
+		if (tid in tasks)
 		{
-			if (tid in tasks)
+			ensureHistoryLoaded(tid);
+			// Store clean translated event in history; raw goes to rawSource.
+			string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ ev.translated ~ `}`;
+			auto historyData = Data(historyEnvelope.representation);
+			// Merge adjacent item/delta events with matching item_id to keep
+			// history compact without reordering events.
+			if (!mergeStreamingDelta(tid, ev.translated, historyData))
 			{
-				ensureHistoryLoaded(tid);
-				// Store full event (with _raw) in history.
-				string historyEnvelope = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ translated ~ `}`;
-				auto historyData = Data(historyEnvelope.representation);
-				// Merge adjacent item/delta events with matching item_id to keep
-				// history compact without reordering events.
-				if (!mergeStreamingDelta(tid, translated, historyData))
-					tasks[tid].history ~= historyData;
+				tasks[tid].history ~= historyData;
+				tasks[tid].rawSource ~= ev.raw;
 			}
-
-			// Send to clients: strip _raw, add _seq.
-			auto stripped = stripRawField(translated);
-			auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-			string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
-				~ `,"seq":` ~ format!"%d"(seq)
-				~ `,"event":` ~ stripped ~ `}`;
-			sendToSubscribed(tid, Data(clientEnvelope.representation));
 		}
+
+		// Send to clients: add _seq.
+		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
+		string clientEnvelope = `{"tid":` ~ format!"%d"(tid)
+			~ `,"seq":` ~ format!"%d"(seq)
+			~ `,"event":` ~ ev.translated ~ `}`;
+		sendToSubscribed(tid, Data(clientEnvelope.representation));
 	}
 
 	/// Try to merge an item/delta into the last history entry.
@@ -4676,11 +4664,9 @@ class App : ToolsBackend
 		if (merged is null)
 			return false;
 
-		// Reconstruct canonical envelope (_raw stripped).
+		// Reconstruct envelope from merged content.
 		import std.json : parseJSON;
 		auto mergedObj = parseJSON(merged);
-		if ("_raw" in mergedObj["event"].objectNoRef)
-			mergedObj["event"].objectNoRef.remove("_raw");
 		string canonical = `{"tid":` ~ format!"%d"(tid) ~ `,"event":` ~ mergedObj["event"].toString() ~ `}`;
 		(*history)[$ - 1] = Data(canonical.representation);
 		return true;
@@ -5284,7 +5270,7 @@ class App : ToolsBackend
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = "failed to generate title: " ~ e.msg;
-			broadcastTask(tid, toJson(ev));
+			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 		}).ignoreResult();
 
 	}

@@ -351,16 +351,16 @@ class ClaudeCodeAgent : Agent
 		return buildPath(claudeDir, "projects", mangleProjectPath(cwd), sessionId ~ ".jsonl");
 	}
 
-	string[] translateHistoryLine(string line, int lineNum)
+	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		return translateClaudeHistoryEvent(line);
 	}
 
-	string[] translateLiveEvent(string rawLine)
+	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
 		// ClaudeCodeSession handles translation statefully inline.
 		// This is an identity pass-through for pre-translated events.
-		return [rawLine];
+		return [TranslatedEvent(rawLine, null)];
 	}
 
 	bool isTurnResult(string rawLine)
@@ -674,7 +674,7 @@ class ClaudeCodeAgent : Agent
 class ClaudeCodeSession : AgentSession
 {
 	private AgentProcess process;
-	private void delegate(string line) outputHandler;
+	private void delegate(TranslatedEvent) outputHandler;
 	private void delegate(string line) stderrHandler;
 	private void delegate(int status) exitHandler;
 
@@ -801,7 +801,7 @@ class ClaudeCodeSession : AgentSession
 		process.killAfterTimeout(timeout);
 	}
 
-	@property void onOutput(void delegate(string line) dg)
+	@property void onOutput(void delegate(TranslatedEvent) dg)
 	{
 		outputHandler = dg;
 	}
@@ -823,10 +823,10 @@ class ClaudeCodeSession : AgentSession
 
 	// ── Stateful per-line translation ──────────────────────────────────────
 
-	private void emitEvent(string event)
+	private void emitEvent(TranslatedEvent ev)
 	{
-		if (outputHandler && event.length > 0)
-			outputHandler(event);
+		if (outputHandler && ev.translated.length > 0)
+			outputHandler(ev);
 	}
 
 	private void translateLiveLine(string rawLine)
@@ -836,7 +836,7 @@ class ClaudeCodeSession : AgentSession
 		// Queue operations must pass through raw so broadcastTask can intercept them.
 		if (rawLine.canFind(`"queue-operation"`))
 		{
-			emitEvent(rawLine);
+			emitEvent(TranslatedEvent(rawLine, null));
 			return;
 		}
 
@@ -846,9 +846,9 @@ class ClaudeCodeSession : AgentSession
 			probe = jsonParse!TypeProbe(rawLine);
 		catch (Exception)
 		{
-			import cydo.agent.protocol : makeUnrecognizedEvent, injectRawField;
+			import cydo.agent.protocol : makeUnrecognizedEvent;
 			import ae.utils.json : toJson;
-			emitEvent(injectRawField(makeUnrecognizedEvent("non-JSON output"), toJson(rawLine)));
+			emitEvent(TranslatedEvent(makeUnrecognizedEvent("non-JSON output"), toJson(rawLine)));
 			return;
 		}
 
@@ -866,7 +866,7 @@ class ClaudeCodeSession : AgentSession
 			default:
 				// Stateless translation for system, result, summary, control, etc.
 				auto t = translateClaudeEvent(rawLine);
-				if (t !is null)
+				if (t.translated !is null)
 					emitEvent(t);
 				return;
 		}
@@ -923,13 +923,13 @@ class ClaudeCodeSession : AgentSession
 					activeItemIds_[idx] = itemId;
 					activeItemTypes_[idx] = blockType;
 
-					import cydo.agent.protocol : ItemStartedEvent, injectRawField, decomposeToolName;
+					import cydo.agent.protocol : ItemStartedEvent, decomposeToolName;
 					ItemStartedEvent ev;
 					ev.item_id = itemId;
 					ev.item_type = blockType;
 					if (blockType == "tool_use")
 						decomposeToolName(probe.content_block.name, ev.name, ev.tool_server, ev.tool_source);
-					emitEvent(injectRawField(toJson(ev), rawLine));
+					emitEvent(TranslatedEvent(toJson(ev), rawLine));
 				}
 				catch (Exception e)
 				{ tracef("translateStreamEventLive: block_start error: %s", e.msg); }
@@ -979,7 +979,7 @@ class ClaudeCodeSession : AgentSession
 						ev.delta_type = "text_delta";
 						ev.content = probe.delta.text;
 					}
-					emitEvent(toJson(ev));
+					emitEvent(TranslatedEvent(toJson(ev), null));
 				}
 				catch (Exception e)
 				{ tracef("translateStreamEventLive: block_delta error: %s", e.msg); }
@@ -995,12 +995,12 @@ class ClaudeCodeSession : AgentSession
 					auto idx = probe.index;
 					if (idx < activeItemIds_.length && activeItemIds_[idx] !is null)
 					{
-						import cydo.agent.protocol : ItemCompletedEvent, injectRawField;
+						import cydo.agent.protocol : ItemCompletedEvent;
 						ItemCompletedEvent ev;
 						ev.item_id = activeItemIds_[idx];
 						if (auto extras = activeItemIds_[idx] in blockExtras_)
 							ev._extras = *extras;
-						emitEvent(injectRawField(toJson(ev), rawLine));
+						emitEvent(TranslatedEvent(toJson(ev), rawLine));
 					}
 				}
 				catch (Exception e)
@@ -1010,9 +1010,9 @@ class ClaudeCodeSession : AgentSession
 
 			case "message_stop":
 			{
-				import cydo.agent.protocol : TurnStopEvent, injectRawField;
+				import cydo.agent.protocol : TurnStopEvent;
 				TurnStopEvent tsev;
-				emitEvent(injectRawField(toJson(tsev), rawLine));
+				emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 				activeItemIds_ = null;
 				activeItemTypes_ = null;
 				blockExtras_ = null;
@@ -1033,7 +1033,7 @@ class ClaudeCodeSession : AgentSession
 	/// messages even in the live stream, so they are processed like history.
 	private void translateAssistantLive(string rawLine)
 	{
-		import cydo.agent.protocol : TurnDeltaEvent, UsageInfo, injectRawField;
+		import cydo.agent.protocol : TurnDeltaEvent, UsageInfo;
 
 		@JSONPartial static struct ClaudeBlock
 		{
@@ -1090,7 +1090,7 @@ class ClaudeCodeSession : AgentSession
 				if (b.text.length > 0) errorText ~= b.text;
 			AgentErrorEvent ev;
 			ev.message = errorText;
-			emitEvent(injectRawField(toJson(ev), rawLine));
+			emitEvent(TranslatedEvent(toJson(ev), rawLine));
 			return;
 		}
 
@@ -1123,7 +1123,7 @@ class ClaudeCodeSession : AgentSession
 					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
 					startEv.text = text;
 				}
-				emitEvent(injectRawField(toJson(startEv), rawLine));
+				emitEvent(TranslatedEvent(toJson(startEv), rawLine));
 
 				ItemCompletedEvent compEv;
 				compEv.item_id = itemId;
@@ -1135,7 +1135,7 @@ class ClaudeCodeSession : AgentSession
 					compEv.text = text;
 				}
 				compEv._extras = extrasToFragment(b._extras);
-				emitEvent(injectRawField(toJson(compEv), rawLine));
+				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
 			}
 
 			UsageInfo subUsage;
@@ -1158,7 +1158,7 @@ class ClaudeCodeSession : AgentSession
 			tsev.is_sidechain       = raw.isSidechain;
 			tsev.uuid               = raw.uuid;
 			tsev._extras = extrasToFragment(collectAllExtras(raw));
-			emitEvent(injectRawField(toJson(tsev), rawLine));
+			emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 			return;
 		}
 
@@ -1199,12 +1199,12 @@ class ClaudeCodeSession : AgentSession
 		ev.is_sidechain       = raw.isSidechain;
 		ev.uuid               = raw.uuid;
 		ev._extras            = extrasToFragment(raw._extras);
-		emitEvent(injectRawField(toJson(ev), rawLine));
+		emitEvent(TranslatedEvent(toJson(ev), rawLine));
 	}
 
 	private void normalizeUserLive(string rawLine)
 	{
-		import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent, injectRawField;
+		import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
 
 		@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 		@JSONPartial static struct ClaudeUser
@@ -1255,7 +1255,7 @@ class ClaudeCodeSession : AgentSession
 			ev.uuid               = raw.uuid;
 			ev.parent_tool_use_id = raw.parent_tool_use_id;
 			ev.is_sidechain       = raw.isSidechain;
-			emitEvent(injectRawField(toJson(ev), rawLine));
+			emitEvent(TranslatedEvent(toJson(ev), rawLine));
 		}
 		else if (contentJson[0] == '[')
 		{
@@ -1300,7 +1300,7 @@ class ClaudeCodeSession : AgentSession
 						ev.tool_result = raw.toolUseResult;
 					else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
 						ev.tool_result = raw.tool_use_result;
-					emitEvent(injectRawField(toJson(ev), rawLine));
+					emitEvent(TranslatedEvent(toJson(ev), rawLine));
 				}
 				else if (item.type == "text")
 				{
@@ -1333,7 +1333,7 @@ class ClaudeCodeSession : AgentSession
 				ev.uuid               = raw.uuid;
 				ev.parent_tool_use_id = raw.parent_tool_use_id;
 				ev.is_sidechain       = raw.isSidechain;
-				emitEvent(injectRawField(toJson(ev), rawLine));
+				emitEvent(TranslatedEvent(toJson(ev), rawLine));
 			}
 		}
 	}
@@ -1442,15 +1442,15 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 // ─── History translation (stateless — complete JSONL messages) ────────────
 
 /// Route a raw Claude JSONL history line to the appropriate translator.
-/// Returns zero or more agnostic event strings.
-private string[] translateClaudeHistoryEvent(string rawLine)
+/// Returns zero or more agnostic event pairs.
+private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 {
 	@JSONPartial static struct TypeProbe { string type; string subtype; }
 	TypeProbe probe;
 	try
 		probe = jsonParse!TypeProbe(rawLine);
 	catch (Exception)
-	{ return [rawLine]; }
+	{ return [TranslatedEvent(rawLine, rawLine)]; }
 
 	switch (probe.type)
 	{
@@ -1462,15 +1462,15 @@ private string[] translateClaudeHistoryEvent(string rawLine)
 			return []; // not stored in JSONL history
 		default:
 			auto t = translateClaudeEvent(rawLine);
-			return t !is null ? [t] : [];
+			return t.translated !is null ? [t] : [];
 	}
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
-private string[] translateAssistantHistory(string rawLine)
+private TranslatedEvent[] translateAssistantHistory(string rawLine)
 {
 	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
-		UsageInfo, injectRawField, decomposeToolName;
+		UsageInfo, decomposeToolName;
 
 	static struct ClaudeThinkingBlock
 	{
@@ -1535,10 +1535,10 @@ private string[] translateAssistantHistory(string rawLine)
 		}
 		AgentErrorEvent ev;
 		ev.message = errorText;
-		return [injectRawField(toJson(ev), rawLine)];
+		return [TranslatedEvent(toJson(ev), rawLine)];
 	}
 
-	string[] events;
+	TranslatedEvent[] events;
 
 	foreach (idx, ref b; raw.message.content)
 	{
@@ -1560,7 +1560,7 @@ private string[] translateAssistantHistory(string rawLine)
 			auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
 			startEv.text = text;
 		}
-		events ~= injectRawField(toJson(startEv), rawLine);
+		events ~= TranslatedEvent(toJson(startEv), rawLine);
 
 		ItemCompletedEvent compEv;
 		compEv.item_id = itemId;
@@ -1572,7 +1572,7 @@ private string[] translateAssistantHistory(string rawLine)
 			compEv.text = text;
 		}
 		compEv._extras = extrasToFragment(b._extras);
-		events ~= injectRawField(toJson(compEv), rawLine);
+		events ~= TranslatedEvent(toJson(compEv), rawLine);
 	}
 
 	// Extract usage.
@@ -1596,15 +1596,15 @@ private string[] translateAssistantHistory(string rawLine)
 	tsev.is_sidechain      = raw.isSidechain;
 	tsev.uuid              = raw.uuid;
 	tsev._extras = extrasToFragment(collectAllExtras(raw));
-	events ~= injectRawField(toJson(tsev), rawLine);
+	events ~= TranslatedEvent(toJson(tsev), rawLine);
 
 	return events;
 }
 
 /// Translate a Claude history user message to item/result + item/started events.
-private string[] normalizeUserHistory(string rawLine)
+private TranslatedEvent[] normalizeUserHistory(string rawLine)
 {
-	import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent, injectRawField;
+	import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
 
 	@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 	@JSONPartial static struct ClaudeUser
@@ -1632,7 +1632,7 @@ private string[] normalizeUserHistory(string rawLine)
 	if (contentJson is null || contentJson.length == 0)
 		return [];
 
-	string[] events;
+	TranslatedEvent[] events;
 
 	if (contentJson[0] == '"')
 	{
@@ -1657,7 +1657,7 @@ private string[] normalizeUserHistory(string rawLine)
 		ev.uuid               = raw.uuid;
 		ev.parent_tool_use_id = raw.parent_tool_use_id;
 		ev.is_sidechain       = raw.isSidechain;
-		events ~= injectRawField(toJson(ev), rawLine);
+		events ~= TranslatedEvent(toJson(ev), rawLine);
 	}
 	else if (contentJson[0] == '[')
 	{
@@ -1701,7 +1701,7 @@ private string[] normalizeUserHistory(string rawLine)
 					ev.tool_result = raw.toolUseResult;
 				else if (raw.tool_use_result.json !is null && raw.tool_use_result.json.length > 0)
 					ev.tool_result = raw.tool_use_result;
-				events ~= injectRawField(toJson(ev), rawLine);
+				events ~= TranslatedEvent(toJson(ev), rawLine);
 			}
 			else if (item.type == "text")
 			{
@@ -1734,7 +1734,7 @@ private string[] normalizeUserHistory(string rawLine)
 			ev.uuid               = raw.uuid;
 			ev.parent_tool_use_id = raw.parent_tool_use_id;
 			ev.is_sidechain       = raw.isSidechain;
-			events ~= injectRawField(toJson(ev), rawLine);
+			events ~= TranslatedEvent(toJson(ev), rawLine);
 		}
 	}
 
@@ -1742,14 +1742,13 @@ private string[] normalizeUserHistory(string rawLine)
 }
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.
-/// Returns null for events that should be consumed (not forwarded).
-private string translateClaudeEvent(string rawLine)
+/// Returns TranslatedEvent.init for events that should be consumed (not forwarded).
+private TranslatedEvent translateClaudeEvent(string rawLine)
 {
 	auto translated = translateClaudeEventInner(rawLine);
-	if (translated is null || translated is rawLine)
-		return translated;
-	import cydo.agent.protocol : injectRawField;
-	return injectRawField(translated, rawLine);
+	if (translated is null)
+		return TranslatedEvent.init;
+	return TranslatedEvent(translated, rawLine);
 }
 
 private string translateClaudeEventInner(string rawLine)

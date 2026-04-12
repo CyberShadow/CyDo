@@ -281,38 +281,13 @@ string makeUnrecognizedEvent(string reason)
 	return toJson(ev);
 }
 
-/// Inject `,"_raw":<rawJson>` before the final `}` of a JSON object string.
-string injectRawField(string translated, string rawJson)
+/// A translated event paired with its raw agent source.
+struct TranslatedEvent
 {
-	auto idx = translated.length;
-	while (idx > 0 && translated[--idx] != '}') {}
-	return translated[0 .. idx] ~ `,"_raw":` ~ rawJson ~ translated[idx .. $];
+	string translated;  // clean agnostic-protocol JSON (no _raw)
+	string raw;         // original agent output line (null for synthetic events)
 }
 
-/// Strip the `,"_raw":...` suffix from a translated event.
-/// Assumes `_raw` was injected by `injectRawField` (always the last field).
-string stripRawField(string event)
-{
-	import std.string : indexOf;
-	enum marker = `,"_raw":`;
-	auto idx = event.indexOf(marker);
-	if (idx < 0)
-		return event;
-	return event[0 .. idx] ~ "}";
-}
-
-/// Extract the raw JSON value from a `_raw` field in an event string.
-/// Returns null if no `_raw` field is present.
-string extractRawField(string event)
-{
-	import std.string : indexOf;
-	enum marker = `,"_raw":`;
-	auto idx = event.indexOf(marker);
-	if (idx < 0)
-		return null;
-	// Value spans from after marker to before the closing }
-	return event[idx + marker.length .. $ - 1];
-}
 
 /// Decompose a raw tool name (possibly `mcp__server__tool`) into structured fields.
 /// On return, `name` holds the canonical display name, `tool_server` and `tool_source`

@@ -153,6 +153,7 @@ struct TaskData
 	AgentSession session;
 	ProcessLaunch launch;
 	DataVec history;          // unified: JSONL file events + live stdout events
+	string[] rawSource;       // parallel to history: original agent line per event (null for synthetics)
 	bool historyLoaded;       // whether JSONL has been loaded into history
 	@property bool alive() { return session !is null && session.alive; }
 	StateQueue!ProcessState* processQueue;

@@ -9,6 +9,8 @@ import ae.sys.data;
 import ae.sys.database : Database;
 import ae.sys.dataset : DataVec;
 
+import cydo.agent.protocol : TranslatedEvent;
+
 struct Persistence
 {
 	Database db;
@@ -312,21 +314,28 @@ struct Persistence
 	}
 }
 
+/// Result from loadTaskHistory: translated events plus parallel raw sources.
+struct LoadedHistory
+{
+	DataVec history;
+	string[] rawSource;
+}
+
 /// Load task history from a JSONL file.
-/// Returns lines wrapped in file-event envelope (distinct from live stdout events).
+/// Returns events wrapped in file-event envelopes paired with raw source lines.
 /// translateLine is called for each line to allow agent-specific translation.
 /// The delegate receives (line, 1-based lineNum) and returns zero or more translated
-/// strings to emit (empty array = skip, one element = normal, two = compaction injection).
-DataVec loadTaskHistory(int tid, string jsonlPath,
-	string[] delegate(string, int) translateLine = null)
+/// event pairs (empty array = skip, one element = normal, two = compaction injection).
+LoadedHistory loadTaskHistory(int tid, string jsonlPath,
+	TranslatedEvent[] delegate(string, int) translateLine = null)
 {
 	import std.file : exists, readText;
 	import std.string : lineSplitter;
 
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
-		return DataVec();
+		return LoadedHistory();
 
-	DataVec history;
+	LoadedHistory result;
 	int lineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
@@ -334,16 +343,19 @@ DataVec loadTaskHistory(int tid, string jsonlPath,
 		if (line.length == 0)
 			continue;
 
-		string[] translated = translateLine !is null ? translateLine(line, lineNum) : [line];
+		TranslatedEvent[] translated = translateLine !is null
+			? translateLine(line, lineNum)
+			: [TranslatedEvent(line, line)];
 
-		// Wrap each translated line with file-event envelope
+		// Wrap each translated event with file-event envelope; store raw separately.
 		foreach (t; translated)
 		{
-			string injected = format!`{"tid":%d,"event":`(tid) ~ t ~ `}`;
-			history ~= Data(injected.representation);
+			string injected = format!`{"tid":%d,"event":`(tid) ~ t.translated ~ `}`;
+			result.history ~= Data(injected.representation);
+			result.rawSource ~= t.raw;
 		}
 	}
-	return move(history);
+	return move(result);
 }
 
 struct ForkResult

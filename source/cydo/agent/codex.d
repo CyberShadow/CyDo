@@ -19,7 +19,7 @@ import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
-import cydo.agent.protocol : ContentBlock, extrasToFragment;
+import cydo.agent.protocol : ContentBlock, TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
@@ -525,7 +525,7 @@ private class CodexServerRouter : ICodexServer
 
 	Promise!void error(ErrorParams params)
 	{
-		import cydo.agent.protocol : AgentErrorEvent, injectRawField;
+		import cydo.agent.protocol : AgentErrorEvent;
 		auto raw = buildRawNotification("error", toJson(params));
 		string message;
 		if (params.error)
@@ -537,16 +537,16 @@ private class CodexServerRouter : ICodexServer
 		AgentErrorEvent ev;
 		ev.message = message;
 		ev.willRetry = params.willRetry;
-		auto evJson = injectRawField(toJson(ev), raw);
+		auto tev = TranslatedEvent(toJson(ev), raw);
 		if (params.threadId.length > 0)
 			routeToSession(params.threadId, (s) {
 				if (s.outputHandler_)
-					s.outputHandler_(evJson);
+					s.outputHandler_(tev);
 			});
 		else
 			foreach (session; server.sessionsByTid)
 				if (session.outputHandler_)
-					session.outputHandler_(evJson);
+					session.outputHandler_(tev);
 		return resolve();
 	}
 
@@ -554,9 +554,8 @@ private class CodexServerRouter : ICodexServer
 	{
 		auto raw = buildRawNotification("thread/compacted", toJson(params));
 		routeToSession(params.threadId, (s) {
-			import cydo.agent.protocol : injectRawField;
 			if (s.outputHandler_)
-				s.outputHandler_(injectRawField(`{"type":"session/compacted"}`, raw));
+				s.outputHandler_(TranslatedEvent(`{"type":"session/compacted"}`, raw));
 		});
 		return resolve();
 	}
@@ -622,10 +621,10 @@ class AppServerProcess
 			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
 				{
-					import cydo.agent.protocol : makeUnrecognizedEvent, injectRawField;
+					import cydo.agent.protocol : makeUnrecognizedEvent;
 					auto rawJsonRpc = `{"jsonrpc":"2.0","method":"` ~ request.method ~ `","params":`
 						~ (request.params.json !is null ? request.params.json : "null") ~ `}`;
-					auto event = injectRawField(makeUnrecognizedEvent("unknown method: " ~ request.method), rawJsonRpc);
+					auto tev = TranslatedEvent(makeUnrecognizedEvent("unknown method: " ~ request.method), rawJsonRpc);
 					// Try to route to a specific session by threadId/conversationId.
 					string routedId;
 					if (request.params.json !is null)
@@ -651,13 +650,13 @@ class AppServerProcess
 					{
 						if (auto session = routedId in sessions)
 							if (session.outputHandler_)
-								session.outputHandler_(event);
+								session.outputHandler_(tev);
 					}
 					else
 					{
 						foreach (session; sessionsByTid)
 							if (session.outputHandler_)
-								session.outputHandler_(event);
+								session.outputHandler_(tev);
 					}
 				}
 				return resp;
@@ -970,8 +969,8 @@ class CodexAgent : Agent
 					{
 						warningf("thread/resume error: %s", e.msg);
 						if (session.outputHandler_)
-							session.outputHandler_(
-								`{"type":"process/stderr","text":` ~ toJson("thread/resume error: " ~ e.msg) ~ `}`);
+							session.outputHandler_(TranslatedEvent(
+								`{"type":"process/stderr","text":` ~ toJson("thread/resume error: " ~ e.msg) ~ `}`, null));
 						session.closeStdin();
 						return;
 					}
@@ -979,8 +978,8 @@ class CodexAgent : Agent
 					{
 						warningf("thread/resume returned empty thread id");
 						if (session.outputHandler_)
-							session.outputHandler_(
-								`{"type":"process/stderr","text":"thread/resume returned empty thread id"}`);
+							session.outputHandler_(TranslatedEvent(
+								`{"type":"process/stderr","text":"thread/resume returned empty thread id"}`, null));
 						session.closeStdin();
 						return;
 					}
@@ -1200,7 +1199,7 @@ class CodexAgent : Agent
 		}
 	}
 
-	string[] translateHistoryLine(string line, int lineNum)
+	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
 		import std.conv : to;
@@ -1210,7 +1209,7 @@ class CodexAgent : Agent
 		if (line.canFind(`"type":"session_meta"`))
 		{
 			auto t = translateRolloutSessionMeta(line);
-			return t !is null ? [t] : [];
+			return t !is null ? [TranslatedEvent(t, line)] : [];
 		}
 		else if (line.canFind(`"type":"response_item"`))
 		{
@@ -1218,21 +1217,25 @@ class CodexAgent : Agent
 			string forkId = null;
 			if (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`))
 				forkId = "line:" ~ to!string(lineNum);
-			return translateRolloutResponseItem(line, forkId);
+			auto results = translateRolloutResponseItem(line, forkId);
+			TranslatedEvent[] evs;
+			foreach (r; results)
+				evs ~= TranslatedEvent(r, line);
+			return evs;
 		}
 		else if (line.canFind(`"type":"event_msg"`))
 		{
 			auto t = translateRolloutEventMsg(line);
-			return t !is null ? [t] : [];
+			return t !is null ? [TranslatedEvent(t, line)] : [];
 		}
 		// Skip turn_context, compacted, unknown
 		return [];
 	}
 
-	string[] translateLiveEvent(string rawLine)
+	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
 		// CodexSession emits new-format events natively; pass through unchanged.
-		return [rawLine];
+		return [TranslatedEvent(rawLine, null)];
 	}
 
 	bool isTurnResult(string rawLine)
@@ -1589,7 +1592,7 @@ class CodexSession : AgentSession
 	private ContentBlock[][] pendingMessages;
 
 	// Callbacks
-	package void delegate(string line) outputHandler_;
+	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
 
@@ -1616,7 +1619,7 @@ class CodexSession : AgentSession
 		if (threadId.length == 0)
 		{
 			if (outputHandler_)
-				outputHandler_(`{"type":"process/stderr","text":"Failed to start Codex thread"}`);
+				outputHandler_(TranslatedEvent(`{"type":"process/stderr","text":"Failed to start Codex thread"}`, null));
 			return;
 		}
 
@@ -1624,7 +1627,7 @@ class CodexSession : AgentSession
 		server.registerSession(threadId, this);
 
 		// Emit synthetic session/init with raw RPC response as _raw.
-		import cydo.agent.protocol : SessionInitEvent, injectRawField;
+		import cydo.agent.protocol : SessionInitEvent;
 		SessionInitEvent initEv;
 		initEv.session_id      = threadId;
 		initEv.model           = model;
@@ -1633,12 +1636,9 @@ class CodexSession : AgentSession
 		initEv.agent_version   = "";
 		initEv.permission_mode = "dangerously-skip-permissions";
 		initEv.agent           = "codex";
-		auto initEvent = toJson(initEv);
-		if (rawResultJson.length > 0)
-			initEvent = injectRawField(initEvent, rawResultJson);
 
 		if (outputHandler_)
-			outputHandler_(initEvent);
+			outputHandler_(TranslatedEvent(toJson(initEv), rawResultJson.length > 0 ? rawResultJson : null));
 
 		// Drain queued messages now that the thread is ready.
 		drainPendingMessages();
@@ -1776,7 +1776,7 @@ class CodexSession : AgentSession
 
 	void killAfterTimeout(Duration timeout) {} // no-op: closeStdin fires exit immediately
 
-	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
+	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_ && !server.dead; }
@@ -1785,7 +1785,7 @@ class CodexSession : AgentSession
 
 	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
-		import cydo.agent.protocol : ItemStartedEvent, injectRawField;
+		import cydo.agent.protocol : ItemStartedEvent;
 		if (params.turnId.length > 0)
 			activeTurnId_ = params.turnId;
 
@@ -1817,7 +1817,7 @@ class CodexSession : AgentSession
 				cb.type = "text";
 				cb.text = userText;
 				ev.content = [cb];
-				outputHandler_(injectRawField(toJson(ev), rawNotification));
+				outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 			}
 			return;
 		}
@@ -1896,7 +1896,7 @@ class CodexSession : AgentSession
 				SessionStatusEvent statusEv;
 				statusEv.status = "Compacting context...";
 				if (outputHandler_)
-					outputHandler_(injectRawField(toJson(statusEv), rawNotification));
+					outputHandler_(TranslatedEvent(toJson(statusEv), rawNotification));
 				return;  // Emit session/status instead of item/started
 			default:
 				activeItemTypes_[itemId] = "text";
@@ -1915,7 +1915,7 @@ class CodexSession : AgentSession
 		ev._extras = extrasToFragment(item.extras);
 
 		if (outputHandler_)
-			outputHandler_(injectRawField(toJson(ev), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 	}
 
 	/// Handle any delta notification (text, thinking, or command output).
@@ -1935,12 +1935,12 @@ class CodexSession : AgentSession
 				lastResultText_ ~= params.delta;
 		}
 
-		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
+		import cydo.agent.protocol : ItemDeltaEvent;
 		ItemDeltaEvent ev;
 		ev.item_id = itemId;
 		ev.delta_type = deltaType;
 		ev.content = params.delta;
-		outputHandler_(injectRawField(toJson(ev), rawNotification));
+		outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 	}
 
 	/// Handle terminal interaction notification (stdin written to a running process).
@@ -1949,12 +1949,12 @@ class CodexSession : AgentSession
 		if (outputHandler_ is null)
 			return;
 
-		import cydo.agent.protocol : ItemDeltaEvent, injectRawField;
+		import cydo.agent.protocol : ItemDeltaEvent;
 		ItemDeltaEvent ev;
 		ev.item_id = params.itemId.length > 0 ? params.itemId : activeItemId_;
 		ev.delta_type = "stdin_delta";
 		ev.content = params.stdin;
-		outputHandler_(injectRawField(toJson(ev), rawNotification));
+		outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 	}
 
 	package void handleItemCompleted(ItemCompletedParams params, string rawNotification)
@@ -1973,17 +1973,17 @@ class CodexSession : AgentSession
 		if (itemType == "contextCompaction")
 		{
 			// Clear the compacting status indicator and skip item/completed.
-			import cydo.agent.protocol : SessionStatusEvent, injectRawField;
+			import cydo.agent.protocol : SessionStatusEvent;
 			SessionStatusEvent clearEv;
 			if (outputHandler_)
-				outputHandler_(injectRawField(toJson(clearEv), rawNotification));
+				outputHandler_(TranslatedEvent(toJson(clearEv), rawNotification));
 			activeItemTypes_.remove(itemId);
 			if (activeItemId_ == itemId)
 				activeItemId_ = null;
 			return;
 		}
 
-		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent, injectRawField;
+		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent;
 		ItemCompletedEvent ev;
 		ev.item_id = itemId;
 		ev.is_error = params.item.is_error;
@@ -1998,7 +1998,7 @@ class CodexSession : AgentSession
 		ev._extras = extrasToFragment(params.item.extras);
 
 		if (outputHandler_)
-			outputHandler_(injectRawField(toJson(ev), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 
 		// Emit item/result for tool_use items so the frontend can display the output.
 		// item/result must come AFTER item/completed so the tool_use block is
@@ -2107,7 +2107,7 @@ class CodexSession : AgentSession
 					resEv.tool_result = JSONFragment(tr.data);
 			}
 
-			outputHandler_(injectRawField(toJson(resEv), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(resEv), rawNotification));
 		}
 
 		// Remove from tracking.
@@ -2127,24 +2127,24 @@ class CodexSession : AgentSession
 		// 1. turn/stop — only if items were emitted since the last intermediate stop
 		if (hadItemsSinceLastStop_ && outputHandler_)
 		{
-			import cydo.agent.protocol : TurnStopEvent, UsageInfo, injectRawField;
+			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
 			TurnStopEvent tsev;
 			tsev.model = model;
 			tsev.usage = UsageInfo(0, 0);
-			outputHandler_(injectRawField(toJson(tsev), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(tsev), rawNotification));
 		}
 		hadItemsSinceLastStop_ = false;
 
 		// 2. turn/result — always emitted
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnResultEvent, UsageInfo, injectRawField;
+			import cydo.agent.protocol : TurnResultEvent, UsageInfo;
 			TurnResultEvent tre;
 			tre.subtype = "success";
 			tre.num_turns = 1;
 			tre.usage = UsageInfo(0, 0);
 			tre.result = lastResultText_;
-			outputHandler_(injectRawField(toJson(tre), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(tre), rawNotification));
 		}
 		lastResultText_ = null;
 	}
@@ -2158,7 +2158,7 @@ class CodexSession : AgentSession
 
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnStopEvent, UsageInfo, injectRawField;
+			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
 			TurnStopEvent tsev;
 			tsev.model = model;
 			if (params.tokenUsage != TokenUsagePayload.init
@@ -2167,7 +2167,7 @@ class CodexSession : AgentSession
 					params.tokenUsage.last.outputTokens);
 			else
 				tsev.usage = UsageInfo(0, 0);
-			outputHandler_(injectRawField(toJson(tsev), rawNotification));
+			outputHandler_(TranslatedEvent(toJson(tsev), rawNotification));
 		}
 	}
 }
@@ -2256,7 +2256,7 @@ string translateRolloutSessionMeta(string line)
 	if (probe.payload.id.length == 0)
 		return null;
 
-	import cydo.agent.protocol : SessionInitEvent, injectRawField;
+	import cydo.agent.protocol : SessionInitEvent;
 	SessionInitEvent ev;
 	ev.session_id      = probe.payload.id;
 	ev.model           = "";
@@ -2265,7 +2265,7 @@ string translateRolloutSessionMeta(string line)
 	ev.agent_version   = probe.payload.cli_version;
 	ev.permission_mode = "dangerously-skip-permissions";
 	ev.agent           = "codex";
-	return injectRawField(toJson(ev), line);
+	return toJson(ev);
 }
 
 /// Translate a response_item rollout line → item-based protocol events.
@@ -2361,11 +2361,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 	if (results.length == 0)
 		return [];
 
-	import cydo.agent.protocol : injectRawField;
-	string[] injected;
-	foreach (r; results)
-		injected ~= injectRawField(r, line);
-	return injected;
+	return results;
 }
 
 /// Translate a message response_item payload → item/started [+ item/completed].
@@ -2562,12 +2558,12 @@ string translateRolloutEventMsg(string line)
 
 	if (probe.payload.type == "task_complete")
 	{
-		import cydo.agent.protocol : TurnResultEvent, UsageInfo, injectRawField;
+		import cydo.agent.protocol : TurnResultEvent, UsageInfo;
 		TurnResultEvent ev;
 		ev.subtype = "success";
 		ev.num_turns = 1;
 		ev.usage = UsageInfo(0, 0);
-		return injectRawField(toJson(ev), line);
+		return toJson(ev);
 	}
 
 	// Skip user_message, task_started, error, etc.
@@ -2709,7 +2705,7 @@ unittest
 
 	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
 	string[] emitted;
-	void sink(string line) { emitted ~= line; }
+	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
 	session.onOutput(&sink);
 
 	auto started = jsonParse!StartedNotification(startedPayload);

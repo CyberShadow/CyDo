@@ -2,6 +2,7 @@ module cydo.agent.agent;
 
 import ae.utils.promise : Promise;
 
+import cydo.agent.protocol : TranslatedEvent;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch;
@@ -108,8 +109,8 @@ interface Agent
 	/// from {timestamp, type, payload} to agnostic events.
 	/// lineNum is 1-based; agents using line-number fork IDs can inject
 	/// the fork ID into translated output.
-	/// Returns zero or more translated event strings (empty = skip line).
-	string[] translateHistoryLine(string line, int lineNum);
+	/// Returns zero or more translated event pairs (empty = skip line).
+	TranslatedEvent[] translateHistoryLine(string line, int lineNum);
 
 	/// Path to the last-created MCP config temp file, or null if none.
 	/// Used for cleanup tracking (the file should be deleted when the
@@ -140,8 +141,8 @@ interface Agent
 	bool isForkableLine(string line);
 
 	/// Translate a raw output line to agnostic protocol JSON.
-	/// Returns zero or more translated event strings (empty = consume event).
-	string[] translateLiveEvent(string rawLine);
+	/// Returns zero or more translated event pairs (empty = consume event).
+	TranslatedEvent[] translateLiveEvent(string rawLine);
 
 	/// Whether a raw output line represents a completed turn.
 	bool isTurnResult(string rawLine);

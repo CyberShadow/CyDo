@@ -2,7 +2,7 @@ module cydo.agent.session;
 
 import core.time : Duration;
 
-import cydo.agent.protocol : ContentBlock;
+import cydo.agent.protocol : ContentBlock, TranslatedEvent;
 
 /// Abstract agent session interface.
 /// Decouples the transport (WebSocket) from the agent implementation.
@@ -29,8 +29,8 @@ interface AgentSession
 	/// Force-kill the agent if it has not exited within `timeout` (SIGTERM, then SIGKILL after 2s).
 	void killAfterTimeout(Duration timeout);
 
-	/// Callback: called for each line of output from the agent.
-	@property void onOutput(void delegate(string line) dg);
+	/// Callback: called for each translated event from the agent.
+	@property void onOutput(void delegate(TranslatedEvent) dg);
 
 	/// Callback: called for each line of stderr from the agent.
 	@property void onStderr(void delegate(string line) dg);

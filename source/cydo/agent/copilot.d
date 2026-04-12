@@ -14,7 +14,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
-import cydo.agent.protocol : ContentBlock;
+import cydo.agent.protocol : ContentBlock, TranslatedEvent;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
@@ -382,12 +382,12 @@ class CopilotAgent : Agent
 		return buildPath(copilotHome, "session-state", sessionId, "events.jsonl");
 	}
 
-	string[] translateHistoryLine(string line, int lineNum)
+	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
 		import std.uuid : randomUUID;
 		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent,
-			TurnStopEvent, SessionInitEvent, injectRawField;
+			TurnStopEvent, SessionInitEvent;
 
 		if (!line.canFind(`"type":"`))
 			return null;
@@ -400,7 +400,7 @@ class CopilotAgent : Agent
 		catch (Exception)
 			return null;
 
-		string[] events;
+		string[] evStrings;
 		switch (base.type)
 		{
 			case "session.start":
@@ -419,7 +419,7 @@ class CopilotAgent : Agent
 				initEv.permission_mode = "dangerously-skip-permissions";
 				initEv.agent           = "copilot";
 				initEv.supports_file_revert = false;
-				events = [toJson(initEv)];
+				evStrings = [toJson(initEv)];
 				break;
 			}
 			case "user.message":
@@ -437,7 +437,7 @@ class CopilotAgent : Agent
 				startEv.item_type = "user_message";
 				startEv.content   = [cb];
 				startEv.uuid      = base.id;
-				events = [toJson(startEv)];
+				evStrings = [toJson(startEv)];
 				break;
 			}
 			case "assistant.message":
@@ -461,7 +461,7 @@ class CopilotAgent : Agent
 
 				TurnStopEvent tsEv;
 				tsEv.uuid = base.id;
-				events = [toJson(startEv), toJson(compEv), toJson(tsEv)];
+				evStrings = [toJson(startEv), toJson(compEv), toJson(tsEv)];
 				break;
 			}
 			case "tool.execution_start":
@@ -500,7 +500,7 @@ class CopilotAgent : Agent
 				startEv.input     = JSONFragment(inputJson);
 				startEv.parent_tool_use_id = ev.data.parentToolCallId;
 
-				events = [toJson(startEv)];
+				evStrings = [toJson(startEv)];
 				break;
 			}
 			case "tool.execution_complete":
@@ -520,11 +520,11 @@ class CopilotAgent : Agent
 				resEv.item_id = toolId;
 				resEv.content = JSONFragment(`[{"type":"text","text":"` ~ cpEscape(outputText) ~ `"}]`);
 				TurnStopEvent tsEv;
-				events = [toJson(compEv), toJson(resEv), toJson(tsEv)];
+				evStrings = [toJson(compEv), toJson(resEv), toJson(tsEv)];
 				break;
 			}
 			case "assistant.turn_end":
-				events = [`{"type":"turn/result","subtype":"success","is_error":false`
+				evStrings = [`{"type":"turn/result","subtype":"success","is_error":false`
 					~ `,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
 					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`];
 				break;
@@ -535,22 +535,23 @@ class CopilotAgent : Agent
 				return null;
 		}
 
-		// Attach original JSONL line as _raw on all translated events.
-		foreach (ref e; events)
-			e = injectRawField(e, line);
+		// Wrap each translated string with the original JSONL line as raw source.
+		TranslatedEvent[] events;
+		foreach (e; evStrings)
+			events ~= TranslatedEvent(e, line);
 		return events;
 	}
 
-	string[] translateLiveEvent(string rawLine)
+	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
 		// Copilot emits agnostic-format events natively (via CopilotSession);
 		// only stderr/exit need renaming.  Everything else passes through.
 		import std.algorithm : canFind;
 		if (rawLine.canFind(`"type":"stderr"`))
-			return [replaceTypeField(rawLine, "process/stderr")];
+			return [TranslatedEvent(replaceTypeField(rawLine, "process/stderr"), null)];
 		if (rawLine.canFind(`"type":"exit"`))
-			return [replaceTypeField(rawLine, "process/exit")];
-		return [rawLine];
+			return [TranslatedEvent(replaceTypeField(rawLine, "process/exit"), null)];
+		return [TranslatedEvent(rawLine, null)];
 	}
 
 	/// Replace the "type" field value in a JSON line.
@@ -797,7 +798,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private ContentBlock[][] pendingMessages;
 
 	// Callbacks
-	package void delegate(string line) outputHandler_;
+	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
 
@@ -950,7 +951,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void killAfterTimeout(Duration timeout) {} // no-op: server.shutdown handles graceful exit
 
-	@property void onOutput(void delegate(string line) dg) { outputHandler_ = dg; }
+	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }
 	@property bool alive() { return alive_ && !server.dead; }
@@ -1232,15 +1233,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private void emitEvent(string translated, string rawJson = null)
 	{
 		if (outputHandler_)
-		{
-			if (rawJson.length > 0)
-			{
-				import cydo.agent.protocol : injectRawField;
-				outputHandler_(injectRawField(translated, rawJson));
-			}
-			else
-				outputHandler_(translated);
-		}
+			outputHandler_(TranslatedEvent(translated, rawJson.length > 0 ? rawJson : null));
 	}
 
 	private void handleTurnStart(JSONFragment data)
