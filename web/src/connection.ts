@@ -56,6 +56,7 @@ export class Connection {
           raw.type === "project_task_types_list" ||
           raw.type === "agent_types_list" ||
           raw.type === "forkable_uuids" ||
+          raw.type === "assign_uuids" ||
           raw.type === "error" ||
           raw.type === "undo_preview" ||
           raw.type === "undo_result" ||

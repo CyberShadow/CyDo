@@ -1188,6 +1188,46 @@ export function useTaskManager(
           });
           break;
         }
+        case "assign_uuids": {
+          const { tid, assignments } = msg;
+          const t = liveStates.get(tid);
+          if (!t) break;
+
+          let changed = false;
+          const messages = [...t.messages];
+          const forkable = new Set(t.forkableUuids);
+
+          for (const { uuid, seq } of assignments) {
+            forkable.add(uuid);
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const m = messages[i];
+              if (!m) continue;
+              if (m.uuid) continue; // already has a UUID
+              const mSeq = m.seq;
+              const seqMatch =
+                typeof mSeq === "number"
+                  ? mSeq === seq
+                  : Array.isArray(mSeq) && mSeq.includes(seq);
+              if (seqMatch) {
+                messages[i] = { ...m, uuid } as typeof m;
+                changed = true;
+                break;
+              }
+            }
+          }
+
+          if (changed) {
+            const updated = { ...t, messages, forkableUuids: forkable };
+            liveStates.set(tid, updated);
+            setTasks((prev) => {
+              if (!prev.has(tid)) return prev;
+              const next = new Map(prev);
+              next.set(tid, updated);
+              return next;
+            });
+          }
+          break;
+        }
         case "undo_preview": {
           const { tid, messages_removed } = msg;
           const t = liveStates.get(tid);

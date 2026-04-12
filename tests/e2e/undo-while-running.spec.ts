@@ -1,10 +1,11 @@
 import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
 
 test("undo while session is running stops session and removes message", async ({ page, agentType }) => {
-  // Codex forkable UUIDs aren't populated during a running session due to
-  // JSONL file discovery timing (the sessions directory doesn't exist on the
-  // host until after the first turn, and the retry may not find it in time).
-  test.skip(agentType === "codex" || agentType === "copilot", "forkable UUID discovery timing issue");
+  // assign_uuids provides retroactive UUID assignment for Codex/Copilot, but
+  // relies on the JSONL watcher finding the history file via the retry timer
+  // (fired 2s after session start). During a "stall session" test the timer
+  // may not fire before the test checks for the undo button.
+  test.skip(agentType === "codex" || agentType === "copilot", "JSONL retry timer may not fire in time during stall");
 
   await enterSession(page);
 
@@ -33,7 +34,6 @@ test("undo while session is running stops session and removes message", async ({
     .last();
   await secondUserMsg.hover();
 
-  // Codex forkable UUIDs may take a few retries to populate (JSONL discovery).
   await expect(secondUserMsg.locator(".undo-btn")).toBeVisible({ timeout: 30_000 });
   await secondUserMsg.locator(".undo-btn").click();
 
