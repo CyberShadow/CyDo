@@ -5,7 +5,7 @@ import core.time : Duration;
 import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
-import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
+import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
@@ -14,7 +14,9 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
-import cydo.agent.protocol : ContentBlock, TranslatedEvent;
+import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
+	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessStderrEvent,
+	SessionInitEvent, TranslatedEvent, TurnResultEvent, TurnStopEvent, UsageInfo;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
@@ -154,9 +156,9 @@ class CopilotAgent : Agent
 						import std.logger : warningf;
 						warningf("session.resume error: %s", resp.error.get.message);
 						session.replayMode = false;
-						session.emitEvent(
-							`{"type":"process/stderr","text":"session.resume error: `
-							~ cpEscape(resp.error.get.message) ~ `"}`);
+						ProcessStderrEvent resumeErrEv;
+						resumeErrEv.text = "session.resume error: " ~ resp.error.get.message;
+						session.emitEvent(toJson(resumeErrEv));
 						server.unregisterSession(sessionId);
 						session.handleExit(1);
 						return;
@@ -386,9 +388,6 @@ class CopilotAgent : Agent
 	{
 		import std.algorithm : canFind;
 		import std.uuid : randomUUID;
-		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, ItemResultEvent,
-			TurnStopEvent, SessionInitEvent;
-
 		if (!line.canFind(`"type":"`))
 			return null;
 
@@ -518,16 +517,26 @@ class CopilotAgent : Agent
 
 				ItemResultEvent resEv;
 				resEv.item_id = toolId;
-				resEv.content = JSONFragment(`[{"type":"text","text":"` ~ cpEscape(outputText) ~ `"}]`);
+				ContentBlock resCb;
+				resCb.type = "text";
+				resCb.text = outputText;
+				resEv.content = JSONFragment(toJson([resCb]));
 				TurnStopEvent tsEv;
 				evStrings = [toJson(compEv), toJson(resEv), toJson(tsEv)];
 				break;
 			}
 			case "assistant.turn_end":
-				evStrings = [`{"type":"turn/result","subtype":"success","is_error":false`
-					~ `,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-					~ `,"usage":{"input_tokens":0,"output_tokens":0}}`];
+			{
+				TurnResultEvent histTrEv;
+				histTrEv.subtype        = "success";
+				histTrEv.is_error       = false;
+				histTrEv.num_turns      = 1;
+				histTrEv.duration_ms    = 0;
+				histTrEv.total_cost_usd = 0.0;
+				histTrEv.usage          = UsageInfo(0, 0);
+				evStrings = [toJson(histTrEv)];
 				break;
+			}
 			case "subagent.started":
 			case "permission.completed":
 				return null;
@@ -705,8 +714,9 @@ class CopilotAgent : Agent
 			// Set cleanup callback before registering
 			session.onFulfill_ = () {
 				srv.unregisterSession(sessionId);
-				srv.sendRequest("session.destroy",
-					`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+				SessionIdParams destP;
+				destP.sessionId = sessionId;
+				srv.sendRequest("session.destroy", toJson(destP))
 				.then((JsonRpcResponse r) { srv.shutdown(); });
 			};
 
@@ -716,8 +726,10 @@ class CopilotAgent : Agent
 				srv.sendRequest("session.create",
 					buildSessionCreateParams(sessionId, model, cwd, SessionConfig.init))
 				.then((JsonRpcResponse createResp) {
-					srv.sendRequest("session.send",
-						`{"sessionId":"` ~ cpEscape(sessionId) ~ `","prompt":"` ~ cpEscape(prompt) ~ `"}`)
+					SessionSendParams oneShotSendP;
+					oneShotSendP.sessionId = sessionId;
+					oneShotSendP.prompt    = prompt;
+					srv.sendRequest("session.send", toJson(oneShotSendP))
 					.then((JsonRpcResponse sendResp) {
 						// Turn completion via session.idle event → handleEvent → promise fulfilled
 					});
@@ -831,7 +843,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		sessionReady_ = true;
 
 		// Emit synthetic session/init.
-		import cydo.agent.protocol : SessionInitEvent;
 		SessionInitEvent initEv;
 		initEv.session_id      = sessionId;
 		initEv.model           = model;
@@ -872,8 +883,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 		}
 
-		auto escaped = cpEscape(text);
-
 		if (turnInProgress)
 		{
 			// Steering: buffer message; send after current turn completes.
@@ -887,18 +896,28 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			activeTools = null;
 
 			// Emit user message item so the frontend confirms the pending placeholder.
-			emitEvent(
-				`{"type":"item/started","item_id":"cp-user-msg","item_type":"user_message","content":[{"type":"text","text":"` ~ escaped ~ `"}]}`);
+			ContentBlock userCb;
+			userCb.type = "text";
+			userCb.text = text;
+			ItemStartedEvent userMsgEv;
+			userMsgEv.item_id   = "cp-user-msg";
+			userMsgEv.item_type = "user_message";
+			userMsgEv.content   = [userCb];
+			emitEvent(toJson(userMsgEv));
 
 			// SDK session.send returns immediately with messageId.
 			// Turn completion comes via session.idle event.
-			server.sendRequest("session.send",
-				`{"sessionId":"` ~ cpEscape(sessionId)
-				~ `","prompt":"` ~ escaped ~ `"}`)
+			SessionSendParams sendP;
+			sendP.sessionId = sessionId;
+			sendP.prompt    = text;
+			server.sendRequest("session.send", toJson(sendP))
 			.then((JsonRpcResponse resp) {
 				if (resp.isError)
-					emitEvent(`{"type":"process/stderr","text":"session.send error: `
-						~ cpEscape(resp.error.get.message) ~ `"}`);
+				{
+					ProcessStderrEvent sendErrEv;
+					sendErrEv.text = "session.send error: " ~ resp.error.get.message;
+					emitEvent(toJson(sendErrEv));
+				}
 			});
 		}
 	}
@@ -909,8 +928,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	{
 		if (!alive_ || sessionId.length == 0)
 			return;
-		server.sendRequest("session.abort",
-			`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+		SessionIdParams abortP;
+		abortP.sessionId = sessionId;
+		server.sendRequest("session.abort", toJson(abortP))
 		.then((JsonRpcResponse resp) {});
 	}
 
@@ -925,8 +945,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 		if (sessionId.length > 0)
 		{
-			server.sendRequest("session.abort",
-				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+			SessionIdParams stopP;
+			stopP.sessionId = sessionId;
+			server.sendRequest("session.abort", toJson(stopP))
 			.then((JsonRpcResponse resp) {});
 		}
 		alive_ = false;
@@ -940,8 +961,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 		if (sessionId.length > 0)
 		{
-			server.sendRequest("session.abort",
-				`{"sessionId":"` ~ cpEscape(sessionId) ~ `"}`)
+			SessionIdParams closeP;
+			closeP.sessionId = sessionId;
+			server.sendRequest("session.abort", toJson(closeP))
 			.then((JsonRpcResponse resp) {});
 		}
 		alive_ = false;
@@ -1027,7 +1049,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "permission.completed":
 				break;
 			default:
-				import cydo.agent.protocol : makeUnrecognizedEvent;
 				emitEvent(makeUnrecognizedEvent(
 					"unknown copilot event: " ~ event.type), currentRawJson_);
 				break;
@@ -1132,37 +1153,40 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			finalizeActiveTextItem();
 			itemId = "cp-ext-" ~ req.requestId;
 			activeTools[itemId] = ToolItem(itemId, displayName, inputJson, "", "", true);
-			emitEvent(
-				`{"type":"item/started","item_id":"` ~ cpEscape(itemId)
-				~ `","item_type":"tool_use","name":"` ~ cpEscape(displayName)
-				~ (isCydo ? `","tool_server":"cydo","tool_source":"mcp` : "")
-				~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
+			ItemStartedEvent extStartEv;
+			extStartEv.item_id   = itemId;
+			extStartEv.item_type = "tool_use";
+			extStartEv.name      = displayName;
+			if (isCydo) { extStartEv.tool_server = "cydo"; extStartEv.tool_source = "mcp"; }
+			extStartEv.input     = JSONFragment(inputJson);
+			emitEvent(toJson(extStartEv), currentRawJson_);
 		}
 		auto rawJson = currentRawJson_; // capture before async dispatch
 
 		toolDispatch_(dispatchName, to!string(tid), req.arguments)
 		.then((McpResult mcpResult) {
 			// Emit completion events for the UI.
-			emitEvent(
-				`{"type":"item/completed","item_id":"` ~ cpEscape(itemId)
-				~ `","input":` ~ inputJson ~ `}`, rawJson);
-			emitEvent(
-				`{"type":"item/result","item_id":"` ~ cpEscape(itemId)
-				~ `","content":"` ~ cpEscape(mcpResult.text) ~ `"}`, rawJson);
+			ItemCompletedEvent extCompEv;
+			extCompEv.item_id = itemId;
+			extCompEv.input   = JSONFragment(inputJson);
+			emitEvent(toJson(extCompEv), rawJson);
 
-			auto resultType = mcpResult.isError ? "failure" : "success";
-			auto escaped = cpEscape(mcpResult.text);
-			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
-				~ `","requestId":"` ~ cpEscape(req.requestId)
-				~ `","result":{"textResultForLlm":"` ~ escaped
-				~ `","resultType":"` ~ resultType ~ `"}}`;
-			server.sendRequest("session.tools.handlePendingToolCall", params);
+			ItemResultEvent extResEv;
+			extResEv.item_id = itemId;
+			extResEv.content = JSONFragment(toJson(mcpResult.text));
+			emitEvent(toJson(extResEv), rawJson);
+
+			HandlePendingToolCallParams tcp;
+			tcp.sessionId = sessionId;
+			tcp.requestId = req.requestId;
+			tcp.result    = ToolCallResultInner(mcpResult.text, mcpResult.isError ? "failure" : "success");
+			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcp));
 		}, (Exception e) {
-			auto escaped = cpEscape(e.msg);
-			auto params = `{"sessionId":"` ~ cpEscape(sessionId)
-				~ `","requestId":"` ~ cpEscape(req.requestId)
-				~ `","error":"` ~ escaped ~ `"}`;
-			server.sendRequest("session.tools.handlePendingToolCall", params);
+			HandlePendingToolCallError tcpe;
+			tcpe.sessionId = sessionId;
+			tcpe.requestId = req.requestId;
+			tcpe.error     = e.msg;
+			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcpe));
 		});
 	}
 
@@ -1188,10 +1212,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (req.resolvedByHook)
 			return;
 
-		auto params = `{"sessionId":"` ~ cpEscape(sessionId)
-			~ `","requestId":"` ~ cpEscape(req.requestId)
-			~ `","result":{"kind":"approved"}}`;
-		server.sendRequest("session.permissions.handlePendingPermissionRequest", params);
+		HandlePermissionRequestParams prp;
+		prp.sessionId = sessionId;
+		prp.requestId = req.requestId;
+		prp.result    = PermissionKind("approved");
+		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp));
 	}
 
 	/// Handle subagent.started — set the current sub-agent parent context
@@ -1261,19 +1286,23 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			finalizeActiveTextItem();
 			auto id = "cp-text-" ~ to!string(nextItemIndex++);
 			activeTextItem = ActiveTextItem(id, "text", "", currentSubagentParent_);
-			string parentField = currentSubagentParent_.length > 0
-				? `","parent_tool_use_id":"` ~ cpEscape(currentSubagentParent_) : "";
-			emitEvent(
-				`{"type":"item/started","item_id":"` ~ cpEscape(id)
-				~ `","item_type":"text` ~ parentField ~ `"}`, currentRawJson_);
+			ItemStartedEvent textStartEv;
+			textStartEv.item_id            = id;
+			textStartEv.item_type          = "text";
+			textStartEv.parent_tool_use_id = currentSubagentParent_;
+			emitEvent(toJson(textStartEv), currentRawJson_);
 		}
 
 		activeTextItem.text ~= text;
 
 		if (text.length > 0)
-			emitEvent(
-				`{"type":"item/delta","item_id":"` ~ cpEscape(activeTextItem.id)
-				~ `","delta_type":"text_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
+		{
+			ItemDeltaEvent textDeltaEv;
+			textDeltaEv.item_id    = activeTextItem.id;
+			textDeltaEv.delta_type = "text_delta";
+			textDeltaEv.content    = text;
+			emitEvent(toJson(textDeltaEv), currentRawJson_);
+		}
 	}
 
 	private void handleReasoningDelta(JSONFragment data)
@@ -1291,19 +1320,23 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			finalizeActiveTextItem();
 			auto id = "cp-think-" ~ to!string(nextItemIndex++);
 			activeTextItem = ActiveTextItem(id, "thinking", "", currentSubagentParent_);
-			string parentField = currentSubagentParent_.length > 0
-				? `","parent_tool_use_id":"` ~ cpEscape(currentSubagentParent_) : "";
-			emitEvent(
-				`{"type":"item/started","item_id":"` ~ cpEscape(id)
-				~ `","item_type":"thinking` ~ parentField ~ `"}`, currentRawJson_);
+			ItemStartedEvent thinkStartEv;
+			thinkStartEv.item_id            = id;
+			thinkStartEv.item_type          = "thinking";
+			thinkStartEv.parent_tool_use_id = currentSubagentParent_;
+			emitEvent(toJson(thinkStartEv), currentRawJson_);
 		}
 
 		activeTextItem.text ~= text;
 
 		if (text.length > 0)
-			emitEvent(
-				`{"type":"item/delta","item_id":"` ~ cpEscape(activeTextItem.id)
-				~ `","delta_type":"thinking_delta","content":"` ~ cpEscape(text) ~ `"}`, currentRawJson_);
+		{
+			ItemDeltaEvent thinkDeltaEv;
+			thinkDeltaEv.item_id    = activeTextItem.id;
+			thinkDeltaEv.delta_type = "thinking_delta";
+			thinkDeltaEv.content    = text;
+			emitEvent(toJson(thinkDeltaEv), currentRawJson_);
+		}
 	}
 
 	private void handleToolExecutionStart(JSONFragment data)
@@ -1349,21 +1382,25 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		activeTools[id] = ToolItem(id, name, inputJson, "", ts.parentToolCallId);
 
-		string parentField = ts.parentToolCallId.length > 0
-			? `","parent_tool_use_id":"` ~ cpEscape(ts.parentToolCallId) : "";
-		emitEvent(
-			`{"type":"item/started","item_id":"` ~ cpEscape(id)
-			~ `","item_type":"tool_use","name":"` ~ cpEscape(name)
-			~ (toolServer.length > 0 ? `","tool_server":"cydo","tool_source":"mcp` : "")
-			~ parentField
-			~ `","input":` ~ inputJson ~ `}`, currentRawJson_);
+		ItemStartedEvent toolStartEv;
+		toolStartEv.item_id            = id;
+		toolStartEv.item_type          = "tool_use";
+		toolStartEv.name               = name;
+		if (toolServer.length > 0) { toolStartEv.tool_server = toolServer; toolStartEv.tool_source = toolSource; }
+		toolStartEv.parent_tool_use_id = ts.parentToolCallId;
+		toolStartEv.input              = JSONFragment(inputJson);
+		emitEvent(toJson(toolStartEv), currentRawJson_);
 
 		// Emit the full input as a single input_json_delta so the UI can
 		// display it during streaming.
 		if (inputJson.length > 0 && inputJson != "{}")
-			emitEvent(
-				`{"type":"item/delta","item_id":"` ~ cpEscape(id)
-				~ `","delta_type":"input_json_delta","content":"` ~ cpEscape(inputJson) ~ `"}`, currentRawJson_);
+		{
+			ItemDeltaEvent inputDeltaEv;
+			inputDeltaEv.item_id    = id;
+			inputDeltaEv.delta_type = "input_json_delta";
+			inputDeltaEv.content    = inputJson;
+			emitEvent(toJson(inputDeltaEv), currentRawJson_);
+		}
 	}
 
 	private void handleToolExecutionComplete(JSONFragment data)
@@ -1384,13 +1421,15 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			p.text = resultText;
 
 		// Emit item/completed with final input.
-		emitEvent(
-			`{"type":"item/completed","item_id":"` ~ cpEscape(p.id)
-			~ `","input":` ~ (p.input.length > 0 ? p.input : `{}`) ~ `}`, currentRawJson_);
+		ItemCompletedEvent tcCompEv;
+		tcCompEv.item_id = p.id;
+		tcCompEv.input   = JSONFragment(p.input.length > 0 ? p.input : `{}`);
+		emitEvent(toJson(tcCompEv), currentRawJson_);
 		// Emit item/result with tool output.
-		emitEvent(
-			`{"type":"item/result","item_id":"` ~ cpEscape(p.id)
-			~ `","content":"` ~ cpEscape(p.text) ~ `"}`, currentRawJson_);
+		ItemResultEvent tcResEv;
+		tcResEv.item_id = p.id;
+		tcResEv.content = JSONFragment(toJson(p.text));
+		emitEvent(toJson(tcResEv), currentRawJson_);
 		activeTools.remove(tc.toolCallId);
 	}
 
@@ -1424,8 +1463,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		SessErr se;
 		try se = jsonParse!SessErr(data.json);
 		catch (Exception) {}
-		emitEvent(
-			`{"type":"process/stderr","text":"Copilot error: ` ~ cpEscape(se.message) ~ `"}`, currentRawJson_);
+		ProcessStderrEvent sessErrEv;
+		sessErrEv.text = "Copilot error: " ~ se.message;
+		emitEvent(toJson(sessErrEv), currentRawJson_);
 	}
 
 	// ----- Turn completion -----
@@ -1441,7 +1481,9 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		turnInProgress = false;
 
 		// 1. turn/stop
-		emitEvent(`{"type":"turn/stop","model":"` ~ cpEscape(model) ~ `"}`, currentRawJson_);
+		TurnStopEvent tsEv;
+		tsEv.model = model;
+		emitEvent(toJson(tsEv), currentRawJson_);
 
 		// 2. turn/result
 		string subtype;
@@ -1452,11 +1494,15 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			default:          subtype = "unknown";   break;
 		}
 		// Include the last text item as "result" so extractResultText can retrieve it.
-		emitEvent(
-			`{"type":"turn/result","subtype":"` ~ subtype ~ `"`
-			~ `,"is_error":false,"num_turns":1,"duration_ms":0,"total_cost_usd":0`
-			~ (lastResultText.length > 0 ? `,"result":"` ~ cpEscape(lastResultText) ~ `"` : "")
-			~ `,"usage":{"input_tokens":0,"output_tokens":0}}`, currentRawJson_);
+		TurnResultEvent trEv;
+		trEv.subtype        = subtype;
+		trEv.is_error       = false;
+		trEv.num_turns      = 1;
+		trEv.duration_ms    = 0;
+		trEv.total_cost_usd = 0.0;
+		trEv.result         = lastResultText;
+		trEv.usage          = UsageInfo(0, 0);
+		emitEvent(toJson(trEv), currentRawJson_);
 		lastResultText = null;
 
 		// Drain pending messages (steering).
@@ -1477,9 +1523,10 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		if (activeTextItem.type == "text")
 			lastResultText = activeTextItem.text;
-		emitEvent(
-			`{"type":"item/completed","item_id":"` ~ cpEscape(activeTextItem.id)
-			~ `","text":"` ~ cpEscape(activeTextItem.text) ~ `"}`, currentRawJson_);
+		ItemCompletedEvent finTextEv;
+		finTextEv.item_id = activeTextItem.id;
+		finTextEv.text    = activeTextItem.text;
+		emitEvent(toJson(finTextEv), currentRawJson_);
 
 		activeTextItem = ActiveTextItem.init;
 	}
@@ -1491,12 +1538,14 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		{
 			if (tool.externallyHandled)
 				continue;
-			emitEvent(
-				`{"type":"item/completed","item_id":"` ~ cpEscape(tool.id)
-				~ `","input":` ~ (tool.input.length > 0 ? tool.input : `{}`) ~ `}`, currentRawJson_);
-			emitEvent(
-				`{"type":"item/result","item_id":"` ~ cpEscape(tool.id)
-				~ `","content":"` ~ cpEscape(tool.text) ~ `"}`, currentRawJson_);
+			ItemCompletedEvent finToolEv;
+			finToolEv.item_id = tool.id;
+			finToolEv.input   = JSONFragment(tool.input.length > 0 ? tool.input : `{}`);
+			emitEvent(toJson(finToolEv), currentRawJson_);
+			ItemResultEvent finResEv;
+			finResEv.item_id = tool.id;
+			finResEv.content = JSONFragment(toJson(tool.text));
+			emitEvent(toJson(finResEv), currentRawJson_);
 		}
 		activeTools = null;
 	}
@@ -1579,6 +1628,71 @@ private final class OneShotCopilotSession : SdkSessionHandler
 
 private:
 
+// ---- JSON-RPC param structs ----
+
+private struct SessionIdParams { string sessionId; }
+private struct SessionSendParams { string sessionId; string prompt; }
+
+private struct ToolCallResultInner { string textResultForLlm; string resultType; }
+private struct HandlePendingToolCallParams
+{
+	string sessionId;
+	string requestId;
+	ToolCallResultInner result;
+}
+private struct HandlePendingToolCallError
+{
+	string sessionId;
+	string requestId;
+	string error;
+}
+
+private struct PermissionKind { string kind; }
+private struct HandlePermissionRequestParams
+{
+	string sessionId;
+	string requestId;
+	PermissionKind result;
+}
+
+// ---- Session create/resume param structs ----
+
+private struct ToolDefinition
+{
+	string name;
+	string description;
+	JSONFragment parameters;
+	bool skipPermission;
+}
+
+private struct SystemMessageParam
+{
+	string mode;
+	string content;
+}
+
+private struct SessionCreateParams
+{
+	string sessionId;
+	@JSONOptional string model;
+	string clientName;
+	string workingDirectory;
+	bool streaming;
+	bool requestPermission;
+	JSONFragment tools;
+	@JSONOptional JSONFragment systemMessage;
+}
+
+private struct SessionResumeParams
+{
+	string sessionId;
+	@JSONOptional string model;
+	bool streaming;
+	bool requestPermission;
+	JSONFragment tools;
+	@JSONOptional JSONFragment systemMessage;
+}
+
 /// Build tool definitions JSON array for session.create params.
 /// Only includes tools if an MCP socket is configured (tools backend is available).
 /// Tool names use `cydo-` prefix to avoid collisions with built-in or third-party tools.
@@ -1590,65 +1704,76 @@ string buildToolDefinitions(SessionConfig config)
 		return "[]";
 
 	// Names use cydo- prefix to match what the LLM sends in tool_calls.
-	return `[`
-		~ `{"name":"cydo-Task","description":"Create sub-tasks that run autonomously","parameters":`
-		~ `{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}}`
-		~ `,"required":["tasks"]},"skipPermission":true}`
-		~ `,{"name":"cydo-Bash","description":"Execute a shell command and return its output","parameters":`
-		~ `{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`
-		~ `,"skipPermission":true}`
-		~ `,{"name":"cydo-SwitchMode","description":"Switch this task to a different mode","parameters":`
-		~ `{"type":"object","properties":{"continuation":{"type":"string"}},"required":["continuation"]}`
-		~ `,"skipPermission":true}`
-		~ `,{"name":"cydo-Handoff","description":"Hand off this task to a successor","parameters":`
-		~ `{"type":"object","properties":{"continuation":{"type":"string"},"prompt":{"type":"string"}}`
-		~ `,"required":["continuation","prompt"]},"skipPermission":true}`
-		~ `,{"name":"cydo-AskUserQuestion","description":"Ask the user one or more questions","parameters":`
-		~ `{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}}`
-		~ `,"required":["questions"]},"skipPermission":true}`
-		~ `,{"name":"cydo-Ask","description":"Ask a question to a related task and wait for the answer","parameters":`
-		~ `{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}}`
-		~ `,"required":["message"]},"skipPermission":true}`
-		~ `,{"name":"cydo-Answer","description":"Answer a question from a related task","parameters":`
-		~ `{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}}`
-		~ `,"required":["qid","message"]},"skipPermission":true}`
-		~ `]`;
+	ToolDefinition[] tools;
+	tools ~= ToolDefinition("cydo-Task",
+		"Create sub-tasks that run autonomously",
+		JSONFragment(`{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object"}}},"required":["tasks"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-Bash",
+		"Execute a shell command and return its output",
+		JSONFragment(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-SwitchMode",
+		"Switch this task to a different mode",
+		JSONFragment(`{"type":"object","properties":{"continuation":{"type":"string"}},"required":["continuation"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-Handoff",
+		"Hand off this task to a successor",
+		JSONFragment(`{"type":"object","properties":{"continuation":{"type":"string"},"prompt":{"type":"string"}},"required":["continuation","prompt"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-AskUserQuestion",
+		"Ask the user one or more questions",
+		JSONFragment(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object"}}},"required":["questions"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-Ask",
+		"Ask a question to a related task and wait for the answer",
+		JSONFragment(`{"type":"object","properties":{"message":{"type":"string"},"tid":{"type":"integer"}},"required":["message"]}`),
+		true);
+	tools ~= ToolDefinition("cydo-Answer",
+		"Answer a question from a related task",
+		JSONFragment(`{"type":"object","properties":{"qid":{"type":"integer"},"message":{"type":"string"}},"required":["qid","message"]}`),
+		true);
+	return toJson(tools);
 }
 
 /// Build JSON params string for session.create.
 string buildSessionCreateParams(string sessionId, string model, string workDir, SessionConfig config)
 {
-	auto tools = buildToolDefinitions(config);
-	auto modelPart = model.length > 0 ? `,"model":"` ~ cpEscape(model) ~ `"` : "";
-	auto systemMsg = config.appendSystemPrompt.length > 0
-		? `,"systemMessage":{"mode":"append","content":"` ~ cpEscape(config.appendSystemPrompt) ~ `"}`
-		: "";
-	return `{"sessionId":"` ~ cpEscape(sessionId) ~ `"`
-		~ modelPart
-		~ `,"clientName":"cydo"`
-		~ `,"workingDirectory":"` ~ cpEscape(workDir) ~ `"`
-		~ `,"streaming":true`
-		~ `,"requestPermission":true`
-		~ `,"tools":` ~ tools
-		~ systemMsg
-		~ `}`;
+	SessionCreateParams p;
+	p.sessionId         = sessionId;
+	p.model             = model;
+	p.clientName        = "cydo";
+	p.workingDirectory  = workDir;
+	p.streaming         = true;
+	p.requestPermission = true;
+	p.tools             = JSONFragment(buildToolDefinitions(config));
+	if (config.appendSystemPrompt.length > 0)
+	{
+		SystemMessageParam sm;
+		sm.mode    = "append";
+		sm.content = config.appendSystemPrompt;
+		p.systemMessage = JSONFragment(toJson(sm));
+	}
+	return toJson(p);
 }
 
 /// Build JSON params string for session.resume.
 string buildSessionResumeParams(string sessionId, string model, SessionConfig config)
 {
-	auto tools = buildToolDefinitions(config);
-	auto modelPart = model.length > 0 ? `,"model":"` ~ cpEscape(model) ~ `"` : "";
-	auto systemMsg = config.appendSystemPrompt.length > 0
-		? `,"systemMessage":{"mode":"append","content":"` ~ cpEscape(config.appendSystemPrompt) ~ `"}`
-		: "";
-	return `{"sessionId":"` ~ cpEscape(sessionId) ~ `"`
-		~ modelPart
-		~ `,"streaming":true`
-		~ `,"requestPermission":true`
-		~ `,"tools":` ~ tools
-		~ systemMsg
-		~ `}`;
+	SessionResumeParams p;
+	p.sessionId         = sessionId;
+	p.model             = model;
+	p.streaming         = true;
+	p.requestPermission = true;
+	p.tools             = JSONFragment(buildToolDefinitions(config));
+	if (config.appendSystemPrompt.length > 0)
+	{
+		SystemMessageParam sm;
+		sm.mode    = "append";
+		sm.content = config.appendSystemPrompt;
+		p.systemMessage = JSONFragment(toJson(sm));
+	}
+	return toJson(p);
 }
 
 private struct CopilotMcpConfigEnv
