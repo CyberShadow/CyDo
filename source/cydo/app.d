@@ -3944,7 +3944,7 @@ class App : ToolsBackend
 
 	private static string makePermissionDenyJson(string message)
 	{
-		return toJson(PermissionDeny(message));
+		return toJson(PermissionDeny("deny", message));
 	}
 
 	/// Convert a JSON string to a UniNode for use as a Djinja template context variable.
