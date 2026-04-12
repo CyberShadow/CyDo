@@ -415,6 +415,19 @@ struct ForkableUuidsMessage
 	string[] uuids;
 }
 
+struct UuidAssignment
+{
+	string uuid;
+	size_t seq;
+}
+
+struct AssignUuidsMessage
+{
+	string type = "assign_uuids";
+	int tid;
+	UuidAssignment[] assignments;
+}
+
 struct ErrorMessage
 {
 	string type = "error";

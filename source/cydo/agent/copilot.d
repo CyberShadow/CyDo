@@ -13,7 +13,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkPermissionRequest, SdkPermissionResult,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
-import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
@@ -613,6 +613,33 @@ class CopilotAgent : Agent
 				auto probe = jsonParse!IdProbe(line);
 				if (probe.id.length > 0)
 					ids ~= probe.id;
+			}
+			catch (Exception) {}
+		}
+		return ids;
+	}
+
+	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0)
+	{
+		import std.algorithm : canFind;
+		import std.string : lineSplitter;
+
+		ForkableIdInfo[] ids;
+		foreach (line; content.lineSplitter)
+		{
+			if (line.length == 0)
+				continue;
+			bool isUser = line.canFind(`"type":"user.message"`);
+			if (!isUser && !line.canFind(`"type":"assistant.message"`))
+				continue;
+
+			@JSONPartial
+			static struct IdProbe { string id; }
+			try
+			{
+				auto probe = jsonParse!IdProbe(line);
+				if (probe.id.length > 0)
+					ids ~= ForkableIdInfo(probe.id, isUser);
 			}
 			catch (Exception) {}
 		}

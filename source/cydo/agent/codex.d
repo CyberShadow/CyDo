@@ -17,7 +17,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent, DiscoveredSession, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, extrasToFragment;
 import cydo.agent.session : AgentSession;
@@ -1282,6 +1282,29 @@ class CodexAgent : Agent
 			if (!line.canFind(`"role":"user"`) && !line.canFind(`"role":"assistant"`))
 				continue;
 			ids ~= "line:" ~ to!string(lineNum);
+		}
+		return ids;
+	}
+
+	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0)
+	{
+		import std.algorithm : canFind;
+		import std.conv : to;
+		import std.string : lineSplitter;
+
+		ForkableIdInfo[] ids;
+		int lineNum = lineOffset;
+		foreach (line; content.lineSplitter)
+		{
+			lineNum++;
+			if (line.length == 0)
+				continue;
+			if (!line.canFind(`"type":"response_item"`))
+				continue;
+			bool isUser = line.canFind(`"role":"user"`);
+			if (!isUser && !line.canFind(`"role":"assistant"`))
+				continue;
+			ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), isUser);
 		}
 		return ids;
 	}

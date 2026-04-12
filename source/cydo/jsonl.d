@@ -8,9 +8,9 @@ import ae.sys.data : Data;
 import ae.sys.inotify : INotify;
 import ae.sys.timing : setTimeout, TimerTask;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.agent : Agent, ForkableIdInfo;
 import cydo.inotify : RefCountedINotify;
-import cydo.task : ForkableUuidsMessage, TaskData;
+import cydo.task : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment;
 
 struct JsonlTracker
 {
@@ -120,7 +120,7 @@ struct JsonlTracker
 
 		auto newContent = cast(string) got;
 		auto lineOffset = jsonlLineCount.get(tid, 0);
-		auto uuids = getAgent(tid).extractForkableIds(newContent, lineOffset);
+		auto forkIds = getAgent(tid).extractForkableIdsWithInfo(newContent, lineOffset);
 
 		import std.string : lineSplitter;
 		int newLines = 0;
@@ -128,8 +128,8 @@ struct JsonlTracker
 			newLines++;
 		jsonlLineCount[tid] = lineOffset + newLines;
 
-		if (uuids.length > 0)
-			broadcastForkableUuids(tid, uuids);
+		if (forkIds.length > 0)
+			broadcastForkableUuidsWithAssignments(tid, forkIds);
 	}
 
 	/// Stop all JSONL watches (used during shutdown).
@@ -162,6 +162,8 @@ struct JsonlTracker
 	void sendForkableUuidsFromFile(WebSocketAdapter ws, int tid,
 		string agentSessionId, string projectPath)
 	{
+		import std.algorithm : map;
+		import std.array : array;
 		import std.file : exists, readText;
 		import ae.utils.json : toJson;
 
@@ -170,9 +172,16 @@ struct JsonlTracker
 			return;
 
 		auto content = readText(jsonlPath);
-		auto uuids = getAgent(tid).extractForkableIds(content);
-		if (uuids.length > 0)
-			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
+		auto forkIds = getAgent(tid).extractForkableIdsWithInfo(content);
+		if (forkIds.length == 0)
+			return;
+
+		string[] uuids = forkIds.map!(f => f.id).array;
+		ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
+
+		auto assignments = computeAssignments(tid, forkIds);
+		if (assignments.length > 0)
+			ws.send(Data(toJson(AssignUuidsMessage("assign_uuids", tid, assignments)).representation));
 	}
 
 	/// Broadcast forkable UUIDs from the full JSONL file to all clients.
@@ -191,9 +200,9 @@ struct JsonlTracker
 		if (jsonlPath.length == 0 || !exists(jsonlPath))
 			return;
 
-		auto uuids = ta.extractForkableIds(readText(jsonlPath));
-		if (uuids.length > 0)
-			broadcastForkableUuids(tid, uuids);
+		auto forkIds = ta.extractForkableIdsWithInfo(readText(jsonlPath));
+		if (forkIds.length > 0)
+			broadcastForkableUuidsWithAssignments(tid, forkIds);
 	}
 
 	/// Broadcast forkable UUIDs to all clients.
@@ -201,5 +210,62 @@ struct JsonlTracker
 	{
 		import ae.utils.json : toJson;
 		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
+	}
+
+	/// Broadcast forkable UUIDs and their seq assignments to all clients.
+	void broadcastForkableUuidsWithAssignments(int tid, ForkableIdInfo[] forkIds)
+	{
+		import std.algorithm : map;
+		import std.array : array;
+		import ae.utils.json : toJson;
+
+		string[] uuids = forkIds.map!(f => f.id).array;
+		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
+
+		auto assignments = computeAssignments(tid, forkIds);
+		if (assignments.length > 0)
+			broadcast(toJson(AssignUuidsMessage("assign_uuids", tid, assignments)));
+	}
+
+	/// Compute seq→UUID assignments by correlating JSONL forkable IDs with history events.
+	UuidAssignment[] computeAssignments(int tid, ForkableIdInfo[] forkIds)
+	{
+		import std.algorithm : canFind;
+
+		auto td = getTask(tid);
+		if (td is null) return null;
+
+		// Count user and assistant events in history, recording their seqs
+		size_t[] userSeqs, assistantSeqs;
+		foreach (i, ref entry; td.history)
+		{
+			auto content = cast(string) entry.unsafeContents;
+			// User message: item/started with user_message type
+			if (content.canFind(`"item_type":"user_message"`) && content.canFind(`"type":"item/started"`))
+				userSeqs ~= i;
+			// Assistant turn: turn/stop
+			else if (content.canFind(`"type":"turn/stop"`))
+				assistantSeqs ~= i;
+		}
+
+		// Match forkable IDs to history seqs by order
+		size_t userIdx, assistantIdx;
+		UuidAssignment[] result;
+		foreach (ref fid; forkIds)
+		{
+			if (fid.isUser)
+			{
+				if (userIdx < userSeqs.length)
+					result ~= UuidAssignment(fid.id, userSeqs[userIdx]);
+				userIdx++;
+			}
+			else
+			{
+				if (assistantIdx < assistantSeqs.length)
+					result ~= UuidAssignment(fid.id, assistantSeqs[assistantIdx]);
+				assistantIdx++;
+			}
+		}
+		return result;
 	}
 }

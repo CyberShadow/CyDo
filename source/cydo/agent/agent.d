@@ -45,6 +45,12 @@ struct SessionMeta
 	bool hasMessages;   /// Whether the session contains any user messages
 }
 
+/// Forkable ID with user/assistant classification.
+struct ForkableIdInfo {
+	string id;
+	bool isUser;  // true = user message, false = assistant
+}
+
 /// Describes an agent type: its sandbox requirements, git identity,
 /// and how to create sessions. Separates agent metadata from
 /// the runtime AgentSession interface.
@@ -120,6 +126,10 @@ interface Agent
 	/// lineOffset is added to line numbers for agents that use line-based IDs
 	/// (used when extracting from a partial read of the file).
 	string[] extractForkableIds(string content, int lineOffset = 0);
+
+	/// Extract forkable identifiers with user/assistant classification.
+	/// Same as extractForkableIds but includes whether each ID is a user message.
+	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0);
 
 	/// Check whether a raw JSONL line (at 1-based lineNum) matches a fork ID.
 	/// Used by truncation/fork logic to find the cut point.
