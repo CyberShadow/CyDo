@@ -400,7 +400,7 @@ export function reduceParseError(
           },
         ],
         rawSource: rawSource ?? raw,
-        seq: getSeq(rawSource),
+        seq: getSeq(rawSource ?? raw),
       },
     ],
   };
