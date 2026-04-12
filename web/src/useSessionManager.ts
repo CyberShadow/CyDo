@@ -15,6 +15,7 @@ import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
 import type {
   AgnosticEvent,
+  EnvelopedEvent,
   ControlMessage,
   ContentBlock,
   Notice,
@@ -571,7 +572,7 @@ export function useTaskManager(
     [],
   );
 
-  const handleTaskMessage = useCallback((tid: number, msg: AgnosticEvent) => {
+  const handleTaskMessage = useCallback((tid: number, msg: EnvelopedEvent) => {
     // Skip stale events for recently deleted draft tasks (e.g. from
     // requestHistory responses arriving after deleteDraftTask).
     if (deletedDraftTid.current === tid) return;
@@ -1303,7 +1304,7 @@ export function useTaskManager(
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | { kind: "task"; tid: number; msg: AgnosticEvent }
+      | { kind: "task"; tid: number; msg: EnvelopedEvent }
       | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];

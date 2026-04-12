@@ -51,6 +51,7 @@ function getExtras(
 }
 
 function getSeq(msg: unknown): number | undefined {
+  if (msg == null || typeof msg !== "object") return undefined;
   const seq = (msg as Record<string, unknown>)._seq;
   return typeof seq === "number" ? seq : undefined;
 }
@@ -378,8 +379,8 @@ export function reduceParseError(
   s: SessionState,
   label: string,
   detail: string,
-  raw: unknown,
-  rawSource?: unknown,
+  rawSource: unknown,
+  dumpSource: boolean = true,
 ): SessionState {
   const id = `parse-error-${++s.msgIdCounter}`;
   return {
@@ -393,14 +394,13 @@ export function reduceParseError(
         content: [
           {
             type: "text" as const,
-            text:
-              raw !== undefined
-                ? `${label}: ${detail}\n${JSON.stringify(raw, null, 2)}`
-                : `${label}: ${detail}`,
+            text: dumpSource
+              ? `${label}: ${detail}\n${JSON.stringify(rawSource, null, 2)}`
+              : `${label}: ${detail}`,
           },
         ],
-        rawSource: rawSource ?? raw,
-        seq: getSeq(rawSource ?? raw),
+        rawSource,
+        seq: getSeq(rawSource),
       },
     ],
   };
@@ -1517,8 +1517,8 @@ export function reduceMessage(
         s,
         "Unrecognized agent data",
         msg.reason,
-        undefined,
         msg,
+        false,
       );
     }
 
@@ -1527,7 +1527,6 @@ export function reduceMessage(
         s,
         "Unknown message type",
         (msg as Record<string, unknown>).type as string,
-        msg,
         msg,
       );
   }

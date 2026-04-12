@@ -313,6 +313,9 @@ export type AgnosticEvent =
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };
 
+/** An AgnosticEvent with the backend envelope's sequence number attached. */
+export type EnvelopedEvent = AgnosticEvent & { _seq?: number };
+
 // Control messages from our backend (not Claude Code) — plain interfaces
 export interface TaskCreatedMessage {
   type: "task_created";

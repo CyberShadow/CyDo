@@ -1,4 +1,9 @@
-import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
+import type {
+  AgnosticEvent,
+  EnvelopedEvent,
+  ControlMessage,
+  ContentBlock,
+} from "./protocol";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.
@@ -9,7 +14,7 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
-  onTaskMessage: ((tid: number, msg: AgnosticEvent) => void) | null = null;
+  onTaskMessage: ((tid: number, msg: EnvelopedEvent) => void) | null = null;
   onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
     null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
@@ -69,9 +74,9 @@ export class Connection {
               raw.unconfirmedUserEvent as AgnosticEvent,
             );
           } else if ("event" in raw) {
-            const event = raw.event as AgnosticEvent;
+            const event = raw.event as EnvelopedEvent;
             if (typeof raw.seq === "number") {
-              (event as Record<string, unknown>)._seq = raw.seq;
+              event._seq = raw.seq;
             }
             this.onTaskMessage?.(raw.tid, event);
           } else {
