@@ -2747,7 +2747,22 @@ class App : ToolsBackend
 		{
 			if (td.session && td.session.alive)
 			{
+				// Use the pre-compaction JSONL snapshot saved by JsonlTracker.
+				// Agents like Codex compact the JSONL file ~270ms after a new
+				// turn starts (triggered by response.created), well before the
+				// undo click arrives.  The snapshot was taken on the last
+				// forkId-producing event, preserving line-based fork IDs that
+				// would otherwise be invalidated by compaction.
+				auto jsonlPathSnap = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+				auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
+				jsonlTracker.clearUndoJsonl(tid);
+
 				td.processQueue.setGoal(ProcessState.Dead).then(() {
+					if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0)
+					{
+						import std.file : write;
+						write(jsonlPathSnap, jsonlSnap);
+					}
 					performUndoExecution(ws, tid, json);
 				}).ignoreResult();
 				td.session.stop();
@@ -2990,6 +3005,11 @@ class App : ToolsBackend
 		sendToSubscribed(tid, data);
 
 		// --- send to agent ---
+		// Snapshot the JSONL before the agent processes the new message.
+		// Agents like Codex may compact the JSONL on the first streaming event
+		// (response.created), invalidating line-based fork IDs.  Capturing here,
+		// before any agent write, preserves the pre-compaction content for undo.
+		jsonlTracker.captureUndoSnapshot(tid);
 		const(ContentBlock)[] toSend = td.session.supportsImages
 			? content
 			: content.filter!(b => b.type != "image").array;

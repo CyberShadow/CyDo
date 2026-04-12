@@ -1271,15 +1271,28 @@ class CodexAgent : Agent
 
 		string[] ids;
 		int lineNum = lineOffset;
+		// Codex prepends system context as a role=user response_item before the
+		// first task_started event.  Skip role=user lines until task_started is
+		// seen so the system context is not treated as a forkable user message.
+		// lineOffset > 0 means we're reading past the startup section already.
+		bool seenTaskStarted = lineOffset > 0;
 		foreach (line; content.lineSplitter)
 		{
 			lineNum++;
 			if (line.length == 0)
 				continue;
+			if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+			{
+				seenTaskStarted = true;
+				continue;
+			}
 			// Forkable: response_item with role user or assistant
 			if (!line.canFind(`"type":"response_item"`))
 				continue;
 			if (!line.canFind(`"role":"user"`) && !line.canFind(`"role":"assistant"`))
+				continue;
+			// Skip pre-session role=user lines (system context injected before task_started).
+			if (line.canFind(`"role":"user"`) && !seenTaskStarted)
 				continue;
 			ids ~= "line:" ~ to!string(lineNum);
 		}
@@ -1294,15 +1307,28 @@ class CodexAgent : Agent
 
 		ForkableIdInfo[] ids;
 		int lineNum = lineOffset;
+		// Codex prepends system context as a role=user response_item before the
+		// first task_started event.  Skip role=user lines until task_started is
+		// seen so the system context is not treated as a forkable user message.
+		// lineOffset > 0 means we're reading past the startup section already.
+		bool seenTaskStarted = lineOffset > 0;
 		foreach (line; content.lineSplitter)
 		{
 			lineNum++;
 			if (line.length == 0)
 				continue;
+			if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+			{
+				seenTaskStarted = true;
+				continue;
+			}
 			if (!line.canFind(`"type":"response_item"`))
 				continue;
 			bool isUser = line.canFind(`"role":"user"`);
 			if (!isUser && !line.canFind(`"role":"assistant"`))
+				continue;
+			// Skip pre-session role=user lines (system context injected before task_started).
+			if (isUser && !seenTaskStarted)
 				continue;
 			ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), isUser);
 		}
