@@ -26,7 +26,7 @@ export interface AssistantContentBlock {
   tool_source?: string;
   input?: Record<string, unknown>;
   caller?: { type: string; tool_id?: string };
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -110,7 +110,7 @@ export interface ResultMessage {
   permission_denials?: unknown[];
   stop_reason?: string | null;
   errors?: string[];
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -152,7 +152,7 @@ export interface ItemStartedEvent {
   isCompactSummary?: boolean;
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -176,7 +176,7 @@ export interface ItemCompletedEvent {
   input?: Record<string, unknown>;
   output?: string;
   is_error?: boolean;
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -186,7 +186,7 @@ export interface ItemResultEvent {
   content: string | UserContentBlock[];
   is_error?: boolean;
   tool_result?: unknown;
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -197,7 +197,7 @@ export interface TurnStopEvent {
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
   uuid?: string;
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -208,7 +208,7 @@ export interface TurnDeltaEvent {
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
   uuid?: string;
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -312,9 +312,6 @@ export type AgnosticEvent =
   | AgentUnrecognizedEvent;
 
 export type TaskMessage = { tid: number; event: AgnosticEvent };
-
-/** An AgnosticEvent with the backend envelope's sequence number attached. */
-export type EnvelopedEvent = AgnosticEvent & { _seq?: number };
 
 // Control messages from our backend (not Claude Code) — plain interfaces
 export interface TaskCreatedMessage {

@@ -38,7 +38,7 @@ import type {
 function getExtras(
   msg: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const extras = msg._extras;
+  const extras = msg.extras;
   if (
     extras &&
     typeof extras === "object" &&
@@ -50,15 +50,13 @@ function getExtras(
   return undefined;
 }
 
-function getSeq(msg: unknown): number | undefined {
-  if (msg == null || typeof msg !== "object") return undefined;
-  const seq = (msg as Record<string, unknown>)._seq;
-  return typeof seq === "number" ? seq : undefined;
-}
-
 /** Append `event` to `msg.rawSource` and accumulate its seq into `msg.seq`.
  *  Mutates `msg` in place — callers must already hold a shallow copy. */
-function appendRawSource(msg: DisplayMessage, event: unknown): void {
+function appendRawSource(
+  msg: DisplayMessage,
+  event: unknown,
+  seq?: number,
+): void {
   const prevRaw = msg.rawSource;
   msg.rawSource = prevRaw
     ? Array.isArray(prevRaw)
@@ -66,15 +64,14 @@ function appendRawSource(msg: DisplayMessage, event: unknown): void {
       : [prevRaw, event]
     : event;
 
-  const newSeq = getSeq(event);
-  if (newSeq != null) {
+  if (seq != null) {
     const prevSeq = msg.seq;
     msg.seq =
       prevSeq != null
         ? Array.isArray(prevSeq)
-          ? [...prevSeq, newSeq]
-          : [prevSeq, newSeq]
-        : newSeq;
+          ? [...prevSeq, seq]
+          : [prevSeq, seq]
+        : seq;
   }
 }
 
@@ -337,6 +334,7 @@ export function reduceParseError(
   detail: string,
   rawSource: unknown,
   dumpSource: boolean = true,
+  seq?: number,
 ): SessionState {
   const id = `parse-error-${++s.msgIdCounter}`;
   return {
@@ -356,7 +354,7 @@ export function reduceParseError(
           },
         ],
         rawSource,
-        seq: getSeq(rawSource),
+        seq,
       },
     ],
   };
@@ -365,6 +363,7 @@ export function reduceParseError(
 export function reduceSystemInit(
   s: SessionState,
   msg: SystemInitMessage,
+  seq?: number,
 ): SessionState {
   const initMsg: DisplayMessage = {
     id: `init-${++s.msgIdCounter}`,
@@ -372,7 +371,7 @@ export function reduceSystemInit(
     subtype: "init" as const,
     content: [],
     rawSource: msg,
-    seq: getSeq(msg),
+    seq,
   };
   return {
     ...s,
@@ -399,6 +398,7 @@ export function reduceSystemInit(
 export function reduceSystemStatus(
   s: SessionState,
   msg: SystemStatusMessage,
+  seq?: number,
 ): SessionState {
   const id = `status-${++s.msgIdCounter}`;
   return {
@@ -412,7 +412,7 @@ export function reduceSystemStatus(
         content: [],
         statusText: msg.status || "clear",
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -428,6 +428,7 @@ export function reduceStopHookSummary(
     hasOutput: boolean;
     [key: string]: unknown;
   },
+  seq?: number,
 ): SessionState {
   const parts: string[] = [];
   for (const hook of msg.hookInfos) {
@@ -450,7 +451,7 @@ export function reduceStopHookSummary(
         subtype: "stop_hook_summary" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -459,6 +460,7 @@ export function reduceStopHookSummary(
 export function reduceCompactBoundary(
   s: SessionState,
   msg: SystemCompactBoundaryMessage,
+  seq?: number,
 ): SessionState {
   const id = `compact-${++s.msgIdCounter}`;
   const cm = msg.compact_metadata;
@@ -474,7 +476,7 @@ export function reduceCompactBoundary(
           ? { trigger: cm.trigger, preTokens: cm.pre_tokens }
           : undefined,
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -483,6 +485,7 @@ export function reduceCompactBoundary(
 export function reduceTaskLifecycle(
   s: SessionState,
   msg: SystemTaskStartedMessage | SystemTaskNotificationMessage,
+  seq?: number,
 ): SessionState {
   const id = `task-${++s.msgIdCounter}`;
   let text: string;
@@ -503,7 +506,7 @@ export function reduceTaskLifecycle(
         subtype: "task_lifecycle" as const,
         content: [{ type: "text" as const, text }],
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -512,6 +515,7 @@ export function reduceTaskLifecycle(
 export function reduceSummary(
   s: SessionState,
   msg: SummaryMessage,
+  seq?: number,
 ): SessionState {
   const id = `summary-${++s.msgIdCounter}`;
   return {
@@ -523,7 +527,7 @@ export function reduceSummary(
         type: "summary" as const,
         content: [{ type: "text" as const, text: msg.summary || "" }],
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -532,6 +536,7 @@ export function reduceSummary(
 export function reduceRateLimit(
   s: SessionState,
   msg: RateLimitEventMessage,
+  seq?: number,
 ): SessionState {
   const id = `ratelimit-${++s.msgIdCounter}`;
   return {
@@ -544,7 +549,7 @@ export function reduceRateLimit(
         content: [],
         rateLimitInfo: msg.rate_limit_info,
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
       },
     ],
   };
@@ -705,6 +710,7 @@ function trackResultFileEdits(
 export function reduceResultMessage(
   s: SessionState,
   msg: ResultMessage,
+  seq?: number,
 ): SessionState {
   // A result (especially error_during_execution from an interrupt) means the
   // current turn is over. Clear any lingering streaming state so the next
@@ -749,7 +755,7 @@ export function reduceResultMessage(
         type: "result" as const,
         content: [],
         rawSource: msg,
-        seq: getSeq(msg),
+        seq,
         extraFields: resultExtraFields,
         resultData: {
           subtype: msg.subtype,
@@ -864,6 +870,7 @@ function tryParseJson(text: string): Record<string, unknown> {
 function reduceItemStartedUserMessage(
   s: SessionState,
   event: ItemStartedEvent,
+  seq?: number,
 ): SessionState {
   const content = event.content ?? [];
   const text = content
@@ -901,7 +908,7 @@ function reduceItemStartedUserMessage(
       parentToolUseId: event.parent_tool_use_id,
       extraFields: getExtras(event as Record<string, unknown>),
       rawSource: event,
-      seq: getSeq(event),
+      seq,
       uuid: event.uuid,
     };
     const messages = event.is_meta
@@ -927,7 +934,7 @@ function reduceItemStartedUserMessage(
       parentToolUseId: event.parent_tool_use_id,
       extraFields: getExtras(event as Record<string, unknown>),
       rawSource: event,
-      seq: getSeq(event),
+      seq,
       uuid: event.uuid,
       cydoMeta: pendingMsg?.cydoMeta,
     };
@@ -956,9 +963,10 @@ function reduceItemStartedUserMessage(
 export function reduceItemStarted(
   s: SessionState,
   event: ItemStartedEvent,
+  seq?: number,
 ): SessionState {
   if (event.item_type === "user_message") {
-    return reduceItemStartedUserMessage(s, event);
+    return reduceItemStartedUserMessage(s, event, seq);
   }
 
   const { messages, msgIdx } = getOrCreateStreamingMessage(
@@ -991,7 +999,7 @@ export function reduceItemStarted(
     msg.parentToolUseId = event.parent_tool_use_id;
   }
 
-  appendRawSource(msg, event);
+  appendRawSource(msg, event, seq);
 
   const blocks = new Map(s.blocks);
   blocks.set(blockKey, block);
@@ -1052,6 +1060,7 @@ export function reduceItemDelta(
 export function reduceItemCompleted(
   s: SessionState,
   event: ItemCompletedEvent,
+  seq?: number,
 ): SessionState {
   const blockKey = s.itemIdMap.get(event.item_id) ?? event.item_id;
   const block = s.blocks.get(blockKey);
@@ -1067,7 +1076,7 @@ export function reduceItemCompleted(
 
   const updated: Block = { ...block, completed: true };
   if (event.text !== undefined) updated.text = event.text;
-  if (event._extras) updated._extras = event._extras;
+  if (event.extras) updated.extras = event.extras;
   if (block.type === "tool_use") {
     updated.input = event.input ?? block.input ?? tryParseJson(block.text);
   }
@@ -1082,7 +1091,7 @@ export function reduceItemCompleted(
     if (m.blockIds?.includes(blockKey)) {
       messages = messages.slice();
       const updatedMsg = { ...m };
-      appendRawSource(updatedMsg, event);
+      appendRawSource(updatedMsg, event, seq);
       messages[i] = updatedMsg;
       break;
     }
@@ -1102,6 +1111,7 @@ export function reduceItemCompleted(
 export function reduceItemResult(
   s: SessionState,
   event: ItemResultEvent,
+  seq?: number,
 ): SessionState {
   const blockKey = s.itemIdMap.get(event.item_id) ?? event.item_id;
   const block = s.blocks.get(blockKey);
@@ -1127,7 +1137,7 @@ export function reduceItemResult(
     if (m.blockIds?.includes(blockKey)) {
       messages = messages.slice();
       const updatedMsg = { ...m };
-      appendRawSource(updatedMsg, event);
+      appendRawSource(updatedMsg, event, seq);
       messages[i] = updatedMsg;
       break;
     }
@@ -1147,6 +1157,7 @@ export function reduceItemResult(
 export function reduceTurnDelta(
   s: SessionState,
   event: TurnDeltaEvent,
+  seq?: number,
 ): SessionState {
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i]!;
@@ -1167,11 +1178,11 @@ export function reduceTurnDelta(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
-      if (event._extras) updated.extraFields = event._extras;
+      if (event.extras) updated.extraFields = event.extras;
       if (event.uuid) updated.uuid = event.uuid;
 
       // Attach to rawSource for "View source" → "Raw".
-      appendRawSource(updated, event);
+      appendRawSource(updated, event, seq);
 
       return { ...s, messages };
     }
@@ -1182,6 +1193,7 @@ export function reduceTurnDelta(
 export function reduceTurnStop(
   s: SessionState,
   event: TurnStopEvent,
+  seq?: number,
 ): SessionState {
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i]!;
@@ -1203,12 +1215,12 @@ export function reduceTurnStop(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
-      if (event._extras) updated.extraFields ??= event._extras;
+      if (event.extras) updated.extraFields ??= event.extras;
       if (event.uuid) updated.uuid ??= event.uuid;
 
       // Always append to rawSource — every raw Claude Code event that
       // contributes to the message should be visible via "View source" → "Raw".
-      appendRawSource(updated, event);
+      appendRawSource(updated, event, seq);
 
       updated.streaming = false;
 
@@ -1236,6 +1248,7 @@ export function reduceTurnStop(
 export function reduceStderr(
   s: SessionState,
   event: StderrMessage,
+  seq?: number,
 ): SessionState {
   const lastMessage = s.messages[s.messages.length - 1];
   if (lastMessage?.type === "system" && lastMessage.subtype === "stderr") {
@@ -1254,7 +1267,7 @@ export function reduceStderr(
         text: priorText.length > 0 ? `${priorText}\n${event.text}` : event.text,
       },
     ];
-    appendRawSource(updated, event);
+    appendRawSource(updated, event, seq);
     messages[messages.length - 1] = updated;
     return { ...s, messages };
   }
@@ -1270,7 +1283,7 @@ export function reduceStderr(
         subtype: "stderr" as const,
         content: [{ type: "text" as const, text: event.text }],
         rawSource: event,
-        seq: getSeq(event),
+        seq,
       },
     ],
   };
@@ -1288,20 +1301,21 @@ export function reduceExit(s: SessionState): SessionState {
 export function reduceMessage(
   s: SessionState,
   msg: AgnosticEvent,
+  seq?: number,
 ): SessionState {
   switch (msg.type) {
     case "session/init":
-      return reduceSystemInit(s, msg);
+      return reduceSystemInit(s, msg, seq);
 
     case "session/status":
-      return reduceSystemStatus(s, msg);
+      return reduceSystemStatus(s, msg, seq);
 
     case "session/compacted":
-      return reduceCompactBoundary(s, msg);
+      return reduceCompactBoundary(s, msg, seq);
 
     case "task/started":
     case "task/notification":
-      return reduceTaskLifecycle(s, msg);
+      return reduceTaskLifecycle(s, msg, seq);
 
     case "system": {
       const sysMsg = msg as Record<string, unknown>;
@@ -1309,6 +1323,7 @@ export function reduceMessage(
         return reduceStopHookSummary(
           s,
           sysMsg as unknown as Parameters<typeof reduceStopHookSummary>[1],
+          seq,
         );
       }
       if (sysMsg.subtype === "api_error" || sysMsg.subtype === "turn_duration")
@@ -1318,32 +1333,34 @@ export function reduceMessage(
         "Unknown system subtype",
         String(sysMsg.subtype),
         msg,
+        true,
+        seq,
       );
     }
 
     case "item/started":
-      return reduceItemStarted(s, msg);
+      return reduceItemStarted(s, msg, seq);
 
     case "item/delta":
       return reduceItemDelta(s, msg);
 
     case "item/completed":
-      return reduceItemCompleted(s, msg);
+      return reduceItemCompleted(s, msg, seq);
 
     case "item/result":
-      return reduceItemResult(s, msg);
+      return reduceItemResult(s, msg, seq);
 
     case "turn/delta":
-      return reduceTurnDelta(s, msg);
+      return reduceTurnDelta(s, msg, seq);
 
     case "turn/stop":
-      return reduceTurnStop(s, msg);
+      return reduceTurnStop(s, msg, seq);
 
     case "turn/result":
-      return reduceResultMessage(s, msg);
+      return reduceResultMessage(s, msg, seq);
 
     case "session/summary":
-      return reduceSummary(s, msg);
+      return reduceSummary(s, msg, seq);
 
     case "session/rate_limit":
       return s;
@@ -1366,7 +1383,7 @@ export function reduceMessage(
               },
             ],
             rawSource: msg,
-            seq: getSeq(msg),
+            seq,
           },
         ],
       };
@@ -1376,7 +1393,7 @@ export function reduceMessage(
       return reduceExit(s);
 
     case "process/stderr":
-      return reduceStderr(s, msg);
+      return reduceStderr(s, msg, seq);
 
     case "agent/error": {
       // Transient agent error (e.g. API disconnect). Display as a system
@@ -1457,7 +1474,7 @@ export function reduceMessage(
           creationOrder,
         };
         updated.blockIds = [...(updated.blockIds || []), itemId];
-        appendRawSource(updated, msg);
+        appendRawSource(updated, msg, seq);
 
         const blocks = new Map(s.blocks);
         blocks.set(itemId, block);
@@ -1470,6 +1487,7 @@ export function reduceMessage(
         msg.reason,
         msg,
         false,
+        seq,
       );
     }
 
@@ -1479,6 +1497,8 @@ export function reduceMessage(
         "Unknown message type",
         (msg as Record<string, unknown>).type as string,
         msg,
+        true,
+        seq,
       );
   }
 }

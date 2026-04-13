@@ -1922,8 +1922,8 @@ class CodexSession : AgentSession
 		if (item.text.length > 0)
 			ev.text = item.text;
 
-		// Forward Codex extras (processId, status, cwd, commandActions, etc.) to _extras.
-		ev._extras = extrasToFragment(item.extras);
+		// Forward Codex extras (processId, status, cwd, commandActions, etc.) to extras.
+		ev.extras = extrasToFragment(item.extras);
 
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
@@ -2005,8 +2005,8 @@ class CodexSession : AgentSession
 		if (itemType == "tool_use" && params.item.aggregatedOutput.length > 0)
 			ev.output = params.item.aggregatedOutput;
 
-		// Forward remaining Codex extras (processId, commandActions, type, etc.) to _extras.
-		ev._extras = extrasToFragment(params.item.extras);
+		// Forward remaining Codex extras (processId, commandActions, type, etc.) to extras.
+		ev.extras = extrasToFragment(params.item.extras);
 
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));

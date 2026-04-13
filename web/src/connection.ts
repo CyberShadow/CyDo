@@ -1,9 +1,4 @@
-import type {
-  AgnosticEvent,
-  EnvelopedEvent,
-  ControlMessage,
-  ContentBlock,
-} from "./protocol";
+import type { AgnosticEvent, ControlMessage, ContentBlock } from "./protocol";
 
 // This module holds stateful class instances that can't be hot-replaced.
 // Force a full page reload when it changes.
@@ -14,7 +9,9 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
-  onTaskMessage: ((tid: number, msg: EnvelopedEvent) => void) | null = null;
+  onTaskMessage:
+    | ((tid: number, event: AgnosticEvent, seq?: number) => void)
+    | null = null;
   onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
     null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
@@ -76,11 +73,9 @@ export class Connection {
               raw.unconfirmedUserEvent as AgnosticEvent,
             );
           } else if ("event" in raw) {
-            const event = raw.event as EnvelopedEvent;
-            if (typeof raw.seq === "number") {
-              event._seq = raw.seq;
-            }
-            this.onTaskMessage?.(raw.tid, event);
+            const event = raw.event as AgnosticEvent;
+            const seq = typeof raw.seq === "number" ? raw.seq : undefined;
+            this.onTaskMessage?.(raw.tid, event, seq);
           } else {
             console.warn("Unknown task envelope:", raw);
           }

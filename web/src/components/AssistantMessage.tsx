@@ -168,7 +168,7 @@ export const AssistantMessage = memo(
         {blocksToRender.map((block, i) => {
           const itemId = block.itemId;
 
-          const blockExtras = { ...(block._extras ?? {}) };
+          const blockExtras = { ...(block.extras ?? {}) };
           const caller = blockExtras.caller;
           if (
             caller &&

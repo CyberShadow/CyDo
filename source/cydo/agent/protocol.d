@@ -25,7 +25,7 @@ struct ContentBlock
 	@JSONOptional JSONFragment input; // tool_use blocks (opaque)
 	@JSONOptional string data;       // image blocks: base64-encoded image data
 	@JSONOptional string media_type; // image blocks: MIME type (e.g., "image/png")
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// Extract plain text from a ContentBlock[].
@@ -78,7 +78,7 @@ struct SessionInitEvent
 	@JSONOptional JSONFragment agents;
 	@JSONOptional JSONFragment plugins;
 	bool supports_file_revert;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// session/status
@@ -111,7 +111,7 @@ struct TurnResultEvent
 	@JSONOptional JSONFragment permission_denials;
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// session/summary
@@ -136,7 +136,7 @@ struct TaskStartedEvent
 	@JSONOptional string tool_use_id;
 	@JSONOptional string description;
 	@JSONOptional string task_type;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// task/notification
@@ -147,7 +147,7 @@ struct TaskNotificationEvent
 	string status;
 	@JSONOptional string output_file;
 	@JSONOptional string summary;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// control/response
@@ -193,7 +193,7 @@ struct ItemStartedEvent
 	@JSONOptional bool isCompactSummary;
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// item/delta — incremental content for the active item.
@@ -214,7 +214,7 @@ struct ItemCompletedEvent
 	@JSONOptional JSONFragment input;
 	@JSONOptional string output;
 	@JSONOptional bool is_error;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// item/result — tool result returned for a previously started tool_use item.
@@ -225,7 +225,7 @@ struct ItemResultEvent
 	JSONFragment content;  // string or content block array
 	@JSONOptional bool is_error;
 	@JSONOptional JSONFragment tool_result;  // opaque payload (toolUseResult/tool_use_result)
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// turn/stop — the assistant turn has finished (replaces stream/turn_stop + message/assistant).
@@ -237,7 +237,7 @@ struct TurnStopEvent
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
 	@JSONOptional string uuid;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// turn/delta — turn-level metadata update from assistant events.
@@ -249,7 +249,7 @@ struct TurnDeltaEvent
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
 	@JSONOptional string uuid;
-	@JSONOptional JSONFragment _extras;
+	@JSONOptional JSONFragment extras;
 }
 
 /// Command input for Bash tool_use blocks (Codex agent).

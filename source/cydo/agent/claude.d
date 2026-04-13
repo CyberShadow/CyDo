@@ -999,7 +999,7 @@ class ClaudeCodeSession : AgentSession
 						ItemCompletedEvent ev;
 						ev.item_id = activeItemIds_[idx];
 						if (auto extras = activeItemIds_[idx] in blockExtras_)
-							ev._extras = *extras;
+							ev.extras = *extras;
 						emitEvent(TranslatedEvent(toJson(ev), rawLine));
 					}
 				}
@@ -1134,7 +1134,7 @@ class ClaudeCodeSession : AgentSession
 					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
 					compEv.text = text;
 				}
-				compEv._extras = extrasToFragment(b._extras);
+				compEv.extras = extrasToFragment(b._extras);
 				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
 			}
 
@@ -1157,7 +1157,7 @@ class ClaudeCodeSession : AgentSession
 			tsev.parent_tool_use_id = raw.parent_tool_use_id;
 			tsev.is_sidechain       = raw.isSidechain;
 			tsev.uuid               = raw.uuid;
-			tsev._extras = extrasToFragment(collectAllExtras(raw));
+			tsev.extras = extrasToFragment(collectAllExtras(raw));
 			emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 			return;
 		}
@@ -1198,7 +1198,7 @@ class ClaudeCodeSession : AgentSession
 		ev.parent_tool_use_id = raw.parent_tool_use_id;
 		ev.is_sidechain       = raw.isSidechain;
 		ev.uuid               = raw.uuid;
-		ev._extras            = extrasToFragment(raw._extras);
+		ev.extras             = extrasToFragment(raw._extras);
 		emitEvent(TranslatedEvent(toJson(ev), rawLine));
 	}
 
@@ -1608,7 +1608,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 			auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
 			compEv.text = text;
 		}
-		compEv._extras = extrasToFragment(b._extras);
+		compEv.extras = extrasToFragment(b._extras);
 		events ~= TranslatedEvent(toJson(compEv), rawLine);
 	}
 
@@ -1632,7 +1632,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 	tsev.parent_tool_use_id = raw.parent_tool_use_id;
 	tsev.is_sidechain      = raw.isSidechain;
 	tsev.uuid              = raw.uuid;
-	tsev._extras = extrasToFragment(collectAllExtras(raw));
+	tsev.extras = extrasToFragment(collectAllExtras(raw));
 	events ~= TranslatedEvent(toJson(tsev), rawLine);
 
 	return events;
@@ -1910,7 +1910,7 @@ private string translateSessionInit(string rawLine)
 	ev.agents        = raw.agents;
 	ev.plugins       = raw.plugins;
 	ev.supports_file_revert = true;
-	ev._extras = extrasToFragment(collectAllExtras(raw));
+	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }
 
@@ -1990,7 +1990,7 @@ private string normalizeTurnResult(string rawLine)
 	ev.permission_denials = raw.permission_denials;
 	ev.stop_reason        = raw.stop_reason;
 	ev.errors             = raw.errors;
-	ev._extras = extrasToFragment(collectAllExtras(raw));
+	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }
 
@@ -2165,7 +2165,7 @@ private string normalizeTaskStarted(string rawLine)
 	ev.tool_use_id  = raw.tool_use_id;
 	ev.description  = raw.description;
 	ev.task_type    = raw.task_type;
-	ev._extras = extrasToFragment(collectAllExtras(raw));
+	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }
 
@@ -2209,7 +2209,7 @@ private string normalizeTaskNotification(string rawLine)
 	ev.status      = raw.status;
 	ev.output_file = raw.output_file;
 	ev.summary     = raw.summary;
-	ev._extras = extrasToFragment(collectAllExtras(raw));
+	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }
 

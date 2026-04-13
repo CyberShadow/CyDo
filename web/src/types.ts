@@ -157,7 +157,7 @@ export interface Block {
   completed: boolean; // false while streaming, true after item/completed or turn/stop
   creationOrder: number; // monotonic counter for stable ordering
   result?: ToolResult; // tool result (tool_use only, set by item/result)
-  _extras?: Record<string, unknown>;
+  extras?: Record<string, unknown>;
 }
 
 export interface SessionInfo {
