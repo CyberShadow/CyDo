@@ -2986,6 +2986,7 @@ pre.extra-field-value {
 
 /* Sidebar back button */
 .sidebar-back-btn {
+  position: relative;
   width: 28px;
   height: 28px;
   border: 1px solid var(--border);
@@ -3015,6 +3016,17 @@ pre.extra-field-value {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.home-attention-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--attention);
+  pointer-events: none;
 }
 
 .sidebar-header-left,

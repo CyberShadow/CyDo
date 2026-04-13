@@ -90,7 +90,15 @@ function AppContent() {
   const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
 
   useEffect(() => {
-    const count = attention.size;
+    let count: number;
+    if (activeProject) {
+      count = 0;
+      for (const t of tasks.values()) {
+        if (t.needsAttention && t.projectPath === activeProject) count++;
+      }
+    } else {
+      count = attention.size;
+    }
     const prefix = count > 0 ? `(${count}) ` : "";
     const scopedTitle = active?.title
       ? active.title
@@ -101,7 +109,7 @@ function AppContent() {
       ? `${prefix}${scopedTitle} — CyDo`
       : `${prefix}CyDo`;
     if ("setAppBadge" in navigator) void navigator.setAppBadge(count);
-  }, [active?.title, activeProject, activeTaskId, attention.size]);
+  }, [active?.title, activeProject, activeTaskId, attention.size, tasks]);
 
   // Ctrl+K: open search popup
   useEffect(() => {
@@ -353,6 +361,7 @@ function AppContent() {
             visible={sidebarOpen}
             onOpenSearch={handleOpenSearch}
             onArchive={handleSidebarArchive}
+            hasGlobalAttention={attention.size > 0}
           />
           <NoticeBar notices={notices} />
           {Array.from(tasks.values())

@@ -80,9 +80,14 @@ function ActiveSessions({
       }
       result.push(t);
     }
-    result.sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0));
+    result.sort((a, b) => {
+      const aAtt = attention.has(a.tid) ? 1 : 0;
+      const bAtt = attention.has(b.tid) ? 1 : 0;
+      if (bAtt !== aAtt) return bAtt - aAtt;
+      return (b.lastActive ?? 0) - (a.lastActive ?? 0);
+    });
     return result;
-  }, [tasks, filterLower]);
+  }, [tasks, filterLower, attention]);
 
   if (activeTasks.length === 0) return null;
 

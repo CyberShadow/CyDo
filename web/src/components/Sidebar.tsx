@@ -506,6 +506,7 @@ interface Props {
   visible?: boolean;
   onOpenSearch?: () => void;
   onArchive?: (tid: number) => void;
+  hasGlobalAttention?: boolean;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -525,6 +526,7 @@ export const Sidebar = memo(function Sidebar({
   visible,
   onOpenSearch,
   onArchive,
+  hasGlobalAttention,
 }: Props) {
   const tree = useMemo(() => buildTree(tasks), [tasks]);
   const flatItems = useMemo(
@@ -597,6 +599,7 @@ export const Sidebar = memo(function Sidebar({
                 class="action-icon"
                 dangerouslySetInnerHTML={{ __html: cydoIcon }}
               />
+              {hasGlobalAttention && <span class="home-attention-dot" />}
             </a>
           )}
         </div>
