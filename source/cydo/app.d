@@ -76,7 +76,7 @@ static:
 		socketManager.loop();
 	}
 
-	@(`Run the MCP server.`)
+	/// Run the MCP server.
 	void mcpServer()
 	{
 		import cydo.mcp.server : runMcpServer;
@@ -107,7 +107,7 @@ static:
 		runDumpContext(typesYaml, typeName);
 	}
 
-	@(`Discover projects in a workspace.`)
+	/// Discover projects in a workspace.
 	void discover(
 		Parameter!(string, "Workspace root path.") root,
 		Parameter!(string, "Workspace name.") name,
