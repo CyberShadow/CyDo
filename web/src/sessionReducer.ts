@@ -767,9 +767,7 @@ export function reduceResultMessage(
           durationApiMs: msg.duration_api_ms,
           totalCostUsd: msg.total_cost_usd,
           usage: msg.usage,
-          modelUsage: msg.model_usage as
-            | Record<string, Record<string, unknown>>
-            | undefined,
+          modelUsage: msg.model_usage,
           permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
           errors: msg.errors,

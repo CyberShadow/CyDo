@@ -23,6 +23,8 @@ template tsTypeName(T)
 		enum tsTypeName = "unknown";
 	else static if (is(T == JSONExtras))
 		enum tsTypeName = "__jsonextras__";
+	else static if (is(T == V[K], V, K))
+		enum tsTypeName = "Record<" ~ tsTypeName!K ~ ", " ~ tsTypeName!V ~ ">";
 	else static if (isArray!T && !is(T == string))
 		enum tsTypeName = tsTypeName!(ForeachType!T) ~ "[]";
 	else static if (is(T == struct))
@@ -110,6 +112,8 @@ template isReferencedByEvents(T)
 				static if (is(FT == T))
 					return true;
 				else static if (isArray!FT && is(ForeachType!FT == T))
+					return true;
+				else static if (is(FT == V[K], V, K) && is(V == T))
 					return true;
 			}
 		return false;

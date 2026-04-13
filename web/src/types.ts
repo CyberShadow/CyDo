@@ -3,7 +3,11 @@
 // These are the frontend's internal representations — distinct from the
 // wire-protocol types in protocol.ts.
 
-import type { AssistantContentBlock, AskUserQuestionItem } from "./protocol";
+import type {
+  AssistantContentBlock,
+  AskUserQuestionItem,
+  ModelUsageInfo,
+} from "./protocol";
 
 /** Metadata for system-generated user messages (prompt templates, nudges). */
 export interface CydoMeta {
@@ -59,7 +63,7 @@ export interface DisplayMessage {
     durationApiMs?: number;
     totalCostUsd: number;
     usage: { input_tokens: number; output_tokens: number };
-    modelUsage?: Record<string, Record<string, unknown>>;
+    modelUsage?: Record<string, ModelUsageInfo>;
     permissionDenials?: unknown[];
     stopReason?: string | null;
     errors?: string[];

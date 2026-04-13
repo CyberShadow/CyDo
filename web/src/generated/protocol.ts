@@ -14,6 +14,12 @@ export interface UsageInfo {
   output_tokens: number;
 }
 
+export interface ModelUsageInfo {
+  input_tokens?: number;
+  output_tokens?: number;
+  [key: string]: unknown;
+}
+
 export interface CompactMetadata {
   trigger?: string;
   pre_tokens?: number;
@@ -73,7 +79,7 @@ export interface TurnResultEvent {
   duration_api_ms?: number;
   total_cost_usd: number;
   usage: UsageInfo;
-  model_usage?: unknown;
+  model_usage?: Record<string, ModelUsageInfo>;
   permission_denials?: unknown[];
   stop_reason?: string;
   errors?: string[];

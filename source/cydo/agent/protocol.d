@@ -51,6 +51,14 @@ struct UsageInfo
 	int output_tokens;
 }
 
+/// Per-model usage entry (used in the model_usage map).
+struct ModelUsageInfo
+{
+	@JSONOptional int input_tokens;
+	@JSONOptional int output_tokens;
+	JSONExtras extras;
+}
+
 /// Compact metadata.
 struct CompactMetadata
 {
@@ -107,7 +115,7 @@ struct TurnResultEvent
 	@JSONOptional int duration_api_ms;
 	double total_cost_usd;
 	UsageInfo usage;
-	@JSONOptional JSONFragment model_usage;
+	@JSONOptional ModelUsageInfo[string] model_usage;
 	@JSONOptional JSONFragment[] permission_denials;
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;

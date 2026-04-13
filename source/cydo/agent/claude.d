@@ -1945,8 +1945,8 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional int duration_api_ms;
 		double total_cost_usd;
 		@JSONOptional ClaudeUsage usage;
-		@JSONOptional JSONFragment modelUsage;
-		@JSONOptional JSONFragment model_usage;
+		@JSONOptional ModelUsageInfo[string] modelUsage;
+		@JSONOptional ModelUsageInfo[string] model_usage;
 		@JSONOptional JSONFragment[] permission_denials;
 		@JSONOptional string stop_reason;
 		@JSONOptional string[] errors;
@@ -1983,9 +1983,9 @@ private string normalizeTurnResult(string rawLine)
 	ev.duration_api_ms    = raw.duration_api_ms;
 	ev.total_cost_usd     = raw.total_cost_usd;
 	ev.usage              = UsageInfo(raw.usage.input_tokens, raw.usage.output_tokens);
-	if (raw.modelUsage.json !is null && raw.modelUsage.json.length > 0)
+	if (raw.modelUsage.length > 0)
 		ev.model_usage = raw.modelUsage;
-	else if (raw.model_usage.json !is null && raw.model_usage.json.length > 0)
+	else if (raw.model_usage.length > 0)
 		ev.model_usage = raw.model_usage;
 	ev.permission_denials = raw.permission_denials;
 	ev.stop_reason        = raw.stop_reason;

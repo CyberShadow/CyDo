@@ -10,6 +10,7 @@
 export type {
   ContentBlock,
   UsageInfo,
+  ModelUsageInfo,
   CompactMetadata,
   RateLimitInfo,
   ControlResponse,
