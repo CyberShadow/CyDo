@@ -1893,7 +1893,7 @@ private string translateSessionInit(string rawLine)
 	try
 		raw = jsonParse!ClaudeInit(rawLine);
 	catch (Exception e)
-	{ tracef("translateSystemInit: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "session/init"); }
+	{ tracef("translateSystemInit: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("session/init parse error: " ~ e.msg); }
 
 	SessionInitEvent ev;
 	ev.session_id    = raw.session_id;
@@ -1972,7 +1972,7 @@ private string normalizeTurnResult(string rawLine)
 	try
 		raw = jsonParse!ClaudeResult(rawLine);
 	catch (Exception e)
-	{ tracef("translateResult: parse error: %s", e.msg); return renameType(rawLine, "turn/result"); }
+	{ tracef("translateResult: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("turn/result parse error: " ~ e.msg); }
 
 	TurnResultEvent ev;
 	ev.subtype            = raw.subtype;
@@ -2148,7 +2148,7 @@ private string normalizeTaskStarted(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskStarted(rawLine);
 	catch (Exception e)
-	{ tracef("translateTaskStarted: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/started"); }
+	{ tracef("translateTaskStarted: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/started parse error: " ~ e.msg); }
 
 	TaskStartedEvent ev;
 	ev.task_id      = raw.task_id;
@@ -2192,7 +2192,7 @@ private string normalizeTaskNotification(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskNotification(rawLine);
 	catch (Exception e)
-	{ tracef("translateTaskNotification: parse error: %s", e.msg); return replaceTypeRemoveSubtype(rawLine, "task/notification"); }
+	{ tracef("translateTaskNotification: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/notification parse error: " ~ e.msg); }
 
 	TaskNotificationEvent ev;
 	ev.task_id     = raw.task_id;

@@ -257,50 +257,6 @@ function buildEditsFromApplyPatchInput(
   );
 }
 
-function buildFileChangeInputFromRawEvent(
-  rawEvent: unknown,
-  cwd?: string,
-): Record<string, unknown> | undefined {
-  const parsedRaw =
-    typeof rawEvent === "string" ? tryParseJson(rawEvent) : rawEvent;
-  if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw))
-    return undefined;
-  const raw = parsedRaw as Record<string, unknown>;
-  const params =
-    raw.params && typeof raw.params === "object" && !Array.isArray(raw.params)
-      ? (raw.params as Record<string, unknown>)
-      : null;
-  const item =
-    params?.item &&
-    typeof params.item === "object" &&
-    !Array.isArray(params.item)
-      ? (params.item as Record<string, unknown>)
-      : null;
-  if (!item || !Array.isArray(item.changes) || item.changes.length === 0)
-    return undefined;
-
-  const changes: Array<Record<string, unknown>> = [];
-  for (const ch of item.changes as unknown[]) {
-    if (!ch || typeof ch !== "object" || Array.isArray(ch)) continue;
-    const change = ch as Record<string, unknown>;
-    const path = typeof change.path === "string" ? change.path : null;
-    if (!path) continue;
-    const kind =
-      change.kind &&
-      typeof change.kind === "object" &&
-      !Array.isArray(change.kind)
-        ? (change.kind as Record<string, unknown>)
-        : null;
-    const op =
-      kind?.type === "add" || kind?.type === "update" || kind?.type === "delete"
-        ? (kind.type as string)
-        : "update";
-    changes.push({ file_path: toAbsolutePath(path, cwd), op });
-  }
-  if (changes.length === 0) return undefined;
-  return { file_path: changes[0]!.file_path, changes };
-}
-
 function buildEditsFromCodexFileChangeEvent(
   rawEvent: unknown,
   toolUseId: string,
@@ -1024,14 +980,7 @@ export function reduceItemStarted(
     name: event.name,
     toolServer: event.tool_server,
     toolSource: event.tool_source,
-    input:
-      event.item_type === "tool_use" && event.name === "fileChange"
-        ? (event.input ??
-          buildFileChangeInputFromRawEvent(
-            (event as Record<string, unknown>)._raw,
-            s.sessionInfo?.cwd,
-          ))
-        : event.input,
+    input: event.input,
     completed: false,
     creationOrder,
   };
@@ -1053,11 +1002,8 @@ export function reduceItemStarted(
 
   if (event.item_type === "tool_use") {
     if (event.name === "fileChange") {
-      // _raw is stripped before broadcast; fall back to event.input (set by backend
-      // for live events) wrapped in the shape buildEditsFromCodexFileChangeEvent expects.
       const rawForEdits =
-        (event as Record<string, unknown>)._raw ??
-        (event.input != null ? { params: { item: event.input } } : undefined);
+        event.input != null ? { params: { item: event.input } } : undefined;
       const edits = buildEditsFromCodexFileChangeEvent(
         rawForEdits,
         event.item_id,
