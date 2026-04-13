@@ -1420,6 +1420,8 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 	auto cydoBin = cydoBinaryPath;
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
+	import ae.utils.array : nonNull;
+
 	// MCP config pointing to our binary in MCP server mode.
 	// CYDO_SOCKET tells the proxy to connect via UNIX socket (no auth needed).
 	auto cfg = McpConfig(McpConfigServers(McpConfigServer(
@@ -1428,12 +1430,12 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 		["mcp-server"],
 		McpConfigEnv(
 			to!string(tid),
-			mcpSocketPath,
-			creatableTaskTypes,
-			switchModes,
-			handoffs,
+			mcpSocketPath.nonNull,
+			creatableTaskTypes.nonNull,
+			switchModes.nonNull,
+			handoffs.nonNull,
 			includeTools is null ? "" : includeTools.join(","),
-			permissionPolicy,
+			permissionPolicy.nonNull,
 		),
 	)));
 	write(configPath, toJson(cfg));

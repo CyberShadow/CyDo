@@ -1816,15 +1816,17 @@ string generateCopilotMcpConfig(int tid, string creatableTaskTypes,
 
 	auto configPath = buildPath(configDir, "cydo-" ~ to!string(tid) ~ ".json");
 
+	import ae.utils.array : nonNull;
+
 	auto cfg = CopilotMcpConfig(CopilotMcpConfigServers(CopilotMcpConfigServer(
 		cydoBin,
 		["mcp-server"],
 		CopilotMcpConfigEnv(
 			to!string(tid),
-			mcpSocketPath,
-			creatableTaskTypes,
-			switchModes,
-			handoffs,
+			mcpSocketPath.nonNull,
+			creatableTaskTypes.nonNull,
+			switchModes.nonNull,
+			handoffs.nonNull,
 			includeTools is null ? "" : includeTools.join(","),
 		),
 	)));
