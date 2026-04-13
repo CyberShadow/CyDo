@@ -13,7 +13,11 @@
 ---
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/main-page.png" alt="Welcome page with project overview and active sessions" width="800">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/main-page-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/main-page-light.png">
+    <img alt="Welcome page with project overview and active sessions" src="https://files.cy.md/CyDo/docs/screenshots/main-page-dark.png" width="800">
+  </picture>
 </p>
 
 ## What is this?
@@ -29,7 +33,11 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
 - **Multi-session management** — Run multiple agent sessions concurrently from a single interface. A sidebar lets you easily switch between sessions, see their status, and steer any of them in real time.
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/conversation.png" alt="Conversation view with live streaming, suggestions, and task sidebar" width="800">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/conversation-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/conversation-light.png">
+    <img alt="Conversation view with live streaming, suggestions, and task sidebar" src="https://files.cy.md/CyDo/docs/screenshots/conversation-dark.png" width="800">
+  </picture>
 </p>
 
 - **Simple model** — One issue = one task = one session = one Git worktree. No learning curve - you will be productive right away.
@@ -46,19 +54,31 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
 - **Rich rendering** — Syntax-highlighted code blocks (via Shiki), ANSI color rendering for terminal output, Markdown with Mermaid diagrams, and structured tool call display.
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/tool-calls.png" alt="Tool calls: file edits, bash commands, and search results" width="800">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/tool-calls-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/tool-calls-light.png">
+    <img alt="Tool calls: file edits, bash commands, and search results" src="https://files.cy.md/CyDo/docs/screenshots/tool-calls-dark.png" width="800">
+  </picture>
 </p>
 
 - **Inline file viewer** — View file contents and diffs directly in the conversation without leaving the UI.
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/file-viewer.png" alt="Inline file viewer with syntax-highlighted diff" width="800">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-light.png">
+    <img alt="Inline file viewer with syntax-highlighted diff" src="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png" width="800">
+  </picture>
 </p>
 
 - **Cross-session search** — Find tasks across all workspaces and sessions.
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/search.png" alt="Search popup with results across workspaces" width="800">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/search-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/search-light.png">
+    <img alt="Search popup with results across workspaces" src="https://files.cy.md/CyDo/docs/screenshots/search-dark.png" width="800">
+  </picture>
 </p>
 
 - **No lock-in** — CyDo sessions are regular terminal sessions, and are stored in the agent's native format. Sessions you create in CyDo show up in the official CLI, and CLI sessions can be imported into CyDo. Use both interchangeably.
@@ -70,9 +90,17 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
 - **Mobile-friendly** — Responsive layout with a slide-out sidebar for use on phones and tablets.
 
 <p align="center">
-  <img src="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation.png" alt="Mobile conversation view" height="400">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation-light.png">
+    <img alt="Mobile conversation view" src="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation-dark.png" height="400">
+  </picture>
   &nbsp;&nbsp;
-  <img src="https://files.cy.md/CyDo/docs/screenshots/mobile-sidebar.png" alt="Mobile sidebar with task tree" height="400">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-sidebar-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-sidebar-light.png">
+    <img alt="Mobile sidebar with task tree" src="https://files.cy.md/CyDo/docs/screenshots/mobile-sidebar-dark.png" height="400">
+  </picture>
 </p>
 
 - **Thoroughly tested** — CyDo's integration test suite runs against the real software (the official, unmodified Claude Code / Codex / Copilot binaries), mocking only the AI inference API servers.
