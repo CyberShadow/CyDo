@@ -5,6 +5,7 @@ targetType "executable"
 targetPath "build"
 
 sourcePaths "source"
+excludedSourceFiles "source/cydo/agent/protocol_codegen.d"
 
 dependency "ae" version="~>0.0.3817"
 dependency "ae:sqlite" version="~>0.0.3817"

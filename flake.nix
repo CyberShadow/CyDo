@@ -63,6 +63,7 @@
           ./web/tsconfig.json
           ./web/vite.config.ts
           ./web/eslint.config.mjs
+          ./web/.prettierignore
         ];
       };
 
@@ -188,6 +189,28 @@ EOF
               description = "Multi-agent orchestration with Claude Code";
               platforms = platforms.linux;
             };
+          };
+
+          protocol-codegen = pkgs.buildDubPackage {
+            pname = "cydo-protocol-codegen";
+            version = "0.1.0";
+            src = backendSrc;
+            dubLock = ./dub-lock.json;
+            dontStrip = true;
+            buildInputs = [ pkgs.openssl_1_1 pkgs.zlib ];
+
+            buildPhase = ''
+              runHook preBuild
+              dub build cydo:protocol-codegen --skip-registry=all
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin
+              install -Dm755 build/cydo_protocol-codegen $out/bin/protocol-codegen
+              runHook postInstall
+            '';
           };
 
           backend = pkgs.buildDubPackage (backendCommon // {
@@ -428,7 +451,7 @@ EOF
           };
         in
         {
-          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug cydoTest fake-bwrap screenshots;
+          inherit frontend backend backendDebug protocol-codegen codex-cli copilot-cli cydo cydoDebug cydoTest fake-bwrap screenshots;
           default = cydo;
         });
 
@@ -754,6 +777,28 @@ EOF
             buildPhase = ''
               runHook preBuild
               npx prettier --check src/
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
+          protocol-types-fresh = pkgs.stdenv.mkDerivation {
+            pname = "cydo-protocol-types-fresh";
+            version = "0.1.0";
+            src = frontendSrc;
+
+            nativeBuildInputs = [ self.packages.${system}.protocol-codegen ];
+
+            buildPhase = ''
+              runHook preBuild
+              protocol-codegen generated-fresh.ts
+              if ! diff -u src/generated/protocol.ts generated-fresh.ts; then
+                echo ""
+                echo "Protocol types are stale — run \`npm run generate\` in web/ and commit the result."
+                exit 1
+              fi
               runHook postBuild
             '';
 

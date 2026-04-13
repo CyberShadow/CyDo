@@ -552,7 +552,7 @@ export function useTaskManager(
         | CydoMeta
         | undefined;
       const content = ((msg as Record<string, unknown>).content as
-        | ContentBlock[]
+        | import("./protocol").AssistantContentBlock[]
         | undefined) ?? [
         { type: "text" as const, text: extractTextContent(msg) },
       ];

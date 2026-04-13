@@ -2,6 +2,7 @@
   "name": "cydo-web",
   "private": true,
   "scripts": {
+    "generate": "cd .. && dub run cydo:protocol-codegen -- web/src/generated/protocol.ts",
     "build": "vite build",
     "dev": "vite",
     "fmt": "prettier --write src/",

@@ -1,21 +1,81 @@
 // Agent-agnostic protocol types.
 //
-// Plain TypeScript interfaces — no runtime validation.  The backend is
-// trusted to emit well-formed events.
+// Agnostic event types are generated from D structs in source/cydo/agent/protocol.d.
+// Run `npm run generate` in web/ to regenerate web/src/generated/protocol.ts.
 
 // ---------------------------------------------------------------------------
-// Nested types
+// Generated event types (re-exported from ./generated/protocol)
 // ---------------------------------------------------------------------------
 
-export interface Usage {
-  input_tokens: number;
-  output_tokens: number;
-  [key: string]: unknown;
-}
+export type {
+  ContentBlock,
+  UsageInfo,
+  CompactMetadata,
+  RateLimitInfo,
+  SessionInitEvent,
+  SessionStatusEvent,
+  SessionCompactedEvent,
+  TurnResultEvent,
+  SessionSummaryEvent,
+  SessionRateLimitEvent,
+  TaskStartedEvent,
+  TaskNotificationEvent,
+  ControlResponseEvent,
+  ProcessStderrEvent,
+  ProcessExitEvent,
+  ItemStartedEvent,
+  ItemDeltaEvent,
+  ItemCompletedEvent,
+  ItemResultEvent,
+  TurnStopEvent,
+  TurnDeltaEvent,
+  AgentErrorEvent,
+  AgentUnrecognizedEvent,
+} from "./generated/protocol";
 
-export type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; media_type: string };
+import type {
+  UsageInfo,
+  SessionInitEvent,
+  SessionStatusEvent,
+  SessionCompactedEvent,
+  TurnResultEvent,
+  SessionSummaryEvent,
+  SessionRateLimitEvent,
+  TaskStartedEvent,
+  TaskNotificationEvent,
+  ControlResponseEvent,
+  ProcessStderrEvent,
+  ProcessExitEvent,
+  ItemStartedEvent,
+  ItemDeltaEvent,
+  ItemCompletedEvent,
+  ItemResultEvent,
+  TurnStopEvent,
+  TurnDeltaEvent,
+  AgentErrorEvent,
+  AgentUnrecognizedEvent,
+} from "./generated/protocol";
+
+// ---------------------------------------------------------------------------
+// Backwards-compatible type aliases (old names → generated types)
+// ---------------------------------------------------------------------------
+
+export type Usage = UsageInfo;
+export type SystemInitMessage = SessionInitEvent;
+export type SystemStatusMessage = SessionStatusEvent;
+export type SystemCompactBoundaryMessage = SessionCompactedEvent;
+export type ResultMessage = TurnResultEvent;
+export type SummaryMessage = SessionSummaryEvent;
+export type RateLimitEventMessage = SessionRateLimitEvent;
+export type SystemTaskStartedMessage = TaskStartedEvent;
+export type SystemTaskNotificationMessage = TaskNotificationEvent;
+export type ControlResponseMessage = ControlResponseEvent;
+export type ExitMessage = ProcessExitEvent;
+export type StderrMessage = ProcessStderrEvent;
+
+// ---------------------------------------------------------------------------
+// Hand-written types: not generated (no corresponding D struct)
+// ---------------------------------------------------------------------------
 
 export interface AssistantContentBlock {
   type: string;
@@ -24,7 +84,7 @@ export interface AssistantContentBlock {
   name?: string;
   tool_server?: string;
   tool_source?: string;
-  input?: Record<string, unknown>;
+  input?: unknown;
   caller?: { type: string; tool_id?: string };
   extras?: Record<string, unknown>;
   [key: string]: unknown;
@@ -39,206 +99,7 @@ export interface UserContentBlock {
   [key: string]: unknown;
 }
 
-// ---------------------------------------------------------------------------
-// Live stream (stdout) event types
-// ---------------------------------------------------------------------------
-
-export interface SystemInitMessage {
-  type: "session/init";
-  session_id: string;
-  model: string;
-  cwd: string;
-  tools: string[];
-  agent_version: string;
-  permission_mode: string;
-  mcp_servers?: unknown[];
-  agents?: unknown[];
-  api_key_source?: string;
-  skills?: string[];
-  plugins?: unknown[];
-  fast_mode_state?: string;
-  agent?: string;
-  supports_file_revert?: boolean;
-  [key: string]: unknown;
-}
-
-export interface SystemStatusMessage {
-  type: "session/status";
-  status?: string | null;
-  [key: string]: unknown;
-}
-
-export interface SystemCompactBoundaryMessage {
-  type: "session/compacted";
-  compact_metadata?: {
-    trigger?: string;
-    pre_tokens?: number;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface SystemTaskStartedMessage {
-  type: "task/started";
-  task_id: string;
-  tool_use_id?: string;
-  description?: string;
-  task_type?: string;
-  [key: string]: unknown;
-}
-
-export interface SystemTaskNotificationMessage {
-  type: "task/notification";
-  task_id: string;
-  status: string;
-  output_file?: string;
-  summary?: string;
-  [key: string]: unknown;
-}
-
-export interface ResultMessage {
-  type: "turn/result";
-  subtype: string;
-  is_error: boolean;
-  result?: string;
-  num_turns: number;
-  duration_ms: number;
-  duration_api_ms?: number;
-  total_cost_usd: number;
-  usage: Usage;
-  model_usage?: Record<string, Record<string, unknown>>;
-  permission_denials?: unknown[];
-  stop_reason?: string | null;
-  errors?: string[];
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface SummaryMessage {
-  type: "session/summary";
-  summary: string;
-  [key: string]: unknown;
-}
-
-export interface RateLimitEventMessage {
-  type: "session/rate_limit";
-  rate_limit_info: {
-    status?: string;
-    rateLimitType?: string;
-    resetsAt?: number;
-    overageStatus?: string;
-    overageDisabledReason?: string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface ItemStartedEvent {
-  type: "item/started";
-  item_id: string;
-  item_type: "text" | "thinking" | "tool_use" | "user_message";
-  name?: string;
-  tool_server?: string;
-  tool_source?: string;
-  input?: Record<string, unknown>;
-  text?: string;
-  content?: ContentBlock[];
-  is_replay?: boolean;
-  is_synthetic?: boolean;
-  is_meta?: boolean;
-  is_steering?: boolean;
-  pending?: boolean;
-  uuid?: string;
-  isCompactSummary?: boolean;
-  parent_tool_use_id?: string;
-  is_sidechain?: boolean;
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface ItemDeltaEvent {
-  type: "item/delta";
-  item_id: string;
-  delta_type:
-    | "text_delta"
-    | "thinking_delta"
-    | "input_json_delta"
-    | "output_delta"
-    | "stdin_delta";
-  content: string;
-  [key: string]: unknown;
-}
-
-export interface ItemCompletedEvent {
-  type: "item/completed";
-  item_id: string;
-  text?: string;
-  input?: Record<string, unknown>;
-  output?: string;
-  is_error?: boolean;
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface ItemResultEvent {
-  type: "item/result";
-  item_id: string;
-  content: string | UserContentBlock[];
-  is_error?: boolean;
-  tool_result?: unknown;
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface TurnStopEvent {
-  type: "turn/stop";
-  model?: string;
-  usage?: Usage;
-  parent_tool_use_id?: string;
-  is_sidechain?: boolean;
-  uuid?: string;
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface TurnDeltaEvent {
-  type: "turn/delta";
-  model?: string;
-  usage?: Usage;
-  parent_tool_use_id?: string;
-  is_sidechain?: boolean;
-  uuid?: string;
-  extras?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-export interface ControlResponseMessage {
-  type: "control/response";
-  response: {
-    subtype: string;
-    request_id?: string;
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
-
-export interface ExitMessage {
-  type: "process/exit";
-  code: number;
-  is_continuation?: boolean;
-  [key: string]: unknown;
-}
-
-export interface StderrMessage {
-  type: "process/stderr";
-  text: string;
-  [key: string]: unknown;
-}
-
-// ---------------------------------------------------------------------------
-// JSONL-only types (pass through unchanged)
-// ---------------------------------------------------------------------------
-
+// JSONL-only system events (no corresponding D struct)
 export interface SystemApiErrorMessage {
   type: "system";
   subtype: "api_error";
@@ -271,43 +132,32 @@ export interface SystemStopHookSummaryMessage {
   [key: string]: unknown;
 }
 
-export interface AgentErrorEvent {
-  type: "agent/error";
-  message: string;
-  willRetry?: boolean;
-}
-
-export interface AgentUnrecognizedEvent {
-  type: "agent/unrecognized";
-  reason: string;
-}
-
 // ---------------------------------------------------------------------------
 // Union event types
 // ---------------------------------------------------------------------------
 
 // Agent-agnostic event union (live stream + JSONL history)
 export type AgnosticEvent =
-  | SystemInitMessage
-  | SystemStatusMessage
-  | SystemCompactBoundaryMessage
+  | SessionInitEvent
+  | SessionStatusEvent
+  | SessionCompactedEvent
   | SystemApiErrorMessage
   | SystemTurnDurationMessage
   | SystemStopHookSummaryMessage
-  | SystemTaskStartedMessage
-  | SystemTaskNotificationMessage
-  | ResultMessage
-  | SummaryMessage
-  | RateLimitEventMessage
+  | TaskStartedEvent
+  | TaskNotificationEvent
+  | TurnResultEvent
+  | SessionSummaryEvent
+  | SessionRateLimitEvent
   | ItemStartedEvent
   | ItemDeltaEvent
   | ItemCompletedEvent
   | ItemResultEvent
   | TurnDeltaEvent
   | TurnStopEvent
-  | ControlResponseMessage
-  | ExitMessage
-  | StderrMessage
+  | ControlResponseEvent
+  | ProcessExitEvent
+  | ProcessStderrEvent
   | AgentErrorEvent
   | AgentUnrecognizedEvent;
 

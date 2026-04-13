@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import type {
   AgnosticEvent,
+  AssistantContentBlock,
   ResultMessage,
   SystemInitMessage,
   SystemStatusMessage,
@@ -382,11 +383,11 @@ export function reduceSystemInit(
       cwd: msg.cwd,
       tools: msg.tools,
       permission_mode: msg.permission_mode,
-      mcp_servers: msg.mcp_servers,
-      agents: msg.agents,
+      mcp_servers: msg.mcp_servers as unknown[] | undefined,
+      agents: msg.agents as unknown[] | undefined,
       api_key_source: msg.api_key_source,
       skills: msg.skills,
-      plugins: msg.plugins,
+      plugins: msg.plugins as unknown[] | undefined,
       fast_mode_state: msg.fast_mode_state,
       agent: msg.agent,
       supports_file_revert: msg.supports_file_revert,
@@ -743,7 +744,9 @@ export function reduceResultMessage(
   }
 
   const id = `result-${++s.msgIdCounter}`;
-  const resultExtraFields = getExtras(msg);
+  const resultExtraFields = getExtras(
+    msg as unknown as Record<string, unknown>,
+  );
   const nextState = {
     ...s,
     blocks,
@@ -766,8 +769,10 @@ export function reduceResultMessage(
           durationApiMs: msg.duration_api_ms,
           totalCostUsd: msg.total_cost_usd,
           usage: msg.usage,
-          modelUsage: msg.model_usage,
-          permissionDenials: msg.permission_denials,
+          modelUsage: msg.model_usage as
+            | Record<string, Record<string, unknown>>
+            | undefined,
+          permissionDenials: msg.permission_denials as unknown[] | undefined,
           stopReason: msg.stop_reason,
           errors: msg.errors,
         },
@@ -877,8 +882,10 @@ function reduceItemStartedUserMessage(
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
     .join("\n");
-  const blocks =
-    content.length > 0 ? content : [{ type: "text" as const, text: "" }];
+  const blocks: AssistantContentBlock[] =
+    content.length > 0
+      ? (content as unknown as AssistantContentBlock[])
+      : [{ type: "text" as const, text: "" }];
 
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
   // removes it from the message list.
@@ -906,7 +913,7 @@ function reduceItemStartedUserMessage(
       isSteering: event.is_steering || undefined,
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
-      extraFields: getExtras(event as Record<string, unknown>),
+      extraFields: getExtras(event as unknown as Record<string, unknown>),
       rawSource: event,
       seq,
       uuid: event.uuid,
@@ -918,7 +925,9 @@ function reduceItemStartedUserMessage(
   }
 
   const hasContent = blocks.some(
-    (b) => (b.type === "text" && b.text.trim().length > 0) || b.type !== "text",
+    (b) =>
+      (b.type === "text" && (b.text ?? "").trim().length > 0) ||
+      b.type !== "text",
   );
   if (hasContent) {
     const id = `user-echo-${++state.msgIdCounter}`;
@@ -932,7 +941,7 @@ function reduceItemStartedUserMessage(
       isSteering: event.is_steering || undefined,
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
-      extraFields: getExtras(event as Record<string, unknown>),
+      extraFields: getExtras(event as unknown as Record<string, unknown>),
       rawSource: event,
       seq,
       uuid: event.uuid,
@@ -1076,7 +1085,10 @@ export function reduceItemCompleted(
 
   const updated: Block = { ...block, completed: true };
   if (event.text !== undefined) updated.text = event.text;
-  if (event.extras) updated.extras = event.extras;
+  const completedExtras = getExtras(
+    event as unknown as Record<string, unknown>,
+  );
+  if (completedExtras) updated.extras = completedExtras;
   if (block.type === "tool_use") {
     updated.input = event.input ?? block.input ?? tryParseJson(block.text);
   }
@@ -1178,7 +1190,10 @@ export function reduceTurnDelta(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
-      if (event.extras) updated.extraFields = event.extras;
+      const deltaExtras = getExtras(
+        event as unknown as Record<string, unknown>,
+      );
+      if (deltaExtras) updated.extraFields = deltaExtras;
       if (event.uuid) updated.uuid = event.uuid;
 
       // Attach to rawSource for "View source" → "Raw".
@@ -1215,7 +1230,8 @@ export function reduceTurnStop(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
-      if (event.extras) updated.extraFields ??= event.extras;
+      const stopExtras = getExtras(event as unknown as Record<string, unknown>);
+      if (stopExtras) updated.extraFields ??= stopExtras;
       if (event.uuid) updated.uuid ??= event.uuid;
 
       // Always append to rawSource — every raw Claude Code event that
@@ -1366,7 +1382,7 @@ export function reduceMessage(
       return s;
 
     case "control/response": {
-      const resp = msg.response;
+      const resp = msg.response as { subtype?: string } | null | undefined;
       const id = `control-response-${++s.msgIdCounter}`;
       return {
         ...s,
@@ -1379,7 +1395,7 @@ export function reduceMessage(
             content: [
               {
                 type: "text" as const,
-                text: `Control response: ${resp.subtype}`,
+                text: `Control response: ${resp?.subtype ?? "unknown"}`,
               },
             ],
             rawSource: msg,
@@ -1495,7 +1511,7 @@ export function reduceMessage(
       return reduceParseError(
         s,
         "Unknown message type",
-        (msg as Record<string, unknown>).type as string,
+        (msg as unknown as Record<string, unknown>).type as string,
         msg,
         true,
         seq,
