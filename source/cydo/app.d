@@ -4969,9 +4969,9 @@ class App : ToolsBackend
 
 			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent_type, ws.default_task_type);
 
-			infof("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
+			tracef("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
 			foreach (ref p; projInfos)
-				infof("  - %s (%s)", p.name, p.path);
+				tracef("  - %s (%s)", p.name, p.path);
 		}
 		injectVirtualProjects();
 	}
