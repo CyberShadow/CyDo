@@ -1,10 +1,4 @@
-import {
-  useState,
-  useMemo,
-  useEffect,
-  useRef,
-  useCallback,
-} from "preact/hooks";
+import { useState, useMemo, useRef, useCallback } from "preact/hooks";
 import type { DisplayMessage } from "../types";
 import { useHighlight, renderTokens } from "../highlight";
 import { CopyButton } from "./CopyButton";
@@ -158,12 +152,12 @@ function EventItem({
   event: unknown;
   seq: number;
   tid: number;
-  rawSource: unknown | null;
+  rawSource: unknown;
   onEditRaw?: (seq: number, content: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState<"abstract" | "raw">("abstract");
-  const [rawData, setRawData] = useState<unknown | null>(rawSource);
+  const [rawData, setRawData] = useState<unknown>(rawSource);
   const [loading, setLoading] = useState(false);
 
   const label = eventLabel(event);
@@ -262,7 +256,7 @@ export function SourceView({
   const events: unknown[] = useMemo(() => {
     const raw = msg.rawSource;
     if (raw == null) return [];
-    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw)) return raw as unknown[];
     return [raw];
   }, [msg.rawSource]);
 
