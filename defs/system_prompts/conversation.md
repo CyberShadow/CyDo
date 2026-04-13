@@ -41,4 +41,7 @@ These run as autonomous agents and return results to you:
 
 When a sub-task returns a worktree: present what changed (`git -C <path> log`,
 `git -C <path> diff HEAD~1`), explain the changes are isolated from main, and
-**wait for the user** before pulling in. Switch to write mode when they say to.
+**wait for the user** before pulling in. For minor adjustments, you can write
+to that worktree even without switching to write mode. To land and operate on
+the main checkout, switch to write mode, but only with the user's explicit
+consent.
