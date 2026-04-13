@@ -1,0 +1,55 @@
+# Source database
+database: ../../../data/cydo.db   # relative to this file
+
+# Project path mapping (source → derivation target)
+projects:
+  cydo:
+    source_path: /home/vladimir/work/cydo
+    target_path: /tmp/ws/cydo
+  ae:
+    source_path: /home/vladimir/work/ae-container/ae
+    target_path: /tmp/ws/ae
+
+# Task trees to export (recursive — includes all descendants)
+trees:
+  - root_tid: 1658   # LoggingAdapter conversation (cydo)
+  - root_tid: 1039   # WebSocket compression (ae)
+
+# Status overrides (applied after export)
+status_overrides:
+  1658: alive      # conversation root — viewed, gets suggestions
+  1676: waiting    # triage — chain root (dimmed golden)
+  1677: waiting    # implement — chain intermediate (dimmed golden)
+  1689: active     # verify — chain leaf (actively processing)
+
+# JSONL extraction
+sessions:
+  # Real truncated JSONLs
+  - tid: 1658
+    session_id: ee043871-4594-412d-ae25-c41bc3774a02
+    project: cydo
+    truncate_line: 100   # After plan update, assistant idle
+  - tid: 1039
+    session_id: 56d46e0a-d8d4-4dbf-8060-c920c87e995b
+    project: ae
+    truncate_line: 488   # After all Phase 1 Edit calls + compilation
+
+  # Synthetic JSONLs (first 19 lines of 1658's JSONL)
+  - tid: 1676
+    session_id: a0d26783-a3c8-41e2-996b-9f74c01f173f
+    project: cydo
+    synthetic_from: ee043871-4594-412d-ae25-c41bc3774a02
+    truncate_line: 19    # Minimal: ends on assistant turn
+  - tid: 1677
+    session_id: 97d06ae2-b61e-49a8-9417-feb511e093f9
+    project: cydo
+    synthetic_from: ee043871-4594-412d-ae25-c41bc3774a02
+    truncate_line: 19
+  - tid: 1689
+    session_id: d202b296-faf4-4714-bcfe-e2d6e7b8c1c5
+    project: cydo
+    synthetic_from: ee043871-4594-412d-ae25-c41bc3774a02
+    truncate_line: 19
+
+# Suggestions text for MOCK_SUGGESTIONS env var
+suggestions: '["investigate the write latency regression", "add rate limiting to the websocket handler", "run the full test suite"]'

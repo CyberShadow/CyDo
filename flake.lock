@@ -18,7 +18,24 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "screenshot-fixtures": "screenshot-fixtures"
+      }
+    },
+    "screenshot-fixtures": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1776065684,
+        "narHash": "sha256-D/7jDQywaqXI+lvSsZAblOrBwbVzH0do86QnuIuPJHI=",
+        "ref": "refs/heads/master",
+        "rev": "de6c22da200e6711b24727e5914a16ea9cb99035",
+        "revCount": 1,
+        "type": "git",
+        "url": "file:docs/tools/screenshots/fixtures"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:docs/tools/screenshots/fixtures"
       }
     }
   },

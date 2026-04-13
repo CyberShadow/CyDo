@@ -3,9 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    screenshot-fixtures = {
+      url = "git+file:docs/tools/screenshots/fixtures";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, screenshot-fixtures }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
       pkgsFor = system: import nixpkgs {
@@ -60,6 +64,16 @@
           ./web/vite.config.ts
           ./web/eslint.config.mjs
         ];
+      };
+
+      screenshotSrc = lib.cleanSourceWith {
+        src = ./docs/tools/screenshots;
+        filter = _path: _type: true;
+      };
+
+      mockApiSrc = lib.cleanSourceWith {
+        src = ./tests/mock-api;
+        filter = _path: _type: true;
       };
     in
     {
@@ -212,9 +226,207 @@ EOF
 
           cydo = mkCydo backend;
           cydoDebug = mkCydo backendDebug;
+
+          fake-bwrap = pkgs.writeShellScript "bwrap" ''
+            chdir=""
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --) shift; break ;;
+                --setenv) export "$2=$3"; shift 3 ;;
+                --chdir) chdir="$2"; shift 2 ;;
+                --clearenv) shift ;;
+                --bind|--ro-bind|--symlink|--dev|--proc|--tmpfs) shift 2 ;;
+                *) shift ;;
+              esac
+            done
+            [[ -n "$chdir" ]] && cd "$chdir"
+            exec "$@"
+          '';
+
+          screenshots = pkgs.stdenv.mkDerivation {
+            pname = "cydo-screenshots";
+            version = "0.1.0";
+
+            src = screenshotSrc;
+            fixtures = screenshot-fixtures;
+            inherit cydo;
+            taskTypeDefs = ./defs;
+
+            nativeBuildInputs = with pkgs; [
+              playwright-test
+              nodejs_22
+              curl
+              claude-code
+              git
+              sqlite
+              websocat
+            ];
+
+            FONTCONFIG_FILE = pkgs.makeFontsConf {
+              fontDirectories = with pkgs; [ roboto jetbrains-mono liberation_ttf ];
+            };
+            HOME = "/tmp/playwright-home";
+
+            ANTHROPIC_BASE_URL = "http://127.0.0.1:9100";
+            ANTHROPIC_API_KEY = "test-key-mock";
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+            DISABLE_TELEMETRY = "1";
+            DISABLE_AUTOUPDATER = "1";
+            CLAUDE_CONFIG_DIR = "/tmp/screenshot-claude-home";
+
+            CYDO_AUTH_USER = "user";
+            CYDO_AUTH_PASS = "screenshot";
+
+            MOCK_SUGGESTIONS = ''["investigate the write latency regression", "add rate limiting to the websocket handler", "run the full test suite"]'';
+
+            buildPhase = let
+              fake-bwrap-local = pkgs.writeShellScript "bwrap" ''
+                chdir=""
+                while [[ $# -gt 0 ]]; do
+                  case "$1" in
+                    --) shift; break ;;
+                    --setenv) export "$2=$3"; shift 3 ;;
+                    --chdir) chdir="$2"; shift 2 ;;
+                    --clearenv) shift ;;
+                    --bind|--ro-bind|--symlink|--dev|--proc|--tmpfs) shift 2 ;;
+                    *) shift ;;
+                  esac
+                done
+                [[ -n "$chdir" ]] && cd "$chdir"
+                exec "$@"
+              '';
+            in ''
+              mkdir -p /tmp/playwright-home
+
+              # ── Claude CLI config ──────────────────────────────────────
+              mkdir -p $CLAUDE_CONFIG_DIR
+              cat > $CLAUDE_CONFIG_DIR/settings.json <<'SETTINGS'
+              {"hasCompletedOnboarding":true,"theme":"dark","skipDangerousModePermissionPrompt":true,"autoUpdates":false}
+              SETTINGS
+
+              # ── Git workspaces ──────────────────────────────────────────
+              for ws in \
+                /tmp/ws/personal/dotfiles /tmp/ws/personal/k4webadmin \
+                /tmp/ws/open-source/cydo /tmp/ws/open-source/ae /tmp/ws/open-source/dunamis /tmp/ws/open-source/graphqld2 /tmp/ws/open-source/dfeed \
+                /tmp/ws/external/nixpkgs /tmp/ws/external/linux /tmp/ws/external/forgejo /tmp/ws/external/swayfx /tmp/ws/external/nix; do
+                mkdir -p $ws
+                cd $ws
+                ${pkgs.git}/bin/git init -q
+                ${pkgs.git}/bin/git config user.email "test@test"
+                ${pkgs.git}/bin/git config user.name "Test"
+                echo "test" > README.md
+                ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
+              done
+
+              # Copy task type definitions into cydo workspace
+              cp -r $taskTypeDefs /tmp/ws/open-source/cydo/defs
+              chmod -R u+w /tmp/ws/open-source/cydo/defs
+
+              # ── JSONL fixtures ─────────────────────────────────────────
+              mkdir -p $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-cydo
+              cp $fixtures/sessions/-tmp-ws-cydo/*.jsonl $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-cydo/
+              # Reuse 1658's JSONL for the child-less conversation task (9060)
+              cp $fixtures/sessions/-tmp-ws-cydo/ee043871-4594-412d-ae25-c41bc3774a02.jsonl \
+                 $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-cydo/f8a23c01-7b9e-4d12-b5a4-c2e7d3f16890.jsonl
+              chmod u+w $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-cydo/*.jsonl
+              mkdir -p $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-ae
+              cp $fixtures/sessions/-tmp-ws-ae/*.jsonl $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-ae/
+
+              # ── fake-bwrap ─────────────────────────────────────────────
+              mkdir -p /tmp/fake-bin
+              ln -sf ${fake-bwrap-local} /tmp/fake-bin/bwrap
+              export PATH="/tmp/fake-bin:$PATH"
+
+              # ── CyDo workspace config ─────────────────────────────────
+              mkdir -p /tmp/playwright-home/.config/cydo
+              cat > /tmp/playwright-home/.config/cydo/config.yaml <<'CYDO_CFG'
+              default_agent_type: claude
+              workspaces:
+                personal:
+                  root: /tmp/ws/personal
+                open-source:
+                  root: /tmp/ws/open-source
+                external:
+                  root: /tmp/ws/external
+              CYDO_CFG
+
+              # ── Mock API ───────────────────────────────────────────────
+              mkdir -p /tmp/mock-api
+              cp ${mockApiSrc}/server.mjs /tmp/mock-api/
+              cp ${mockApiSrc}/patterns.mjs /tmp/mock-api/
+
+              MOCK_API_PORT=9100 MOCK_SUGGESTIONS="$MOCK_SUGGESTIONS" MOCK_STALL_SYSTEM=1 ${pkgs.nodejs_22}/bin/node /tmp/mock-api/server.mjs &
+              MOCK_PID=$!
+              for i in $(seq 1 15); do
+                if curl -sf http://127.0.0.1:9100/api/hello >/dev/null 2>&1; then break; fi
+                sleep 1
+              done
+
+              # ── Phase 1: Start CyDo to create DB schema ───────────────
+              cd /tmp/ws/open-source/cydo
+              CYDO_LISTEN_PORT=3950 ${cydo}/bin/cydo &
+              CYDO_PID=$!
+              for i in $(seq 1 30); do
+                if curl -sf http://user:screenshot@127.0.0.1:3950/ >/dev/null 2>&1; then break; fi
+                sleep 1
+              done
+              kill $CYDO_PID
+              wait $CYDO_PID 2>/dev/null || true
+              sleep 1
+
+              # ── Phase 2: Seed database ─────────────────────────────────
+              ${pkgs.sqlite}/bin/sqlite3 /tmp/playwright-home/.local/share/cydo/cydo.db < $fixtures/init.sql
+
+              # ── Phase 3: Restart CyDo with seeded data ────────────────
+              CYDO_LISTEN_PORT=3950 ${cydo}/bin/cydo &
+              CYDO_PID=$!
+              for i in $(seq 1 30); do
+                if curl -sf http://user:screenshot@127.0.0.1:3950/ >/dev/null 2>&1; then break; fi
+                sleep 1
+              done
+              # Give time for alive/waiting/active tasks to resume
+              sleep 5
+
+              # Send "stall session" to waiting chain tasks via WebSocket.
+              # This makes their claude processes call the mock API, which stalls,
+              # setting isProcessing=true — required for the "waiting" sidebar icon.
+              printf '%s\n%s\n%s\n%s\n' '{"type":"message","tid":1658,"content":[{"type":"text","text":"stall session"}]}' '{"type":"message","tid":1676,"content":[{"type":"text","text":"stall session"}]}' '{"type":"message","tid":1677,"content":[{"type":"text","text":"stall session"}]}' '{"type":"message","tid":1700,"content":[{"type":"text","text":"stall session"}]}' \
+                | ${pkgs.websocat}/bin/websocat -n ws://user:screenshot@127.0.0.1:3950/ws &
+              WSCAT_PID=$!
+              # Wait for the stall to take effect (API calls reach mock, isProcessing=true)
+              sleep 3
+              kill $WSCAT_PID 2>/dev/null || true
+
+              # ── Capture screenshots ────────────────────────────────────
+              mkdir -p /tmp/screenshots
+              export CYDO_PORT=3950
+              export SCREENSHOT_OUTPUT=/tmp/screenshots
+
+              cp -r $src /tmp/capture
+              chmod -R u+w /tmp/capture
+              cd /tmp/capture
+              playwright test capture.spec.ts || CAPTURE_RESULT=$?
+
+              # ── Cleanup ────────────────────────────────────────────────
+              kill $CYDO_PID 2>/dev/null || true
+              kill $MOCK_PID 2>/dev/null || true
+              wait $CYDO_PID 2>/dev/null || true
+              wait $MOCK_PID 2>/dev/null || true
+
+              if [ "''${CAPTURE_RESULT:-0}" != "0" ]; then
+                echo "Screenshot capture failed with exit code ''${CAPTURE_RESULT}"
+                exit 1
+              fi
+            '';
+
+            installPhase = ''
+              mkdir -p $out/docs/screenshots
+              cp /tmp/screenshots/*.png $out/docs/screenshots/
+            '';
+          };
         in
         {
-          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug;
+          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug fake-bwrap screenshots;
           default = cydo;
         });
 
@@ -281,7 +493,7 @@ EOF
             ] ++ extraNativeBuildInputs;
 
             FONTCONFIG_FILE = pkgs.makeFontsConf {
-              fontDirectories = [ pkgs.liberation_ttf ];
+              fontDirectories = with pkgs; [ roboto jetbrains-mono liberation_ttf ];
             };
             HOME = "/tmp/playwright-home";
 

@@ -14,6 +14,9 @@ export function matchPattern(userText) {
   // Uses includes() because Copilot prepends <current_datetime>...</current_datetime>
   // before the actual content, so startsWith() would fail.
   if (userText.includes("[SUGGESTION MODE:")) {
+    if (process.env.MOCK_SUGGESTIONS) {
+      return { type: "text", text: process.env.MOCK_SUGGESTIONS };
+    }
     // Extract the [Session: ...] header so tests can assert on its content.
     const headerMatch = userText.match(/\[Session: [^\]]*\]/);
     const header = headerMatch ? headerMatch[0] : "no session header";
@@ -33,7 +36,9 @@ export function matchPattern(userText) {
 
   // Backend restart nudge — acknowledge and respond with Done.
   // Uses includes() for the same reason as SUGGESTION MODE above.
+  // When MOCK_STALL_SYSTEM is set, stall instead (for screenshot chain tasks).
   if (userText.includes("[SYSTEM:")) {
+    if (process.env.MOCK_STALL_SYSTEM) return { type: "stall" };
     return { type: "text", text: "Done." };
   }
 
