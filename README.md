@@ -193,15 +193,25 @@ Task type definitions are customizable and extensible with per-project or global
    dub build
    ```
 
-4. Build the front-end:
+4. Generate shared protocol types (TypeScript interfaces from D structs):
 
    ```bash
    cd web
+   npm run generate
+   ```
+
+   This runs the protocol codegen tool (`dub run cydo:protocol-codegen`), which
+   generates `web/src/generated/protocol.ts`. Re-run after modifying
+   `source/cydo/agent/protocol.d`.
+
+5. Build the front-end:
+
+   ```bash
    npm ci
    npm run build
    ```
 
-5. Run the back-end:
+6. Run the back-end:
 
    ```bash
    cd ..
@@ -220,12 +230,14 @@ git config core.hooksPath .githooks
 # Build and run the backend (serves on http://localhost:3940)
 dub run
 
-# In another terminal — install frontend deps and build
+# In another terminal — install frontend deps, generate protocol types, and build
 cd web
 npm ci
+npm run generate
 npm run build
 
 # Or for frontend development with hot reload:
+npm run generate   # once, or after changing protocol.d
 npm run dev
 
 # Run all tests
