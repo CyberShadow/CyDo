@@ -2012,7 +2012,7 @@ private string translateSummary(string rawLine)
 /// Translate "rate_limit_event" event to session/rate_limit.
 private string translateRateLimitEvent(string rawLine)
 {
-	@JSONPartial static struct RawRateLimit { JSONFragment rate_limit_info; }
+	@JSONPartial static struct RawRateLimit { RateLimitInfo rate_limit_info; }
 	try
 	{
 		auto raw = jsonParse!RawRateLimit(rawLine);

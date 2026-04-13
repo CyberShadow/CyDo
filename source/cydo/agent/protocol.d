@@ -121,11 +121,22 @@ struct SessionSummaryEvent
 	string summary;
 }
 
+/// Rate limit information.
+struct RateLimitInfo
+{
+	@JSONOptional string status;
+	@JSONOptional string rateLimitType;
+	@JSONOptional double resetsAt;
+	@JSONOptional string overageStatus;
+	@JSONOptional string overageDisabledReason;
+	JSONExtras extras;
+}
+
 /// session/rate_limit
 struct SessionRateLimitEvent
 {
 	string type = "session/rate_limit";
-	JSONFragment rate_limit_info;
+	RateLimitInfo rate_limit_info;
 }
 
 /// task/started
