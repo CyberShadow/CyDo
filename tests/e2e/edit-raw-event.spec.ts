@@ -29,19 +29,27 @@ test("edit raw JSON event in source view", async ({ page, agentType }) => {
   await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn.click();
 
-  // Switch to Raw tab
-  const rawTab = page.locator(".source-tab", { hasText: "Raw" });
+  // The source view should show a collapsible event list
+  const sourceView = doneMsg.locator(".source-view");
+  await expect(sourceView).toBeVisible({ timeout: 5_000 });
+
+  // Expand the first event
+  const firstEventHeader = sourceView.locator(".source-event-header").first();
+  await expect(firstEventHeader).toBeVisible({ timeout: 5_000 });
+  await firstEventHeader.click();
+
+  // Switch to Raw tab inside the expanded event
+  const rawTab = sourceView.locator(".source-tab", { hasText: "Raw" });
   await expect(rawTab).toBeVisible({ timeout: 5_000 });
   await rawTab.click();
 
-  // Wait for raw events to load — there should be at least one code-pre-wrap block
-  const rawBlocks = page.locator(".source-view .code-pre-wrap");
-  await expect(rawBlocks.first()).toBeVisible({ timeout: 10_000 });
+  // Wait for raw JSON to load
+  const rawBlock = sourceView.locator(".code-pre-wrap").first();
+  await expect(rawBlock).toBeVisible({ timeout: 10_000 });
 
-  // Hover over the first block and click edit
-  const firstBlock = rawBlocks.first();
-  await firstBlock.hover();
-  const editBtn = firstBlock.locator(".edit-btn");
+  // Hover over the block and click edit
+  await rawBlock.hover();
+  const editBtn = rawBlock.locator(".edit-btn");
   await expect(editBtn).toBeVisible({ timeout: 5_000 });
   await editBtn.click();
 
@@ -57,7 +65,6 @@ test("edit raw JSON event in source view", async ({ page, agentType }) => {
     parsed._test_edit_marker = "edit-raw-test-marker";
     modified = JSON.stringify(parsed, null, 2);
   } catch {
-    // If parsing fails, just append the marker field
     modified = currentValue.replace(/\}$/, ', "_test_edit_marker": "edit-raw-test-marker"}');
   }
 
@@ -84,16 +91,22 @@ test("edit raw JSON event in source view", async ({ page, agentType }) => {
   await expect(viewSourceBtn2).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn2.click();
 
-  // Switch to Raw tab again
-  const rawTab2 = page.locator(".source-tab", { hasText: "Raw" });
+  // Expand the first event again
+  const sourceView2 = doneMsgAfter.locator(".source-view");
+  const firstEventHeader2 = sourceView2.locator(".source-event-header").first();
+  await expect(firstEventHeader2).toBeVisible({ timeout: 5_000 });
+  await firstEventHeader2.click();
+
+  // Switch to Raw tab
+  const rawTab2 = sourceView2.locator(".source-tab", { hasText: "Raw" });
   await expect(rawTab2).toBeVisible({ timeout: 5_000 });
   await rawTab2.click();
 
-  // Wait for raw events to load
-  await expect(page.locator(".source-view .code-pre-wrap").first()).toBeVisible({ timeout: 10_000 });
+  // Wait for raw JSON to load
+  await expect(sourceView2.locator(".code-pre-wrap").first()).toBeVisible({ timeout: 10_000 });
 
-  // Verify the edit marker appears in one of the raw event blocks
+  // Verify the edit marker appears
   await expect(
-    page.locator(".source-view .code-pre-wrap", { hasText: "edit-raw-test-marker" }),
+    sourceView2.locator(".code-pre-wrap", { hasText: "edit-raw-test-marker" }),
   ).toBeVisible({ timeout: 5_000 });
 });

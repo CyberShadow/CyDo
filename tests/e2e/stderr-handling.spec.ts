@@ -7,7 +7,7 @@ import {
   responseTimeout,
 } from "./fixtures";
 
-test("codex stderr view source keeps tabs and shows agnostic stderr payload", async ({
+test("codex stderr view source keeps tabs and shows abstract stderr payload", async ({
   page,
   agentType,
   backend,
@@ -46,16 +46,21 @@ test("codex stderr view source keeps tabs and shows agnostic stderr payload", as
 
   const sourceView = page.locator(".source-view").last();
   await expect(sourceView).toBeVisible({ timeout: 5_000 });
+
+  // Expand the first (and likely only) event in the list
+  const firstEvent = sourceView.locator(".source-event-header").first();
+  await expect(firstEvent).toBeVisible({ timeout: 5_000 });
+  await firstEvent.click();
+
+  // Both tabs should be visible inside the expanded event
   await expect(
     sourceView.locator(".source-tab", { hasText: "Raw" }),
-  ).toBeVisible({
-    timeout: 5_000,
+  ).toBeVisible({ timeout: 5_000 });
+  const abstractTab = sourceView.locator(".source-tab", {
+    hasText: "Abstract",
   });
-  const agnosticTab = sourceView.locator(".source-tab", {
-    hasText: "Agnostic",
-  });
-  await expect(agnosticTab).toBeVisible({ timeout: 5_000 });
-  await agnosticTab.click();
+  await expect(abstractTab).toBeVisible({ timeout: 5_000 });
+  await abstractTab.click();
 
   await expect(sourceView).toContainText('"type": "process/stderr"', {
     timeout: 5_000,

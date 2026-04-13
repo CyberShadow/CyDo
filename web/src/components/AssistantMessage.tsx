@@ -95,7 +95,7 @@ function tryParsePartialJson(partial: string): Record<string, unknown> {
 }
 
 /** Wrapper for nested subagent messages — adds a "view source" toggle
- *  with full Raw/Agnostic tabs (same as top-level messages). */
+ *  with full Raw/Abstract tabs (same as top-level messages). */
 function NestedMessageWrapper({
   msg,
   tid,

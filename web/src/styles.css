@@ -801,8 +801,6 @@ body,
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 600px;
-  overflow-y: auto;
 }
 
 /* Messages */
@@ -1876,8 +1874,10 @@ body,
 }
 
 .raw-edit-textarea {
-  font-family: var(--font-mono, monospace);
-  min-height: 120px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .code-pre-wrap > .edit-btn {
@@ -1892,10 +1892,61 @@ body,
   opacity: 1;
 }
 
-.raw-events > .code-pre-wrap + .code-pre-wrap {
-  margin-top: 8px;
-  border-top: 1px solid var(--border-color, #333);
-  padding-top: 8px;
+/* Source event list (expandable per-event items) */
+.source-event {
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.source-event + .source-event {
+  border-top: none;
+}
+
+.source-event-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.source-event-header:hover {
+  background: var(--overlay-light);
+}
+
+.source-event-chevron {
+  width: 10px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.source-event-seq {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  min-width: 3ch;
+  text-align: right;
+}
+
+.source-event-type {
+  color: var(--info);
+  font-weight: bold;
+}
+
+.source-event-detail {
+  color: var(--text-dim);
+}
+
+.source-event-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--overlay-dark);
+}
+
+.source-event-body > .source-tabs {
+  margin-bottom: 8px;
 }
 
 /* Mobile quote-selection button */
