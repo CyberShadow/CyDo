@@ -350,7 +350,8 @@ void dispatch(
 
 void run(string[] args)
 {
-	funopt!(dispatch, FunOptConfig.init, usageFun)(args);
+	enum config = () { import std.getopt : config; FunOptConfig c; c.getoptConfig = [config.stopOnFirstNonOption]; return c; }();
+	funopt!(dispatch, config, usageFun)(args);
 }
 
 mixin main!run;
