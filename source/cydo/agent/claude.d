@@ -1869,9 +1869,9 @@ private string translateSessionInit(string rawLine)
 		@JSONOptional string apiKeySource;
 		@JSONOptional string fast_mode_state;
 		@JSONOptional string[] skills;
-		@JSONOptional JSONFragment mcp_servers;
-		@JSONOptional JSONFragment agents;
-		@JSONOptional JSONFragment plugins;
+		@JSONOptional JSONFragment[] mcp_servers;
+		@JSONOptional JSONFragment[] agents;
+		@JSONOptional JSONFragment[] plugins;
 		@JSONOptional string agent;
 		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
 		@JSONOptional string type;
@@ -1947,7 +1947,7 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional ClaudeUsage usage;
 		@JSONOptional JSONFragment modelUsage;
 		@JSONOptional JSONFragment model_usage;
-		@JSONOptional JSONFragment permission_denials;
+		@JSONOptional JSONFragment[] permission_denials;
 		@JSONOptional string stop_reason;
 		@JSONOptional string[] errors;
 		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
@@ -2027,7 +2027,8 @@ private string translateRateLimitEvent(string rawLine)
 /// Translate "control_response" event to control/response.
 private string translateControlResponse(string rawLine)
 {
-	@JSONPartial static struct RawControlResponse { JSONFragment response; }
+	import cydo.agent.protocol : ControlResponse;
+	@JSONPartial static struct RawControlResponse { ControlResponse response; }
 	try
 	{
 		auto raw = jsonParse!RawControlResponse(rawLine);

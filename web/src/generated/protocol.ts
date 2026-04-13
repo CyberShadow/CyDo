@@ -6,6 +6,7 @@ export interface ContentBlock {
   input?: unknown;
   data?: string;
   media_type?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface UsageInfo {
@@ -27,6 +28,12 @@ export interface RateLimitInfo {
   [key: string]: unknown;
 }
 
+export interface ControlResponse {
+  subtype?: string;
+  request_id?: string;
+  [key: string]: unknown;
+}
+
 export interface SessionInitEvent {
   type: "session/init";
   session_id: string;
@@ -39,10 +46,11 @@ export interface SessionInitEvent {
   api_key_source?: string;
   fast_mode_state?: string;
   skills?: string[];
-  mcp_servers?: unknown;
-  agents?: unknown;
-  plugins?: unknown;
+  mcp_servers?: unknown[];
+  agents?: unknown[];
+  plugins?: unknown[];
   supports_file_revert: boolean;
+  extras?: Record<string, unknown>;
 }
 
 export interface SessionStatusEvent {
@@ -66,9 +74,10 @@ export interface TurnResultEvent {
   total_cost_usd: number;
   usage: UsageInfo;
   model_usage?: unknown;
-  permission_denials?: unknown;
+  permission_denials?: unknown[];
   stop_reason?: string;
   errors?: string[];
+  extras?: Record<string, unknown>;
 }
 
 export interface SessionSummaryEvent {
@@ -87,6 +96,7 @@ export interface TaskStartedEvent {
   tool_use_id?: string;
   description?: string;
   task_type?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface TaskNotificationEvent {
@@ -95,11 +105,12 @@ export interface TaskNotificationEvent {
   status: string;
   output_file?: string;
   summary?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface ControlResponseEvent {
   type: "control/response";
-  response: unknown;
+  response: ControlResponse;
 }
 
 export interface ProcessStderrEvent {
@@ -132,6 +143,7 @@ export interface ItemStartedEvent {
   isCompactSummary?: boolean;
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
+  extras?: Record<string, unknown>;
 }
 
 export interface ItemDeltaEvent {
@@ -148,6 +160,7 @@ export interface ItemCompletedEvent {
   input?: unknown;
   output?: string;
   is_error?: boolean;
+  extras?: Record<string, unknown>;
 }
 
 export interface ItemResultEvent {
@@ -156,6 +169,7 @@ export interface ItemResultEvent {
   content: unknown;
   is_error?: boolean;
   tool_result?: unknown;
+  extras?: Record<string, unknown>;
 }
 
 export interface TurnStopEvent {
@@ -165,6 +179,7 @@ export interface TurnStopEvent {
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
   uuid?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface TurnDeltaEvent {
@@ -174,6 +189,7 @@ export interface TurnDeltaEvent {
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
   uuid?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface AgentErrorEvent {

@@ -12,6 +12,7 @@ export type {
   UsageInfo,
   CompactMetadata,
   RateLimitInfo,
+  ControlResponse,
   SessionInitEvent,
   SessionStatusEvent,
   SessionCompactedEvent,

@@ -137,10 +137,10 @@ string generateStruct(S)() pure
 		{
 			hasExtras = true;
 		}
-		// Skip `extras` fields of type JSONFragment: the index signature covers these
+		// `extras` fields of type JSONFragment carry opaque key/value pairs (always an object).
 		else static if (is(FT == JSONFragment) && fname == "extras")
 		{
-			// skip
+			out_ ~= "  extras?: Record<string, unknown>;\n";
 		}
 		else
 		{

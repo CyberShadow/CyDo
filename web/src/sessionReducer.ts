@@ -36,9 +36,9 @@ import type {
   StderrMessage,
 } from "./protocol";
 
-function getExtras(
-  msg: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+function getExtras(msg: {
+  extras?: Record<string, unknown>;
+}): Record<string, unknown> | undefined {
   const extras = msg.extras;
   if (
     extras &&
@@ -46,7 +46,7 @@ function getExtras(
     !Array.isArray(extras) &&
     Object.keys(extras).length > 0
   ) {
-    return extras as Record<string, unknown>;
+    return extras;
   }
   return undefined;
 }
@@ -383,11 +383,11 @@ export function reduceSystemInit(
       cwd: msg.cwd,
       tools: msg.tools,
       permission_mode: msg.permission_mode,
-      mcp_servers: msg.mcp_servers as unknown[] | undefined,
-      agents: msg.agents as unknown[] | undefined,
+      mcp_servers: msg.mcp_servers,
+      agents: msg.agents,
       api_key_source: msg.api_key_source,
       skills: msg.skills,
-      plugins: msg.plugins as unknown[] | undefined,
+      plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
       agent: msg.agent,
       supports_file_revert: msg.supports_file_revert,
@@ -744,9 +744,7 @@ export function reduceResultMessage(
   }
 
   const id = `result-${++s.msgIdCounter}`;
-  const resultExtraFields = getExtras(
-    msg as unknown as Record<string, unknown>,
-  );
+  const resultExtraFields = getExtras(msg);
   const nextState = {
     ...s,
     blocks,
@@ -772,7 +770,7 @@ export function reduceResultMessage(
           modelUsage: msg.model_usage as
             | Record<string, Record<string, unknown>>
             | undefined,
-          permissionDenials: msg.permission_denials as unknown[] | undefined,
+          permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
           errors: msg.errors,
         },
@@ -884,7 +882,7 @@ function reduceItemStartedUserMessage(
     .join("\n");
   const blocks: AssistantContentBlock[] =
     content.length > 0
-      ? (content as unknown as AssistantContentBlock[])
+      ? (content as AssistantContentBlock[])
       : [{ type: "text" as const, text: "" }];
 
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
@@ -913,7 +911,7 @@ function reduceItemStartedUserMessage(
       isSteering: event.is_steering || undefined,
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
-      extraFields: getExtras(event as unknown as Record<string, unknown>),
+      extraFields: getExtras(event),
       rawSource: event,
       seq,
       uuid: event.uuid,
@@ -941,7 +939,7 @@ function reduceItemStartedUserMessage(
       isSteering: event.is_steering || undefined,
       isCompactSummary: event.isCompactSummary || undefined,
       parentToolUseId: event.parent_tool_use_id,
-      extraFields: getExtras(event as unknown as Record<string, unknown>),
+      extraFields: getExtras(event),
       rawSource: event,
       seq,
       uuid: event.uuid,
@@ -1085,9 +1083,7 @@ export function reduceItemCompleted(
 
   const updated: Block = { ...block, completed: true };
   if (event.text !== undefined) updated.text = event.text;
-  const completedExtras = getExtras(
-    event as unknown as Record<string, unknown>,
-  );
+  const completedExtras = getExtras(event);
   if (completedExtras) updated.extras = completedExtras;
   if (block.type === "tool_use") {
     updated.input = event.input ?? block.input ?? tryParseJson(block.text);
@@ -1190,9 +1186,7 @@ export function reduceTurnDelta(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain = event.is_sidechain;
-      const deltaExtras = getExtras(
-        event as unknown as Record<string, unknown>,
-      );
+      const deltaExtras = getExtras(event);
       if (deltaExtras) updated.extraFields = deltaExtras;
       if (event.uuid) updated.uuid = event.uuid;
 
@@ -1230,7 +1224,7 @@ export function reduceTurnStop(
       if (event.parent_tool_use_id)
         updated.parentToolUseId ??= event.parent_tool_use_id;
       if (event.is_sidechain) updated.isSidechain ??= event.is_sidechain;
-      const stopExtras = getExtras(event as unknown as Record<string, unknown>);
+      const stopExtras = getExtras(event);
       if (stopExtras) updated.extraFields ??= stopExtras;
       if (event.uuid) updated.uuid ??= event.uuid;
 
@@ -1382,7 +1376,6 @@ export function reduceMessage(
       return s;
 
     case "control/response": {
-      const resp = msg.response as { subtype?: string } | null | undefined;
       const id = `control-response-${++s.msgIdCounter}`;
       return {
         ...s,
@@ -1395,7 +1388,7 @@ export function reduceMessage(
             content: [
               {
                 type: "text" as const,
-                text: `Control response: ${resp?.subtype ?? "unknown"}`,
+                text: `Control response: ${msg.response.subtype ?? "unknown"}`,
               },
             ],
             rawSource: msg,

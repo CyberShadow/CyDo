@@ -74,9 +74,9 @@ struct SessionInitEvent
 	@JSONOptional string api_key_source;   // was apiKeySource
 	@JSONOptional string fast_mode_state;
 	@JSONOptional string[] skills;
-	@JSONOptional JSONFragment mcp_servers;
-	@JSONOptional JSONFragment agents;
-	@JSONOptional JSONFragment plugins;
+	@JSONOptional JSONFragment[] mcp_servers;
+	@JSONOptional JSONFragment[] agents;
+	@JSONOptional JSONFragment[] plugins;
 	bool supports_file_revert;
 	@JSONOptional JSONFragment extras;
 }
@@ -108,7 +108,7 @@ struct TurnResultEvent
 	double total_cost_usd;
 	UsageInfo usage;
 	@JSONOptional JSONFragment model_usage;
-	@JSONOptional JSONFragment permission_denials;
+	@JSONOptional JSONFragment[] permission_denials;
 	@JSONOptional string stop_reason;
 	@JSONOptional string[] errors;
 	@JSONOptional JSONFragment extras;
@@ -161,11 +161,19 @@ struct TaskNotificationEvent
 	@JSONOptional JSONFragment extras;
 }
 
+/// Payload of a control/response event.
+struct ControlResponse
+{
+	@JSONOptional string subtype;
+	@JSONOptional string request_id;
+	JSONExtras extras;
+}
+
 /// control/response
 struct ControlResponseEvent
 {
 	string type = "control/response";
-	JSONFragment response;
+	ControlResponse response;
 }
 
 /// process/stderr
