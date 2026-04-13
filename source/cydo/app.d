@@ -40,7 +40,7 @@ import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow,
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask,
-	editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
+	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	prepareProcessLaunch, resolveExecutablePath,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
@@ -1994,6 +1994,7 @@ class App : ToolsBackend
 			case "fork_task":         handleForkTaskMsg(ws, json); break;
 			case "undo_task":         handleUndoTaskMsg(ws, json); break;
 			case "edit_message":      handleEditMessage(ws, json); break;
+			case "edit_raw_event":    handleEditRawEvent(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(ws, json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
@@ -3055,6 +3056,63 @@ class App : ToolsBackend
 		if (!edited)
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "Message UUID not found in history", tid)).representation));
+			return;
+		}
+
+		td.history = DataVec();
+		td.rawSource = null;
+		td.historyLoaded = false;
+		unsubscribeAll(tid);
+
+		broadcast(toJson(TaskReloadMessage("task_reload", tid, "edit")));
+		broadcastTaskUpdate(tid);
+	}
+
+	private void handleEditRawEvent(WebSocketAdapter ws, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.agentSessionId.length == 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
+			return;
+		}
+
+		if (td.session && td.session.alive)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing events", tid)).representation));
+			return;
+		}
+
+		auto seq = json.seq;
+		if (seq < 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Invalid seq number", tid)).representation));
+			return;
+		}
+
+		ensureHistoryLoaded(tid);
+
+		if (seq >= td.rawSource.length || td.rawSource[seq] is null)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Seq out of range or no raw source", tid)).representation));
+			return;
+		}
+
+		auto originalLine = td.rawSource[seq];
+		auto ta = agentForTask(tid);
+		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
+
+		auto edited = editJsonlByContent(jsonlPath, originalLine, newContent);
+
+		if (!edited)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Raw event not found in JSONL file", tid)).representation));
 			return;
 		}
 

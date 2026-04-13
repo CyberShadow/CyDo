@@ -238,6 +238,7 @@ struct WsMessage
 	string type;
 	@JSONOptional JSONFragment content;  // string (for legacy fields) or ContentBlock[] (for messages)
 	int tid = -1;
+	int seq = -1;
 	string workspace;
 	string project_path;
 	string after_uuid;

@@ -46,6 +46,7 @@ function AppContent() {
     sendAskUserResponse,
     sendPermissionPromptResponse,
     editMessage,
+    editRawEvent,
     createDraftTask,
     deleteDraftTask,
     draftRenderKey,
@@ -421,6 +422,7 @@ function AppContent() {
                     onAskUserResponse={sendAskUserResponse}
                     onPermissionPromptResponse={sendPermissionPromptResponse}
                     onEditMessage={editMessage}
+                    onEditRawEvent={editRawEvent}
                     entryPoints={
                       task.renderKey === draftRenderKey
                         ? entryPoints

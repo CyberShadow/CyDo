@@ -57,6 +57,7 @@ interface Props {
   onToggleSidebar: () => void;
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
+  onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   entryPoints?: EntryPointInfo[];
   agentTypes?: AgentTypeInfo[];
   defaultAgentType?: string;
@@ -90,6 +91,7 @@ function SessionViewInner({
   onToggleSidebar,
   onSetArchived,
   onEditMessage,
+  onEditRawEvent,
   entryPoints,
   agentTypes,
   defaultAgentType,
@@ -507,6 +509,7 @@ function SessionViewInner({
           onFork={onFork}
           onUndo={onUndo}
           onEditMessage={!task.alive ? onEditMessage : undefined}
+          onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
           forkableUuids={task.forkableUuids}
           onViewFile={openFileViewer}
         />

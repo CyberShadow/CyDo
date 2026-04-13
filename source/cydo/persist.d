@@ -489,6 +489,39 @@ bool editJsonlMessage(string jsonlPath, string targetId,
 	return true;
 }
 
+/// Edit a JSONL line identified by its exact original content.
+/// Returns true if the line was found and replaced.
+bool editJsonlByContent(string jsonlPath, string originalLine, string newLine)
+{
+	import std.file : exists, readText, write;
+	import std.string : lineSplitter;
+
+	if (jsonlPath.length == 0 || !exists(jsonlPath))
+		return false;
+
+	string output;
+	bool found = false;
+	foreach (line; readText(jsonlPath).lineSplitter)
+	{
+		if (line.length == 0)
+			continue;
+
+		if (!found && line == originalLine)
+		{
+			found = true;
+			output ~= newLine ~ "\n";
+		}
+		else
+			output ~= line ~ "\n";
+	}
+
+	if (!found)
+		return false;
+
+	write(jsonlPath, output);
+	return true;
+}
+
 bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
 	bool delegate(string line, int lineNum, string forkId) matchFn)
 {

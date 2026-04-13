@@ -141,6 +141,7 @@ export interface TaskManager {
   sendAskUserResponse: (tid: number, content: string) => void;
   sendPermissionPromptResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
+  editRawEvent: (tid: number, seq: number, content: string) => void;
   createDraftTask: (entryPointName?: string, agentType?: string) => void;
   deleteDraftTask: () => void;
   draftRenderKey: string | null;
@@ -1918,6 +1919,13 @@ export function useTaskManager(
     [],
   );
 
+  const editRawEvent = useCallback(
+    (tid: number, seq: number, content: string) => {
+      connRef.current?.editRawEvent(tid, seq, content);
+    },
+    [],
+  );
+
   const resolvedEntryPoints = useMemo(() => {
     if (activeWorkspace && activeProject) {
       const projPath = findProjectPath(
@@ -2051,6 +2059,7 @@ export function useTaskManager(
     sendAskUserResponse,
     sendPermissionPromptResponse,
     editMessage,
+    editRawEvent,
     createDraftTask,
     deleteDraftTask,
     draftRenderKey,

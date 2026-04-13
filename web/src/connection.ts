@@ -222,6 +222,10 @@ export class Connection {
     );
   }
 
+  editRawEvent(tid: number, seq: number, content: string) {
+    this.send(JSON.stringify({ type: "edit_raw_event", tid, seq, content }));
+  }
+
   requestTaskTypes(projectPath: string) {
     this.send(
       JSON.stringify({ type: "request_task_types", project_path: projectPath }),

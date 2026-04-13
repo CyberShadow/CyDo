@@ -30,6 +30,7 @@ interface Props {
   onFork?: (sid: number, afterUuid: string) => void;
   onUndo?: (tid: number, afterUuid: string) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
+  onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   forkableUuids?: Set<string>;
   onViewFile?: (filePath: string) => void;
 }
@@ -483,6 +484,7 @@ const MessageView = memo(
     onFork,
     onUndo,
     onEdit,
+    onEditRaw,
     forkable,
   }: {
     msg: DisplayMessage;
@@ -494,6 +496,7 @@ const MessageView = memo(
     onFork?: (afterUuid: string) => void;
     onUndo?: (afterUuid: string) => void;
     onEdit?: (uuid: string, content: string) => void;
+    onEditRaw?: (seq: number, content: string) => void;
     forkable?: boolean;
   }) {
     const devMode = useDevMode();
@@ -674,7 +677,7 @@ const MessageView = memo(
             </div>
           </div>
         ) : showSource ? (
-          <SourceView msg={msg} tid={tid} />
+          <SourceView msg={msg} tid={tid} onEditRaw={onEditRaw} />
         ) : (
           inner
         )}
@@ -733,6 +736,7 @@ export function MessageList({
   onFork,
   onUndo,
   onEditMessage,
+  onEditRawEvent,
   forkableUuids,
   onViewFile,
 }: Props) {
@@ -763,6 +767,15 @@ export function MessageList({
           }
         : undefined,
     [onEditMessage, sessionId],
+  );
+  const handleEditRawEvent = useMemo(
+    () =>
+      onEditRawEvent
+        ? (seq: number, content: string) => {
+            onEditRawEvent(sessionId, seq, content);
+          }
+        : undefined,
+    [onEditRawEvent, sessionId],
   );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
@@ -905,6 +918,7 @@ export function MessageList({
               onFork={handleFork}
               onUndo={msg.type === "user" ? handleUndo : undefined}
               onEdit={msg.type === "user" ? handleEditMessage : undefined}
+              onEditRaw={handleEditRawEvent}
               forkable={isForkable}
             />
           );

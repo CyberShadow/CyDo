@@ -1875,6 +1875,23 @@ body,
   padding: 8px;
 }
 
+.raw-edit-textarea {
+  font-family: var(--font-mono, monospace);
+  min-height: 120px;
+}
+
+.code-pre-wrap > .edit-btn {
+  position: absolute;
+  top: 4px;
+  right: 30px;
+  opacity: 0;
+  z-index: 1;
+}
+
+.code-pre-wrap:hover > .edit-btn {
+  opacity: 1;
+}
+
 /* Mobile quote-selection button */
 .quote-selection-btn {
   position: fixed;
