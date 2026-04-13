@@ -47,6 +47,14 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   - **Not interested?** No problem: the blank, direct, and isolated task types provide a more classic experience.
   - **Not satisfied?** Everything is defined using a YAML-driven task type system; customize or replace at your leisure.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/new-task-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/new-task-light.png">
+    <img alt="New task view with task type selector and agent picker" src="https://files.cy.md/CyDo/docs/screenshots/new-task-dark.png" width="800">
+  </picture>
+</p>
+
 - **Sandbox isolation** — Agent sessions run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes with configurable read-only and read-write filesystem paths. Agents can't escape their workspace.
 
 - **Git worktree isolation** — Tasks that produce code changes run in their own git worktrees. Changes stay isolated until explicitly pulled into the main tree, so parallel agents never conflict.
@@ -61,15 +69,7 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Inline file viewer** — View file contents and diffs directly in the conversation without leaving the UI.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-light.png">
-    <img alt="Inline file viewer with syntax-highlighted diff" src="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png" width="800">
-  </picture>
-</p>
+- **No lock-in** — CyDo sessions are regular terminal sessions, and are stored in the agent's native format. Sessions you create in CyDo show up in the official CLI, and CLI sessions can be imported into CyDo. Use both interchangeably.
 
 - **Cross-session search** — Find tasks across all workspaces and sessions.
 
@@ -81,15 +81,35 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **No lock-in** — CyDo sessions are regular terminal sessions, and are stored in the agent's native format. Sessions you create in CyDo show up in the official CLI, and CLI sessions can be imported into CyDo. Use both interchangeably.
-
 - **Resilient** — Backend restarts preserve all sessions. In-progress working agents are resumed automatically. Message and task drafts are persisted server-side, and synced across all clients. The UI reconnects automatically, and picks up where you left off.
+
+- **Inline file viewer** — View file contents and diffs directly in the conversation without leaving the UI.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/file-viewer-light.png">
+    <img alt="Inline file viewer with syntax-highlighted diff" src="https://files.cy.md/CyDo/docs/screenshots/file-viewer-dark.png" width="800">
+  </picture>
+</p>
 
 - **Multi-agent support** — Not locked to a single AI provider. Supports Claude Code, OpenAI Codex, and GitHub Copilot CLI as agent backends, selectable per workspace or task.
 
 - **Mobile-friendly** — Responsive layout with a slide-out sidebar for use on phones and tablets.
 
 <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-main-page-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-main-page-light.png">
+    <img alt="Mobile welcome page" src="https://files.cy.md/CyDo/docs/screenshots/mobile-main-page-dark.png" height="400">
+  </picture>
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-new-task-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-new-task-light.png">
+    <img alt="Mobile new task view" src="https://files.cy.md/CyDo/docs/screenshots/mobile-new-task-dark.png" height="400">
+  </picture>
+  &nbsp;&nbsp;
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/CyDo/docs/screenshots/mobile-conversation-light.png">

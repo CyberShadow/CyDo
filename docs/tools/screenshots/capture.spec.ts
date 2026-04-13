@@ -17,6 +17,12 @@ for (const theme of ['dark', 'light'] as const) {
       await page.screenshot({ path: `${OUTPUT_DIR}/main-page-${theme}.png` });
     });
 
+    test('new-task', async ({ page }) => {
+      await page.goto('/open-source/cydo');
+      await page.locator('.task-type-picker').waitFor({ state: 'visible', timeout: 30_000 });
+      await page.screenshot({ path: `${OUTPUT_DIR}/new-task-${theme}.png` });
+    });
+
     test('conversation', async ({ page }) => {
       // Navigate to the cydo project in the open-source workspace
       await page.goto('/open-source/cydo');
@@ -127,6 +133,20 @@ for (const theme of ['dark', 'light'] as const) {
     });
 
     // ── Mobile screenshots (portrait) ────────────────────────────────
+
+    test('mobile-main-page', async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto('/');
+      await page.locator('.welcome-page-header h1').waitFor({ state: 'visible', timeout: 30_000 });
+      await page.screenshot({ path: `${OUTPUT_DIR}/mobile-main-page-${theme}.png` });
+    });
+
+    test('mobile-new-task', async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto('/open-source/cydo');
+      await page.locator('.task-type-picker').waitFor({ state: 'visible', timeout: 30_000 });
+      await page.screenshot({ path: `${OUTPUT_DIR}/mobile-new-task-${theme}.png` });
+    });
 
     test('mobile-file-viewer', async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });
