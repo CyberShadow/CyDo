@@ -3108,7 +3108,20 @@ class App : ToolsBackend
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 
-		auto edited = editJsonlByContent(jsonlPath, originalLine, newContent);
+		// Compact to single line — JSONL requires one JSON object per line.
+		string compactContent;
+		try
+		{
+			import std.json : parseJSON;
+			compactContent = parseJSON(newContent).toString();
+		}
+		catch (Exception)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Invalid JSON in edited event", tid)).representation));
+			return;
+		}
+
+		auto edited = editJsonlByContent(jsonlPath, originalLine, compactContent);
 
 		if (!edited)
 		{
