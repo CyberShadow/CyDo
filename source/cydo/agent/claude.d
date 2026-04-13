@@ -1814,15 +1814,15 @@ private string translateClaudeEventInner(string rawLine)
 		case "result":
 			return normalizeTurnResult(rawLine);
 		case "summary":
-			return renameType(rawLine, "session/summary");
+			return translateSummary(rawLine);
 		case "rate_limit_event":
-			return renameType(rawLine, "session/rate_limit");
+			return translateRateLimitEvent(rawLine);
 		case "control_response":
-			return renameType(rawLine, "control/response");
+			return translateControlResponse(rawLine);
 		case "stderr":
-			return renameType(rawLine, "process/stderr");
+			return translateStderr(rawLine);
 		case "exit":
-			return renameType(rawLine, "process/exit");
+			return translateExit(rawLine);
 		case "queue-operation":
 			return null; // consumed — handled by broadcastTask / stateful replay closure
 		case "progress":
@@ -1842,9 +1842,9 @@ private string translateSystemEvent(string rawLine, string subtype)
 		case "init":
 			return translateSessionInit(rawLine);
 		case "status":
-			return replaceTypeRemoveSubtype(rawLine, "session/status");
+			return translateSystemStatus(rawLine);
 		case "compact_boundary":
-			return replaceTypeRemoveSubtype(rawLine, "session/compacted");
+			return translateCompactBoundary(rawLine);
 		case "task_started":
 			return normalizeTaskStarted(rawLine);
 		case "task_notification":
@@ -1994,23 +1994,110 @@ private string normalizeTurnResult(string rawLine)
 	return toJson(ev);
 }
 
-/// Rename the top-level "type" field in a JSON line. Preserves all other fields.
-/// Uses brace-depth tracking so nested "type" fields (e.g. inside "message")
-/// are not accidentally matched.
-private string renameType(string rawLine, string newType)
+/// Translate "summary" event to session/summary.
+private string translateSummary(string rawLine)
 {
-	auto typeIdx = findTopLevelType(rawLine);
-	if (typeIdx < 0)
-		return rawLine;
-
-	auto valueStart = typeIdx + `"type":"`.length;
-	// Find closing quote of value
-	foreach (i; valueStart .. rawLine.length)
+	@JSONPartial static struct RawSummary { string summary; }
+	try
 	{
-		if (rawLine[i] == '"')
-			return rawLine[0 .. typeIdx] ~ `"type":"` ~ newType ~ `"` ~ rawLine[i + 1 .. $];
+		auto raw = jsonParse!RawSummary(rawLine);
+		SessionSummaryEvent ev;
+		ev.summary = raw.summary;
+		return toJson(ev);
 	}
-	return rawLine;
+	catch (Exception e)
+	{ tracef("translateSummary: parse error: %s", e.msg); return makeUnrecognizedEvent("summary parse error: " ~ e.msg); }
+}
+
+/// Translate "rate_limit_event" event to session/rate_limit.
+private string translateRateLimitEvent(string rawLine)
+{
+	@JSONPartial static struct RawRateLimit { JSONFragment rate_limit_info; }
+	try
+	{
+		auto raw = jsonParse!RawRateLimit(rawLine);
+		SessionRateLimitEvent ev;
+		ev.rate_limit_info = raw.rate_limit_info;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateRateLimitEvent: parse error: %s", e.msg); return makeUnrecognizedEvent("rate_limit_event parse error: " ~ e.msg); }
+}
+
+/// Translate "control_response" event to control/response.
+private string translateControlResponse(string rawLine)
+{
+	@JSONPartial static struct RawControlResponse { JSONFragment response; }
+	try
+	{
+		auto raw = jsonParse!RawControlResponse(rawLine);
+		ControlResponseEvent ev;
+		ev.response = raw.response;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateControlResponse: parse error: %s", e.msg); return makeUnrecognizedEvent("control_response parse error: " ~ e.msg); }
+}
+
+/// Translate "stderr" event to process/stderr.
+private string translateStderr(string rawLine)
+{
+	@JSONPartial static struct RawStderr { string text; }
+	try
+	{
+		auto raw = jsonParse!RawStderr(rawLine);
+		ProcessStderrEvent ev;
+		ev.text = raw.text;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateStderr: parse error: %s", e.msg); return makeUnrecognizedEvent("stderr parse error: " ~ e.msg); }
+}
+
+/// Translate "exit" event to process/exit.
+private string translateExit(string rawLine)
+{
+	@JSONPartial static struct RawExit { int code; @JSONOptional bool is_continuation; }
+	try
+	{
+		auto raw = jsonParse!RawExit(rawLine);
+		ProcessExitEvent ev;
+		ev.code = raw.code;
+		ev.is_continuation = raw.is_continuation;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateExit: parse error: %s", e.msg); return makeUnrecognizedEvent("exit parse error: " ~ e.msg); }
+}
+
+/// Translate "system/status" event to session/status.
+private string translateSystemStatus(string rawLine)
+{
+	@JSONPartial static struct RawStatus { @JSONOptional string status; }
+	try
+	{
+		auto raw = jsonParse!RawStatus(rawLine);
+		SessionStatusEvent ev;
+		ev.status = raw.status;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateSystemStatus: parse error: %s", e.msg); return makeUnrecognizedEvent("system/status parse error: " ~ e.msg); }
+}
+
+/// Translate "system/compact_boundary" event to session/compacted.
+private string translateCompactBoundary(string rawLine)
+{
+	@JSONPartial static struct RawCompact { @JSONOptional CompactMetadata compact_metadata; }
+	try
+	{
+		auto raw = jsonParse!RawCompact(rawLine);
+		SessionCompactedEvent ev;
+		ev.compact_metadata = raw.compact_metadata;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateCompactBoundary: parse error: %s", e.msg); return makeUnrecognizedEvent("system/compact_boundary parse error: " ~ e.msg); }
 }
 
 /// Recursively collect all JSONExtras from a struct and its nested struct fields.
@@ -2036,83 +2123,6 @@ private JSONExtras collectAllExtras(S)(ref const S s)
 		}
 	}}
 	return result;
-}
-
-/// Find the byte offset of the top-level `"type":"` in a JSON object string.
-/// Returns -1 if not found.  Only matches at brace depth 1 (top-level keys).
-private int findTopLevelType(string s)
-{
-	int depth = 0;
-	bool inString = false;
-	bool escaped = false;
-	enum needle = `"type":"`;
-
-	foreach (i; 0 .. s.length)
-	{
-		auto c = s[i];
-		if (escaped)
-		{
-			escaped = false;
-			continue;
-		}
-		if (c == '\\' && inString)
-		{
-			escaped = true;
-			continue;
-		}
-		if (c == '"' && !inString)
-		{
-			// Starting a key or value at the current depth.
-			// Check for needle match at top-level (depth 1).
-			if (depth == 1 && i + needle.length <= s.length
-				&& s[i .. i + needle.length] == needle)
-				return cast(int) i;
-			inString = true;
-			continue;
-		}
-		if (c == '"')
-		{
-			inString = false;
-			continue;
-		}
-		if (inString)
-			continue;
-		if (c == '{')
-			depth++;
-		else if (c == '}')
-			depth--;
-	}
-	return -1;
-}
-
-/// Replace "type":"system" with the new type and remove "subtype":"..." field.
-private string replaceTypeRemoveSubtype(string rawLine, string newType)
-{
-	import std.string : indexOf;
-
-	// First rename the type
-	auto renamed = renameType(rawLine, newType);
-
-	// Then remove the subtype field
-	auto subtypeIdx = renamed.indexOf(`"subtype":"`);
-	if (subtypeIdx < 0)
-		return renamed;
-
-	// Find the extent of "subtype":"value"
-	auto subtypeValueStart = subtypeIdx + `"subtype":"`.length;
-	auto subtypeValueEnd = renamed.indexOf('"', subtypeValueStart);
-	if (subtypeValueEnd < 0)
-		return renamed;
-
-	auto fieldEnd = subtypeValueEnd + 1;
-
-	// Remove trailing comma if present, or leading comma
-	if (fieldEnd < renamed.length && renamed[fieldEnd] == ',')
-		fieldEnd++;
-	else if (subtypeIdx > 0 && renamed[subtypeIdx - 1] == ',')
-		subtypeIdx--;
-
-	return renamed[0 .. subtypeIdx] ~ renamed[fieldEnd .. $];
 }
 
 /// Normalize a Claude task_started system event to the agnostic TaskStartedEvent format.

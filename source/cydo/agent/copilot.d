@@ -15,8 +15,9 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkEvent, EmptyResult;
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
-	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessStderrEvent,
-	SessionInitEvent, TranslatedEvent, TurnResultEvent, TurnStopEvent, UsageInfo;
+	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
+	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
+	TurnStopEvent, UsageInfo;
 import cydo.agent.session : AgentSession;
 import cydo.config : PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
@@ -555,42 +556,51 @@ class CopilotAgent : Agent
 	{
 		// Copilot emits agnostic-format events natively (via CopilotSession);
 		// only stderr/exit need renaming.  Everything else passes through.
-		import std.algorithm : canFind;
-		if (rawLine.canFind(`"type":"stderr"`))
-			return [TranslatedEvent(replaceTypeField(rawLine, "process/stderr"), null)];
-		if (rawLine.canFind(`"type":"exit"`))
-			return [TranslatedEvent(replaceTypeField(rawLine, "process/exit"), null)];
+		@JSONPartial static struct TypeProbe { string type; }
+		try
+		{
+			auto probe = jsonParse!TypeProbe(rawLine);
+			if (probe.type == "stderr")
+			{
+				@JSONPartial static struct RawStderr { string text; }
+				auto raw = jsonParse!RawStderr(rawLine);
+				ProcessStderrEvent ev;
+				ev.text = raw.text;
+				return [TranslatedEvent(toJson(ev), null)];
+			}
+			if (probe.type == "exit")
+			{
+				@JSONPartial static struct RawExit { int code; @JSONOptional bool is_continuation; }
+				auto raw = jsonParse!RawExit(rawLine);
+				ProcessExitEvent ev;
+				ev.code = raw.code;
+				ev.is_continuation = raw.is_continuation;
+				return [TranslatedEvent(toJson(ev), null)];
+			}
+		}
+		catch (Exception) {}
 		return [TranslatedEvent(rawLine, null)];
-	}
-
-	/// Replace the "type" field value in a JSON line.
-	private static string replaceTypeField(string rawLine, string newType)
-	{
-		import std.string : indexOf;
-		auto idx = rawLine.indexOf(`"type":"`);
-		if (idx < 0) return rawLine;
-		auto valStart = idx + `"type":"`.length;
-		auto valEnd = rawLine.indexOf(`"`, valStart);
-		if (valEnd < 0) return rawLine;
-		return rawLine[0 .. valStart] ~ newType ~ rawLine[valEnd .. $];
 	}
 
 	bool isTurnResult(string rawLine)
 	{
-		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"turn/result"`);
+		@JSONPartial static struct TypeProbe { string type; }
+		try { return jsonParse!TypeProbe(rawLine).type == "turn/result"; }
+		catch (Exception) { return false; }
 	}
 
 	bool isUserMessageLine(string rawLine)
 	{
-		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"user.message"`);
+		@JSONPartial static struct TypeProbe { string type; }
+		try { return jsonParse!TypeProbe(rawLine).type == "user.message"; }
+		catch (Exception) { return false; }
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
-		import std.algorithm : canFind;
-		return rawLine.canFind(`"type":"assistant.message"`);
+		@JSONPartial static struct TypeProbe { string type; }
+		try { return jsonParse!TypeProbe(rawLine).type == "assistant.message"; }
+		catch (Exception) { return false; }
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -601,26 +611,20 @@ class CopilotAgent : Agent
 
 	string[] extractForkableIds(string content, int lineOffset = 0)
 	{
-		import std.algorithm : canFind;
 		import std.string : lineSplitter;
+
+		@JSONPartial static struct TypeIdProbe { string type; string id; }
 
 		string[] ids;
 		foreach (line; content.lineSplitter)
 		{
 			if (line.length == 0)
 				continue;
-			if (!line.canFind(`"type":"user.message"`) && !line.canFind(`"type":"assistant.message"`))
-				continue;
-
-			@JSONPartial
-			static struct IdProbe
-			{
-				string id;
-			}
-
 			try
 			{
-				auto probe = jsonParse!IdProbe(line);
+				auto probe = jsonParse!TypeIdProbe(line);
+				if (probe.type != "user.message" && probe.type != "assistant.message")
+					continue;
 				if (probe.id.length > 0)
 					ids ~= probe.id;
 			}
@@ -631,25 +635,22 @@ class CopilotAgent : Agent
 
 	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0)
 	{
-		import std.algorithm : canFind;
 		import std.string : lineSplitter;
+
+		@JSONPartial static struct TypeIdProbe { string type; string id; }
 
 		ForkableIdInfo[] ids;
 		foreach (line; content.lineSplitter)
 		{
 			if (line.length == 0)
 				continue;
-			bool isUser = line.canFind(`"type":"user.message"`);
-			if (!isUser && !line.canFind(`"type":"assistant.message"`))
-				continue;
-
-			@JSONPartial
-			static struct IdProbe { string id; }
 			try
 			{
-				auto probe = jsonParse!IdProbe(line);
+				auto probe = jsonParse!TypeIdProbe(line);
+				if (probe.type != "user.message" && probe.type != "assistant.message")
+					continue;
 				if (probe.id.length > 0)
-					ids ~= ForkableIdInfo(probe.id, isUser);
+					ids ~= ForkableIdInfo(probe.id, probe.type == "user.message");
 			}
 			catch (Exception) {}
 		}
