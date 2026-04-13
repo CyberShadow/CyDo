@@ -22,15 +22,20 @@
 
 ## What is this?
 
-CyDo provides a browser-based control plane for running multiple AI coding agents in parallel. Instead of interacting with one agent at a time in a terminal, you get:
+CyDo provides a browser-based control plane for running multiple AI coding agents in parallel.
+Instead of interacting with one agent at a time in a terminal, you get:
 
-- **An enhanced experience with your existing subscription** — CyDo wraps the official agent CLIs (Claude Code, Codex, Copilot) rather than replacing them. This means:
+- **An enhanced experience with your existing subscription** — CyDo wraps the official agent CLIs (Claude Code, Codex, Copilot) rather than replacing them.
+  This means:
 
   - **No API key required** — use your existing Claude Code, Codex, or Copilot subscription as-is.
-  - **No account risk** — CyDo runs the real, unmodified agent binaries. It doesn't impersonate official software or make direct API calls on your behalf, so there's no risk of violating terms of service.
-  - **Always up to date** — when the underlying CLI updates, you get new features and fixes automatically. CyDo talks to the agent over its documented streaming protocol, not internal APIs.
+  - **No account risk** — CyDo runs the real, unmodified agent binaries.
+    It doesn't impersonate official software or make direct API calls on your behalf, so there's no risk of violating terms of service.
+  - **Always up to date** — when the underlying CLI updates, you get new features and fixes automatically.
+    CyDo talks to the agent over its documented streaming protocol, not internal APIs.
 
-- **Multi-session management** — Run multiple agent sessions concurrently from a single interface. A sidebar lets you easily switch between sessions, see their status, and steer any of them in real time.
+- **Multi-session management** — Run multiple agent sessions concurrently from a single interface.
+  A sidebar lets you easily switch between sessions, see their status, and steer any of them in real time.
 
 <p align="center">
   <picture>
@@ -40,9 +45,13 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Simple model** — One issue = one task = one session = one Git worktree. No learning curve - you will be productive right away.
+- **Simple model** — One issue → one task → one session → one Git worktree.
+  No learning curve - you will be productive right away.
 
-- **Agentic workflows** — CyDo comes pre-configured with a set of single-purpose tasks. The agentic flow diagnoses bugs, creates reproducers, carefully plans out large changes, runs spikes to confirm experiments, decomposes large plans, reviews and verifies implementation outputs automatically. Everything is fully observable, and sub-tasks are directly steerable.
+- **Agentic workflows** — CyDo comes pre-configured with a set of single-purpose tasks.
+  The agentic flow diagnoses bugs, creates reproducers, carefully plans out large changes,
+  runs spikes to confirm feasibility, decomposes large plans, reviews and verifies implementation outputs automatically.
+  Everything is fully observable, and sub-tasks are directly steerable.
 
   - **Not interested?** No problem: the blank, direct, and isolated task types provide a more classic experience.
   - **Not satisfied?** Everything is defined using a YAML-driven task type system; customize or replace at your leisure.
@@ -55,9 +64,11 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Sandbox isolation** — Agent sessions run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes with configurable read-only and read-write filesystem paths. Agents can't escape their workspace.
+- **Sandbox isolation** — Agent sessions run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes with configurable read-only and read-write filesystem paths.
+  Agents can't escape their workspace.
 
-- **Git worktree isolation** — Tasks that produce code changes run in their own git worktrees. Changes stay isolated until explicitly pulled into the main tree, so parallel agents never conflict.
+- **Git worktree isolation** — Tasks that produce code changes run in their own git worktrees.
+  Changes stay isolated until explicitly pulled into the main tree, so parallel agents never conflict.
 
 - **Rich rendering** — Syntax-highlighted code blocks (via Shiki), ANSI color rendering for terminal output, Markdown with Mermaid diagrams, and structured tool call display.
 
@@ -69,7 +80,8 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **No lock-in** — CyDo sessions are regular terminal sessions, and are stored in the agent's native format. Sessions you create in CyDo show up in the official CLI, and CLI sessions can be imported into CyDo. Use both interchangeably.
+- **No lock-in** — CyDo sessions are regular terminal sessions, and are stored in the agent's native format.
+  Sessions you create in CyDo show up in the official CLI, and CLI sessions can be imported into CyDo. Use both interchangeably.
 
 - **Cross-session search** — Find tasks across all workspaces and sessions.
 
@@ -81,7 +93,10 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Resilient** — Backend restarts preserve all sessions. In-progress working agents are resumed automatically. Message and task drafts are persisted server-side, and synced across all clients. The UI reconnects automatically, and picks up where you left off.
+- **Resilient** — Backend restarts preserve all sessions.
+  In-progress working agents are resumed automatically.
+  Message and task drafts are persisted server-side, and synced across all clients.
+  The UI reconnects automatically, and picks up where you left off.
 
 - **Inline file viewer** — View file contents and diffs directly in the conversation without leaving the UI.
 
@@ -93,7 +108,8 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Multi-agent support** — Not locked to a single AI provider. Supports Claude Code, OpenAI Codex, and GitHub Copilot CLI as agent backends, selectable per workspace or task.
+- **Multi-agent support** — Not locked to a single AI provider.
+  Supports Claude Code, OpenAI Codex, and GitHub Copilot CLI as agent backends, selectable per workspace or task.
 
 - **Mobile-friendly** — Responsive layout with a slide-out sidebar for use on phones and tablets.
 
@@ -123,7 +139,7 @@ CyDo provides a browser-based control plane for running multiple AI coding agent
   </picture>
 </p>
 
-- **Thoroughly tested** — CyDo's integration test suite runs against the real software (the official, unmodified Claude Code / Codex / Copilot binaries), mocking only the AI inference API servers.
+- **Strongly tested** — CyDo's integration test suite runs against the real software (the official, unmodified Claude Code / Codex / Copilot binaries), mocking only the AI inference API servers.
 
 ## Task Type System
 
@@ -131,17 +147,19 @@ CyDo uses a declarative YAML-based task type system (`defs/task-types.yaml`) tha
 
 | Role | Purpose |
 |------|---------|
-| **conversation** | Interactive session — plans, delegates, reviews via sub-agents |
-| **plan** | Designs implementation plans by reading the codebase |
-| **implement** | Executes a plan in an isolated worktree, produces a commit |
-| **triage** | Decides whether to implement directly or decompose into sub-tasks |
-| **verify** | Adversarial testing — tries to break the implementation |
-| **review** | Code review against the original plan |
-| **spike** | Prototype in a disposable worktree to test feasibility |
-| **bug** | Investigate and diagnose a bug report |
-| **reproduce** | Create a minimal bug reproducer for fail-first development |
+| <img src="docs/icons/conversation.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**conversation** | Interactive session — plans, delegates, reviews via sub-agents |
+| <img src="docs/icons/bug.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**bug** | Investigate and diagnose a bug report |
+| <img src="docs/icons/reproduce.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**reproduce** | Create a minimal bug reproducer for fail-first development |
+| <img src="docs/icons/plan.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**plan** | Designs implementation plans by reading the codebase |
+| <img src="docs/icons/spike.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**spike** | Prototype in a disposable worktree to test feasibility |
+| <img src="docs/icons/triage.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**triage** | Decides whether to implement directly or decompose into sub-tasks |
+| <img src="docs/icons/implement.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**implement** | Executes a plan in an isolated worktree, produces commits |
+| <img src="docs/icons/review.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**review** | Code review against the original plan |
+| <img src="docs/icons/verify.svg" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;**verify** | Adversarial testing — tries to break the implementation |
 
-Task types control which sub-tasks an agent can create, what model class to use, whether the session is read-only, and what output it produces. Continuations define state machine transitions between types.
+Task types control which sub-tasks an agent can create,
+what model class to use, whether the session is read-only, and what output it produces.
+Continuations define state machine transitions between types.
 
 Task type definitions are customizable and extensible with per-project or global personal overrides.
 
@@ -149,21 +167,21 @@ Task type definitions are customizable and extensible with per-project or global
 
 ### Agent support
 
-| Agent                                                         | Status          |
-|---------------------------------------------------------------|-----------------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Fully supported |
-| [OpenAI Codex CLI](https://github.com/openai/codex)           | Fully supported |
-| [GitHub Copilot CLI](https://github.com/github/copilot-cli)   | Experimental    |
-| [OpenCode](https://github.com/sst/opencode)                   | Planned         |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli)     | Planned         |
+| Agent                                                                                                                                                                                            | Status             |
+|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
+| <img src="https://www.google.com/s2/favicons?domain=claude.ai&sz=32"         width="16" height="16" align="absmiddle"> &nbsp;&nbsp;[Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ Fully supported |
+| <img src="https://www.google.com/s2/favicons?domain=openai.com&sz=32"        width="16" height="16" align="absmiddle"> &nbsp;&nbsp;[OpenAI Codex CLI](https://github.com/openai/codex)           | ✅ Fully supported |
+| <img src="https://www.google.com/s2/favicons?domain=github.com&sz=32"        width="16" height="16" align="absmiddle"> &nbsp;&nbsp;[GitHub Copilot CLI](https://github.com/github/copilot-cli)   | 💥 Experimental    |
+| <img src="https://www.google.com/s2/favicons?domain=opencode.ai&sz=32"       width="16" height="16" align="absmiddle"> &nbsp;&nbsp;[OpenCode](https://github.com/sst/opencode)                   | ⏳ Planned         |
+| <img src="https://www.google.com/s2/favicons?domain=gemini.google.com&sz=32" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;[Gemini CLI](https://github.com/google-gemini/gemini-cli)     | ⏳ Planned         |
 
 ### OS support
 
-| Platform    | Status          |
-|-------------|-----------------|
-| Linux / WSL | Fully supported |
-| Windows     | Planned         |
-| macOS       | Planned         |
+| Platform                                                                                                                                   | Status             |
+|--------------------------------------------------------------------------------------------------------------------------------------------|--------------------|
+| <img src="https://www.google.com/s2/favicons?domain=kernel.org&sz=32"    width="16" height="16" align="absmiddle"> &nbsp;&nbsp;Linux / WSL | ✅ Fully supported |
+| <img src="https://www.google.com/s2/favicons?domain=microsoft.com&sz=32" width="16" height="16" align="absmiddle"> &nbsp;&nbsp;Windows     | ⏳ Planned         |
+| <img src="https://www.google.com/s2/favicons?domain=apple.com&sz=32"     width="16" height="16" align="absmiddle"> &nbsp;&nbsp;macOS       | ⏳ Planned         |
 
 ## Running
 
