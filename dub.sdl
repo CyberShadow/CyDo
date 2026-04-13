@@ -12,3 +12,14 @@ dependency "ae:openssl" version="~>0.0.3817"
 dependency "ae:zlib" version="~>0.0.3817"
 dependency "configy" version="~>2.2.0"
 dependency "djinja" repository="git+https://github.com/VPanteleev-sym/djinja.git" version="~master"
+
+subPackage {
+	name "protocol-codegen"
+	description "CTFE-based TypeScript codegen for cydo.agent.protocol structs"
+	targetType "executable"
+	targetPath "build"
+	sourcePaths "source/cydo/agent/codegen_only"
+	importPaths "source"
+	sourceFiles "source/cydo/agent/protocol.d" "source/cydo/agent/protocol_codegen.d"
+	dependency "ae" version="~>0.0.3817"
+}
