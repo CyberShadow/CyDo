@@ -52,6 +52,19 @@ import cydo.worktree;
 
 import uninode.node : UniNode;
 
+private string resolveTaskTypesPath()
+{
+	import ae.utils.path : findProgramDirectory;
+	import std.path : buildPath;
+	auto dir = findProgramDirectory("defs/task-types.yaml");
+	if (dir is null)
+	{
+		warningf("Could not locate defs/task-types.yaml relative to binary");
+		return "defs/task-types.yaml";
+	}
+	return buildPath(dir, "defs/task-types.yaml");
+}
+
 @(`CyDo backend and tooling.`)
 struct Program
 {
@@ -84,27 +97,26 @@ static:
 	}
 
 	@(`Simulate task type workflow.`)
-	void simulate(Parameter!(string, "Path to task-types YAML file.") typesYaml)
+	void simulate()
 	{
 		import cydo.tasktype : runSimulator;
-		runSimulator(typesYaml);
+		runSimulator(resolveTaskTypesPath());
 	}
 
 	@(`Generate Graphviz dot output for task types.`)
-	void dot(Parameter!(string, "Path to task-types YAML file.") typesYaml)
+	void dot()
 	{
 		import cydo.tasktype : runDot;
-		runDot(typesYaml);
+		runDot(resolveTaskTypesPath());
 	}
 
 	@(`Dump agent context for a task type.`)
 	void dumpContext(
-		Parameter!(string, "Path to task-types YAML file.") typesYaml,
 		Parameter!(string, "Task type name.") typeName,
 	)
 	{
 		import cydo.tasktype : runDumpContext;
-		runDumpContext(typesYaml, typeName);
+		runDumpContext(resolveTaskTypesPath(), typeName);
 	}
 
 	/// Discover projects in a workspace.
@@ -171,7 +183,9 @@ static:
 		stderr.writeln(history);
 		stderr.writeln("===========================");
 
-		auto promptPath = buildPath("defs", "prompts/generate-suggestions.md");
+		import ae.utils.path : findProgramDirectory;
+		auto defsBase = () { auto d = findProgramDirectory("defs/task-types.yaml"); return d !is null ? d : ""; }();
+		auto promptPath = buildPath(defsBase, "defs", "prompts/generate-suggestions.md");
 		if (!exists(promptPath))
 		{
 			stderr.writeln("Error: prompt file not found: ", promptPath);
@@ -266,8 +280,9 @@ class App : ToolsBackend
 		bool[string] treeReadOnly;
 	}
 	private ProjectTypeCache[string] taskTypesByProject;
-	private enum taskTypesDir = "defs";
-	private enum taskTypesPath = "defs/task-types.yaml";
+	private string taskTypesDir;
+	private string taskTypesPath;
+	private string webDistDir;
 	// Pending sub-task promises (childTid → promise fulfilled on task exit)
 	private Promise!(McpResult)[int] pendingSubTasks;
 	// In-memory mirror of task_deps table (childTid → parentTid)
@@ -410,6 +425,21 @@ class App : ToolsBackend
 	void start()
 	{
 		initLogLevel();
+		{
+			import ae.utils.path : findProgramDirectory;
+			import std.path : buildPath;
+			auto baseDir = findProgramDirectory("defs/task-types.yaml");
+			if (baseDir is null)
+			{
+				warningf("Could not locate application directory (defs/task-types.yaml not found relative to binary)");
+				baseDir = "";
+			}
+			else if (baseDir != "")
+				infof("Application base directory: %s", baseDir);
+			taskTypesDir = buildPath(baseDir, "defs");
+			taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
+			webDistDir = buildPath(baseDir, "web/dist/");
+		}
 		{
 			import ae.sys.paths : getDataDir;
 			import std.path : buildPath;
@@ -735,7 +765,7 @@ class App : ToolsBackend
 			if (resource == pub)
 			{
 				auto response = new HttpResponseEx();
-				response.serveFile(pub, "web/dist/");
+				response.serveFile(pub, webDistDir);
 				if (pub == "manifest.json")
 					response.headers["Content-Type"] = "application/manifest+json";
 				conn.sendResponse(response);
@@ -761,9 +791,9 @@ class App : ToolsBackend
 		// Serve static files from web/dist/, with SPA fallback
 		auto response = new HttpResponseEx();
 		auto path = request.resource[1 .. $]; // strip leading /
-		if (path == "" || !exists("web/dist/" ~ path) || !isFile("web/dist/" ~ path))
+		if (path == "" || !exists(webDistDir ~ path) || !isFile(webDistDir ~ path))
 			path = "index.html";
-		response.serveFile(path, "web/dist/");
+		response.serveFile(path, webDistDir);
 		response.headers["Content-Security-Policy"] =
 			"default-src 'self'; " ~
 			"script-src 'self' 'wasm-unsafe-eval'; " ~

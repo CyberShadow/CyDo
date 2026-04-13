@@ -198,7 +198,7 @@ EOF
             dubBuildType = "debug";
           });
 
-          mkCydo = backendPkg: pkgs.stdenv.mkDerivation {
+          mkCydo = backendPkg: { defs ? ./defs }: pkgs.stdenv.mkDerivation {
             pname = "cydo";
             version = "0.1.0";
 
@@ -211,9 +211,9 @@ EOF
               mkdir -p $out/bin $out/share/cydo/web
               install -Dm755 ${backendPkg}/bin/cydo $out/share/cydo/
               cp -r ${frontend}/. $out/share/cydo/web/dist/
+              cp -r ${defs}/. $out/share/cydo/defs/
 
-              makeWrapper $out/share/cydo/cydo $out/bin/cydo \
-                --run 'if [ ! -e web/dist ]; then mkdir -p web && ln -snf '"$out"'/share/cydo/web/dist web/dist; fi'
+              makeWrapper $out/share/cydo/cydo $out/bin/cydo
               runHook postInstall
             '';
 
@@ -224,8 +224,15 @@ EOF
             };
           };
 
-          cydo = mkCydo backend;
-          cydoDebug = mkCydo backendDebug;
+          testDefs = pkgs.runCommand "cydo-test-defs" {} ''
+            cp -r ${./defs} $out
+            chmod -R u+w $out
+            cp ${./tests/defs/task-types.yaml} $out/task-types.yaml
+          '';
+
+          cydo = mkCydo backend {};
+          cydoDebug = mkCydo backendDebug {};
+          cydoTest = mkCydo backendDebug { defs = testDefs; };
 
           fake-bwrap = pkgs.writeShellScript "bwrap" ''
             chdir=""
@@ -250,7 +257,6 @@ EOF
             src = screenshotSrc;
             fixtures = screenshot-fixtures;
             inherit cydo;
-            taskTypeDefs = ./defs;
 
             nativeBuildInputs = with pkgs; [
               playwright-test
@@ -317,10 +323,6 @@ EOF
                 echo "test" > README.md
                 ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
               done
-
-              # Copy task type definitions into cydo workspace
-              cp -r $taskTypeDefs /tmp/ws/open-source/cydo/defs
-              chmod -R u+w /tmp/ws/open-source/cydo/defs
 
               # ── JSONL fixtures ─────────────────────────────────────────
               mkdir -p $CLAUDE_CONFIG_DIR/projects/-tmp-ws-open-source-cydo
@@ -426,7 +428,7 @@ EOF
           };
         in
         {
-          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug fake-bwrap screenshots;
+          inherit frontend backend backendDebug codex-cli copilot-cli cydo cydoDebug cydoTest fake-bwrap screenshots;
           default = cydo;
         });
 
@@ -434,7 +436,7 @@ EOF
         let
           pkgs = pkgsFor system;
           cydo = self.packages.${system}.default;
-          cydoDebug = self.packages.${system}.cydoDebug;
+          cydoDebug = self.packages.${system}.cydoTest;
           codex = self.packages.${system}.codex-cli;
           copilot = self.packages.${system}.copilot-cli;
 
@@ -480,7 +482,6 @@ EOF
             pname = "cydo-integration-${name}";
             version = "0.1.0";
             src = ./tests;
-            taskTypeDocs = ./defs;
 
             nativeBuildInputs = with pkgs; [
               playwright-test
@@ -537,10 +538,6 @@ EOF
               ${pkgs.git}/bin/git config user.name "Test"
               echo "test" > README.md
               ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
-
-              cp -r $taskTypeDocs /tmp/cydo-test-workspace/defs
-              chmod -R u+w /tmp/cydo-test-workspace/defs
-              cp $src/defs/task-types.yaml /tmp/cydo-test-workspace/defs/task-types.yaml
 
               ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
               MOCK_PID=$!
