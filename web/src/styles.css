@@ -3236,6 +3236,7 @@ pre.extra-field-value {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   width: 480px;
+  max-width: calc(100vw - 32px);
   height: 400px;
   display: flex;
   flex-direction: column;
