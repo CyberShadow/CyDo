@@ -132,6 +132,110 @@ static:
 		runDiscover(root, name, isProjectExpr, recurseWhenExpr, cast(string[]) exclude);
 	}
 
+	@(`Open CyDo in a browser.`)
+	void open(
+		Parameter!(string, "Path to open.") path = null,
+	)
+	{
+		import cydo.config : loadConfig;
+		import cydo.discover : discoverProjects, ProjectDiscoveryConfig;
+		import std.file : getcwd;
+		import std.path : absolutePath, expandTilde;
+		import std.process : browse, environment, execute, spawnProcess;
+		import std.algorithm : startsWith;
+		import std.string : replace, strip;
+
+		auto config = loadConfig();
+
+		// Determine target directory
+		string targetDir = path.length > 0
+			? absolutePath(expandTilde(path))
+			: getcwd();
+
+		// Discover workspace and project for targetDir
+		string workspace;
+		string projectName;
+
+		foreach (ref ws; config.workspaces)
+		{
+			auto wsRoot = expandTilde(ws.root);
+
+			// Check if targetDir is under this workspace root
+			if (!targetDir.startsWith(wsRoot))
+				continue;
+			// Make sure it's a proper prefix (not just a partial directory name match)
+			if (targetDir.length > wsRoot.length && targetDir[wsRoot.length] != '/')
+				continue;
+
+			// Run discovery for this workspace
+			auto projects = discoverProjects(wsRoot, ws.name, ws.exclude, ws.project_discovery);
+
+			// Find the project that contains targetDir (longest match)
+			string bestPath;
+			string bestName;
+			foreach (ref p; projects)
+			{
+				if (targetDir.startsWith(p.path) &&
+					(targetDir.length == p.path.length || targetDir[p.path.length] == '/'))
+				{
+					if (p.path.length > bestPath.length)
+					{
+						bestPath = p.path;
+						bestName = p.name;
+					}
+				}
+			}
+
+			if (bestPath.length > 0)
+			{
+				workspace = ws.name;
+				projectName = bestName;
+				break;
+			}
+
+			// targetDir is under workspace but not a discovered project —
+			// still use this workspace (will open at workspace level)
+			workspace = ws.name;
+			break;
+		}
+
+		// Build URL
+		auto sslCert = environment.get("CYDO_TLS_CERT", null);
+		auto proto = sslCert ? "https" : "http";
+		auto listenAddr = environment.get("CYDO_LISTEN_ADDRESS", "localhost");
+		if (listenAddr == "*") listenAddr = "localhost";
+		auto listenPort = environment.get("CYDO_LISTEN_PORT", "3940");
+		auto authUser = environment.get("CYDO_AUTH_USER", null);
+
+		string hostPort = listenAddr ~ ":" ~ listenPort;
+
+		// Build path portion: /{workspace}/{encoded-project}
+		// Project names use : instead of / in URLs
+		string urlPath = "/";
+		if (workspace.length > 0)
+		{
+			urlPath = "/" ~ workspace ~ "/";
+			if (projectName.length > 0)
+				urlPath ~= projectName.replace("/", ":");
+		}
+
+		string url;
+		if (authUser.length > 0)
+			url = proto ~ "://" ~ authUser ~ "@" ~ hostPort ~ urlPath;
+		else
+			url = proto ~ "://" ~ hostPort ~ urlPath;
+
+		// Try chromium --app mode first, fall back to browse()
+		auto chromiumResult = execute(["which", "chromium"]);
+		if (chromiumResult.status == 0)
+		{
+			auto chromiumPath = chromiumResult.output.strip();
+			spawnProcess([chromiumPath, "--app=" ~ url]);
+		}
+		else
+			browse(url);
+	}
+
 	@(`Replay suggestion generation from a debug dump directory.`)
 	void replaySuggestions(
 		Parameter!(string, "Path to suggestion debug dump directory.") dumpDir,
