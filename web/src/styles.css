@@ -1892,6 +1892,12 @@ body,
   opacity: 1;
 }
 
+.raw-events > .code-pre-wrap + .code-pre-wrap {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-color, #333);
+  padding-top: 8px;
+}
+
 /* Mobile quote-selection button */
 .quote-selection-btn {
   position: fixed;
