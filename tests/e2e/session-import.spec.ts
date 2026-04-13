@@ -173,6 +173,9 @@ test("Import group node in sidebar expands on click and navigates correctly", as
     // Click the importable session to load its history.
     await importableEntry.click();
 
+    // URL must preserve workspace/project context (not just /task/<tid>).
+    await expect(page).toHaveURL(/\/testws\/cydo-test-workspace\/task\//, { timeout: 5_000 });
+
     // History loads.
     await expect(
       page.locator(".message.user-message", {
