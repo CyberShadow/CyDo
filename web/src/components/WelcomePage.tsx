@@ -98,60 +98,64 @@ function ActiveSessions({
         Active Sessions ({activeTasks.length})
       </h2>
       {!collapsed && (
-        <table class="active-sessions-table">
-          <tbody>
-            {activeTasks.map((t) => {
-              const title = t.title || `Task ${t.tid}`;
-              const statusClass = computeStatusClass(t);
-              const projName =
-                workspaces
-                  .find((w) => w.name === t.workspace)
-                  ?.projects.find((p) => p.path === t.projectPath)?.name ||
-                t.projectPath ||
-                "";
-              return (
-                <tr
-                  key={t.tid}
-                  class="active-sessions-row"
-                  onClick={(e: MouseEvent) => {
-                    if (!isPlainLeftClick(e)) return;
-                    e.preventDefault();
-                    onSelectTask(t.tid);
-                  }}
-                  onAuxClick={(e: MouseEvent) => {
-                    if (e.button !== 1) return;
-                    e.preventDefault();
-                    openInNewTab(getTaskHref(String(t.tid)));
-                  }}
-                >
-                  <td class="active-sessions-icon">
-                    {attention.has(t.tid) ? (
-                      <span class="task-type-icon task-type-icon-check alive" />
-                    ) : hasTaskTypeIcon(t.taskType, taskTypes) ? (
-                      <TaskTypeIcon
-                        taskType={t.taskType}
-                        taskTypes={taskTypes}
-                        class={statusClass || undefined}
-                      />
-                    ) : (
-                      <span
-                        class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
-                      />
-                    )}
-                  </td>
-                  <td class="active-sessions-title" title={title}>
-                    {title}
-                  </td>
-                  <td class="active-sessions-workspace">{t.workspace || ""}</td>
-                  <td class="active-sessions-project">{projName}</td>
-                  <td class="active-sessions-time">
+        <div class="active-sessions-table">
+          {activeTasks.map((t) => {
+            const title = t.title || `Task ${t.tid}`;
+            const statusClass = computeStatusClass(t);
+            const projName =
+              workspaces
+                .find((w) => w.name === t.workspace)
+                ?.projects.find((p) => p.path === t.projectPath)?.name ||
+              t.projectPath ||
+              "";
+            return (
+              <div
+                key={t.tid}
+                class="active-sessions-row"
+                onClick={(e: MouseEvent) => {
+                  if (!isPlainLeftClick(e)) return;
+                  e.preventDefault();
+                  onSelectTask(t.tid);
+                }}
+                onAuxClick={(e: MouseEvent) => {
+                  if (e.button !== 1) return;
+                  e.preventDefault();
+                  openInNewTab(getTaskHref(String(t.tid)));
+                }}
+              >
+                <span class="active-sessions-icon">
+                  {attention.has(t.tid) ? (
+                    <span class="task-type-icon task-type-icon-check alive" />
+                  ) : hasTaskTypeIcon(t.taskType, taskTypes) ? (
+                    <TaskTypeIcon
+                      taskType={t.taskType}
+                      taskTypes={taskTypes}
+                      class={statusClass || undefined}
+                    />
+                  ) : (
+                    <span
+                      class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+                    />
+                  )}
+                </span>
+                <span class="active-sessions-title" title={title}>
+                  {title}
+                </span>
+                <span class="active-sessions-meta">
+                  {t.workspace && (
+                    <span class="active-sessions-workspace">{t.workspace}</span>
+                  )}
+                  {projName && (
+                    <span class="active-sessions-project">{projName}</span>
+                  )}
+                  <span class="active-sessions-time">
                     {relativeTime(t.lastActive ?? Date.now())}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </section>
   );

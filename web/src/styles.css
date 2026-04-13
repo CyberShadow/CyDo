@@ -2926,62 +2926,56 @@ pre.extra-field-value {
   max-height: 240px;
   overflow-y: auto;
   border: 1px solid var(--border);
-  display: block;
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.active-sessions-table tbody {
-  display: table;
-  width: 100%;
 }
 
 .active-sessions-row {
+  display: flex;
+  align-items: center;
   cursor: pointer;
   font-size: 13px;
+  padding: 6px 12px;
+  white-space: nowrap;
 }
 
 .active-sessions-row:hover {
   background: var(--hover);
 }
 
-.active-sessions-row td {
-  padding: 6px 6px;
-  white-space: nowrap;
-}
-
-.active-sessions-row td:first-child {
-  padding-left: 12px;
-  width: 20px;
-}
-
-.active-sessions-row td:last-child {
-  padding-right: 12px;
-}
-
 .active-sessions-row + .active-sessions-row {
   border-top: 1px solid var(--border);
 }
 
+.active-sessions-icon {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  line-height: 0;
+}
+
 .active-sessions-title {
-  max-width: 0;
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.active-sessions-meta {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 12px;
+  margin-left: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.active-sessions-time {
+  order: -1;
 }
 
 .active-sessions-workspace,
 .active-sessions-project {
-  color: var(--text-dim);
-  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
-}
-
-.active-sessions-time {
-  color: var(--text-dim);
-  font-size: 12px;
 }
 
 /* Sidebar back button */
@@ -3186,6 +3180,44 @@ pre.extra-field-value {
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
     z-index: 199;
+  }
+
+  .welcome-page {
+    padding: 24px 16px;
+  }
+
+  .active-sessions-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: 6px;
+    row-gap: 2px;
+  }
+
+  .active-sessions-icon {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: center;
+  }
+
+  .active-sessions-title {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .active-sessions-meta {
+    grid-column: 2;
+    grid-row: 2;
+    margin-left: 0;
+  }
+
+  .active-sessions-time {
+    order: 0;
+  }
+
+  .active-sessions-workspace,
+  .active-sessions-project {
+    max-width: none;
   }
 }
 
