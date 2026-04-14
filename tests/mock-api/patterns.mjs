@@ -314,6 +314,10 @@ export function matchPattern(userText) {
   match = userText.match(/use builtin view (\S+)/i);
   if (match) return { type: "builtin_tool", name: "view", input: { path: match[1] } };
 
+  // "web search <query>" — trigger a web_search_call response
+  match = userText.match(/^web search (.+)$/im);
+  if (match) return { type: "web_search", query: match[1].trim() };
+
   // Default: echo back
   return { type: "text", text: userText };
 }

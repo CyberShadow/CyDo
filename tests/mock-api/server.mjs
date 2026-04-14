@@ -393,6 +393,72 @@ function oaiStreamCustomToolCallResponse(res, name, input) {
   res.end();
 }
 
+function oaiStreamWebSearchCallResponse(res, query, queries) {
+  const respId = nextRespId();
+  const wsId = `ws_mock_${nextCallId()}`;
+  oaiSseEvent(res, "response.created", {
+    type: "response.created",
+    response: { id: respId },
+  });
+  // 1. Item added (in_progress, no action yet)
+  oaiSseEvent(res, "response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: {
+      id: wsId,
+      type: "web_search_call",
+      status: "in_progress",
+    },
+  });
+  // 2. State: in_progress
+  oaiSseEvent(res, "response.web_search_call.in_progress", {
+    type: "response.web_search_call.in_progress",
+    output_index: 0,
+    item_id: wsId,
+  });
+  // 3. State: searching
+  oaiSseEvent(res, "response.web_search_call.searching", {
+    type: "response.web_search_call.searching",
+    output_index: 0,
+    item_id: wsId,
+  });
+  // 4. State: completed
+  oaiSseEvent(res, "response.web_search_call.completed", {
+    type: "response.web_search_call.completed",
+    output_index: 0,
+    item_id: wsId,
+  });
+  // 5. Final item with action containing query/queries
+  oaiSseEvent(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: 0,
+    item: {
+      id: wsId,
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        type: "search",
+        query: query,
+        queries: queries || [query],
+      },
+    },
+  });
+  oaiSseEvent(res, "response.completed", {
+    type: "response.completed",
+    response: {
+      id: respId,
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: 20,
+        output_tokens_details: null,
+        total_tokens: 30,
+      },
+    },
+  });
+  res.end();
+}
+
 // Extract the last user text from the Responses API input array.
 function extractLastUserTextFromInput(input) {
   for (let i = input.length - 1; i >= 0; i--) {
@@ -537,6 +603,8 @@ function handleResponses(req, res) {
       }
     } else if (intent.name === "apply_patch") {
       oaiStreamCustomToolCallResponse(res, intent.name, intent.input);
+    } else if (intent.type === "web_search") {
+      oaiStreamWebSearchCallResponse(res, intent.query, [intent.query]);
     } else {
       // tool_call — names are already correct for the OpenAI/Codex protocol
       oaiStreamFunctionCallResponse(res, intent.name, intent.input);
