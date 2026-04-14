@@ -157,7 +157,10 @@ function EventItem({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState<"abstract" | "raw">("abstract");
-  const [rawData, setRawData] = useState<unknown>(rawSource);
+  // undefined = not yet fetched, null = fetched but no raw source, other = data
+  const [rawData, setRawData] = useState<unknown>(
+    rawSource === null ? undefined : rawSource,
+  );
   const [loading, setLoading] = useState(false);
 
   const label = eventLabel(event);
@@ -169,15 +172,16 @@ function EventItem({
   );
 
   const fetchRaw = useCallback(() => {
-    if (rawData != null) return;
+    if (rawData !== undefined) return;
     setLoading(true);
     fetch(`/api/raw-source?tid=${tid}&seq=${seq}`)
       .then((r) => r.json())
       .then((data) => {
-        setRawData(data);
+        setRawData(data ?? null);
         setLoading(false);
       })
       .catch(() => {
+        setRawData(null);
         setLoading(false);
       });
   }, [tid, seq, rawData]);
@@ -189,9 +193,11 @@ function EventItem({
     setExpanded(!expanded);
   }, [expanded, fetchRaw]);
 
+  const hasRaw = rawData !== undefined && rawData !== null;
+
   const rawText = useMemo(
-    () => (rawData != null ? JSON.stringify(rawData, jsonReplacer, 2) : null),
-    [rawData],
+    () => (hasRaw ? JSON.stringify(rawData, jsonReplacer, 2) : null),
+    [rawData, hasRaw],
   );
 
   return (
@@ -206,26 +212,30 @@ function EventItem({
       </div>
       {expanded && (
         <div class="source-event-body">
-          <div class="source-tabs">
-            <button
-              class={`source-tab${tab === "abstract" ? " active" : ""}`}
-              onClick={() => {
-                setTab("abstract");
-              }}
-            >
-              Abstract
-            </button>
-            <button
-              class={`source-tab${tab === "raw" ? " active" : ""}`}
-              onClick={() => {
-                setTab("raw");
-                fetchRaw();
-              }}
-            >
-              Raw
-            </button>
-          </div>
-          {tab === "abstract" && <HighlightedJson text={abstractText} />}
+          {(hasRaw || loading || rawData === undefined) && (
+            <div class="source-tabs">
+              <button
+                class={`source-tab${tab === "abstract" ? " active" : ""}`}
+                onClick={() => {
+                  setTab("abstract");
+                }}
+              >
+                Abstract
+              </button>
+              <button
+                class={`source-tab${tab === "raw" ? " active" : ""}`}
+                onClick={() => {
+                  setTab("raw");
+                  fetchRaw();
+                }}
+              >
+                Raw
+              </button>
+            </div>
+          )}
+          {(tab === "abstract" || (!hasRaw && !loading)) && (
+            <HighlightedJson text={abstractText} />
+          )}
           {tab === "raw" && loading && (
             <div class="source-loading">Loading...</div>
           )}
