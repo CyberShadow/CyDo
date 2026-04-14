@@ -279,6 +279,8 @@ struct ItemCompletedParams
 		@JSONOptional string command;          // original command string
 		@JSONOptional string cwd;              // working directory
 		@JSONOptional string type;             // item type (e.g. "commandExecution")
+		@JSONOptional JSONFragment query;      // webSearch: search query
+		@JSONOptional JSONFragment action;     // webSearch: {type, query, queries}
 		@JSONOptional string processId;        // process ID for commandExecution
 		@JSONOptional JSONFragment commandActions; // commandExecution actions log
 		@JSONOptional JSONFragment result;     // mcpToolCall/webSearch result payload
@@ -2008,6 +2010,11 @@ class CodexSession : AgentSession
 		// Forward remaining Codex extras (processId, commandActions, type, etc.) to extras.
 		ev.extras = extrasToFragment(params.item.extras);
 
+		// For webSearch items, propagate the completed query into the input field
+		// so the frontend subtitle updates from the empty started-query to the real query.
+		if (params.item.type == "webSearch" && params.item.query.json !is null)
+			ev.input = JSONFragment(`{"query":` ~ params.item.query.json ~ `}`);
+
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 
@@ -2048,15 +2055,50 @@ class CodexSession : AgentSession
 					catch (Exception) {}
 				}
 
-				// For webSearch items, serialize the full item as result content.
-				// For all other tool_use items (commandExecution, mcpToolCall, etc.),
-				// use an empty string — the frontend expects a string or array, not an object.
 				if (!hasResultContent)
 				{
 					if (itemTypeName == "webSearch")
 					{
-						auto itemJson = toJson(params.item);
-						resEv.content = JSONFragment(`[{"type":"text","text":` ~ (itemJson.length > 2 ? toJson(itemJson) : `""`) ~ `}]`);
+						// Format Codex webSearch result into Claude-compatible text format
+						// so the frontend parseWebSearchResult renders it nicely.
+						import std.array : appender;
+						auto buf = appender!string;
+
+						// Extract queries array from action: {type, query, queries: [...]}
+						if (params.item.action.json !is null)
+						{
+							@JSONPartial
+							static struct WebSearchAction
+							{
+								@JSONOptional string[] queries;
+							}
+							try
+							{
+								auto act = jsonParse!WebSearchAction(params.item.action.json);
+								foreach (q; act.queries)
+								{
+									if (buf.data.length > 0)
+										buf ~= "\n";
+									buf ~= `Web search results for query: "` ~ q ~ `"`;
+								}
+							}
+							catch (Exception) {}
+						}
+
+						// Fallback to main query if no queries extracted from action.
+						if (buf.data.length == 0 && params.item.query.json !is null)
+						{
+							try
+							{
+								auto q = jsonParse!string(params.item.query.json);
+								if (q.length > 0)
+									buf ~= `Web search results for query: "` ~ q ~ `"`;
+							}
+							catch (Exception) {}
+						}
+
+						auto text = buf.data.length > 0 ? buf.data : "";
+						resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(text) ~ `}]`);
 					}
 					else
 						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
@@ -2354,6 +2396,56 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 		}
 		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
 			inputJson);
+	}
+	else if (ptype == "web_search_call")
+	{
+		// webSearch items in rollout: query and queries are inside action.
+		string mainQuery;
+		string[] queries;
+		if (probe.payload.action.json !is null)
+		{
+			@JSONPartial
+			static struct WSAction
+			{
+				@JSONOptional string query;
+				@JSONOptional string[] queries;
+			}
+			try
+			{
+				auto act = jsonParse!WSAction(probe.payload.action.json);
+				mainQuery = act.query;
+				queries = act.queries;
+			}
+			catch (Exception) {}
+		}
+
+		string inputJson = `{}`;
+		if (mainQuery.length > 0)
+			inputJson = `{"query":` ~ toJson(mainQuery) ~ `}`;
+
+		// Generate a stable call_id so tool_use and tool_result share the same ID.
+		import std.uuid : randomUUID;
+		string callId = probe.payload.call_id.length > 0
+			? probe.payload.call_id : randomUUID().toString();
+		results = translateRolloutToolUse(callId, "WebSearch", inputJson);
+
+		// Emit result with Claude-compatible formatted queries.
+		import std.array : appender;
+		auto buf = appender!string;
+		foreach (q; queries)
+		{
+			if (buf.data.length > 0)
+				buf ~= "\n";
+			buf ~= `Web search results for query: "` ~ q ~ `"`;
+		}
+		if (buf.data.length == 0 && mainQuery.length > 0)
+			buf ~= `Web search results for query: "` ~ mainQuery ~ `"`;
+
+		if (buf.data.length > 0)
+		{
+			auto r = translateRolloutToolResult(callId, toJson(buf.data));
+			if (r !is null) results ~= r;
+		}
 	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")
