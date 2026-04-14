@@ -1626,6 +1626,27 @@ body,
   opacity: 0.5;
 }
 
+/* Partial source view gap indicator */
+.source-gap {
+  display: flex;
+  padding: 4px 0;
+  color: var(--text-dim);
+  opacity: 0.6;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  margin: 2px 0;
+}
+
+.source-gap-label {
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* Added line highlight in partial source view */
+.source-line-added {
+  background: rgba(76, 175, 80, 0.08);
+}
+
 /* File tree items */
 .file-tree-item {
   padding: 2px 8px 2px calc(8px + var(--depth, 0) * 16px);

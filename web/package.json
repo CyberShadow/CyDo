@@ -6,7 +6,9 @@
     "build": "vite build",
     "dev": "vite",
     "fmt": "prettier --write src/",
-    "fmt:check": "prettier --check src/"
+    "fmt:check": "prettier --check src/",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@incremark/core": "^0.3.10",
@@ -27,6 +29,7 @@
     "prettier": "^3.8.1",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.57.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.3"
   }
 }

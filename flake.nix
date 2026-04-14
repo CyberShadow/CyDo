@@ -62,6 +62,7 @@
           ./web/package-lock.json
           ./web/tsconfig.json
           ./web/vite.config.ts
+          ./web/vitest.config.ts
           ./web/eslint.config.mjs
           ./web/.prettierignore
         ];
@@ -158,7 +159,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-ogpHx/5ZDEMFBsS9h9H7XUMmvx2ThzvvsQlti3d6Wd0=";
+            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
 
             installPhase = ''
               runHook preInstall
@@ -738,7 +739,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-ogpHx/5ZDEMFBsS9h9H7XUMmvx2ThzvvsQlti3d6Wd0=";
+            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
 
             buildPhase = ''
               runHook preBuild
@@ -755,7 +756,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-ogpHx/5ZDEMFBsS9h9H7XUMmvx2ThzvvsQlti3d6Wd0=";
+            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
 
             buildPhase = ''
               runHook preBuild
@@ -772,7 +773,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-ogpHx/5ZDEMFBsS9h9H7XUMmvx2ThzvvsQlti3d6Wd0=";
+            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
 
             buildPhase = ''
               runHook preBuild
@@ -799,6 +800,23 @@ EOF
                 echo "Protocol types are stale — run \`npm run generate\` in web/ and commit the result."
                 exit 1
               fi
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
+          frontend-unit-tests = pkgs.buildNpmPackage {
+            pname = "cydo-frontend-unit-tests";
+            version = "0.1.0";
+            src = frontendSrc;
+            nodejs = pkgs.nodejs_22;
+            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+
+            buildPhase = ''
+              runHook preBuild
+              npx vitest run
               runHook postBuild
             '';
 

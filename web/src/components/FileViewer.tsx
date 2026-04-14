@@ -1,3 +1,4 @@
+import * as preact from "preact";
 import { Fragment } from "preact";
 import type { CSSProperties, PointerEventHandler } from "preact";
 import { memo } from "preact/compat";
@@ -7,8 +8,9 @@ import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import type { ThemedToken } from "../highlight";
-import { DiffView, PatchView } from "./ToolCall";
+import { DiffView, PatchView, parsePatchHunksFromText } from "./ToolCall";
 import type { PatchHunk } from "./ToolCall";
+import { composeHunks } from "../lib/composeHunks";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 
@@ -19,7 +21,8 @@ import { CopyButton } from "./CopyButton";
 /** Resolved file content for a single edit, computed on-demand. */
 interface ResolvedEdit {
   contentBefore: string | null;
-  contentAfter: string;
+  /** null when only patch hunks available (no full content) */
+  contentAfter: string | null;
   structuredPatch?: PatchHunk[];
   isDeleted?: boolean;
 }
@@ -87,7 +90,20 @@ function resolveEditContent(
   }
   if (edit.payload?.mode === "patch_text") {
     const contentBefore = currentContent ?? originalFile;
-    if (contentBefore == null) return null;
+    if (contentBefore == null) {
+      // No original content available (e.g. Codex fileChange without originalFile).
+      // Parse the patch text into structured hunks for partial rendering.
+      const hunks = parsePatchHunksFromText(edit.payload.patchText);
+      if (hunks && hunks.length > 0) {
+        return {
+          contentBefore: null,
+          contentAfter: null,
+          structuredPatch: hunks,
+          isDeleted: edit.op === "delete",
+        };
+      }
+      return null;
+    }
     const contentAfter = applyTrackedPatch(
       contentBefore,
       edit.payload.patchText,
@@ -151,6 +167,18 @@ function toUnifiedPatch(patchText: string): string | null {
   if (!header.startsWith("*** Update File: ")) return null;
   const path = header.slice("*** Update File: ".length).trim();
   if (!path) return null;
+
+  // Parse hunks to get proper line numbers; bare @@ headers (no numbers) are
+  // not accepted by the diff library's applyPatch, so we rebuild them.
+  const hunks = parsePatchHunksFromText(patchText);
+  if (hunks && hunks.length > 0) {
+    const hunkParts = hunks.map(
+      (h) =>
+        `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n${h.lines.join("\n")}`,
+    );
+    return `--- a/${path}\n+++ b/${path}\n${hunkParts.join("\n")}\n`;
+  }
+
   const bodyLines: string[] = [];
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i]!;
@@ -187,8 +215,10 @@ function resolveFileContent(
     resolved.set(i, r);
     if (edit.status !== "applied") continue;
     hasApplied = true;
-    if (originalContent == null) originalContent = r.contentBefore ?? "";
-    currentContent = r.contentAfter;
+    if (r.contentAfter != null) {
+      if (originalContent == null) originalContent = r.contentBefore ?? "";
+      currentContent = r.contentAfter;
+    }
     isDeleted = !!r.isDeleted;
     deletedContent = r.isDeleted ? (r.contentBefore ?? "") : null;
   }
@@ -197,8 +227,10 @@ function resolveFileContent(
     for (let i = file.edits.length - 1; i >= 0; i--) {
       const r = resolved.get(i);
       if (!r) continue;
-      currentContent = r.contentAfter;
-      if (originalContent == null) originalContent = r.contentBefore ?? "";
+      if (r.contentAfter != null) {
+        currentContent = r.contentAfter;
+        if (originalContent == null) originalContent = r.contentBefore ?? "";
+      }
       isDeleted = !!r.isDeleted;
       deletedContent = r.isDeleted ? (r.contentBefore ?? "") : null;
       break;
@@ -244,6 +276,21 @@ function computeDiffstat(
     added: newLines.length - kept,
     removed: oldLines.length - kept,
   };
+}
+
+function computeDiffstatFromHunks(hunks: PatchHunk[]): {
+  added: number;
+  removed: number;
+} {
+  let added = 0;
+  let removed = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line[0] === "+") added++;
+      else if (line[0] === "-") removed++;
+    }
+  }
+  return { added, removed };
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +498,113 @@ function CumulativeDiff({
   return <PatchView hunks={patch.hunks as PatchHunk[]} filePath={filePath} />;
 }
 
+function PartialSourceView({
+  hunks,
+  filePath,
+}: {
+  hunks: PatchHunk[];
+  filePath: string;
+}) {
+  // Extract the "new" side content from all hunks for syntax highlighting.
+  const newLines: string[] = [];
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      const prefix = line[0];
+      if (prefix === " " || prefix === "+") {
+        newLines.push(line.slice(1));
+      }
+    }
+  }
+  const newText = newLines.join("\n");
+  const lang = langFromPath(filePath);
+  const tokenLines = useHighlight(newText, lang);
+
+  // Compute max line number for gutter width
+  let maxLineNum = 0;
+  for (const hunk of hunks) {
+    maxLineNum = Math.max(maxLineNum, hunk.newStart + hunk.newLines);
+  }
+  const gutterWidth = `${String(maxLineNum).length}ch`;
+
+  const elements: preact.JSX.Element[] = [];
+  let tokenIdx = 0;
+  let prevHunkEnd = 0; // track end of previous hunk to detect gaps
+
+  for (let hi = 0; hi < hunks.length; hi++) {
+    const hunk = hunks[hi]!;
+
+    // Gap indicator between non-contiguous hunks
+    if (hi > 0 && hunk.newStart > prevHunkEnd + 1) {
+      const gapStart = prevHunkEnd + 1;
+      const gapEnd = hunk.newStart - 1;
+      elements.push(
+        <div key={`gap-${hi}`} class="source-gap">
+          <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+            {gapStart === gapEnd ? `${gapStart}` : `${gapStart}-${gapEnd}`}
+          </span>
+          <span class="source-gap-label">
+            ⋮ {gapEnd - gapStart + 1} lines not available
+          </span>
+        </div>,
+      );
+    }
+
+    // Render hunk lines (new side only: context + added)
+    let lineNum = hunk.newStart;
+    for (const line of hunk.lines) {
+      const prefix = line[0];
+      if (prefix === "-") continue; // skip removed lines in source view
+
+      const isAdded = prefix === "+";
+      const idx = tokenIdx++;
+      const num = lineNum++;
+      elements.push(
+        <div
+          key={`${hi}-${num}`}
+          class={`source-line${isAdded ? " source-line-added" : ""}`}
+        >
+          <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+            {num}
+          </span>
+          {tokenLines?.[idx] ? renderTokens(tokenLines[idx]) : line.slice(1)}
+        </div>,
+      );
+    }
+
+    prevHunkEnd = hunk.newStart + hunk.newLines - 1;
+  }
+
+  // Gap indicator if first hunk doesn't start at line 1
+  if (hunks.length > 0 && hunks[0]!.newStart > 1) {
+    elements.unshift(
+      <div key="gap-start" class="source-gap">
+        <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+          1-{hunks[0]!.newStart - 1}
+        </span>
+        <span class="source-gap-label">
+          ⋮ {hunks[0]!.newStart - 1} lines not available
+        </span>
+      </div>,
+    );
+  }
+
+  return (
+    <div class="code-pre-wrap">
+      <pre class="file-viewer-source">{elements}</pre>
+    </div>
+  );
+}
+
+function CumulativeHunkView({
+  hunks,
+  filePath,
+}: {
+  hunks: PatchHunk[];
+  filePath: string;
+}) {
+  return <PatchView hunks={hunks} filePath={filePath} />;
+}
+
 const ContentViewer = memo(function ContentViewer({
   filePath,
   currentContent,
@@ -458,6 +612,7 @@ const ContentViewer = memo(function ContentViewer({
   resolvedEdit,
   diffEdit,
   cumulativeContent,
+  cumulativeHunks,
   isDeleted,
   deletedContent,
   viewMode,
@@ -471,21 +626,27 @@ const ContentViewer = memo(function ContentViewer({
   resolvedEdit: ResolvedEdit | null;
   /** Resolved content for diff view — falls back to last edit when none selected. */
   diffEdit: ResolvedEdit | null;
-  /** Content after applying edits up to and including the selected one (for cumulative diff). */
-  cumulativeContent: string;
+  /** Content after applying edits up to and including the selected one (null when only hunks available). */
+  cumulativeContent: string | null;
+  /** Merged cumulative hunks when full content unavailable. */
+  cumulativeHunks: PatchHunk[] | null;
   isDeleted: boolean;
   deletedContent: string | null;
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
 }) {
   const isMarkdown = /\.(md|mdx)$/i.test(filePath);
-  const content = resolvedEdit
+  const content: string | null = resolvedEdit
     ? resolvedEdit.isDeleted
       ? (resolvedEdit.contentBefore ?? "")
       : resolvedEdit.contentAfter
     : isDeleted
       ? (deletedContent ?? originalContent)
       : currentContent;
+
+  // Hunks for partial rendering when full content unavailable
+  const partialHunks =
+    content == null ? (resolvedEdit?.structuredPatch ?? null) : null;
 
   return (
     <div class="content-viewer">
@@ -529,8 +690,16 @@ const ContentViewer = memo(function ContentViewer({
         {(resolvedEdit?.isDeleted || (!resolvedEdit && isDeleted)) && (
           <div class="file-viewer-empty">File deleted in this change.</div>
         )}
-        {viewMode === "source" && (
+        {viewMode === "source" && content != null && (
           <SourceView content={content} filePath={filePath} />
+        )}
+        {viewMode === "source" && content == null && partialHunks && (
+          <PartialSourceView hunks={partialHunks} filePath={filePath} />
+        )}
+        {viewMode === "source" && content == null && !partialHunks && (
+          <div class="file-viewer-empty">
+            Source content not available for this edit.
+          </div>
         )}
         {viewMode === "diff" && diffEdit?.structuredPatch?.length ? (
           <PatchView hunks={diffEdit.structuredPatch} filePath={filePath} />
@@ -539,7 +708,7 @@ const ContentViewer = memo(function ContentViewer({
           diffEdit && (
             <DiffView
               oldStr={diffEdit.contentBefore ?? ""}
-              newStr={diffEdit.contentAfter}
+              newStr={diffEdit.contentAfter ?? ""}
               filePath={filePath}
             />
           )
@@ -547,18 +716,33 @@ const ContentViewer = memo(function ContentViewer({
         {viewMode === "diff" && !diffEdit && (
           <div class="file-viewer-empty">No diff available for this edit.</div>
         )}
-        {viewMode === "cumulative" && (
+        {viewMode === "cumulative" && cumulativeContent != null && (
           <CumulativeDiff
             oldStr={originalContent}
             newStr={cumulativeContent}
             filePath={filePath}
           />
         )}
-        {viewMode === "rendered" && isMarkdown && (
+        {viewMode === "cumulative" &&
+          cumulativeContent == null &&
+          cumulativeHunks && (
+            <CumulativeHunkView hunks={cumulativeHunks} filePath={filePath} />
+          )}
+        {viewMode === "cumulative" &&
+          cumulativeContent == null &&
+          !cumulativeHunks && (
+            <div class="file-viewer-empty">
+              Cumulative diff not available — original file content unknown.
+            </div>
+          )}
+        {viewMode === "rendered" && isMarkdown && content != null && (
           <Markdown text={content} class="text-content" />
         )}
-        {viewMode === "rendered" && !isMarkdown && (
+        {viewMode === "rendered" && !isMarkdown && content != null && (
           <SourceView content={content} filePath={filePath} />
+        )}
+        {viewMode === "rendered" && content == null && partialHunks && (
+          <PartialSourceView hunks={partialHunks} filePath={filePath} />
         )}
       </div>
     </div>
@@ -588,7 +772,11 @@ function EditHistory({
         const r = resolvedEdits.get(i);
         let diffstat: { added: number; removed: number } | null = null;
         if (r) {
-          diffstat = computeDiffstat(r.contentBefore ?? "", r.contentAfter);
+          if (r.contentBefore != null && r.contentAfter != null) {
+            diffstat = computeDiffstat(r.contentBefore, r.contentAfter);
+          } else if (r.structuredPatch?.length) {
+            diffstat = computeDiffstatFromHunks(r.structuredPatch);
+          }
         }
         const label =
           edit.op === "delete"
@@ -677,8 +865,29 @@ export function FileViewer({
       }
     }
   }
-  const cumulativeContent =
-    selectedResolvedEdit?.contentAfter ?? resolved?.currentContent ?? "";
+  // cumulativeContent: null when full content is unavailable (triggers hunk-based view)
+  const cumulativeContent: string | null =
+    selectedResolvedEdit != null
+      ? selectedResolvedEdit.contentAfter
+      : resolved?.currentContent || null;
+
+  // Build cumulative hunks from all resolved edits' structuredPatch arrays.
+  // Only computed when cumulativeContent is unavailable.
+  const cumulativeHunks = useMemo(() => {
+    if (!file || !resolved) return null;
+    if (cumulativeContent != null) return null;
+
+    let cumulative: PatchHunk[] = [];
+    const endIdx = selectedEditIndex ?? file.edits.length - 1;
+    for (let i = 0; i <= endIdx; i++) {
+      const r = resolved.resolved.get(i);
+      if (!r?.structuredPatch?.length) continue;
+      if (file.edits[i]?.status === "cancelled") continue;
+      cumulative = composeHunks(cumulative, r.structuredPatch);
+    }
+    if (cumulative.length === 0) return null;
+    return cumulative;
+  }, [file, resolved, cumulativeContent, selectedEditIndex]);
 
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
@@ -736,6 +945,7 @@ export function FileViewer({
               resolvedEdit={selectedResolvedEdit}
               diffEdit={selectedResolvedEdit ?? latestResolvedEdit}
               cumulativeContent={cumulativeContent}
+              cumulativeHunks={cumulativeHunks}
               viewMode={viewMode}
               isDeleted={resolved.isDeleted}
               deletedContent={resolved.deletedContent}

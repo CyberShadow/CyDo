@@ -942,7 +942,7 @@ function looksLikePatchText(text: string): boolean {
   );
 }
 
-function parsePatchHunksFromText(text: string): PatchHunk[] | null {
+export function parsePatchHunksFromText(text: string): PatchHunk[] | null {
   const lines = text.split("\n");
   const hunks: PatchHunk[] = [];
   let sawMalformedLine = false;
