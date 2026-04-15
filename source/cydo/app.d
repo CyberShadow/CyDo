@@ -1061,11 +1061,24 @@ class App : ToolsBackend
 
 		// Unified async dispatch — all tools return Promise!McpResult
 		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
+			import std.conv : to;
 			if (!conn.connected)
 			{
 				// MCP delivery failed — trigger fallback delivery for Task tool calls.
 				onMcpDeliveryFailed(call.tid);
 				return;
+			}
+			// If the tool set a pendingContinuation (SwitchMode/Handoff), interrupt
+			// the agent instead of returning the result — force an immediate stop.
+			auto parsedTid = to!int(call.tid);
+			if (auto tdp = parsedTid in tasks)
+			{
+				if (tdp.pendingContinuation.length > 0)
+				{
+					tdp.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+					tdp.session.interrupt();
+					return;
+				}
 			}
 			auto resultJson = toJson(McpContentResult(
 				[McpContentItem("text", result.text)],
