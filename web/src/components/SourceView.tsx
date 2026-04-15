@@ -212,32 +212,31 @@ function EventItem({
       </div>
       {expanded && (
         <div class="source-event-body">
-          {(hasRaw || loading || rawData === undefined) && (
-            <div class="source-tabs">
-              <button
-                class={`source-tab${tab === "abstract" ? " active" : ""}`}
-                onClick={() => {
-                  setTab("abstract");
-                }}
-              >
-                Abstract
-              </button>
-              <button
-                class={`source-tab${tab === "raw" ? " active" : ""}`}
-                onClick={() => {
-                  setTab("raw");
-                  fetchRaw();
-                }}
-              >
-                Raw
-              </button>
-            </div>
-          )}
-          {(tab === "abstract" || (!hasRaw && !loading)) && (
-            <HighlightedJson text={abstractText} />
-          )}
+          <div class="source-tabs">
+            <button
+              class={`source-tab${tab === "abstract" ? " active" : ""}`}
+              onClick={() => {
+                setTab("abstract");
+              }}
+            >
+              Abstract
+            </button>
+            <button
+              class={`source-tab${tab === "raw" ? " active" : ""}`}
+              onClick={() => {
+                setTab("raw");
+                fetchRaw();
+              }}
+            >
+              Raw
+            </button>
+          </div>
+          {tab === "abstract" && <HighlightedJson text={abstractText} />}
           {tab === "raw" && loading && (
             <div class="source-loading">Loading...</div>
+          )}
+          {tab === "raw" && !loading && !hasRaw && (
+            <div class="source-loading">No raw source available</div>
           )}
           {tab === "raw" && rawText && (
             <EditableRawJson text={rawText} seq={seq} onEditRaw={onEditRaw} />

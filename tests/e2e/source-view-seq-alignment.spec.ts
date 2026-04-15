@@ -15,8 +15,6 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
   agentType,
 }) => {
   test.skip(agentType !== "claude", "stream events are Claude-protocol only");
-  // Known bug: seq desync from mergeStreamingDelta. Remove test.fail() when fixed.
-  test.fail();
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);

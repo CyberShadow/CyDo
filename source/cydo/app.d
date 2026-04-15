@@ -3185,6 +3185,7 @@ class App : ToolsBackend
 		{
 			ensureHistoryLoaded(tid);
 			tasks[tid].history ~= data;
+			tasks[tid].rawSource ~= cast(string) null;
 		}
 		sendToSubscribed(tid, data);
 
