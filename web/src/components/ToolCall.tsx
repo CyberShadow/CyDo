@@ -1671,40 +1671,68 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
   return iterations;
 }
 
-function WebSearchResult({ content }: { content: string }) {
-  const iterations = parseWebSearchResult(content);
-  if (!iterations) {
+function WebSearchResult({
+  content,
+  toolResult,
+}: {
+  content: string | null;
+  toolResult?: Record<string, unknown> | null;
+}) {
+  // Try Claude text format first
+  const iterations = content ? parseWebSearchResult(content) : null;
+  if (iterations) {
     return (
-      <CodePre class="tool-result" copyText={content}>
-        {content}
-      </CodePre>
+      <div class="tool-result-blocks">
+        {iterations.map((iter, i) => (
+          <div class="web-search-iteration" key={i}>
+            {iter.query && <div class="web-search-query">"{iter.query}"</div>}
+            {iter.links.length > 0 && (
+              <div class="web-search-links">
+                {iter.links.map((link, j) => (
+                  <a
+                    key={j}
+                    class="web-search-link"
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {link.title}
+                  </a>
+                ))}
+              </div>
+            )}
+            {iter.body && <Markdown text={iter.body} class="text-content" />}
+          </div>
+        ))}
+      </div>
     );
   }
 
-  return (
-    <div class="tool-result-blocks">
-      {iterations.map((iter, i) => (
-        <div class="web-search-iteration" key={i}>
-          {iter.query && <div class="web-search-query">"{iter.query}"</div>}
-          {iter.links.length > 0 && (
-            <div class="web-search-links">
-              {iter.links.map((link, j) => (
-                <a
-                  key={j}
-                  class="web-search-link"
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {link.title}
-                </a>
-              ))}
+  // Codex structured format: toolResult has { query, queries }
+  if (toolResult) {
+    const queries: string[] = Array.isArray(toolResult.queries)
+      ? (toolResult.queries as string[])
+      : typeof toolResult.query === "string"
+        ? [toolResult.query]
+        : [];
+    if (queries.length > 0) {
+      return (
+        <div class="tool-result-blocks">
+          {queries.map((q, i) => (
+            <div class="web-search-iteration" key={i}>
+              <div class="web-search-query">"{q}"</div>
             </div>
-          )}
-          {iter.body && <Markdown text={iter.body} class="text-content" />}
+          ))}
         </div>
-      ))}
-    </div>
+      );
+    }
+  }
+
+  // Fallback: raw text
+  return (
+    <CodePre class="tool-result" copyText={content ?? ""}>
+      {content ?? ""}
+    </CodePre>
   );
 }
 
@@ -1836,7 +1864,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "appliedOffset",
   ]),
   TodoWrite: new Set(["oldTodos", "newTodos"]),
-  WebSearch: new Set(["query", "results", "durationSeconds"]),
+  WebSearch: new Set(["query", "queries", "results", "durationSeconds"]),
   WebFetch: new Set([
     "url",
     "code",
@@ -2712,7 +2740,11 @@ export const ToolCall = memo(
     const useExecCommandResult =
       name === "exec_command" && resultText != null && !result!.isError;
     const useWebSearchResult =
-      name === "WebSearch" && resultText != null && !result!.isError;
+      name === "WebSearch" &&
+      result != null &&
+      !result.isError &&
+      (resultText != null ||
+        (result.toolResult != null && typeof result.toolResult === "object"));
     const useWebFetchResult =
       name === "WebFetch" && resultText != null && !result!.isError;
     const useTaskOutputResult =
@@ -2945,7 +2977,15 @@ export const ToolCall = memo(
                   ) : useReadHighlight ? (
                     <ReadResult content={resultText} filePath={filePath} />
                   ) : useWebSearchResult ? (
-                    <WebSearchResult content={resultText} />
+                    <WebSearchResult
+                      content={resultText}
+                      toolResult={
+                        result.toolResult != null &&
+                        typeof result.toolResult === "object"
+                          ? (result.toolResult as Record<string, unknown>)
+                          : null
+                      }
+                    />
                   ) : useWebFetchResult ? (
                     <div class="tool-result-blocks">
                       <Markdown text={resultText} class="text-content" />

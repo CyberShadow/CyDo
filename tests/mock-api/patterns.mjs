@@ -315,7 +315,7 @@ export function matchPattern(userText) {
   if (match) return { type: "builtin_tool", name: "view", input: { path: match[1] } };
 
   // "web search <query>" — trigger a web_search_call response
-  match = userText.match(/^web search (.+)$/im);
+  match = userText.match(/web search (.+)/i);
   if (match) return { type: "web_search", query: match[1].trim() };
 
   // Default: echo back

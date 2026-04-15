@@ -2059,46 +2059,41 @@ class CodexSession : AgentSession
 				{
 					if (itemTypeName == "webSearch")
 					{
-						// Format Codex webSearch result into Claude-compatible text format
-						// so the frontend parseWebSearchResult renders it nicely.
-						import std.array : appender;
-						auto buf = appender!string;
+						// Pass Codex web search data as structured tool_result for the frontend
+						// to interpret. Set content to empty text (required field).
+						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 
-						// Extract queries array from action: {type, query, queries: [...]}
+						import std.array : appender;
+						auto tr = appender!string;
+						tr ~= `{`;
+
+						// Include the main query
+						if (params.item.query.json !is null)
+							tr ~= `"query":` ~ params.item.query.json;
+
+						// Include the queries array from action
 						if (params.item.action.json !is null)
 						{
 							@JSONPartial
 							static struct WebSearchAction
 							{
-								@JSONOptional string[] queries;
+								@JSONOptional JSONFragment queries;  // preserve raw JSON
 							}
 							try
 							{
 								auto act = jsonParse!WebSearchAction(params.item.action.json);
-								foreach (q; act.queries)
+								if (act.queries.json !is null)
 								{
-									if (buf.data.length > 0)
-										buf ~= "\n";
-									buf ~= `Web search results for query: "` ~ q ~ `"`;
+									if (params.item.query.json !is null)
+										tr ~= `,`;
+									tr ~= `"queries":` ~ act.queries.json;
 								}
 							}
 							catch (Exception) {}
 						}
 
-						// Fallback to main query if no queries extracted from action.
-						if (buf.data.length == 0 && params.item.query.json !is null)
-						{
-							try
-							{
-								auto q = jsonParse!string(params.item.query.json);
-								if (q.length > 0)
-									buf ~= `Web search results for query: "` ~ q ~ `"`;
-							}
-							catch (Exception) {}
-						}
-
-						auto text = buf.data.length > 0 ? buf.data : "";
-						resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(text) ~ `}]`);
+						tr ~= `}`;
+						resEv.tool_result = JSONFragment(tr.data);
 					}
 					else
 						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
@@ -2429,23 +2424,34 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 			? probe.payload.call_id : randomUUID().toString();
 		results = translateRolloutToolUse(callId, "WebSearch", inputJson);
 
-		// Emit result with Claude-compatible formatted queries.
+		// Build structured tool_result instead of Claude-formatted text
 		import std.array : appender;
-		auto buf = appender!string;
-		foreach (q; queries)
+		auto tr = appender!string;
+		tr ~= `{`;
+		if (mainQuery.length > 0)
+			tr ~= `"query":` ~ toJson(mainQuery);
+		if (queries.length > 0)
 		{
-			if (buf.data.length > 0)
-				buf ~= "\n";
-			buf ~= `Web search results for query: "` ~ q ~ `"`;
+			if (mainQuery.length > 0)
+				tr ~= `,`;
+			tr ~= `"queries":[`;
+			foreach (i, q; queries)
+			{
+				if (i > 0)
+					tr ~= `,`;
+				tr ~= toJson(q);
+			}
+			tr ~= `]`;
 		}
-		if (buf.data.length == 0 && mainQuery.length > 0)
-			buf ~= `Web search results for query: "` ~ mainQuery ~ `"`;
+		tr ~= `}`;
 
-		if (buf.data.length > 0)
-		{
-			auto r = translateRolloutToolResult(callId, toJson(buf.data));
-			if (r !is null) results ~= r;
-		}
+		// Emit item/result with empty content and structured tool_result
+		import cydo.agent.protocol : ItemResultEvent;
+		ItemResultEvent resEv;
+		resEv.item_id = callId;
+		resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
+		resEv.tool_result = JSONFragment(tr.data);
+		results ~= toJson(resEv);
 	}
 	else if (ptype == "function_call_output" || ptype == "custom_tool_call_output"
 		|| ptype == "mcp_tool_call_output")
