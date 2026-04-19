@@ -1609,7 +1609,9 @@ class App : ToolsBackend
 				auto msg = "[Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")]\n\n"
 					~ message
 					~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
-				sendTaskMessage(childTid, [ContentBlock("text", msg)]);
+				auto followUpMeta = buildCydoMeta("Follow-up from parent",
+					["message": message], "message", true);
+				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
 
 			// When child calls Answer(qid, ...), the promise is fulfilled directly.
