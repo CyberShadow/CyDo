@@ -2929,7 +2929,6 @@ class App : ToolsBackend
 					}
 					// +1: include the target turn itself
 					auto numTurns = cast(uint)(userMsgCount + 1);
-					jsonlTracker.clearUndoJsonl(tid);
 
 					ca.rollbackThread(td.agentSessionId, numTurns, td.launch, td.workspace)
 						.then((r) {
@@ -2941,6 +2940,8 @@ class App : ToolsBackend
 								return;
 							}
 							// Rollback succeeded — Codex appended a ThreadRolledBack marker.
+							// Clear the undo snapshot (no longer needed for this undo).
+							jsonlTracker.clearUndoJsonl(tid);
 							// Reload history (marker-aware reading skips rolled-back turns).
 							auto td2 = &tasks[tid];
 							td2.history = DataVec();
