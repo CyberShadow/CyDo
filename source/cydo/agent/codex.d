@@ -1177,10 +1177,10 @@ class CodexAgent : Agent
 			return *p;
 		switch (modelClass)
 		{
-			case "small":  return "gpt-5-nano";
+			case "small":  return "gpt-5.4-mini";
 			case "medium": return "gpt-5.3-codex";
 			case "large":  return "gpt-5.4";
-			default:       return "gpt-5-nano";
+			default:       return "gpt-5.4-mini";
 		}
 	}
 
