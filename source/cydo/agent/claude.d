@@ -9,6 +9,7 @@ import std.logger : errorf, tracef, warningf;
 
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
+import ae.utils.time.types : AbsTime;
 
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol;
@@ -682,6 +683,7 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
+	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	private string executablePath_;
 
 	this(string executablePath, string resumeSessionId = null, string[] cmdPrefix = null,
@@ -825,12 +827,16 @@ class ClaudeCodeSession : AgentSession
 
 	private void emitEvent(TranslatedEvent ev)
 	{
+		if (ev.ts == AbsTime.init)
+			ev.ts = lineReceiptTs_;
 		if (outputHandler && ev.translated.length > 0)
 			outputHandler(ev);
 	}
 
 	private void translateLiveLine(string rawLine)
 	{
+		import std.datetime : Clock;
+		lineReceiptTs_ = AbsTime(Clock.currStdTime);
 		import std.algorithm : canFind;
 
 		// Queue operations must pass through raw so broadcastTask can intercept them.
@@ -1482,6 +1488,8 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 /// Returns zero or more agnostic event pairs.
 private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 {
+	import cydo.agent.protocol : parseIso8601Timestamp;
+
 	@JSONPartial static struct TypeProbe { string type; string subtype; }
 	TypeProbe probe;
 	try
@@ -1489,18 +1497,32 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 	catch (Exception)
 	{ return [TranslatedEvent(rawLine, rawLine)]; }
 
+	// Probe timestamp from the JSONL line (present on history lines).
+	@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
+	AbsTime ts;
+	try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(rawLine).timestamp); }
+	catch (Exception) {}
+
+	TranslatedEvent[] result;
 	switch (probe.type)
 	{
 		case "assistant":
-			return translateAssistantHistory(rawLine);
+			result = translateAssistantHistory(rawLine);
+			break;
 		case "user":
-			return normalizeUserHistory(rawLine);
+			result = normalizeUserHistory(rawLine);
+			break;
 		case "stream_event":
 			return []; // not stored in JSONL history
 		default:
 			auto t = translateClaudeEvent(rawLine);
-			return t.translated !is null ? [t] : [];
+			result = t.translated !is null ? [t] : [];
+			break;
 	}
+	foreach (ref ev; result)
+		if (ev.ts == AbsTime.init)
+			ev.ts = ts;
+	return result;
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.

@@ -568,8 +568,18 @@ long stdTimeToUnixMillis(long stdTime)
 	return (stdTime - unixEpochStdTime) / 10_000;
 }
 
+/// Extract the "ts" field from a task envelope JSON string.
+/// Returns 0 if not present (envelope predates timestamp support).
+long extractTsFromEnvelope(string envelope)
+{
+	import ae.utils.json : JSONOptional, JSONPartial, jsonParse;
+	@JSONPartial static struct TsProbe { @JSONOptional long ts; }
+	try { return jsonParse!TsProbe(envelope).ts; }
+	catch (Exception) { return 0; }
+}
+
 /// Extract the "event" field from a task envelope JSON string.
-/// Envelopes have the form: {"tid":N,"event":{...}}
+/// Envelopes have the form: {"tid":N,"ts":N,"event":{...}}
 string extractEventFromEnvelope(string envelope)
 {
 	import std.string : indexOf;

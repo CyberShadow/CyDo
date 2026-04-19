@@ -804,6 +804,7 @@ function insertBeforeStreaming(
 function getOrCreateStreamingMessage(
   s: SessionState,
   parentToolUseId?: string,
+  ts?: number,
 ): {
   messages: DisplayMessage[];
   msgIdx: number;
@@ -830,6 +831,7 @@ function getOrCreateStreamingMessage(
       streaming: true,
       nextCreationOrder: 0,
       parentToolUseId,
+      ts,
     };
     messages.push(placeholder);
     return { messages, msgIdx: messages.length - 1 };
@@ -849,6 +851,7 @@ function getOrCreateStreamingMessage(
     blockIds: [],
     streaming: true,
     nextCreationOrder: 0,
+    ts,
   };
   messages.push(placeholder);
   return { messages, msgIdx: messages.length - 1 };
@@ -872,6 +875,7 @@ function reduceItemStartedUserMessage(
   s: SessionState,
   event: ItemStartedEvent,
   seq?: number,
+  ts?: number,
 ): SessionState {
   const content = event.content ?? [];
   const text = content
@@ -913,6 +917,7 @@ function reduceItemStartedUserMessage(
       rawSource: event,
       seq,
       uuid: event.uuid,
+      ts,
     };
     const messages = event.is_meta
       ? [...state.messages, echoMsg]
@@ -942,6 +947,7 @@ function reduceItemStartedUserMessage(
       seq,
       uuid: event.uuid,
       cydoMeta: pendingMsg?.cydoMeta,
+      ts,
     };
     const filtered = state.messages.filter(
       (m) => !(m.pending && m.type === "user"),
@@ -969,14 +975,16 @@ export function reduceItemStarted(
   s: SessionState,
   event: ItemStartedEvent,
   seq?: number,
+  ts?: number,
 ): SessionState {
   if (event.item_type === "user_message") {
-    return reduceItemStartedUserMessage(s, event, seq);
+    return reduceItemStartedUserMessage(s, event, seq, ts);
   }
 
   const { messages, msgIdx } = getOrCreateStreamingMessage(
     s,
     event.parent_tool_use_id,
+    ts,
   );
   const msg = messages[msgIdx]!;
 
@@ -1310,6 +1318,7 @@ export function reduceMessage(
   s: SessionState,
   msg: AgnosticEvent,
   seq?: number,
+  ts?: number,
 ): SessionState {
   switch (msg.type) {
     case "session/init":
@@ -1347,7 +1356,7 @@ export function reduceMessage(
     }
 
     case "item/started":
-      return reduceItemStarted(s, msg, seq);
+      return reduceItemStarted(s, msg, seq, ts);
 
     case "item/delta":
       return reduceItemDelta(s, msg);

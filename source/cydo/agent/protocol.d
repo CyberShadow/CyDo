@@ -1,6 +1,7 @@
 module cydo.agent.protocol;
 
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONExtras, jsonParse, toJson;
+import ae.utils.time.types : AbsTime;
 
 /// Convert a JSONExtras map to a JSONFragment wrapping it as a JSON object.
 /// Returns JSONFragment.init (null) if the extras map is empty.
@@ -308,11 +309,35 @@ string makeUnrecognizedEvent(string reason)
 	return toJson(ev);
 }
 
+/// Parse an ISO 8601 timestamp string (e.g. "2026-03-30T14:29:14.993Z") into AbsTime.
+/// Returns AbsTime.init (stdTime == 0) on failure or empty input.
+AbsTime parseIso8601Timestamp(string s) nothrow
+{
+	import ae.utils.time.parse : parseAbsTime;
+	if (s.length == 0)
+		return AbsTime.init;
+	try
+		return parseAbsTime!(`Y-m-d\TH:i:s.vP`)(s);
+	catch (Exception) {}
+	try
+		return parseAbsTime!(`Y-m-d\TH:i:sP`)(s);
+	catch (Exception) {}
+	return AbsTime.init;
+}
+
 /// A translated event paired with its raw agent source.
 struct TranslatedEvent
 {
 	string translated;  // clean agnostic-protocol JSON (no _raw)
 	string raw;         // original agent output line (null for synthetic events)
+	AbsTime ts;         // AbsTime.init (stdTime == 0) means "not available"
+
+	this(string translated, string raw, AbsTime ts = AbsTime.init) @safe nothrow
+	{
+		this.translated = translated;
+		this.raw = raw;
+		this.ts = ts;
+	}
 }
 
 
@@ -322,6 +347,7 @@ struct TranslatedEvent
 struct TaskEventEnvelope
 {
 	int tid;
+	long ts;           // AbsTime.stdTime; 0 = not available
 	JSONFragment event;
 }
 
@@ -330,6 +356,7 @@ struct TaskEventSeqEnvelope
 {
 	int tid;
 	int seq;
+	long ts;           // AbsTime.stdTime; 0 = not available
 	JSONFragment event;
 }
 

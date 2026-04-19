@@ -6,6 +6,7 @@ import std.conv : to;
 import std.format : format;
 import std.path : buildPath, dirName, expandTilde;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
+import ae.utils.time.types : AbsTime;
 import ae.utils.jsonrpc : JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
 
@@ -393,12 +394,15 @@ class CopilotAgent : Agent
 			return null;
 
 		@JSONPartial
-		static struct CpEventBase { string type; string id; }
+		static struct CpEventBase { string type; string id; @JSONOptional string timestamp; }
 
 		CpEventBase base;
 		try base = jsonParse!CpEventBase(line);
 		catch (Exception)
 			return null;
+
+		import cydo.agent.protocol : parseIso8601Timestamp;
+		auto ts = parseIso8601Timestamp(base.timestamp);
 
 		string[] evStrings;
 		switch (base.type)
@@ -548,7 +552,7 @@ class CopilotAgent : Agent
 		// Wrap each translated string with the original JSONL line as raw source.
 		TranslatedEvent[] events;
 		foreach (e; evStrings)
-			events ~= TranslatedEvent(e, line);
+			events ~= TranslatedEvent(e, line, ts);
 		return events;
 	}
 
@@ -803,6 +807,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private string lastResultText;  // last completed text content, for turn/result
 	private string currentRawJson_; // raw event data.json from handleEvent, for _raw injection
+	private AbsTime currentEventTs_; // timestamp of the current live event
 	private string currentSubagentParent_;  // toolCallId of current sub-agent parent (task tool)
 
 	private bool sessionReady_; // true after session.create/resume response
@@ -988,6 +993,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (replayMode)
 			return;
 
+		import cydo.agent.protocol : parseIso8601Timestamp;
+		currentEventTs_ = parseIso8601Timestamp(event.timestamp);
 		currentRawJson_ = event.data.json;
 		switch (event.type)
 		{
@@ -1259,7 +1266,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private void emitEvent(string translated, string rawJson = null)
 	{
 		if (outputHandler_)
-			outputHandler_(TranslatedEvent(translated, rawJson.length > 0 ? rawJson : null));
+			outputHandler_(TranslatedEvent(translated, rawJson.length > 0 ? rawJson : null, currentEventTs_));
 	}
 
 	private void handleTurnStart(JSONFragment data)

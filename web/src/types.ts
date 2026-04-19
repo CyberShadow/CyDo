@@ -93,6 +93,8 @@ export interface DisplayMessage {
   extraFields?: Record<string, unknown>;
   /** Claude Code message UUID — drives fork/undo/edit buttons. */
   uuid?: string;
+  /** Timestamp of the first event that built this message (AbsTime stdTime units). */
+  ts?: number;
   /** Metadata for system-generated user messages. Present only for messages
    *  sent by CyDo on behalf of the user (prompt templates, nudges). */
   cydoMeta?: CydoMeta;

@@ -583,13 +583,13 @@ export function useTaskManager(
   );
 
   const handleTaskMessage = useCallback(
-    (tid: number, msg: AgnosticEvent, seq?: number) => {
+    (tid: number, msg: AgnosticEvent, seq?: number, ts?: number) => {
       // Skip stale events for recently deleted draft tasks (e.g. from
       // requestHistory responses arriving after deleteDraftTask).
       if (deletedDraftTid.current === tid) return;
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const updated = reduceMessage(prev, msg, seq);
+      const updated = reduceMessage(prev, msg, seq, ts);
       liveStates.set(tid, updated);
 
       // When an agent sub-task exits and it's currently focused, switch to the
@@ -1372,7 +1372,13 @@ export function useTaskManager(
     // Buffer incoming messages and flush on rAF so that hundreds of replay
     // messages are processed in a single render pass instead of one-per-message.
     type BufferedMsg =
-      | { kind: "task"; tid: number; msg: AgnosticEvent; seq?: number }
+      | {
+          kind: "task";
+          tid: number;
+          msg: AgnosticEvent;
+          seq?: number;
+          ts?: number;
+        }
       | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
@@ -1391,7 +1397,7 @@ export function useTaskManager(
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
           handleUnconfirmedUserMessage(item.tid, item.msg);
-        else handleTaskMessage(item.tid, item.msg, item.seq);
+        else handleTaskMessage(item.tid, item.msg, item.seq, item.ts);
       }
     };
 
@@ -1453,8 +1459,8 @@ export function useTaskManager(
       }
     };
 
-    conn.onTaskMessage = (tid, msg, seq) => {
-      buffer.push({ kind: "task", tid, msg, seq });
+    conn.onTaskMessage = (tid, msg, seq, ts) => {
+      buffer.push({ kind: "task", tid, msg, seq, ts });
       scheduleFlush();
     };
     conn.onUnconfirmedUserMessage = (tid, msg) => {

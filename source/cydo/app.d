@@ -2287,6 +2287,7 @@ class App : ToolsBackend
 		// user messages that were sent but not yet flushed to JSONL at kill time.
 		if (!hasQueueOps && td.pendingSteeringTexts.length > userMsgFromJsonl)
 		{
+			import std.datetime : Clock;
 			import std.file : append, mkdirRecurse;
 			import std.path : dirName;
 			import ae.utils.json : toJson;
@@ -2307,7 +2308,7 @@ class App : ToolsBackend
 				auto synEv = buildSyntheticUserEvent(text);
 				synEv.uuid = uuid;
 				td.history ~= Data(
-					toJson(TaskEventEnvelope(tid, JSONFragment(toJson(synEv)))).representation);
+					toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(synEv)))).representation);
 				td.rawSource ~= cast(string) null;
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
@@ -2338,7 +2339,8 @@ class App : ToolsBackend
 				ws.send(msg);
 				continue;
 			}
-			auto clientEnvelope = toJson(TaskEventSeqEnvelope(tid, cast(int) i, JSONFragment(event)));
+			import cydo.task : extractTsFromEnvelope;
+			auto clientEnvelope = toJson(TaskEventSeqEnvelope(tid, cast(int) i, extractTsFromEnvelope(envelope), JSONFragment(event)));
 			ws.send(Data(clientEnvelope.representation));
 		}
 
@@ -4759,6 +4761,12 @@ class App : ToolsBackend
 
 	private void broadcastTask(int tid, TranslatedEvent ev)
 	{
+		// Apply timestamp fallback: use backend receipt time if agent provided none.
+		import std.datetime : Clock;
+		import ae.utils.time.types : AbsTime;
+		if (ev.ts == AbsTime.init)
+			ev.ts = AbsTime(Clock.currStdTime);
+
 		// Extract agent session ID from translated event
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, ev.translated);
@@ -4795,7 +4803,7 @@ class App : ToolsBackend
 						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
-						auto data = Data(toJson(TaskEventEnvelope(tid, JSONFragment(toJson(steeringEv)))).representation);
+						auto data = Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(steeringEv)))).representation);
 						ensureHistoryLoaded(tid);
 						td.history ~= data;
 						td.rawSource ~= enqueueRaw.length > 0 ? enqueueRaw : null;
@@ -4811,7 +4819,7 @@ class App : ToolsBackend
 		{
 			ensureHistoryLoaded(tid);
 			// Store clean translated event in history; raw goes to rawSource.
-			auto historyData = Data(toJson(TaskEventEnvelope(tid, JSONFragment(ev.translated))).representation);
+			auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
 			// Merge adjacent item/delta events with matching item_id to keep
 			// history compact without reordering events.
 			if (!mergeStreamingDelta(tid, ev.translated, historyData))
@@ -4823,7 +4831,7 @@ class App : ToolsBackend
 
 		// Send to clients: add _seq.
 		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(tid, cast(int) seq, JSONFragment(ev.translated))).representation));
+		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime, JSONFragment(ev.translated))).representation));
 	}
 
 	/// Try to merge an item/delta into the last history entry.
@@ -4858,10 +4866,12 @@ class App : ToolsBackend
 		if (merged is null)
 			return false;
 
-		// Reconstruct envelope from merged content.
+		// Reconstruct envelope from merged content, preserving the original ts.
 		import std.json : parseJSON;
+		import cydo.task : extractTsFromEnvelope;
+		auto prevTs = extractTsFromEnvelope(cast(string)(*history)[$ - 1].unsafeContents);
 		auto mergedObj = parseJSON(merged);
-		auto canonical = toJson(TaskEventEnvelope(tid, JSONFragment(mergedObj["event"].toString())));
+		auto canonical = toJson(TaskEventEnvelope(tid, prevTs, JSONFragment(mergedObj["event"].toString())));
 		(*history)[$ - 1] = Data(canonical.representation);
 		return true;
 	}

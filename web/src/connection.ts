@@ -10,7 +10,7 @@ export class Connection {
   private disposed = false;
 
   onTaskMessage:
-    | ((tid: number, event: AgnosticEvent, seq?: number) => void)
+    | ((tid: number, event: AgnosticEvent, seq?: number, ts?: number) => void)
     | null = null;
   onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
     null;
@@ -75,7 +75,9 @@ export class Connection {
           } else if ("event" in raw) {
             const event = raw.event as AgnosticEvent;
             const seq = typeof raw.seq === "number" ? raw.seq : undefined;
-            this.onTaskMessage?.(raw.tid, event, seq);
+            const ts =
+              typeof raw.ts === "number" && raw.ts !== 0 ? raw.ts : undefined;
+            this.onTaskMessage?.(raw.tid, event, seq, ts);
           } else {
             console.warn("Unknown task envelope:", raw);
           }

@@ -12,6 +12,7 @@ import ae.net.jsonrpc.binding : JsonRpcDispatcher,
 	jsonRpcDispatcher, RPCFlatten, RPCName, RPCNamedParams;
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.sys.data : Data;
+import ae.utils.time.types : AbsTime;
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial,
 	jsonParse, toJson;
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
@@ -1212,13 +1213,19 @@ class CodexAgent : Agent
 	{
 		import std.algorithm : canFind;
 		import std.conv : to;
+		import cydo.agent.protocol : parseIso8601Timestamp;
 
 		// Codex JSONL lines: { timestamp, type, payload }
 		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
+		@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
+		AbsTime ts;
+		try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(line).timestamp); }
+		catch (Exception) {}
+
 		if (line.canFind(`"type":"session_meta"`))
 		{
 			auto t = translateRolloutSessionMeta(line);
-			return t !is null ? [TranslatedEvent(t, line)] : [];
+			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
 		}
 		else if (line.canFind(`"type":"response_item"`))
 		{
@@ -1229,13 +1236,13 @@ class CodexAgent : Agent
 			auto results = translateRolloutResponseItem(line, forkId);
 			TranslatedEvent[] evs;
 			foreach (r; results)
-				evs ~= TranslatedEvent(r, line);
+				evs ~= TranslatedEvent(r, line, ts);
 			return evs;
 		}
 		else if (line.canFind(`"type":"event_msg"`))
 		{
 			auto t = translateRolloutEventMsg(line);
-			return t !is null ? [TranslatedEvent(t, line)] : [];
+			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
 		}
 		// Skip turn_context, compacted, unknown
 		return [];
@@ -1244,7 +1251,8 @@ class CodexAgent : Agent
 	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
 		// CodexSession emits new-format events natively; pass through unchanged.
-		return [TranslatedEvent(rawLine, null)];
+		import std.datetime : Clock;
+		return [TranslatedEvent(rawLine, null, AbsTime(Clock.currStdTime))];
 	}
 
 	bool isTurnResult(string rawLine)
