@@ -305,7 +305,8 @@ struct JsonlTracker
 			if (content.length == 0)
 				continue;
 			// User message: item/started with user_message type
-			if (content.canFind(`"item_type":"user_message"`) && content.canFind(`"type":"item/started"`))
+			if (content.canFind(`"item_type":"user_message"`) && content.canFind(`"type":"item/started"`)
+				&& !content.canFind(`"is_meta":true`))
 				userSeqs ~= i;
 			// Assistant turn: turn/stop
 			else if (content.canFind(`"type":"turn/stop"`))

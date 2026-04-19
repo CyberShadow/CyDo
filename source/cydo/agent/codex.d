@@ -2560,6 +2560,8 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		ev.item_id = "codex-user-hist";
 		ev.item_type = "user_message";
 		ev.content = [cb];
+		if (role != "user")
+			ev.is_meta = true;
 		if (forkId !is null)
 			ev.uuid = forkId;
 		return [toJson(ev)];
