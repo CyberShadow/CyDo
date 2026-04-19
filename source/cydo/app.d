@@ -612,6 +612,7 @@ class App : ToolsBackend
 			td.resultText = row.resultText;
 			td.createdAt = row.createdAt;
 			td.lastActive = row.lastActive;
+			td.needsAttention = row.needsAttention;
 			td.titleGenDone = row.title.length > 0;
 			auto rowTid = row.tid;
 			tasks[rowTid] = move(td);
@@ -1489,6 +1490,7 @@ class App : ToolsBackend
 
 		// Update task state for sidebar
 		tdp.needsAttention = true;
+		persistence.setNeedsAttention(tid, true);
 		tdp.hasPendingQuestion = true;
 		tdp.notificationBody = "Waiting for your answer";
 		tdp.isProcessing = false;
@@ -1775,6 +1777,7 @@ class App : ToolsBackend
 
 		// Update task state for sidebar
 		tdp.needsAttention = true;
+		persistence.setNeedsAttention(tid, true);
 		tdp.hasPendingQuestion = true;
 		tdp.notificationBody = "Permission requested";
 		tdp.isProcessing = false;
@@ -1879,6 +1882,7 @@ class App : ToolsBackend
 		td.pendingAskToolUseId = null;
 		td.pendingAskQuestions = JSONFragment.init;
 		td.needsAttention = false;
+		persistence.setNeedsAttention(tid, false);
 		td.hasPendingQuestion = false;
 		td.notificationBody = "";
 		td.isProcessing = true;
@@ -1934,6 +1938,7 @@ class App : ToolsBackend
 		td.pendingPermissionToolName = null;
 		td.pendingPermissionInput = JSONFragment.init;
 		td.needsAttention = false;
+		persistence.setNeedsAttention(tid, false);
 		td.hasPendingQuestion = false;
 		td.notificationBody = "";
 		td.isProcessing = true;
@@ -2480,6 +2485,7 @@ class App : ToolsBackend
 		if (td.session !is null && td.session.alive)
 			return;
 		td.needsAttention = false;
+		persistence.setNeedsAttention(tid, false);
 		td.notificationBody = "";
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
@@ -2561,6 +2567,7 @@ class App : ToolsBackend
 		if (tid >= 0 && tid in tasks)
 		{
 			tasks[tid].needsAttention = false;
+			persistence.setNeedsAttention(tid, false);
 			tasks[tid].notificationBody = "";
 			broadcastTaskUpdate(tid);
 		}
@@ -3194,6 +3201,7 @@ class App : ToolsBackend
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
+		persistence.setNeedsAttention(tid, false);
 		td.notificationBody = "";
 		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
 		td.suggestGeneration++;
@@ -3645,6 +3653,7 @@ class App : ToolsBackend
 					td.status = "alive";
 					persistence.setStatus(tid, "alive");
 					td.needsAttention = true;
+					persistence.setNeedsAttention(tid, true);
 					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
 					touchTask(tid);
 					persistence.setLastActive(tid, tasks[tid].lastActive);
@@ -3723,6 +3732,7 @@ class App : ToolsBackend
 				tasks[tid].pendingAskToolUseId = null;
 				tasks[tid].pendingAskQuestions = JSONFragment.init;
 				tasks[tid].needsAttention = false;
+				persistence.setNeedsAttention(tid, false);
 				tasks[tid].hasPendingQuestion = false;
 				tasks[tid].notificationBody = "";
 			}
