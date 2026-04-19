@@ -2338,6 +2338,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 			string name;
 			string arguments;
 			string input;
+			@JSONOptional string namespace;
 
 			// function_call_output fields
 			JSONFragment output;
@@ -2374,7 +2375,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 		else
 			inputJson = `{}`;
 		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
-			inputJson);
+			inputJson, probe.payload.namespace);
 	}
 	else if (ptype == "custom_tool_call")
 	{
@@ -2390,7 +2391,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 				inputJson = `{"input":` ~ toJson(rawInput) ~ `}`;
 		}
 		results = translateRolloutToolUse(probe.payload.call_id, probe.payload.name,
-			inputJson);
+			inputJson, probe.payload.namespace);
 	}
 	else if (ptype == "web_search_call")
 	{
@@ -2558,7 +2559,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 }
 
 /// Translate a tool_use response_item → item/started + item/completed.
-string[] translateRolloutToolUse(string callId, string toolName, string inputJson)
+string[] translateRolloutToolUse(string callId, string toolName, string inputJson, string namespace = "")
 {
 	import std.uuid : randomUUID;
 	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo, decomposeToolName;
@@ -2570,6 +2571,21 @@ string[] translateRolloutToolUse(string callId, string toolName, string inputJso
 	startEv.item_id = callId;
 	startEv.item_type = "tool_use";
 	decomposeToolName(toolName, startEv.name, startEv.tool_server, startEv.tool_source);
+	if (namespace.length > 0 && startEv.tool_server.length == 0)
+	{
+		// Parse namespace like "mcp__cydo__" → tool_server="cydo", tool_source="mcp"
+		import std.algorithm : startsWith, endsWith;
+		string ns = namespace;
+		if (ns.startsWith("mcp__"))
+			ns = ns["mcp__".length .. $];
+		if (ns.endsWith("__"))
+			ns = ns[0 .. $ - 2];
+		if (ns.length > 0)
+		{
+			startEv.tool_server = ns;
+			startEv.tool_source = "mcp";
+		}
+	}
 	if (inputJson.length > 0 && inputJson != `{}`)
 		startEv.input = JSONFragment(inputJson);
 
