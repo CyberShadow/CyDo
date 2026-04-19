@@ -7,12 +7,75 @@ import { applyPatch, structuredPatch } from "diff";
 import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
-import type { ThemedToken } from "../highlight";
-import { DiffView, PatchView, parsePatchHunksFromText } from "./ToolCall";
+import { PatchView, parsePatchHunksFromText } from "./ToolCall";
 import type { PatchHunk } from "./ToolCall";
 import { composeHunks } from "../lib/composeHunks";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
+
+// ---------------------------------------------------------------------------
+// SourceContent types and helpers
+// ---------------------------------------------------------------------------
+
+/** A contiguous block of known file content at a known position. */
+interface SourceFragment {
+  startLine: number; // 1-indexed
+  lines: string[]; // raw content lines (no diff prefix)
+}
+
+/** A view of file content as positioned fragments.
+ *  `complete: true` means fragments cover the entire file.
+ *  `complete: false` means there may be unknown content before/between/after
+ *  fragments — gap indicators should be shown. */
+interface SourceContent {
+  fragments: SourceFragment[];
+  complete: boolean;
+}
+
+function contentToSource(content: string): SourceContent {
+  return {
+    fragments: [{ startLine: 1, lines: content.split("\n") }],
+    complete: true,
+  };
+}
+
+function hunksToSource(hunks: PatchHunk[]): SourceContent {
+  const fragments: SourceFragment[] = [];
+  for (const hunk of hunks) {
+    const lines: string[] = [];
+    for (const line of hunk.lines) {
+      if (line[0] === " " || line[0] === "+") lines.push(line.slice(1));
+    }
+    if (lines.length > 0) fragments.push({ startLine: hunk.newStart, lines });
+  }
+  return { fragments, complete: false };
+}
+
+function hunksToOldSource(hunks: PatchHunk[]): SourceContent {
+  const fragments: SourceFragment[] = [];
+  for (const hunk of hunks) {
+    const lines: string[] = [];
+    for (const line of hunk.lines) {
+      if (line[0] === " " || line[0] === "-") lines.push(line.slice(1));
+    }
+    if (lines.length > 0) fragments.push({ startLine: hunk.oldStart, lines });
+  }
+  return { fragments, complete: false };
+}
+
+function sourceToContent(source: SourceContent): string | null {
+  if (!source.complete) return null;
+  if (source.fragments.length !== 1) return null;
+  return source.fragments[0]!.lines.join("\n");
+}
+
+function computeHunksFromStrings(oldStr: string, newStr: string): PatchHunk[] {
+  if (oldStr === newStr) return [];
+  const patch = structuredPatch("", "", oldStr, newStr, undefined, undefined, {
+    context: 3,
+  });
+  return patch.hunks as PatchHunk[];
+}
 
 // ---------------------------------------------------------------------------
 // On-demand content resolution
@@ -20,10 +83,9 @@ import { CopyButton } from "./CopyButton";
 
 /** Resolved file content for a single edit, computed on-demand. */
 interface ResolvedEdit {
-  contentBefore: string | null;
-  /** null when only patch hunks available (no full content) */
-  contentAfter: string | null;
-  structuredPatch?: PatchHunk[];
+  sourceAfter: SourceContent;
+  sourceBefore: SourceContent;
+  patchHunks: PatchHunk[];
   isDeleted?: boolean;
 }
 
@@ -69,50 +131,61 @@ function resolveEditContent(
   const tr = (block?.result?.toolResult ?? {}) as Record<string, unknown>;
   const originalFile =
     typeof tr.originalFile === "string" ? tr.originalFile : null;
-  const structuredPatch = Array.isArray(tr.structuredPatch)
+  const trStructuredPatch = Array.isArray(tr.structuredPatch)
     ? (tr.structuredPatch as PatchHunk[])
     : undefined;
 
   if (edit.payload?.mode === "full_content") {
     if (edit.op === "delete") {
+      const beforeStr = currentContent ?? originalFile ?? edit.payload.content;
+      const afterStr = "";
+      const hunks =
+        trStructuredPatch ?? computeHunksFromStrings(beforeStr, afterStr);
       return {
-        contentBefore: currentContent ?? originalFile ?? edit.payload.content,
-        contentAfter: "",
+        sourceBefore: contentToSource(beforeStr),
+        sourceAfter: contentToSource(afterStr),
+        patchHunks: hunks,
         isDeleted: true,
-        structuredPatch,
       };
     }
+    const beforeStr = currentContent ?? originalFile ?? "";
+    const afterStr = edit.payload.content;
+    const hunks =
+      trStructuredPatch ?? computeHunksFromStrings(beforeStr, afterStr);
     return {
-      contentBefore: currentContent ?? originalFile ?? "",
-      contentAfter: edit.payload.content,
-      structuredPatch,
+      sourceBefore: contentToSource(beforeStr),
+      sourceAfter: contentToSource(afterStr),
+      patchHunks: hunks,
     };
   }
+
   if (edit.payload?.mode === "patch_text") {
     const contentBefore = currentContent ?? originalFile;
     if (contentBefore == null) {
       // No original content available (e.g. Codex fileChange without originalFile).
       // Parse the patch text into structured hunks for partial rendering.
       const hunks = parsePatchHunksFromText(edit.payload.patchText);
-      if (hunks && hunks.length > 0) {
-        return {
-          contentBefore: null,
-          contentAfter: null,
-          structuredPatch: hunks,
-          isDeleted: edit.op === "delete",
-        };
-      }
-      return null;
+      if (!hunks?.length) return null;
+      return {
+        sourceBefore: hunksToOldSource(hunks),
+        sourceAfter: hunksToSource(hunks),
+        patchHunks: hunks,
+        isDeleted: edit.op === "delete",
+      };
     }
     const contentAfter = applyTrackedPatch(
       contentBefore,
       edit.payload.patchText,
     );
     if (contentAfter == null) return null;
+    const hunks =
+      trStructuredPatch ??
+      parsePatchHunksFromText(edit.payload.patchText) ??
+      computeHunksFromStrings(contentBefore, contentAfter);
     return {
-      contentBefore,
-      contentAfter,
-      structuredPatch,
+      sourceBefore: contentToSource(contentBefore),
+      sourceAfter: contentToSource(contentAfter),
+      patchHunks: hunks,
     };
   }
 
@@ -139,25 +212,33 @@ function resolveEditContent(
         contentAfter = contentBefore;
       }
     }
-    return { contentBefore, contentAfter, structuredPatch };
+    const hunks =
+      trStructuredPatch ?? computeHunksFromStrings(contentBefore, contentAfter);
+    return {
+      sourceBefore: contentToSource(contentBefore),
+      sourceAfter: contentToSource(contentAfter),
+      patchHunks: hunks,
+    };
   }
 
   const contentAfter = typeof input.content === "string" ? input.content : null;
   if (contentAfter == null) return null;
+  const beforeStr = currentContent ?? originalFile ?? "";
+  const hunks =
+    trStructuredPatch ?? computeHunksFromStrings(beforeStr, contentAfter);
   return {
-    contentBefore: currentContent ?? originalFile ?? "",
-    contentAfter,
-    structuredPatch,
+    sourceBefore: contentToSource(beforeStr),
+    sourceAfter: contentToSource(contentAfter),
+    patchHunks: hunks,
   };
 }
 
 interface ResolvedFileContent {
-  /** Content before any edits (first edit's contentBefore, or "" for new files). */
-  originalContent: string;
-  currentContent: string;
+  originalSource: SourceContent;
+  currentSource: SourceContent;
   resolved: Map<number, ResolvedEdit>;
   isDeleted: boolean;
-  deletedContent: string | null;
+  deletedSource: SourceContent | null;
 }
 
 function toUnifiedPatch(patchText: string): string | null {
@@ -201,10 +282,11 @@ function resolveFileContent(
   itemIdMap: Map<string, string>,
 ): ResolvedFileContent | null {
   const resolved = new Map<number, ResolvedEdit>();
-  let currentContent: string | null = null;
-  let originalContent: string | null = null;
+  let currentContent: string | null = null; // for chaining resolveEditContent
+  let currentSource: SourceContent | null = null; // for display
+  let originalSource: SourceContent | null = null;
   let isDeleted = false;
-  let deletedContent: string | null = null;
+  let deletedSource: SourceContent | null = null;
   let hasApplied = false;
 
   for (let i = 0; i < file.edits.length; i++) {
@@ -215,66 +297,44 @@ function resolveFileContent(
     resolved.set(i, r);
     if (edit.status !== "applied") continue;
     hasApplied = true;
-    if (r.contentAfter != null) {
-      if (originalContent == null) originalContent = r.contentBefore ?? "";
-      currentContent = r.contentAfter;
+
+    currentSource = r.sourceAfter;
+    // Only chain full content forward; partial edits don't break prior chain
+    const newContent = sourceToContent(r.sourceAfter);
+    if (newContent != null) {
+      if (originalSource == null) originalSource = r.sourceBefore;
+      currentContent = newContent;
     }
     isDeleted = !!r.isDeleted;
-    deletedContent = r.isDeleted ? (r.contentBefore ?? "") : null;
+    deletedSource = r.isDeleted ? r.sourceBefore : null;
   }
 
   if (!hasApplied) {
     for (let i = file.edits.length - 1; i >= 0; i--) {
       const r = resolved.get(i);
       if (!r) continue;
-      if (r.contentAfter != null) {
-        currentContent = r.contentAfter;
-        if (originalContent == null) originalContent = r.contentBefore ?? "";
+      currentSource = r.sourceAfter;
+      const newContent = sourceToContent(r.sourceAfter);
+      if (newContent != null) {
+        if (originalSource == null) originalSource = r.sourceBefore;
       }
       isDeleted = !!r.isDeleted;
-      deletedContent = r.isDeleted ? (r.contentBefore ?? "") : null;
+      deletedSource = r.isDeleted ? r.sourceBefore : null;
       break;
     }
   }
 
-  if (currentContent == null) {
+  if (currentSource == null) {
     if (resolved.size === 0) return null;
-    currentContent = "";
+    currentSource = contentToSource("");
   }
+
   return {
-    originalContent: originalContent ?? "",
-    currentContent,
+    originalSource: originalSource ?? contentToSource(""),
+    currentSource,
     resolved,
     isDeleted,
-    deletedContent,
-  };
-}
-
-/** Compute line-level diffstat between two strings. */
-function computeDiffstat(
-  oldStr: string,
-  newStr: string,
-): { added: number; removed: number } {
-  const oldLines = oldStr.split("\n");
-  const newLines = newStr.split("\n");
-  // Simple line diff: count lines present in new but not old (added) and vice versa.
-  // For accuracy we use a set-based approach on indexed lines, but a proper diff
-  // would be better.  For a quick stat, compare line counts after a longest-common-
-  // subsequence style estimate.  We'll use the simple heuristic: run through both
-  // and count net changes.
-  const oldSet = new Map<string, number>();
-  for (const line of oldLines) oldSet.set(line, (oldSet.get(line) ?? 0) + 1);
-  let kept = 0;
-  for (const line of newLines) {
-    const c = oldSet.get(line);
-    if (c && c > 0) {
-      oldSet.set(line, c - 1);
-      kept++;
-    }
-  }
-  return {
-    added: newLines.length - kept,
-    removed: oldLines.length - kept,
+    deletedSource,
   };
 }
 
@@ -451,202 +511,200 @@ function FileTreeNode({
 // Content viewer
 // ---------------------------------------------------------------------------
 
-function SourceView({
-  content,
-  filePath,
-}: {
-  content: string;
-  filePath: string;
-}) {
-  const lang = langFromPath(filePath);
-  const tokenLines = useHighlight(content, lang);
-  const renderLines = tokenLines ?? content.split("\n");
-  const gutterWidth = `${String(renderLines.length).length}ch`;
+function gapElement(
+  key: string,
+  gapStart: number,
+  gapEnd: number,
+  gutterWidth: string,
+) {
   return (
-    <div class="code-pre-wrap">
-      <CopyButton text={content} />
-      <pre class="file-viewer-source">
-        {renderLines.map((line, i) => (
-          <div key={i} class="source-line">
-            <span class="source-gutter" style={{ minWidth: gutterWidth }}>
-              {i + 1}
-            </span>
-            {tokenLines ? renderTokens(line as ThemedToken[]) : line}
-          </div>
-        ))}
-      </pre>
+    <div key={key} class="source-gap">
+      <span class="source-gutter" style={{ minWidth: gutterWidth }}>
+        {gapStart === gapEnd ? `${gapStart}` : `${gapStart}-${gapEnd}`}
+      </span>
+      <span class="source-gap-label">
+        ⋮ {gapEnd - gapStart + 1} lines not available
+      </span>
     </div>
   );
 }
 
-function CumulativeDiff({
-  oldStr,
-  newStr,
+function FragmentSourceView({
+  source,
   filePath,
 }: {
-  oldStr: string;
-  newStr: string;
+  source: SourceContent;
   filePath: string;
 }) {
-  const patch = useMemo(
-    () =>
-      structuredPatch("", "", oldStr, newStr, undefined, undefined, {
-        context: 3,
-      }),
-    [oldStr, newStr],
-  );
-  return <PatchView hunks={patch.hunks as PatchHunk[]} filePath={filePath} />;
-}
+  const { fragments, complete } = source;
 
-function PartialSourceView({
-  hunks,
-  filePath,
-}: {
-  hunks: PatchHunk[];
-  filePath: string;
-}) {
-  // Extract the "new" side content from all hunks for syntax highlighting.
-  const newLines: string[] = [];
-  for (const hunk of hunks) {
-    for (const line of hunk.lines) {
-      const prefix = line[0];
-      if (prefix === " " || prefix === "+") {
-        newLines.push(line.slice(1));
-      }
-    }
+  if (fragments.length === 0) {
+    return (
+      <div class="file-viewer-empty">
+        Source content not available for this edit.
+      </div>
+    );
   }
-  const newText = newLines.join("\n");
+
+  // Concatenate all fragment lines for syntax highlighting
+  const allLines: string[] = [];
+  for (const frag of fragments) {
+    allLines.push(...frag.lines);
+  }
+  const text = allLines.join("\n");
   const lang = langFromPath(filePath);
-  const tokenLines = useHighlight(newText, lang);
+  const tokenLines = useHighlight(text, lang);
 
   // Compute max line number for gutter width
   let maxLineNum = 0;
-  for (const hunk of hunks) {
-    maxLineNum = Math.max(maxLineNum, hunk.newStart + hunk.newLines);
+  for (const frag of fragments) {
+    maxLineNum = Math.max(maxLineNum, frag.startLine + frag.lines.length - 1);
   }
   const gutterWidth = `${String(maxLineNum).length}ch`;
 
   const elements: preact.JSX.Element[] = [];
   let tokenIdx = 0;
-  let prevHunkEnd = 0; // track end of previous hunk to detect gaps
+  let prevEnd = 0; // end line of previous fragment (0 = none)
 
-  for (let hi = 0; hi < hunks.length; hi++) {
-    const hunk = hunks[hi]!;
+  for (let fi = 0; fi < fragments.length; fi++) {
+    const frag = fragments[fi]!;
 
-    // Gap indicator between non-contiguous hunks
-    if (hi > 0 && hunk.newStart > prevHunkEnd + 1) {
-      const gapStart = prevHunkEnd + 1;
-      const gapEnd = hunk.newStart - 1;
+    // Gap indicator before this fragment
+    if (fi === 0 && frag.startLine > 1) {
       elements.push(
-        <div key={`gap-${hi}`} class="source-gap">
-          <span class="source-gutter" style={{ minWidth: gutterWidth }}>
-            {gapStart === gapEnd ? `${gapStart}` : `${gapStart}-${gapEnd}`}
-          </span>
-          <span class="source-gap-label">
-            ⋮ {gapEnd - gapStart + 1} lines not available
-          </span>
-        </div>,
+        gapElement(`gap-start`, 1, frag.startLine - 1, gutterWidth),
+      );
+    } else if (fi > 0 && frag.startLine > prevEnd + 1) {
+      elements.push(
+        gapElement(`gap-${fi}`, prevEnd + 1, frag.startLine - 1, gutterWidth),
       );
     }
 
-    // Render hunk lines (new side only: context + added)
-    let lineNum = hunk.newStart;
-    for (const line of hunk.lines) {
-      const prefix = line[0];
-      if (prefix === "-") continue; // skip removed lines in source view
-
-      const isAdded = prefix === "+";
+    // Render fragment lines
+    for (let li = 0; li < frag.lines.length; li++) {
+      const lineNum = frag.startLine + li;
       const idx = tokenIdx++;
-      const num = lineNum++;
       elements.push(
-        <div
-          key={`${hi}-${num}`}
-          class={`source-line${isAdded ? " source-line-added" : ""}`}
-        >
+        <div key={`${fi}-${lineNum}`} class="source-line">
           <span class="source-gutter" style={{ minWidth: gutterWidth }}>
-            {num}
+            {lineNum}
           </span>
-          {tokenLines?.[idx] ? renderTokens(tokenLines[idx]) : line.slice(1)}
+          {tokenLines?.[idx] ? renderTokens(tokenLines[idx]) : frag.lines[li]}
         </div>,
       );
     }
 
-    prevHunkEnd = hunk.newStart + hunk.newLines - 1;
+    prevEnd = frag.startLine + frag.lines.length - 1;
   }
 
-  // Gap indicator if first hunk doesn't start at line 1
-  if (hunks.length > 0 && hunks[0]!.newStart > 1) {
-    elements.unshift(
-      <div key="gap-start" class="source-gap">
-        <span class="source-gutter" style={{ minWidth: gutterWidth }}>
-          1-{hunks[0]!.newStart - 1}
-        </span>
-        <span class="source-gap-label">
-          ⋮ {hunks[0]!.newStart - 1} lines not available
-        </span>
+  // Trailing gap indicator when content is incomplete
+  if (!complete) {
+    elements.push(
+      <div key="gap-end" class="source-gap">
+        <span class="source-gutter" style={{ minWidth: gutterWidth }} />
+        <span class="source-gap-label">⋮</span>
       </div>,
     );
   }
 
   return (
     <div class="code-pre-wrap">
+      {complete && <CopyButton text={text} />}
       <pre class="file-viewer-source">{elements}</pre>
     </div>
   );
 }
 
-function CumulativeHunkView({
-  hunks,
+function FragmentMarkdownView({
+  source,
   filePath,
 }: {
-  hunks: PatchHunk[];
+  source: SourceContent;
   filePath: string;
 }) {
-  return <PatchView hunks={hunks} filePath={filePath} />;
+  const { fragments, complete } = source;
+
+  if (fragments.length === 0) {
+    return (
+      <div class="file-viewer-empty">
+        Rendered content not available for this edit.
+      </div>
+    );
+  }
+
+  const isMarkdown = /\.(md|mdx)$/i.test(filePath);
+  if (!isMarkdown) {
+    return <FragmentSourceView source={source} filePath={filePath} />;
+  }
+
+  // Full content: single Markdown render (no gaps)
+  if (complete && fragments.length === 1) {
+    return (
+      <Markdown text={fragments[0]!.lines.join("\n")} class="text-content" />
+    );
+  }
+
+  // Partial: render each fragment through Markdown with gap indicators
+  const elements: preact.JSX.Element[] = [];
+  let prevEnd = 0;
+
+  for (let fi = 0; fi < fragments.length; fi++) {
+    const frag = fragments[fi]!;
+
+    if (fi === 0 && frag.startLine > 1) {
+      elements.push(
+        <div key="gap-start" class="source-gap">
+          ⋮ Lines 1-{frag.startLine - 1} not available
+        </div>,
+      );
+    } else if (fi > 0 && frag.startLine > prevEnd + 1) {
+      elements.push(
+        <div key={`gap-${fi}`} class="source-gap">
+          ⋮ {frag.startLine - prevEnd - 1} lines not available
+        </div>,
+      );
+    }
+
+    elements.push(
+      <Markdown
+        key={`md-${fi}`}
+        text={frag.lines.join("\n")}
+        class="text-content"
+      />,
+    );
+    prevEnd = frag.startLine + frag.lines.length - 1;
+  }
+
+  // Trailing gap indicator when content is incomplete
+  if (!complete) {
+    elements.push(
+      <div key="gap-end" class="source-gap">
+        ⋮
+      </div>,
+    );
+  }
+
+  return <>{elements}</>;
 }
 
 const ContentViewer = memo(function ContentViewer({
   filePath,
-  currentContent,
-  originalContent,
-  resolvedEdit,
-  diffEdit,
-  cumulativeContent,
+  displaySource,
+  diffHunks,
   cumulativeHunks,
   isDeleted,
-  deletedContent,
   viewMode,
   onChangeViewMode,
 }: {
   filePath: string;
-  currentContent: string;
-  /** Content before any edits (for cumulative diff baseline). */
-  originalContent: string;
-  /** Resolved content for the selected edit (null when no edit selected). */
-  resolvedEdit: ResolvedEdit | null;
-  /** Resolved content for diff view — falls back to last edit when none selected. */
-  diffEdit: ResolvedEdit | null;
-  /** Content after applying edits up to and including the selected one (null when only hunks available). */
-  cumulativeContent: string | null;
-  /** Merged cumulative hunks when full content unavailable. */
+  displaySource: SourceContent;
+  diffHunks: PatchHunk[] | null;
   cumulativeHunks: PatchHunk[] | null;
   isDeleted: boolean;
-  deletedContent: string | null;
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
 }) {
   const isMarkdown = /\.(md|mdx)$/i.test(filePath);
-  const content: string | null = resolvedEdit
-    ? resolvedEdit.isDeleted
-      ? (resolvedEdit.contentBefore ?? "")
-      : resolvedEdit.contentAfter
-    : isDeleted
-      ? (deletedContent ?? originalContent)
-      : currentContent;
-
-  // Hunks for partial rendering when full content unavailable
-  const partialHunks =
-    content == null ? (resolvedEdit?.structuredPatch ?? null) : null;
 
   return (
     <div class="content-viewer">
@@ -687,62 +745,29 @@ const ContentViewer = memo(function ContentViewer({
         )}
       </div>
       <div class="content-viewer-body">
-        {(resolvedEdit?.isDeleted || (!resolvedEdit && isDeleted)) && (
+        {isDeleted && (
           <div class="file-viewer-empty">File deleted in this change.</div>
         )}
-        {viewMode === "source" && content != null && (
-          <SourceView content={content} filePath={filePath} />
+        {viewMode === "source" && (
+          <FragmentSourceView source={displaySource} filePath={filePath} />
         )}
-        {viewMode === "source" && content == null && partialHunks && (
-          <PartialSourceView hunks={partialHunks} filePath={filePath} />
+        {viewMode === "diff" && diffHunks && diffHunks.length > 0 && (
+          <PatchView hunks={diffHunks} filePath={filePath} />
         )}
-        {viewMode === "source" && content == null && !partialHunks && (
-          <div class="file-viewer-empty">
-            Source content not available for this edit.
-          </div>
-        )}
-        {viewMode === "diff" && diffEdit?.structuredPatch?.length ? (
-          <PatchView hunks={diffEdit.structuredPatch} filePath={filePath} />
-        ) : (
-          viewMode === "diff" &&
-          diffEdit && (
-            <DiffView
-              oldStr={diffEdit.contentBefore ?? ""}
-              newStr={diffEdit.contentAfter ?? ""}
-              filePath={filePath}
-            />
-          )
-        )}
-        {viewMode === "diff" && !diffEdit && (
+        {viewMode === "diff" && (!diffHunks || diffHunks.length === 0) && (
           <div class="file-viewer-empty">No diff available for this edit.</div>
         )}
-        {viewMode === "cumulative" && cumulativeContent != null && (
-          <CumulativeDiff
-            oldStr={originalContent}
-            newStr={cumulativeContent}
-            filePath={filePath}
-          />
-        )}
         {viewMode === "cumulative" &&
-          cumulativeContent == null &&
-          cumulativeHunks && (
-            <CumulativeHunkView hunks={cumulativeHunks} filePath={filePath} />
+          cumulativeHunks &&
+          cumulativeHunks.length > 0 && (
+            <PatchView hunks={cumulativeHunks} filePath={filePath} />
           )}
         {viewMode === "cumulative" &&
-          cumulativeContent == null &&
-          !cumulativeHunks && (
-            <div class="file-viewer-empty">
-              Cumulative diff not available — original file content unknown.
-            </div>
+          (!cumulativeHunks || cumulativeHunks.length === 0) && (
+            <div class="file-viewer-empty">No cumulative changes.</div>
           )}
-        {viewMode === "rendered" && isMarkdown && content != null && (
-          <Markdown text={content} class="text-content" />
-        )}
-        {viewMode === "rendered" && !isMarkdown && content != null && (
-          <SourceView content={content} filePath={filePath} />
-        )}
-        {viewMode === "rendered" && content == null && partialHunks && (
-          <PartialSourceView hunks={partialHunks} filePath={filePath} />
+        {viewMode === "rendered" && (
+          <FragmentMarkdownView source={displaySource} filePath={filePath} />
         )}
       </div>
     </div>
@@ -771,12 +796,8 @@ function EditHistory({
       {file.edits.map((edit, i) => {
         const r = resolvedEdits.get(i);
         let diffstat: { added: number; removed: number } | null = null;
-        if (r) {
-          if (r.contentBefore != null && r.contentAfter != null) {
-            diffstat = computeDiffstat(r.contentBefore, r.contentAfter);
-          } else if (r.structuredPatch?.length) {
-            diffstat = computeDiffstatFromHunks(r.structuredPatch);
-          }
+        if (r && r.patchHunks.length > 0) {
+          diffstat = computeDiffstatFromHunks(r.patchHunks);
         }
         const label =
           edit.op === "delete"
@@ -865,29 +886,35 @@ export function FileViewer({
       }
     }
   }
-  // cumulativeContent: null when full content is unavailable (triggers hunk-based view)
-  const cumulativeContent: string | null =
-    selectedResolvedEdit != null
-      ? selectedResolvedEdit.contentAfter
-      : resolved?.currentContent || null;
 
-  // Build cumulative hunks from all resolved edits' structuredPatch arrays.
-  // Only computed when cumulativeContent is unavailable.
+  // Compute displaySource for Source/Rendered tabs
+  const displaySource: SourceContent = selectedResolvedEdit
+    ? selectedResolvedEdit.isDeleted
+      ? selectedResolvedEdit.sourceBefore
+      : selectedResolvedEdit.sourceAfter
+    : resolved
+      ? resolved.isDeleted
+        ? (resolved.deletedSource ?? resolved.originalSource)
+        : resolved.currentSource
+      : { fragments: [], complete: true };
+
+  // Compute diffHunks for Diff tab
+  const diffEdit = selectedResolvedEdit ?? latestResolvedEdit;
+  const diffHunks = diffEdit?.patchHunks ?? null;
+
+  // Compute cumulativeHunks for Cumulative tab — always via composeHunks
   const cumulativeHunks = useMemo(() => {
     if (!file || !resolved) return null;
-    if (cumulativeContent != null) return null;
-
     let cumulative: PatchHunk[] = [];
     const endIdx = selectedEditIndex ?? file.edits.length - 1;
     for (let i = 0; i <= endIdx; i++) {
       const r = resolved.resolved.get(i);
-      if (!r?.structuredPatch?.length) continue;
+      if (!r?.patchHunks.length) continue;
       if (file.edits[i]?.status === "cancelled") continue;
-      cumulative = composeHunks(cumulative, r.structuredPatch);
+      cumulative = composeHunks(cumulative, r.patchHunks);
     }
-    if (cumulative.length === 0) return null;
-    return cumulative;
-  }, [file, resolved, cumulativeContent, selectedEditIndex]);
+    return cumulative.length === 0 ? null : cumulative;
+  }, [file, resolved, selectedEditIndex]);
 
   const handlePointerDown = (e: PointerEvent) => {
     e.preventDefault();
@@ -940,15 +967,15 @@ export function FileViewer({
           <>
             <ContentViewer
               filePath={file.path}
-              currentContent={resolved.currentContent}
-              originalContent={resolved.originalContent}
-              resolvedEdit={selectedResolvedEdit}
-              diffEdit={selectedResolvedEdit ?? latestResolvedEdit}
-              cumulativeContent={cumulativeContent}
+              displaySource={displaySource}
+              diffHunks={diffHunks}
               cumulativeHunks={cumulativeHunks}
+              isDeleted={
+                selectedResolvedEdit
+                  ? !!selectedResolvedEdit.isDeleted
+                  : resolved.isDeleted
+              }
               viewMode={viewMode}
-              isDeleted={resolved.isDeleted}
-              deletedContent={resolved.deletedContent}
               onChangeViewMode={onChangeViewMode}
             />
             <EditHistory

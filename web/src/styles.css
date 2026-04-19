@@ -1712,11 +1712,6 @@ body,
   font-size: 11px;
 }
 
-/* Added line highlight in partial source view */
-.source-line-added {
-  background: rgba(76, 175, 80, 0.08);
-}
-
 /* File tree items */
 .file-tree-item {
   padding: 2px 8px 2px calc(8px + var(--depth, 0) * 16px);
