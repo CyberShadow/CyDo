@@ -151,7 +151,9 @@ struct JsonlTracker
 			newLines++;
 		jsonlLineCount[tid] = lineOffset + newLines;
 
-		if (forkIds.length > 0)
+		import std.algorithm : canFind;
+		bool hasRollback = newContent.canFind(`"thread_rolled_back"`);
+		if (forkIds.length > 0 || hasRollback)
 			// Read the full JSONL so computeAssignments can correlate IDs by
 			// global order (incremental forkIds start idx at 0 and would map
 			// turn-2 IDs to turn-1 seqs).

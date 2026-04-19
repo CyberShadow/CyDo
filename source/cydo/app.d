@@ -2184,6 +2184,19 @@ class App : ToolsBackend
 
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+
+		// Pre-compute rollback skip lines for Codex agents
+		bool[int] rollbackSkipLines;
+		if (td.agentType == "codex" && jsonlPath.length > 0)
+		{
+			import std.file : exists, readText;
+			if (exists(jsonlPath))
+			{
+				import cydo.agent.codex : computeRollbackSkipLines;
+				rollbackSkipLines = computeRollbackSkipLines(readText(jsonlPath));
+			}
+		}
+
 		// steeringStash holds (text, enqueueLineNum, rawLine) for queued steering messages.
 		// Using parallel arrays to avoid struct allocation in a delegate closure.
 		bool hasQueueOps = false;     // set when any queue-operation line is seen
@@ -2195,6 +2208,9 @@ class App : ToolsBackend
 		int lastDequeuedEnqueueLineNum;
 		string lastDequeuedRawLine;
 		auto loaded = loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
+			// Skip lines that are part of rolled-back turns
+			if (lineNum in rollbackSkipLines)
+				return [];
 			if (isQueueOperation(line))
 			{
 				import ae.utils.json : jsonParse;
@@ -2895,30 +2911,108 @@ class App : ToolsBackend
 		{
 			if (td.session && td.session.alive)
 			{
-				// Use the pre-compaction JSONL snapshot saved by JsonlTracker.
-				// Agents like Codex compact the JSONL file ~270ms after a new
-				// turn starts (triggered by response.created), well before the
-				// undo click arrives.  The snapshot was taken on the last
-				// forkId-producing event, preserving line-based fork IDs that
-				// would otherwise be invalidated by compaction.
-				auto jsonlPathSnap = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-				auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
-				jsonlTracker.clearUndoJsonl(tid);
+				// Codex alive path: use thread/rollback RPC instead of killing
+				import cydo.agent.codex : CodexAgent, ThreadRollbackOutcome;
+				if (auto ca = cast(CodexAgent) ta)
+				{
+					auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 
-				td.processQueue.setGoal(ProcessState.Dead).then(() {
-					if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0)
+					// Count user messages from the undo point to the end
+					auto userMsgCount = countLinesAfterForkId(
+						jsonlPath, json.after_uuid,
+						&ta.forkIdMatchesLine,
+						&ta.isUserMessageLine);
+					if (userMsgCount < 0)
 					{
-						import std.file : write;
-						write(jsonlPathSnap, jsonlSnap);
+						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+						return;
 					}
-					performUndoExecution(ws, tid, json);
-				}).ignoreResult();
-				td.session.stop();
+					// +1: include the target turn itself
+					auto numTurns = cast(uint)(userMsgCount + 1);
+					jsonlTracker.clearUndoJsonl(tid);
+
+					ca.rollbackThread(td.agentSessionId, numTurns, td.launch, td.workspace)
+						.then((r) {
+							if (!r.ok)
+							{
+								warningf("thread/rollback failed (tid=%d): %s — falling back to kill+truncate",
+									tid, r.error);
+								fallbackUndoKillAndTruncate(ws, tid, json);
+								return;
+							}
+							// Rollback succeeded — Codex appended a ThreadRolledBack marker.
+							// Reload history (marker-aware reading skips rolled-back turns).
+							auto td2 = &tasks[tid];
+							td2.history = DataVec();
+							td2.rawSource = null;
+							td2.historyLoaded = false;
+							unsubscribeAll(tid);
+
+							// Reset JSONL tracker so it re-reads fork IDs
+							jsonlTracker.stopJsonlWatch(tid);
+
+							// Clip pendingSteeringTexts to match remaining user messages
+							if (td2.pendingSteeringTexts.length > 0)
+							{
+								import std.file : readText, exists;
+								auto histPath = ta.historyPath(td2.agentSessionId, td2.effectiveCwd);
+								if (histPath.length > 0 && histPath.exists)
+								{
+									auto forkIds = ta.extractForkableIdsWithInfo(readText(histPath));
+									int remaining = 0;
+									foreach (ref f; forkIds)
+										if (f.isUser) remaining++;
+									if (remaining < cast(int)td2.pendingSteeringTexts.length)
+										td2.pendingSteeringTexts = td2.pendingSteeringTexts[0 .. remaining].dup;
+								}
+							}
+
+							ws.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
+							broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+							broadcastTaskUpdate(tid);
+						}).ignoreResult();
+					return;
+				}
+
+				// Non-Codex alive session: kill + JSONL truncation
+				fallbackUndoKillAndTruncate(ws, tid, json);
 				return;
 			}
 
 			performUndoExecution(ws, tid, json);
 		}
+	}
+
+	/// Kill the alive session and then perform JSONL-based undo.
+	/// Used as fallback when thread/rollback is unavailable or fails.
+	private void fallbackUndoKillAndTruncate(WebSocketAdapter ws, int tid, WsMessage json)
+	{
+		import ae.utils.json : toJson;
+
+		if (tid < 0 || tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		auto ta = agentForTask(tid);
+
+		// Use the pre-compaction JSONL snapshot saved by JsonlTracker.
+		// Agents like Codex compact the JSONL file ~270ms after a new
+		// turn starts (triggered by response.created), well before the
+		// undo click arrives.  The snapshot was taken on the last
+		// forkId-producing event, preserving line-based fork IDs that
+		// would otherwise be invalidated by compaction.
+		auto jsonlPathSnap = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
+		jsonlTracker.clearUndoJsonl(tid);
+
+		td.processQueue.setGoal(ProcessState.Dead).then(() {
+			if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0)
+			{
+				import std.file : write;
+				write(jsonlPathSnap, jsonlSnap);
+			}
+			performUndoExecution(ws, tid, json);
+		}).ignoreResult();
+		td.session.stop();
 	}
 
 	private void performUndoExecution(WebSocketAdapter ws, int tid, WsMessage json)

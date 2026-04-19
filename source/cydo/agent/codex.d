@@ -97,6 +97,19 @@ struct ThreadForkOutcome
 }
 
 @RPCFlatten @JSONPartial
+struct ThreadRollbackParams
+{
+	string threadId;
+	uint numTurns;
+}
+
+struct ThreadRollbackOutcome
+{
+	bool ok;
+	string error;
+}
+
+@RPCFlatten @JSONPartial
 struct TurnStartInput
 {
 	string type;
@@ -1057,6 +1070,36 @@ class CodexAgent : Agent
 		return outcome;
 	}
 
+	/// Roll back `numTurns` turns from the end of the given thread.
+	/// The session must be alive and idle (no turn in progress).
+	Promise!ThreadRollbackOutcome rollbackThread(string threadId, uint numTurns,
+		ProcessLaunch launch, string workspace = "")
+	{
+		auto outcome = new Promise!ThreadRollbackOutcome;
+		auto ws = workspace.length > 0 ? workspace : "default";
+		auto server = getOrCreateServer(serverPoolKey(ws, launch), launch);
+
+		server.onReady(() {
+			ThreadRollbackParams params;
+			params.threadId = threadId;
+			params.numTurns = numTurns;
+
+			server.sendRequest("thread/rollback", JSONFragment(toJson(params)))
+				.then((JsonRpcResponse resp) {
+					try
+						resp.getResult!JSONFragment(); // throws on RPC error
+					catch (Exception e)
+					{
+						outcome.fulfill(ThreadRollbackOutcome(false, e.msg));
+						return;
+					}
+					outcome.fulfill(ThreadRollbackOutcome(true, ""));
+				});
+		});
+
+		return outcome;
+	}
+
 	private AppServerProcess getOrCreateServer(string poolKey, ProcessLaunch launch)
 	{
 		if (auto existing = poolKey in serverPool)
@@ -1306,6 +1349,14 @@ class CodexAgent : Agent
 				seenTaskStarted = true;
 				continue;
 			}
+			// Handle ThreadRolledBack markers: remove last N user-turn groups
+			if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+			{
+				auto numTurns = parseRollbackNumTurns(line);
+				if (numTurns > 0)
+					ids = applyRollbackToIds(ids, numTurns);
+				continue;
+			}
 			// Forkable: response_item with role user or assistant
 			if (!line.canFind(`"type":"response_item"`))
 				continue;
@@ -1340,6 +1391,14 @@ class CodexAgent : Agent
 			if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
 			{
 				seenTaskStarted = true;
+				continue;
+			}
+			// Handle ThreadRolledBack markers: remove last N user-turn groups
+			if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+			{
+				auto numTurns = parseRollbackNumTurns(line);
+				if (numTurns > 0)
+					ids = applyRollbackToIdsWithInfo(ids, numTurns);
 				continue;
 			}
 			if (!line.canFind(`"type":"response_item"`))
@@ -2225,6 +2284,228 @@ class CodexSession : AgentSession
 				tsev.usage = UsageInfo(0, 0);
 			outputHandler_(TranslatedEvent(toJson(tsev), rawNotification));
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rollback marker helpers
+// ---------------------------------------------------------------------------
+
+/// Parse `num_turns` from a ThreadRolledBack event_msg JSONL line.
+/// The payload is `{"type":"thread_rolled_back","num_turns":N}`.
+/// Returns 0 if parsing fails.
+uint parseRollbackNumTurns(string line)
+{
+	@JSONPartial
+	static struct RollbackProbe
+	{
+		@JSONPartial
+		static struct Payload { uint num_turns; }
+		Payload payload;
+	}
+
+	try
+	{
+		auto probe = jsonParse!RollbackProbe(line);
+		return probe.payload.num_turns;
+	}
+	catch (Exception)
+		return 0;
+}
+
+/// Apply a rollback to a list of fork IDs: remove the last N user-turn groups.
+/// A user-turn group is a user message and all following assistant messages
+/// until the next user message.
+string[] applyRollbackToIds(string[] ids, uint numTurns)
+{
+	if (numTurns == 0 || ids.length == 0)
+		return ids;
+
+	auto toRemove = numTurns * 2;
+	if (toRemove >= ids.length)
+		return [];
+	return ids[0 .. $ - toRemove];
+}
+
+/// Apply a rollback to a list of ForkableIdInfo: remove the last N user-turn groups.
+ForkableIdInfo[] applyRollbackToIdsWithInfo(ForkableIdInfo[] ids, uint numTurns)
+{
+	if (numTurns == 0 || ids.length == 0)
+		return ids;
+
+	// Find the position of the Nth-from-last user message
+	uint usersSeen = 0;
+	for (size_t i = ids.length; i > 0; i--)
+	{
+		if (ids[i - 1].isUser)
+		{
+			usersSeen++;
+			if (usersSeen >= numTurns)
+				return ids[0 .. i - 1];
+		}
+	}
+	// Fewer user messages than numTurns — remove everything
+	return [];
+}
+
+/// Check if a JSONL line is a ThreadRolledBack event_msg.
+bool isRollbackMarker(string line)
+{
+	import std.algorithm : canFind;
+	return line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`);
+}
+
+/// Compute the set of 1-based line numbers that should be skipped when
+/// replaying a Codex JSONL that contains ThreadRolledBack markers.
+/// A rollback with num_turns=N removes the last N user-turn segments
+/// (each segment = a user response_item and all following lines until
+/// the next user response_item).
+bool[int] computeRollbackSkipLines(string content)
+{
+	import std.algorithm : canFind;
+	import std.string : lineSplitter;
+
+	struct TurnBoundary { int lineNum; }
+	TurnBoundary[] userTurnStarts;
+	struct RollbackInfo { int lineNum; uint numTurns; }
+	RollbackInfo[] rollbacks;
+
+	bool seenTaskStarted = false;
+	int lineNum = 0;
+	foreach (line; content.lineSplitter)
+	{
+		lineNum++;
+		if (line.length == 0)
+			continue;
+		if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+		{
+			seenTaskStarted = true;
+			continue;
+		}
+		if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+		{
+			rollbacks ~= RollbackInfo(lineNum, parseRollbackNumTurns(line));
+			continue;
+		}
+		if (seenTaskStarted && line.canFind(`"type":"response_item"`) && line.canFind(`"role":"user"`))
+			userTurnStarts ~= TurnBoundary(lineNum);
+	}
+
+	if (rollbacks.length == 0)
+		return (bool[int]).init;
+
+	bool[int] skipLines;
+	size_t[] activeTurnIndices;
+	size_t turnIdx = 0;
+
+	foreach (ri, ref rb; rollbacks)
+	{
+		while (turnIdx < userTurnStarts.length && userTurnStarts[turnIdx].lineNum < rb.lineNum)
+		{
+			activeTurnIndices ~= turnIdx;
+			turnIdx++;
+		}
+		if (rb.numTurns > 0)
+		{
+			auto toRemove = rb.numTurns > activeTurnIndices.length
+				? activeTurnIndices.length : rb.numTurns;
+			auto removedTurns = activeTurnIndices[$ - toRemove .. $];
+			activeTurnIndices = activeTurnIndices[0 .. $ - toRemove];
+
+			foreach (ri2, removedIdx; removedTurns)
+			{
+				auto startLine = userTurnStarts[removedIdx].lineNum;
+				int endLine;
+				if (ri2 + 1 < removedTurns.length)
+					endLine = userTurnStarts[removedTurns[ri2 + 1]].lineNum;
+				else
+					endLine = rb.lineNum;
+				for (int ln = startLine; ln < endLine; ln++)
+					skipLines[ln] = true;
+			}
+		}
+		skipLines[rb.lineNum] = true;
+	}
+
+	return skipLines;
+}
+
+unittest
+{
+	// Test parseRollbackNumTurns
+	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`) == 2);
+	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":0}}`) == 0);
+	assert(parseRollbackNumTurns(`{"type":"event_msg","payload":{"type":"task_started"}}`) == 0);
+
+	// Test applyRollbackToIdsWithInfo
+	auto ids = [
+		ForkableIdInfo("line:1", true),
+		ForkableIdInfo("line:2", false),
+		ForkableIdInfo("line:3", true),
+		ForkableIdInfo("line:4", false),
+		ForkableIdInfo("line:5", true),
+		ForkableIdInfo("line:6", false),
+	];
+	auto rolled1 = applyRollbackToIdsWithInfo(ids, 1);
+	assert(rolled1.length == 4, "rollback 1 should remove last user turn group");
+	assert(rolled1[$ - 1].id == "line:4");
+
+	auto rolled2 = applyRollbackToIdsWithInfo(ids, 2);
+	assert(rolled2.length == 2, "rollback 2 should remove last 2 user turn groups");
+	assert(rolled2[$ - 1].id == "line:2");
+
+	auto rolledAll = applyRollbackToIdsWithInfo(ids, 10);
+	assert(rolledAll.length == 0, "rollback > total should remove everything");
+
+	// Test isRollbackMarker
+	assert(isRollbackMarker(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`));
+	assert(!isRollbackMarker(`{"type":"event_msg","payload":{"type":"task_started"}}`));
+	assert(!isRollbackMarker(`{"type":"response_item","payload":{"role":"user"}}`));
+
+	// Test computeRollbackSkipLines — single rollback removing 1 turn
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
+		auto skip = computeRollbackSkipLines(jsonl);
+		assert(4 in skip, "user 2 line should be skipped");
+		assert(5 in skip, "assistant 2 line should be skipped");
+		assert(6 in skip, "rollback marker should be skipped");
+		assert(2 !in skip, "user 1 line should not be skipped");
+		assert(3 !in skip, "assistant 1 line should not be skipped");
+	}
+
+	// Test computeRollbackSkipLines — double rollback (two markers)
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
+		auto skip = computeRollbackSkipLines(jsonl);
+		assert(6 in skip && 7 in skip, "user/assistant 3 should be skipped");
+		assert(4 in skip && 5 in skip, "user/assistant 2 should be skipped");
+		assert(8 in skip && 9 in skip, "rollback markers should be skipped");
+		assert(2 !in skip && 3 !in skip, "user/assistant 1 should not be skipped");
+	}
+
+	// Test computeRollbackSkipLines — no rollback markers
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"role":"assistant","content":[]}}`;
+		auto skip = computeRollbackSkipLines(jsonl);
+		assert(skip.length == 0, "no rollback markers should mean no skipped lines");
 	}
 }
 
