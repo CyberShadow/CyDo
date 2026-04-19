@@ -90,6 +90,11 @@ test("undo moves user message text to input box", async ({
     { timeout: 15_000 },
   );
 
+  // After undo: exactly 2 assistant messages remain (reply-one and reply-two)
+  await expect(page.locator(".message.assistant-message")).toHaveCount(2, {
+    timeout: 15_000,
+  });
+
   // Messages 1 and 2 are still visible (user + assistant)
   await expect(
     page.locator(".message.user-message:not(.pending)", {
