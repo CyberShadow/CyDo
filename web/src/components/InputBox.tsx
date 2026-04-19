@@ -119,6 +119,10 @@ export function InputBox({
       const prev = textRef.current;
       handleChange(prev ? `${prev.trimEnd()}\n\n${quoted}` : quoted);
       textareaRef.current?.focus();
+      requestAnimationFrame(() => {
+        if (textareaRef.current)
+          textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
+      });
     };
     return () => {
       insertTextRef.current = null;
