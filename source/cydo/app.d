@@ -30,7 +30,7 @@ import ae.utils.statequeue : StateQueue;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
-import cydo.mcp.tools : AskQuestion, ToolsBackend;
+import cydo.mcp.tools : AskQuestion, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
@@ -1116,8 +1116,10 @@ class App : ToolsBackend
 		});
 	}
 
-	/// Handle Task — returns a promise that resolves when the child task completes.
-	Promise!McpResult handleCreateTask(string callerTid,
+	/// Handle Task — validates the spec and returns a delegate that, when called,
+	/// creates the child task and returns a promise that resolves when it completes.
+	/// On validation failure, returns a ValidatedTask with a null launch delegate.
+	ValidatedTask handleCreateTask(string callerTid,
 		string description, string taskType, string prompt)
 	{
 		import ae.utils.json : toJson;
@@ -1136,11 +1138,11 @@ class App : ToolsBackend
 		try
 			parentTid = to!int(callerTid);
 		catch (Exception)
-			return resolve(structuredTaskError("Invalid calling task ID"));
+			return ValidatedTask(structuredTaskError("Invalid calling task ID"));
 
 		auto parentTd = parentTid in tasks;
 		if (parentTd is null)
-			return resolve(structuredTaskError("Calling task not found"));
+			return ValidatedTask(structuredTaskError("Calling task not found"));
 
 		// Validate task_type against parent's creatable_tasks and resolve alias
 		auto parentTypeDef = getTaskTypesForProject(parentTd.projectPath).byName(parentTd.taskType);
@@ -1151,7 +1153,7 @@ class App : ToolsBackend
 			auto edge = parentTypeDef.creatable_tasks.byName(taskType);
 			if (edge is null)
 			{
-				return resolve(structuredTaskError(
+				return ValidatedTask(structuredTaskError(
 					"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
 					parentTd.taskType ~ "'. Allowed: " ~
 					parentTypeDef.creatable_tasks.map!(c => c.name).join(", ")));
@@ -1162,70 +1164,79 @@ class App : ToolsBackend
 		// Validate child task type exists
 		auto childTypeDef = getTaskTypesForProject(parentTd.projectPath).byName(resolvedTaskType);
 		if (childTypeDef is null)
-			return resolve(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
+			return ValidatedTask(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
 
-		// Create child task
-		auto childTid = createTask(parentTd.workspace, parentTd.projectPath, parentTd.agentType);
-		auto childTd = &tasks[childTid];
-		childTd.taskType = resolvedTaskType;
-		childTd.description = prompt;
-		childTd.parentTid = parentTid;
-		childTd.relationType = "subtask";
-		childTd.title = description.length > 0
-			? description
-			: truncateTitle(prompt, 80);
+		// All validation passed — return a delegate that performs the actual creation.
+		// Capture only simple values; re-fetch pointers at launch time to avoid
+		// stale AA pointers if sibling delegates caused reallocation.
+		return ValidatedTask(McpResult.init, () {
+			auto pd = parentTid in tasks;
+			auto ptd = getTaskTypesForProject(pd.projectPath).byName(pd.taskType);
+			auto ctd = getTaskTypesForProject(pd.projectPath).byName(resolvedTaskType);
 
-		// Persist metadata
-		persistence.setTaskType(childTid, resolvedTaskType);
-		persistence.setDescription(childTid, prompt);
-		persistence.setParentTid(childTid, parentTid);
-		persistence.setRelationType(childTid, "subtask");
-		persistence.setTitle(childTid, childTd.title);
+			// Create child task
+			auto childTid = createTask(pd.workspace, pd.projectPath, pd.agentType);
+			auto childTd = &tasks[childTid];
+			childTd.taskType = resolvedTaskType;
+			childTd.description = prompt;
+			childTd.parentTid = parentTid;
+			childTd.relationType = "subtask";
+			childTd.title = description.length > 0
+				? description
+				: truncateTitle(prompt, 80);
 
-		// Create promise — fulfilled when child task exits
-		auto promise = new Promise!McpResult;
-		pendingSubTasks[childTid] = promise;
-		persistence.addTaskDep(parentTid, childTid);
-		taskDeps[childTid] = parentTid;
-		parentTd.status = "waiting";
-		persistence.setStatus(parentTid, "waiting");
-		broadcastTaskUpdate(parentTid);
+			// Persist metadata
+			persistence.setTaskType(childTid, resolvedTaskType);
+			persistence.setDescription(childTid, prompt);
+			persistence.setParentTid(childTid, parentTid);
+			persistence.setRelationType(childTid, "subtask");
+			persistence.setTitle(childTid, childTd.title);
 
-		// Broadcast to UI
-		broadcast(toJson(TaskCreatedMessage("task_created", childTid,
-			parentTd.workspace, parentTd.projectPath, parentTid, "subtask")));
-		broadcastTaskUpdate(childTid);
+			// Create promise — fulfilled when child task exits
+			auto promise = new Promise!McpResult;
+			pendingSubTasks[childTid] = promise;
+			persistence.addTaskDep(parentTid, childTid);
+			taskDeps[childTid] = parentTid;
+			pd.status = "waiting";
+			persistence.setStatus(parentTid, "waiting");
+			broadcastTaskUpdate(parentTid);
 
-		// Set up worktree from edge config: create new or inherit from parent
-		string edgeTemplate;
-		if (parentTypeDef !is null)
-		{
-			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
+			// Broadcast to UI
+			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
+				pd.workspace, pd.projectPath, parentTid, "subtask")));
+			broadcastTaskUpdate(childTid);
+
+			// Set up worktree from edge config: create new or inherit from parent
+			string edgeTemplate;
+			if (ptd !is null)
 			{
-				edgeTemplate = edge.prompt_template;
-				childTd.resultNote = substituteVars(edge.result_note,
-					["output_dir": parentTd.taskDir]);
-				setupWorktreeForEdge(childTid, parentTid, edge.worktree);
+				if (auto edge = ptd.creatable_tasks.byName(taskType))
+				{
+					edgeTemplate = edge.prompt_template;
+					childTd.resultNote = substituteVars(edge.result_note,
+						["output_dir": pd.taskDir]);
+					setupWorktreeForEdge(childTid, parentTid, edge.worktree);
+				}
 			}
-		}
 
-		// Configure and spawn child agent
-		auto renderedPrompt = renderPrompt(*childTypeDef, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
-		auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
-		tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-			sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)], null, subtaskMeta);
-		}).ignoreResult();
-
-		if (description.length == 0)
-		{
-			auto promptForTitle = prompt;
+			// Configure and spawn child agent
+			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
+			auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				generateTitle(childTid, promptForTitle);
+				sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)], null, subtaskMeta);
 			}).ignoreResult();
-		}
-		infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
-		return promise;
+			if (description.length == 0)
+			{
+				auto promptForTitle = prompt;
+				tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
+					generateTitle(childTid, promptForTitle);
+				}).ignoreResult();
+			}
+			infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
+
+			return promise;
+		});
 	}
 
 	bool wouldBeWriter(string callerTid, string taskType)

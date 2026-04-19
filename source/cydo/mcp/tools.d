@@ -206,11 +206,20 @@ interface CydoTools
 
 import ae.utils.promise : Promise;
 
+/// Result of validating a single Task spec.
+/// On validation success, `launch` is non-null and creates the child task when called.
+/// On validation failure, `launch` is null and `error` contains the reason.
+struct ValidatedTask
+{
+	McpResult error;
+	Promise!McpResult delegate() launch;
+}
+
 /// Backend interface — methods that CydoToolsImpl needs from the application.
 /// App implements this; the indirection breaks the compile-time dependency on cydo.app.
 interface ToolsBackend
 {
-	Promise!McpResult handleCreateTask(string callerTid,
+	ValidatedTask handleCreateTask(string callerTid,
 		string description, string taskType, string prompt);
 	bool wouldBeWriter(string callerTid, string taskType);
 	McpResult handleSwitchMode(string callerTid, string continuation);
@@ -268,6 +277,8 @@ class CydoToolsImpl : CydoTools
 		import ae.utils.json : JSONFragment, toJson;
 		import ae.utils.promise : Promise;
 		import ae.utils.promise.await : await;
+		import std.array : join;
+		import std.conv : to;
 
 		if (tasks.length == 0)
 			return McpResult("No tasks provided", true);
@@ -282,10 +293,37 @@ class CydoToolsImpl : CydoTools
 				"Cannot run multiple non-read-only tasks in parallel: they would share the same worktree. Run them sequentially, or use fork worktrees.",
 				true);
 
-		// Launch all tasks — each returns a promise.
-		auto promises = new Promise!McpResult[tasks.length];
+		// Phase 1: validate all specs without executing any.
+		auto validated = new ValidatedTask[tasks.length];
 		foreach (i, ref spec; tasks)
-			promises[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
+			validated[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
+
+		// If any spec failed validation, report all errors and abort.
+		string[] errors;
+		ValidatedTask firstError;
+		foreach (i, ref vt; validated)
+			if (vt.launch is null)
+			{
+				if (errors.length == 0) firstError = vt;
+				errors ~= tasks.length == 1
+					? vt.error.text
+					: "Task " ~ to!string(i + 1) ~ " (" ~ tasks[i].task_type ~ "): " ~ vt.error.text;
+			}
+		if (errors.length > 0)
+		{
+			// For a single failure, preserve the structured content from validation.
+			if (errors.length == 1)
+				return firstError.error;
+			// Multiple failures: aggregate into a single TaskResult.
+			import cydo.task : TaskResult;
+			auto msg = errors.join("\n");
+			return McpResult(msg, true, JSONFragment(toJson(TaskResult(msg, null, null, null, msg))));
+		}
+
+		// Phase 2: all specs valid — launch all tasks.
+		auto promises = new Promise!McpResult[tasks.length];
+		foreach (i, ref vt; validated)
+			promises[i] = vt.launch();
 
 		// Register batch state and enter the event-driven wait loop.
 		// Returns when all children complete or a child asks a question.
