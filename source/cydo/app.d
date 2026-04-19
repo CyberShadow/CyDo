@@ -1593,8 +1593,8 @@ class App : ToolsBackend
 				~ "). Use Answer(qid, message) instead.", true));
 		}
 
-		// Child completed/failed → resume for follow-up
-		if (childTd.status == "completed" || childTd.status == "failed")
+		// Child completed/failed/active → resume or send follow-up
+		if (childTd.status == "completed" || childTd.status == "failed" || childTd.status == "active")
 		{
 			int qid = nextQid++;
 			auto promise = new Promise!McpResult;
@@ -1658,11 +1658,11 @@ class App : ToolsBackend
 			return awaitBatchLoop(parentTid);
 		}
 
-		// Child is active/busy
+		// Child is busy (waiting on its own sub-tasks, etc.)
 		return resolve(McpResult(
-			"Cannot Ask active sub-task (tid=" ~ to!string(childTid)
+			"Cannot Ask busy sub-task (tid=" ~ to!string(childTid)
 			~ ", status=" ~ childTd.status ~ "). "
-			~ "Ask to children is only supported for completed/failed tasks.", true));
+			~ "Wait for the sub-task to finish or become idle.", true));
 	}
 
 	private Promise!McpResult handleAskParent(int childTid, int parentTid, string message)

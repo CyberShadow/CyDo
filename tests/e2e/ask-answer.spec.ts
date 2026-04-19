@@ -239,7 +239,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: Ask to active sub-task returns error", async ({
+test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
   page,
   agentType,
 }) => {
@@ -284,14 +284,21 @@ test("Ask/Answer: Ask to active sub-task returns error", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Parent tries to Ask the stalling (active) child tid=2.
+  // Parent asks the stalling (active) child tid=2 with a follow-up.
+  // This should succeed now — asking an active child is allowed.
   await sendMessage(page, "call ask 2 hey are you done?");
 
-  // Backend should return an error because child 2 is active/busy.
+  // Navigate to child 2 to verify the follow-up was delivered.
+  // sendTaskMessage broadcasts to the UI immediately, so the message appears
+  // in child 2's conversation even though the child process is still stalling.
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
+    timeout: 10_000,
+  });
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
-      .getByText(/active sub-task/i)
+      .getByText("hey are you done?")
       .last(),
   ).toBeVisible({ timeout: 60_000 });
 });
