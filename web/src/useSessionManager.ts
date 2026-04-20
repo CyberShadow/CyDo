@@ -363,9 +363,6 @@ export function useTaskManager(
   );
 
   const connRef = useRef<Connection | null>(null);
-  // Correlation ID of the most recent createTask call; set to null once consumed.
-  // The client only auto-focuses a new task when the task_created response echoes this ID.
-  const pendingFocusId = useRef<string | null>(null);
   // Track which tasks have had history requested (avoid duplicate requests)
   const requestedHistoryRef = useRef(new Set<number>());
 
@@ -592,30 +589,6 @@ export function useTaskManager(
       const updated = reduceMessage(prev, msg, seq, ts);
       liveStates.set(tid, updated);
 
-      // When an agent sub-task exits and it's currently focused, switch to the
-      // first alive ancestor. For continuations (Handoff), the direct parent is
-      // already completed; the actual result receiver is further up the chain.
-      // User-created children (forks) stay focused — user navigates manually.
-      if (
-        msg.type === "process/exit" &&
-        !msg.is_continuation &&
-        prev.alive &&
-        prev.parentTid &&
-        prev.relationType !== "fork" &&
-        activeTaskIdRef.current === String(tid)
-      ) {
-        let targetTid = prev.parentTid;
-        while (targetTid) {
-          const t = liveStates.get(targetTid);
-          if (!t || !t.parentTid || t.alive) break;
-          targetTid = t.parentTid;
-        }
-        const target = liveStates.get(targetTid);
-        if (target) {
-          setActiveTaskId(String(targetTid));
-        }
-      }
-
       setTasks((map) => {
         const next = new Map(map);
         next.set(tid, updated);
@@ -791,43 +764,6 @@ export function useTaskManager(
             break; // Skip normal navigation logic
           }
 
-          // Navigate to the new task only if:
-          // - this client created it (top-level, correlation ID matches), or
-          // - its parent is currently focused (sub-task visible in context)
-          // Never auto-focus undo-backup tasks (they're invisible backups).
-          const correlationMatches =
-            pendingFocusId.current !== null &&
-            msg.correlation_id === pendingFocusId.current;
-          const shouldFocus =
-            relationType === "undo-backup"
-              ? false
-              : parentTid
-                ? activeTaskIdRef.current === String(parentTid)
-                : correlationMatches;
-          // Only consume the pending focus ID when the correlation actually
-          // matched.  Broadcast task_created messages (sub-tasks, forks,
-          // continuations) must not clear it — otherwise the unicast response
-          // to our own createTask would fail to navigate.
-          if (correlationMatches) pendingFocusId.current = null;
-          if (shouldFocus) {
-            activeTaskIdRef.current = String(tid);
-            if (workspace && projectPath) {
-              const projName = findProjectName(
-                workspacesRef.current,
-                workspace,
-                projectPath,
-              );
-              if (projName) {
-                const encodedProject = projName.replace(/\//g, ":");
-                routeRef.current(`/${workspace}/${encodedProject}/task/${tid}`);
-              } else {
-                routeRef.current("/");
-              }
-            } else {
-              routeRef.current("/");
-            }
-          }
-
           break;
         }
         case "tasks_list": {
@@ -984,34 +920,25 @@ export function useTaskManager(
             };
           }
           liveStates.set(entry.tid, taskUpdated);
-          // Auto-navigate away from dying sub-tasks immediately on
-          // task_updated, rather than waiting for the delayed process/exit
-          // event. This closes a race window where the user could send
-          // messages to the wrong (dead) task.
-          if (
-            existing &&
-            existing.alive &&
-            !entry.alive &&
-            taskUpdated.parentTid &&
-            taskUpdated.relationType !== "fork" &&
-            activeTaskIdRef.current === String(entry.tid)
-          ) {
-            let targetTid = taskUpdated.parentTid;
-            while (targetTid) {
-              const t = liveStates.get(targetTid);
-              if (!t || !t.parentTid || t.alive) break;
-              targetTid = t.parentTid;
-            }
-            const target = liveStates.get(targetTid);
-            if (target) {
-              setActiveTaskId(String(targetTid));
-            }
-          }
           setTasks((prev) => {
             const next = new Map(prev);
             next.set(entry.tid, taskUpdated);
             return next;
           });
+          break;
+        }
+        case "focus_hint": {
+          const fromTid = msg.from_tid;
+          const toTid = msg.to_tid;
+          const currentId = activeTaskIdRef.current;
+          const currentTid = currentId !== null ? parseInt(currentId, 10) : NaN;
+          const matches =
+            fromTid === 0
+              ? currentId === null || isNaN(currentTid)
+              : currentId === String(fromTid);
+          if (matches && liveStates.has(toTid)) {
+            setActiveTaskId(String(toTid));
+          }
           break;
         }
         case "task_reload": {
@@ -1664,7 +1591,6 @@ export function useTaskManager(
 
         // Atomic create+send
         const correlationId = crypto.randomUUID();
-        pendingFocusId.current = correlationId;
         const ws = activeWorkspaceRef.current;
         const proj = activeProjectRef.current;
         if (ws && proj) {

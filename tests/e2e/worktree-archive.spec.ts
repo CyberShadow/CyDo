@@ -297,28 +297,31 @@ test("archiving parent task archives spike's worktree", async ({
   } catch {
     // Task already inactive — no stop button
   }
-  await expect(page.locator(".btn-banner-archive")).toHaveText("Archive", {
-    timeout: responseTimeout(agentType),
-  });
+  await expect(page.locator(".btn-banner-archive:visible")).toHaveText(
+    "Archive",
+    { timeout: responseTimeout(agentType) },
+  );
 
   // Verify spike's worktree exists before archiving parent.
   const wtDir = `${backend.wsDir}/.cydo/tasks/${spikeTid}/worktree`;
   expect(existsSync(wtDir)).toBe(true);
 
   // 8. Archive the parent conversation task.
-  await page.locator(".btn-banner-archive").click();
-  await expect(page.locator(".btn-banner-archive")).toHaveText("Unarchive", {
-    timeout: responseTimeout(agentType),
-  });
+  await page.locator(".btn-banner-archive:visible").click();
+  await expect(page.locator(".btn-banner-archive:visible")).toHaveText(
+    "Unarchive",
+    { timeout: responseTimeout(agentType) },
+  );
 
   // Spike's worktree should be removed (parent cascade archived it).
   expect(existsSync(wtDir)).toBe(false);
 
   // 9. Unarchive the parent conversation task.
-  await page.locator(".btn-banner-archive").click();
-  await expect(page.locator(".btn-banner-archive")).toHaveText("Archive", {
-    timeout: responseTimeout(agentType),
-  });
+  await page.locator(".btn-banner-archive:visible").click();
+  await expect(page.locator(".btn-banner-archive:visible")).toHaveText(
+    "Archive",
+    { timeout: responseTimeout(agentType) },
+  );
 
   // Spike's worktree should be restored.
   expect(existsSync(wtDir)).toBe(true);

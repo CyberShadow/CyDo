@@ -1218,6 +1218,7 @@ class App : ToolsBackend
 			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 				pd.workspace, pd.projectPath, parentTid, "subtask")));
 			broadcastTaskUpdate(childTid);
+			broadcastFocusHint(parentTid, childTid);
 
 			// Set up worktree from edge config: create new or inherit from parent
 			string edgeTemplate;
@@ -1612,6 +1613,7 @@ class App : ToolsBackend
 			childTd.status = "active";
 			persistence.setStatus(childTid, "active");
 			broadcastTaskUpdate(childTid);
+			broadcastFocusHint(parentTid, childTid);
 
 			// Register a single-child batch so we can reuse awaitBatchLoop
 			BatchState batch;
@@ -1686,6 +1688,7 @@ class App : ToolsBackend
 		childTd.notificationBody = "Asking parent: " ~ truncateTitle(message, 100);
 		persistence.setStatus(childTid, "waiting");
 		broadcastTaskUpdate(childTid);
+		broadcastFocusHint(childTid, parentTid);
 
 		return promise;
 	}
@@ -1737,6 +1740,7 @@ class App : ToolsBackend
 			askTd.notificationBody = "";
 			persistence.setStatus(askTid, "active");
 			broadcastTaskUpdate(askTid);
+			broadcastFocusHint(callerTidInt, askTid);
 
 			// Re-enter the batch wait loop — blocks until next event
 			return awaitBatchLoop(callerTidInt);
@@ -1747,6 +1751,7 @@ class App : ToolsBackend
 			// Fulfill the promise — handleAskChild's .then() handler delivers to batch
 			(*questionPromise).fulfill(McpResult(message, false));
 			// Note: pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
+			broadcastFocusHint(callerTidInt, askTid);
 
 			// Return simple success to the child
 			return resolve(McpResult("Answer delivered.", false));
@@ -2118,6 +2123,7 @@ class App : ToolsBackend
 		// Send task_created only to the requesting client (unicast) so that
 		// parallel test workers don't steal each other's task IDs.
 		ws.send(Data(toJson(TaskCreatedMessage("task_created", tid, json.workspace, json.project_path, 0, "", json.correlation_id)).representation));
+		unicastFocusHint(ws, 0, tid);
 		// Broadcast updated task state so all other clients see the new task.
 		broadcastTaskUpdate(tid);
 
@@ -2808,6 +2814,7 @@ class App : ToolsBackend
 					broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
 						td.projectPath, tid, "fork")));
 					broadcastTaskUpdate(childTid);
+					broadcastFocusHint(tid, childTid);
 				});
 			return;
 		}
@@ -2854,6 +2861,7 @@ class App : ToolsBackend
 
 		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
+		broadcastFocusHint(tid, result.tid);
 	}
 
 	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -3839,6 +3847,12 @@ class App : ToolsBackend
 				if (tasks[tid].error.length == 0)
 					tasks[tid].error = "Process exited unexpectedly";
 				persistence.setStatus(tid, "failed");
+				if (tasks[tid].relationType != "fork")
+				{
+					auto ancestor = findAliveAncestor(tid);
+					if (ancestor >= 0)
+						broadcastFocusHint(tid, ancestor);
+				}
 				broadcastTaskUpdate(tid);
 				return;
 			}
@@ -3951,6 +3965,12 @@ class App : ToolsBackend
 			// No attention on exit — the session is over and there's
 			// nothing for the user to act on.  Turn-complete attention
 			// (in onOutput) is sufficient for interactive tasks.
+			if (tasks[tid].relationType != "fork")
+			{
+				auto ancestor = findAliveAncestor(tid);
+				if (ancestor >= 0)
+					broadcastFocusHint(tid, ancestor);
+			}
 			broadcastTaskUpdate(tid);
 		};
 
@@ -4074,6 +4094,7 @@ class App : ToolsBackend
 			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 				td.workspace, td.projectPath, tid, "continuation")));
 			broadcastTaskUpdate(childTid);
+			broadcastFocusHint(tid, childTid);
 
 			// If this task was itself a pending sub-task, move the promise
 			// to the new child so the parent awaits the full chain
@@ -5542,6 +5563,35 @@ class App : ToolsBackend
 		import ae.utils.json : toJson;
 
 		broadcast(toJson(TaskUpdatedMessage("task_updated", buildTaskEntry(tasks[tid]))));
+	}
+
+	private void broadcastFocusHint(int fromTid, int toTid)
+	{
+		import ae.utils.json : toJson;
+		broadcast(toJson(FocusHintMessage("focus_hint", fromTid, toTid)));
+	}
+
+	private void unicastFocusHint(WebSocketAdapter ws, int fromTid, int toTid)
+	{
+		import ae.utils.json : toJson;
+		ws.send(Data(toJson(FocusHintMessage("focus_hint", fromTid, toTid)).representation));
+	}
+
+	/// Find the first alive ancestor of a task, walking up through dead parents.
+	/// Returns -1 if no ancestor is found.
+	private int findAliveAncestor(int tid)
+	{
+		if (tid !in tasks || tasks[tid].parentTid == 0)
+			return -1;
+		int targetTid = tasks[tid].parentTid;
+		while (targetTid in tasks)
+		{
+			auto target = &tasks[targetTid];
+			if (target.parentTid == 0 || target.alive)
+				break;
+			targetTid = target.parentTid;
+		}
+		return (targetTid in tasks) ? targetTid : -1;
 	}
 
 	private string buildWorkspacesList()

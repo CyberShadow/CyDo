@@ -234,6 +234,11 @@ export interface TaskReloadMessage {
   tid: number;
   reason?: string;
 }
+export interface FocusHintMessage {
+  type: "focus_hint";
+  from_tid: number;
+  to_tid: number;
+}
 export interface TitleUpdateMessage {
   type: "title_update";
   tid: number;
@@ -382,6 +387,7 @@ export type ControlMessage =
   | TasksListMessage
   | TaskUpdatedMessage
   | TaskReloadMessage
+  | FocusHintMessage
   | TitleUpdateMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage

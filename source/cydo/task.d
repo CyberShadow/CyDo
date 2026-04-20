@@ -275,6 +275,13 @@ struct TaskUpdatedMessage
 	TaskListEntry task;
 }
 
+struct FocusHintMessage
+{
+	string type;
+	int from_tid;
+	int to_tid;
+}
+
 struct TaskListEntry
 {
 	int tid;

@@ -63,7 +63,8 @@ export class Connection {
           raw.type === "draft_updated" ||
           raw.type === "server_status" ||
           raw.type === "task_deleted" ||
-          raw.type === "notices_list"
+          raw.type === "notices_list" ||
+          raw.type === "focus_hint"
         ) {
           this.onControlMessage?.(raw as unknown as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
