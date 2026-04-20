@@ -32,7 +32,18 @@ nix build         # Build the full application
 nix flake check   # Run all tests — the single "all tests pass" command
 nix develop -ic env -C tests playwright ...        # Invoke Playwright directly
 ```
-Always run `nix flake check` after every unit of work and before committing. Do not skip or substitute with partial checks.
+
+**`nix flake check` is the mandatory gate before handing any work to the user.**
+This applies after every unit of work — not just `git commit`, but also
+`git commit --amend`, `git rebase`, or any other operation that changes the
+tree. No work is considered complete until the full suite passes.
+
+- If a test fails and the failure looks flaky (non-deterministic, unrelated to
+  your changes), retry `nix flake check`. If it fails consistently, treat it as
+  a real regression and fix it before proceeding.
+- **`--no-verify` is BANNED.** Never use it to bypass the pre-commit hook or
+  any other check. The `nix flake check` gate is non-negotiable.
+- Do not skip or substitute with partial checks.
 
 **Formatting:**
 ```bash
