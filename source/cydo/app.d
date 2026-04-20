@@ -4036,16 +4036,6 @@ class App : ToolsBackend
 			persistence.setStatus(tid, tasks[tid].status);
 			persistence.setResultText(tid, tasks[tid].resultText);
 
-			// Read output file content (if any) — prefer it over stream result text.
-			// The stream result text (agent's final message) is kept as the summary.
-			string outputContent;
-			if (tasks[tid].outputPath.length > 0)
-			{
-				import std.file : exists, readText;
-				if (exists(tasks[tid].outputPath))
-					outputContent = readText(tasks[tid].outputPath);
-			}
-
 			// Fulfill pending sub-task promise (if this is a child task)
 			if (auto pending = tid in pendingSubTasks)
 			{
@@ -4087,10 +4077,6 @@ class App : ToolsBackend
 				else
 					tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
 			}
-
-			// Store the best result text for UI display
-			if (outputContent.length > 0)
-				tasks[tid].resultText = outputContent;
 
 			// Notify frontends to re-request history (in-memory history
 			// already contains both JSONL and stdout-only messages like result).
