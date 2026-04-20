@@ -19,6 +19,17 @@ test("Ask/Answer: follow-up to completed sub-task", async ({ page, agentType }) 
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 
+  // Wait for the parent's turn to complete (mock responds "Done." after seeing
+  // the Task tool result). This ensures the session is in "alive" state before
+  // sending the follow-up, avoiding a race where suggestions render mid-turn
+  // and destabilize the send button layout.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
   // Parent calls Ask on the completed child (tid=2) with a follow-up question.
   await sendMessage(page, "call ask 2 any follow-up?");
 

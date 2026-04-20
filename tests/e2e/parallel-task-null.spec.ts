@@ -22,19 +22,22 @@ test("parallel Task results have no null entries", async ({ page }) => {
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible({ timeout: 10_000 });
 
-  // Wait for the parent to finish — "Done." appears after Task tool result is processed.
+  const msgList = page.locator('[style*="display: contents"] .message-list');
+
+  // Wait for the parent turn to complete. Copilot/Claude agents emit "Done." as
+  // an assistant text response after processing the Task tool result.  Codex may
+  // not emit any text (context compaction can end the turn silently), so we also
+  // accept the first task spec appearing as an equivalent completion signal.
+  const firstSpec = msgList.locator('.tool-result-container .cydo-task-spec').first();
   await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("Done.", { exact: true })
-      .last(),
+    msgList.getByText("Done.", { exact: true }).or(firstSpec).first(),
   ).toBeVisible({ timeout: 90_000 });
 
   // Scope to the tool result container inside the Task tool call.
   // The .tool-result-container holds result items, while .cydo-task-spec also
   // appears in the input section. Scoping avoids double-counting.
-  const resultSpecs = page.locator(
-    '[style*="display: contents"] .message-list .tool-result-container .cydo-task-spec',
+  const resultSpecs = msgList.locator(
+    '.tool-result-container .cydo-task-spec',
   );
   await expect(resultSpecs).toHaveCount(2, { timeout: 10_000 });
 

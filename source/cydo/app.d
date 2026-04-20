@@ -3757,8 +3757,22 @@ class App : ToolsBackend
 							auto resultJson = toJson(taskResult);
 							pending.fulfill(McpResult(resultJson, false, JSONFragment(resultJson)));
 							pendingSubTasks.remove(tid);
-							// taskDeps is left intact — onToolCallDelivered() handles
-							// the cleanup and the parent "waiting"→"active" transition.
+							// Clean up taskDeps eagerly — waiting for the deferred
+							// onToolCallDelivered() is unsafe because agents with
+							// synchronous closeStdin (Codex) fire onExit before it runs.
+							if (auto parentTidPtr = tid in taskDeps)
+							{
+								auto parentTid = *parentTidPtr;
+								persistence.removeTaskDep(parentTid, tid);
+								taskDeps.remove(tid);
+								if (childrenOf(parentTid).length == 0
+									&& parentTid in tasks && tasks[parentTid].status == "waiting")
+								{
+									tasks[parentTid].status = "active";
+									persistence.setStatus(parentTid, "active");
+									broadcastTaskUpdate(parentTid);
+								}
+							}
 						}
 					}
 
