@@ -188,6 +188,22 @@ export function matchPattern(userText) {
       },
     };
 
+  // "call busy-child-test" → two children:
+  //   - child A (tid+1): creates a grandchild that stalls → becomes "waiting"
+  //   - child B (tid+2): asks parent → makes parent's Task return early
+  // The grandchild gets the next tid after both children are allocated.
+  if (/call busy-child-test/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          { task_type: "research", prompt: "call task research stall session", description: "Busy child" },
+          { task_type: "research", prompt: "call ask any updates?", description: "Helper child" },
+        ],
+      },
+    };
+
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
   if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };

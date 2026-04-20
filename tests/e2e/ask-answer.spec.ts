@@ -303,6 +303,53 @@ test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
   ).toBeVisible({ timeout: 60_000 });
 });
 
+test("Ask/Answer: Ask to busy (waiting) sub-task returns error", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+
+  await enterSession(page);
+
+  // "call busy-child-test" creates two children:
+  //   - child A (tid=2): creates grandchild (tid=4) that stalls → becomes "waiting"
+  //   - child B (tid=3): asks parent → makes parent's Task return early with a question
+  // Tids: 1=parent, 2=child A, 3=child B, 4=grandchild (created by child A).
+  await sendMessage(page, "call busy-child-test");
+
+  // Wait for grandchild (tid=4) to appear in sidebar — confirms child A (tid=2) has
+  // created its sub-task and entered "waiting" status.
+  await page.locator('.sidebar-item[data-tid="4"]').waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  // Navigate to parent (tid=1) which should have the Task result.
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // Wait for the parent's turn to finish (mock responds "Done." after task result).
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Parent tries to Ask the busy (waiting) child tid=2.
+  await sendMessage(page, "call ask 2 hey are you done?");
+
+  // Backend should return an error because child 2 is busy (waiting on grandchild).
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/busy sub-task/i)
+      .last(),
+  ).toBeVisible({ timeout: 60_000 });
+});
+
 test("Ask/Answer: yield enforcement steers parent with unanswered child question", async ({
   page,
   agentType,
