@@ -247,6 +247,44 @@ function parseApplyPatchPaths(patchText: string): string[] {
   return paths;
 }
 
+interface ApplyPatchLine {
+  kind: "header" | "added" | "removed" | "context" | "plain";
+  text: string; // full original line text (with prefix)
+  content: string; // line content without prefix (for highlighting)
+}
+
+function parseApplyPatchLines(patchText: string): {
+  lines: ApplyPatchLine[];
+  lang: string | null;
+} {
+  const rawLines = patchText.split("\n");
+  const result: ApplyPatchLine[] = [];
+  let lang: string | null = null;
+
+  for (const line of rawLines) {
+    if (line.startsWith("*** ")) {
+      // Extract file path from Add/Update/Delete markers for lang detection
+      if (lang === null) {
+        const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+        if (m) lang = langFromPath(m[1]!.trim());
+      }
+      result.push({ kind: "header", text: line, content: line });
+    } else if (line.startsWith("@@")) {
+      result.push({ kind: "header", text: line, content: line });
+    } else if (line.startsWith("+")) {
+      result.push({ kind: "added", text: line, content: line.slice(1) });
+    } else if (line.startsWith("-")) {
+      result.push({ kind: "removed", text: line, content: line.slice(1) });
+    } else if (line.startsWith(" ")) {
+      result.push({ kind: "context", text: line, content: line.slice(1) });
+    } else {
+      result.push({ kind: "plain", text: line, content: line });
+    }
+  }
+
+  return { lines: result, lang };
+}
+
 function getToolCallFilePaths(
   name: string,
   input: Record<string, unknown>,
@@ -1293,6 +1331,162 @@ function FileChangeInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
+function ApplyPatchInput({ input }: { input: Record<string, unknown> }) {
+  const patchText = parsePatchTextFromInput(input);
+  if (!patchText) return formatGenericInput(input);
+
+  const { lines: patchLines, lang } = useMemo(
+    () => parseApplyPatchLines(patchText),
+    [patchText],
+  );
+
+  const { oldText, newText } = useMemo(() => {
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    for (const pl of patchLines) {
+      if (pl.kind === "removed" || pl.kind === "context")
+        oldLines.push(pl.content);
+      if (pl.kind === "added" || pl.kind === "context")
+        newLines.push(pl.content);
+    }
+    return { oldText: oldLines.join("\n"), newText: newLines.join("\n") };
+  }, [patchLines]);
+
+  const oldTokens = useHighlight(oldText, lang);
+  const newTokens = useHighlight(newText, lang);
+
+  const elements: h.JSX.Element[] = [];
+  let oldTokenIdx = 0;
+  let newTokenIdx = 0;
+
+  let i = 0;
+  while (i < patchLines.length) {
+    const pl = patchLines[i]!;
+
+    if (pl.kind === "header" || pl.kind === "plain") {
+      elements.push(
+        <div key={i} class={pl.kind === "header" ? "diff-header" : ""}>
+          {pl.text}
+        </div>,
+      );
+      i++;
+      continue;
+    }
+
+    if (pl.kind === "context") {
+      const oldIdx = oldTokenIdx++;
+      newTokenIdx++;
+      elements.push(
+        <div key={i} class="diff-context">
+          {" "}
+          {oldTokens?.[oldIdx] ? renderTokens(oldTokens[oldIdx]) : pl.content}
+        </div>,
+      );
+      i++;
+      continue;
+    }
+
+    if (pl.kind === "removed") {
+      // Collect consecutive removed lines
+      const removeStart = i;
+      while (i < patchLines.length && patchLines[i]!.kind === "removed") i++;
+      const removedSlice = patchLines.slice(removeStart, i);
+
+      // Collect adjacent added lines
+      const addStart = i;
+      while (i < patchLines.length && patchLines[i]!.kind === "added") i++;
+      const addedSlice = patchLines.slice(addStart, i);
+
+      const pairCount = Math.min(removedSlice.length, addedSlice.length);
+      const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
+      for (let p = 0; p < pairCount; p++) {
+        const wc = diffWordsWithSpace(
+          removedSlice[p]!.content,
+          addedSlice[p]!.content,
+        );
+        wordDiffs.push({
+          changes: wc,
+          similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
+        });
+      }
+
+      for (let p = 0; p < removedSlice.length; p++) {
+        const oldIdx = oldTokenIdx++;
+        const key = removeStart + p;
+        if (p < pairCount && wordDiffs[p]!.similar) {
+          const spans = overlayDiff(
+            oldTokens?.[oldIdx] ?? null,
+            wordDiffs[p]!.changes,
+            "old",
+          );
+          elements.push(
+            <div key={key} class="diff-removed">
+              {"-"}
+              {renderAnnotatedSpans(spans, "removed")}
+            </div>,
+          );
+        } else {
+          elements.push(
+            <div key={key} class="diff-removed">
+              {"-"}
+              {oldTokens?.[oldIdx]
+                ? renderTokens(oldTokens[oldIdx])
+                : removedSlice[p]!.content}
+            </div>,
+          );
+        }
+      }
+
+      for (let p = 0; p < addedSlice.length; p++) {
+        const newIdx = newTokenIdx++;
+        const key = addStart + p;
+        if (p < pairCount && wordDiffs[p]!.similar) {
+          const spans = overlayDiff(
+            newTokens?.[newIdx] ?? null,
+            wordDiffs[p]!.changes,
+            "new",
+          );
+          elements.push(
+            <div key={key} class="diff-added">
+              {"+"}
+              {renderAnnotatedSpans(spans, "added")}
+            </div>,
+          );
+        } else {
+          elements.push(
+            <div key={key} class="diff-added">
+              {"+"}
+              {newTokens?.[newIdx]
+                ? renderTokens(newTokens[newIdx])
+                : addedSlice[p]!.content}
+            </div>,
+          );
+        }
+      }
+      continue;
+    }
+
+    // Pure added line (no preceding removed block)
+    const newIdx = newTokenIdx++;
+    elements.push(
+      <div key={i} class="diff-added">
+        {"+"}
+        {newTokens?.[newIdx] ? renderTokens(newTokens[newIdx]) : pl.content}
+      </div>,
+    );
+    i++;
+  }
+
+  const remaining: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === "input" || k === "patchText" || k === "patch" || k === "diff")
+      continue;
+    remaining[k] = v;
+  }
+
+  return formatGenericInput(remaining, <div class="diff-view">{elements}</div>);
+}
+
 function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
   // Different Codex formats use different field names for the command:
   //   Bash/commandExecution/local_shell_call: "command"
@@ -2267,6 +2461,9 @@ function formatInput(
 ): h.JSX.Element {
   if (name === "fileChange" && Array.isArray(input.changes)) {
     return <FileChangeInput input={input} />;
+  }
+  if (name === "apply_patch") {
+    return <ApplyPatchInput input={input} />;
   }
   if (name === "Edit" && "old_string" in input && "new_string" in input) {
     return <EditInput input={input} result={result} />;
