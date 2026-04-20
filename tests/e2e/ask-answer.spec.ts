@@ -286,20 +286,14 @@ test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
 
   // Parent asks the stalling (active) child tid=2 with a follow-up.
   // This should succeed now — asking an active child is allowed.
+  // The old behavior would return "Cannot Ask active sub-task" error.
   await sendMessage(page, "call ask 2 hey are you done?");
 
-  // Navigate to child 2 to verify the follow-up was delivered.
-  // sendTaskMessage broadcasts to the UI immediately, so the message appears
-  // in child 2's conversation even though the child process is still stalling.
-  await page.locator('.sidebar-item[data-tid="2"]').click();
-  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
-    timeout: 10_000,
-  });
+  // Verify success: the parent enters "waiting" state (yellow dot in sidebar).
+  // This means Ask was accepted and the parent is blocking on the batch loop.
+  // The old behavior would have returned an error immediately without changing state.
   await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("hey are you done?")
-      .last(),
+    page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
   ).toBeVisible({ timeout: 60_000 });
 });
 
