@@ -2309,9 +2309,7 @@ class App : ToolsBackend
 				userMsgFromJsonl++;
 			return ta.translateHistoryLine(line, lineNum);
 		});
-		import core.lifetime : move;
-		td.history = move(loaded.history);
-		td.rawSource = loaded.rawSource;
+		td.setHistory(loaded.history, loaded.rawSource);
 		td.historyLoaded = true;
 		// For agents without queue-operations (e.g. Copilot), emit synthetics for
 		// user messages that were sent but not yet flushed to JSONL at kill time.
@@ -2337,9 +2335,8 @@ class App : ToolsBackend
 				// Emit synthetic into history with uuid for undo support.
 				auto synEv = buildSyntheticUserEvent(text);
 				synEv.uuid = uuid;
-				td.history ~= Data(
-					toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(synEv)))).representation);
-				td.rawSource ~= cast(string) null;
+				td.appendHistory(Data(
+					toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(synEv)))).representation), null);
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -3019,8 +3016,7 @@ class App : ToolsBackend
 				ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
 				return;
 			}
-			td.history = DataVec();
-			td.rawSource = null;
+			td.resetHistory();
 			td.historyLoaded = false;
 			unsubscribeAll(tid);
 			// Clip pendingSteeringTexts to match remaining user messages in the
@@ -3102,8 +3098,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		td.history = DataVec();
-		td.rawSource = null;
+		td.resetHistory();
 		td.historyLoaded = false;
 		unsubscribeAll(tid);
 
@@ -3172,8 +3167,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		td.history = DataVec();
-		td.rawSource = null;
+		td.resetHistory();
 		td.historyLoaded = false;
 		unsubscribeAll(tid);
 
@@ -3220,8 +3214,7 @@ class App : ToolsBackend
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
-			tasks[tid].history ~= data;
-			tasks[tid].rawSource ~= cast(string) null;
+			tasks[tid].appendHistory(data, null);
 		}
 		sendToSubscribed(tid, data);
 
@@ -3816,8 +3809,7 @@ class App : ToolsBackend
 
 			// Force JSONL reload on next request_history so that
 			// fork IDs from the file replace live-stream UUIDs.
-			tasks[tid].history = DataVec();
-			tasks[tid].rawSource = null;
+			tasks[tid].resetHistory();
 			tasks[tid].historyLoaded = false;
 			unsubscribeAll(tid);
 
@@ -4825,33 +4817,24 @@ class App : ToolsBackend
 				auto op = jsonParse!QueueOperationProbe(ev.translated);
 				if (op.operation == "enqueue")
 				{
-					td.enqueuedSteeringTexts ~= op.content;
-					td.enqueuedSteeringRawLines ~= ev.translated;
+					td.enqueueSteering(op.content, ev.translated);
 					return; // already displayed via unconfirmedUserEvent
 				}
 				else if (op.operation == "dequeue")
 				{
-					if (td.enqueuedSteeringTexts.length > 0)
-					{
-						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
-						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
-					}
+					td.dequeueSteering();
 					return; // the real message/user follows
 				}
 				else if (op.operation == "remove")
 				{
-					if (td.enqueuedSteeringTexts.length > 0)
+					string text, enqueueRaw;
+					if (td.popSteering(text, enqueueRaw))
 					{
-						auto text = td.enqueuedSteeringTexts[0];
-						auto enqueueRaw = td.enqueuedSteeringRawLines[0];
-						td.enqueuedSteeringTexts = td.enqueuedSteeringTexts[1 .. $];
-						td.enqueuedSteeringRawLines = td.enqueuedSteeringRawLines[1 .. $];
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
 						auto data = Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(steeringEv)))).representation);
 						ensureHistoryLoaded(tid);
-						td.history ~= data;
-						td.rawSource ~= enqueueRaw.length > 0 ? enqueueRaw : null;
+						td.appendHistory(data, enqueueRaw.length > 0 ? enqueueRaw : null);
 						sendToSubscribed(tid, data);
 					}
 					return;
@@ -4869,8 +4852,7 @@ class App : ToolsBackend
 			// history compact without reordering events.
 			if (!mergeStreamingDelta(tid, ev.translated, historyData))
 			{
-				tasks[tid].history ~= historyData;
-				tasks[tid].rawSource ~= ev.raw;
+				tasks[tid].appendHistory(historyData, ev.raw);
 			}
 		}
 
@@ -4889,11 +4871,11 @@ class App : ToolsBackend
 		if (!translated.canFind(`"type":"item/delta"`))
 			return false;
 
-		auto history = &tasks[tid].history;
-		if (history.length == 0)
+		auto td = &tasks[tid];
+		if (td.history.length == 0)
 			return false;
 
-		auto lastEntry = cast(const(char)[])(*history)[$ - 1].unsafeContents;
+		auto lastEntry = cast(const(char)[])td.history[$ - 1].unsafeContents;
 		if (lastEntry.length > 64 * 1024)
 			return false;
 		if (!lastEntry.canFind(`"type":"item/delta"`) &&
@@ -4914,10 +4896,10 @@ class App : ToolsBackend
 		// Reconstruct envelope from merged content, preserving the original ts.
 		import std.json : parseJSON;
 		import cydo.task : extractTsFromEnvelope;
-		auto prevTs = extractTsFromEnvelope(cast(string)(*history)[$ - 1].unsafeContents);
+		auto prevTs = extractTsFromEnvelope(cast(string)td.history[$ - 1].unsafeContents);
 		auto mergedObj = parseJSON(merged);
 		auto canonical = toJson(TaskEventEnvelope(tid, prevTs, JSONFragment(mergedObj["event"].toString())));
-		(*history)[$ - 1] = Data(canonical.representation);
+		td.replaceLastHistory(Data(canonical.representation));
 		return true;
 	}
 

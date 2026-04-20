@@ -4,6 +4,7 @@ import std.format : format;
 
 private string[string] repoPathCache;
 
+import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial;
 import ae.utils.promise : Promise, PromiseQueue;
@@ -154,6 +155,7 @@ struct TaskData
 	// Runtime state (not persisted)
 	AgentSession session;
 	ProcessLaunch launch;
+	// --- history + rawSource: parallel arrays, mutate only via helpers below ---
 	DataVec history;          // unified: JSONL file events + live stdout events
 	string[] rawSource;       // parallel to history: original agent line per event (null for synthetics)
 	bool historyLoaded;       // whether JSONL has been loaded into history
@@ -179,8 +181,78 @@ struct TaskData
 	void delegate() suggestGenKill;  // cancel one-shot subprocess; null if not running
 	uint suggestGeneration;  // incremented each time generateSuggestions is called
 	string[] lastSuggestions; // most recent suggestions, sent on subscribe
+	// --- enqueuedSteering*: parallel arrays, mutate only via helpers below ---
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 	string[] enqueuedSteeringRawLines; // parallel: raw JSONL lines for _raw
+	// -- History parallel-array helpers --
+
+	/// Append an event and its raw source atomically.
+	void appendHistory(Data event, string raw)
+	{
+		history ~= event;
+		rawSource ~= raw;
+		assert(history.length == rawSource.length);
+	}
+
+	/// Replace the last history entry (for merge-streaming-delta).
+	/// rawSource is unchanged since the merged entry keeps the original's raw.
+	void replaceLastHistory(Data event)
+	{
+		assert(history.length > 0);
+		history[$ - 1] = event;
+		assert(history.length == rawSource.length);
+	}
+
+	/// Bulk-assign history and rawSource together (for loading persisted history).
+	void setHistory(ref DataVec newHistory, string[] newRawSource)
+	{
+		import core.lifetime : move;
+		assert(newHistory.length == newRawSource.length);
+		history = move(newHistory);
+		rawSource = newRawSource;
+	}
+
+	/// Reset history and rawSource to empty.
+	void resetHistory()
+	{
+		history = DataVec();
+		rawSource = null;
+	}
+
+	// -- Steering parallel-array helpers --
+
+	/// Enqueue a steering message text and its raw line.
+	void enqueueSteering(string text, string rawLine)
+	{
+		enqueuedSteeringTexts ~= text;
+		enqueuedSteeringRawLines ~= rawLine;
+		assert(enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length);
+	}
+
+	/// Dequeue (pop front) from steering arrays. Returns false if empty.
+	bool dequeueSteering()
+	{
+		if (enqueuedSteeringTexts.length == 0)
+			return false;
+		enqueuedSteeringTexts = enqueuedSteeringTexts[1 .. $];
+		enqueuedSteeringRawLines = enqueuedSteeringRawLines[1 .. $];
+		assert(enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length);
+		return true;
+	}
+
+	/// Pop and return the front steering entry. Returns false if empty.
+	bool popSteering(out string text, out string rawLine)
+	{
+		if (enqueuedSteeringTexts.length == 0)
+			return false;
+		text = enqueuedSteeringTexts[0];
+		rawLine = enqueuedSteeringRawLines[0];
+		enqueuedSteeringTexts = enqueuedSteeringTexts[1 .. $];
+		enqueuedSteeringRawLines = enqueuedSteeringRawLines[1 .. $];
+		assert(enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length);
+		return true;
+	}
+
 	/// Texts of all messages sent to this task, in send order.
 	/// Populated in handleUserMessage; NOT cleared by history reset.
 	/// Consumed by ensureHistoryLoaded to supply text for queue-operation:enqueue
