@@ -104,6 +104,10 @@ interface Agent
 	/// projectPath is the project's absolute path; empty means use cwd.
 	string historyPath(string sessionId, string projectPath);
 
+	/// Reset internal history-replay state (e.g. task_started sentinel).
+	/// Called before each loadTaskHistory loop so re-loads start clean.
+	void resetHistoryReplay();
+
 	/// Translate a history line from the agent's native JSONL format.
 	/// Claude returns lines unchanged (raw protocol); Codex translates
 	/// from {timestamp, type, payload} to agnostic events.

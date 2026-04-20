@@ -8,13 +8,6 @@ test("codex alive-path undo: session stays alive after undo", async ({
     agentType !== "codex",
     "Codex-only: tests thread/rollback undo path",
   );
-  // Known bug: Codex alive-path undo doesn't correctly truncate displayed
-  // history — the thread/rollback RPC succeeds but the JSONL reload shows
-  // extra messages from the undone turn.
-  test.fixme(
-    true,
-    "Known bug: Codex alive-path undo doesn't correctly truncate displayed history",
-  );
 
   await enterSession(page);
 
@@ -52,11 +45,10 @@ test("codex alive-path undo: session stays alive after undo", async ({
   await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
   await page.locator(".btn-undo").click();
 
-  // After undo: exactly 1 confirmed user message remains.
-  await expect(page.locator(".message.user-message:not(.pending)")).toHaveCount(
-    1,
-    { timeout: 15_000 },
-  );
+  // After undo: exactly 1 confirmed user message remains (meta messages excluded).
+  await expect(
+    page.locator(".message.user-message:not(.pending):not(.meta-message)"),
+  ).toHaveCount(1, { timeout: 15_000 });
 
   // After undo: exactly 1 assistant message remains.
   await expect(page.locator(".message.assistant-message")).toHaveCount(1, {

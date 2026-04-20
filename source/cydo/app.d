@@ -2207,6 +2207,7 @@ class App : ToolsBackend
 		string lastDequeuedText;
 		int lastDequeuedEnqueueLineNum;
 		string lastDequeuedRawLine;
+		ta.resetHistoryReplay();
 		auto loaded = loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
 			// Skip lines that are part of rolled-back turns
 			if (lineNum in rollbackSkipLines)
@@ -2927,6 +2928,37 @@ class App : ToolsBackend
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 						return;
 					}
+
+					// Verify the undo target is actually a user-message line.
+					// A non-user target (e.g. assistant line) means rollback would
+					// remove the wrong number of turns — fall back to kill+truncate.
+					{
+						import std.file : exists, readText;
+						import std.string : lineSplitter;
+						bool targetIsUserMsg = false;
+						if (jsonlPath.length > 0 && exists(jsonlPath))
+						{
+							int lnum = 0;
+							foreach (rawLine; readText(jsonlPath).lineSplitter)
+							{
+								lnum++;
+								if (rawLine.length == 0) continue;
+								if (ta.forkIdMatchesLine(rawLine, lnum, json.after_uuid))
+								{
+									targetIsUserMsg = ta.isUserMessageLine(rawLine);
+									break;
+								}
+							}
+						}
+						if (!targetIsUserMsg)
+						{
+							warningf("tid=%d: thread/rollback invariant: after_uuid=%s is not a user-message line — falling back to kill+truncate",
+								tid, json.after_uuid);
+							fallbackUndoKillAndTruncate(ws, tid, json);
+							return;
+						}
+					}
+
 					// +1: include the target turn itself
 					auto numTurns = cast(uint)(userMsgCount + 1);
 

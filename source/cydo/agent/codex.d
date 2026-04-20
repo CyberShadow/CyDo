@@ -839,6 +839,13 @@ class CodexAgent : Agent
 	private string lastMcpConfigPath_;
 	// Background thread: sessionId → file path (populated by enumerateAllSessions)
 	private string[string] sessionIdToPath_;
+	// History replay state: tracks whether task_started has been seen in the current replay.
+	private bool histSeenTaskStarted_;
+
+	void resetHistoryReplay()
+	{
+		histSeenTaskStarted_ = false;
+	}
 
 	void configureSandbox(ref PathMode[string] paths, ref string[string] env)
 	{
@@ -1276,7 +1283,9 @@ class CodexAgent : Agent
 			string forkId = null;
 			if (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`))
 				forkId = "line:" ~ to!string(lineNum);
-			auto results = translateRolloutResponseItem(line, forkId);
+			// Lines before task_started are system context injected by Codex — mark as meta.
+			bool forceMeta = !histSeenTaskStarted_;
+			auto results = translateRolloutResponseItem(line, forkId, forceMeta);
 			TranslatedEvent[] evs;
 			foreach (r; results)
 				evs ~= TranslatedEvent(r, line, ts);
@@ -1284,6 +1293,8 @@ class CodexAgent : Agent
 		}
 		else if (line.canFind(`"type":"event_msg"`))
 		{
+			if (!histSeenTaskStarted_ && line.canFind(`"task_started"`))
+				histSeenTaskStarted_ = true;
 			auto t = translateRolloutEventMsg(line);
 			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
 		}
@@ -2606,7 +2617,7 @@ string translateRolloutSessionMeta(string line)
 }
 
 /// Translate a response_item rollout line → item-based protocol events.
-string[] translateRolloutResponseItem(string line, string forkId = null)
+string[] translateRolloutResponseItem(string line, string forkId = null, bool forceMeta = false)
 {
 	@JSONPartial
 	static struct Probe
@@ -2650,7 +2661,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 	if (ptype == "message")
 		results = translateRolloutMessage(probe.payload.role,
 			probe.payload.content.json !is null ? probe.payload.content.json : "[]",
-			forkId);
+			forkId, forceMeta);
 	else if (ptype == "local_shell_call")
 		results = translateRolloutToolUse(probe.payload.call_id, "local_shell_call",
 			extractCommandInput(probe.payload.action));
@@ -2764,7 +2775,8 @@ string[] translateRolloutResponseItem(string line, string forkId = null)
 }
 
 /// Translate a message response_item payload → item/started [+ item/completed].
-string[] translateRolloutMessage(string role, string contentJson, string forkId = null)
+string[] translateRolloutMessage(string role, string contentJson, string forkId = null,
+	bool forceMeta = false)
 {
 	import std.array : replace;
 
@@ -2841,7 +2853,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		ev.item_id = "codex-user-hist";
 		ev.item_type = "user_message";
 		ev.content = [cb];
-		if (role != "user")
+		if (role != "user" || forceMeta)
 			ev.is_meta = true;
 		if (forkId !is null)
 			ev.uuid = forkId;

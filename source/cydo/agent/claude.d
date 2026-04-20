@@ -357,6 +357,8 @@ class ClaudeCodeAgent : Agent
 		return translateClaudeHistoryEvent(line);
 	}
 
+	void resetHistoryReplay() {} // no state to reset for Claude
+
 	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
 		// ClaudeCodeSession handles translation statefully inline.

@@ -386,6 +386,8 @@ class CopilotAgent : Agent
 		return buildPath(copilotHome, "session-state", sessionId, "events.jsonl");
 	}
 
+	void resetHistoryReplay() {} // no state to reset for Copilot
+
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.algorithm : canFind;
