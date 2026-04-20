@@ -184,6 +184,10 @@ struct TaskData
 	// --- enqueuedSteering*: parallel arrays, mutate only via helpers below ---
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 	string[] enqueuedSteeringRawLines; // parallel: raw JSONL lines for _raw
+
+	invariant (history.length == rawSource.length, "history/rawSource length mismatch");
+	invariant (enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length, "steering texts/rawLines length mismatch");
+
 	// -- History parallel-array helpers --
 
 	/// Append an event and its raw source atomically.
