@@ -66,6 +66,7 @@ function AppContent() {
     getProjectHref,
     getTaskHref,
     refreshWorkspaces,
+    refreshingWorkspaces,
   } = useTaskManager(addToast);
 
   const { theme, toggleTheme } = useTheme();
@@ -194,6 +195,7 @@ function AppContent() {
                 getProjectHref={getProjectHref}
                 getTaskHref={getTaskHref}
                 onRefreshWorkspaces={refreshWorkspaces}
+                refreshingWorkspaces={refreshingWorkspaces}
               />
             ) : (
               <div class="connection-overlay">

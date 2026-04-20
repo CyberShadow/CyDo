@@ -2891,6 +2891,20 @@ pre.extra-field-value {
   height: 34px;
 }
 
+.refresh-workspaces-btn:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+.refresh-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 .project-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));

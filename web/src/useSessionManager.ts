@@ -174,6 +174,7 @@ export interface TaskManager {
   getProjectHref: (workspace: string, projectName: string) => string;
   getTaskHref: (id: string) => string;
   refreshWorkspaces: () => void;
+  refreshingWorkspaces: boolean;
 }
 
 /// Extract text content from a user message event (for unconfirmed display).
@@ -224,6 +225,7 @@ export function useTaskManager(
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false);
   const [entryPoints, setEntryPoints] = useState<EntryPointInfo[]>([]);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
   const [projectEntryPoints, setProjectEntryPoints] = useState<
@@ -603,6 +605,7 @@ export function useTaskManager(
       switch (msg.type) {
         case "workspaces_list": {
           setWorkspaces(msg.workspaces);
+          setRefreshingWorkspaces(false);
           setConnected(true);
           break;
         }
@@ -2010,7 +2013,11 @@ export function useTaskManager(
     navigateToProject,
     getProjectHref,
     getTaskHref,
-    refreshWorkspaces: () => connRef.current?.refreshWorkspaces(),
+    refreshWorkspaces: () => {
+      setRefreshingWorkspaces(true);
+      connRef.current?.refreshWorkspaces();
+    },
+    refreshingWorkspaces,
   };
 }
 

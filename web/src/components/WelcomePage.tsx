@@ -18,6 +18,7 @@ interface Props {
   taskTypes: TypeInfo[];
   notices: Record<string, Notice>;
   onRefreshWorkspaces: () => void;
+  refreshingWorkspaces: boolean;
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -172,6 +173,7 @@ export function WelcomePage({
   taskTypes,
   notices,
   onRefreshWorkspaces,
+  refreshingWorkspaces,
 }: Props) {
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -413,8 +415,9 @@ export function WelcomePage({
           class="sidebar-new-btn refresh-workspaces-btn"
           onClick={onRefreshWorkspaces}
           title="Refresh project list"
+          disabled={refreshingWorkspaces}
         >
-          ↻
+          {refreshingWorkspaces ? <span class="refresh-spinner" /> : "↻"}
         </button>
       </div>
       <ActiveSessions
