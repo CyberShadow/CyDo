@@ -55,6 +55,7 @@ interface Props {
   theme: Theme;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
+  hasGlobalAttention?: boolean;
   onSetArchived?: (tid: number, archived: boolean) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
@@ -89,6 +90,7 @@ function SessionViewInner({
   theme,
   onToggleTheme,
   onToggleSidebar,
+  hasGlobalAttention,
   onSetArchived,
   onEditMessage,
   onEditRawEvent,
@@ -407,6 +409,7 @@ function SessionViewInner({
         onCloseStdin={onCloseStdin}
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
+        hasGlobalAttention={hasGlobalAttention}
         archived={task.archived}
         archiving={task.archiving}
         onSetArchived={onSetArchived ? handleSetArchived : undefined}

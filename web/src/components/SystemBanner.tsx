@@ -17,6 +17,7 @@ interface Props {
   onCloseStdin: () => void;
   taskType?: string;
   onToggleSidebar?: () => void;
+  hasGlobalAttention?: boolean;
   archived?: boolean;
   archiving?: boolean;
   onSetArchived?: () => void;
@@ -36,6 +37,7 @@ export function SystemBanner({
   onCloseStdin,
   taskType,
   onToggleSidebar,
+  hasGlobalAttention,
   archived,
   archiving,
   onSetArchived,
@@ -49,14 +51,22 @@ export function SystemBanner({
       <div class="banner-left">
         {onToggleSidebar && (
           <button
-            class="hamburger-btn"
+            class={`hamburger-btn${hasGlobalAttention ? " has-attention" : ""}`}
             onClick={onToggleSidebar}
-            title="Toggle sidebar"
+            title={
+              hasGlobalAttention
+                ? "Toggle sidebar — sessions need attention"
+                : "Toggle sidebar"
+            }
           >
-            <span
-              class="action-icon"
-              dangerouslySetInnerHTML={{ __html: hamburgerIcon }}
-            />
+            {hasGlobalAttention ? (
+              <span class="task-type-icon task-type-icon-check alive" />
+            ) : (
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: hamburgerIcon }}
+              />
+            )}
           </button>
         )}
         <span class="banner-title">CyDo</span>
