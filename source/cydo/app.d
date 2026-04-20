@@ -1143,7 +1143,7 @@ class App : ToolsBackend
 		McpResult structuredTaskError(string message)
 		{
 			auto taskResultJson = toJson(TaskResult(message, null, null, null, message));
-			return McpResult(message, true, JSONFragment(taskResultJson));
+			return McpResult.structured(taskResultJson, true);
 		}
 
 		// Look up calling task
@@ -1379,9 +1379,8 @@ class App : ToolsBackend
 			if (result.isError)
 				anyError = true;
 		}
-		auto arrayJson = toJson(items);
 		auto wrappedJson = toJson(BatchResultEnvelope(items));
-		return resolve(McpResult(arrayJson, anyError, JSONFragment(wrappedJson)));
+		return resolve(McpResult.structured(wrappedJson, anyError));
 	}
 
 	/// Handle SwitchMode tool — validate and store continuation choice (keep_context).
@@ -1727,9 +1726,7 @@ class App : ToolsBackend
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
 				"Use Ask(question) to ask follow-up questions."));
-			(*questionPromise).fulfill(McpResult(
-				"Answer from \"" ~ tasks[callerTidInt].title ~ "\": " ~ message,
-				false, JSONFragment(answerJson)));
+			(*questionPromise).fulfill(McpResult.structured(answerJson));
 
 			// Clean up child state
 			if (askTd.pendingAskPromise !is null)
@@ -1758,18 +1755,14 @@ class App : ToolsBackend
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
 				"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
-			(*questionPromise).fulfill(McpResult(
-				"Answer from \"" ~ tasks[callerTidInt].title ~ "\": " ~ message,
-				false, JSONFragment(answerJson)));
+			(*questionPromise).fulfill(McpResult.structured(answerJson));
 			// Note: pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
 			broadcastFocusHint(callerTidInt, askTid);
 
 			// Return simple success to the child
 			auto deliveredJson = toJson(AnswerResult("delivered", askTid, qid,
 				null, null, "Answer delivered to parent task. End the session now."));
-			return resolve(McpResult(
-				"Answer delivered to parent task. End the session now.",
-				false, JSONFragment(deliveredJson)));
+			return resolve(McpResult.structured(deliveredJson));
 		}
 		else
 		{
@@ -1839,11 +1832,7 @@ class App : ToolsBackend
 		import std.conv : to;
 		auto childTd = &tasks[childTid];
 		auto questionJson = toJson(QuestionResult("question", childTid, childTd.pendingAskQid, childTd.title, childTd.pendingAskQuestion));
-		return McpResult(
-			"Sub-task \"" ~ childTd.title ~ "\" is asking (qid=" ~ to!string(childTd.pendingAskQid) ~ "): " ~ childTd.pendingAskQuestion,
-			false,
-			JSONFragment(questionJson)
-		);
+		return McpResult.structured(questionJson);
 	}
 
 	/// Called after an MCP tool call result is successfully sent back to the
@@ -3770,7 +3759,7 @@ class App : ToolsBackend
 							persistence.setResultText(tid, td.resultText);
 							auto taskResult = buildTaskResult(tid);
 							auto resultJson = toJson(taskResult);
-							pending.fulfill(McpResult(resultJson, false, JSONFragment(resultJson)));
+							pending.fulfill(McpResult.structured(resultJson));
 							pendingSubTasks.remove(tid);
 							// Clean up taskDeps eagerly — waiting for the deferred
 							// onToolCallDelivered() is unsafe because agents with
@@ -4057,7 +4046,7 @@ class App : ToolsBackend
 				auto success = tasks[tid].status == "completed";
 				auto taskResult = buildTaskResult(tid);
 				auto resultJson = toJson(taskResult);
-				pending.fulfill(McpResult(resultJson, !success, JSONFragment(resultJson)));
+				pending.fulfill(McpResult.structured(resultJson, !success));
 				pendingSubTasks.remove(tid);
 				// Deps left intact — cleaned by onToolCallDelivered() on success,
 				// or used by deliverBatchResults() as fallback if MCP delivery fails.

@@ -317,7 +317,7 @@ class CydoToolsImpl : CydoTools
 			// Multiple failures: aggregate into a single TaskResult.
 			import cydo.task : TaskResult;
 			auto msg = errors.join("\n");
-			return McpResult(msg, true, JSONFragment(toJson(TaskResult(msg, null, null, null, msg))));
+			return McpResult.structured(toJson(TaskResult(msg, null, null, null, msg)), true);
 		}
 
 		// Phase 2: all specs valid — launch all tasks.

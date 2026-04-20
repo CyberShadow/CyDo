@@ -17,11 +17,22 @@ struct McpName
 }
 
 /// Result of an MCP tool call.
+///
+/// When returning structured content, use `McpResult.structured(json, isError)`
+/// which sets `text` to the same JSON string — per the MCP spec, `content[0].text`
+/// must equal `structuredContent` when both are present.
 struct McpResult
 {
 	string text;
 	bool isError;
-	JSONFragment structuredContent; /// Optional structured JSON result (MCP structuredContent)
+	JSONFragment structuredContent; /// Optional structured JSON; must equal text when present.
+
+	/// Construct a result with structured content. Sets text = json string
+	/// so that content[0].text and structuredContent are identical per MCP spec.
+	static McpResult structured(string json, bool isError = false)
+	{
+		return McpResult(json, isError, JSONFragment(json));
+	}
 }
 
 import ae.utils.json : JSONFragment;
