@@ -594,12 +594,21 @@ export const Sidebar = memo(function Sidebar({
       <div class="sidebar-header">
         <div class="sidebar-header-left">
           {showBackButton && onBack && backHref && (
-            <a href={backHref} class="sidebar-back-btn" title="Home">
-              <span
-                class="action-icon"
-                dangerouslySetInnerHTML={{ __html: cydoIcon }}
-              />
-              {hasGlobalAttention && <span class="home-attention-dot" />}
+            <a
+              href={backHref}
+              class={`sidebar-back-btn${hasGlobalAttention ? " has-attention" : ""}`}
+              title={
+                hasGlobalAttention ? "Home — sessions need attention" : "Home"
+              }
+            >
+              {hasGlobalAttention ? (
+                <span class="task-type-icon task-type-icon-check alive" />
+              ) : (
+                <span
+                  class="action-icon"
+                  dangerouslySetInnerHTML={{ __html: cydoIcon }}
+                />
+              )}
             </a>
           )}
         </div>

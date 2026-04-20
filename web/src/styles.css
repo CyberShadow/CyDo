@@ -3036,6 +3036,10 @@ pre.extra-field-value {
   background: var(--hover);
 }
 
+.active-sessions-row.attention {
+  background: rgba(76, 175, 80, 0.1);
+}
+
 .active-sessions-row + .active-sessions-row {
   border-top: 1px solid var(--border);
 }
@@ -3075,7 +3079,6 @@ pre.extra-field-value {
 
 /* Sidebar back button */
 .sidebar-back-btn {
-  position: relative;
   width: 28px;
   height: 28px;
   border: 1px solid var(--border);
@@ -3107,15 +3110,9 @@ pre.extra-field-value {
   height: 100%;
 }
 
-.home-attention-dot {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--attention);
-  pointer-events: none;
+.sidebar-back-btn.has-attention {
+  background: rgba(76, 175, 80, 0.1);
+  border-color: var(--success);
 }
 
 .sidebar-header-left,
@@ -3207,6 +3204,11 @@ pre.extra-field-value {
   background: var(--bg-tertiary);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.hamburger-btn.has-attention {
+  background: rgba(76, 175, 80, 0.1);
+  border-color: var(--success);
 }
 
 .hamburger-btn .action-icon {

@@ -111,7 +111,7 @@ function ActiveSessions({
             return (
               <div
                 key={t.tid}
-                class="active-sessions-row"
+                class={`active-sessions-row${attention.has(t.tid) ? " attention" : ""}`}
                 onClick={(e: MouseEvent) => {
                   if (!isPlainLeftClick(e)) return;
                   e.preventDefault();
