@@ -1696,6 +1696,7 @@ class App : ToolsBackend
 	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
 	{
 		import std.conv : to;
+		import cydo.agent.protocol : AnswerResult;
 		int callerTidInt;
 		try callerTidInt = to!int(callerTidStr);
 		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
@@ -1723,7 +1724,12 @@ class App : ToolsBackend
 		if (parentAnsweringChild)
 		{
 			// Fulfill child's blocking Ask call with the answer
-			(*questionPromise).fulfill(McpResult(message, false));
+			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+				tasks[callerTidInt].title, message,
+				"Use Ask(question) to ask follow-up questions."));
+			(*questionPromise).fulfill(McpResult(
+				"Answer from \"" ~ tasks[callerTidInt].title ~ "\": " ~ message,
+				false, JSONFragment(answerJson)));
 
 			// Clean up child state
 			if (askTd.pendingAskPromise !is null)
@@ -1749,12 +1755,21 @@ class App : ToolsBackend
 		{
 			// Child answering parent's follow-up question
 			// Fulfill the promise — handleAskChild's .then() handler delivers to batch
-			(*questionPromise).fulfill(McpResult(message, false));
+			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+				tasks[callerTidInt].title, message,
+				"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
+			(*questionPromise).fulfill(McpResult(
+				"Answer from \"" ~ tasks[callerTidInt].title ~ "\": " ~ message,
+				false, JSONFragment(answerJson)));
 			// Note: pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
 			broadcastFocusHint(callerTidInt, askTid);
 
 			// Return simple success to the child
-			return resolve(McpResult("Answer delivered.", false));
+			auto deliveredJson = toJson(AnswerResult("delivered", askTid, qid,
+				null, null, "Answer delivered to parent task. End the session now."));
+			return resolve(McpResult(
+				"Answer delivered to parent task. End the session now.",
+				false, JSONFragment(deliveredJson)));
 		}
 		else
 		{

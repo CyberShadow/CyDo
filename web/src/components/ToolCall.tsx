@@ -1959,18 +1959,21 @@ function formatCydoTaskResultItem(item: Record<string, unknown>): {
   const text =
     typeof item.error === "string"
       ? item.error
-      : typeof item.question === "string"
-        ? item.question
+      : typeof item.message === "string"
+        ? item.message
         : typeof item.summary === "string"
           ? item.summary
           : typeof item.result === "string"
             ? item.result
-            : null;
+            : typeof item.note === "string"
+              ? item.note
+              : null;
   const {
     error: _error,
-    question: _question,
+    message: _message,
     summary,
     result: _result,
+    note: _note,
     ...rest
   } = item;
   return { fields: rest, text };
@@ -2129,7 +2132,8 @@ const knownResultFields: Record<string, Set<string>> = {
     "status",
     "tid",
     "title",
-    "question",
+    "message",
+    "note",
   ]),
   "cydo:Ask": new Set([
     "tasks",
@@ -2139,7 +2143,8 @@ const knownResultFields: Record<string, Set<string>> = {
     "tid",
     "qid",
     "title",
-    "question",
+    "message",
+    "note",
   ]),
   "cydo:Answer": new Set([
     "tasks",
@@ -2149,7 +2154,8 @@ const knownResultFields: Record<string, Set<string>> = {
     "tid",
     "qid",
     "title",
-    "question",
+    "message",
+    "note",
   ]),
   "cydo:SwitchMode": new Set(["message"]),
   "cydo:Handoff": new Set(["message"]),

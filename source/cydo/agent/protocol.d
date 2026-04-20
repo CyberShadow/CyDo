@@ -392,7 +392,20 @@ struct QuestionResult
 	int tid;
 	int qid;
 	string title;
-	string question;
+	string message;
+}
+
+/// Structured content of an "answered"/"delivered" MCP result for Ask/Answer tools.
+struct AnswerResult
+{
+	import ae.utils.json : JSONOptional;
+
+	string status;
+	int tid;
+	@JSONOptional int qid;
+	@JSONOptional string title;
+	@JSONOptional string message;
+	@JSONOptional string note;
 }
 
 /// Wrapper for batch task results.
