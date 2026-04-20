@@ -3849,7 +3849,8 @@ class App : ToolsBackend
 							~ enfMissing ~ "\n\n"
 							~ "Please produce the missing output(s) before finishing. "
 							~ "Write your report to your output file if you haven't already.";
-						sendTaskMessage(tid, [ContentBlock("text", msg)]);
+						auto outputsMeta = buildCydoMeta("Missing required outputs");
+						sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
 					}).ignoreResult();
 					return; // Don't complete yet — wait for the agent to try again
 				}
