@@ -330,11 +330,11 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
     timeout: 10_000,
   });
 
-  // Yield enforcement sends: "[SYSTEM: Sub-task is waiting for your answer (qid=N). ...]"
+  // Yield enforcement sends a system message with label "Sub-task waiting for answer"
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
-      .getByText(/waiting for your answer/i)
+      .getByText(/sub-task waiting for answer/i)
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 });

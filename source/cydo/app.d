@@ -3627,11 +3627,13 @@ class App : ToolsBackend
 					{
 						import std.conv : to;
 						string reminder;
+						string pendingQuestion;
 						foreach (cTid; batch.childTids)
 						{
 							if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
 							{
 								auto childTd = &tasks[cTid];
+								pendingQuestion = childTd.pendingAskQuestion;
 								reminder = "[SYSTEM: Sub-task \"" ~ childTd.title ~ "\" (tid="
 									~ to!string(cTid) ~ ") is waiting for your answer (qid="
 									~ to!string(childTd.pendingAskQid) ~ ").]\n\n"
@@ -3642,7 +3644,9 @@ class App : ToolsBackend
 							}
 						}
 						auto reminderBlocks = [ContentBlock("text", reminder)];
-						sendTaskMessage(tid, reminderBlocks);
+						auto askReminderMeta = buildCydoMeta("Sub-task waiting for answer",
+							["question": pendingQuestion], "question", true);
+						sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 					}
 					else
 					{
@@ -4367,7 +4371,8 @@ class App : ToolsBackend
 			~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
 			~ "Continue from where you left off. Process these results as if they "
 			~ "were returned normally by the Task tool.";
-		sendTaskMessage(parentTid, [ContentBlock("text", msg)]);
+		auto resultsMeta = buildCydoMeta("Sub-task results");
+		sendTaskMessage(parentTid, [ContentBlock("text", msg)], null, resultsMeta);
 
 		// Clean up all deps
 		foreach (childTid; children)
