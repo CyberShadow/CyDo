@@ -90,12 +90,28 @@ function AppContent() {
   const activeTid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
   const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
 
+  // Resolve active project path for attention scoping
+  const activeProjectPath = useMemo(() => {
+    if (!activeProject || !activeWorkspace) return null;
+    const ws = workspaces.find((w) => w.name === activeWorkspace);
+    return ws?.projects.find((p) => p.name === activeProject)?.path ?? null;
+  }, [activeProject, activeWorkspace, workspaces]);
+
+  // Attention outside the current project (for Home button)
+  const hasOtherProjectAttention = useMemo(() => {
+    if (!activeProjectPath) return false;
+    for (const t of tasks.values()) {
+      if (t.needsAttention && t.projectPath !== activeProjectPath) return true;
+    }
+    return false;
+  }, [tasks, activeProjectPath, attention]);
+
   useEffect(() => {
     let count: number;
-    if (activeProject) {
+    if (activeProjectPath) {
       count = 0;
       for (const t of tasks.values()) {
-        if (t.needsAttention && t.projectPath === activeProject) count++;
+        if (t.needsAttention && t.projectPath === activeProjectPath) count++;
       }
     } else {
       count = attention.size;
@@ -110,7 +126,14 @@ function AppContent() {
       ? `${prefix}${scopedTitle} — CyDo`
       : `${prefix}CyDo`;
     if ("setAppBadge" in navigator) void navigator.setAppBadge(count);
-  }, [active?.title, activeProject, activeTaskId, attention.size, tasks]);
+  }, [
+    active?.title,
+    activeProject,
+    activeProjectPath,
+    activeTaskId,
+    attention.size,
+    tasks,
+  ]);
 
   // Ctrl+K: open search popup
   useEffect(() => {
@@ -362,7 +385,7 @@ function AppContent() {
             visible={sidebarOpen}
             onOpenSearch={handleOpenSearch}
             onArchive={handleSidebarArchive}
-            hasGlobalAttention={attention.size > 0}
+            hasGlobalAttention={hasOtherProjectAttention}
           />
           <NoticeBar notices={notices} />
           {Array.from(tasks.values())
@@ -418,6 +441,7 @@ function AppContent() {
                     theme={theme}
                     onToggleTheme={toggleTheme}
                     onToggleSidebar={toggleSidebar}
+                    hasGlobalAttention={attention.size > 0}
                     onSetArchived={setArchived}
                     onAskUserResponse={sendAskUserResponse}
                     onPermissionPromptResponse={sendPermissionPromptResponse}
