@@ -10,6 +10,8 @@ import type { ImageAttachment } from "../useSessionManager";
 
 export const drafts = new Map<number, string>();
 
+const supportsFieldSizing = CSS.supports("field-sizing", "content");
+
 interface Props {
   onSend: (text: string, images?: ImageAttachment[]) => void;
   onInterrupt: () => void;
@@ -150,6 +152,14 @@ export function InputBox({
       pasteTextRef.current = null;
     };
   }, [pasteTextRef]);
+
+  useLayoutEffect(() => {
+    if (supportsFieldSizing) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "0";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [text]);
 
   // Pre-fill with unsaved user messages recovered after session reload
   useEffect(() => {
