@@ -157,6 +157,7 @@ export interface Block {
   name?: string; // tool name (tool_use)
   toolServer?: string; // MCP server name (e.g. "cydo"); absent for built-ins
   toolSource?: string; // "mcp" for MCP tools; absent for built-ins
+  agentType?: string; // agent type (e.g. "claude", "codex")
   input?: unknown; // tool input
   output?: string; // accumulated output (output_delta)
   stdin?: string; // accumulated stdin (stdin_delta)

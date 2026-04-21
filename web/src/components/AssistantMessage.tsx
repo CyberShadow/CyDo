@@ -235,6 +235,7 @@ export const AssistantMessage = memo(
                     name={block.name}
                     toolServer={block.toolServer}
                     toolSource={block.toolSource}
+                    agentType={block.agentType}
                     toolUseId={block.itemId}
                     streaming={!block.completed}
                     input={

@@ -5,6 +5,7 @@ import { diffLines, diffWordsWithSpace, type Change } from "diff";
 import HtmlDiff from "htmldiff-js";
 import { marked } from "marked";
 import type { ToolResult, ToolResultContent } from "../types";
+import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
 import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
@@ -34,9 +35,27 @@ import { CodePre } from "./CopyButton";
  *    prominently.
  */
 
-function toolKey(name: string, server?: string): string {
-  return server ? `${server}:${name}` : name;
-}
+/** Check if tool is a shell command executor across agents. */
+const isShellTool = (
+  name: string,
+  agentType?: string,
+  toolServer?: string,
+): boolean =>
+  toolIs(
+    name,
+    agentType,
+    toolServer,
+    "claude/Bash",
+    "copilot/bash",
+    "codex/commandExecution",
+    "codex/local_shell_call",
+    "codex/exec_command",
+    "cydo:Bash",
+  );
+
+/** Check if tool is a file write operation across agents. */
+const isFileWriteTool = (name: string, agentType?: string): boolean =>
+  toolIs(name, agentType, undefined, "claude/Write", "codex/fileChange");
 
 function ResultPre({
   content,
@@ -71,21 +90,6 @@ function extractResultText(
     .map((b) => b.text!);
   return texts.length > 0 ? texts.join("") : null;
 }
-
-/** Tool names that represent shell command execution across agents/formats. */
-const shellToolNames = new Set([
-  "Bash", // Claude Code
-  "bash", // Copilot
-  "commandExecution", // Codex live
-  "local_shell_call", // Codex rollout (OpenAI Responses API format)
-  "exec_command", // Codex rollout (function_call format)
-]);
-
-/** Tool names that represent file write operations across agents/formats. */
-const fileWriteToolNames = new Set([
-  "Write", // Claude Code
-  "fileChange", // Codex live
-]);
 
 /** Strip cat -n line number prefixes ("    1→" or "    1\t") from text. */
 function stripCatLineNumbers(text: string): string {
@@ -167,6 +171,7 @@ interface Props {
   name: string;
   toolServer?: string;
   toolSource?: string;
+  agentType?: string;
   toolUseId?: string;
   input: Record<string, unknown>;
   result?: ToolResult;
@@ -287,6 +292,7 @@ function parseApplyPatchLines(patchText: string): {
 
 function getToolCallFilePaths(
   name: string,
+  agentType: string | undefined,
   input: Record<string, unknown>,
 ): string[] {
   const paths: string[] = [];
@@ -299,10 +305,16 @@ function getToolCallFilePaths(
 
   addPath(typeof input.file_path === "string" ? input.file_path : null);
   addPath(
-    name === "view" && typeof input.path === "string" ? input.path : null,
+    toolIs(name, agentType, undefined, "copilot/view") &&
+      typeof input.path === "string"
+      ? input.path
+      : null,
   );
 
-  if (name === "fileChange" && Array.isArray(input.changes)) {
+  if (
+    toolIs(name, agentType, undefined, "codex/fileChange") &&
+    Array.isArray(input.changes)
+  ) {
     for (const change of input.changes) {
       if (!change || typeof change !== "object" || Array.isArray(change))
         continue;
@@ -317,7 +329,7 @@ function getToolCallFilePaths(
     }
   }
 
-  if (name === "apply_patch") {
+  if (toolIs(name, agentType, undefined, "codex/apply_patch")) {
     const patchText = parsePatchTextFromInput(input);
     if (patchText) {
       for (const path of parseApplyPatchPaths(patchText)) addPath(path);
@@ -2005,9 +2017,9 @@ function formatGenericInput(
   );
 }
 
-// Map tool name → set of known (ignored + consumed) toolResult field names.
+// Map qualified tool key → set of known (ignored + consumed) toolResult field names.
 const knownResultFields: Record<string, Set<string>> = {
-  Bash: new Set([
+  "claude/Bash": new Set([
     "stdout",
     "stderr",
     "interrupted",
@@ -2020,7 +2032,7 @@ const knownResultFields: Record<string, Set<string>> = {
     "persistedOutputPath",
     "persistedOutputSize",
   ]),
-  commandExecution: new Set([
+  "codex/commandExecution": new Set([
     "exitCode",
     "status",
     "durationMs",
@@ -2029,10 +2041,10 @@ const knownResultFields: Record<string, Set<string>> = {
     "processId",
     "commandActions",
   ]),
-  local_shell_call: new Set([]),
-  exec_command: new Set([]),
-  Read: new Set(["type", "file"]),
-  Edit: new Set([
+  "codex/local_shell_call": new Set([]),
+  "codex/exec_command": new Set([]),
+  "claude/Read": new Set(["type", "file"]),
+  "claude/Edit": new Set([
     "filePath",
     "oldString",
     "newString",
@@ -2041,16 +2053,16 @@ const knownResultFields: Record<string, Set<string>> = {
     "structuredPatch",
     "userModified",
   ]),
-  Write: new Set([
+  "claude/Write": new Set([
     "type",
     "filePath",
     "content",
     "originalFile",
     "structuredPatch",
   ]),
-  fileChange: new Set([]),
-  Glob: new Set(["filenames", "numFiles", "truncated", "durationMs"]),
-  Grep: new Set([
+  "codex/fileChange": new Set([]),
+  "claude/Glob": new Set(["filenames", "numFiles", "truncated", "durationMs"]),
+  "claude/Grep": new Set([
     "mode",
     "filenames",
     "numFiles",
@@ -2060,9 +2072,20 @@ const knownResultFields: Record<string, Set<string>> = {
     "appliedLimit",
     "appliedOffset",
   ]),
-  TodoWrite: new Set(["oldTodos", "newTodos"]),
-  WebSearch: new Set(["query", "queries", "results", "durationSeconds"]),
-  WebFetch: new Set([
+  "claude/TodoWrite": new Set(["oldTodos", "newTodos"]),
+  "claude/WebSearch": new Set([
+    "query",
+    "queries",
+    "results",
+    "durationSeconds",
+  ]),
+  "codex/WebSearch": new Set([
+    "query",
+    "queries",
+    "results",
+    "durationSeconds",
+  ]),
+  "claude/WebFetch": new Set([
     "url",
     "code",
     "codeText",
@@ -2070,9 +2093,9 @@ const knownResultFields: Record<string, Set<string>> = {
     "bytes",
     "durationMs",
   ]),
-  AskUserQuestion: new Set(["questions", "answers", "annotations"]),
+  "claude/AskUserQuestion": new Set(["questions", "answers", "annotations"]),
   "cydo:AskUserQuestion": new Set(["questions", "answers"]),
-  Task: new Set([
+  "claude/Task": new Set([
     "status",
     "prompt",
     "agentId",
@@ -2100,31 +2123,40 @@ const knownResultFields: Record<string, Set<string>> = {
     "tmux_session_name",
     "tmux_window_name",
   ]),
-  TaskCreate: new Set(["task"]),
-  TaskGet: new Set(["task"]),
-  TaskList: new Set(["tasks"]),
-  TaskOutput: new Set(["retrieval_status", "task"]),
-  TaskStop: new Set(["message", "task_id", "task_type", "command"]),
-  TaskUpdate: new Set([
+  "claude/TaskCreate": new Set(["task"]),
+  "claude/TaskGet": new Set(["task"]),
+  "claude/TaskList": new Set(["tasks"]),
+  "claude/TaskOutput": new Set(["retrieval_status", "task"]),
+  "claude/TaskStop": new Set(["message", "task_id", "task_type", "command"]),
+  "claude/TaskUpdate": new Set([
     "success",
     "taskId",
     "updatedFields",
     "statusChange",
     "error",
   ]),
-  TeamCreate: new Set(["team_name", "team_file_path", "lead_agent_id"]),
-  TeamDelete: new Set(["success", "message", "team_name"]),
-  SendMessage: new Set([
+  "claude/TeamCreate": new Set([
+    "team_name",
+    "team_file_path",
+    "lead_agent_id",
+  ]),
+  "claude/TeamDelete": new Set(["success", "message", "team_name"]),
+  "claude/SendMessage": new Set([
     "success",
     "message",
     "request_id",
     "target",
     "routing",
   ]),
-  Skill: new Set(["success", "commandName", "allowedTools"]),
-  EnterPlanMode: new Set(["message"]),
-  ExitPlanMode: new Set(["plan", "filePath", "isAgent", "hasTaskTool"]),
-  NotebookEdit: new Set([]),
+  "claude/Skill": new Set(["success", "commandName", "allowedTools"]),
+  "claude/EnterPlanMode": new Set(["message"]),
+  "claude/ExitPlanMode": new Set([
+    "plan",
+    "filePath",
+    "isAgent",
+    "hasTaskTool",
+  ]),
+  "claude/NotebookEdit": new Set([]),
   "cydo:Task": new Set([
     "tasks",
     "content",
@@ -2164,6 +2196,7 @@ const knownResultFields: Record<string, Set<string>> = {
 function formatToolUseResult(
   name: string,
   toolServer: string | undefined,
+  agentType: string | undefined,
   toolResult: Record<string, unknown> | unknown[],
 ): h.JSX.Element | null {
   if (Array.isArray(toolResult)) {
@@ -2187,7 +2220,8 @@ function formatToolUseResult(
 
   if (Object.keys(toolResult).length === 0) return null;
 
-  const known = knownResultFields[toolKey(name, toolServer)];
+  const known =
+    knownResultFields[qualifiedToolKey(name, toolServer, agentType)];
   const unknown: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(toolResult)) {
     if (!known?.has(k)) unknown[k] = v;
@@ -2210,12 +2244,13 @@ function formatToolUseResult(
 function getHeaderSubtitle(
   name: string,
   toolServer: string | undefined,
+  agentType: string | undefined,
   input: Record<string, unknown>,
 ): h.JSX.Element | null {
-  const viewPaths = getToolCallFilePaths(name, input);
+  const viewPaths = getToolCallFilePaths(name, agentType, input);
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
 
-  if (name === "Edit" && filePath) {
+  if (toolIs(name, agentType, toolServer, "claude/Edit") && filePath) {
     return (
       <Fragment>
         <span class="tool-subtitle-path">{filePath}</span>
@@ -2223,17 +2258,17 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (fileWriteToolNames.has(name) && filePath) {
+  if (isFileWriteTool(name, agentType) && filePath) {
     return <span class="tool-subtitle-path">{filePath}</span>;
   }
-  if (name === "fileChange") {
+  if (toolIs(name, agentType, toolServer, "codex/fileChange")) {
     const singleFileSubtitle = getSingleFileChangeHeaderSubtitle(input);
     if (singleFileSubtitle) return singleFileSubtitle;
     if (viewPaths.length > 1) {
       return <span class="tool-subtitle">{viewPaths.length} files</span>;
     }
   }
-  if (name === "apply_patch") {
+  if (toolIs(name, agentType, toolServer, "codex/apply_patch")) {
     if (viewPaths.length === 1) {
       return <span class="tool-subtitle-path">{viewPaths[0]}</span>;
     }
@@ -2241,7 +2276,7 @@ function getHeaderSubtitle(
       return <span class="tool-subtitle">{viewPaths.length} files</span>;
     }
   }
-  if (name === "Read" && filePath) {
+  if (toolIs(name, agentType, toolServer, "claude/Read") && filePath) {
     const offset = typeof input.offset === "number" ? input.offset : null;
     const limit = typeof input.limit === "number" ? input.limit : null;
     const range =
@@ -2259,7 +2294,10 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (name === "view" && typeof input.path === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "copilot/view") &&
+    typeof input.path === "string"
+  ) {
     const vr = Array.isArray(input.view_range) ? input.view_range : null;
     const range =
       vr && vr.length === 2
@@ -2298,17 +2336,38 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
-  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+  if (
+    toolIs(
+      name,
+      agentType,
+      toolServer,
+      "claude/AskUserQuestion",
+      "cydo:AskUserQuestion",
+    ) &&
+    Array.isArray(input.questions)
+  ) {
     const questions = input.questions as AskQuestion[];
     if (questions.length === 1) {
       return <span class="tool-subtitle">{questions[0]!.header}</span>;
     }
     return <span class="tool-subtitle">{questions.length} questions</span>;
   }
-  if (name === "WebSearch" && typeof input.query === "string") {
+  if (
+    toolIs(
+      name,
+      agentType,
+      toolServer,
+      "claude/WebSearch",
+      "codex/WebSearch",
+    ) &&
+    typeof input.query === "string"
+  ) {
     return <span class="tool-subtitle">{input.query}</span>;
   }
-  if (name === "WebFetch" && typeof input.url === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/WebFetch") &&
+    typeof input.url === "string"
+  ) {
     return (
       <a
         class="tool-subtitle"
@@ -2323,17 +2382,23 @@ function getHeaderSubtitle(
       </a>
     );
   }
-  if (shellToolNames.has(name) && typeof input.description === "string") {
+  if (
+    isShellTool(name, agentType, toolServer) &&
+    typeof input.description === "string"
+  ) {
     return <span class="tool-subtitle">{input.description}</span>;
   }
-  if (name === "report_intent" && typeof input.intent === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "copilot/report_intent") &&
+    typeof input.intent === "string"
+  ) {
     return <span class="tool-subtitle">{input.intent}</span>;
   }
   if (
-    (name === "Task" || name === "task") &&
+    toolIs(name, agentType, toolServer, "claude/Task", "copilot/task") &&
     typeof input.description === "string"
   ) {
-    const agentType =
+    const subagentType =
       typeof input.subagent_type === "string"
         ? input.subagent_type
         : typeof input.agent_type === "string"
@@ -2341,27 +2406,25 @@ function getHeaderSubtitle(
           : null;
     return (
       <Fragment>
-        {agentType && <span class="tool-subtitle-tag">{agentType}</span>}
+        {subagentType && <span class="tool-subtitle-tag">{subagentType}</span>}
         <span class="tool-subtitle">{input.description}</span>
       </Fragment>
     );
   }
   // --- CyDo MCP tools ---
   if (
-    name === "SwitchMode" &&
-    toolServer === "cydo" &&
+    toolIs(name, agentType, toolServer, "cydo:SwitchMode") &&
     typeof input.continuation === "string"
   ) {
     return <span class="tool-subtitle">{input.continuation}</span>;
   }
   if (
-    name === "Handoff" &&
-    toolServer === "cydo" &&
+    toolIs(name, agentType, toolServer, "cydo:Handoff") &&
     typeof input.continuation === "string"
   ) {
     return <span class="tool-subtitle">{input.continuation}</span>;
   }
-  if (name === "Task" && toolServer === "cydo") {
+  if (toolIs(name, agentType, toolServer, "cydo:Task")) {
     const tasks = input.tasks as
       | Array<{ task_type?: string; description?: string }>
       | undefined;
@@ -2373,7 +2436,7 @@ function getHeaderSubtitle(
     }
   }
   // --- Claude Code built-in tools ---
-  if (name === "SendMessage") {
+  if (toolIs(name, agentType, toolServer, "claude/SendMessage")) {
     const type = typeof input.type === "string" ? input.type : null;
     const recipient =
       typeof input.recipient === "string" ? input.recipient : null;
@@ -2388,7 +2451,7 @@ function getHeaderSubtitle(
       return <span class="tool-subtitle">{type}</span>;
     }
   }
-  if (name === "TaskCreate") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskCreate")) {
     const tasks = input.tasks as Array<{ description?: string }> | undefined;
     if (Array.isArray(tasks)) {
       if (tasks.length === 1 && tasks[0]!.description) {
@@ -2397,7 +2460,7 @@ function getHeaderSubtitle(
       return <span class="tool-subtitle">{tasks.length} tasks</span>;
     }
   }
-  if (name === "TaskUpdate") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskUpdate")) {
     const rawId = input.task_id ?? input.taskId;
     const idStr =
       typeof rawId === "string" || typeof rawId === "number"
@@ -2412,7 +2475,7 @@ function getHeaderSubtitle(
       );
     }
   }
-  if (name === "TaskOutput") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskOutput")) {
     const taskId = typeof input.task_id === "string" ? input.task_id : null;
     if (taskId) {
       const timeout = typeof input.timeout === "number" ? input.timeout : null;
@@ -2433,7 +2496,7 @@ function getHeaderSubtitle(
       );
     }
   }
-  if (name === "TaskStop") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskStop")) {
     const taskId =
       typeof input.task_id === "string"
         ? input.task_id
@@ -2444,13 +2507,19 @@ function getHeaderSubtitle(
       return <span class="tool-subtitle">{taskId}</span>;
     }
   }
-  if (name === "Skill" && typeof input.skill === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/Skill") &&
+    typeof input.skill === "string"
+  ) {
     return <span class="tool-subtitle">{input.skill}</span>;
   }
-  if (name === "TeamCreate" && typeof input.team_name === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/TeamCreate") &&
+    typeof input.team_name === "string"
+  ) {
     return <span class="tool-subtitle">{input.team_name}</span>;
   }
-  if (name === "EnterWorktree") {
+  if (toolIs(name, agentType, toolServer, "claude/EnterWorktree")) {
     const wName = typeof input.name === "string" ? input.name : null;
     if (wName) {
       return <span class="tool-subtitle">{wName}</span>;
@@ -2462,40 +2531,61 @@ function getHeaderSubtitle(
 function formatInput(
   name: string,
   toolServer: string | undefined,
+  agentType: string | undefined,
   input: Record<string, unknown>,
   result?: ToolResult,
 ): h.JSX.Element {
-  if (name === "fileChange" && Array.isArray(input.changes)) {
+  if (
+    toolIs(name, agentType, toolServer, "codex/fileChange") &&
+    Array.isArray(input.changes)
+  ) {
     return <FileChangeInput input={input} />;
   }
-  if (name === "apply_patch") {
+  if (toolIs(name, agentType, toolServer, "codex/apply_patch")) {
     return <ApplyPatchInput input={input} />;
   }
-  if (name === "Edit" && "old_string" in input && "new_string" in input) {
+  if (
+    toolIs(name, agentType, toolServer, "claude/Edit") &&
+    "old_string" in input &&
+    "new_string" in input
+  ) {
     return <EditInput input={input} result={result} />;
   }
   if (
-    fileWriteToolNames.has(name) &&
+    isFileWriteTool(name, agentType) &&
     "file_path" in input &&
     "content" in input
   ) {
     return <WriteInput input={input} />;
   }
   if (
-    (name === "TodoWrite" || "todos" in input) &&
+    (toolIs(name, agentType, toolServer, "claude/TodoWrite") ||
+      "todos" in input) &&
     Array.isArray(input.todos)
   ) {
     return formatTodoWriteInput(input);
   }
-  if (name === "AskUserQuestion" && Array.isArray(input.questions)) {
+  if (
+    toolIs(
+      name,
+      agentType,
+      toolServer,
+      "claude/AskUserQuestion",
+      "cydo:AskUserQuestion",
+    ) &&
+    Array.isArray(input.questions)
+  ) {
     return <AskUserQuestionInput input={input} result={result} />;
   }
-  if (name === "ExitPlanMode" && typeof input.plan === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/ExitPlanMode") &&
+    typeof input.plan === "string"
+  ) {
     const { plan, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={plan} />);
   }
   if (
-    (name === "Task" || name === "task") &&
+    toolIs(name, agentType, toolServer, "claude/Task", "copilot/task") &&
     typeof input.prompt === "string"
   ) {
     const {
@@ -2509,11 +2599,23 @@ function formatInput(
     } = input;
     return formatGenericInput(remaining, <Markdown text={prompt} />);
   }
-  if (name === "WebSearch" && typeof input.query === "string") {
+  if (
+    toolIs(
+      name,
+      agentType,
+      toolServer,
+      "claude/WebSearch",
+      "codex/WebSearch",
+    ) &&
+    typeof input.query === "string"
+  ) {
     const { query, ...remaining } = input;
     return formatGenericInput(remaining);
   }
-  if (name === "WebFetch" && typeof input.url === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/WebFetch") &&
+    typeof input.url === "string"
+  ) {
     const { url, prompt, ...remaining } = input;
     return formatGenericInput(
       remaining,
@@ -2521,16 +2623,22 @@ function formatInput(
     );
   }
   if (
-    shellToolNames.has(name) &&
+    isShellTool(name, agentType, toolServer) &&
     (typeof input.command === "string" || typeof input.cmd === "string")
   ) {
     return <ShellCommandInput input={input} />;
   }
-  if (name === "Read" && typeof input.file_path === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "claude/Read") &&
+    typeof input.file_path === "string"
+  ) {
     const { file_path, offset, limit, ...remaining } = input;
     return formatGenericInput(remaining);
   }
-  if (name === "view" && typeof input.path === "string") {
+  if (
+    toolIs(name, agentType, toolServer, "copilot/view") &&
+    typeof input.path === "string"
+  ) {
     const { path, view_range, ...remaining } = input;
     return formatGenericInput(remaining);
   }
@@ -2543,17 +2651,19 @@ function formatInput(
   }
   // --- CyDo MCP tools ---
   if (
-    (name === "Ask" || name === "Answer") &&
-    toolServer === "cydo" &&
+    toolIs(name, agentType, toolServer, "cydo:Ask", "cydo:Answer") &&
     typeof input.message === "string"
   ) {
     const { message, ...remaining } = input;
     return formatGenericInput(remaining, <Markdown text={message} />);
   }
-  if (name === "Task" && toolServer === "cydo" && Array.isArray(input.tasks)) {
+  if (
+    toolIs(name, agentType, toolServer, "cydo:Task") &&
+    Array.isArray(input.tasks)
+  ) {
     return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
   }
-  if (name === "Handoff" && toolServer === "cydo") {
+  if (toolIs(name, agentType, toolServer, "cydo:Handoff")) {
     const { continuation, prompt: handoffPrompt, ...remaining } = input;
     return formatGenericInput(
       remaining,
@@ -2563,7 +2673,7 @@ function formatInput(
     );
   }
   // --- Claude Code built-in tools ---
-  if (name === "SendMessage") {
+  if (toolIs(name, agentType, toolServer, "claude/SendMessage")) {
     const { type, recipient, summary, ...remaining } = input;
     const content = typeof input.content === "string" ? input.content : null;
     const filteredRemaining = Object.fromEntries(
@@ -2574,7 +2684,7 @@ function formatInput(
       content ? <Markdown text={content} /> : undefined,
     );
   }
-  if (name === "Skill") {
+  if (toolIs(name, agentType, toolServer, "claude/Skill")) {
     const { skill, args: skillArgs, ...remaining } = input;
     return formatGenericInput(
       remaining,
@@ -2583,18 +2693,21 @@ function formatInput(
       ) : undefined,
     );
   }
-  if (name === "TaskCreate" && Array.isArray(input.tasks)) {
+  if (
+    toolIs(name, agentType, toolServer, "claude/TaskCreate") &&
+    Array.isArray(input.tasks)
+  ) {
     return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
   }
-  if (name === "TaskUpdate") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskUpdate")) {
     const { task_id, taskId, status, ...remaining } = input;
     return formatGenericInput(remaining);
   }
-  if (name === "TaskOutput") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskOutput")) {
     const { task_id, block, timeout, ...remaining } = input;
     return formatGenericInput(remaining);
   }
-  if (name === "TaskStop") {
+  if (toolIs(name, agentType, toolServer, "claude/TaskStop")) {
     const { task_id, ...remaining } = input;
     return formatGenericInput(remaining);
   }
@@ -2828,40 +2941,45 @@ function formatTaskStopResult(
 }
 
 const defaultExpandedTools = new Set([
-  "Edit",
-  "Write",
-  "fileChange",
-  "Bash",
-  "commandExecution",
-  "local_shell_call",
-  "exec_command",
-  "ExitPlanMode",
-  "TodoWrite",
-  "AskUserQuestion",
-  "WebFetch",
-  "Task",
-  "task",
-  "Ask",
-  "Answer",
-  "Handoff",
-  "SendMessage",
-  "TaskCreate",
-  "bash",
+  "claude/Edit",
+  "claude/Write",
+  "codex/fileChange",
+  "claude/Bash",
+  "codex/commandExecution",
+  "codex/local_shell_call",
+  "codex/exec_command",
+  "claude/ExitPlanMode",
+  "claude/TodoWrite",
+  "claude/AskUserQuestion",
+  "claude/WebFetch",
+  "claude/Task",
+  "copilot/task",
+  "cydo:Ask",
+  "cydo:Answer",
+  "cydo:Handoff",
+  "cydo:AskUserQuestion",
+  "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
+  "claude/SendMessage",
+  "claude/TaskCreate",
+  "copilot/bash",
 ]);
 const defaultExpandedResults = new Set([
-  "Bash",
-  "bash",
-  "commandExecution",
-  "local_shell_call",
-  "exec_command",
-  "Task",
-  "task",
-  "Ask",
-  "Answer",
-  "WebSearch",
-  "WebFetch",
-  "TaskOutput",
-  "TaskStop",
+  "claude/Bash",
+  "copilot/bash",
+  "cydo:Bash", // Copilot calls CyDo's cydo-Bash MCP tool, which arrives as name="Bash", toolServer="cydo"
+  "codex/commandExecution",
+  "codex/local_shell_call",
+  "codex/exec_command",
+  "claude/Task",
+  "cydo:Task",
+  "copilot/task",
+  "cydo:Ask",
+  "cydo:Answer",
+  "claude/WebSearch",
+  "codex/WebSearch", // Codex also emits "WebSearch" — to be properly namespaced in a follow-up
+  "claude/WebFetch",
+  "claude/TaskOutput",
+  "claude/TaskStop",
 ]);
 
 function hasReadOnlyCommandActions(result?: ToolResult): boolean {
@@ -2885,18 +3003,32 @@ function hasReadOnlyCommandActions(result?: ToolResult): boolean {
   );
 }
 
-function defaultResultExpanded(name: string, result?: ToolResult): boolean {
-  if (name === "commandExecution" && hasReadOnlyCommandActions(result))
+function defaultResultExpanded(
+  name: string,
+  toolServer: string | undefined,
+  agentType: string | undefined,
+  result?: ToolResult,
+): boolean {
+  if (
+    toolIs(name, agentType, toolServer, "codex/commandExecution") &&
+    hasReadOnlyCommandActions(result)
+  )
     return false;
-  return defaultExpandedResults.has(name);
+  return defaultExpandedResults.has(
+    qualifiedToolKey(name, toolServer, agentType),
+  );
 }
 
-const askToolNames = new Set(["AskUserQuestion"]);
+const askToolNames = new Set([
+  "claude/AskUserQuestion",
+  "cydo:AskUserQuestion",
+]);
 
 export const ToolCall = memo(
   function ToolCall({
     name,
     toolServer,
+    agentType,
     toolUseId,
     input,
     result,
@@ -2905,9 +3037,10 @@ export const ToolCall = memo(
     onViewFile,
   }: Props) {
     // Collapse pending AskUserQuestion input — the interactive form shows the same content
-    const isAsk = askToolNames.has(name);
+    const qKey = qualifiedToolKey(name, toolServer, agentType);
+    const isAsk = askToolNames.has(qKey);
     const [inputOpen, setInputOpen] = useState(
-      isAsk ? !!result : defaultExpandedTools.has(name),
+      isAsk ? !!result : defaultExpandedTools.has(qKey),
     );
     // Auto-expand when result arrives for ask tools
     useEffect(() => {
@@ -2917,58 +3050,78 @@ export const ToolCall = memo(
       boolean | null
     >(null);
     const resultOpen =
-      resultOpenOverride ?? defaultResultExpanded(name, result);
-    const subtitle = getHeaderSubtitle(name, toolServer, input);
-    const viewPaths = onViewFile ? getToolCallFilePaths(name, input) : [];
+      resultOpenOverride ??
+      defaultResultExpanded(name, toolServer, agentType, result);
+    const subtitle = getHeaderSubtitle(name, toolServer, agentType, input);
+    const viewPaths = onViewFile
+      ? getToolCallFilePaths(name, agentType, input)
+      : [];
 
     const filePath =
       typeof input.file_path === "string"
         ? input.file_path
-        : name === "view" && typeof input.path === "string"
+        : toolIs(name, agentType, toolServer, "copilot/view") &&
+            typeof input.path === "string"
           ? input.path
           : null;
     const resultText = result ? extractResultText(result.content) : null;
     const cydoTaskItems =
-      (name === "Task" || name === "Ask" || name === "Answer") &&
-      toolServer === "cydo" &&
+      toolIs(
+        name,
+        agentType,
+        toolServer,
+        "cydo:Task",
+        "cydo:Ask",
+        "cydo:Answer",
+      ) &&
       resultText != null &&
       !result!.isError
         ? parseCydoTaskResult(resultText)
         : null;
     const useReadHighlight =
-      (name === "Read" || name === "view") &&
+      toolIs(name, agentType, toolServer, "claude/Read", "copilot/view") &&
       filePath &&
       resultText != null &&
       !result!.isError;
     const useExecCommandResult =
-      name === "exec_command" && resultText != null && !result!.isError;
+      toolIs(name, agentType, toolServer, "codex/exec_command") &&
+      resultText != null &&
+      !result!.isError;
     const useWebSearchResult =
-      name === "WebSearch" &&
+      toolIs(
+        name,
+        agentType,
+        toolServer,
+        "claude/WebSearch",
+        "codex/WebSearch",
+      ) &&
       result != null &&
       !result.isError &&
       (resultText != null ||
         (result.toolResult != null && typeof result.toolResult === "object"));
     const useWebFetchResult =
-      name === "WebFetch" && resultText != null && !result!.isError;
+      toolIs(name, agentType, toolServer, "claude/WebFetch") &&
+      resultText != null &&
+      !result!.isError;
     const useTaskOutputResult =
-      name === "TaskOutput" &&
+      toolIs(name, agentType, toolServer, "claude/TaskOutput") &&
       result &&
       !result.isError &&
       result.toolResult != null &&
       typeof result.toolResult === "object";
     const useTaskStopResult =
-      name === "TaskStop" &&
+      toolIs(name, agentType, toolServer, "claude/TaskStop") &&
       result &&
       !result.isError &&
       result.toolResult != null &&
       typeof result.toolResult === "object";
     const useCommandExecutionResult =
-      name === "commandExecution" &&
+      toolIs(name, agentType, toolServer, "codex/commandExecution") &&
       result != null &&
       result.toolResult != null &&
       typeof result.toolResult === "object";
     const useBashResult =
-      name === "Bash" &&
+      toolIs(name, agentType, toolServer, "claude/Bash") &&
       result != null &&
       result.toolResult != null &&
       typeof result.toolResult === "object";
@@ -3053,9 +3206,9 @@ export const ToolCall = memo(
           <span class="tool-name">{name}</span>
           {subtitle}
           {!result && <span class="tool-spinner" />}
-          {(name === "Edit" ||
-            name === "apply_patch" ||
-            fileWriteToolNames.has(name)) &&
+          {(toolIs(name, agentType, toolServer, "claude/Edit") ||
+            toolIs(name, agentType, toolServer, "codex/apply_patch") ||
+            isFileWriteTool(name, agentType)) &&
             viewPaths.length > 0 &&
             onViewFile && (
               <button
@@ -3104,7 +3257,7 @@ export const ToolCall = memo(
               ))}
             </div>
           )}
-        {inputOpen && formatInput(name, toolServer, input, result)}
+        {inputOpen && formatInput(name, toolServer, agentType, input, result)}
         {children}
         {result && hasResultContent && (
           <div class="tool-result-section">
@@ -3218,6 +3371,7 @@ export const ToolCall = memo(
                   formatToolUseResult(
                     name,
                     toolServer,
+                    agentType,
                     result.toolResult as Record<string, unknown> | unknown[],
                   )}
               </>
@@ -3231,6 +3385,7 @@ export const ToolCall = memo(
     prev.name === next.name &&
     prev.toolServer === next.toolServer &&
     prev.toolSource === next.toolSource &&
+    prev.agentType === next.agentType &&
     prev.toolUseId === next.toolUseId &&
     prev.input === next.input &&
     prev.result === next.result &&

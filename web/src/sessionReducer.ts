@@ -16,6 +16,7 @@ import type {
   FileEditStatus,
   Block,
 } from "./types";
+import { toolIs } from "./toolIdentity";
 import type {
   AgnosticEvent,
   AssistantContentBlock,
@@ -376,6 +377,9 @@ export function reduceSystemInit(
   };
   return {
     ...s,
+    // Propagate agent type from init message so blocks created before task_updated
+    // arrives still carry the correct agentType.
+    agentType: msg.agent ?? s.agentType,
     sessionInfo: {
       model: msg.model,
       version: msg.agent_version,
@@ -654,9 +658,24 @@ function trackResultFileEdits(
     const toolName = toolBlock.name;
     if (
       !toolName ||
-      (toolName !== "Edit" &&
-        toolName !== "Write" &&
-        toolName !== "apply_patch")
+      (!toolIs(
+        toolName,
+        toolBlock.agentType,
+        toolBlock.toolServer,
+        "claude/Edit",
+      ) &&
+        !toolIs(
+          toolName,
+          toolBlock.agentType,
+          toolBlock.toolServer,
+          "claude/Write",
+        ) &&
+        !toolIs(
+          toolName,
+          toolBlock.agentType,
+          toolBlock.toolServer,
+          "codex/apply_patch",
+        ))
     )
       continue;
 
@@ -672,7 +691,14 @@ function trackResultFileEdits(
 
     const input = (toolBlock.input ?? {}) as Record<string, unknown>;
 
-    if (toolName === "apply_patch") {
+    if (
+      toolIs(
+        toolName,
+        toolBlock.agentType,
+        toolBlock.toolServer,
+        "codex/apply_patch",
+      )
+    ) {
       if (hasTrackedEditsForToolUseId(state, block.tool_use_id)) continue;
       const edits = buildEditsFromApplyPatchInput(
         input,
@@ -694,12 +720,31 @@ function trackResultFileEdits(
         toolUseId: block.tool_use_id,
         messageId,
         filePath,
-        type: toolName === "Edit" ? "edit" : "write",
-        op: toolName === "Edit" ? "edit" : "write",
+        type: toolIs(
+          toolName,
+          toolBlock.agentType,
+          toolBlock.toolServer,
+          "claude/Edit",
+        )
+          ? "edit"
+          : "write",
+        op: toolIs(
+          toolName,
+          toolBlock.agentType,
+          toolBlock.toolServer,
+          "claude/Edit",
+        )
+          ? "edit"
+          : "write",
         status: "applied",
         source: "claude-tool",
         payload:
-          toolName === "Write" && typeof input.content === "string"
+          toolIs(
+            toolName,
+            toolBlock.agentType,
+            toolBlock.toolServer,
+            "claude/Write",
+          ) && typeof input.content === "string"
             ? { mode: "full_content", content: input.content }
             : { mode: "none" },
       },
@@ -1001,6 +1046,7 @@ export function reduceItemStarted(
     name: event.name,
     toolServer: event.tool_server,
     toolSource: event.tool_source,
+    agentType: s.agentType,
     input: event.input,
     completed: false,
     creationOrder,
@@ -1022,7 +1068,14 @@ export function reduceItemStarted(
   let state = { ...s, messages, blocks, itemIdMap };
 
   if (event.item_type === "tool_use") {
-    if (event.name === "fileChange") {
+    if (
+      toolIs(
+        event.name ?? "",
+        s.agentType,
+        event.tool_server,
+        "codex/fileChange",
+      )
+    ) {
       const rawForEdits =
         event.input != null ? { params: { item: event.input } } : undefined;
       const edits = buildEditsFromCodexFileChangeEvent(
@@ -1033,7 +1086,14 @@ export function reduceItemStarted(
         state.sessionInfo?.cwd,
       );
       state = appendTrackedEdits(state, edits);
-    } else if (event.name === "apply_patch") {
+    } else if (
+      toolIs(
+        event.name ?? "",
+        s.agentType,
+        event.tool_server,
+        "codex/apply_patch",
+      )
+    ) {
       const edits = buildEditsFromApplyPatchInput(
         (block.input ?? {}) as Record<string, unknown>,
         event.item_id,
