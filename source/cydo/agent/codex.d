@@ -1977,7 +1977,7 @@ class CodexSession : AgentSession
 			case "webSearch":
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
-				ev.name = "WebSearch";
+				ev.name = "webSearch";
 				if (item.query.json !is null)
 					ev.input = JSONFragment(`{"query":` ~ item.query.json ~ `}`);
 				break;
@@ -2723,7 +2723,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null, bool fo
 		import std.uuid : randomUUID;
 		string callId = probe.payload.call_id.length > 0
 			? probe.payload.call_id : randomUUID().toString();
-		results = translateRolloutToolUse(callId, "WebSearch", inputJson);
+		results = translateRolloutToolUse(callId, "webSearch", inputJson);
 
 		// Build structured tool_result instead of Claude-formatted text
 		import std.array : appender;

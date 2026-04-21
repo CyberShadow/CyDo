@@ -2073,18 +2073,8 @@ const knownResultFields: Record<string, Set<string>> = {
     "appliedOffset",
   ]),
   "claude/TodoWrite": new Set(["oldTodos", "newTodos"]),
-  "claude/WebSearch": new Set([
-    "query",
-    "queries",
-    "results",
-    "durationSeconds",
-  ]),
-  "codex/WebSearch": new Set([
-    "query",
-    "queries",
-    "results",
-    "durationSeconds",
-  ]),
+  "claude/WebSearch": new Set(["query", "results", "durationSeconds"]),
+  "codex/webSearch": new Set(["query", "queries"]),
   "claude/WebFetch": new Set([
     "url",
     "code",
@@ -2358,7 +2348,7 @@ function getHeaderSubtitle(
       agentType,
       toolServer,
       "claude/WebSearch",
-      "codex/WebSearch",
+      "codex/webSearch",
     ) &&
     typeof input.query === "string"
   ) {
@@ -2605,7 +2595,7 @@ function formatInput(
       agentType,
       toolServer,
       "claude/WebSearch",
-      "codex/WebSearch",
+      "codex/webSearch",
     ) &&
     typeof input.query === "string"
   ) {
@@ -2976,7 +2966,7 @@ const defaultExpandedResults = new Set([
   "cydo:Ask",
   "cydo:Answer",
   "claude/WebSearch",
-  "codex/WebSearch", // Codex also emits "WebSearch" — to be properly namespaced in a follow-up
+  "codex/webSearch",
   "claude/WebFetch",
   "claude/TaskOutput",
   "claude/TaskStop",
@@ -3093,7 +3083,7 @@ export const ToolCall = memo(
         agentType,
         toolServer,
         "claude/WebSearch",
-        "codex/WebSearch",
+        "codex/webSearch",
       ) &&
       result != null &&
       !result.isError &&

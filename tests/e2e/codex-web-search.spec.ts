@@ -182,7 +182,7 @@ test("codex web search renders query subtitle and formatted results", async ({
 
   // Wait for WebSearch tool call to appear
   const toolCall = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "WebSearch" }),
+    has: page.locator(".tool-name", { hasText: "webSearch" }),
   });
   await expect(toolCall).toBeVisible({ timeout: responseTimeout("codex") });
 
@@ -206,7 +206,7 @@ test("codex web search renders query subtitle and formatted results", async ({
 
   // Verify the same WebSearch tool call appears from history
   const replayedToolCall = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "WebSearch" }),
+    has: page.locator(".tool-name", { hasText: "webSearch" }),
   });
   await expect(replayedToolCall).toBeVisible({ timeout: 15_000 });
   await expect(replayedToolCall.locator(".tool-subtitle")).toContainText(
@@ -257,7 +257,7 @@ test("codex history replay renders web_search_call from rollout JSONL", async ({
 
   // Verify web search tool call renders from history
   const wsToolCall = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "WebSearch" }),
+    has: page.locator(".tool-name", { hasText: "webSearch" }),
   });
   await expect(wsToolCall).toBeVisible({ timeout: 15_000 });
 
