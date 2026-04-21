@@ -431,6 +431,11 @@ body,
   background-color: var(--success);
 }
 
+.task-type-icon.ending {
+  background-color: orange;
+  opacity: 0.8;
+}
+
 .task-type-icon.resumable {
   background-color: var(--success);
   opacity: 0.5;

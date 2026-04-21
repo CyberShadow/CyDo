@@ -10,6 +10,7 @@ interface Props {
   connected: boolean;
   totalCost: number;
   isProcessing: boolean;
+  stdinClosed: boolean;
   alive: boolean;
   theme: Theme;
   onToggleTheme: () => void;
@@ -30,6 +31,7 @@ export function SystemBanner({
   connected,
   totalCost,
   isProcessing,
+  stdinClosed,
   alive,
   theme,
   onToggleTheme,
@@ -90,16 +92,23 @@ export function SystemBanner({
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
-        {isProcessing && <span class="banner-processing">Processing...</span>}
+        {alive && stdinClosed && (
+          <span class="banner-processing">Ending...</span>
+        )}
+        {isProcessing && !stdinClosed && (
+          <span class="banner-processing">Processing...</span>
+        )}
         {alive && (
           <>
-            <button
-              class="btn-banner-end"
-              onClick={onCloseStdin}
-              title="End session gracefully (Ctrl+Shift+E)"
-            >
-              End
-            </button>
+            {!stdinClosed && (
+              <button
+                class="btn-banner-end"
+                onClick={onCloseStdin}
+                title="End session gracefully (Ctrl+Shift+E)"
+              >
+                End
+              </button>
+            )}
             <button
               class="btn-banner-stop"
               onClick={onStop}

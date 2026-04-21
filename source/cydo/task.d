@@ -166,6 +166,7 @@ struct TaskData
 	Promise!ProcessState killPromise;  // non-null during active Dead transition
 	bool isProcessing = false;
 	bool wasKilledByUser = false;  // set when user explicitly kills via stop button
+	bool stdinClosed = false;      // set after closeStdin, cleared on session restart/exit
 	bool outputEnforcementAttempted; // true after first enforcement retry for missing outputs
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
@@ -365,6 +366,7 @@ struct TaskListEntry
 	bool alive;
 	bool resumable;
 	bool isProcessing;
+	bool stdinClosed;
 	bool needsAttention;
 	bool hasPendingQuestion;
 	string notificationBody;

@@ -16,6 +16,7 @@ interface Props {
   onSend: (text: string, images?: ImageAttachment[]) => void;
   onInterrupt: () => void;
   isProcessing: boolean;
+  stdinClosed?: boolean;
   disabled: boolean;
   sessionId: number;
   inputDraft?: string;
@@ -56,6 +57,7 @@ export function InputBox({
   onSend,
   onInterrupt,
   isProcessing,
+  stdinClosed,
   disabled,
   sessionId,
   inputDraft,
@@ -320,7 +322,13 @@ export function InputBox({
         }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
-        placeholder={disabled ? "Connecting..." : "Type a message..."}
+        placeholder={
+          stdinClosed
+            ? "Session ending..."
+            : disabled
+              ? "Connecting..."
+              : "Type a message..."
+        }
         disabled={disabled}
         rows={1}
       />
@@ -332,7 +340,9 @@ export function InputBox({
       <button
         class="btn btn-send"
         onClick={send}
-        disabled={disabled || (!text.trim() && images.length === 0)}
+        disabled={
+          disabled || !!stdinClosed || (!text.trim() && images.length === 0)
+        }
       >
         Send
       </button>

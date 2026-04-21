@@ -182,6 +182,7 @@ export interface TasksListMessage {
     alive: boolean;
     resumable: boolean;
     isProcessing: boolean;
+    stdinClosed?: boolean;
     needsAttention?: boolean;
     hasPendingQuestion?: boolean;
     notificationBody?: string;
@@ -209,6 +210,7 @@ export interface TaskUpdatedMessage {
     alive: boolean;
     resumable: boolean;
     isProcessing: boolean;
+    stdinClosed?: boolean;
     needsAttention?: boolean;
     hasPendingQuestion?: boolean;
     notificationBody?: string;

@@ -150,6 +150,7 @@ export interface TaskManager {
     alive: boolean;
     resumable: boolean;
     isProcessing: boolean;
+    stdinClosed?: boolean;
     title?: string;
     parentTid?: number;
     relationType?: string;
@@ -791,6 +792,7 @@ export function useTaskManager(
                   entry.relation_type || undefined,
                   entry.status || "pending",
                   entry.isProcessing || false,
+                  entry.stdinClosed || false,
                   entry.needsAttention || false,
                   entry.hasPendingQuestion || false,
                   entry.task_type || undefined,
@@ -819,6 +821,7 @@ export function useTaskManager(
                 alive: entry.alive,
                 resumable: entry.resumable,
                 isProcessing: entry.isProcessing || false,
+                stdinClosed: entry.stdinClosed || false,
                 needsAttention: entry.needsAttention || false,
                 hasPendingQuestion: entry.hasPendingQuestion || false,
                 historyLoaded: needsHistory ? false : existing.historyLoaded,
@@ -876,6 +879,7 @@ export function useTaskManager(
                 entry.relation_type || undefined,
                 entry.status || "pending",
                 entry.isProcessing || false,
+                entry.stdinClosed || false,
                 entry.needsAttention || false,
                 entry.hasPendingQuestion || false,
                 entry.task_type || undefined,
@@ -899,6 +903,7 @@ export function useTaskManager(
               alive: entry.alive,
               resumable: entry.resumable,
               isProcessing: entry.isProcessing || false,
+              stdinClosed: entry.stdinClosed || false,
               needsAttention: entry.needsAttention || false,
               hasPendingQuestion: entry.hasPendingQuestion || false,
               historyLoaded: needsHistory ? false : existing.historyLoaded,
@@ -1924,6 +1929,7 @@ export function useTaskManager(
         alive: t.alive,
         resumable: t.resumable,
         isProcessing: t.isProcessing,
+        stdinClosed: t.stdinClosed,
         title:
           t.title ||
           (t.status === "pending" && t.messages.length === 0 && t.serverDraft
@@ -1950,6 +1956,7 @@ export function useTaskManager(
           t.alive === p.alive &&
           t.resumable === p.resumable &&
           t.isProcessing === p.isProcessing &&
+          t.stdinClosed === p.stdinClosed &&
           t.title === p.title &&
           t.parentTid === p.parentTid &&
           t.relationType === p.relationType &&

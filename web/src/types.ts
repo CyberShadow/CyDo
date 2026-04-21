@@ -190,6 +190,7 @@ export interface TaskState {
   messages: DisplayMessage[];
   sessionInfo: SessionInfo | null;
   isProcessing: boolean;
+  stdinClosed: boolean;
   needsAttention: boolean;
   hasPendingQuestion: boolean;
   totalCost: number;
@@ -271,6 +272,7 @@ export function makeTaskState(
   relationType?: string,
   status: string = "pending",
   isProcessing: boolean = false,
+  stdinClosed: boolean = false,
   needsAttention: boolean = false,
   hasPendingQuestion: boolean = false,
   taskType?: string,
@@ -287,6 +289,7 @@ export function makeTaskState(
     messages: [],
     sessionInfo: null,
     isProcessing,
+    stdinClosed,
     needsAttention,
     hasPendingQuestion,
     totalCost: 0,

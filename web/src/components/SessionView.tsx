@@ -402,6 +402,7 @@ function SessionViewInner({
         connected={connected}
         totalCost={task.totalCost}
         isProcessing={task.isProcessing}
+        stdinClosed={task.stdinClosed}
         alive={task.alive}
         theme={theme}
         onToggleTheme={onToggleTheme}
@@ -477,6 +478,7 @@ function SessionViewInner({
                 onSend={handleSend}
                 onInterrupt={onInterrupt}
                 isProcessing={task.isProcessing}
+                stdinClosed={task.stdinClosed}
                 disabled={false}
                 sessionId={task.tid}
                 inputDraft={task.inputDraft}
@@ -552,6 +554,7 @@ function SessionViewInner({
             onSend={handleSend}
             onInterrupt={onInterrupt}
             isProcessing={task.isProcessing}
+            stdinClosed={task.stdinClosed}
             disabled={!connected}
             sessionId={task.tid}
             inputDraft={task.inputDraft}
@@ -588,6 +591,7 @@ function SessionViewInner({
           onSend={handleSend}
           onInterrupt={onInterrupt}
           isProcessing={task.isProcessing}
+          stdinClosed={task.stdinClosed}
           disabled={!connected}
           sessionId={task.tid}
           inputDraft={task.inputDraft}

@@ -2673,6 +2673,8 @@ class App : ToolsBackend
 		if (td.session)
 		{
 			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+			td.stdinClosed = true;
+			broadcastTaskUpdate(tid);
 			td.session.closeStdin();
 		}
 	}
@@ -3779,6 +3781,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
 		td.wasKilledByUser = false;
+		td.stdinClosed = false;
 
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
@@ -3801,6 +3804,12 @@ class App : ToolsBackend
 
 		td.session.onOutput = (TranslatedEvent ev) {
 			broadcastTask(tid, ev);
+
+			if (!td.isProcessing)
+			{
+				td.isProcessing = true;
+				broadcastTaskUpdate(tid);
+			}
 
 			if (taskAgent.isTurnResult(ev.translated))
 			{
@@ -4002,6 +4011,7 @@ class App : ToolsBackend
 			if (tid !in tasks)
 				return;
 			tasks[tid].isProcessing = false;
+			tasks[tid].stdinClosed = false;
 			if (exitCode != 0)
 				tasks[tid].error = lastStderr;
 			cleanup(tasks[tid].launch.sandbox);
@@ -5768,7 +5778,7 @@ class App : ToolsBackend
 		import cydo.task : stdTimeToUnixMillis;
 		return TaskListEntry(td.tid, td.alive,
 			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
-			td.isProcessing, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
+			td.isProcessing, td.stdinClosed, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 			td.taskType, td.entryPoint, td.agentType, td.archived, td.archiving, td.draft, td.error,
 			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));

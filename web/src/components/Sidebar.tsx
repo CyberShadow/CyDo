@@ -126,6 +126,7 @@ export interface SidebarTask {
   resumable: boolean;
   lastActive?: number;
   isProcessing: boolean;
+  stdinClosed?: boolean;
   title?: string;
   parentTid?: number;
   relationType?: string;
@@ -286,6 +287,7 @@ interface FlatItem {
 
 export function computeStatusClass(t: SidebarTask): string {
   if (t.isProcessing) return t.status === "waiting" ? "waiting" : "processing";
+  if (t.alive && t.stdinClosed) return "ending";
   if (t.alive) return "alive";
   if (t.status === "failed") return "failed";
   if (t.resumable) return "resumable";
