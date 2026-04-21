@@ -3796,6 +3796,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
 		td.wasKilledByUser = false;
+		td.hadTurnResult = false;
 		td.stdinClosed = false;
 
 		// Look up the correct agent for this task's agent type
@@ -3820,7 +3821,7 @@ class App : ToolsBackend
 		td.session.onOutput = (TranslatedEvent ev) {
 			broadcastTask(tid, ev);
 
-			if (!td.isProcessing)
+			if (!td.isProcessing && td.hadTurnResult)
 			{
 				td.isProcessing = true;
 				broadcastTaskUpdate(tid);
@@ -3830,6 +3831,7 @@ class App : ToolsBackend
 			{
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
+				td.hadTurnResult = true;
 
 				// Re-try JSONL watch if not yet established (Codex may
 				// not have the file at session-start time).
