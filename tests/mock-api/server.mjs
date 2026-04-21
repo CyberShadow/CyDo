@@ -191,6 +191,53 @@ function oaiStreamTextResponse(res, text, totalTokensOverride) {
     type: "response.created",
     response: { id: respId },
   });
+  oaiSseEvent(res, "response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: {
+      type: "message",
+      role: "assistant",
+      id: msgId,
+      content: [],
+    },
+  });
+  oaiSseEvent(res, "response.output_text.delta", {
+    type: "response.output_text.delta",
+    delta: text,
+  });
+  oaiSseEvent(res, "response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: 0,
+    item: {
+      type: "message",
+      role: "assistant",
+      id: msgId,
+      content: [{ type: "output_text", text }],
+    },
+  });
+  oaiSseEvent(res, "response.completed", {
+    type: "response.completed",
+    response: {
+      id: respId,
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: text.length,
+        output_tokens_details: null,
+        total_tokens: totalTokensOverride ?? 10 + text.length,
+      },
+    },
+  });
+  res.end();
+}
+
+function oaiStreamLegacyMalformedTextResponse(res, text, totalTokensOverride) {
+  const respId = nextRespId();
+  const msgId = nextMsgId();
+  oaiSseEvent(res, "response.created", {
+    type: "response.created",
+    response: { id: respId },
+  });
   oaiSseEvent(res, "response.output_text.delta", {
     type: "response.output_text.delta",
     delta: text,
@@ -577,6 +624,12 @@ function handleResponses(req, res) {
           });
           return;
         }
+      }
+      if (origText && /codex filechange update fixture/i.test(origText)) {
+        // Keep this path malformed on purpose: stderr-handling.spec.ts relies on
+        // Codex surfacing a process/stderr payload for this fixture.
+        oaiStreamLegacyMalformedTextResponse(res, "Done.");
+        return;
       }
       oaiStreamTextResponse(res, "Done.");
       return;
