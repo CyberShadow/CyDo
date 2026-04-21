@@ -6062,6 +6062,22 @@ private string extractMessageText(string event)
 	}
 	catch (Exception) {}
 
+	// Try nested params.item.text (Codex item/completed agentMessage events)
+	@JSONPartial
+	static struct ParamsItemTextInner { string text; }
+	@JSONPartial
+	static struct ParamsItemParamsInner { ParamsItemTextInner item; }
+	@JSONPartial
+	static struct ParamsItemProbe { ParamsItemParamsInner params; }
+
+	try
+	{
+		auto probe = jsonParse!ParamsItemProbe(event);
+		if (probe.params.item.text.length > 0)
+			return probe.params.item.text;
+	}
+	catch (Exception) {}
+
 	// Try flat array content (agnostic assistant messages: content at top level)
 	@JSONPartial
 	static struct Block { string type; string text; }
@@ -6139,6 +6155,15 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 
 	bool seenAssistantText = false;
 	bool turnCollapsed = false;
+	// True when the most-recent "A:" entry came from a non-streaming source
+	// (turn/result or item/completed) that can be superseded by a later
+	// item/delta text_delta event for the same turn.  This prevents spurious
+	// "[...]" entries when multiple event types carry the same assistant text:
+	//   Claude live:   item/delta (set) → item/completed (no text) → turn/result (skip)
+	//   Claude history: item/completed (set, no delta follows) → correct
+	//   Codex:         turn/result (set, no delta follows) → correct
+	//   Copilot:       turn/result (set) → item/completed (replace) → item/delta (replace)
+	bool lastEntryFromNonDelta = false;
 
 	foreach_reverse (envelope; envelopes)
 	{
@@ -6157,12 +6182,28 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 			{
 				seenAssistantText = false;
 				turnCollapsed = false;
+				lastEntryFromNonDelta = false;
 				entry = "USER: " ~ abbreviateText(text, truncThreshold);
 			}
 			else
 				continue;
 		}
-		else if (event.canFind(`"item/completed"`) || event.canFind(`"turn/result"`) ||
+		else if (event.canFind(`"turn/result"`))
+		{
+			// turn/result echoes the full assistant response. Used as a fallback source
+			// when no item/delta text_delta events are present (e.g. Codex). For Claude
+			// and Copilot, item/delta text_delta arrives later in the reverse scan and
+			// replaces this entry, so we mark it as supersedable (lastEntryFromNonDelta).
+			if (seenAssistantText)
+				continue;  // already have text from a delta — skip
+			auto text = extractMessageText(event);
+			if (text.length == 0)
+				continue;
+			seenAssistantText = true;
+			lastEntryFromNonDelta = true;
+			entry = "A: " ~ abbreviateText(text, truncThreshold);
+		}
+		else if (event.canFind(`"item/completed"`) ||
 		         (event.canFind(`"item/delta"`) && event.canFind(`"text_delta"`)))
 		{
 			auto text = extractMessageText(event);
@@ -6172,7 +6213,18 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 			if (!seenAssistantText)
 			{
 				seenAssistantText = true;
+				// item/completed is supersedable; item/delta is authoritative.
+				lastEntryFromNonDelta = event.canFind(`"item/completed"`);
 				entry = "A: " ~ abbreviateText(text, truncThreshold);
+			}
+			else if (lastEntryFromNonDelta && !turnCollapsed)
+			{
+				// The preceding "A:" came from a lower-priority source (turn/result or
+				// item/completed); replace it with the more specific source.
+				// item/completed is still supersedable; item/delta is authoritative.
+				entries[$ - 1] = "A: " ~ abbreviateText(text, truncThreshold);
+				lastEntryFromNonDelta = event.canFind(`"item/completed"`);
+				continue;
 			}
 			else
 			{
@@ -6192,6 +6244,7 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 				if (!turnCollapsed)
 				{
 					turnCollapsed = true;
+					lastEntryFromNonDelta = false;
 					entry = "[...]";
 				}
 				else
@@ -6213,9 +6266,23 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 	import std.algorithm : reverse;
 	entries.reverse();
 
-	// Structured context: header + last 4 entries only
-	if (entries.length > 4)
-		entries = entries[$ - 4 .. $];
+	// Structured context: header + last 4 turns (user-assistant pairs).
+	// After reversing, entries alternate as "USER: ..." then "A: ..." per turn.
+	// We scan backward to find the 4th USER: from the end and slice from there.
+	enum maxTurns = 4;
+	int turnCount = 0;
+	size_t sliceFrom = 0;
+	foreach_reverse (i, ref e; entries)
+	{
+		if (e.length > 5 && e[0 .. 5] == "USER:")
+		{
+			turnCount++;
+			if (turnCount <= maxTurns)
+				sliceFrom = i;
+		}
+	}
+	if (turnCount > maxTurns)
+		entries = entries[sliceFrom .. $];
 
 	import std.conv : to;
 	import std.array : join;
