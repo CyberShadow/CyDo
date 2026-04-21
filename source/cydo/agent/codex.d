@@ -1261,7 +1261,6 @@ class CodexAgent : Agent
 
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
-		import std.algorithm : canFind;
 		import std.conv : to;
 		import cydo.agent.protocol : parseIso8601Timestamp;
 
@@ -1272,16 +1271,17 @@ class CodexAgent : Agent
 		try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(line).timestamp); }
 		catch (Exception) {}
 
-		if (line.canFind(`"type":"session_meta"`))
+		auto probe = parseRolloutLineProbe(line);
+		if (probe.isSessionMeta)
 		{
 			auto t = translateRolloutSessionMeta(line);
 			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
 		}
-		else if (line.canFind(`"type":"response_item"`))
+		else if (probe.isResponseItem)
 		{
 			// Pass line-number fork ID for user/assistant messages
 			string forkId = null;
-			if (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`))
+			if (probe.isForkableMessage)
 				forkId = "line:" ~ to!string(lineNum);
 			// Lines before task_started are system context injected by Codex — mark as meta.
 			bool forceMeta = !histSeenTaskStarted_;
@@ -1291,9 +1291,9 @@ class CodexAgent : Agent
 				evs ~= TranslatedEvent(r, line, ts);
 			return evs;
 		}
-		else if (line.canFind(`"type":"event_msg"`))
+		else if (probe.isEventMsg)
 		{
-			if (!histSeenTaskStarted_ && line.canFind(`"task_started"`))
+			if (!histSeenTaskStarted_ && probe.isTaskStarted)
 				histSeenTaskStarted_ = true;
 			auto t = translateRolloutEventMsg(line);
 			return t !is null ? [TranslatedEvent(t, line, ts)] : [];
@@ -1317,16 +1317,12 @@ class CodexAgent : Agent
 
 	bool isUserMessageLine(string rawLine)
 	{
-		import std.algorithm : canFind;
-		// Codex JSONL: response_item with role=user
-		return rawLine.canFind(`"type":"response_item"`) && rawLine.canFind(`"role":"user"`);
+		return parseRolloutLineProbe(rawLine).isUserMessage;
 	}
 
 	bool isAssistantMessageLine(string rawLine)
 	{
-		import std.algorithm : canFind;
-		// Codex JSONL: response_item with role=assistant
-		return rawLine.canFind(`"type":"response_item"`) && rawLine.canFind(`"role":"assistant"`);
+		return parseRolloutLineProbe(rawLine).isAssistantMessage;
 	}
 
 	string rewriteSessionId(string line, string oldId, string newId)
@@ -1339,7 +1335,6 @@ class CodexAgent : Agent
 
 	string[] extractForkableIds(string content, int lineOffset = 0)
 	{
-		import std.algorithm : canFind;
 		import std.conv : to;
 		import std.string : lineSplitter;
 
@@ -1355,26 +1350,24 @@ class CodexAgent : Agent
 			lineNum++;
 			if (line.length == 0)
 				continue;
-			if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+			auto probe = parseRolloutLineProbe(line);
+			if (!seenTaskStarted && probe.isTaskStarted)
 			{
 				seenTaskStarted = true;
 				continue;
 			}
 			// Handle ThreadRolledBack markers: remove last N user-turn groups
-			if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+			if (probe.isThreadRolledBack)
 			{
-				auto numTurns = parseRollbackNumTurns(line);
-				if (numTurns > 0)
-					ids = applyRollbackToIds(ids, numTurns);
+				if (probe.rollbackNumTurns > 0)
+					ids = applyRollbackToIds(ids, probe.rollbackNumTurns);
 				continue;
 			}
-			// Forkable: response_item with role user or assistant
-			if (!line.canFind(`"type":"response_item"`))
-				continue;
-			if (!line.canFind(`"role":"user"`) && !line.canFind(`"role":"assistant"`))
+			// Forkable: message response_item with role user or assistant
+			if (!probe.isForkableMessage)
 				continue;
 			// Skip pre-session role=user lines (system context injected before task_started).
-			if (line.canFind(`"role":"user"`) && !seenTaskStarted)
+			if (probe.isUserMessage && !seenTaskStarted)
 				continue;
 			ids ~= "line:" ~ to!string(lineNum);
 		}
@@ -1383,7 +1376,6 @@ class CodexAgent : Agent
 
 	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0)
 	{
-		import std.algorithm : canFind;
 		import std.conv : to;
 		import std.string : lineSplitter;
 
@@ -1399,28 +1391,25 @@ class CodexAgent : Agent
 			lineNum++;
 			if (line.length == 0)
 				continue;
-			if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+			auto probe = parseRolloutLineProbe(line);
+			if (!seenTaskStarted && probe.isTaskStarted)
 			{
 				seenTaskStarted = true;
 				continue;
 			}
 			// Handle ThreadRolledBack markers: remove last N user-turn groups
-			if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+			if (probe.isThreadRolledBack)
 			{
-				auto numTurns = parseRollbackNumTurns(line);
-				if (numTurns > 0)
-					ids = applyRollbackToIdsWithInfo(ids, numTurns);
+				if (probe.rollbackNumTurns > 0)
+					ids = applyRollbackToIdsWithInfo(ids, probe.rollbackNumTurns);
 				continue;
 			}
-			if (!line.canFind(`"type":"response_item"`))
-				continue;
-			bool isUser = line.canFind(`"role":"user"`);
-			if (!isUser && !line.canFind(`"role":"assistant"`))
+			if (!probe.isForkableMessage)
 				continue;
 			// Skip pre-session role=user lines (system context injected before task_started).
-			if (isUser && !seenTaskStarted)
+			if (probe.isUserMessage && !seenTaskStarted)
 				continue;
-			ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), isUser);
+			ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), probe.isUserMessage);
 		}
 		return ids;
 	}
@@ -1441,9 +1430,7 @@ class CodexAgent : Agent
 
 	bool isForkableLine(string line)
 	{
-		import std.algorithm : canFind;
-		return line.canFind(`"type":"response_item"`)
-			&& (line.canFind(`"role":"user"`) || line.canFind(`"role":"assistant"`));
+		return parseRolloutLineProbe(line).isForkableMessage;
 	}
 
 	@property bool needsBash() { return false; }
@@ -2302,26 +2289,96 @@ class CodexSession : AgentSession
 // Rollback marker helpers
 // ---------------------------------------------------------------------------
 
+private enum ForkableMessageRole
+{
+	none,
+	user,
+	assistant,
+}
+
+private struct RolloutLineProbe
+{
+	bool isSessionMeta;
+	bool isResponseItem;
+	bool isEventMsg;
+	bool isTaskStarted;
+	bool isThreadRolledBack;
+	uint rollbackNumTurns;
+	ForkableMessageRole messageRole = ForkableMessageRole.none;
+
+	@property bool isUserMessage() const
+	{
+		return messageRole == ForkableMessageRole.user;
+	}
+
+	@property bool isAssistantMessage() const
+	{
+		return messageRole == ForkableMessageRole.assistant;
+	}
+
+	@property bool isForkableMessage() const
+	{
+		return isUserMessage || isAssistantMessage;
+	}
+}
+
+/// Parse one rollout JSONL line and return only the fields relevant to
+/// history/forkable-line classification.
+private RolloutLineProbe parseRolloutLineProbe(string line)
+{
+	@JSONPartial
+	static struct TopLevelProbe
+	{
+		@JSONOptional string type;
+		@JSONOptional JSONFragment payload;
+	}
+
+	@JSONPartial
+	static struct PayloadProbe
+	{
+		@JSONOptional string type;
+		@JSONOptional string role;
+		@JSONOptional uint num_turns;
+	}
+
+	RolloutLineProbe result;
+	try
+	{
+		auto top = jsonParse!TopLevelProbe(line);
+		result.isSessionMeta = top.type == "session_meta";
+		result.isResponseItem = top.type == "response_item";
+		result.isEventMsg = top.type == "event_msg";
+
+		if (top.payload.json is null || top.payload.json.length == 0)
+			return result;
+
+		auto payload = jsonParse!PayloadProbe(top.payload.json);
+		if (result.isEventMsg)
+		{
+			result.isTaskStarted = payload.type == "task_started";
+			result.isThreadRolledBack = payload.type == "thread_rolled_back";
+			if (result.isThreadRolledBack)
+				result.rollbackNumTurns = payload.num_turns;
+		}
+		if (result.isResponseItem && payload.type == "message")
+		{
+			if (payload.role == "user")
+				result.messageRole = ForkableMessageRole.user;
+			else if (payload.role == "assistant")
+				result.messageRole = ForkableMessageRole.assistant;
+		}
+	}
+	catch (Exception) {}
+	return result;
+}
+
 /// Parse `num_turns` from a ThreadRolledBack event_msg JSONL line.
 /// The payload is `{"type":"thread_rolled_back","num_turns":N}`.
 /// Returns 0 if parsing fails.
 uint parseRollbackNumTurns(string line)
 {
-	@JSONPartial
-	static struct RollbackProbe
-	{
-		@JSONPartial
-		static struct Payload { uint num_turns; }
-		Payload payload;
-	}
-
-	try
-	{
-		auto probe = jsonParse!RollbackProbe(line);
-		return probe.payload.num_turns;
-	}
-	catch (Exception)
-		return 0;
+	auto probe = parseRolloutLineProbe(line);
+	return probe.isThreadRolledBack ? probe.rollbackNumTurns : 0;
 }
 
 /// Apply a rollback to a list of fork IDs: remove the last N user-turn groups.
@@ -2362,8 +2419,7 @@ ForkableIdInfo[] applyRollbackToIdsWithInfo(ForkableIdInfo[] ids, uint numTurns)
 /// Check if a JSONL line is a ThreadRolledBack event_msg.
 bool isRollbackMarker(string line)
 {
-	import std.algorithm : canFind;
-	return line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`);
+	return parseRolloutLineProbe(line).isThreadRolledBack;
 }
 
 /// Compute the set of 1-based line numbers that should be skipped when
@@ -2373,7 +2429,6 @@ bool isRollbackMarker(string line)
 /// the next user response_item).
 bool[int] computeRollbackSkipLines(string content)
 {
-	import std.algorithm : canFind;
 	import std.string : lineSplitter;
 
 	struct TurnBoundary { int lineNum; }
@@ -2388,17 +2443,18 @@ bool[int] computeRollbackSkipLines(string content)
 		lineNum++;
 		if (line.length == 0)
 			continue;
-		if (!seenTaskStarted && line.canFind(`"type":"event_msg"`) && line.canFind(`"task_started"`))
+		auto probe = parseRolloutLineProbe(line);
+		if (!seenTaskStarted && probe.isTaskStarted)
 		{
 			seenTaskStarted = true;
 			continue;
 		}
-		if (line.canFind(`"type":"event_msg"`) && line.canFind(`"thread_rolled_back"`))
+		if (probe.isThreadRolledBack)
 		{
-			rollbacks ~= RollbackInfo(lineNum, parseRollbackNumTurns(line));
+			rollbacks ~= RollbackInfo(lineNum, probe.rollbackNumTurns);
 			continue;
 		}
-		if (seenTaskStarted && line.canFind(`"type":"response_item"`) && line.canFind(`"role":"user"`))
+		if (seenTaskStarted && probe.isUserMessage)
 			userTurnStarts ~= TurnBoundary(lineNum);
 	}
 
@@ -2443,6 +2499,23 @@ bool[int] computeRollbackSkipLines(string content)
 
 unittest
 {
+	// Genuine message response_item lines are forkable.
+	auto userProbe = parseRolloutLineProbe(
+		`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}`);
+	assert(userProbe.isUserMessage);
+	assert(userProbe.isForkableMessage);
+
+	auto assistantProbe = parseRolloutLineProbe(
+		`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`);
+	assert(assistantProbe.isAssistantMessage);
+	assert(assistantProbe.isForkableMessage);
+
+	// Internal/non-message response_item lines can contain nested "role":"user"
+	// data, but must not be treated as forkable user turns.
+	auto internalProbe = parseRolloutLineProbe(
+		`{"type":"response_item","payload":{"type":"function_call_output","output":{"role":"user"}}}`);
+	assert(!internalProbe.isForkableMessage);
+
 	// Test parseRollbackNumTurns
 	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`) == 2);
 	assert(parseRollbackNumTurns(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":0}}`) == 0);
@@ -2477,10 +2550,10 @@ unittest
 	{
 		string jsonl =
 			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
 		auto skip = computeRollbackSkipLines(jsonl);
 		assert(4 in skip, "user 2 line should be skipped");
@@ -2494,12 +2567,12 @@ unittest
 	{
 		string jsonl =
 			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n" ~
 			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
 		auto skip = computeRollbackSkipLines(jsonl);
@@ -2513,10 +2586,26 @@ unittest
 	{
 		string jsonl =
 			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"user","content":[]}}` ~ "\n" ~
-			`{"type":"response_item","payload":{"role":"assistant","content":[]}}`;
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`;
 		auto skip = computeRollbackSkipLines(jsonl);
 		assert(skip.length == 0, "no rollback markers should mean no skipped lines");
+	}
+
+	// Non-message response_item lines containing nested role/user data must not
+	// shift user-turn boundaries.
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"function_call_output","output":{"role":"user"}}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}`;
+		auto skip = computeRollbackSkipLines(jsonl);
+		assert(5 in skip && 6 in skip, "rolled back second visible turn");
+		assert(4 !in skip, "non-message response_item should not be treated as user turn");
 	}
 }
 

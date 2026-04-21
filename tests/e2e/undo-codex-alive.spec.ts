@@ -13,57 +13,110 @@ test("codex alive-path undo: session stays alive after undo", async ({
 
   await sendMessage(page, 'Please reply with "alive-one"');
   await expect(
-    page.locator(".message.assistant-message .text-content", {
+    page.locator(".message.assistant-message .text-content:visible", {
       hasText: "alive-one",
     }),
   ).toBeVisible({ timeout: 90_000 });
 
   await sendMessage(page, 'Please reply with "alive-two"');
   await expect(
-    page.locator(".message.assistant-message .text-content", {
+    page.locator(".message.assistant-message .text-content:visible", {
       hasText: "alive-two",
     }),
   ).toBeVisible({ timeout: 90_000 });
 
-  // Session is idle but alive — do NOT kill it before undoing.
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
-
-  // Hover over the second user message to reveal the undo button.
-  const secondUserMsg = page
-    .locator(".message-wrapper", {
-      has: page.locator(".user-message", { hasText: "alive-two" }),
-    })
-    .last();
-  await secondUserMsg.hover();
-
-  await expect(secondUserMsg.locator(".undo-btn")).toBeVisible({
-    timeout: 5_000,
-  });
-  await secondUserMsg.locator(".undo-btn").click();
-
-  await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
-  await page.locator(".btn-undo").click();
-
-  // After undo: exactly 1 confirmed user message remains (meta messages excluded).
+  await sendMessage(page, 'Please reply with "alive-three"');
   await expect(
-    page.locator(".message.user-message:not(.pending):not(.meta-message)"),
-  ).toHaveCount(1, { timeout: 15_000 });
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-three",
+    }),
+  ).toBeVisible({ timeout: 90_000 });
 
-  // After undo: exactly 1 assistant message remains.
-  await expect(page.locator(".message.assistant-message")).toHaveCount(1, {
+  await sendMessage(page, 'Please reply with "alive-four"');
+  await expect(
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-four",
+    }),
+  ).toBeVisible({ timeout: 90_000 });
+
+  await sendMessage(page, 'Please reply with "alive-five"');
+  await expect(
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-five",
+    }),
+  ).toBeVisible({ timeout: 90_000 });
+
+  // Session is idle but alive — do NOT kill it before undoing.
+  await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
     timeout: 15_000,
   });
 
-  // alive-two is gone; alive-one remains.
+  // Hover over the third user message to reveal the undo button.
+  const thirdUserMsg = page
+    .locator(".message-wrapper:visible", {
+      has: page.locator(".user-message:visible", { hasText: "alive-three" }),
+    })
+    .last();
+  await thirdUserMsg.hover();
+
+  await expect(thirdUserMsg.locator(".undo-btn")).toBeVisible({
+    timeout: 5_000,
+  });
+  await thirdUserMsg.locator(".undo-btn").click();
+
+  await expect(page.locator(".undo-dialog:visible")).toBeVisible({
+    timeout: 5_000,
+  });
+  await page.locator(".btn-undo:visible").click();
+
+  // After undo: exactly turns 1-2 remain.
   await expect(
-    page.locator(".message.user-message", { hasText: "alive-two" }),
-  ).not.toBeVisible();
+    page.locator(
+      ".message.user-message:not(.pending):not(.meta-message):visible",
+    ),
+  ).toHaveCount(2, { timeout: 15_000 });
+
+  // After undo: exactly 2 assistant messages remain.
+  await expect(page.locator(".message.assistant-message:visible")).toHaveCount(
+    2,
+    {
+      timeout: 15_000,
+    },
+  );
+
+  // alive-one/alive-two remain.
   await expect(
-    page.locator(".message.assistant-message .text-content", {
+    page.locator(".message.user-message:not(.pending):visible", {
       hasText: "alive-one",
     }),
   ).toBeVisible();
+  await expect(
+    page.locator(".message.user-message:not(.pending):visible", {
+      hasText: "alive-two",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-one",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-two",
+    }),
+  ).toBeVisible();
+
+  // alive-three..alive-five are gone.
+  for (const marker of ["alive-three", "alive-four", "alive-five"]) {
+    await expect(
+      page.locator(".message.user-message:visible", { hasText: marker }),
+    ).not.toBeVisible();
+    await expect(
+      page.locator(".message.assistant-message .text-content:visible", {
+        hasText: marker,
+      }),
+    ).not.toBeVisible();
+  }
 
   // Session is still alive: input box is visible and enabled.
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
@@ -71,10 +124,10 @@ test("codex alive-path undo: session stays alive after undo", async ({
   });
 
   // Send a follow-up message to confirm the session is fully functional.
-  await sendMessage(page, 'Please reply with "alive-three"');
+  await sendMessage(page, 'Please reply with "alive-six"');
   await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "alive-three",
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "alive-six",
     }),
   ).toBeVisible({ timeout: 90_000 });
 });

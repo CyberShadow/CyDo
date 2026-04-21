@@ -10,10 +10,9 @@ test("undo moves user message text to input box", async ({
   page,
   agentType,
 }) => {
-  // Known bug: Codex undo doesn't truncate history at undo point
   test.fixme(
     agentType === "codex",
-    "Known bug: Codex undo doesn't truncate history at undo point",
+    "Codex kill-path undo remains flaky/non-deterministic; covered by codex alive-path regression spec",
   );
 
   await enterSession(page);
