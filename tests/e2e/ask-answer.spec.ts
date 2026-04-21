@@ -3,7 +3,10 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 // All ask/answer tests require launching sub-tasks which takes more time.
 const TALK_TIMEOUT = 120_000;
 
-test("Ask/Answer: follow-up to completed sub-task", async ({ page, agentType }) => {
+test("Ask/Answer: follow-up to completed sub-task", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
 
   await enterSession(page);
@@ -43,7 +46,10 @@ test("Ask/Answer: follow-up to completed sub-task", async ({ page, agentType }) 
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: child asks parent, parent answers", async ({ page, agentType }) => {
+test("Ask/Answer: child asks parent, parent answers", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
 
   await enterSession(page);
@@ -135,7 +141,10 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: invalid Ask target returns error", async ({ page, agentType }) => {
+test("Ask/Answer: invalid Ask target returns error", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
 
   await enterSession(page);
@@ -152,7 +161,10 @@ test("Ask/Answer: invalid Ask target returns error", async ({ page, agentType })
   ).toBeVisible({ timeout: 60_000 });
 });
 
-test("Ask/Answer: tid field present in Task results", async ({ page, agentType }) => {
+test("Ask/Answer: tid field present in Task results", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
 
   await enterSession(page);
@@ -308,7 +320,7 @@ test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
   ).toBeVisible({ timeout: 60_000 });
 });
 
-test("Ask/Answer: Ask to busy (waiting) sub-task returns error", async ({
+test("Ask/Answer: Ask to busy (waiting) sub-task is enqueued", async ({
   page,
   agentType,
 }) => {
@@ -343,15 +355,12 @@ test("Ask/Answer: Ask to busy (waiting) sub-task returns error", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Parent tries to Ask the busy (waiting) child tid=2.
+  // Parent asks the busy (waiting) child tid=2.
   await sendMessage(page, "call ask 2 hey are you done?");
 
-  // Backend should return an error because child 2 is busy (waiting on grandchild).
+  // Ask is enqueued — parent enters "waiting" state (no error returned).
   await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText(/busy sub-task/i)
-      .last(),
+    page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
   ).toBeVisible({ timeout: 60_000 });
 });
 
@@ -398,7 +407,10 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: answer delivery is deferred until child becomes idle", async ({ page, agentType }) => {
+test("Ask/Answer: answer delivery is deferred until child becomes idle", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
   await enterSession(page);
 
@@ -429,12 +441,17 @@ test("Ask/Answer: answer delivery is deferred until child becomes idle", async (
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: Answer with invalid qid returns error", async ({ page, agentType }) => {
+test("Ask/Answer: Answer with invalid qid returns error", async ({
+  page,
+  agentType,
+}) => {
   test.setTimeout(TALK_TIMEOUT);
   await enterSession(page);
   await sendMessage(page, "call answer 999 hello");
   await expect(
-    page.locator('[style*="display: contents"] .message-list')
-      .getByText(/unknown question/i).last(),
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/unknown question/i)
+      .last(),
   ).toBeVisible({ timeout: 60_000 });
 });

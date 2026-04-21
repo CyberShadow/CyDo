@@ -1657,11 +1657,65 @@ class App : ToolsBackend
 			return awaitBatchLoop(parentTid);
 		}
 
-		// Child is busy (waiting on its own sub-tasks, etc.)
-		return resolve(McpResult(
-			"Cannot Ask busy sub-task (tid=" ~ to!string(childTid)
-			~ ", status=" ~ childTd.status ~ "). "
-			~ "Wait for the sub-task to finish or become idle.", true));
+		// Child is busy (waiting on its own sub-tasks, etc.) — enqueue for delivery when idle.
+		{
+			int qid = nextQid++;
+			auto promise = new Promise!McpResult;
+			pendingQuestions[qid] = promise;
+			questionToTask[qid] = parentTid;
+
+			// Wire the question promise to fire a batch signal when answered
+			promise.then((McpResult r) {
+				if (parentTid in activeBatches)
+					activeBatches[parentTid].eventQueue.fulfillOne(
+						BatchSignal.childDone(childTid, r));
+				pendingQuestions.remove(qid);
+				questionToTask.remove(qid);
+			});
+
+			// Set parent to waiting
+			tasks[parentTid].status = "waiting";
+			persistence.setStatus(parentTid, "waiting");
+			broadcastTaskUpdate(parentTid);
+
+			// Attach a callback that delivers the question when the child becomes idle
+			childTd.onIdleCallbacks ~= () {
+				if (childTid !in tasks || !tasks[childTid].alive)
+				{
+					// Child died before question could be delivered
+					if (auto qp = qid in pendingQuestions)
+					{
+						(*qp).fulfill(McpResult("Sub-task exited before the queued question could be delivered", true));
+						pendingQuestions.remove(qid);
+						questionToTask.remove(qid);
+					}
+					return;
+				}
+				auto ctd = &tasks[childTid];
+				ctd.status = "active";
+				persistence.setStatus(childTid, "active");
+				broadcastTaskUpdate(childTid);
+				broadcastFocusHint(parentTid, childTid);
+				auto followUpMsg = "[Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")]\n\n"
+					~ message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+				auto followUpMeta = buildCydoMeta("Follow-up from parent",
+					["message": message], "message", true);
+				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
+			};
+
+			// Create a 1-child batch if no existing batch
+			if (parentTid !in activeBatches)
+			{
+				BatchState batch;
+				batch.totalChildren = 1;
+				batch.results = new McpResult[1];
+				batch.done = new bool[1];
+				batch.childTids = [childTid];
+				activeBatches[parentTid] = batch;
+			}
+
+			return awaitBatchLoop(parentTid);
+		}
 	}
 
 	private Promise!McpResult handleAskParent(int childTid, int parentTid, string message)
