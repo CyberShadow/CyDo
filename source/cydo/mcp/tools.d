@@ -9,7 +9,7 @@ struct TaskSpec
 {
 	@Description("A short (3-5 word) description of the task")
 	string description;
-	@Description("The task type to create (e.g., 'research', 'plan', 'implement')")
+	@Description("The task type to create")
 	string task_type;
 	@Description("The task for the agent to perform")
 	string prompt;
