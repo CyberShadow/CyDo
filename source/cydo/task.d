@@ -270,6 +270,7 @@ struct TaskData
 	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
 	string pendingAskQuestion;             // question text from child
 	int pendingAskQid;                     // qid allocated for this question
+	void delegate()[] onIdleCallbacks;     // callbacks to run when the task next yields idle
 	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 

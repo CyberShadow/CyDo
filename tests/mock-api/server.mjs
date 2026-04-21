@@ -318,6 +318,41 @@ function oaiStreamFunctionCallResponse(res, name, args) {
   res.end();
 }
 
+function oaiStreamMultiFunctionCallResponse(res, names, argsList) {
+  const respId = nextRespId();
+  oaiSseEvent(res, "response.created", {
+    type: "response.created",
+    response: { id: respId },
+  });
+  for (let i = 0; i < names.length; i++) {
+    const callId = nextCallId();
+    oaiSseEvent(res, "response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: i,
+      item: {
+        type: "function_call",
+        call_id: callId,
+        name: names[i],
+        arguments: JSON.stringify(argsList[i]),
+      },
+    });
+  }
+  oaiSseEvent(res, "response.completed", {
+    type: "response.completed",
+    response: {
+      id: respId,
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: null,
+        output_tokens: 20,
+        output_tokens_details: null,
+        total_tokens: 30,
+      },
+    },
+  });
+  res.end();
+}
+
 function oaiStreamCustomToolCallResponse(res, name, input) {
   const respId = nextRespId();
   const callId = nextCallId();
@@ -601,6 +636,12 @@ function handleResponses(req, res) {
       } else {
         oaiStreamShellCallResponse(res, intent.command);
       }
+    } else if (intent.type === "multi_tool_call") {
+      // For the OpenAI/Codex protocol, only send the first tool call.
+      // Codex doesn't support MCP + shell calls in parallel, and the
+      // deferral mechanism is exercised even with a single Answer call.
+      const first = intent.tool_calls[0];
+      oaiStreamFunctionCallResponse(res, first.name, first.input);
     } else if (intent.name === "apply_patch") {
       oaiStreamCustomToolCallResponse(res, intent.name, intent.input);
     } else if (intent.type === "web_search") {
@@ -779,6 +820,10 @@ function handleMessages(req, res) {
         command: cmd,
         description: "Running command",
       }));
+      streamMultiToolUseResponse(res, toolNames, inputs, model);
+    } else if (intent.type === "multi_tool_call") {
+      const toolNames = intent.tool_calls.map((tc) => tc.name);
+      const inputs = intent.tool_calls.map((tc) => tc.input);
       streamMultiToolUseResponse(res, toolNames, inputs, model);
     } else if (intent.type === "orphan_then_switchmode") {
       // Step 1: run sleep 999 with a short timeout — the timeout causes Claude

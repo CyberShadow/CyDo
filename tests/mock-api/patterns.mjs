@@ -151,6 +151,18 @@ export function matchPattern(userText) {
       input: { qid: parseInt(match[1]), message: match[2].trim() },
     };
 
+  // Follow-up from parent containing "deferred-test" — Answer AND do extra Bash work
+  // in the same response (parallel tool calls), simulating post-answer work.
+  match = userText.match(/\[Follow-up question from parent task \(qid=(\d+)\)\][\s\S]*deferred-test/);
+  if (match)
+    return {
+      type: "multi_tool_call",
+      tool_calls: [
+        { name: "mcp__cydo__Answer", input: { qid: parseInt(match[1]), message: "deferred-answer-result" } },
+        { name: "Bash", input: { command: "echo post-answer-work", description: "Post-answer work" } },
+      ],
+    };
+
   // Follow-up from parent task (injected by backend as resume message with qid)
   // Extract qid and respond with Answer tool call
   match = userText.match(/\[Follow-up question from parent task \(qid=(\d+)\)\]/);

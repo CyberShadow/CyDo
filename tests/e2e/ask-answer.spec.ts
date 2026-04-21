@@ -398,6 +398,37 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   ).toBeVisible({ timeout: 90_000 });
 });
 
+test("Ask/Answer: answer delivery is deferred until child becomes idle", async ({ page, agentType }) => {
+  test.setTimeout(TALK_TIMEOUT);
+  await enterSession(page);
+
+  // Create a child that completes normally.
+  await sendMessage(page, 'call task research reply with "initial-result"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("initial-result", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Ask follow-up with "deferred-test" trigger — child will Answer + do extra Bash work.
+  await sendMessage(page, "call ask 2 deferred-test");
+
+  // Parent should receive the answer after the child's full turn completes.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("deferred-answer-result", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+});
+
 test("Ask/Answer: Answer with invalid qid returns error", async ({ page, agentType }) => {
   test.setTimeout(TALK_TIMEOUT);
   await enterSession(page);

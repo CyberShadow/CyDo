@@ -215,6 +215,22 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
     ]);
+  } else if (intent.type === "multi_tool_call") {
+    // For copilot, only send the first tool call (Answer).
+    // Copilot doesn't support MCP + shell calls in parallel, and the
+    // deferral mechanism is exercised even with a single Answer call.
+    const first = intent.tool_calls[0];
+    let toolName = first.name;
+    if (toolName.startsWith("mcp__cydo__")) {
+      toolName = "cydo-" + toolName.slice("mcp__cydo__".length);
+    }
+    const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
+    sendSse(socket, [
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: callId, type: "function", function: { name: toolName, arguments: "" } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(first.input) } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    ]);
   } else {
     // tool_call — translate mcp__cydo__Foo → cydo-Foo for copilot's MCP tool registry
     let toolName = intent.name;

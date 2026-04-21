@@ -1750,16 +1750,40 @@ class App : ToolsBackend
 		}
 		else if (childAnsweringParent)
 		{
-			// Child answering parent's follow-up question
-			// Fulfill the promise — handleAskChild's .then() handler delivers to batch
+			// Child answering parent's follow-up question.
+			// Defer fulfillment until the child's turn completes (becomes idle),
+			// so the parent doesn't receive the answer mid-turn.
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
 				"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
-			(*questionPromise).fulfill(McpResult.structured(answerJson));
-			// Note: pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
-			broadcastFocusHint(callerTidInt, askTid);
+			auto answerResult = McpResult.structured(answerJson);
+			int childTid = callerTidInt;
 
-			// Return simple success to the child
+			tasks[childTid].onIdleCallbacks ~= () {
+				// Fulfill the promise — handleAskChild's .then() delivers to parent's batch.
+				if (auto qp = qid in pendingQuestions)
+					(*qp).fulfill(answerResult);
+				// pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
+
+				// Complete the child task.
+				if (childTid in tasks)
+				{
+					tasks[childTid].status = "completed";
+					persistence.setStatus(childTid, "completed");
+					persistence.setResultText(childTid, tasks[childTid].resultText);
+				}
+				if (childTid in pendingSubTasks)
+					pendingSubTasks.remove(childTid);
+				if (auto parentTidPtr = childTid in taskDeps)
+				{
+					auto parentTid2 = *parentTidPtr;
+					persistence.removeTaskDep(parentTid2, childTid);
+					taskDeps.remove(childTid);
+				}
+				broadcastFocusHint(childTid, askTid);
+			};
+
+			// Return simple success to the child immediately.
 			auto deliveredJson = toJson(AnswerResult("delivered", askTid, qid,
 				null, null, "Answer delivered to parent task. End the session now."));
 			return resolve(McpResult.structured(deliveredJson));
@@ -3746,11 +3770,26 @@ class App : ToolsBackend
 				auto onYieldTypeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
 				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
-					|| tid in taskDeps || hasOnYield)
+					|| tid in taskDeps || hasOnYield || td.onIdleCallbacks.length > 0)
 				{
-					// For non-continuation subtasks, deliver the result immediately
-					// so the parent doesn't wait for process exit.
-					if (auto pending = tid in pendingSubTasks)
+					// Drain idle callbacks if any — they take priority over normal completion.
+					if (td.onIdleCallbacks.length > 0)
+					{
+						auto cbs = td.onIdleCallbacks.dup;
+						td.onIdleCallbacks = null;
+						foreach (cb; cbs)
+							cb();
+						// If the callback set the task to "active" (e.g., sent a question),
+						// the task has new work — don't close stdin, don't complete.
+						if (td.status == "active")
+						{
+							broadcastTaskUpdate(tid);
+							return;
+						}
+						// Otherwise fall through — e.g., deferred answer was delivered,
+						// task is "completed", proceed with normal stdin close.
+					}
+					else if (auto pending = tid in pendingSubTasks)
 					{
 						if (td.pendingContinuation.length == 0 && !hasOnYield)
 						{
@@ -3829,17 +3868,28 @@ class App : ToolsBackend
 				}
 				else
 				{
-					td.status = "alive";
-					persistence.setStatus(tid, "alive");
-					td.needsAttention = true;
-					persistence.setNeedsAttention(tid, true);
-					td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
-					touchTask(tid);
-					persistence.setLastActive(tid, tasks[tid].lastActive);
-					try
-						generateSuggestions(tid);
-					catch (Exception e)
-						warningf("Error generating suggestions: %s", e.msg);
+					if (td.onIdleCallbacks.length > 0)
+					{
+						auto cbs = td.onIdleCallbacks.dup;
+						td.onIdleCallbacks = null;
+						foreach (cb; cbs)
+							cb();
+						// Don't set "alive" — callbacks took over.
+					}
+					else
+					{
+						td.status = "alive";
+						persistence.setStatus(tid, "alive");
+						td.needsAttention = true;
+						persistence.setNeedsAttention(tid, true);
+						td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
+						touchTask(tid);
+						persistence.setLastActive(tid, tasks[tid].lastActive);
+						try
+							generateSuggestions(tid);
+						catch (Exception e)
+							warningf("Error generating suggestions: %s", e.msg);
+					}
 				}
 				broadcastTaskUpdate(tid);
 			}
@@ -3925,6 +3975,15 @@ class App : ToolsBackend
 				tasks[tid].pendingPermissionToolUseId = null;
 				tasks[tid].pendingPermissionToolName = null;
 				tasks[tid].pendingPermissionInput = JSONFragment.init;
+			}
+
+			// Drain idle callbacks on exit — task won't yield again.
+			if (tasks[tid].onIdleCallbacks.length > 0)
+			{
+				auto cbs = tasks[tid].onIdleCallbacks.dup;
+				tasks[tid].onIdleCallbacks = null;
+				foreach (cb; cbs)
+					cb();
 			}
 
 			// Fulfill pending Ask promise with error if child exits while waiting
