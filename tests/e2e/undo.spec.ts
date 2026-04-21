@@ -10,11 +10,6 @@ test("undo moves user message text to input box", async ({
   page,
   agentType,
 }) => {
-  test.fixme(
-    agentType === "codex",
-    "Codex kill-path undo remains flaky/non-deterministic; covered by codex alive-path regression spec",
-  );
-
   await enterSession(page);
 
   await sendMessage(page, 'Please reply with "reply-one"');
@@ -54,6 +49,11 @@ test("undo moves user message text to input box", async ({
 
   await killSession(page, agentType);
 
+  const confirmedUser = page.locator(".message.user-message:not(.pending)");
+  const replyUser = confirmedUser.filter({
+    hasText: /reply-(one|two|three|four|five)/,
+  });
+
   // Before undo: all 5 user messages must be visible (confirmed, not pending)
   for (const marker of [
     "reply-one",
@@ -62,9 +62,9 @@ test("undo moves user message text to input box", async ({
     "reply-four",
     "reply-five",
   ]) {
-    await expect(
-      page.locator(".message.user-message:not(.pending)", { hasText: marker }),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(replyUser.filter({ hasText: marker })).toBeVisible({
+      timeout: 15_000,
+    });
   }
 
   // Undo at message 3
@@ -84,10 +84,7 @@ test("undo moves user message text to input box", async ({
   await page.locator(".btn-undo").click();
 
   // After undo: exactly 2 confirmed user messages remain
-  await expect(page.locator(".message.user-message:not(.pending)")).toHaveCount(
-    2,
-    { timeout: 15_000 },
-  );
+  await expect(replyUser).toHaveCount(2, { timeout: 15_000 });
 
   // After undo: exactly 2 assistant messages remain (reply-one and reply-two)
   await expect(page.locator(".message.assistant-message")).toHaveCount(2, {
@@ -95,16 +92,8 @@ test("undo moves user message text to input box", async ({
   });
 
   // Messages 1 and 2 are still visible (user + assistant)
-  await expect(
-    page.locator(".message.user-message:not(.pending)", {
-      hasText: "reply-one",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.locator(".message.user-message:not(.pending)", {
-      hasText: "reply-two",
-    }),
-  ).toBeVisible();
+  await expect(replyUser.filter({ hasText: "reply-one" })).toBeVisible();
+  await expect(replyUser.filter({ hasText: "reply-two" })).toBeVisible();
   await expect(
     page.locator(".message.assistant-message .text-content", {
       hasText: "reply-one",
@@ -118,9 +107,7 @@ test("undo moves user message text to input box", async ({
 
   // Messages 3, 4, 5 are gone
   for (const marker of ["reply-three", "reply-four", "reply-five"]) {
-    await expect(
-      page.locator(".message.user-message", { hasText: marker }),
-    ).not.toBeVisible();
+    await expect(replyUser.filter({ hasText: marker })).not.toBeVisible();
     await expect(
       page.locator(".message.assistant-message .text-content", {
         hasText: marker,

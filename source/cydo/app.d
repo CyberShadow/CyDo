@@ -367,8 +367,8 @@ class App : ToolsBackend
 	private WebSocketAdapter[] clients;
 	/// Per-client subscription set: which tasks each client receives live events for.
 	/// INVARIANT: subscription ≡ request_history. A client is subscribed only
-	/// after receiving the full history buffer. Resetting history (agent exit,
-	/// undo) unsubscribes all clients, forcing re-subscription via request_history.
+	/// after receiving the full history buffer. Every task_reload is a hard
+	/// boundary: clients are unsubscribed and must re-subscribe via request_history.
 	private bool[int][WebSocketAdapter] clientSubscriptions;
 	private TaskData[int] tasks;
 	private Persistence persistence;
@@ -576,7 +576,8 @@ class App : ToolsBackend
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
-		jsonlTracker.broadcast = &broadcast;
+		jsonlTracker.sendToSubscribed = (int tid, string msg) =>
+			sendToSubscribed(tid, Data(msg.representation));
 
 		// Load task type definitions
 		auto types = getTaskTypes();
@@ -1509,7 +1510,8 @@ class App : ToolsBackend
 		tdp.pendingAskQuestions = JSONFragment(questionsJson);
 
 		// Broadcast to subscribed clients
-		auto msg = toJson(AskUserQuestionMessage("ask_user_question", tid, toolUseId, JSONFragment(questionsJson)));
+		auto msg = toJson(AskUserQuestionMessage("ask_user_question", tid,
+			toolUseId, JSONFragment(questionsJson)));
 		sendToSubscribed(tid, Data(msg.representation));
 
 		// Update task state for sidebar
@@ -1890,7 +1892,8 @@ class App : ToolsBackend
 		tdp.pendingPermissionInput = input;
 
 		// Broadcast to subscribed clients
-		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt", tid, toolUseId, toolName, input)).representation));
+		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
+			tid, toolUseId, toolName, input)).representation));
 
 		// Update task state for sidebar
 		tdp.needsAttention = true;
@@ -2031,7 +2034,8 @@ class App : ToolsBackend
 
 		// Broadcast clear to all subscribed clients (so other tabs/windows dismiss the form)
 		import ae.utils.json : toJson;
-		sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question", tid, "", JSONFragment("[]"))).representation));
+		sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question",
+			tid, "", JSONFragment("[]"))).representation));
 
 		broadcastTaskUpdate(tid);
 	}
@@ -2088,7 +2092,8 @@ class App : ToolsBackend
 		pendingPermissionInputs.remove(tid);
 
 		// Broadcast clear to all subscribed clients (empty tool_use_id signals clear)
-		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt", tid, "", "", JSONFragment("{}"))).representation));
+		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
+			tid, "", "", JSONFragment("{}"))).representation));
 
 		broadcastTaskUpdate(tid);
 	}
@@ -2435,7 +2440,8 @@ class App : ToolsBackend
 				auto synEv = buildSyntheticUserEvent(text);
 				synEv.uuid = uuid;
 				td.appendHistory(Data(
-					toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(synEv)))).representation), null);
+					toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+						JSONFragment(toJson(synEv)))).representation), null);
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -2466,26 +2472,33 @@ class App : ToolsBackend
 				continue;
 			}
 			import cydo.task : extractTsFromEnvelope;
-			auto clientEnvelope = toJson(TaskEventSeqEnvelope(tid, cast(int) i, extractTsFromEnvelope(envelope), JSONFragment(event)));
+			auto clientEnvelope = toJson(TaskEventSeqEnvelope(
+				tid,
+				cast(int) i,
+				extractTsFromEnvelope(envelope),
+				JSONFragment(event)));
 			ws.send(Data(clientEnvelope.representation));
 		}
 
 		// Send forkable UUIDs extracted from JSONL
 		if (td.agentSessionId.length > 0)
-			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId, td.effectiveCwd);
+			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
+				td.effectiveCwd);
 
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
 
 		// Send cached suggestions if available
 		if (td.lastSuggestions.length > 0)
-			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid, td.lastSuggestions)).representation));
+			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid,
+				td.lastSuggestions)).representation));
 
 		// Re-broadcast pending AskUserQuestion (client reconnect / tab switch)
 		if (tid in pendingAskUserQuestions && tasks[tid].pendingAskToolUseId.length > 0)
 		{
 			auto tdask = &tasks[tid];
-			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid, tdask.pendingAskToolUseId, tdask.pendingAskQuestions)).representation));
+			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid,
+				tdask.pendingAskToolUseId, tdask.pendingAskQuestions)).representation));
 		}
 
 		// Re-broadcast pending PermissionPrompt (client reconnect / tab switch)
@@ -3085,7 +3098,7 @@ class App : ToolsBackend
 							}
 
 							ws.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
-							broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+							emitTaskReload(tid);
 							broadcastTaskUpdate(tid);
 						}).ignoreResult();
 					return;
@@ -3253,7 +3266,7 @@ class App : ToolsBackend
 		// Send undo result to the requesting client
 		ws.send(Data(toJson(UndoResultMessage("undo_result", tid, rewindOutput)).representation));
 
-		broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+		emitTaskReload(tid);
 
 		// 4. Auto-resume so the input box shows immediately
 		// (the user's undone message text is recovered via preReloadDrafts)
@@ -3313,7 +3326,7 @@ class App : ToolsBackend
 		td.historyLoaded = false;
 		unsubscribeAll(tid);
 
-		broadcast(toJson(TaskReloadMessage("task_reload", tid, "edit")));
+		emitTaskReload(tid, "edit");
 		broadcastTaskUpdate(tid);
 	}
 
@@ -3382,7 +3395,7 @@ class App : ToolsBackend
 		td.historyLoaded = false;
 		unsubscribeAll(tid);
 
-		broadcast(toJson(TaskReloadMessage("task_reload", tid, "edit")));
+		emitTaskReload(tid, "edit");
 		broadcastTaskUpdate(tid);
 	}
 
@@ -3392,7 +3405,7 @@ class App : ToolsBackend
 	/// writes the message to the agent's stdin and flips the task into the
 	/// "processing" state (yellow dot in the UI), which is later cleared when
 	/// the agent emits a `result` event or the process exits.
-	/// Broadcast an unconfirmed user message to all clients and send it to the
+	/// Broadcast an unconfirmed user message to subscribed clients and send it to the
 	/// agent.  Every code path that delivers a message must use this method so
 	/// that (a) the UI sees a pending bubble immediately and (b) processing
 	/// state stays consistent.
@@ -3421,7 +3434,9 @@ class App : ToolsBackend
 		auto userEvent = toJson(ev);
 		if (cydoMeta.length > 0)
 			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		auto data = Data(toJson(UnconfirmedUserEventEnvelope(tid, JSONFragment(userEvent))).representation);
+		auto data = Data(toJson(UnconfirmedUserEventEnvelope(
+			tid,
+			JSONFragment(userEvent))).representation);
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
@@ -4207,7 +4222,7 @@ class App : ToolsBackend
 
 			// Notify frontends to re-request history (in-memory history
 			// already contains both JSONL and stdout-only messages like result).
-			broadcast(toJson(TaskReloadMessage("task_reload", tid)));
+			emitTaskReload(tid);
 			// No attention on exit — the session is over and there's
 			// nothing for the user to act on.  Turn-complete attention
 			// (in onOutput) is sufficient for interactive tasks.
@@ -4298,7 +4313,7 @@ class App : ToolsBackend
 			persistence.setTaskType(tid, contDef.task_type);
 
 			// Notify frontends to re-request history
-			broadcast(toJson(TaskReloadMessage("task_reload", tid, "continuation")));
+			emitTaskReload(tid, "continuation");
 
 			td.status = "active";
 			persistence.setStatus(tid, "active");
@@ -4323,7 +4338,7 @@ class App : ToolsBackend
 			persistence.setStatus(tid, "completed");
 
 			// Notify frontends to re-request history
-			broadcast(toJson(TaskReloadMessage("task_reload", tid, "continuation")));
+			emitTaskReload(tid, "continuation");
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = handoffPrompt.length > 0 ? handoffPrompt : td.description;
@@ -5034,6 +5049,27 @@ class App : ToolsBackend
 				(*subs).remove(tid);
 	}
 
+	/// Broadcast a task reload boundary and invalidate in-flight derived work.
+	/// This is a hard barrier: clients are unsubscribed first and must call
+	/// request_history to re-subscribe after replay.
+	private void emitTaskReload(int tid, string reason = "")
+	{
+		import ae.utils.json : toJson;
+
+		if (tid !in tasks)
+			return;
+		unsubscribeAll(tid);
+		auto td = &tasks[tid];
+		// Invalidate cached/in-flight suggestions so pre-reload content cannot replay.
+		td.lastSuggestions = null;
+		td.suggestGeneration++;
+		if (td.suggestGenKill !is null)
+			td.suggestGenKill();
+		td.suggestGenHandle = null;
+		td.suggestGenKill = null;
+		broadcast(toJson(TaskReloadMessage("task_reload", tid, reason)));
+	}
+
 	/// Build metadata JSON for a system-generated user message.
 	/// The result is a JSON string (or null) to be injected as "meta" in the
 	/// unconfirmed-user-event envelope. NOT sent to the agent.
@@ -5091,7 +5127,8 @@ class App : ToolsBackend
 					{
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
-						auto data = Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime, JSONFragment(toJson(steeringEv)))).representation);
+						auto data = Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+							JSONFragment(toJson(steeringEv)))).representation);
 						ensureHistoryLoaded(tid);
 						td.appendHistory(data, enqueueRaw.length > 0 ? enqueueRaw : null);
 						sendToSubscribed(tid, data);
@@ -5106,7 +5143,8 @@ class App : ToolsBackend
 		{
 			ensureHistoryLoaded(tid);
 			// Store clean translated event in history; raw goes to rawSource.
-			auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
+			auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
+				JSONFragment(ev.translated))).representation);
 			// Merge adjacent item/delta events with matching item_id to keep
 			// history compact without reordering events.
 			if (!mergeStreamingDelta(tid, ev.translated, historyData))
@@ -5117,7 +5155,11 @@ class App : ToolsBackend
 
 		// Send to clients: add _seq.
 		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime, JSONFragment(ev.translated))).representation));
+		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(
+			tid,
+			cast(int) seq,
+			ev.ts.stdTime,
+			JSONFragment(ev.translated))).representation));
 	}
 
 	/// Try to merge an item/delta into the last history entry.
@@ -5157,7 +5199,8 @@ class App : ToolsBackend
 		import cydo.task : extractTsFromEnvelope;
 		auto prevTs = extractTsFromEnvelope(cast(string)td.history[$ - 1].unsafeContents);
 		auto mergedObj = parseJSON(merged);
-		auto canonical = toJson(TaskEventEnvelope(tid, prevTs, JSONFragment(mergedObj["event"].toString())));
+		auto canonical = toJson(TaskEventEnvelope(tid, prevTs,
+			JSONFragment(mergedObj["event"].toString())));
 		td.replaceLastHistory(Data(canonical.representation));
 		return true;
 	}
@@ -5228,7 +5271,8 @@ class App : ToolsBackend
 	private void broadcastSuggestionsUpdate(int tid, string[] suggestions)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(SuggestionsUpdateMessage("suggestions_update", tid, suggestions)));
+		sendToSubscribed(tid, Data(toJson(
+			SuggestionsUpdateMessage("suggestions_update", tid, suggestions)).representation));
 	}
 
 	private void handlePromoteTaskMsg(WsMessage json)

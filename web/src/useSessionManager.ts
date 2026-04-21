@@ -1314,7 +1314,11 @@ export function useTaskManager(
           seq?: number;
           ts?: number;
         }
-      | { kind: "unconfirmed"; tid: number; msg: AgnosticEvent }
+      | {
+          kind: "unconfirmed";
+          tid: number;
+          msg: AgnosticEvent;
+        }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
@@ -1412,7 +1416,7 @@ export function useTaskManager(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       conn.disconnect();
     };
-  }, [handleTaskMessage, handleControlMessage]);
+  }, [handleTaskMessage, handleControlMessage, handleUnconfirmedUserMessage]);
 
   // Request history when the active task changes and hasn't been loaded yet
   useEffect(() => {

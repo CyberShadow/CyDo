@@ -360,7 +360,8 @@ LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 		// Wrap each translated event with file-event envelope; store raw separately.
 		foreach (t; translated)
 		{
-			auto injected = toJson(TaskEventEnvelope(tid, t.ts.stdTime, JSONFragment(t.translated)));
+			auto injected = toJson(TaskEventEnvelope(tid, t.ts.stdTime,
+				JSONFragment(t.translated)));
 			result.history ~= Data(injected.representation);
 			result.rawSource ~= t.raw;
 		}

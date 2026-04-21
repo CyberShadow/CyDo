@@ -16,7 +16,7 @@ struct JsonlTracker
 {
 	Agent delegate(int tid) getAgent;
 	TaskData* delegate(int tid) getTask;
-	void delegate(string msg) broadcast;
+	void delegate(int tid, string msg) sendToSubscribed;
 
 	private RefCountedINotify rcINotify;
 	private RefCountedINotify.Handle[int] jsonlWatches;
@@ -240,7 +240,7 @@ struct JsonlTracker
 			ws.send(Data(toJson(AssignUuidsMessage("assign_uuids", tid, assignments)).representation));
 	}
 
-	/// Broadcast forkable UUIDs from the full JSONL file to all clients.
+	/// Broadcast forkable UUIDs from the full JSONL file to subscribed clients.
 	void broadcastForkableUuidsFromFile(int tid)
 	{
 		import std.file : exists, readText;
@@ -266,14 +266,14 @@ struct JsonlTracker
 			broadcastForkableUuidsWithAssignments(tid, forkIds);
 	}
 
-	/// Broadcast forkable UUIDs to all clients.
+	/// Broadcast forkable UUIDs to subscribed clients.
 	void broadcastForkableUuids(int tid, string[] uuids)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
+		sendToSubscribed(tid, toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
 	}
 
-	/// Broadcast forkable UUIDs and their seq assignments to all clients.
+	/// Broadcast forkable UUIDs and their seq assignments to subscribed clients.
 	void broadcastForkableUuidsWithAssignments(int tid, ForkableIdInfo[] forkIds)
 	{
 		import std.algorithm : map;
@@ -281,11 +281,11 @@ struct JsonlTracker
 		import ae.utils.json : toJson;
 
 		string[] uuids = forkIds.map!(f => f.id).array;
-		broadcast(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
+		sendToSubscribed(tid, toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
 
 		auto assignments = computeAssignments(tid, forkIds);
 		if (assignments.length > 0)
-			broadcast(toJson(AssignUuidsMessage("assign_uuids", tid, assignments)));
+			sendToSubscribed(tid, toJson(AssignUuidsMessage("assign_uuids", tid, assignments)));
 	}
 
 	/// Compute seq→UUID assignments by correlating JSONL forkable IDs with history events.
