@@ -13,6 +13,28 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
   await expect(
     page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
   ).toBeVisible({ timeout: 30_000 });
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "SwitchMode to plan successful.",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
+});
+
+test("keep_context SwitchMode preface uses continuation key", async ({ page, agentType }) => {
+  await enterSession(page);
+
+  await sendMessage(page, "call switchmode implement");
+
+  await expect(
+    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: write_mode" }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "SwitchMode to implement successful.",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
 test("unsent steer is either recovered into input box or shown in history after kill", async ({ page, agentType }) => {

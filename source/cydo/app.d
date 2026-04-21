@@ -4269,7 +4269,8 @@ class App : ToolsBackend
 
 	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
 	/// and implicit (on_yield) paths.
-	private void executeContinuation(int tid, ContinuationDef contDef, string handoffPrompt)
+	private void executeContinuation(int tid, ContinuationDef contDef, string handoffPrompt,
+		string switchModeContinuation = null)
 	{
 		import ae.utils.json : toJson;
 
@@ -4306,6 +4307,9 @@ class App : ToolsBackend
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", promptSearchPath(td.projectPath),
 				["result_text": resultText, "output_dir": td.taskDir]);
+			if (switchModeContinuation.length > 0)
+				renderedContinuationPrompt = "`SwitchMode` to `" ~ switchModeContinuation
+					~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], null, contMeta);
@@ -4403,7 +4407,8 @@ class App : ToolsBackend
 			return;
 		}
 
-		executeContinuation(tid, *contDefP, hPrompt);
+		auto switchModeKey = contDefP.keep_context ? contKey : null;
+		executeContinuation(tid, *contDefP, hPrompt, switchModeKey);
 	}
 
 	private string defaultAgentType(string workspaceName)

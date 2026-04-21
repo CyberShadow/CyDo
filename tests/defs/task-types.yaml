@@ -66,6 +66,10 @@ task_types:
         task_type: write_mode
         keep_context: true
         prompt_template: prompts/enter_write_mode.md
+      implement:
+        task_type: write_mode
+        keep_context: true
+        prompt_template: prompts/enter_write_mode.md
 
   plan_mode:
     icon: plan-mode
