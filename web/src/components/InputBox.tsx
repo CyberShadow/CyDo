@@ -327,7 +327,9 @@ export function InputBox({
             ? "Session ending..."
             : disabled
               ? "Connecting..."
-              : "Type a message..."
+              : isProcessing
+                ? "Type a steering message..."
+                : "Type a message..."
         }
         disabled={disabled}
         rows={1}
