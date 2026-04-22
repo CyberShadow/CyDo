@@ -30,7 +30,7 @@ import ae.utils.statequeue : StateQueue;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
-import cydo.mcp.tools : AskQuestion, ToolsBackend, ValidatedTask;
+import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
@@ -51,6 +51,134 @@ import cydo.task;
 import cydo.worktree;
 
 import uninode.node : UniNode;
+
+private struct BatchHandle
+{
+	int parentTid;
+	ulong batchId;
+}
+
+private struct BatchState
+{
+	ulong batchId;
+	McpResult[] results;
+	bool[] done;
+	size_t completed;
+	size_t totalChildren;
+	int[] childTids;                   // ordered child tids
+	size_t[int] slotByChildTid;        // child tid -> slot in childTids/results
+	PromiseQueue!BatchSignal eventQueue;
+
+	bool trySlotForChild(int childTid, out size_t slot) const
+	{
+		auto slotPtr = childTid in slotByChildTid;
+		if (slotPtr is null)
+			return false;
+		slot = *slotPtr;
+		return true;
+	}
+}
+
+private enum BatchConsumeKind { ignored, childDone, question, invalid }
+
+private struct BatchConsumeResult
+{
+	BatchConsumeKind kind = BatchConsumeKind.ignored;
+	string error;
+	int childTid;
+	int qid;
+	string questionText;
+}
+
+private BatchState buildBatchState(ulong batchId, int[] childTids, out string error)
+{
+	BatchState batch;
+	batch.batchId = batchId;
+	batch.totalChildren = childTids.length;
+	batch.results = new McpResult[childTids.length];
+	batch.done = new bool[childTids.length];
+	batch.childTids = childTids.dup;
+
+	foreach (i, childTid; childTids)
+	{
+		if (childTid <= 0)
+		{
+			error = format!"invalid child tid in batch: %d"(childTid);
+			return batch;
+		}
+		if (childTid in batch.slotByChildTid)
+		{
+			error = format!"duplicate child tid in batch: %d"(childTid);
+			return batch;
+		}
+		batch.slotByChildTid[childTid] = i;
+	}
+
+	error = "";
+	return batch;
+}
+
+private BatchConsumeResult consumeBatchSignal(ref BatchState batch, BatchSignal sig,
+	scope bool delegate(int childTid, int qid) hasPendingQuestion)
+{
+	BatchConsumeResult result;
+	if (sig.batchId != batch.batchId)
+		return result;
+
+	if (sig.slot >= batch.childTids.length)
+	{
+		result.kind = BatchConsumeKind.invalid;
+		result.error = format!"slot %s out of range for child count %s"(sig.slot, batch.childTids.length);
+		return result;
+	}
+
+	if (batch.childTids[sig.slot] != sig.childTid)
+	{
+		result.kind = BatchConsumeKind.invalid;
+		result.error = format!"slot %s expects child tid %d but got %d"(sig.slot, batch.childTids[sig.slot], sig.childTid);
+		return result;
+	}
+
+	size_t mappedSlot;
+	if (!batch.trySlotForChild(sig.childTid, mappedSlot) || mappedSlot != sig.slot)
+	{
+		result.kind = BatchConsumeKind.invalid;
+		result.error = format!"child tid %d maps to slot %s, signal targeted slot %s"(sig.childTid, mappedSlot, sig.slot);
+		return result;
+	}
+
+	if (sig.kind == BatchSignal.Kind.childDone)
+	{
+		if (batch.done[sig.slot])
+			return result; // duplicate completion for finished slot
+		batch.results[sig.slot] = sig.result;
+		batch.done[sig.slot] = true;
+		batch.completed++;
+		result.kind = BatchConsumeKind.childDone;
+		return result;
+	}
+
+	if (!hasPendingQuestion(sig.childTid, sig.qid))
+		return result; // stale question
+
+	result.kind = BatchConsumeKind.question;
+	result.childTid = sig.childTid;
+	result.qid = sig.qid;
+	result.questionText = sig.questionText;
+	return result;
+}
+
+private string validateBatchCompletion(in BatchState batch)
+{
+	if (batch.totalChildren != batch.childTids.length)
+		return format!"batch child count mismatch: total=%s childTids=%s"(batch.totalChildren, batch.childTids.length);
+	if (batch.completed != batch.totalChildren)
+		return format!"batch completed mismatch: completed=%s total=%s"(batch.completed, batch.totalChildren);
+	foreach (i, d; batch.done)
+		if (!d)
+			return format!"batch slot %s unfinished"(i);
+	return "";
+}
 
 private string resolveTaskTypesPath()
 {
@@ -400,20 +528,11 @@ class App : ToolsBackend
 	private string[int] pendingPermissionInputs;
 	// Per-parent batch state, keyed by parent tid
 	private BatchState[int] activeBatches;
+	private ulong nextBatchId = 1;
 	// App-global question ID counter and registry
 	private int nextQid = 1;
 	private Promise!McpResult[int] pendingQuestions;  // qid → promise waiting for answer
 	private int[int] questionToTask;                   // qid → tid of the task that asked
-
-	private struct BatchState
-	{
-		McpResult[] results;
-		bool[] done;
-		size_t completed;
-		size_t totalChildren;
-		int[] childTids;                   // ordered child tids
-		PromiseQueue!BatchSignal eventQueue;
-	}
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// inotify watches for config file hot-reload
@@ -1133,7 +1252,7 @@ class App : ToolsBackend
 	}
 
 	/// Handle Task — validates the spec and returns a delegate that, when called,
-	/// creates the child task and returns a promise that resolves when it completes.
+	/// creates the child task and returns `{childTid, promise}`.
 	/// On validation failure, returns a ValidatedTask with a null launch delegate.
 	ValidatedTask handleCreateTask(string callerTid,
 		string description, string taskType, string prompt)
@@ -1252,7 +1371,7 @@ class App : ToolsBackend
 			}
 			infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
 
-			return promise;
+			return LaunchedTask(childTid, promise);
 		});
 	}
 
@@ -1287,88 +1406,169 @@ class App : ToolsBackend
 		return childRO is null || !(*childRO);
 	}
 
+	private McpResult makeInternalBatchError(string message)
+	{
+		errorf("batch router error: %s", message);
+		return McpResult("Internal batch routing error: " ~ message, true);
+	}
+
+	private bool createActiveBatch(int parentTid, int[] childTids, out BatchHandle handle, out string error)
+	{
+		auto batch = buildBatchState(nextBatchId++, childTids, error);
+		if (error.length > 0)
+		{
+			handle = BatchHandle.init;
+			return false;
+		}
+		activeBatches[parentTid] = batch;
+		handle = BatchHandle(parentTid, batch.batchId);
+		return true;
+	}
+
+	private void enqueueChildDoneSignal(BatchHandle handle, size_t slot, int childTid, McpResult result)
+	{
+		auto batch = handle.parentTid in activeBatches;
+		if (batch is null)
+			return;
+		if (batch.batchId != handle.batchId)
+			return;
+		if (slot >= batch.childTids.length || batch.childTids[slot] != childTid)
+		{
+			errorf("dropping childDone with invalid slot ownership: parent=%d batch=%s child=%d slot=%s",
+				handle.parentTid, handle.batchId, childTid, slot);
+			return;
+		}
+		batch.eventQueue.fulfillOne(BatchSignal.childDone(handle.batchId, slot, childTid, result));
+	}
+
+	private void enqueueQuestionSignal(BatchHandle handle, size_t slot, int childTid, string questionText, int qid)
+	{
+		auto batch = handle.parentTid in activeBatches;
+		if (batch is null)
+			return;
+		if (batch.batchId != handle.batchId)
+			return;
+		if (slot >= batch.childTids.length || batch.childTids[slot] != childTid)
+		{
+			errorf("dropping question with invalid slot ownership: parent=%d batch=%s child=%d slot=%s qid=%d",
+				handle.parentTid, handle.batchId, childTid, slot, qid);
+			return;
+		}
+		batch.eventQueue.fulfillOne(BatchSignal.question(handle.batchId, slot, childTid, questionText, qid));
+	}
+
 	/// Set up batch event stream and enter the wait loop.
 	/// Called from createTasks — parent fiber blocks here.
 	Promise!McpResult registerBatchAndAwait(string callerTidStr,
-		Promise!McpResult[] childPromises)
+		LaunchedTask[] launchedTasks)
 	{
 		import std.conv : to;
-		int parentTid = to!int(callerTidStr);
+		int parentTid;
+		try
+			parentTid = to!int(callerTidStr);
+		catch (Exception)
+			return resolve(makeInternalBatchError("invalid calling task ID for Task batch"));
 
-		// Map each promise to its child tid by reverse-lookup in pendingSubTasks.
-		// (taskDeps iteration order is non-deterministic, but pendingSubTasks allows
-		//  matching each promise to the exact child that produced it.)
-		int[] childTids = new int[childPromises.length];
-		foreach (i, p; childPromises)
+		int[] childTids = new int[launchedTasks.length];
+		foreach (i, ref launchedTask; launchedTasks)
 		{
-			childTids[i] = -1;
-			foreach (childTid, subProm; pendingSubTasks)
-				if (subProm is p) { childTids[i] = childTid; break; }
+			if (launchedTask.promise is null)
+				return resolve(makeInternalBatchError(format!"missing child promise for slot %s"(i)));
+			childTids[i] = launchedTask.childTid;
 		}
 
-		BatchState batch;
-		batch.totalChildren = childPromises.length;
-		batch.results = new McpResult[childPromises.length];
-		batch.done = new bool[childPromises.length];
-		batch.childTids = childTids;
+		BatchHandle handle;
+		string batchError;
+		if (!createActiveBatch(parentTid, childTids, handle, batchError))
+			return resolve(makeInternalBatchError(batchError));
 
-		// Set up .then() handlers ONCE — they feed into the event queue.
-		foreach (i, p; childPromises)
+		foreach (i, ref launchedTask; launchedTasks)
 		{
-			// Immediately-invoked lambda to force per-iteration capture.
-			// D foreach closures share loop-local variables across iterations;
-			// see also makeProcessQueueSF() and resumeActiveTask() for the same pattern.
-			(int cTid, Promise!McpResult p) {
-				p.then((McpResult r) {
-					if (parentTid in activeBatches)
-						activeBatches[parentTid].eventQueue.fulfillOne(
-							BatchSignal.childDone(cTid, r));
+			(BatchHandle h, size_t slot, int cTid, Promise!McpResult promise) {
+				promise.then((McpResult r) {
+					enqueueChildDoneSignal(h, slot, cTid, r);
 				});
-			}(childTids[i], p);
+			}(handle, i, launchedTask.childTid, launchedTask.promise);
 		}
 
-		activeBatches[parentTid] = batch;
-		return awaitBatchLoop(parentTid);
+		return awaitBatchLoop(parentTid, handle.batchId);
 	}
 
 	/// Enter (or re-enter) the batch wait loop for a parent.
 	/// Blocks until all children complete or a child asks a question.
-	private Promise!McpResult awaitBatchLoop(int parentTid)
+	private Promise!McpResult awaitBatchLoop(int parentTid, ulong batchId)
 	{
 		import ae.utils.json : JSONFragment, toJson;
 		import ae.utils.promise.await : await;
 
-		if ((parentTid in activeBatches) is null)
-			return resolve(McpResult("No active batch", true));
+		auto current = parentTid in activeBatches;
+		if (current is null)
+			return resolve(makeInternalBatchError(
+				format!"no active batch for parent tid=%d (expected batch=%s)"(parentTid, batchId)));
+		if (current.batchId != batchId)
+			return resolve(makeInternalBatchError(
+				format!"active batch mismatch for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
 
-		while (activeBatches[parentTid].completed < activeBatches[parentTid].totalChildren)
+		while (true)
 		{
-			// Re-fetch pointer after each await() — AA may rehash during suspension.
-			auto sig = activeBatches[parentTid].eventQueue.waitOne().await();
+			current = parentTid in activeBatches;
+			if (current is null)
+				return resolve(makeInternalBatchError(
+					format!"batch disappeared while waiting for parent tid=%d batch=%s"(parentTid, batchId)));
+			if (current.batchId != batchId)
+				return resolve(makeInternalBatchError(
+					format!"batch replaced while waiting for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
+			if (current.completed >= current.totalChildren)
+				break;
 
-			if (sig.kind == BatchSignal.Kind.childDone)
+			auto sig = current.eventQueue.waitOne().await();
+
+			current = parentTid in activeBatches;
+			if (current is null)
+				return resolve(makeInternalBatchError(
+					format!"batch disappeared after event for parent tid=%d batch=%s"(parentTid, batchId)));
+			if (current.batchId != batchId)
+				return resolve(makeInternalBatchError(
+					format!"batch replaced after event for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
+
+			auto consumed = consumeBatchSignal(*current, sig, (int childTid, int qid) {
+				if (childTid !in tasks)
+					return false;
+				auto childTd = &tasks[childTid];
+				return childTd.pendingAskPromise !is null && childTd.pendingAskQid == qid;
+			});
+
+			final switch (consumed.kind)
 			{
-				foreach (i, cTid; activeBatches[parentTid].childTids)
-				{
-					if (cTid == sig.childTid)
-					{
-						activeBatches[parentTid].results[i] = sig.result;
-						activeBatches[parentTid].done[i] = true;
-						break;
-					}
-				}
-				activeBatches[parentTid].completed++;
-			}
-			else // question
-			{
-				// Return question to parent agent — parent answers via Answer,
-				// which re-enters this loop.
-				return resolve(buildQuestionResult(sig.childTid));
+				case BatchConsumeKind.ignored:
+				case BatchConsumeKind.childDone:
+					break;
+				case BatchConsumeKind.question:
+					// Return question to parent agent — parent answers via Answer,
+					// which re-enters this same batch instance.
+					return resolve(buildQuestionResult(consumed.childTid, consumed.qid, consumed.questionText));
+				case BatchConsumeKind.invalid:
+					errorf("ignoring invalid batch signal for parent=%d batch=%s: %s",
+						parentTid, batchId, consumed.error);
+					break;
 			}
 		}
 
+		current = parentTid in activeBatches;
+		if (current is null || current.batchId != batchId)
+			return resolve(makeInternalBatchError(
+				format!"batch missing before finalization for parent tid=%d batch=%s"(parentTid, batchId)));
+
+		auto invariantError = validateBatchCompletion(*current);
+		if (invariantError.length > 0)
+		{
+			activeBatches.remove(parentTid);
+			return resolve(makeInternalBatchError(
+				format!"cannot finalize parent tid=%d batch=%s: %s"(parentTid, batchId, invariantError)));
+		}
+
 		// All children done — assemble results and clean up
-		auto results = activeBatches[parentTid].results.dup;
+		auto results = current.results.dup;
 		activeBatches.remove(parentTid);
 
 		bool anyError;
@@ -1619,19 +1819,13 @@ class App : ToolsBackend
 			broadcastFocusHint(parentTid, childTid);
 
 			// Register a single-child batch so we can reuse awaitBatchLoop
-			BatchState batch;
-			batch.totalChildren = 1;
-			batch.results = new McpResult[1];
-			batch.done = new bool[1];
-			batch.childTids = [childTid];
-			activeBatches[parentTid] = batch;
+			BatchHandle batchHandle;
+			string batchError;
+			if (!createActiveBatch(parentTid, [childTid], batchHandle, batchError))
+				return resolve(makeInternalBatchError(batchError));
 
 			// Hook the promise into the event queue
-			subTaskPromise.then((McpResult r) {
-				if (parentTid in activeBatches)
-					activeBatches[parentTid].eventQueue.fulfillOne(
-						BatchSignal.childDone(childTid, r));
-			});
+			subTaskPromise.then((McpResult r) { enqueueChildDoneSignal(batchHandle, 0, childTid, r); });
 
 			// Resume child process and send follow-up message with qid
 			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
@@ -1651,14 +1845,12 @@ class App : ToolsBackend
 			// Wire: when promise is fulfilled (child answers), deliver to parent via awaitBatchLoop.
 			promise.then((McpResult r) {
 				// Child answered the follow-up — deliver as batch result
-				if (parentTid in activeBatches)
-					activeBatches[parentTid].eventQueue.fulfillOne(
-						BatchSignal.childDone(childTid, r));
+				enqueueChildDoneSignal(batchHandle, 0, childTid, r);
 				pendingQuestions.remove(qid);
 				questionToTask.remove(qid);
 			});
 
-			return awaitBatchLoop(parentTid);
+			return awaitBatchLoop(parentTid, batchHandle.batchId);
 		}
 
 		// Child is busy (waiting on its own sub-tasks, etc.) — enqueue for delivery when idle.
@@ -1668,11 +1860,28 @@ class App : ToolsBackend
 			pendingQuestions[qid] = promise;
 			questionToTask[qid] = parentTid;
 
+			BatchHandle batchHandle;
+			size_t childSlot;
+			if (auto batch = parentTid in activeBatches)
+			{
+				if (!batch.trySlotForChild(childTid, childSlot))
+				{
+					return resolve(makeInternalBatchError(
+						format!"active batch for parent tid=%d does not own child tid=%d"(parentTid, childTid)));
+				}
+				batchHandle = BatchHandle(parentTid, batch.batchId);
+			}
+			else
+			{
+				string batchError;
+				if (!createActiveBatch(parentTid, [childTid], batchHandle, batchError))
+					return resolve(makeInternalBatchError(batchError));
+				childSlot = 0;
+			}
+
 			// Wire the question promise to fire a batch signal when answered
 			promise.then((McpResult r) {
-				if (parentTid in activeBatches)
-					activeBatches[parentTid].eventQueue.fulfillOne(
-						BatchSignal.childDone(childTid, r));
+				enqueueChildDoneSignal(batchHandle, childSlot, childTid, r);
 				pendingQuestions.remove(qid);
 				questionToTask.remove(qid);
 			});
@@ -1707,24 +1916,12 @@ class App : ToolsBackend
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
 
-			// Create a 1-child batch if no existing batch
-			if (parentTid !in activeBatches)
-			{
-				BatchState batch;
-				batch.totalChildren = 1;
-				batch.results = new McpResult[1];
-				batch.done = new bool[1];
-				batch.childTids = [childTid];
-				activeBatches[parentTid] = batch;
-			}
-
-			return awaitBatchLoop(parentTid);
+			return awaitBatchLoop(parentTid, batchHandle.batchId);
 		}
 	}
 
 	private Promise!McpResult handleAskParent(int childTid, int parentTid, string message)
 	{
-		import std.conv : to;
 		auto childTd = &tasks[childTid];
 
 		// Allocate a qid for this question
@@ -1738,7 +1935,14 @@ class App : ToolsBackend
 
 		// Inject question into parent's batch event queue
 		if (auto batch = parentTid in activeBatches)
-			batch.eventQueue.fulfillOne(BatchSignal.question(childTid, message, qid));
+		{
+			size_t slot;
+			if (batch.trySlotForChild(childTid, slot))
+				enqueueQuestionSignal(BatchHandle(parentTid, batch.batchId), slot, childTid, message, qid);
+			else
+				errorf("dropping question for parent tid=%d child tid=%d: child not in active batch",
+					parentTid, childTid);
+		}
 
 		// Update child status
 		childTd.status = "waiting";
@@ -1780,6 +1984,14 @@ class App : ToolsBackend
 
 		if (parentAnsweringChild)
 		{
+			auto batch = callerTidInt in activeBatches;
+			if (batch is null)
+			{
+				return resolve(makeInternalBatchError(
+					format!"no active batch while answering child question: parent tid=%d qid=%d"(callerTidInt, qid)));
+			}
+			auto expectedBatchId = batch.batchId;
+
 			// Fulfill child's blocking Ask call with the answer
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
@@ -1804,7 +2016,7 @@ class App : ToolsBackend
 			broadcastFocusHint(callerTidInt, askTid);
 
 			// Re-enter the batch wait loop — blocks until next event
-			return awaitBatchLoop(callerTidInt);
+			return awaitBatchLoop(callerTidInt, expectedBatchId);
 		}
 		else if (childAnsweringParent)
 		{
@@ -1910,11 +2122,10 @@ class App : ToolsBackend
 		return promise;
 	}
 
-	private McpResult buildQuestionResult(int childTid)
+	private McpResult buildQuestionResult(int childTid, int qid, string questionText)
 	{
-		import std.conv : to;
-		auto childTd = &tasks[childTid];
-		auto questionJson = toJson(QuestionResult("question", childTid, childTd.pendingAskQid, childTd.title, childTd.pendingAskQuestion));
+		auto childTitle = (childTid in tasks) ? tasks[childTid].title : null;
+		auto questionJson = toJson(QuestionResult("question", childTid, qid, childTitle, questionText));
 		return McpResult.structured(questionJson);
 	}
 
@@ -6763,4 +6974,103 @@ private string replaceUserMessageContent(string line, string newContent)
 		&& json["operation"].str == "enqueue")
 		json["content"] = JSONValue(newContent);
 	return json.toString();
+}
+
+unittest
+{
+	string err;
+	auto batch = buildBatchState(10, [101, 202], err);
+	assert(err.length == 0);
+
+	auto foreignBatch = consumeBatchSignal(batch,
+		BatchSignal.childDone(99, 0, 101, McpResult("foreign-batch", false)),
+		(int childTid, int qid) => false);
+	assert(foreignBatch.kind == BatchConsumeKind.ignored);
+	assert(batch.completed == 0);
+
+	auto wrongSlot = consumeBatchSignal(batch,
+		BatchSignal.childDone(10, 1, 101, McpResult("wrong-slot", false)),
+		(int childTid, int qid) => false);
+	assert(wrongSlot.kind == BatchConsumeKind.invalid);
+	assert(batch.completed == 0);
+}
+
+unittest
+{
+	string err;
+	auto batch = buildBatchState(11, [501], err);
+	assert(err.length == 0);
+
+	auto first = consumeBatchSignal(batch,
+		BatchSignal.childDone(11, 0, 501, McpResult("first", false)),
+		(int childTid, int qid) => false);
+	assert(first.kind == BatchConsumeKind.childDone);
+	assert(batch.completed == 1);
+	assert(batch.results[0].text == "first");
+
+	auto duplicate = consumeBatchSignal(batch,
+		BatchSignal.childDone(11, 0, 501, McpResult("duplicate", false)),
+		(int childTid, int qid) => false);
+	assert(duplicate.kind == BatchConsumeKind.ignored);
+	assert(batch.completed == 1);
+	assert(batch.results[0].text == "first");
+}
+
+unittest
+{
+	string err;
+	auto batch = buildBatchState(12, [1, 2, 3], err);
+	assert(err.length == 0);
+
+	consumeBatchSignal(batch, BatchSignal.childDone(12, 2, 3, McpResult("C", false)),
+		(int childTid, int qid) => false);
+	consumeBatchSignal(batch, BatchSignal.childDone(12, 0, 1, McpResult("A", false)),
+		(int childTid, int qid) => false);
+	consumeBatchSignal(batch, BatchSignal.childDone(12, 1, 2, McpResult("B", false)),
+		(int childTid, int qid) => false);
+
+	assert(batch.completed == 3);
+	assert(batch.results[0].text == "A");
+	assert(batch.results[1].text == "B");
+	assert(batch.results[2].text == "C");
+	assert(validateBatchCompletion(batch).length == 0);
+}
+
+unittest
+{
+	string err;
+	auto batch = buildBatchState(13, [7, 8], err);
+	assert(err.length == 0);
+
+	auto doneA = consumeBatchSignal(batch,
+		BatchSignal.childDone(13, 0, 7, McpResult("slot-a", false)),
+		(int childTid, int qid) => childTid == 8 && qid == 42);
+	assert(doneA.kind == BatchConsumeKind.childDone);
+	assert(batch.completed == 1);
+
+	auto staleQuestion = consumeBatchSignal(batch,
+		BatchSignal.question(13, 1, 8, "stale", 41),
+		(int childTid, int qid) => childTid == 8 && qid == 42);
+	assert(staleQuestion.kind == BatchConsumeKind.ignored);
+	assert(batch.completed == 1);
+	assert(batch.done[0] && !batch.done[1]);
+
+	auto question = consumeBatchSignal(batch,
+		BatchSignal.question(13, 1, 8, "ready", 42),
+		(int childTid, int qid) => childTid == 8 && qid == 42);
+	assert(question.kind == BatchConsumeKind.question);
+	assert(question.childTid == 8);
+	assert(question.qid == 42);
+	assert(question.questionText == "ready");
+	assert(batch.completed == 1);
+	assert(batch.done[0] && !batch.done[1]);
+
+	auto doneB = consumeBatchSignal(batch,
+		BatchSignal.childDone(13, 1, 8, McpResult("slot-b", false)),
+		(int childTid, int qid) => false);
+	assert(doneB.kind == BatchConsumeKind.childDone);
+	assert(batch.completed == 2);
+	assert(batch.results[0].text == "slot-a");
+	assert(batch.results[1].text == "slot-b");
+	assert(validateBatchCompletion(batch).length == 0);
 }

@@ -132,13 +132,17 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   await sendMessage(page, "call answer 1 use approach A");
 
   // After child B completes, Answer returns with the full batch results
-  // (both child A's "normal-child-done" and child B's final result).
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("normal-child-done")
-      .last(),
-  ).toBeVisible({ timeout: 90_000 });
+  // in original request order (Normal child, then Questioning child).
+  const finalSpecs = page
+    .locator(
+      '[style*="display: contents"] .message-list .tool-result-container',
+    )
+    .last()
+    .locator(".cydo-task-spec");
+  await expect(finalSpecs).toHaveCount(2, { timeout: 90_000 });
+  await expect(finalSpecs.nth(0)).toContainText("tid: 2");
+  await expect(finalSpecs.nth(0)).toContainText("normal-child-done");
+  await expect(finalSpecs.nth(1)).toContainText("tid: 3");
 });
 
 test("Ask/Answer: invalid Ask target returns error", async ({

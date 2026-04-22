@@ -1,6 +1,8 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("parallel Task results have no null entries", async ({ page }) => {
+test("parallel Task results keep request order and never render null", async ({
+  page,
+}) => {
   // Sub-task creation + completion for 2 children requires extra time.
   test.setTimeout(120_000);
 
@@ -41,14 +43,17 @@ test("parallel Task results have no null entries", async ({ page }) => {
   );
   await expect(resultSpecs).toHaveCount(2, { timeout: 10_000 });
 
-  // BUG CHECK: due to the D foreach closure capture bug in registerBatchAndAwait,
-  // the first child's result slot stays as default McpResult (serializes as null).
-  // The frontend renders null items as "result: null" fallback text.
-  // Assert that each result item contains the actual task output "parallel-ok".
+  // The UI should preserve request order (tid 2, then tid 3) and each item
+  // should contain the child output instead of fallback null text.
+  await expect(resultSpecs.nth(0)).toContainText("tid: 2");
+  await expect(resultSpecs.nth(1)).toContainText("tid: 3");
   for (let i = 0; i < 2; i++) {
     const spec = resultSpecs.nth(i);
     await expect(spec.getByText("parallel-ok")).toBeVisible({
       timeout: 5_000,
     });
   }
+  await expect(
+    msgList.locator('.tool-result-container').last().getByText("result: null"),
+  ).toHaveCount(0);
 });

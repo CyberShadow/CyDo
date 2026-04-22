@@ -209,13 +209,20 @@ interface CydoTools
 
 import ae.utils.promise : Promise;
 
+/// Child task launch result preserved in request order.
+struct LaunchedTask
+{
+	int childTid;
+	Promise!McpResult promise;
+}
+
 /// Result of validating a single Task spec.
 /// On validation success, `launch` is non-null and creates the child task when called.
 /// On validation failure, `launch` is null and `error` contains the reason.
 struct ValidatedTask
 {
 	McpResult error;
-	Promise!McpResult delegate() launch;
+	LaunchedTask delegate() launch;
 }
 
 /// Backend interface — methods that CydoToolsImpl needs from the application.
@@ -229,7 +236,7 @@ interface ToolsBackend
 	McpResult handleHandoff(string callerTid, string continuation, string prompt);
 	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions);
 	Promise!McpResult handleBash(string callerTid, string command);
-	Promise!McpResult registerBatchAndAwait(string callerTid, Promise!McpResult[] childPromises);
+	Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks);
 	Promise!McpResult handleAsk(string callerTid, string message, int targetTid);
 	Promise!McpResult handleAnswer(string callerTid, int qid, string message);
 	Promise!McpResult handlePermissionPrompt(string callerTid, string toolUseId, string toolName, JSONFragment input);
@@ -324,13 +331,13 @@ class CydoToolsImpl : CydoTools
 		}
 
 		// Phase 2: all specs valid — launch all tasks.
-		auto promises = new Promise!McpResult[tasks.length];
+		auto launched = new LaunchedTask[tasks.length];
 		foreach (i, ref vt; validated)
-			promises[i] = vt.launch();
+			launched[i] = vt.launch();
 
 		// Register batch state and enter the event-driven wait loop.
 		// Returns when all children complete or a child asks a question.
-		return app.registerBatchAndAwait(callerTid, promises).await();
+		return app.registerBatchAndAwait(callerTid, launched).await();
 	}
 
 	McpResult switchMode(string continuation)

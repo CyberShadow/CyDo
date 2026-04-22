@@ -21,14 +21,18 @@ struct BatchSignal
 {
 	enum Kind { childDone, question }
 	Kind kind;
+	ulong batchId;
+	size_t slot;
 	int childTid;
 	McpResult result;      // populated for childDone
 	string questionText;   // populated for question
 
-	static BatchSignal childDone(int tid, McpResult r)
+	static BatchSignal childDone(ulong batchId, size_t slot, int tid, McpResult r)
 	{
 		BatchSignal s;
 		s.kind = Kind.childDone;
+		s.batchId = batchId;
+		s.slot = slot;
 		s.childTid = tid;
 		s.result = r;
 		return s;
@@ -36,10 +40,12 @@ struct BatchSignal
 
 	int qid;            // question ID for question signals
 
-	static BatchSignal question(int tid, string text, int qid)
+	static BatchSignal question(ulong batchId, size_t slot, int tid, string text, int qid)
 	{
 		BatchSignal s;
 		s.kind = Kind.question;
+		s.batchId = batchId;
+		s.slot = slot;
 		s.childTid = tid;
 		s.questionText = text;
 		s.qid = qid;
