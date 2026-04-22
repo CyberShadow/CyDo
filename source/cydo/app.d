@@ -3892,33 +3892,16 @@ class App : ToolsBackend
 						// Otherwise fall through — e.g., deferred answer was delivered,
 						// task is "completed", proceed with normal stdin close.
 					}
-					else if (auto pending = tid in pendingSubTasks)
+					else if (tid in pendingSubTasks)
 					{
 						if (td.pendingContinuation.length == 0 && !hasOnYield)
 						{
-							td.status = "completed";
-							persistence.setStatus(tid, "completed");
-							persistence.setResultText(tid, td.resultText);
-							auto taskResult = buildTaskResult(tid);
-							auto resultJson = toJson(taskResult);
-							pending.fulfill(McpResult.structured(resultJson));
-							pendingSubTasks.remove(tid);
-							// Clean up taskDeps eagerly — waiting for the deferred
-							// onToolCallDelivered() is unsafe because agents with
-							// synchronous closeStdin (Codex) fire onExit before it runs.
-							if (auto parentTidPtr = tid in taskDeps)
-							{
-								auto parentTid = *parentTidPtr;
-								persistence.removeTaskDep(parentTid, tid);
-								taskDeps.remove(tid);
-								if (childrenOf(parentTid).length == 0
-									&& parentTid in tasks && tasks[parentTid].status == "waiting")
-								{
-									tasks[parentTid].status = "active";
-									persistence.setStatus(parentTid, "active");
-									broadcastTaskUpdate(parentTid);
-								}
-							}
+							auto missingOutputs = checkDeclaredOutputs(tid);
+							if (missingOutputs is null)
+								finalizeCompletedSubTask(tid, true);
+							else
+								tracef("onOutput: tid=%d deferring sub-task finalization; %s",
+									tid, missingOutputs);
 						}
 					}
 
@@ -4203,46 +4186,55 @@ class App : ToolsBackend
 			persistence.setStatus(tid, tasks[tid].status);
 			persistence.setResultText(tid, tasks[tid].resultText);
 
-			// Fulfill pending sub-task promise (if this is a child task)
-			if (auto pending = tid in pendingSubTasks)
+			bool deliveredPendingSubTask = false;
+			if (tasks[tid].status == "completed")
 			{
-				auto success = tasks[tid].status == "completed";
+				// Keep completion finalization behavior aligned with onOutput.
+				deliveredPendingSubTask = finalizeCompletedSubTask(tid);
+			}
+			else if (auto pending = tid in pendingSubTasks)
+			{
 				auto taskResult = buildTaskResult(tid);
 				auto resultJson = toJson(taskResult);
-				pending.fulfill(McpResult.structured(resultJson, !success));
+				pending.fulfill(McpResult.structured(resultJson, true));
 				pendingSubTasks.remove(tid);
+				deliveredPendingSubTask = true;
 				// Deps left intact — cleaned by onToolCallDelivered() on success,
 				// or used by deliverBatchResults() as fallback if MCP delivery fails.
 			}
-			else if (auto parentTidPtr = tid in taskDeps)
-			{
-				// Post-restart path: no promise — batch deliver when all children done
-				auto parentTid = *parentTidPtr;
-				tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
-					tid, tasks[tid].status, parentTid);
-				if (parentTid in tasks)
-				{
-					// Check if ALL children of this parent are completed/failed
-					bool allDone = true;
-					foreach (childTid, depParent; taskDeps)
-					{
-						if (depParent == parentTid && childTid in tasks
-							&& tasks[childTid].status != "completed"
-							&& tasks[childTid].status != "failed")
-						{
-							tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
-								childTid, tasks[childTid].status);
-							allDone = false;
-							break;
-						}
-					}
 
-					if (allDone)
-						deliverBatchResults(parentTid);
-					// else: wait — remaining children will trigger this check
+			if (!deliveredPendingSubTask)
+			{
+				if (auto parentTidPtr = tid in taskDeps)
+				{
+					// Post-restart path: no promise — batch deliver when all children done
+					auto parentTid = *parentTidPtr;
+					tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
+						tid, tasks[tid].status, parentTid);
+					if (parentTid in tasks)
+					{
+						// Check if ALL children of this parent are completed/failed
+						bool allDone = true;
+						foreach (childTid, depParent; taskDeps)
+						{
+							if (depParent == parentTid && childTid in tasks
+								&& tasks[childTid].status != "completed"
+								&& tasks[childTid].status != "failed")
+							{
+								tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
+									childTid, tasks[childTid].status);
+								allDone = false;
+								break;
+							}
+						}
+
+						if (allDone)
+							deliverBatchResults(parentTid);
+						// else: wait — remaining children will trigger this check
+					}
+					else
+						tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
 				}
-				else
-					tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
 			}
 
 			// Notify frontends to re-request history (in-memory history
@@ -4646,6 +4638,48 @@ class App : ToolsBackend
 		);
 		result.tid = tid;
 		return result;
+	}
+
+	/// Finalize a successful sub-task completion when a pending Task() call exists.
+	/// Returns true when the pending sub-task promise was fulfilled.
+	private bool finalizeCompletedSubTask(int childTid, bool eagerDepCleanup = false)
+	{
+		import ae.utils.json : toJson;
+		if (childTid !in tasks)
+			return false;
+
+		auto td = &tasks[childTid];
+		td.status = "completed";
+		persistence.setStatus(childTid, "completed");
+		persistence.setResultText(childTid, td.resultText);
+
+		auto pending = childTid in pendingSubTasks;
+		if (pending is null)
+			return false;
+
+		auto taskResult = buildTaskResult(childTid);
+		auto resultJson = toJson(taskResult);
+		pending.fulfill(McpResult.structured(resultJson));
+		pendingSubTasks.remove(childTid);
+
+		// Early result delivery can race onExit for agents with synchronous stdin
+		// close. Eager dep cleanup keeps parent state transitions consistent.
+		if (eagerDepCleanup)
+			if (auto parentTidPtr = childTid in taskDeps)
+			{
+				auto parentTid = *parentTidPtr;
+				persistence.removeTaskDep(parentTid, childTid);
+				taskDeps.remove(childTid);
+				if (childrenOf(parentTid).length == 0
+					&& parentTid in tasks && tasks[parentTid].status == "waiting")
+				{
+					tasks[parentTid].status = "active";
+					persistence.setStatus(parentTid, "active");
+					broadcastTaskUpdate(parentTid);
+				}
+			}
+
+		return true;
 	}
 
 	private void deliverBatchResults(int parentTid)
