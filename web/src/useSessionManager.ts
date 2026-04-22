@@ -1144,8 +1144,8 @@ export function useTaskManager(
             for (let i = messages.length - 1; i >= 0; i--) {
               const m = messages[i];
               if (!m) continue;
-              if (m.uuid) continue; // already has a UUID
               if (m.type !== "user" && m.type !== "assistant") continue; // only patch forkable message types
+              if (m.uuid) continue;
               const mSeq = m.seq;
               const seqMatch =
                 typeof mSeq === "number"

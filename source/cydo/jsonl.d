@@ -17,6 +17,7 @@ struct JsonlTracker
 	Agent delegate(int tid) getAgent;
 	TaskData* delegate(int tid) getTask;
 	void delegate(int tid, string msg) sendToSubscribed;
+	void delegate(int tid, size_t seq, string anchor) onAnchorResolved;
 
 	private RefCountedINotify rcINotify;
 	private RefCountedINotify.Handle[int] jsonlWatches;
@@ -229,13 +230,27 @@ struct JsonlTracker
 
 		auto content = readText(jsonlPath);
 		auto forkIds = getAgent(tid).extractForkableIdsWithInfo(content);
-		if (forkIds.length == 0)
-			return;
-
-		string[] uuids = forkIds.map!(f => f.id).array;
-		ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
-
-		auto assignments = computeAssignments(tid, forkIds);
+		auto td = getTask(tid);
+		auto isClaude = td !is null && td.agentType == "claude";
+		UuidAssignment[] assignments;
+		string[] uuids;
+		if (isClaude)
+		{
+			bool[string] onDiskAnchors;
+			foreach (ref fid; forkIds)
+				onDiskAnchors[fid.id] = true;
+			assignments = resolvePendingAssignments(tid, forkIds);
+			foreach (anchor; td.resolvedVisibleAnchors())
+				if (anchor in onDiskAnchors)
+					uuids ~= anchor;
+		}
+		else
+		{
+			assignments = computeAssignments(tid, forkIds);
+			uuids = forkIds.map!(f => f.id).array;
+		}
+		if (uuids.length > 0)
+			ws.send(Data(toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)).representation));
 		if (assignments.length > 0)
 			ws.send(Data(toJson(AssignUuidsMessage("assign_uuids", tid, assignments)).representation));
 	}
@@ -280,10 +295,27 @@ struct JsonlTracker
 		import std.array : array;
 		import ae.utils.json : toJson;
 
-		string[] uuids = forkIds.map!(f => f.id).array;
+		auto td = getTask(tid);
+		auto isClaude = td !is null && td.agentType == "claude";
+		UuidAssignment[] assignments;
+		string[] uuids;
+		if (isClaude)
+		{
+			bool[string] onDiskAnchors;
+			foreach (ref fid; forkIds)
+				onDiskAnchors[fid.id] = true;
+			assignments = resolvePendingAssignments(tid, forkIds);
+			foreach (anchor; td.resolvedVisibleAnchors())
+				if (anchor in onDiskAnchors)
+					uuids ~= anchor;
+		}
+		else
+		{
+			assignments = computeAssignments(tid, forkIds);
+			uuids = forkIds.map!(f => f.id).array;
+		}
 		sendToSubscribed(tid, toJson(ForkableUuidsMessage("forkable_uuids", tid, uuids)));
 
-		auto assignments = computeAssignments(tid, forkIds);
 		if (assignments.length > 0)
 			sendToSubscribed(tid, toJson(AssignUuidsMessage("assign_uuids", tid, assignments)));
 	}
@@ -339,4 +371,151 @@ struct JsonlTracker
 		tracef("[jsonl] computeAssignments tid=%d result=%d assignments", tid, result.length);
 		return result;
 	}
+
+	private bool isEnqueueAnchor(string id)
+	{
+		return id.length > "enqueue-".length
+			&& id[0 .. "enqueue-".length] == "enqueue-";
+	}
+
+	/// Resolve pending visible-turn anchors against enqueue IDs seen in JSONL.
+	private UuidAssignment[] resolvePendingAssignments(int tid, ForkableIdInfo[] forkIds)
+	{
+		import std.algorithm : sort;
+		import std.logger : tracef;
+
+		auto td = getTask(tid);
+		if (td is null)
+			return null;
+
+		auto pendingSeqs = td.pendingVisibleTurnSeqs();
+		if (pendingSeqs.length == 0)
+			return null;
+		pendingSeqs.sort();
+
+		bool[string] usedEnqueueAnchors;
+		foreach (anchor; td.resolvedEnqueueAnchors())
+			usedEnqueueAnchors[anchor] = true;
+
+		string[] availableEnqueueAnchors;
+		bool[string] availableSeen;
+		foreach (ref fid; forkIds)
+		{
+			if (!fid.isUser || !isEnqueueAnchor(fid.id))
+				continue;
+			if (fid.id in usedEnqueueAnchors)
+				continue;
+			if (fid.id in availableSeen)
+				continue;
+			availableSeen[fid.id] = true;
+			availableEnqueueAnchors ~= fid.id;
+		}
+
+		tracef("[jsonl] resolvePendingAssignments tid=%d pending=%d availableEnqueue=%d",
+			tid, pendingSeqs.length, availableEnqueueAnchors.length);
+		UuidAssignment[] result;
+		size_t enqueueIdx = 0;
+		foreach (seq; pendingSeqs)
+		{
+			if (enqueueIdx >= availableEnqueueAnchors.length)
+				break;
+			auto anchor = availableEnqueueAnchors[enqueueIdx++];
+			if (td.resolveVisibleTurnAnchor(seq, anchor))
+			{
+				if (onAnchorResolved !is null)
+					onAnchorResolved(tid, seq, anchor);
+				result ~= UuidAssignment(anchor, seq);
+			}
+		}
+		tracef("[jsonl] resolvePendingAssignments tid=%d result=%d", tid, result.length);
+		return result;
+	}
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	TaskData td = TaskData(1);
+	td.registerVisibleTurnAnchor(4, true, false, "user-one", "user-one", false);
+	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
+
+	JsonlTracker tracker;
+	tracker.getAgent = (int) => cast(Agent) null;
+	tracker.getTask = (int tid) => tid == 1 ? &td : null;
+	tracker.sendToSubscribed = (int, string) {};
+
+	ForkableIdInfo[] forkIds = [
+		ForkableIdInfo("user-one", true),
+		ForkableIdInfo("enqueue-22", true),
+		ForkableIdInfo("raw-steering", true),
+	];
+	auto assignments = tracker.resolvePendingAssignments(1, forkIds);
+	assert(assignments.length == 1);
+	assert(assignments[0].seq == 13);
+	assert(assignments[0].uuid == "enqueue-22");
+	assert(td.resolvedVisibleAnchors().canFind("enqueue-22"));
+}
+
+unittest
+{
+	TaskData td = TaskData(1);
+	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
+
+	JsonlTracker tracker;
+	tracker.getAgent = (int) => cast(Agent) null;
+	tracker.getTask = (int tid) => tid == 1 ? &td : null;
+	tracker.sendToSubscribed = (int, string) {};
+	int callbackCount;
+	size_t callbackSeq;
+	string callbackAnchor;
+	tracker.onAnchorResolved = (int tid, size_t seq, string anchor)
+	{
+		assert(tid == 1);
+		callbackCount++;
+		callbackSeq = seq;
+		callbackAnchor = anchor;
+	};
+
+	ForkableIdInfo[] forkIds = [
+		ForkableIdInfo("enqueue-22", true),
+	];
+	auto assignments = tracker.resolvePendingAssignments(1, forkIds);
+	assert(assignments.length == 1);
+	assert(callbackCount == 1);
+	assert(callbackSeq == 13);
+	assert(callbackAnchor == "enqueue-22");
+}
+
+unittest
+{
+	import std.algorithm : sort;
+
+	TaskData td = TaskData(1);
+	td.registerVisibleTurnAnchor(2, true, false, "user-two", "user-two", false);
+	td.registerVisibleTurnAnchor(10, true, true, "enqueue-3", null, false); // already resolved
+	td.registerVisibleTurnAnchor(20, true, true, null, "raw-tool-only", true);
+	td.registerVisibleTurnAnchor(30, true, true, null, "raw-meta", true);
+
+	JsonlTracker tracker;
+	tracker.getAgent = (int) => cast(Agent) null;
+	tracker.getTask = (int tid) => tid == 1 ? &td : null;
+	tracker.sendToSubscribed = (int, string) {};
+
+	// Extra raw user/assistant IDs (tool-result-only users, meta users, API-error
+	// assistant lines) must not shift pending steering anchors.
+	ForkableIdInfo[] forkIds = [
+		ForkableIdInfo("tool-result-user-uuid", true),
+		ForkableIdInfo("enqueue-3", true),   // already used, must be skipped
+		ForkableIdInfo("assistant-api-error", false),
+		ForkableIdInfo("enqueue-8", true),
+		ForkableIdInfo("meta-user-uuid", true),
+		ForkableIdInfo("enqueue-12", true),
+	];
+
+	auto assignments = tracker.resolvePendingAssignments(1, forkIds);
+	assert(assignments.length == 2);
+	assignments.sort!((a, b) => a.seq < b.seq);
+	assert(assignments[0].seq == 20 && assignments[0].uuid == "enqueue-8");
+	assert(assignments[1].seq == 30 && assignments[1].uuid == "enqueue-12");
 }

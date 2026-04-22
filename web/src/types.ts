@@ -91,7 +91,7 @@ export interface DisplayMessage {
   seq?: number | number[];
   /** Extra/unknown fields from the wire protocol, surfaced in the UI. */
   extraFields?: Record<string, unknown>;
-  /** Claude Code message UUID — drives fork/undo/edit buttons. */
+  /** Canonical visible-turn anchor used for fork/undo/edit (often a Claude UUID, sometimes synthetic enqueue-N). */
   uuid?: string;
   /** Timestamp of the first event that built this message (AbsTime stdTime units). */
   ts?: number;
@@ -212,7 +212,7 @@ export interface TaskState {
   parentTid?: number;
   /** Relation type to parent (e.g. "fork"). */
   relationType?: string;
-  /** UUIDs confirmed in the on-disk JSONL file — only these are forkable. */
+  /** Canonical visible-turn anchors currently forkable for this task. */
   forkableUuids: Set<string>;
   /** Current task type (e.g. "conversation", "plan", "implement"). */
   taskType?: string;

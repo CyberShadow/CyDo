@@ -47,6 +47,16 @@ struct BatchSignal
 	}
 }
 
+struct VisibleTurnAnchor
+{
+	size_t seq;
+	bool isUser;
+	bool isSteering;
+	bool pending;
+	string anchor;
+	string checkpointUuid;
+}
+
 enum ProcessState : bool { Dead = false, Alive = true }
 enum ArchiveState : bool { Unarchived = false, Archived = true }
 
@@ -186,6 +196,9 @@ struct TaskData
 	// --- enqueuedSteering*: parallel arrays, mutate only via helpers below ---
 	string[] enqueuedSteeringTexts; // stash of enqueued steering message texts
 	string[] enqueuedSteeringRawLines; // parallel: raw JSONL lines for _raw
+	VisibleTurnAnchor[] visibleTurnAnchors;
+	string pendingDequeuedSteeringText;
+	string pendingDequeuedSteeringRawLine;
 
 	invariant (history.length == rawSource.length, "history/rawSource length mismatch");
 	invariant (enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length, "steering texts/rawLines length mismatch");
@@ -223,6 +236,8 @@ struct TaskData
 	{
 		history = DataVec();
 		rawSource = null;
+		visibleTurnAnchors = null;
+		clearPendingDequeuedSteering();
 	}
 
 	// -- Steering parallel-array helpers --
@@ -257,6 +272,131 @@ struct TaskData
 		enqueuedSteeringRawLines = enqueuedSteeringRawLines[1 .. $];
 		assert(enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length);
 		return true;
+	}
+
+	void setPendingDequeuedSteering(string text, string rawLine)
+	{
+		pendingDequeuedSteeringText = text;
+		pendingDequeuedSteeringRawLine = rawLine;
+	}
+
+	bool hasPendingDequeuedSteering() const
+	{
+		return pendingDequeuedSteeringText.length > 0;
+	}
+
+	bool popPendingDequeuedSteering(out string text, out string rawLine)
+	{
+		if (pendingDequeuedSteeringText.length == 0)
+			return false;
+		text = pendingDequeuedSteeringText;
+		rawLine = pendingDequeuedSteeringRawLine;
+		pendingDequeuedSteeringText = null;
+		pendingDequeuedSteeringRawLine = null;
+		return true;
+	}
+
+	void clearPendingDequeuedSteering()
+	{
+		pendingDequeuedSteeringText = null;
+		pendingDequeuedSteeringRawLine = null;
+	}
+
+	private size_t visibleTurnAnchorIndex(size_t seq) const
+	{
+		foreach (i, rec; visibleTurnAnchors)
+			if (rec.seq == seq)
+				return i;
+		return cast(size_t) -1;
+	}
+
+	void registerVisibleTurnAnchor(size_t seq, bool isUser, bool isSteering,
+		string anchor, string checkpointUuid, bool pending)
+	{
+		auto idx = visibleTurnAnchorIndex(seq);
+		if (idx == cast(size_t) -1)
+		{
+			VisibleTurnAnchor rec;
+			rec.seq = seq;
+			rec.isUser = isUser;
+			rec.isSteering = isSteering;
+			rec.pending = pending;
+			rec.anchor = anchor;
+			rec.checkpointUuid = checkpointUuid;
+			visibleTurnAnchors ~= rec;
+			return;
+		}
+
+		auto rec = &visibleTurnAnchors[idx];
+		rec.isUser = isUser;
+		rec.isSteering = isSteering;
+		rec.pending = pending;
+		rec.anchor = anchor;
+		rec.checkpointUuid = checkpointUuid;
+	}
+
+	size_t[] pendingVisibleTurnSeqs() const
+	{
+		size_t[] seqs;
+		foreach (rec; visibleTurnAnchors)
+			if (rec.pending)
+				seqs ~= rec.seq;
+		return seqs;
+	}
+
+	bool resolveVisibleTurnAnchor(size_t seq, string anchor)
+	{
+		auto idx = visibleTurnAnchorIndex(seq);
+		if (idx == cast(size_t) -1)
+			return false;
+		auto rec = &visibleTurnAnchors[idx];
+		if (rec.anchor == anchor && !rec.pending)
+			return false;
+		rec.anchor = anchor;
+		rec.pending = false;
+		return true;
+	}
+
+	string[] resolvedVisibleAnchors() const
+	{
+		string[] anchors;
+		bool[string] seen;
+		foreach (rec; visibleTurnAnchors)
+		{
+			if (rec.pending || rec.anchor.length == 0)
+				continue;
+			if (rec.anchor in seen)
+				continue;
+			seen[rec.anchor] = true;
+			anchors ~= rec.anchor;
+		}
+		return anchors;
+	}
+
+	string[] resolvedEnqueueAnchors() const
+	{
+		string[] anchors;
+		foreach (rec; visibleTurnAnchors)
+		{
+			if (rec.pending || rec.anchor.length <= "enqueue-".length)
+				continue;
+			if (rec.anchor[0 .. "enqueue-".length] == "enqueue-")
+				anchors ~= rec.anchor;
+		}
+		return anchors;
+	}
+
+	string checkpointUuidForAnchor(string anchor) const
+	{
+		if (anchor.length == 0)
+			return null;
+		foreach (rec; visibleTurnAnchors)
+		{
+			if (rec.pending || rec.anchor != anchor || rec.checkpointUuid.length == 0)
+				continue;
+			return rec.checkpointUuid;
+		}
+		return null;
 	}
 
 	/// Texts of all messages sent to this task, in send order.

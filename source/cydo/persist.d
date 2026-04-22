@@ -719,6 +719,40 @@ string findNextUserUuid(string jsonlPath, string forkId,
 	return null;
 }
 
+unittest
+{
+	import std.algorithm : canFind;
+	import std.array : join;
+	import std.file : mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-find-next-user-uuid");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	auto jsonl = [
+		`{"type":"queue-operation","operation":"enqueue","content":"steer"}`,
+		`{"type":"progress","stage":"queued"}`,
+		`{"type":"user","uuid":"user-echo-1","message":{"content":"steer"}}`,
+		`{"type":"assistant","uuid":"assistant-1","message":{"content":"ok"}}`,
+	].join("\n") ~ "\n";
+	write(jsonlPath, jsonl);
+
+	bool delegate(string, int, string) matchEnqueue = (string line, int lineNum, string forkId) {
+		return forkId == "enqueue-1"
+			&& lineNum == 1
+			&& line.canFind(`"queue-operation"`)
+			&& line.canFind(`"operation":"enqueue"`);
+	};
+
+	assert(findNextUserUuid(jsonlPath, "enqueue-1", matchEnqueue) == "user-echo-1");
+
+	bool delegate(string) countForkable = (string line) =>
+		line.canFind(`"type":"user"`) || line.canFind(`"type":"assistant"`);
+	assert(countLinesAfterForkId(jsonlPath, "enqueue-1", matchEnqueue, countForkable) == 2);
+}
+
 /// Returns true if this JSONL line is a queue-operation, file-history-snapshot,
 /// or progress event — lines that are "run-up" to a steered user message and
 /// should be stripped together with it on undo.

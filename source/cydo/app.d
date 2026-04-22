@@ -21,7 +21,7 @@ import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.sys.pidfile : createPidFile;
-import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
+import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise, PromiseQueue, resolve, reject;
 import std.typecons : Nullable;
 import ae.utils.promise.concurrency : threadAsync;
@@ -578,6 +578,8 @@ class App : ToolsBackend
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
 		jsonlTracker.sendToSubscribed = (int tid, string msg) =>
 			sendToSubscribed(tid, Data(msg.representation));
+		jsonlTracker.onAnchorResolved = (int tid, size_t seq, string anchor) =>
+			backfillHistoryAnchor(tid, seq, anchor);
 
 		// Load task type definitions
 		auto types = getTaskTypes();
@@ -2377,16 +2379,19 @@ class App : ToolsBackend
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
 					auto ts = ta.translateHistoryLine(line, lineNum);
-					if (ts.length > 0)
-					{
-						import std.format : format;
-						auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
-						// Inject enqueue UUID into the first event (item/started type=user_message).
-						import cydo.agent.protocol : ItemStartedEvent;
-						auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-						ev.uuid = enqueueUuid;
-						return [TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $];
-					}
+						if (ts.length > 0)
+						{
+							import std.format : format;
+							auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
+							// Inject enqueue UUID into the first event (item/started type=user_message).
+							import cydo.agent.protocol : ItemStartedEvent;
+							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+							// Only steering echoes should use enqueue-N as the visible anchor.
+							// Regular user turns keep the raw user UUID.
+							if (ev.is_steering)
+								ev.uuid = enqueueUuid;
+							return [TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $];
+						}
 					return [];
 				}
 				if (ta.isAssistantMessageLine(line))
@@ -2414,6 +2419,7 @@ class App : ToolsBackend
 			return ta.translateHistoryLine(line, lineNum);
 		});
 		td.setHistory(loaded.history, loaded.rawSource);
+		td.clearPendingDequeuedSteering();
 		td.historyLoaded = true;
 		// For agents without queue-operations (e.g. Copilot), emit synthetics for
 		// user messages that were sent but not yet flushed to JSONL at kill time.
@@ -2446,6 +2452,7 @@ class App : ToolsBackend
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
 		}
+		rebuildVisibleTurnAnchors(tid);
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
@@ -2990,7 +2997,6 @@ class App : ToolsBackend
 		}
 
 		auto ta = agentForTask(tid);
-
 		if (json.dry_run)
 		{
 				auto count = countLinesAfterForkId(
@@ -3161,14 +3167,13 @@ class App : ToolsBackend
 		string rewindOutput;
 		if (json.revert_files && ta.supportsFileRevert())
 		{
-			// Synthetic enqueue-N UUIDs don't have file checkpoints, but the
-			// next real type:"user" message in the JSONL does.  Find it.
+			// Synthetic enqueue-N anchors need explicit resolution to the
+			// corresponding raw user UUID before file rewind.
 			string rewindUuid = json.after_uuid;
 			if (rewindUuid.startsWith("enqueue-"))
 			{
-				rewindUuid = findNextUserUuid(
-					ta.historyPath(td.agentSessionId, td.effectiveCwd),
-					json.after_uuid, &ta.forkIdMatchesLine);
+				ensureHistoryLoaded(tid);
+				rewindUuid = td.checkpointUuidForAnchor(json.after_uuid);
 			}
 
 			if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
@@ -3290,6 +3295,7 @@ class App : ToolsBackend
 	private void handleEditMessage(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
+		import std.algorithm : startsWith;
 
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
@@ -3311,6 +3317,18 @@ class App : ToolsBackend
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 		auto targetUuid = json.after_uuid;
+		if (targetUuid.startsWith("enqueue-"))
+		{
+			ensureHistoryLoaded(tid);
+			auto checkpointUuid = td.checkpointUuidForAnchor(json.after_uuid);
+			if (checkpointUuid.length > 0)
+				targetUuid = checkpointUuid;
+		}
+		if (targetUuid.length == 0)
+		{
+			ws.send(Data(toJson(ErrorMessage("error", "Message UUID not found in history", tid)).representation));
+			return;
+		}
 
 		auto edited = editJsonlMessage(jsonlPath, targetUuid,
 			&ta.forkIdMatchesLine,
@@ -5093,10 +5111,170 @@ class App : ToolsBackend
 		return toJson(m);
 	}
 
+	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, string translated, string rawLine = null)
+	{
+		import std.algorithm : canFind, startsWith;
+
+		if (tid !in tasks || translated.length == 0)
+			return;
+		auto td = &tasks[tid];
+
+		if (translated.canFind(`"type":"item/started"`) && translated.canFind(`"item_type":"user_message"`))
+		{
+			@JSONPartial
+			static struct UserAnchorProbe
+			{
+				string type;
+				string item_type;
+				@JSONOptional bool is_meta;
+				@JSONOptional bool is_steering;
+				@JSONOptional bool pending;
+				@JSONOptional string uuid;
+			}
+
+			UserAnchorProbe probe;
+			try
+				probe = jsonParse!UserAnchorProbe(translated);
+			catch (Exception)
+				return;
+
+			if (probe.type != "item/started" || probe.item_type != "user_message")
+				return;
+			if (probe.is_meta || probe.pending)
+				return;
+
+			auto uuid = probe.uuid;
+			auto isEnqueue = uuid.length > "enqueue-".length && uuid.startsWith("enqueue-");
+			string checkpointUuid;
+			if (!isEnqueue && uuid.length > 0)
+				checkpointUuid = uuid;
+			else if (rawLine.length > 0)
+			{
+				@JSONPartial static struct RawUserUuidProbe
+				{
+					string type;
+					@JSONOptional string uuid;
+				}
+				try
+				{
+					auto rawProbe = jsonParse!RawUserUuidProbe(rawLine);
+					if (rawProbe.type == "user" && rawProbe.uuid.length > 0)
+						checkpointUuid = rawProbe.uuid;
+				}
+				catch (Exception)
+				{
+				}
+			}
+			auto shouldPend = probe.is_steering && uuid.length == 0;
+			auto anchor = shouldPend ? null : uuid;
+			if (!shouldPend && anchor.length == 0)
+				return;
+
+			td.registerVisibleTurnAnchor(seq, true, probe.is_steering,
+				anchor, checkpointUuid, shouldPend);
+			return;
+		}
+
+		if (translated.canFind(`"type":"turn/stop"`))
+		{
+			@JSONPartial static struct TurnStopAnchorProbe { string type; @JSONOptional string uuid; }
+			TurnStopAnchorProbe probe;
+			try
+				probe = jsonParse!TurnStopAnchorProbe(translated);
+			catch (Exception)
+				return;
+			if (probe.type == "turn/stop" && probe.uuid.length > 0)
+				td.registerVisibleTurnAnchor(seq, false, false, probe.uuid, probe.uuid, false);
+			return;
+		}
+
+		if (translated.canFind(`"type":"turn/delta"`))
+		{
+			@JSONPartial static struct TurnDeltaAnchorProbe { string type; @JSONOptional string uuid; }
+			TurnDeltaAnchorProbe probe;
+			try
+				probe = jsonParse!TurnDeltaAnchorProbe(translated);
+			catch (Exception)
+				return;
+			if (probe.type == "turn/delta" && probe.uuid.length > 0)
+				td.registerVisibleTurnAnchor(seq, false, false, probe.uuid, probe.uuid, false);
+		}
+	}
+
+	private void rebuildVisibleTurnAnchors(int tid)
+	{
+		import cydo.task : extractEventFromEnvelope;
+
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		td.visibleTurnAnchors = null;
+		foreach (i, ref entry; td.history)
+		{
+			auto event = extractEventFromEnvelope(cast(string) entry.unsafeContents);
+			if (event.length == 0)
+				continue;
+			registerVisibleTurnAnchorFromEvent(tid, i, event, i < td.rawSource.length ? td.rawSource[i] : null);
+		}
+	}
+
+	private void backfillHistoryAnchor(int tid, size_t seq, string anchor)
+	{
+		import std.algorithm : canFind;
+		import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
+		import cydo.agent.protocol : ItemStartedEvent;
+
+		if (tid !in tasks || anchor.length == 0)
+			return;
+		auto td = &tasks[tid];
+		if (seq >= td.history.length)
+			return;
+
+		auto envelope = cast(string) td.history[seq].unsafeContents;
+		auto event = extractEventFromEnvelope(envelope);
+		if (event.length == 0
+			|| !event.canFind(`"type":"item/started"`)
+			|| !event.canFind(`"item_type":"user_message"`))
+			return;
+
+		ItemStartedEvent userEv;
+		try
+			userEv = jsonParse!ItemStartedEvent(event);
+		catch (Exception)
+			return;
+		if (userEv.uuid == anchor)
+			return;
+		userEv.uuid = anchor;
+		td.history[seq] = Data(toJson(TaskEventEnvelope(
+			tid, extractTsFromEnvelope(envelope), JSONFragment(toJson(userEv)))).representation);
+	}
+
+	private size_t appendAndBroadcastTaskEvent(int tid, TranslatedEvent ev)
+	{
+		if (tid !in tasks)
+			return 0;
+
+		ensureHistoryLoaded(tid);
+		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
+		if (!mergeStreamingDelta(tid, ev.translated, historyData))
+		{
+			tasks[tid].appendHistory(historyData, ev.raw);
+			auto seq = tasks[tid].history.length - 1;
+			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
+		}
+
+		auto seq = tasks[tid].history.length - 1;
+		sendToSubscribed(tid, Data(
+			toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
+				JSONFragment(ev.translated))).representation));
+		return seq;
+	}
+
 	private void broadcastTask(int tid, TranslatedEvent ev)
 	{
 		// Apply timestamp fallback: use backend receipt time if agent provided none.
 		import std.datetime : Clock;
+		import std.algorithm : canFind, startsWith;
 		import ae.utils.time.types : AbsTime;
 		if (ev.ts == AbsTime.init)
 			ev.ts = AbsTime(Clock.currStdTime);
@@ -5117,9 +5295,29 @@ class App : ToolsBackend
 					td.enqueueSteering(op.content, ev.translated);
 					return; // already displayed via unconfirmedUserEvent
 				}
-				else if (op.operation == "dequeue")
+
+				// Compacted back-to-back queue operations can leave one dequeued
+				// steering turn without a following user echo; flush it now.
+				if ((op.operation == "dequeue" || op.operation == "remove")
+					&& td.hasPendingDequeuedSteering())
 				{
-					td.dequeueSteering();
+					string pendingText, pendingRaw;
+					if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
+					{
+						auto pendingSteeringEv = buildSyntheticUserEvent(pendingText, true);
+						appendAndBroadcastTaskEvent(tid,
+							TranslatedEvent(toJson(pendingSteeringEv),
+								pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
+					}
+				}
+
+				if (op.operation == "dequeue")
+				{
+					string text, enqueueRaw;
+					if (td.popSteering(text, enqueueRaw))
+						td.setPendingDequeuedSteering(text, enqueueRaw);
+					else
+						td.clearPendingDequeuedSteering();
 					return; // the real message/user follows
 				}
 				else if (op.operation == "remove")
@@ -5129,11 +5327,9 @@ class App : ToolsBackend
 					{
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
-						auto data = Data(toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-							JSONFragment(toJson(steeringEv)))).representation);
-						ensureHistoryLoaded(tid);
-						td.appendHistory(data, enqueueRaw.length > 0 ? enqueueRaw : null);
-						sendToSubscribed(tid, data);
+						appendAndBroadcastTaskEvent(tid,
+							TranslatedEvent(toJson(steeringEv),
+								enqueueRaw.length > 0 ? enqueueRaw : null, ev.ts));
 					}
 					return;
 				}
@@ -5141,27 +5337,57 @@ class App : ToolsBackend
 			return; // unknown queue operation — consume silently
 		}
 
-		if (tid in tasks)
+		if (tid in tasks && tasks[tid].hasPendingDequeuedSteering())
 		{
-			ensureHistoryLoaded(tid);
-			// Store clean translated event in history; raw goes to rawSource.
-			auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
-				JSONFragment(ev.translated))).representation);
-			// Merge adjacent item/delta events with matching item_id to keep
-			// history compact without reordering events.
-			if (!mergeStreamingDelta(tid, ev.translated, historyData))
+			auto td = &tasks[tid];
+			auto ta = agentForTask(tid);
+			if (ev.raw.length > 0 && ta.isAssistantMessageLine(ev.raw))
 			{
-				tasks[tid].appendHistory(historyData, ev.raw);
+				string pendingText, pendingRaw;
+				if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
+				{
+					auto steeringEv = buildSyntheticUserEvent(pendingText, true);
+					appendAndBroadcastTaskEvent(tid,
+						TranslatedEvent(toJson(steeringEv),
+							pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
+				}
+			}
+			else if (ev.translated.canFind(`"type":"item/started"`)
+				&& ev.translated.canFind(`"item_type":"user_message"`))
+			{
+				@JSONPartial static struct SteeringEchoProbe
+				{
+					string type;
+					string item_type;
+					@JSONOptional bool is_steering;
+					@JSONOptional string uuid;
+				}
+				SteeringEchoProbe probe;
+				try
+				{
+					probe = jsonParse!SteeringEchoProbe(ev.translated);
+					if (probe.type == "item/started"
+						&& probe.item_type == "user_message"
+						&& probe.is_steering)
+					{
+						if (probe.uuid.length > 0 && !probe.uuid.startsWith("enqueue-"))
+						{
+							import cydo.agent.protocol : ItemStartedEvent;
+							auto userEv = jsonParse!ItemStartedEvent(ev.translated);
+							userEv.uuid = null;
+							ev.translated = toJson(userEv);
+						}
+						td.clearPendingDequeuedSteering();
+					}
+				}
+				catch (Exception)
+				{
+					// Keep the original event if parsing fails.
+				}
 			}
 		}
 
-		// Send to clients: add _seq.
-		auto seq = (tid in tasks) ? tasks[tid].history.length - 1 : 0;
-		sendToSubscribed(tid, Data(toJson(TaskEventSeqEnvelope(
-			tid,
-			cast(int) seq,
-			ev.ts.stdTime,
-			JSONFragment(ev.translated))).representation));
+		appendAndBroadcastTaskEvent(tid, ev);
 	}
 
 	/// Try to merge an item/delta into the last history entry.
@@ -6484,8 +6710,8 @@ private void initLogLevel()
 	}
 }
 
-/// Replace the text content in a user message JSONL line.
-/// Handles both string content and array-of-blocks content.
+/// Replace text content for editable user-facing messages in JSONL.
+/// Supports both type:"user" message lines and queue-operation enqueue lines.
 private string replaceUserMessageContent(string line, string newContent)
 {
 	import std.json : parseJSON, JSONValue;
@@ -6493,5 +6719,9 @@ private string replaceUserMessageContent(string line, string newContent)
 	auto json = parseJSON(line);
 	if ("message" in json)
 		json["message"]["content"] = JSONValue(newContent);
+	else if ("type" in json && "operation" in json
+		&& json["type"].str == "queue-operation"
+		&& json["operation"].str == "enqueue")
+		json["content"] = JSONValue(newContent);
 	return json.toString();
 }
