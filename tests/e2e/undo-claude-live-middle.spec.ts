@@ -162,6 +162,10 @@ test("claude undo preview targets the same turn before and after reload", async 
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
     timeout: 15_000,
   });
+  await expect(page.locator(".input-textarea:visible").first()).toHaveValue(
+    /Please reply with "reload-three"/,
+    { timeout: 15_000 },
+  );
   await expect(async () => {
     const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
     const survivingUserTurns = turns.filter((turn) =>

@@ -3317,12 +3317,11 @@ class App : ToolsBackend
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 		auto targetUuid = json.after_uuid;
+		string fallbackUuid;
 		if (targetUuid.startsWith("enqueue-"))
 		{
 			ensureHistoryLoaded(tid);
-			auto checkpointUuid = td.checkpointUuidForAnchor(json.after_uuid);
-			if (checkpointUuid.length > 0)
-				targetUuid = checkpointUuid;
+			fallbackUuid = td.checkpointUuidForAnchor(targetUuid);
 		}
 		if (targetUuid.length == 0)
 		{
@@ -3333,6 +3332,12 @@ class App : ToolsBackend
 		auto edited = editJsonlMessage(jsonlPath, targetUuid,
 			&ta.forkIdMatchesLine,
 			(string line) => replaceUserMessageContent(line, newContent));
+		if (!edited && fallbackUuid.length > 0)
+		{
+			edited = editJsonlMessage(jsonlPath, fallbackUuid,
+				&ta.forkIdMatchesLine,
+				(string line) => replaceUserMessageContent(line, newContent));
+		}
 
 		if (!edited)
 		{
