@@ -15,8 +15,16 @@ plan, and your attempts to debug or redesign will likely make things worse.
    This prevents losing track of later steps (like verification) during
    long sessions.
 2. **Review the plan** — Re-read the plan from the discussion above. If
-   anything is ambiguous, read the relevant source files to clarify. If the
-   ambiguity can't be resolved by reading code, Ask your parent — don't guess.
+   anything is ambiguous, first distinguish between:
+   - **local mapping work** — finding the exact code location for a change the
+     plan already specifies. Reading source files to do this is allowed.
+   - **missing design** — deciding what the change should be, which approach
+     to take, what files are in scope, or what "done" means. This is not your
+     job.
+
+   If the plan is missing design, acceptance criteria, or concrete direction,
+   Ask your parent immediately — do not treat implementation as an
+   investigation.
 3. **Adopt reproducer** — If the plan references a reproducer worktree path
    (from a bug investigation spike), cherry-pick or copy the failing test into
    your worktree first. This test should fail before your fix and pass after.
@@ -76,6 +84,8 @@ plan, and your attempts to debug or redesign will likely make things worse.
   - The change requires modifying files or systems not mentioned in the plan
   - You find yourself designing a new approach rather than following the
     existing one
+  - The plan leaves core questions unanswered (what to build, how to verify
+    it, or which implementation direction to follow)
 
 ## Validation
 

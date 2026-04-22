@@ -505,9 +505,9 @@ task_types:
     icon: triage
     system_prompt_template: system_prompts/triage.md
     agent_description: >
-      Execute a plan. Reads the plan and decides: implement directly
-      (small, single-commit change) or decompose into sub-tasks.
-      Decomposed sub-tasks are themselves executed recursively.
+      Validate whether a plan is implementation-ready. Decides whether to
+      implement directly, decompose into implementation-ready sub-tasks, or
+      send the plan back when core unknowns remain unresolved.
     tool_guidance: >
       Use to dispatch any approved plan for implementation. Pass the plan
       file path as the task description. Spawn one at a time — wait for
@@ -532,8 +532,9 @@ task_types:
     system_prompt_template: system_prompts/decompose.md
     agent_description: >
       Use when a plan is too large or ambiguous for a single implementation
-      task. Clarifies unknowns via research/spike, then splits the work into
-      smaller sub-tasks that are each executed recursively.
+      task. Resolves bounded unknowns via planning/research/spike, then splits
+      the work into smaller implementation-ready sub-tasks that are each
+      executed recursively.
     model_class: large
     read_only: true
     output_type: []
@@ -563,8 +564,8 @@ task_types:
       Use for well-scoped coding tasks with a clear plan. The agent works in its
       own isolated worktree and produces a commit. Use when: you have a clear
       description of what to build, which files to change, and what the result
-      should look like. Can create 'test' sub-tasks to validate changes. For
-      open-ended work where you're not sure what to change, use 'plan' first.
+      should look like. Can create 'test' sub-tasks to validate changes. Not
+      for open-ended work where the implementation direction is still unknown.
     tool_guidance: >
       Pair with 'plan' for complex work. For simple well-understood changes, use
       directly. Best when the prompt includes a specific plan or clear

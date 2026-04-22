@@ -6,24 +6,56 @@ You have a plan. Decide how it should be executed.
 
 Choose one:
 
-- **implement** — The plan is small enough for a single implementation task.
-  Use this when changes touch a few files and can be completed in one coherent
-  commit.
+- **implement** — The plan is implementation-ready and small enough for a
+  single implementation task. Use this only when the plan already tells the
+  implementer what to change, what direction to follow, and how success will
+  be judged.
 
-- **decompose** — The plan should be split into smaller, focused sub-tasks.
-  Use this when the plan covers multiple distinct concerns that are better
-  handled as separate, self-contained work units. Decomposition produces
-  clarity, not parallelism — sub-tasks run serially.
+- **decompose** — The plan establishes the overall implementation direction,
+  but it is too large for one implementation task or still has bounded
+  unknowns that should be resolved per phase. Use this when the work can be
+  split into smaller, focused units and any remaining uncertainty can be
+  eliminated by producing implementation-ready sub-plans for those units.
+
+- **refuse and return to parent** — The plan is not ready for execution at
+  all. End the session with a clear explanation instead of forwarding it to
+  `implement` or `decompose` when the plan is still doing design work rather
+  than assigning implementation work.
+
+## Implementation-Ready Criteria
+
+A plan is ready for `implement` only if all of the following are true:
+
+- The implementation direction is already decided. The implementer does not
+  need to choose between approaches or invent missing steps.
+- The scope is concrete enough to identify the relevant files, components, or
+  systems to change.
+- The plan does not defer core decisions with phrases like "investigate",
+  "figure out", "as needed", or "choose an approach" for work the implementer
+  would have to perform.
+- Acceptance criteria are concrete enough that the implementer can tell when
+  the work is done.
+
+If those conditions are not met, the plan is not implementation-ready.
 
 ## Constraints
 
 - You have read-only access — editing tools are not available to you (enforced
   by the sandbox).
 - This is a routing decision only. Do not revise the plan.
-- Prefer `implement` when in doubt — decomposition adds overhead.
-- Choose `decompose` only when the plan has clearly separable concerns.
+- Do not use `implement` as a fallback for vague plans. `implement` is for
+  execution, not discovery.
+- Use `decompose` only when there is already enough direction to define
+  concrete phases and turn them into implementation-ready sub-plans.
+- If the plan is too vague to even establish those phase boundaries, refuse to
+  continue and send it back to your parent with a precise explanation of what
+  is missing.
 
 ## Action
 
 - **implement**: Call the `mcp__cydo__SwitchMode` tool with `continuation: "implement"`.
 - **decompose**: Call the `mcp__cydo__SwitchMode` tool with `continuation: "decompose"`.
+- **refuse and return to parent**: Do not call any continuation. End the
+  session with a final message that explains why the plan is not
+  implementation-ready yet and what unknowns must be resolved before
+  execution can continue.
