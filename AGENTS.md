@@ -50,6 +50,19 @@ tree. No work is considered complete until the full suite passes.
 cd web && npm run fmt   # Run prettier on frontend sources
 ```
 
+## Commit Messages
+
+- Prefer `type(scope): imperative summary` in lowercase when a conventional
+  type fits, for example `fix(codex): align mock text streaming with current
+  protocol`.
+- Choose a conventional type that best matches the change instead of inventing
+  alternate subject formats.
+- Keep the subject concise, imperative, and without a trailing period.
+- Leave a blank line before the body. Use the body to explain what changed and
+  why, and wrap it at roughly 72 columns.
+- Split unrelated changes into separate commits instead of combining them under
+  one message.
+
 Tests are Playwright e2e specs (`tests/e2e/`) that run against a mock LLM API server (`tests/mock-api/server.mjs`).
 
 ## Architecture
