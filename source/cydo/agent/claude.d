@@ -2098,16 +2098,64 @@ private string translateExit(string rawLine)
 /// Translate "system/status" event to session/status.
 private string translateSystemStatus(string rawLine)
 {
-	@JSONPartial static struct RawStatus { @JSONOptional string status; }
+	static struct RawStatus
+	{
+		@JSONOptional string status;
+		@JSONOptional string permissionMode;
+		JSONExtras _extras;
+	}
 	try
 	{
 		auto raw = jsonParse!RawStatus(rawLine);
 		SessionStatusEvent ev;
 		ev.status = raw.status;
+		ev.permission_mode = raw.permissionMode;
+		ev.extras = extrasToFragment(raw._extras);
 		return toJson(ev);
 	}
 	catch (Exception e)
 	{ tracef("translateSystemStatus: parse error: %s", e.msg); return makeUnrecognizedEvent("system/status parse error: " ~ e.msg); }
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	@JSONPartial static struct StatusProbe
+	{
+		string type;
+		@JSONOptional string status;
+		@JSONOptional string permission_mode;
+		@JSONOptional JSONFragment extras;
+	}
+
+	{
+		auto translated = translateSystemStatus(
+			`{"type":"system","subtype":"status","status":"compacting","permissionMode":"acceptEdits","foo":"bar"}`);
+		auto ev = jsonParse!StatusProbe(translated);
+		assert(ev.type == "session/status");
+		assert(ev.status == "compacting");
+		assert(ev.permission_mode == "acceptEdits");
+		assert(ev.extras.json !is null);
+		assert(ev.extras.json.canFind(`"foo":"bar"`));
+	}
+
+	{
+		auto translated = translateSystemStatus(
+			`{"type":"system","subtype":"status","status":null,"permissionMode":"acceptEdits"}`);
+		auto ev = jsonParse!StatusProbe(translated);
+		assert(ev.type == "session/status");
+		assert(ev.status.length == 0);
+		assert(ev.permission_mode == "acceptEdits");
+	}
+
+	{
+		auto translated = translateSystemStatus(
+			`{"type":"system","subtype":"status","status":"future-status"}`);
+		auto ev = jsonParse!StatusProbe(translated);
+		assert(ev.type == "session/status");
+		assert(ev.status == "future-status");
+	}
 }
 
 /// Translate "system/compact_boundary" event to session/compacted.

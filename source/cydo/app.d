@@ -2407,6 +2407,9 @@ class App : ToolsBackend
 		string lastDequeuedText;
 		int lastDequeuedEnqueueLineNum;
 		string lastDequeuedRawLine;
+		auto stripTransientStatus = (TranslatedEvent[] events) {
+			return filterTransientSessionStatusEvents(events);
+		};
 		ta.resetHistoryReplay();
 		auto loaded = loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
 			// Skip lines that are part of rolled-back turns
@@ -2468,7 +2471,7 @@ class App : ToolsBackend
 							// Defer: wait to see if type:"user" echo follows
 						}
 					}
-					return result;
+					return stripTransientStatus(result);
 				}
 				return []; // unknown queue operation
 			}
@@ -2501,7 +2504,7 @@ class App : ToolsBackend
 							// Regular user turns keep the raw user UUID.
 							if (ev.is_steering)
 								ev.uuid = enqueueUuid;
-							return [TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $];
+							return stripTransientStatus([TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
 						}
 					return [];
 				}
@@ -2519,15 +2522,15 @@ class App : ToolsBackend
 					lastDequeuedEnqueueLineNum = 0;
 					lastDequeuedRawLine = null;
 					auto ts = ta.translateHistoryLine(line, lineNum);
-					return [TranslatedEvent(synthetic, syntheticRaw)] ~ ts;
+					return stripTransientStatus([TranslatedEvent(synthetic, syntheticRaw)] ~ ts);
 				}
 				// Other lines (file-history-snapshot, progress, etc.) are translated/dropped;
 				// stay in deferred mode waiting for type:"user" or type:"assistant".
-				return ta.translateHistoryLine(line, lineNum);
+				return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
 			}
 			if (ta.isUserMessageLine(line))
 				userMsgFromJsonl++;
-			return ta.translateHistoryLine(line, lineNum);
+			return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
 		});
 		td.setHistory(loaded.history, loaded.rawSource);
 		td.clearPendingDequeuedSteering();
@@ -2605,6 +2608,13 @@ class App : ToolsBackend
 
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
+
+		// Re-broadcast live session status only for active runs.
+		if (td.isProcessing && td.hasLastSessionStatus)
+		{
+			ws.send(Data(toJson(TaskEventEnvelope(tid, td.lastSessionStatusTs,
+				JSONFragment(td.lastSessionStatus))).representation));
+		}
 
 		// Send cached suggestions if available
 		if (td.lastSuggestions.length > 0)
@@ -3932,6 +3942,7 @@ class App : ToolsBackend
 		td.wasKilledByUser = false;
 		td.hadTurnResult = false;
 		td.stdinClosed = false;
+		td.clearLastSessionStatus();
 
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
@@ -5400,10 +5411,92 @@ class App : ToolsBackend
 			tid, extractTsFromEnvelope(envelope), JSONFragment(toJson(userEv)))).representation);
 	}
 
+	private static bool isSessionStatusEvent(string translated)
+	{
+		import std.algorithm : canFind;
+		return translated.canFind(`"type":"session/status"`)
+			|| translated.canFind(`"type":"session\/status"`);
+	}
+
+	private static bool isTurnResultEvent(string translated)
+	{
+		import std.algorithm : canFind;
+		return translated.canFind(`"type":"turn/result"`)
+			|| translated.canFind(`"type":"turn\/result"`);
+	}
+
+	private static bool isProcessExitEvent(string translated)
+	{
+		import std.algorithm : canFind;
+		return translated.canFind(`"type":"process/exit"`)
+			|| translated.canFind(`"type":"process\/exit"`);
+	}
+
+	private void cacheSessionStatusEvent(int tid, string translated, long ts)
+	{
+		if (tid !in tasks)
+			return;
+
+		@JSONPartial static struct StatusProbe
+		{
+			string type;
+			@JSONOptional string status;
+		}
+
+		try
+		{
+			auto probe = jsonParse!StatusProbe(translated);
+			if (probe.type != "session/status")
+				return;
+			import std.string : strip;
+			if (probe.status.strip.length == 0)
+			{
+				tasks[tid].clearLastSessionStatus();
+				return;
+			}
+			tasks[tid].setLastSessionStatus(translated, ts);
+		}
+		catch (Exception)
+		{
+			// Malformed status payloads are never durable and should not linger.
+			tasks[tid].clearLastSessionStatus();
+		}
+	}
+
+	private static TranslatedEvent[] filterTransientSessionStatusEvents(
+		TranslatedEvent[] events)
+	{
+		if (events.length == 0)
+			return events;
+
+		TranslatedEvent[] filtered;
+		foreach (ev; events)
+		{
+			if (!isSessionStatusEvent(ev.translated))
+			{
+				filtered ~= ev;
+				continue;
+			}
+		}
+		return filtered;
+	}
+
 	private size_t appendAndBroadcastTaskEvent(int tid, TranslatedEvent ev)
 	{
 		if (tid !in tasks)
 			return 0;
+
+		if (isTurnResultEvent(ev.translated) || isProcessExitEvent(ev.translated))
+			tasks[tid].clearLastSessionStatus();
+
+		if (isSessionStatusEvent(ev.translated))
+		{
+			cacheSessionStatusEvent(tid, ev.translated, ev.ts.stdTime);
+			sendToSubscribed(tid, Data(
+				toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
+					JSONFragment(ev.translated))).representation));
+			return cast(size_t) -1;
+		}
 
 		ensureHistoryLoaded(tid);
 		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);

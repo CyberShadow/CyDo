@@ -189,6 +189,7 @@ export interface TaskState {
   status: string; // pending, active, completed, failed
   messages: DisplayMessage[];
   sessionInfo: SessionInfo | null;
+  sessionStatus?: string | null;
   isProcessing: boolean;
   stdinClosed: boolean;
   needsAttention: boolean;
@@ -288,6 +289,7 @@ export function makeTaskState(
     status,
     messages: [],
     sessionInfo: null,
+    sessionStatus: null,
     isProcessing,
     stdinClosed,
     needsAttention,

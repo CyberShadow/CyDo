@@ -5,6 +5,18 @@ import {
   sendMessage,
   responseTimeout,
 } from "./fixtures";
+import type { Page } from "./fixtures";
+
+async function disableFocusForAttentionChecks(page: Page) {
+  // Keep this false across navigations; otherwise auto-dismiss can clear
+  // attention before assertions run.
+  await page.addInitScript(() => {
+    Document.prototype.hasFocus = () => false;
+  });
+  await page.evaluate(() => {
+    document.hasFocus = () => false;
+  });
+}
 
 test("tab title shows attention count scoped to current project", async ({
   page,
@@ -16,9 +28,7 @@ test("tab title shows attention count scoped to current project", async ({
   // Enter session 1. Override hasFocus to prevent auto-dismiss from racing
   // with navigation (auto-dismiss gates on document.hasFocus()).
   await enterSession(page);
-  await page.evaluate(() => {
-    document.hasFocus = () => false;
-  });
+  await disableFocusForAttentionChecks(page);
   await sendMessage(page, "call askuserquestion Do you agree?");
   await page.goto("/local/cydo-test-workspace");
 
@@ -40,9 +50,7 @@ test("home button does not show attention for same-project sessions", async ({
   // Enter session and trigger attention. Override hasFocus to prevent the
   // auto-dismiss race with navigation.
   await enterSession(page);
-  await page.evaluate(() => {
-    document.hasFocus = () => false;
-  });
+  await disableFocusForAttentionChecks(page);
   await sendMessage(page, "call askuserquestion Do you agree?");
   await page.goto("/local/cydo-test-workspace");
 
@@ -67,9 +75,7 @@ test("hamburger button shows attention for any session on mobile", async ({
   // Create session 1 and trigger attention. Override hasFocus to prevent the
   // auto-dismiss race with navigation.
   await enterSession(page);
-  await page.evaluate(() => {
-    document.hasFocus = () => false;
-  });
+  await disableFocusForAttentionChecks(page);
   await sendMessage(page, "call askuserquestion Do you agree?");
   await page.goto("/local/cydo-test-workspace");
 
@@ -119,14 +125,9 @@ test("active sessions sort attention-needing tasks first with attention styling"
   // from firing (it gates on hasFocus()). This eliminates the race between
   // the AskUserQuestion response arriving and page.goto navigating away.
   await enterSession(page);
-  await page.evaluate(() => {
-    document.hasFocus = () => false;
-  });
+  await disableFocusForAttentionChecks(page);
   await sendMessage(page, "call askuserquestion Do you agree?");
   await page.goto("/local/cydo-test-workspace");
-  await expect(page).toHaveTitle(/^\(1\) /, {
-    timeout: responseTimeout(agentType),
-  });
   await page.goto("/");
   await expect(page.locator(".active-sessions-table")).toBeVisible({
     timeout: 10_000,

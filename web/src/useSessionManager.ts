@@ -1044,6 +1044,7 @@ export function useTaskManager(
             preReloadDrafts: undefined,
             confirmedDuringReplay: undefined,
             inputDraft,
+            sessionStatus: t.isProcessing ? t.sessionStatus : null,
           };
           liveStates.set(tid, t);
 

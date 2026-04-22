@@ -95,6 +95,8 @@ struct SessionStatusEvent
 {
 	string type = "session/status";
 	@JSONOptional string status;
+	@JSONOptional string permission_mode;
+	@JSONOptional JSONFragment extras;
 }
 
 /// session/compacted

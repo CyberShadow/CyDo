@@ -187,6 +187,8 @@ struct TaskData
 	bool outputEnforcementAttempted; // true after first enforcement retry for missing outputs
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
+	string lastSessionStatus;
+	long lastSessionStatusTs; // StdTime, 0 when unset
 	string notificationBody;
 	string resultText;    // result from the "result" event (canonical sub-task output)
 	string resultNote;        // note from the creatable_tasks edge, returned with result
@@ -244,6 +246,24 @@ struct TaskData
 		rawSource = null;
 		visibleTurnAnchors = null;
 		clearPendingDequeuedSteering();
+		clearLastSessionStatus();
+	}
+
+	void setLastSessionStatus(string translatedStatus, long ts)
+	{
+		lastSessionStatus = translatedStatus;
+		lastSessionStatusTs = ts;
+	}
+
+	void clearLastSessionStatus()
+	{
+		lastSessionStatus = null;
+		lastSessionStatusTs = 0;
+	}
+
+	@property bool hasLastSessionStatus() const
+	{
+		return lastSessionStatus.length > 0;
 	}
 
 	// -- Steering parallel-array helpers --

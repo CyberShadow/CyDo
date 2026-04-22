@@ -399,6 +399,7 @@ function SessionViewInner({
     <>
       <SystemBanner
         sessionInfo={task.sessionInfo}
+        sessionStatus={task.sessionStatus}
         connected={connected}
         totalCost={task.totalCost}
         isProcessing={task.isProcessing}

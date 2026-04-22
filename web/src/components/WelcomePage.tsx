@@ -67,7 +67,13 @@ function ActiveSessions({
   const activeTasks = useMemo(() => {
     const result: TaskState[] = [];
     for (const t of tasks.values()) {
-      if (!t.alive && !t.isProcessing) continue;
+      const includeInActiveSessions =
+        t.alive ||
+        t.isProcessing ||
+        t.needsAttention ||
+        t.hasPendingQuestion ||
+        t.status === "waiting";
+      if (!includeInActiveSessions) continue;
       if (filterLower) {
         const title = (t.title || `Task ${t.tid}`).toLowerCase();
         const ws = (t.workspace || "").toLowerCase();

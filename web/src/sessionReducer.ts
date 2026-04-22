@@ -396,6 +396,7 @@ export function reduceSystemInit(
       agent: msg.agent,
       supports_file_revert: msg.supports_file_revert,
     },
+    sessionStatus: null,
     messages: [...s.messages, initMsg],
   };
 }
@@ -405,21 +406,19 @@ export function reduceSystemStatus(
   msg: SystemStatusMessage,
   seq?: number,
 ): SessionState {
-  const id = `status-${++s.msgIdCounter}`;
+  void seq;
+  const status =
+    typeof msg.status === "string" && msg.status.trim().length > 0
+      ? msg.status
+      : null;
+  const sessionInfo =
+    msg.permission_mode && msg.permission_mode.length > 0 && s.sessionInfo
+      ? { ...s.sessionInfo, permission_mode: msg.permission_mode }
+      : s.sessionInfo;
   return {
     ...s,
-    messages: [
-      ...s.messages,
-      {
-        id,
-        type: "system" as const,
-        subtype: "status" as const,
-        content: [],
-        statusText: msg.status || "clear",
-        rawSource: msg,
-        seq,
-      },
-    ],
+    sessionInfo,
+    sessionStatus: status,
   };
 }
 
@@ -793,6 +792,7 @@ export function reduceResultMessage(
   const nextState = {
     ...s,
     blocks,
+    sessionStatus: null,
     totalCost: msg.total_cost_usd || s.totalCost,
     messages: [
       ...messages,
@@ -1367,7 +1367,7 @@ export function reduceStderr(
 
 export function reduceExit(s: SessionState): SessionState {
   // Backend owns alive/resumable via tasks_list; nothing to update here.
-  return cancelPendingFileEdits(s);
+  return cancelPendingFileEdits({ ...s, sessionStatus: null });
 }
 
 // ---------------------------------------------------------------------------

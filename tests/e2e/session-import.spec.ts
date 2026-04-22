@@ -319,3 +319,106 @@ test("importable session appears on startup, history loads, Import Session promo
     rmSync(workDir, { recursive: true, force: true });
   }
 });
+
+test("import replay drops durable session/status rows but keeps compact boundary", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
+
+  const { workDir, workerHome } = createWorkDir("status-replay");
+  const projectPath = "/tmp/cydo-test-workspace";
+  const mangledPath = projectPath.replace(/\//g, "-");
+  const sessionId = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+  mkdirSync(claudeProjectsDir, { recursive: true });
+
+  const jsonlContent =
+    [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        model: "claude-3-5-sonnet-20241022",
+        cwd: projectPath,
+        permissionMode: "init-perm",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "status",
+        status: "compacting",
+        permissionMode: "acceptEdits",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "status",
+        status: "requesting",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "status",
+        status: "future-status",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "status",
+        status: null,
+        permissionMode: "acceptEdits",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 321 },
+      }),
+      JSON.stringify({
+        type: "user",
+        message: { content: "import replay status fixture" },
+      }),
+    ].join("\n") + "\n";
+
+  writeFileSync(`${claudeProjectsDir}/${sessionId}.jsonl`, jsonlContent);
+
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+  );
+
+  const proc = spawnBackend(workDir, workerHome);
+  try {
+    await waitForBackend(proc);
+    await page.goto(BACKEND_URL + "/");
+
+    const importableLabel = page.locator(
+      ".project-card-sessions .sidebar-item .sidebar-label",
+      { hasText: "import replay status fixture" },
+    );
+    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await importableLabel.click();
+
+    await expect(page).toHaveURL(/\/task\//, { timeout: 5_000 });
+    await expect(
+      page.locator(".message.user-message", {
+        hasText: "import replay status fixture",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // session/status is transient and must not appear in transcript replay.
+    await expect(page.locator(".system-status-message")).toHaveCount(0);
+
+    // compact_boundary is durable and must remain visible in replay.
+    await expect(page.locator(".compact-boundary-message")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Completed imported sessions should not resurrect transient banners.
+    await expect(page.locator(".banner-processing")).not.toBeVisible();
+
+    // Permission mode comes from durable init metadata.
+    await expect(page.locator(".banner-perms")).toHaveText("init-perm");
+  } finally {
+    await killBackend(proc);
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});

@@ -457,14 +457,6 @@ function ControlResponseView({ message }: { message: DisplayMessage }) {
   );
 }
 
-function SystemStatusMessageView({ message }: { message: DisplayMessage }) {
-  return (
-    <div class="message system-status-message">
-      status: {message.statusText}
-    </div>
-  );
-}
-
 function shallowArrayEqual<T>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -563,8 +555,6 @@ const MessageView = memo(
       case "system": {
         if (msg.subtype === "init") {
           inner = <SystemInitView message={msg} />;
-        } else if (msg.subtype === "status") {
-          inner = <SystemStatusMessageView message={msg} />;
         } else if (msg.subtype === "task_lifecycle") {
           inner = <TaskLifecycleView message={msg} />;
         } else if (msg.subtype === "control_response") {

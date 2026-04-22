@@ -62,6 +62,8 @@ export interface SessionInitEvent {
 export interface SessionStatusEvent {
   type: "session/status";
   status?: string;
+  permission_mode?: string;
+  extras?: Record<string, unknown>;
 }
 
 export interface SessionCompactedEvent {

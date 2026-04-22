@@ -7,6 +7,7 @@ import hamburgerIcon from "../icons/hamburger.svg?raw";
 
 interface Props {
   sessionInfo: SessionInfo | null;
+  sessionStatus?: string | null;
   connected: boolean;
   totalCost: number;
   isProcessing: boolean;
@@ -26,8 +27,20 @@ interface Props {
   onResume?: () => void;
 }
 
+export function normalizeSessionStatus(status?: string | null): string | null {
+  if (typeof status !== "string" || status.trim().length === 0) return null;
+  return status;
+}
+
+export function isCompactingStatus(status: string): boolean {
+  const lower = status.toLowerCase();
+  if (lower === "compacting" || lower.includes("compacting")) return true;
+  return lower.includes("compact") && !lower.includes("compacted");
+}
+
 export function SystemBanner({
   sessionInfo,
+  sessionStatus,
   connected,
   totalCost,
   isProcessing,
@@ -47,6 +60,21 @@ export function SystemBanner({
   onResume,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const liveStatus = normalizeSessionStatus(sessionStatus);
+  let processingText: string | null = null;
+  if (alive && stdinClosed) {
+    processingText = "Ending...";
+  } else if (liveStatus) {
+    if (isCompactingStatus(liveStatus)) {
+      processingText = "Compacting...";
+    } else if (liveStatus.trim().toLowerCase() === "requesting") {
+      processingText = "Requesting...";
+    } else {
+      processingText = liveStatus;
+    }
+  } else if (isProcessing && !stdinClosed) {
+    processingText = "Processing...";
+  }
 
   return (
     <div class="system-banner">
@@ -92,11 +120,8 @@ export function SystemBanner({
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
-        {alive && stdinClosed && (
-          <span class="banner-processing">Ending...</span>
-        )}
-        {isProcessing && !stdinClosed && (
-          <span class="banner-processing">Processing...</span>
+        {processingText && (
+          <span class="banner-processing">{processingText}</span>
         )}
         {alive && (
           <>
