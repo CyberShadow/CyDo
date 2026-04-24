@@ -216,6 +216,25 @@ export function matchPattern(userText) {
       },
     };
 
+  // "call partial-restart-batch" → two children with staggered completion:
+  //   - child A completes quickly before the backend restart
+  //   - child B is still running at restart time and completes after recovery
+  if (/call partial-restart-batch/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          { task_type: "research", prompt: 'reply with "first-child-done"', description: "Fast child" },
+          {
+            task_type: "research",
+            prompt: "run command sleep 20 && echo second-child-done",
+            description: "Slow child",
+          },
+        ],
+      },
+    };
+
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
   if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };

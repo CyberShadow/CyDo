@@ -400,6 +400,9 @@ class App : ToolsBackend
 	private Promise!(McpResult)[int] pendingSubTasks;
 	// In-memory mirror of task_deps table (childTid → parentTid)
 	private int[int] taskDeps;
+	// Child tids whose result was already delivered to a live Task() batch via
+	// pendingSubTasks, used to suppress duplicate onExit fallback delivery.
+	private bool[int] liveDeliveredSubTasks;
 	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
 	private Promise!(McpResult)[int] pendingAskUserQuestions;
 	// Pending PermissionPrompt promises (tid -> promise fulfilled when user responds)
@@ -1947,8 +1950,7 @@ class App : ToolsBackend
 				if (auto parentTidPtr = childTid in taskDeps)
 				{
 					auto parentTid2 = *parentTidPtr;
-					persistence.removeTaskDep(parentTid2, childTid);
-					taskDeps.remove(childTid);
+					removeTaskDependency(parentTid2, childTid);
 				}
 				broadcastFocusHint(childTid, askTid);
 			};
@@ -2029,6 +2031,13 @@ class App : ToolsBackend
 		return McpResult.structured(questionJson);
 	}
 
+	private void removeTaskDependency(int parentTid, int childTid)
+	{
+		persistence.removeTaskDep(parentTid, childTid);
+		taskDeps.remove(childTid);
+		liveDeliveredSubTasks.remove(childTid);
+	}
+
 	/// Called after an MCP tool call result is successfully sent back to the
 	/// agent's MCP proxy. Cleans up sub-task deps (if any) and transitions
 	/// the parent from "waiting" to "active".
@@ -2053,8 +2062,7 @@ class App : ToolsBackend
 
 		foreach (childTid; children)
 		{
-			persistence.removeTaskDep(tid, childTid);
-			taskDeps.remove(childTid);
+			removeTaskDependency(tid, childTid);
 		}
 
 		// Transition parent from waiting to active
@@ -4330,33 +4338,41 @@ class App : ToolsBackend
 			{
 				if (auto parentTidPtr = tid in taskDeps)
 				{
-					// Post-restart path: no promise — batch deliver when all children done
-					auto parentTid = *parentTidPtr;
-					tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
-						tid, tasks[tid].status, parentTid);
-					if (parentTid in tasks)
+					if (tid in liveDeliveredSubTasks)
 					{
-						// Check if ALL children of this parent are completed/failed
-						bool allDone = true;
-						foreach (childTid, depParent; taskDeps)
-						{
-							if (depParent == parentTid && childTid in tasks
-								&& tasks[childTid].status != "completed"
-								&& tasks[childTid].status != "failed")
-							{
-								tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
-									childTid, tasks[childTid].status);
-								allDone = false;
-								break;
-							}
-						}
-
-						if (allDone)
-							deliverBatchResults(parentTid);
-						// else: wait — remaining children will trigger this check
+						tracef("onExit Branch B: child tid=%d already delivered to live batch, skipping fallback",
+							tid);
 					}
 					else
-						tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
+					{
+						// Post-restart path: no promise — batch deliver when all children done
+						auto parentTid = *parentTidPtr;
+						tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
+							tid, tasks[tid].status, parentTid);
+						if (parentTid in tasks)
+						{
+							// Check if ALL children of this parent are completed/failed
+							bool allDone = true;
+							foreach (childTid, depParent; taskDeps)
+							{
+								if (depParent == parentTid && childTid in tasks
+									&& tasks[childTid].status != "completed"
+									&& tasks[childTid].status != "failed")
+								{
+									tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
+										childTid, tasks[childTid].status);
+									allDone = false;
+									break;
+								}
+							}
+
+							if (allDone)
+								deliverBatchResults(parentTid);
+							// else: wait — remaining children will trigger this check
+						}
+						else
+							tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
+					}
 				}
 			}
 
@@ -4511,6 +4527,7 @@ class App : ToolsBackend
 				persistence.removeAllChildDeps(tid);
 				persistence.addTaskDep(td.parentTid, childTid);
 				taskDeps.remove(tid);
+				liveDeliveredSubTasks.remove(tid);
 				taskDeps[childTid] = td.parentTid;
 			}
 
@@ -4786,21 +4803,9 @@ class App : ToolsBackend
 		pendingSubTasks.remove(childTid);
 
 		// Early result delivery can race onExit for agents with synchronous stdin
-		// close. Eager dep cleanup keeps parent state transitions consistent.
+		// close. Record this child so onExit does not trigger duplicate fallback.
 		if (eagerDepCleanup)
-			if (auto parentTidPtr = childTid in taskDeps)
-			{
-				auto parentTid = *parentTidPtr;
-				persistence.removeTaskDep(parentTid, childTid);
-				taskDeps.remove(childTid);
-				if (childrenOf(parentTid).length == 0
-					&& parentTid in tasks && tasks[parentTid].status == "waiting")
-				{
-					tasks[parentTid].status = "active";
-					persistence.setStatus(parentTid, "active");
-					broadcastTaskUpdate(parentTid);
-				}
-			}
+			liveDeliveredSubTasks[childTid] = true;
 
 		return true;
 	}
@@ -4873,8 +4878,7 @@ class App : ToolsBackend
 		// Clean up all deps
 		foreach (childTid; children)
 		{
-			persistence.removeTaskDep(parentTid, childTid);
-			taskDeps.remove(childTid);
+			removeTaskDependency(parentTid, childTid);
 		}
 
 		// Transition parent

@@ -420,6 +420,78 @@ test("waiting parent receives batch results after restart", async ({
   await expect(page.locator(".message.assistant-message")).toHaveCount(2);
 });
 
+test("waiting parent retains pre-restart completed child in batch results", async ({
+  page,
+  restartableBackend,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "claude", "claude-only test");
+  test.setTimeout(150_000);
+
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await input.fill("call partial-restart-batch");
+  const sendBtn = page.locator(".btn-send:visible").first();
+  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await sendBtn.click();
+
+  const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
+  await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
+
+  const fastChild = page.locator(".sidebar-item", {
+    has: page.locator(".sidebar-label", { hasText: "Fast child" }),
+  });
+  const slowChild = page.locator(".sidebar-item", {
+    has: page.locator(".sidebar-label", { hasText: "Slow child" }),
+  });
+
+  await fastChild.click();
+  await expect(
+    page.locator(".message.assistant-message .text-content:visible", {
+      hasText: "first-child-done",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await slowChild.click();
+  await expect(
+    page.locator(".tool-call:visible", { hasText: "sleep 20" }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // Restart after one child has completed but before the slow child has.
+  await restartableBackend.restart();
+  await page.goto("/");
+
+  const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
+  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
+  await taskItems.last().click();
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "Done.",
+    }),
+  ).toBeVisible({ timeout: 90_000 });
+
+  const batchDivider = page.locator(".result-divider.system-user-message", {
+    hasText: "Sub-task results",
+  });
+  await expect(batchDivider).toBeVisible({ timeout: 10_000 });
+  await batchDivider.click();
+
+  const batchMessage = page.locator(".message.user-message.system-user-expanded", {
+    hasText: "Sub-task results",
+  });
+  await expect(batchMessage.locator(".system-user-pre")).toContainText(
+    "first-child-done",
+  );
+  await expect(batchMessage.locator(".system-user-pre")).toContainText(
+    '"tid":2',
+  );
+  await expect(batchMessage.locator(".system-user-pre")).toContainText(
+    '"tid":3',
+  );
+});
+
 test("waiting parent with completed children gets results after restart", async ({
   page,
   restartableBackend,
