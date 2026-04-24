@@ -1243,7 +1243,7 @@ class App : ToolsBackend
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
 			auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", renderedPrompt)], null, subtaskMeta);
+				sendTaskMessage(childTid, [ContentBlock("text", wrapSystemMessage("Task prompt", renderedPrompt))], null, subtaskMeta);
 			}).ignoreResult();
 
 			if (description.length == 0)
@@ -1713,9 +1713,10 @@ class App : ToolsBackend
 
 			// Resume child process and send follow-up message with qid
 			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
-				auto msg = "[Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")]\n\n"
-					~ message
-					~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+				auto msg = wrapSystemMessage(
+					"Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")",
+					message
+						~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
 				auto followUpMeta = buildCydoMeta("Follow-up from parent",
 					["message": message], "message", true);
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
@@ -1796,8 +1797,9 @@ class App : ToolsBackend
 				persistence.setStatus(childTid, "active");
 				broadcastTaskUpdate(childTid);
 				broadcastFocusHint(parentTid, childTid);
-				auto followUpMsg = "[Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")]\n\n"
-					~ message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+				auto followUpMsg = wrapSystemMessage(
+					"Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")",
+					message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
 				auto followUpMeta = buildCydoMeta("Follow-up from parent",
 					["message": message], "message", true);
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
@@ -2702,7 +2704,7 @@ class App : ToolsBackend
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath),
 					td.outputPath, entryPointTemplate);
 				// Preserve image blocks alongside the rendered text prompt.
-				messageToSend = ContentBlock("text", rendered)
+				messageToSend = ContentBlock("text", wrapSystemMessage("Session start", rendered))
 					~ blocks.filter!(b => b.type == "image").array;
 				// Attach metadata so the frontend can render this as a collapsible system message.
 				auto label = "Session start: " ~ (td.entryPoint.length > 0 ? td.entryPoint : td.taskType);
@@ -4061,12 +4063,13 @@ class App : ToolsBackend
 							{
 								auto childTd = &tasks[cTid];
 								pendingQuestion = childTd.pendingAskQuestion;
-								reminder = "[SYSTEM: Sub-task \"" ~ childTd.title ~ "\" (tid="
-									~ to!string(cTid) ~ ") is waiting for your answer (qid="
-									~ to!string(childTd.pendingAskQid) ~ ").]\n\n"
-									~ "Question: " ~ childTd.pendingAskQuestion ~ "\n\n"
-									~ "Use Answer(" ~ to!string(childTd.pendingAskQid)
-									~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
+								reminder = wrapSystemMessage(
+									"Sub-task \"" ~ childTd.title ~ "\" (tid="
+										~ to!string(cTid) ~ ") is waiting for your answer (qid="
+										~ to!string(childTd.pendingAskQid) ~ ")",
+									"Question: " ~ childTd.pendingAskQuestion ~ "\n\n"
+										~ "Use Answer(" ~ to!string(childTd.pendingAskQid)
+										~ ", \"your answer\") to respond. You must answer before you can complete your turn.");
 								break;
 							}
 						}
@@ -4298,11 +4301,11 @@ class App : ToolsBackend
 					infof("Output enforcement: tid=%d missing outputs, resuming: %s", tid, missing);
 					auto enfMissing = missing;
 					tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-						auto msg = "[SYSTEM: Missing required outputs]\n\n"
-							~ "Your task type declares outputs that were not produced:\n"
-							~ enfMissing ~ "\n\n"
-							~ "Please produce the missing output(s) before finishing. "
-							~ "Write your report to your output file if you haven't already.";
+						auto msg = wrapSystemMessage("Missing required outputs",
+							"Your task type declares outputs that were not produced:\n"
+								~ enfMissing ~ "\n\n"
+								~ "Please produce the missing output(s) before finishing. "
+								~ "Write your report to your output file if you haven't already.");
 						auto outputsMeta = buildCydoMeta("Missing required outputs");
 						sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
 					}).ignoreResult();
@@ -4483,7 +4486,7 @@ class App : ToolsBackend
 					~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(tid, [ContentBlock("text", renderedContinuationPrompt)], null, contMeta);
+				sendTaskMessage(tid, [ContentBlock("text", wrapSystemMessage("Mode switch", renderedContinuationPrompt))], null, contMeta);
 			}).ignoreResult();
 		}
 		else
@@ -4541,7 +4544,7 @@ class App : ToolsBackend
 			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
 				["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", renderedSuccessorPrompt)], null, handoffMeta);
+				sendTaskMessage(childTid, [ContentBlock("text", wrapSystemMessage("Handoff", renderedSuccessorPrompt))], null, handoffMeta);
 			}).ignoreResult();
 
 			broadcastTaskUpdate(tid);
@@ -4864,14 +4867,13 @@ class App : ToolsBackend
 
 		// Deliver single batch message
 		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto msg =
-			"[SYSTEM: Sub-task results]\n\n"
-			~ "The following sub-task(s) completed while your session was interrupted. "
-			~ "Their results are provided below exactly as they would have been "
-			~ "returned by the Task tool.\n\n"
-			~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
-			~ "Continue from where you left off. Process these results as if they "
-			~ "were returned normally by the Task tool.";
+		auto msg = wrapSystemMessage("Sub-task results",
+			"The following sub-task(s) completed while your session was interrupted. "
+				~ "Their results are provided below exactly as they would have been "
+				~ "returned by the Task tool.\n\n"
+				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
+				~ "Continue from where you left off. Process these results as if they "
+				~ "were returned normally by the Task tool.");
 		auto resultsMeta = buildCydoMeta("Sub-task results");
 		sendTaskMessage(parentTid, [ContentBlock("text", msg)], null, resultsMeta);
 
@@ -5254,6 +5256,15 @@ class App : ToolsBackend
 		td.suggestGenHandle = null;
 		td.suggestGenKill = null;
 		broadcast(toJson(TaskReloadMessage("task_reload", tid, reason)));
+	}
+
+	/// Wrap text in [SYSTEM: ...] tags so the agent knows the message is
+	/// injected by CyDo, not typed by the user.
+	private string wrapSystemMessage(string subject, string body = null)
+	{
+		if (body is null || body.length == 0)
+			return "[SYSTEM: " ~ subject ~ "]";
+		return "[SYSTEM: " ~ subject ~ "]\n\n" ~ body ~ "\n\n[/SYSTEM]";
 	}
 
 	/// Build metadata JSON for a system-generated user message.

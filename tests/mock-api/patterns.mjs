@@ -34,7 +34,42 @@ export function matchPattern(userText) {
     return { type: "text", text: innerMatch ? innerMatch[1] : "Test Task" };
   }
 
-  // Backend restart nudge — acknowledge and respond with Done.
+  // [SYSTEM: Follow-up question from parent task (qid=N)] — backend wraps Ask
+  // messages in SYSTEM tags. Extract qid from the subject and respond with Answer.
+  {
+    let m = userText.match(/\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\][\s\S]*deferred-test/);
+    if (m)
+      return {
+        type: "multi_tool_call",
+        tool_calls: [
+          { name: "mcp__cydo__Answer", input: { qid: parseInt(m[1]), message: "deferred-answer-result" } },
+          { name: "Bash", input: { command: "echo post-answer-work", description: "Post-answer work" } },
+        ],
+      };
+    m = userText.match(/\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\]/);
+    if (m)
+      return {
+        type: "tool_call",
+        name: "mcp__cydo__Answer",
+        input: { qid: parseInt(m[1]), message: "follow-up-answered" },
+      };
+  }
+
+  // [SYSTEM: Task prompt / Session start / Mode switch / Handoff] wraps
+  // executable content. Extract the body and re-match so task-level patterns
+  // (call task, reply with, stall, etc.) remain visible to the mock.
+  // No ^ or $ anchors: Copilot prepends <current_datetime> before the tag.
+  // \n{2,} before [/SYSTEM]: the body may end with a trailing newline from
+  // the prompt template, producing three newlines before the closing tag.
+  {
+    const m = userText.match(/\[SYSTEM: (?:Task prompt|Session start|Mode switch|Handoff)\]\n\n([\s\S]*)\n{2,}\[\/SYSTEM\]/);
+    if (m) {
+      if (process.env.MOCK_STALL_SYSTEM) return { type: "stall" };
+      return matchPattern(m[1]);
+    }
+  }
+
+  // Backend restart nudge and other system injections — acknowledge with Done.
   // Uses includes() for the same reason as SUGGESTION MODE above.
   // When MOCK_STALL_SYSTEM is set, stall instead (for screenshot chain tasks).
   if (userText.includes("[SYSTEM:")) {
@@ -151,27 +186,7 @@ export function matchPattern(userText) {
       input: { qid: parseInt(match[1]), message: match[2].trim() },
     };
 
-  // Follow-up from parent containing "deferred-test" — Answer AND do extra Bash work
-  // in the same response (parallel tool calls), simulating post-answer work.
-  match = userText.match(/\[Follow-up question from parent task \(qid=(\d+)\)\][\s\S]*deferred-test/);
-  if (match)
-    return {
-      type: "multi_tool_call",
-      tool_calls: [
-        { name: "mcp__cydo__Answer", input: { qid: parseInt(match[1]), message: "deferred-answer-result" } },
-        { name: "Bash", input: { command: "echo post-answer-work", description: "Post-answer work" } },
-      ],
-    };
-
-  // Follow-up from parent task (injected by backend as resume message with qid)
-  // Extract qid and respond with Answer tool call
-  match = userText.match(/\[Follow-up question from parent task \(qid=(\d+)\)\]/);
-  if (match)
-    return {
-      type: "tool_call",
-      name: "mcp__cydo__Answer",
-      input: { qid: parseInt(match[1]), message: "follow-up-answered" },
-    };
+  // (Follow-up from parent patterns handled above, before the [SYSTEM:] check.)
 
   // "call mixed batch <type>" → two tasks with different behavior
   match = userText.match(/call mixed batch (\S+)/i);
