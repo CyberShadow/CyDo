@@ -34,6 +34,12 @@
   --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 }
 
+@property --status-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgb(255, 200, 40);
+}
+
 [data-theme="light"] {
   --bg: #f5f5f5;
   --bg-secondary: #e8e8e8;
@@ -3311,6 +3317,81 @@ pre.extra-field-value {
 /* Sidebar backdrop (only visible on narrow screens when sidebar is open) */
 .sidebar-backdrop {
   display: none;
+}
+
+/* ── Status band ─────────────────────────────────────────── */
+.status-band {
+  width: 100%;
+  height: 1px;
+  flex-shrink: 0;
+  display: block;
+  --status-color: rgb(255, 200, 40);
+  transition: --status-color 2s ease;
+}
+
+.status-band[data-status="idle"] {
+  --status-color: rgb(76, 175, 80);
+}
+.status-band[data-status="working"] {
+  --status-color: rgb(255, 200, 40);
+}
+.status-band[data-status="compacting"] {
+  --status-color: rgb(156, 39, 176);
+}
+.status-band[data-status="requesting"] {
+  --status-color: rgb(100, 181, 246);
+}
+.status-band[data-status="ending"] {
+  --status-color: rgb(244, 67, 54);
+}
+
+.sb-layer {
+  opacity: 0;
+  transition: opacity 2s ease;
+}
+
+.status-band[data-status="working"] .sb-layer-working,
+.status-band[data-status="compacting"] .sb-layer-compacting,
+.status-band[data-status="requesting"] .sb-layer-requesting,
+.status-band[data-status="ending"] .sb-layer-ending {
+  opacity: 1;
+}
+
+@keyframes sb-scan-down {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-800px);
+  }
+}
+
+@keyframes sb-sweep-lr {
+  0% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-1000px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.sb-layer-working .sb-scan-group {
+  animation: sb-scan-down 30s linear infinite;
+}
+
+.sb-layer-compacting .sb-scan-group {
+  animation: sb-scan-down 20s linear infinite;
+}
+
+.sb-layer-ending .sb-scan-group {
+  animation: sb-scan-down 25s linear infinite;
+}
+
+.sb-layer-requesting .sb-sweep-group {
+  animation: sb-sweep-lr 22s ease-in-out infinite;
 }
 
 /* Responsive: narrow screens */

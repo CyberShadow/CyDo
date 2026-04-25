@@ -14,6 +14,7 @@ import { UserMessage } from "./UserMessage";
 import { useDevMode } from "../devMode";
 import { Markdown } from "./Markdown";
 import { SourceView } from "./SourceView";
+import { StatusBand } from "./StatusBand";
 import editIcon from "../icons/edit.svg?raw";
 import viewSourceIcon from "../icons/view-source.svg?raw";
 import forkIcon from "../icons/fork.svg?raw";
@@ -27,6 +28,7 @@ interface Props {
   messages: DisplayMessage[];
   blocks: Map<string, Block>;
   isProcessing: boolean;
+  bandStatus: string;
   onFork?: (sid: number, afterUuid: string) => void;
   onUndo?: (tid: number, afterUuid: string) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
@@ -723,6 +725,7 @@ export function MessageList({
   sessionId,
   messages,
   blocks,
+  bandStatus,
   onFork,
   onUndo,
   onEditMessage,
@@ -885,6 +888,7 @@ export function MessageList({
 
   return (
     <div class="message-list" ref={containerRef}>
+      <StatusBand status={bandStatus} />
       <div class="message-list-inner">
         {topLevelMessages.map((msg) => {
           const resolvedBlocks =

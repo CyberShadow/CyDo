@@ -14,7 +14,8 @@ import type {
   EntryPointInfo,
   AgentTypeInfo,
 } from "../useSessionManager";
-import { SystemBanner } from "./SystemBanner";
+import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
+import { deriveBandStatus } from "./StatusBand";
 import { MessageList } from "./MessageList";
 import { InputBox } from "./InputBox";
 import { SessionConfig } from "./SessionConfig";
@@ -512,6 +513,12 @@ function SessionViewInner({
           messages={task.messages}
           blocks={task.blocks}
           isProcessing={task.isProcessing}
+          bandStatus={deriveBandStatus(
+            normalizeSessionStatus(task.sessionStatus),
+            task.isProcessing,
+            task.stdinClosed,
+            task.alive,
+          )}
           onFork={onFork}
           onUndo={onUndo}
           onEditMessage={!task.alive ? onEditMessage : undefined}
