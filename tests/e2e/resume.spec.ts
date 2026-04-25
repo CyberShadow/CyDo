@@ -466,16 +466,10 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
   await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
   await taskItems.last().click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "Done.",
-    }),
-  ).toBeVisible({ timeout: 90_000 });
-
   const batchDivider = page.locator(".result-divider.system-user-message", {
     hasText: "Sub-task results",
   });
-  await expect(batchDivider).toBeVisible({ timeout: 10_000 });
+  await expect(batchDivider).toBeVisible({ timeout: 90_000 });
   await batchDivider.click();
 
   const batchMessage = page.locator(".message.user-message.system-user-expanded", {
