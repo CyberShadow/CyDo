@@ -1,7 +1,7 @@
 module cydo.discover;
 
 import std.path : baseName, buildPath, relativePath;
-import std.file : exists, isDir, dirEntries, SpanMode;
+import std.file : exists, isDir, isSymlink, dirEntries, SpanMode;
 import std.logger : warningf;
 
 // ---------------------------------------------------------------------------
@@ -169,6 +169,10 @@ private void scanDir(string dir, string wsRoot, uint depth,
 
 			// Skip hidden directories
 			if (dirName.length > 0 && dirName[0] == '.')
+				continue;
+
+			// Skip symlinks
+			if (entry.isSymlink)
 				continue;
 
 			// Skip excluded names
