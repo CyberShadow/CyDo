@@ -34,6 +34,7 @@ import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
 import cydo.batchrouter : BatchConsumeKind, BatchState, buildBatchState,
 	consumeBatchSignal, validateBatchCompletion;
+import cydo.inotify : RefCountedINotify;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
@@ -425,8 +426,9 @@ class App : ToolsBackend
 	private bool configFileWatchActive;
 	private bool configDirWatchActive;
 	// inotify watches for per-project config hot-reload (projectPath → watch)
-	private INotify.WatchDescriptor[string] projectDirWatches;
-	private INotify.WatchDescriptor[string] projectFileWatches;
+	private RefCountedINotify projectINotify;
+	private RefCountedINotify.Handle[string] projectDirWatches;
+	private RefCountedINotify.Handle[string] projectFileWatches;
 	// HTTP basic auth credentials (from environment)
 	private string authUser;
 	private string authPass;
@@ -838,11 +840,11 @@ class App : ToolsBackend
 			iNotify.remove(configDirWatch);
 			configDirWatchActive = false;
 		}
-		foreach (projectPath, wd; projectFileWatches)
-			iNotify.remove(wd);
+		foreach (projectPath, handle; projectFileWatches)
+			projectINotify.remove(handle);
 		projectFileWatches = null;
-		foreach (projectPath, wd; projectDirWatches)
-			iNotify.remove(wd);
+		foreach (projectPath, handle; projectDirWatches)
+			projectINotify.remove(handle);
 		projectDirWatches = null;
 	}
 
@@ -6199,7 +6201,7 @@ class App : ToolsBackend
 		if (!exists(cydoDir))
 			return;  // nothing to watch yet
 
-		projectDirWatches[projectPath] = iNotify.add(
+		projectDirWatches[projectPath] = projectINotify.add(
 			cydoDir,
 			INotify.Mask.closeWrite | INotify.Mask.create | INotify.Mask.movedTo,
 			(in char[] name, INotify.Mask mask, uint cookie)
@@ -6212,7 +6214,7 @@ class App : ToolsBackend
 		auto typesFile = buildPath(cydoDir, "task-types.yaml");
 		if (exists(typesFile))
 		{
-			projectFileWatches[projectPath] = iNotify.add(
+			projectFileWatches[projectPath] = projectINotify.add(
 				typesFile,
 				INotify.Mask.closeWrite,
 				(in char[] name, INotify.Mask mask, uint cookie)
