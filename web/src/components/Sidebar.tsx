@@ -697,7 +697,9 @@ export const Sidebar = memo(function Sidebar({
               href={backHref}
               class={`sidebar-back-btn${hasGlobalAttention ? " has-attention" : ""}`}
               title={
-                hasGlobalAttention ? "Home — sessions need attention" : "Home"
+                hasGlobalAttention
+                  ? "Home — sessions need attention (Ctrl+Shift+H)"
+                  : "Home (Ctrl+Shift+H)"
               }
             >
               {hasGlobalAttention ? (

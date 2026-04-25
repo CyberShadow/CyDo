@@ -258,9 +258,15 @@ function AppContent() {
 
   // Alt+Up / Alt+Down: navigate between sidebar sessions (including New Task)
   // Alt+Shift+Up / Alt+Shift+Down: jump to next/prev session with attention
+  // Ctrl+Shift+H: go to home page
   // Ctrl+Shift+O: new task
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "H") {
+        e.preventDefault();
+        navigateHome();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "O") {
         e.preventDefault();
         handleNewTask();
@@ -313,7 +319,14 @@ function AppContent() {
     return () => {
       document.removeEventListener("keydown", handler);
     };
-  }, [sidebarTasks, activeTaskId, setActiveTaskId, attention, handleNewTask]);
+  }, [
+    sidebarTasks,
+    activeTaskId,
+    setActiveTaskId,
+    attention,
+    handleNewTask,
+    navigateHome,
+  ]);
 
   const handleCloseSidebar = useCallback(() => {
     setSidebarOpen(false);
