@@ -3325,6 +3325,7 @@ pre.extra-field-value {
   height: 1px;
   flex-shrink: 0;
   display: block;
+  contain: strict;
   --status-color: rgb(255, 200, 40);
   transition: --status-color 2s ease;
 }
@@ -3359,38 +3360,42 @@ pre.extra-field-value {
 
 @keyframes sb-scan-down {
   from {
-    transform: translateY(0);
+    translate: 0 0;
   }
   to {
-    transform: translateY(-800px);
+    translate: 0 -800px;
   }
 }
 
 @keyframes sb-sweep-lr {
   0% {
-    transform: translateX(0);
+    translate: 0 0;
   }
   50% {
-    transform: translateX(-1000px);
+    translate: -1000px 0;
   }
   100% {
-    transform: translateX(0);
+    translate: 0 0;
   }
 }
 
 .sb-layer-working .sb-scan-group {
+  will-change: transform;
   animation: sb-scan-down 30s linear infinite;
 }
 
 .sb-layer-compacting .sb-scan-group {
+  will-change: transform;
   animation: sb-scan-down 20s linear infinite;
 }
 
 .sb-layer-ending .sb-scan-group {
+  will-change: transform;
   animation: sb-scan-down 25s linear infinite;
 }
 
 .sb-layer-requesting .sb-sweep-group {
+  will-change: transform;
   animation: sb-sweep-lr 22s ease-in-out infinite;
 }
 
