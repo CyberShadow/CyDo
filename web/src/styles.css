@@ -1012,6 +1012,13 @@ body,
   word-break: break-word;
 }
 
+.markdown.thinking-text h1,
+.markdown.thinking-text h2,
+.markdown.thinking-text h3,
+.markdown.thinking-text h4 {
+  color: inherit;
+}
+
 /* Tool calls */
 .tool-call {
   margin: 8px 0;
