@@ -3321,10 +3321,10 @@ pre.extra-field-value {
 
 /* ── Status band ─────────────────────────────────────────── */
 .status-band {
+  position: relative;
   width: 100%;
   height: 1px;
   flex-shrink: 0;
-  display: block;
   contain: strict;
   --status-color: rgb(255, 200, 40);
   transition: --status-color 2s ease;
@@ -3347,8 +3347,19 @@ pre.extra-field-value {
 }
 
 .sb-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   opacity: 0;
   transition: opacity 2s ease;
+  will-change: transform, opacity;
+}
+
+.sb-layer svg {
+  width: 100%;
+  height: 800px;
+  display: block;
 }
 
 .status-band[data-status="working"] .sb-layer-working,
@@ -3372,30 +3383,26 @@ pre.extra-field-value {
     translate: 0 0;
   }
   50% {
-    translate: -1000px 0;
+    translate: -100% 0;
   }
   100% {
     translate: 0 0;
   }
 }
 
-.sb-layer-working .sb-scan-group {
-  will-change: transform;
+.sb-layer-working {
   animation: sb-scan-down 30s linear infinite;
 }
 
-.sb-layer-compacting .sb-scan-group {
-  will-change: transform;
+.sb-layer-compacting {
   animation: sb-scan-down 20s linear infinite;
 }
 
-.sb-layer-ending .sb-scan-group {
-  will-change: transform;
+.sb-layer-ending {
   animation: sb-scan-down 25s linear infinite;
 }
 
-.sb-layer-requesting .sb-sweep-group {
-  will-change: transform;
+.sb-layer-requesting {
   animation: sb-sweep-lr 22s ease-in-out infinite;
 }
 

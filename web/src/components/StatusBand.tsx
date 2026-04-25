@@ -71,8 +71,32 @@ const ENDING_CIRCLES: [number, number, number, number][] = [
   [328, 839, 85, 0.61],
 ];
 
+function addGradient(svg: SVGSVGElement, gradId: string) {
+  const ns = "http://www.w3.org/2000/svg";
+  const defs = document.createElementNS(ns, "defs");
+  const grad = document.createElementNS(ns, "radialGradient");
+  grad.setAttribute("id", gradId);
+  grad.setAttribute("gradientUnits", "objectBoundingBox");
+  grad.setAttribute("cx", "0.5");
+  grad.setAttribute("cy", "0.5");
+  grad.setAttribute("r", "0.5");
+  for (const [offset, opacity] of [
+    ["0%", "1"],
+    ["55%", "0.25"],
+    ["100%", "0"],
+  ] as const) {
+    const stop = document.createElementNS(ns, "stop");
+    stop.setAttribute("offset", offset);
+    stop.setAttribute("stop-color", "var(--status-color)");
+    stop.setAttribute("stop-opacity", opacity);
+    grad.appendChild(stop);
+  }
+  defs.appendChild(grad);
+  svg.appendChild(defs);
+}
+
 function buildCircles(
-  container: SVGGElement,
+  container: SVGElement,
   circles: [number, number, number, number][],
   gradId: string,
 ) {
@@ -92,7 +116,7 @@ function buildCircles(
   }
 }
 
-function buildCompacting(container: SVGGElement, gradId: string) {
+function buildCompacting(container: SVGElement, gradId: string) {
   const ns = "http://www.w3.org/2000/svg";
   const CX_L = 250,
     CX_R = 750,
@@ -108,7 +132,6 @@ function buildCompacting(container: SVGGElement, gradId: string) {
     ];
     for (const [cx, angle] of sides) {
       const ellipses: [number, number][] = [[cx, cy]];
-      // Wrapping duplicates
       const reach = RX * cos45;
       if (cy - reach < 0) ellipses.push([cx, cy + TILE_H]);
       if (cy + reach > TILE_H) ellipses.push([cx, cy - TILE_H]);
@@ -133,7 +156,7 @@ function buildCompacting(container: SVGGElement, gradId: string) {
   }
 }
 
-function buildRequesting(container: SVGGElement, gradId: string) {
+function buildRequesting(container: SVGElement, gradId: string) {
   const ns = "http://www.w3.org/2000/svg";
   const ellipses: [number, number, number, number, number][] = [
     [1000, 400, 120, 2000, 0.85],
@@ -167,74 +190,73 @@ export function deriveBandStatus(
   return "idle";
 }
 
+function initSvg(
+  svg: SVGSVGElement | null,
+  gradId: string,
+  builder: (container: SVGElement, gradId: string) => void,
+) {
+  if (!svg) return;
+  addGradient(svg, gradId);
+  builder(svg, gradId);
+}
+
 export function StatusBand({ status }: { status: string }) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const gradId = useRef(`sb-grad-${++counter}`).current;
+  const workingRef = useRef<SVGSVGElement>(null);
+  const compactingRef = useRef<SVGSVGElement>(null);
+  const requestingRef = useRef<SVGSVGElement>(null);
+  const endingRef = useRef<SVGSVGElement>(null);
+  const ids = useRef({
+    w: `sb-g-${++counter}`,
+    c: `sb-g-${++counter}`,
+    r: `sb-g-${++counter}`,
+    e: `sb-g-${++counter}`,
+  }).current;
 
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const workingLayer = svg.querySelector<SVGGElement>(
-      ".sb-layer-working .sb-scan-group",
-    );
-    const endingLayer = svg.querySelector<SVGGElement>(
-      ".sb-layer-ending .sb-scan-group",
-    );
-    const compactingLayer = svg.querySelector<SVGGElement>(
-      ".sb-layer-compacting .sb-scan-group",
-    );
-    const requestingLayer = svg.querySelector<SVGGElement>(
-      ".sb-layer-requesting .sb-sweep-group",
-    );
-
-    if (workingLayer) buildCircles(workingLayer, WORKING_CIRCLES, gradId);
-    if (endingLayer) buildCircles(endingLayer, ENDING_CIRCLES, gradId);
-    if (compactingLayer) buildCompacting(compactingLayer, gradId);
-    if (requestingLayer) buildRequesting(requestingLayer, gradId);
-  }, [gradId]);
+    initSvg(workingRef.current, ids.w, (c, g) => {
+      buildCircles(c, WORKING_CIRCLES, g);
+    });
+    initSvg(compactingRef.current, ids.c, buildCompacting);
+    initSvg(requestingRef.current, ids.r, buildRequesting);
+    initSvg(endingRef.current, ids.e, (c, g) => {
+      buildCircles(c, ENDING_CIRCLES, g);
+    });
+  }, [ids]);
 
   return (
-    <svg
-      ref={svgRef}
-      class="status-band"
-      data-status={status}
-      preserveAspectRatio="none"
-      viewBox="0 0 1000 1"
-    >
-      <defs>
-        <radialGradient
-          id={gradId}
-          gradientUnits="objectBoundingBox"
-          cx="0.5"
-          cy="0.5"
-          r="0.5"
-        >
-          <stop offset="0%" stop-color="var(--status-color)" stop-opacity="1" />
-          <stop
-            offset="55%"
-            stop-color="var(--status-color)"
-            stop-opacity="0.25"
-          />
-          <stop
-            offset="100%"
-            stop-color="var(--status-color)"
-            stop-opacity="0"
-          />
-        </radialGradient>
-      </defs>
-      <g class="sb-layer sb-layer-working">
-        <g class="sb-scan-group" />
-      </g>
-      <g class="sb-layer sb-layer-compacting">
-        <g class="sb-scan-group" />
-      </g>
-      <g class="sb-layer sb-layer-requesting">
-        <g class="sb-sweep-group" />
-      </g>
-      <g class="sb-layer sb-layer-ending">
-        <g class="sb-scan-group" />
-      </g>
-    </svg>
+    <div class="status-band" data-status={status}>
+      <div class="sb-layer sb-layer-working">
+        <svg
+          ref={workingRef}
+          viewBox="0 0 1000 800"
+          preserveAspectRatio="none"
+          overflow="visible"
+        />
+      </div>
+      <div class="sb-layer sb-layer-compacting">
+        <svg
+          ref={compactingRef}
+          viewBox="0 0 1000 800"
+          preserveAspectRatio="none"
+          overflow="visible"
+        />
+      </div>
+      <div class="sb-layer sb-layer-requesting">
+        <svg
+          ref={requestingRef}
+          viewBox="0 0 1000 800"
+          preserveAspectRatio="none"
+          overflow="visible"
+        />
+      </div>
+      <div class="sb-layer sb-layer-ending">
+        <svg
+          ref={endingRef}
+          viewBox="0 0 1000 800"
+          preserveAspectRatio="none"
+          overflow="visible"
+        />
+      </div>
+    </div>
   );
 }
