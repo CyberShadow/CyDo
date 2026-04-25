@@ -261,9 +261,7 @@ body,
   text-align: center;
 }
 
-.welcome-title {
-  font-size: 32px;
-  color: var(--accent);
+.welcome-box .logo-banner {
   margin-bottom: 8px;
 }
 
@@ -2920,20 +2918,13 @@ pre.extra-field-value {
 
 .welcome-page-header {
   display: flex;
-  align-items: center;
   justify-content: center;
-  gap: 12px;
   margin-bottom: 32px;
 }
 
-.welcome-logo {
-  width: 36px;
-  height: 36px;
-}
-
-.welcome-page-header h1 {
-  font-size: 28px;
-  color: var(--accent);
+.logo-banner {
+  width: 300px;
+  height: auto;
 }
 
 .workspace-group {

@@ -14,7 +14,7 @@ test("page loads and shows CyDo branding", async ({ page, agentType }) => {
     "agent-agnostic, runs in claude project only",
   );
   await page.goto("/");
-  await expect(page.locator(".welcome-page-header h1")).toContainText("CyDo", {
+  await expect(page.locator(".welcome-page-header .logo-banner")).toBeVisible({
     timeout: 10_000,
   });
 });

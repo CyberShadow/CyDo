@@ -24,6 +24,7 @@ import { AskUserForm } from "./AskUserForm";
 import { PermissionPromptForm } from "./PermissionPromptForm";
 import { FileViewer } from "./FileViewer";
 import { requestNotificationPermissionFromGesture } from "../useNotifications";
+import { LogoBanner } from "./LogoBanner";
 
 interface Props {
   task: TaskState;
@@ -447,23 +448,7 @@ function SessionViewInner({
           <div class="message-list welcome-prompt">
             <div class="session-empty-inner">
               <div class="welcome-page-header">
-                <svg
-                  class="welcome-logo"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                >
-                  <path
-                    style={{ stroke: "var(--success)" }}
-                    d="M5.5 12L10.5 4L13 8l-2.5 4"
-                  />
-                  <path
-                    style={{ stroke: "var(--processing)" }}
-                    d="M5.5 4L3 8l2.5 4"
-                  />
-                </svg>
-                <h1>CyDo</h1>
+                <LogoBanner />
               </div>
               <SessionConfig
                 entryPoints={entryPoints}
@@ -504,7 +489,7 @@ function SessionViewInner({
         ) : (
           <div class="message-list welcome-prompt">
             <div class="welcome-box">
-              <h1 class="welcome-title">CyDo</h1>
+              <LogoBanner />
               <p class="welcome-subtitle">Multi-agent orchestration system</p>
             </div>
           </div>

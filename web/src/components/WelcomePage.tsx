@@ -6,6 +6,7 @@ import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 import { computeStatusClass } from "./Sidebar";
 import { isPlainLeftClick, relativeTime } from "../utils";
 import { NoticeBar } from "./NoticeBar";
+import { LogoBanner } from "./LogoBanner";
 
 interface Props {
   workspaces: WorkspaceInfo[];
@@ -118,7 +119,9 @@ function ActiveSessions({
             return (
               <div
                 key={t.tid}
-                class={`active-sessions-row${attention.has(t.tid) ? " attention" : ""}`}
+                class={`active-sessions-row${
+                  attention.has(t.tid) ? " attention" : ""
+                }`}
                 onClick={(e: MouseEvent) => {
                   if (!isPlainLeftClick(e)) return;
                   e.preventDefault();
@@ -141,7 +144,9 @@ function ActiveSessions({
                     />
                   ) : (
                     <span
-                      class={`task-type-icon task-type-icon-dot${statusClass ? ` ${statusClass}` : ""}`}
+                      class={`task-type-icon task-type-icon-dot${
+                        statusClass ? ` ${statusClass}` : ""
+                      }`}
                     />
                   )}
                 </span>
@@ -377,20 +382,7 @@ export function WelcomePage({
   return (
     <div class="welcome-page">
       <header class="welcome-page-header">
-        <svg
-          class="welcome-logo"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke-width="2"
-          stroke-linecap="round"
-        >
-          <path
-            style={{ stroke: "var(--success)" }}
-            d="M5.5 12L10.5 4L13 8l-2.5 4"
-          />
-          <path style={{ stroke: "var(--processing)" }} d="M5.5 4L3 8l2.5 4" />
-        </svg>
-        <h1>CyDo</h1>
+        <LogoBanner />
       </header>
       <NoticeBar notices={notices} />
       <div class="welcome-filter-row">
@@ -457,7 +449,9 @@ export function WelcomePage({
                 {projects.map(({ project: proj, tasks: projTasks }) => {
                   return (
                     <div
-                      class={`project-card${proj.virtual ? " project-card-virtual" : ""}`}
+                      class={`project-card${
+                        proj.virtual ? " project-card-virtual" : ""
+                      }`}
                       key={proj.path}
                     >
                       <div class="project-card-header">

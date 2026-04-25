@@ -306,8 +306,7 @@ test(
       await page.goto(BACKEND_URL + "/");
 
       // Page loads: the backend is alive after the failed discovery.
-      await expect(page.locator(".welcome-page-header h1")).toContainText(
-        "CyDo",
+      await expect(page.locator(".welcome-page-header .logo-banner")).toBeVisible(
         { timeout: 10_000 },
       );
 

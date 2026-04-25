@@ -1,0 +1,37 @@
+export function LogoBanner({ class: className }: { class?: string }) {
+  return (
+    <svg
+      class={className ?? "logo-banner"}
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="3 5 154 46"
+      fill="none"
+    >
+      <defs>
+        <linearGradient id="logo-g" x1="0" y1="0" x2="0.8" y2="1">
+          <stop offset="0%" stop-color="#f0d050" />
+          <stop offset="100%" stop-color="hsl(122, 40%, 50%)" />
+        </linearGradient>
+        <filter id="logo-emboss">
+          <feOffset dx="1.2" dy="1.2" in="SourceGraphic" result="offset" />
+          <feFlood flood-color="#000" flood-opacity="0.6" result="black" />
+          <feComposite in="black" in2="offset" operator="in" result="shadow" />
+          <feMerge>
+            <feMergeNode in="shadow" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      <g filter="url(#logo-emboss)">
+        <g transform="scale(3.2)" stroke-width="2" stroke-linecap="round">
+          <path stroke="hsl(122, 40%, 50%)" d="M5.5 12L10.5 4L13 8l-2.5 4" />
+          <path stroke="#f0d050" d="M5.5 4L3 8l2.5 4" />
+        </g>
+        <path
+          fill="url(#logo-g)"
+          aria-label="CyDo"
+          d="M 54.2,34.4 V 15.6 L 58.8,11 H 72.48 L 77,15.52 v 4.28 h -5.44 v -2.28 l -1.88,-1.88 h -8 l -2.04,2.04 v 14.64 l 2.04,2.04 h 8 l 1.88,-1.88 V 30.2 H 77 v 4.28 L 72.48,39 H 58.8 Z M 99.520027,19.08 v 24.48 l -4.32,4.28 h -10.48 l -3.72,-3.68 v -2.72 h 5.28 v 1.2 l 0.76,0.8 h 5.84 l 1.36,-1.4 v -6 l -2.96,2.96 h -6.6 l -4.28,-4.32 v -15.6 h 5.28 v 14.04 l 1.36,1.4 h 3.48 l 3.72,-3.96 V 19.08 Z M 104.52004,11 h 17.92 l 4.8,4.8 v 18.4 l -4.8,4.8 h -17.92 z m 15.24,23.36 2.04,-2.04 V 17.68 l -2.04,-2.04 h -9.8 v 18.72 z m 11.67999,0.48 v -11.6 l 4.12,-4.16 h 11.44 l 4.12,4.16 v 11.6 l -4.12,4.16 h -11.44 z m 13,-0.24 1.4,-1.4 v -8.32 l -1.4,-1.4 h -6.32 l -1.4,1.4 v 8.32 l 1.4,1.4 z"
+        />
+      </g>
+    </svg>
+  );
+}
