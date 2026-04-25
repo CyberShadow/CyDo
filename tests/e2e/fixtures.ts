@@ -1,5 +1,5 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page, TestInfo } from "@playwright/test";
+import type { Locator, Page, TestInfo } from "@playwright/test";
 import { spawn } from "child_process";
 import { mkdirSync, symlinkSync } from "fs";
 
@@ -29,6 +29,24 @@ export async function sendMessage(page: Page, text: string) {
     await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
   }
   await sendBtn.click();
+}
+
+/** Locate top-level assistant text blocks by content (excludes nested tool markdown). */
+export function assistantText(
+  page: Page,
+  textOrRegex: string | RegExp,
+): Locator {
+  return page.locator('[data-testid="assistant-text"]:visible', {
+    hasText: textOrRegex,
+  });
+}
+
+/** Locate the latest top-level assistant text block that matches content. */
+export function lastAssistantText(
+  page: Page,
+  textOrRegex: string | RegExp,
+): Locator {
+  return assistantText(page, textOrRegex).last();
 }
 
 /** Kill the active session and wait for it to become inactive. */

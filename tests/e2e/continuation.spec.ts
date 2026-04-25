@@ -1,6 +1,15 @@
-import { test, expect, enterSession, sendMessage } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  assistantText,
+} from "./fixtures";
 
-test("keep_context continuation injects prompt template", async ({ page, agentType }) => {
+test("keep_context continuation injects prompt template", async ({
+  page,
+  agentType,
+}) => {
   await enterSession(page);
 
   await sendMessage(page, "call switchmode plan");
@@ -11,70 +20,87 @@ test("keep_context continuation injects prompt template", async ({ page, agentTy
   ).toBeVisible({ timeout: 30_000 });
 
   await expect(
-    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
+    page.locator(".result-divider.system-user-message", {
+      hasText: "Mode switch: plan_mode",
+    }),
   ).toBeVisible({ timeout: 30_000 });
 
   await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "SwitchMode to plan successful.",
-    }),
+    assistantText(page, "SwitchMode to plan successful."),
   ).toBeVisible({ timeout: 30_000 });
 });
 
-test("keep_context SwitchMode preface uses continuation key", async ({ page, agentType }) => {
+test("keep_context SwitchMode preface uses continuation key", async ({
+  page,
+  agentType,
+}) => {
   await enterSession(page);
 
   await sendMessage(page, "call switchmode implement");
 
   await expect(
-    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: write_mode" }),
+    page.locator(".result-divider.system-user-message", {
+      hasText: "Mode switch: write_mode",
+    }),
   ).toBeVisible({ timeout: 30_000 });
 
   await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "SwitchMode to implement successful.",
-    }),
+    assistantText(page, "SwitchMode to implement successful."),
   ).toBeVisible({ timeout: 30_000 });
 });
 
-test("unsent steer is either recovered into input box or shown in history after kill", async ({ page, agentType }) => {
+test("unsent steer is either recovered into input box or shown in history after kill", async ({
+  page,
+  agentType,
+}) => {
   // Codex and Copilot write turn/steer messages to their session files immediately upon
   // receipt (before the LLM responds), so the preReloadDrafts confirmation logic
   // incorrectly marks the steer as "confirmed" even though the LLM never processed it.
   // The first message also fails to match because codex/copilot store the full rendered
   // prompt template, not the raw text.
-  test.skip(agentType === "codex" || agentType === "copilot", "codex/copilot write steers eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers");
+  test.skip(
+    agentType === "codex" || agentType === "copilot",
+    "codex/copilot write steers eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers",
+  );
 
   await enterSession(page);
 
   await sendMessage(page, "run command sleep 60");
 
-  await expect(
-    page.locator(".tool-call", { hasText: "sleep 60" }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".tool-call", { hasText: "sleep 60" })).toBeVisible(
+    { timeout: 30_000 },
+  );
 
   await sendMessage(page, "this should be recovered");
 
   await page.locator(".btn-banner-stop").click();
-  await expect(page.locator(".btn-banner-resume")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".btn-banner-resume")).toBeVisible({
+    timeout: 10_000,
+  });
 
   await page.locator(".btn-banner-resume").click();
-  await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".btn-banner-stop")).toBeVisible({
+    timeout: 15_000,
+  });
 
   const input = page.locator(".input-textarea:visible").first();
-  const historyMessage = page.locator(".user-message", { hasText: "this should be recovered" });
+  const historyMessage = page.locator(".user-message", {
+    hasText: "this should be recovered",
+  });
 
-  await expect(
-    async () => {
-      const inputValue = await input.inputValue();
-      const messageVisible = await historyMessage.isVisible();
-      expect(inputValue === "this should be recovered" || messageVisible).toBe(true);
-    }
-  ).toPass({ timeout: 10_000 });
+  await expect(async () => {
+    const inputValue = await input.inputValue();
+    const messageVisible = await historyMessage.isVisible();
+    expect(inputValue === "this should be recovered" || messageVisible).toBe(
+      true,
+    );
+  }).toPass({ timeout: 10_000 });
 });
 
-test("handoff continuation exit navigates to grandparent, not completed parent", async ({ page, agentType }) => {
-
+test("handoff continuation exit navigates to grandparent, not completed parent", async ({
+  page,
+  agentType,
+}) => {
   // Create root task G and enter its session.
   await enterSession(page);
 
@@ -82,11 +108,18 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   // A's prompt is "call handoff done test-prompt" which triggers Handoff immediately.
   // G's fiber blocks waiting for A's result, keeping G alive throughout.
   // The task is created atomically with this first message (activeTaskId === null).
-  await sendMessage(page, "call task test_handoff call handoff done test-prompt");
+  await sendMessage(
+    page,
+    "call task test_handoff call handoff done test-prompt",
+  );
 
   // Wait for the task URL to settle so we can capture G's tid.
-  await expect(page).toHaveURL(/\/[^/]+\/[^/]+\/task\/\d+/, { timeout: 15_000 });
-  const tidG = parseInt(page.url().match(/\/[^/]+\/[^/]+\/task\/(\d+)/)?.[1] ?? "0");
+  await expect(page).toHaveURL(/\/[^/]+\/[^/]+\/task\/\d+/, {
+    timeout: 15_000,
+  });
+  const tidG = parseInt(
+    page.url().match(/\/[^/]+\/[^/]+\/task\/(\d+)/)?.[1] ?? "0",
+  );
   expect(tidG).toBeGreaterThan(0);
 
   // Flow: A calls Handoff → A completes → continuation C created → C auto-focused
@@ -94,10 +127,15 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   //
   // With the bug, it would navigate to A (completed direct parent).
   // With the fix, it walks up through completed A to find alive G.
-  await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`), { timeout: 30_000 });
+  await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`), {
+    timeout: 30_000,
+  });
 });
 
-test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agentType }) => {
+test("SwitchMode from sub-task sends is_continuation flag", async ({
+  page,
+  agentType,
+}) => {
   // Listen for websocket broadcast frames sent to ALL clients regardless
   // of subscription. The process/exit event with is_continuation is only sent
   // to subscribers of the child's tid, which is racy (the child can exit
@@ -120,7 +158,9 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
             reason: data.reason,
           });
         }
-      } catch { /* ignore non-JSON frames */ }
+      } catch {
+        /* ignore non-JSON frames */
+      }
     });
   });
 
@@ -136,21 +176,32 @@ test("SwitchMode from sub-task sends is_continuation flag", async ({ page, agent
   // Wait for the child task to be created first; otherwise continuation reload
   // checks can race ahead before the sub-task exists on slower MCP paths.
   await expect(async () => {
-    const subTaskCreated = taskCreatedEvents.find((e) => e.relation_type === "subtask");
+    const subTaskCreated = taskCreatedEvents.find(
+      (e) => e.relation_type === "subtask",
+    );
     expect(subTaskCreated).toBeTruthy();
   }).toPass({ timeout });
 
   // Wait for a task_reload with reason "continuation" — this confirms the
   // backend processed the SwitchMode and transitioned the task in-place.
   await expect(async () => {
-    const continuationReload = reloadEvents.find((e) => e.reason === "continuation");
+    const continuationReload = reloadEvents.find(
+      (e) => e.reason === "continuation",
+    );
     expect(continuationReload).toBeTruthy();
   }).toPass({ timeout });
 });
 
-test("on_yield continuation auto-fires on clean exit", async ({ page, agentType }) => {
+test("on_yield continuation auto-fires on clean exit", async ({
+  page,
+  agentType,
+}) => {
   // Listen for task_created broadcast frames — sent to ALL clients regardless of subscription.
-  const taskCreatedEvents: Array<{ tid: number; parent_tid: number; relation_type: string }> = [];
+  const taskCreatedEvents: Array<{
+    tid: number;
+    parent_tid: number;
+    relation_type: string;
+  }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
       try {
@@ -162,7 +213,9 @@ test("on_yield continuation auto-fires on clean exit", async ({ page, agentType 
             relation_type: data.relation_type,
           });
         }
-      } catch { /* ignore non-JSON frames */ }
+      } catch {
+        /* ignore non-JSON frames */
+      }
     });
   });
 
@@ -175,7 +228,9 @@ test("on_yield continuation auto-fires on clean exit", async ({ page, agentType 
 
   // A task_created with relation_type "continuation" must appear.
   await expect(async () => {
-    const continuationCreated = taskCreatedEvents.find((e) => e.relation_type === "continuation");
+    const continuationCreated = taskCreatedEvents.find(
+      (e) => e.relation_type === "continuation",
+    );
     expect(continuationCreated).toBeTruthy();
   }).toPass({ timeout: 30_000 });
 });
@@ -183,9 +238,16 @@ test("on_yield continuation auto-fires on clean exit", async ({ page, agentType 
 test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
   // Keep Codex skipped for now: in this mocked stall path, Codex/mock behavior
   // is not yet deterministic enough to keep the child stalled until kill assertion.
-  test.skip(agentType === "codex", "Codex stall-path timing in mock mode is not deterministic enough for kill assertion");
+  test.skip(
+    agentType === "codex",
+    "Codex stall-path timing in mock mode is not deterministic enough for kill assertion",
+  );
 
-  const taskCreatedEvents: Array<{ tid: number; parent_tid: number; relation_type: string }> = [];
+  const taskCreatedEvents: Array<{
+    tid: number;
+    parent_tid: number;
+    relation_type: string;
+  }> = [];
   const taskUpdatedEvents: Array<{ tid: number; alive: boolean }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
@@ -198,7 +260,10 @@ test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
             relation_type: data.relation_type,
           });
         } else if (data.type === "task_updated") {
-          taskUpdatedEvents.push({ tid: data.task.tid, alive: data.task.alive });
+          taskUpdatedEvents.push({
+            tid: data.task.tid,
+            alive: data.task.alive,
+          });
         }
       } catch {}
     });
@@ -212,10 +277,14 @@ test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
 
   // Wait for the sub-task to be created (task_created is broadcast to all clients).
   await expect(async () => {
-    const subTask = taskCreatedEvents.find((e) => e.relation_type === "subtask");
+    const subTask = taskCreatedEvents.find(
+      (e) => e.relation_type === "subtask",
+    );
     expect(subTask).toBeTruthy();
   }).toPass({ timeout: 30_000 });
-  const subTaskTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
+  const subTaskTid = taskCreatedEvents.find(
+    (e) => e.relation_type === "subtask",
+  )!.tid;
 
   // Kill the sub-task. getByRole targets only accessible elements, so it
   // finds the sub-task's Kill button and ignores hidden buttons from other tasks.
@@ -223,12 +292,16 @@ test("on_yield does not fire on non-zero exit", async ({ page, agentType }) => {
 
   // Wait for the sub-task to show as dead via broadcast task_updated.
   await expect(async () => {
-    const deadUpdate = taskUpdatedEvents.find((e) => e.tid === subTaskTid && !e.alive);
+    const deadUpdate = taskUpdatedEvents.find(
+      (e) => e.tid === subTaskTid && !e.alive,
+    );
     expect(deadUpdate).toBeTruthy();
   }).toPass({ timeout: 10_000 });
 
   // No task_created with relation_type "continuation" should have appeared.
-  const continuationCreated = taskCreatedEvents.find((e) => e.relation_type === "continuation");
+  const continuationCreated = taskCreatedEvents.find(
+    (e) => e.relation_type === "continuation",
+  );
   expect(continuationCreated).toBeFalsy();
 });
 
@@ -238,7 +311,9 @@ test("input box stays empty after mode switch", async ({ page, agentType }) => {
   await sendMessage(page, "call switchmode plan");
 
   await expect(
-    page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan_mode" }),
+    page.locator(".result-divider.system-user-message", {
+      hasText: "Mode switch: plan_mode",
+    }),
   ).toBeVisible({ timeout: 30_000 });
 
   const input = page.locator(".input-textarea:visible").first();

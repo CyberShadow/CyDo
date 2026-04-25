@@ -1,4 +1,11 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  lastAssistantText,
+} from "./fixtures";
 
 /**
  * Regression test: after multi-turn conversations with tool calls, the
@@ -23,19 +30,17 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
   // seq drift from merged item/delta events.
   for (const marker of ["seq-align-1", "seq-align-2", "seq-align-3"]) {
     await sendMessage(page, `run command echo ${marker}`);
-    await expect(
-      page.locator(".tool-result", { hasText: marker }),
-    ).toBeVisible({ timeout });
-    await expect(
-      page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
-    ).toBeVisible({ timeout });
+    await expect(page.locator(".tool-result", { hasText: marker })).toBeVisible(
+      { timeout },
+    );
+    await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
   }
 
   // Find the last assistant message (the third "Done.")
   const lastAssistantMsg = page
     .locator(".message-wrapper")
     .filter({
-      has: page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+      has: lastAssistantText(page, "Done."),
     })
     .last();
   await lastAssistantMsg.hover();
@@ -45,7 +50,7 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
   await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn.click();
 
-  const sourceView = page.locator(".source-view").last();
+  const sourceView = page.locator(".source-view");
   await expect(sourceView).toBeVisible({ timeout: 5_000 });
 
   // Collect all event headers

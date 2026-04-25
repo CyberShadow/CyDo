@@ -4,6 +4,7 @@ import {
   enterSession,
   sendMessage,
   killSession,
+  assistantText,
 } from "./fixtures";
 
 test("undo moves user message text to input box", async ({
@@ -13,39 +14,29 @@ test("undo moves user message text to input box", async ({
   await enterSession(page);
 
   await sendMessage(page, 'Please reply with "reply-one"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-one",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "reply-one")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await sendMessage(page, 'Please reply with "reply-two"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-two",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "reply-two")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await sendMessage(page, 'Please reply with "reply-three"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-three",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "reply-three")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await sendMessage(page, 'Please reply with "reply-four"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-four",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "reply-four")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await sendMessage(page, 'Please reply with "reply-five"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-five",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "reply-five")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await killSession(page, agentType);
 
@@ -94,25 +85,13 @@ test("undo moves user message text to input box", async ({
   // Messages 1 and 2 are still visible (user + assistant)
   await expect(replyUser.filter({ hasText: "reply-one" })).toBeVisible();
   await expect(replyUser.filter({ hasText: "reply-two" })).toBeVisible();
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-one",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "reply-two",
-    }),
-  ).toBeVisible();
+  await expect(assistantText(page, "reply-one")).toBeVisible();
+  await expect(assistantText(page, "reply-two")).toBeVisible();
 
   // Messages 3, 4, 5 are gone
   for (const marker of ["reply-three", "reply-four", "reply-five"]) {
     await expect(replyUser.filter({ hasText: marker })).not.toBeVisible();
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: marker,
-      }),
-    ).not.toBeVisible();
+    await expect(assistantText(page, marker)).not.toBeVisible();
   }
 
   // Input box contains the undone message text

@@ -1,4 +1,10 @@
-import { test, expect, enterSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 import type { Page } from "./fixtures";
 
 async function snapshotTids(page: Page): Promise<Set<string>> {
@@ -10,10 +16,7 @@ async function snapshotTids(page: Page): Promise<Set<string>> {
   return new Set(tids);
 }
 
-async function waitForNewTid(
-  page: Page,
-  before: Set<string>,
-): Promise<string> {
+async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
   let newTid: string | undefined;
   await expect(async () => {
     const tids = await page
@@ -61,9 +64,7 @@ test("sidebar icon updates when entry point changed on draft", async ({
   // BUG: sidebar icon should update to "blank" but stays as "conversation"
   // because the selected entry point was not being persisted on the draft task
   await expect(
-    page.locator(
-      `.sidebar-item[data-tid="${draftTid}"] .task-type-icon-blank`,
-    ),
+    page.locator(`.sidebar-item[data-tid="${draftTid}"] .task-type-icon-blank`),
   ).toBeVisible({ timeout: 3_000 });
 });
 
@@ -128,16 +129,12 @@ test("sending from isolated draft applies the isolated entry-point prompt", asyn
   await input.fill("isolated draft echo test");
   await page.locator(".btn-send:visible").first().click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "The user's request follows",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "isolated draft echo test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "The user's request follows")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+  await expect(assistantText(page, "isolated draft echo test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });
 
 test("agent type persists across page reload on draft", async ({

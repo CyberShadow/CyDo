@@ -1,5 +1,13 @@
 import { existsSync, rmSync } from "fs";
-import { test, expect, enterSession, sendMessage, responseTimeout, killSession } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  killSession,
+  assistantText,
+} from "./fixtures";
 
 // Regression test for background commands shown as still running after completion.
 //
@@ -15,7 +23,10 @@ test("background command spinner disappears after command completes", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: exec_command with yield_time_ms");
+  test.skip(
+    agentType !== "codex",
+    "codex-only: exec_command with yield_time_ms",
+  );
 
   await enterSession(page);
 
@@ -27,15 +38,11 @@ test("background command spinner disappears after command completes", async ({
   const timeout = responseTimeout(agentType);
 
   // Wait for the tool call to appear (commandExecution rendered as tool block).
-  await expect(
-    page.locator(".tool-call"),
-  ).toBeVisible({ timeout });
+  await expect(page.locator(".tool-call")).toBeVisible({ timeout });
 
   // Wait for the turn to end — the LLM's "Done." text response appears after
   // processing the yielded tool output.
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // At this point the turn has completed but `sleep 3` is still running.
   // The spinner should still be visible.
@@ -46,7 +53,9 @@ test("background command spinner disappears after command completes", async ({
   //
   // BUG: The spinner never disappears because item/completed is dropped by
   // the backend (activeItemId_ was cleared by handleTurnCompleted).
-  await expect(page.locator(".tool-spinner")).not.toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".tool-spinner")).not.toBeVisible({
+    timeout: 10_000,
+  });
 });
 
 // Regression test: multiple concurrent background commands.
@@ -68,7 +77,10 @@ test("multiple background command spinners all disappear after completion", asyn
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: exec_command with yield_time_ms");
+  test.skip(
+    agentType !== "codex",
+    "codex-only: exec_command with yield_time_ms",
+  );
 
   await enterSession(page);
 
@@ -82,14 +94,10 @@ test("multiple background command spinners all disappear after completion", asyn
   const timeout = responseTimeout(agentType);
 
   // Wait for both tool calls to appear.
-  await expect(
-    page.locator(".tool-call"),
-  ).toHaveCount(2, { timeout });
+  await expect(page.locator(".tool-call")).toHaveCount(2, { timeout });
 
   // Wait for the turn to end — "Done." text appears.
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Both commands are still running; spinners should be visible.
   const spinners = page.locator(".tool-spinner");
@@ -110,22 +118,26 @@ test("late command output appears after turn completes", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: exec_command with yield_time_ms");
+  test.skip(
+    agentType !== "codex",
+    "codex-only: exec_command with yield_time_ms",
+  );
 
   await enterSession(page);
 
   // yield_time_ms=1 causes near-immediate yield. The shell command sleeps
   // briefly then echoes a marker string. The turn completes before the echo
   // runs, so the output arrives as a late output_delta on a sealed message.
-  await sendMessage(page, 'run quick-yield command sleep 2 && echo late-output-marker');
+  await sendMessage(
+    page,
+    "run quick-yield command sleep 2 && echo late-output-marker",
+  );
 
   const timeout = responseTimeout(agentType);
 
   // Wait for the tool call to appear and the turn to complete.
   await expect(page.locator(".tool-call")).toBeVisible({ timeout });
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // The late output should appear in the tool call's output area.
   // This verifies that output_delta events are applied to the sealed content
@@ -139,7 +151,10 @@ test("kill stops codex background command before delayed side effect", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: pooled app-server kill behavior");
+  test.skip(
+    agentType !== "codex",
+    "codex-only: pooled app-server kill behavior",
+  );
 
   await enterSession(page);
 
@@ -165,7 +180,10 @@ test("killing one codex task also interrupts sibling session on pooled server", 
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: pooled app-server sibling interruption");
+  test.skip(
+    agentType !== "codex",
+    "codex-only: pooled app-server sibling interruption",
+  );
 
   const markerA = `/tmp/cydo-codex-kill-sibling-a-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
   const markerB = `/tmp/cydo-codex-kill-sibling-b-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
@@ -206,13 +224,15 @@ test("killing one codex task also interrupts sibling session on pooled server", 
     .locator(".sidebar-item:not(.active):not(.sidebar-new-task)")
     .first();
   await siblingTask.click({ timeout: 15_000 });
-  await expect(page.locator(".btn-banner-resume")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".btn-banner-resume")).toBeVisible({
+    timeout: 30_000,
+  });
 
   await page.locator(".btn-banner-resume").click();
   await sendMessage(page, 'Please reply with "sibling-resumed"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "sibling-resumed" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "sibling-resumed")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   rmSync(markerA, { force: true });
   rmSync(markerB, { force: true });

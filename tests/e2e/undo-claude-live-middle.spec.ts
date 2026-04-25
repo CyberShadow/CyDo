@@ -6,14 +6,18 @@ import {
   killSession,
   responseTimeout,
   type Page,
+  assistantText,
 } from "./fixtures";
 
 async function openUndoDialogForTurn(page: Page, turnText: string) {
   const userMsg = page
     .locator(".message-wrapper", {
-      has: page.locator(".message.user-message:not(.pending):not(.meta-message)", {
-        hasText: turnText,
-      }),
+      has: page.locator(
+        ".message.user-message:not(.pending):not(.meta-message)",
+        {
+          hasText: turnText,
+        },
+      ),
     })
     .last();
   await userMsg.hover();
@@ -23,14 +27,20 @@ async function openUndoDialogForTurn(page: Page, turnText: string) {
 }
 
 async function readUndoRemovalCount(page: Page): Promise<number> {
-  const countText = (await page.locator(".undo-dialog-count").textContent()) ?? "";
+  const countText =
+    (await page.locator(".undo-dialog-count").textContent()) ?? "";
   const match = countText.match(/(\d+)/);
-  expect(match, `Could not parse undo count from: "${countText}"`).not.toBeNull();
+  expect(
+    match,
+    `Could not parse undo count from: "${countText}"`,
+  ).not.toBeNull();
   return Number(match![1]);
 }
 
 function uniqueNormalized(texts: string[]) {
-  return Array.from(new Set(texts.map((text) => text.replace(/\s+/g, " ").trim())));
+  return Array.from(
+    new Set(texts.map((text) => text.replace(/\s+/g, " ").trim())),
+  );
 }
 
 async function readVisibleTurnTexts(page: Page) {
@@ -41,7 +51,7 @@ async function readVisibleTurnTexts(page: Page) {
   );
   const assistantTexts = uniqueNormalized(
     await page
-      .locator(".message.assistant-message:visible .text-content")
+      .locator('[data-testid="assistant-text"]:visible')
       .allTextContents(),
   );
   return { userTexts, assistantTexts };
@@ -51,7 +61,11 @@ function userPrompt(turn: string) {
   return `Please reply with "${turn}"`;
 }
 
-async function assertTurnPresence(page: Page, turns: string[], visible: boolean) {
+async function assertTurnPresence(
+  page: Page,
+  turns: string[],
+  visible: boolean,
+) {
   const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
   for (const turn of turns) {
     const userFound = userTexts.some(
@@ -59,17 +73,19 @@ async function assertTurnPresence(page: Page, turns: string[], visible: boolean)
     );
     const assistantFound = assistantTexts.includes(turn);
     if (visible) {
-      expect(userFound, `Expected visible user turn for ${turn}. Saw: ${userTexts.join(" | ")}`).toBe(
-        true,
-      );
+      expect(
+        userFound,
+        `Expected visible user turn for ${turn}. Saw: ${userTexts.join(" | ")}`,
+      ).toBe(true);
       expect(
         assistantFound,
         `Expected visible assistant turn for ${turn}. Saw: ${assistantTexts.join(" | ")}`,
       ).toBe(true);
     } else {
-      expect(userFound, `Unexpected visible user turn for ${turn}. Saw: ${userTexts.join(" | ")}`).toBe(
-        false,
-      );
+      expect(
+        userFound,
+        `Unexpected visible user turn for ${turn}. Saw: ${userTexts.join(" | ")}`,
+      ).toBe(false);
       expect(
         assistantFound,
         `Unexpected visible assistant turn for ${turn}. Saw: ${assistantTexts.join(" | ")}`,
@@ -82,19 +98,24 @@ test("claude live idle undo on turn three removes only turns three through five"
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "Claude-only regression for live undo UUID anchoring");
+  test.skip(
+    agentType !== "claude",
+    "Claude-only regression for live undo UUID anchoring",
+  );
 
-  const turns = ["live-one", "live-two", "live-three", "live-four", "live-five"];
+  const turns = [
+    "live-one",
+    "live-two",
+    "live-three",
+    "live-four",
+    "live-five",
+  ];
   const timeout = responseTimeout(agentType);
 
   await enterSession(page);
   for (const turn of turns) {
     await sendMessage(page, `Please reply with "${turn}"`);
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: turn,
-      }),
-    ).toBeVisible({ timeout });
+    await expect(assistantText(page, turn)).toBeVisible({ timeout });
   }
 
   const input = page.locator(".input-textarea:visible").first();
@@ -106,40 +127,49 @@ test("claude live idle undo on turn three removes only turns three through five"
   await expect(async () => {
     const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
     const survivingUserTurns = turns.filter((turn) =>
-      userTexts.some((text) => text.includes(userPrompt(turn)) || text.includes(turn)),
+      userTexts.some(
+        (text) => text.includes(userPrompt(turn)) || text.includes(turn),
+      ),
     );
-    const survivingAssistantTurns = turns.filter((turn) => assistantTexts.includes(turn));
+    const survivingAssistantTurns = turns.filter((turn) =>
+      assistantTexts.includes(turn),
+    );
     expect(survivingUserTurns).toHaveLength(2);
     expect(survivingAssistantTurns).toHaveLength(2);
     await assertTurnPresence(page, ["live-one", "live-two"], true);
-    await assertTurnPresence(page, ["live-three", "live-four", "live-five"], false);
+    await assertTurnPresence(
+      page,
+      ["live-three", "live-four", "live-five"],
+      false,
+    );
   }).toPass({ timeout: 15_000 });
 
   await sendMessage(page, 'Please reply with "live-six"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "live-six",
-    }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "live-six")).toBeVisible({ timeout });
 });
 
 test("claude undo preview targets the same turn before and after reload", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "Claude-only regression for live/replay undo target invariant");
+  test.skip(
+    agentType !== "claude",
+    "Claude-only regression for live/replay undo target invariant",
+  );
 
-  const turns = ["reload-one", "reload-two", "reload-three", "reload-four", "reload-five"];
+  const turns = [
+    "reload-one",
+    "reload-two",
+    "reload-three",
+    "reload-four",
+    "reload-five",
+  ];
   const timeout = responseTimeout(agentType);
 
   await enterSession(page);
   for (const turn of turns) {
     await sendMessage(page, `Please reply with "${turn}"`);
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: turn,
-      }),
-    ).toBeVisible({ timeout });
+    await expect(assistantText(page, turn)).toBeVisible({ timeout });
   }
 
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
@@ -148,7 +178,9 @@ test("claude undo preview targets the same turn before and after reload", async 
 
   await openUndoDialogForTurn(page, "reload-three");
   await page.locator(".undo-dialog .btn", { hasText: "Cancel" }).click();
-  await expect(page.locator(".undo-dialog")).not.toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".undo-dialog")).not.toBeVisible({
+    timeout: 5_000,
+  });
 
   await killSession(page, agentType);
   await expect(
@@ -169,13 +201,21 @@ test("claude undo preview targets the same turn before and after reload", async 
   await expect(async () => {
     const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
     const survivingUserTurns = turns.filter((turn) =>
-      userTexts.some((text) => text.includes(userPrompt(turn)) || text.includes(turn)),
+      userTexts.some(
+        (text) => text.includes(userPrompt(turn)) || text.includes(turn),
+      ),
     );
-    const survivingAssistantTurns = turns.filter((turn) => assistantTexts.includes(turn));
+    const survivingAssistantTurns = turns.filter((turn) =>
+      assistantTexts.includes(turn),
+    );
     expect(survivingUserTurns).toHaveLength(2);
     expect(survivingAssistantTurns).toHaveLength(2);
     await assertTurnPresence(page, ["reload-one", "reload-two"], true);
-    await assertTurnPresence(page, ["reload-three", "reload-four", "reload-five"], false);
+    await assertTurnPresence(
+      page,
+      ["reload-three", "reload-four", "reload-five"],
+      false,
+    );
   }).toPass({ timeout: 15_000 });
 });
 
@@ -196,18 +236,20 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", asy
     });
   });
 
-  const turns = ["proto-one", "proto-two", "proto-three", "proto-four", "proto-five"];
+  const turns = [
+    "proto-one",
+    "proto-two",
+    "proto-three",
+    "proto-four",
+    "proto-five",
+  ];
   const timeout = responseTimeout(agentType);
 
   await enterSession(page);
 
   for (const turn of turns) {
     await sendMessage(page, `Please reply with "${turn}"`);
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: turn,
-      }),
-    ).toBeVisible({ timeout });
+    await expect(assistantText(page, turn)).toBeVisible({ timeout });
   }
 
   await openUndoDialogForTurn(page, "proto-three");
@@ -251,7 +293,10 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", asy
     if (frame?.type !== "assign_uuids" || !Array.isArray(frame?.assignments))
       continue;
     for (const assignment of frame.assignments) {
-      if (typeof assignment?.seq !== "number" || typeof assignment?.uuid !== "string")
+      if (
+        typeof assignment?.seq !== "number" ||
+        typeof assignment?.uuid !== "string"
+      )
         continue;
       const prev = seqToUuid.get(assignment.seq);
       if (prev && prev !== assignment.uuid) {
@@ -261,5 +306,8 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", asy
       }
     }
   }
-  expect(conflicts, `Unexpected UUID reassignment conflicts: ${conflicts.join(", ")}`).toEqual([]);
+  expect(
+    conflicts,
+    `Unexpected UUID reassignment conflicts: ${conflicts.join(", ")}`,
+  ).toEqual([]);
 });

@@ -1,13 +1,20 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("suggestions appear after agent responds", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
   // Wait for agent response
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "done" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "done")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Suggestions should appear asynchronously (from suggestion subprocess)
   const suggestions = page.locator(".btn-suggestion");
@@ -23,9 +30,9 @@ test("suggestions disappear when user types", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "done" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "done")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Wait for suggestions
   const suggestions = page.locator(".btn-suggestion");
@@ -41,13 +48,16 @@ test("suggestions disappear when user types", async ({ page, agentType }) => {
   await expect(suggestions.first()).toBeVisible({ timeout: 5_000 });
 });
 
-test("clicking suggestion sends it immediately", async ({ page, agentType }) => {
+test("clicking suggestion sends it immediately", async ({
+  page,
+  agentType,
+}) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "done" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "done")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Wait for suggestions and get first button text
   const suggBtn = page.locator(".btn-suggestion").first();
@@ -71,13 +81,16 @@ test("clicking suggestion sends it immediately", async ({ page, agentType }) => 
   await expect(input).toHaveValue("");
 });
 
-test("shift+click suggestion pre-fills input without sending", async ({ page, agentType }) => {
+test("shift+click suggestion pre-fills input without sending", async ({
+  page,
+  agentType,
+}) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "done"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "done" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "done")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   const suggBtn = page.locator(".btn-suggestion").first();
   await expect(suggBtn).toBeVisible({ timeout: 30_000 });

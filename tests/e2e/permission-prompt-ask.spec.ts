@@ -1,7 +1,17 @@
 import { writeFileSync } from "fs";
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
-test("permission_policy ask: Allow button approves the tool call", async ({ page, agentType }) => {
+test("permission_policy ask: Allow button approves the tool call", async ({
+  page,
+  agentType,
+}) => {
   test.skip(agentType !== "claude", "claude-only test");
 
   writeFileSync(
@@ -17,7 +27,10 @@ workspaces:
   await page.waitForTimeout(500);
 
   await enterSession(page);
-  await sendMessage(page, "run command echo ask-allow-test > .claude/test-ask-allow.md");
+  await sendMessage(
+    page,
+    "run command echo ask-allow-test > .claude/test-ask-allow.md",
+  );
 
   // The permission prompt form must appear.
   const form = page.locator(".permission-prompt-form");
@@ -30,12 +43,15 @@ workspaces:
   await expect(form).not.toBeVisible({ timeout: 10_000 });
 
   // Session completes with "Done." from the mock LLM.
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });
 
-test("permission_policy ask: Deny button blocks the tool call", async ({ page, agentType }) => {
+test("permission_policy ask: Deny button blocks the tool call", async ({
+  page,
+  agentType,
+}) => {
   test.skip(agentType !== "claude", "claude-only test");
 
   writeFileSync(
@@ -51,7 +67,10 @@ workspaces:
   await page.waitForTimeout(500);
 
   await enterSession(page);
-  await sendMessage(page, "run command echo ask-deny-test > .claude/test-ask-deny.md");
+  await sendMessage(
+    page,
+    "run command echo ask-deny-test > .claude/test-ask-deny.md",
+  );
 
   // The permission prompt form must appear.
   const form = page.locator(".permission-prompt-form");
@@ -66,7 +85,7 @@ workspaces:
   await expect(form).not.toBeVisible({ timeout: 10_000 });
 
   // Session completes with "Done." from the mock LLM after the denied tool_result.
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });

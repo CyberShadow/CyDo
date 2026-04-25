@@ -32,9 +32,7 @@ test("file viewer shows diff content for codex update without prior create", asy
   // as a live item event — it only appears after history reload.
   await sendMessage(page, "codex filechange update fixture");
   await expect(
-    page
-      .locator(".message.assistant-message .text-content", { hasText: "Done." })
-      .last(),
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
   ).toBeVisible({ timeout });
 
   // Kill the session to trigger task_reload → history reload from JSONL.
@@ -85,16 +83,13 @@ test("cumulative diff shows net change after codex create and update", async ({
   // Create the file first (full_content mode — gives base content).
   await sendMessage(page, "codex filechange create fixture");
   await expect(
-    page
-      .locator(".message.assistant-message .text-content", { hasText: "Done." })
-      .last(),
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
   ).toBeVisible({ timeout });
 
   // Update the file (patch_text mode — chains off the create's contentAfter).
   await sendMessage(page, "codex filechange update fixture");
   await expect(
-    page
-      .locator(".message.assistant-message .text-content", { hasText: "Done." }),
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }),
   ).toHaveCount(2, { timeout });
 
   // Kill the session to trigger task_reload → history reload from JSONL.

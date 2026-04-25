@@ -8,6 +8,7 @@ import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
+import { assistantText } from "./fixtures";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -30,7 +31,11 @@ async function waitForBackend(
   const processExited = proc
     ? new Promise<never>((_, reject) => {
         if (proc.exitCode !== null) {
-          reject(new Error(`Backend process already exited with code ${proc.exitCode}`));
+          reject(
+            new Error(
+              `Backend process already exited with code ${proc.exitCode}`,
+            ),
+          );
           return;
         }
         proc.on("exit", (code, signal) => {
@@ -61,7 +66,11 @@ async function waitForBackend(
   await Promise.race([polling, processExited]);
 }
 
-function spawnBackend(workDir: string, workerHome: string, codexHome?: string): ChildProcess {
+function spawnBackend(
+  workDir: string,
+  workerHome: string,
+  codexHome?: string,
+): ChildProcess {
   return spawn(process.env.CYDO_BIN!, [], {
     detached: true,
     cwd: workDir,
@@ -114,7 +123,9 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     try {
       await waitForBackend(baseURL, proc);
     } catch (e) {
-      try { process.kill(-proc.pid!, "SIGTERM"); } catch {}
+      try {
+        process.kill(-proc.pid!, "SIGTERM");
+      } catch {}
       throw e;
     }
 
@@ -152,7 +163,11 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 // Helper: wait for a task to appear in the sidebar
 // ---------------------------------------------------------------------------
 
-async function waitForSidebarTask(page: any, labelText: string, timeoutMs = 15_000) {
+async function waitForSidebarTask(
+  page: any,
+  labelText: string,
+  timeoutMs = 15_000,
+) {
   await expect(
     page.locator(".sidebar-item .sidebar-label", { hasText: labelText }),
   ).toBeVisible({ timeout: timeoutMs });
@@ -178,11 +193,9 @@ test("idle task is not nudged after resume + restart", async ({
   await sendBtn.click();
 
   // Wait for the response — task becomes "alive" (idle)
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "restart-alive",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "restart-alive")).toBeVisible({
+    timeout: 30_000,
+  });
 
   // Exactly one assistant message before restart
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
@@ -197,23 +210,27 @@ test("idle task is not nudged after resume + restart", async ({
   await restartableBackend.restart();
   await page.goto("/");
   await waitForSidebarTask(page, "restart-alive");
-  await page.locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" }).click();
+  await page
+    .locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" })
+    .click();
 
   // Click the Resume button (this is where the bug was: handleResumeMsg
   // set status to "active" even though the session is idle).
   const resumeBtn = page.locator(".btn-banner-resume");
-  const isResumeVisible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
+  const isResumeVisible = await resumeBtn
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
-    await expect(page.locator(".btn-banner-stop")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".btn-banner-stop")).toBeVisible({
+      timeout: 15_000,
+    });
   }
 
   // History preserved, still one assistant message
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "restart-alive",
-    }),
-  ).toBeVisible({ timeout: 10_000 });
+  await expect(assistantText(page, "restart-alive")).toBeVisible({
+    timeout: 10_000,
+  });
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
 
   // --- Second restart ---
@@ -222,14 +239,14 @@ test("idle task is not nudged after resume + restart", async ({
   await restartableBackend.restart();
   await page.goto("/");
   await waitForSidebarTask(page, "restart-alive");
-  await page.locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" }).click();
+  await page
+    .locator(".sidebar-item .sidebar-label", { hasText: "restart-alive" })
+    .click();
 
   // Wait for history to load
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "restart-alive",
-    }),
-  ).toBeVisible({ timeout: 10_000 });
+  await expect(assistantText(page, "restart-alive")).toBeVisible({
+    timeout: 10_000,
+  });
 
   // Wait to give any [SYSTEM:] nudge time to trigger a response.
   // If nudged, the mock API responds with "Done." — a second assistant message.
@@ -253,17 +270,17 @@ test("MCP tools work after backend restart", async ({
   await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
   await sendBtn.click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "mcp-ready",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "mcp-ready")).toBeVisible({
+    timeout: 30_000,
+  });
 
   // Restart — task is auto-resumed with the new MCP socket
   await restartableBackend.restart();
   await page.goto("/");
   await waitForSidebarTask(page, "mcp-ready");
-  await page.locator(".sidebar-item .sidebar-label", { hasText: "mcp-ready" }).click();
+  await page
+    .locator(".sidebar-item .sidebar-label", { hasText: "mcp-ready" })
+    .click();
 
   // Send a message that triggers an MCP tool call (Task tool).
   // If the MCP socket is broken, this will fail with "Backend connection failed".
@@ -300,9 +317,9 @@ test("active task receives nudge and continues after restart", async ({
   await sendBtn.click();
 
   // Wait until the tool call is visible (task is mid-turn / "active")
-  await expect(
-    page.locator(".tool-call", { hasText: "sleep 60" }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".tool-call", { hasText: "sleep 60" })).toBeVisible(
+    { timeout: 30_000 },
+  );
 
   // Kill and restart the backend while task is "active"
   await restartableBackend.restart();
@@ -311,16 +328,16 @@ test("active task receives nudge and continues after restart", async ({
   await page.goto("/");
 
   // Task should still be in the sidebar
-  await expect(page.locator(".sidebar-item")).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.locator(".sidebar-item")).toHaveCount(1, {
+    timeout: 10_000,
+  });
 
   // Click on the task
   await page.locator(".sidebar-item").first().click();
 
   // The nudge message and the agent's reply should appear
   // After nudge, the agent retries and eventually responds with "Done."
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 120_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 120_000 });
 });
 
 test("sub-task result delivered to parent after backend restart", async ({
@@ -359,9 +376,7 @@ test("sub-task result delivered to parent after backend restart", async ({
   await taskItems.last().click();
 
   // The parent should eventually process the sub-task result and respond with "Done."
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
 });
 
 test("waiting parent receives batch results after restart", async ({
@@ -406,11 +421,7 @@ test("waiting parent receives batch results after restart", async ({
   await taskItems.last().click();
 
   // Wait for the parent to respond to the batch delivery.
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "Done.",
-    }),
-  ).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
 
   // Allow time for any spurious additional messages.
   await page.waitForTimeout(3_000);
@@ -446,17 +457,15 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
     has: page.locator(".sidebar-label", { hasText: "Slow child" }),
   });
 
-  await fastChild.click();
-  await expect(
-    page.locator(".message.assistant-message .text-content:visible", {
-      hasText: "first-child-done",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
-
   await slowChild.click();
   await expect(
     page.locator(".tool-call:visible", { hasText: "sleep 20" }),
   ).toBeVisible({ timeout: 15_000 });
+
+  await fastChild.click();
+  await expect(
+    assistantText(page, "first-child-done"),
+  ).toBeVisible({ timeout: 30_000 });
 
   // Restart after one child has completed but before the slow child has.
   await restartableBackend.restart();
@@ -472,9 +481,12 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
   await expect(batchDivider).toBeVisible({ timeout: 90_000 });
   await batchDivider.click();
 
-  const batchMessage = page.locator(".message.user-message.system-user-expanded", {
-    hasText: "Sub-task results",
-  });
+  const batchMessage = page.locator(
+    ".message.user-message.system-user-expanded",
+    {
+      hasText: "Sub-task results",
+    },
+  );
   await expect(batchMessage.locator(".system-user-pre")).toContainText(
     "first-child-done",
   );
@@ -508,11 +520,9 @@ test("waiting parent with completed children gets results after restart", async 
   await sendBtn.click();
 
   // Wait for the response — task is now "alive" with a valid session.
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "parent-ready",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "parent-ready")).toBeVisible({
+    timeout: 30_000,
+  });
 
   // Stop the backend before manipulating the DB to avoid "database is locked".
   await restartableBackend.stop();
@@ -537,11 +547,11 @@ test("waiting parent with completed children gets results after restart", async 
   // Reload and navigate to the parent task.
   await page.goto("/");
   await waitForSidebarTask(page, "parent-ready");
-  await page.locator(".sidebar-item .sidebar-label", { hasText: "parent-ready" }).click();
+  await page
+    .locator(".sidebar-item .sidebar-label", { hasText: "parent-ready" })
+    .click();
 
   // The parent should receive the [SYSTEM: Session resumed] message with
   // task_results and respond with "Done." (mock API handles [SYSTEM: messages).
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
 });

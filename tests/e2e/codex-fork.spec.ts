@@ -1,6 +1,15 @@
-import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  responseTimeout,
+} from "./fixtures";
 
-async function snapshotTids(page: Parameters<typeof sendMessage>[0]): Promise<Set<string>> {
+async function snapshotTids(
+  page: Parameters<typeof sendMessage>[0],
+): Promise<Set<string>> {
   const tids = await page
     .locator(".sidebar-item[data-tid]")
     .evaluateAll((els: Element[]) =>
@@ -28,15 +37,20 @@ async function waitForNewTid(
 
 async function resumeIfNeeded(page: Parameters<typeof sendMessage>[0]) {
   const resumeBtn = page.locator(".btn-banner-resume:visible").first();
-  const visible = await resumeBtn.isVisible({ timeout: 5_000 }).catch(() => false);
+  const visible = await resumeBtn
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
   if (visible) {
     await resumeBtn.click();
   }
 }
 
-function activeAssistantText(page: Parameters<typeof sendMessage>[0], text: string) {
+function activeAssistantText(
+  page: Parameters<typeof sendMessage>[0],
+  text: string,
+) {
   return page
-    .locator("[style*='display: contents'] .message.assistant-message .text-content", {
+    .locator("[style*='display: contents'] [data-testid='assistant-text']", {
       hasText: text,
     })
     .last();
@@ -119,7 +133,8 @@ test("codex fork from older turn truncates later history and isolates branches",
 
   await expect(async () => {
     const fork = taskCreatedEvents.find(
-      (event) => event.relation_type === "fork" && event.parent_tid === parentTid,
+      (event) =>
+        event.relation_type === "fork" && event.parent_tid === parentTid,
     );
     expect(fork).toBeTruthy();
   }).toPass({ timeout: 20_000 });
@@ -137,11 +152,16 @@ test("codex fork from older turn truncates later history and isolates branches",
     });
   }).toPass({ timeout: 20_000 });
 
-  await expect(activeAssistantText(page, turnOne)).toBeVisible({ timeout: 15_000 });
+  await expect(activeAssistantText(page, turnOne)).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(
-    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-      hasText: turnTwo,
-    }),
+    page.locator(
+      "[style*='display: contents'] [data-testid='assistant-text']",
+      {
+        hasText: turnTwo,
+      },
+    ),
   ).toHaveCount(0);
 
   await resumeIfNeeded(page);
@@ -161,24 +181,35 @@ test("codex fork from older turn truncates later history and isolates branches",
     timeout: responseTimeout(agentType),
   });
   await expect(
-    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-      hasText: forkOnly,
-    }),
+    page.locator(
+      "[style*='display: contents'] [data-testid='assistant-text']",
+      {
+        hasText: forkOnly,
+      },
+    ),
   ).toHaveCount(0);
 
   await page.locator(`.sidebar-item[data-tid="${forkTid}"]`).click();
   await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
     timeout: 15_000,
   });
-  await expect(activeAssistantText(page, forkOnly)).toBeVisible({ timeout: 15_000 });
+  await expect(activeAssistantText(page, forkOnly)).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(
-    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-      hasText: parentOnly,
-    }),
+    page.locator(
+      "[style*='display: contents'] [data-testid='assistant-text']",
+      {
+        hasText: parentOnly,
+      },
+    ),
   ).toHaveCount(0);
   await expect(
-    page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-      hasText: turnTwo,
-    }),
+    page.locator(
+      "[style*='display: contents'] [data-testid='assistant-text']",
+      {
+        hasText: turnTwo,
+      },
+    ),
   ).toHaveCount(0);
 });

@@ -1,4 +1,10 @@
-import { test, expect, enterSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 import type { Page } from "./fixtures";
 
 async function snapshotTids(page: Page): Promise<Set<string>> {
@@ -10,10 +16,7 @@ async function snapshotTids(page: Page): Promise<Set<string>> {
   return new Set(tids);
 }
 
-async function waitForNewTid(
-  page: Page,
-  before: Set<string>,
-): Promise<string> {
+async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
   let newTid: string | undefined;
   await expect(async () => {
     const tids = await page
@@ -80,11 +83,9 @@ test("changing entry point after draft creation updates backend", async ({
   await page.locator(".btn-send:visible").first().click();
 
   // Wait for the agent response
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "type-change-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "type-change-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Verify the backend task has task_type "blank" (not the default conversation type)
   const tid = parseInt(draftTid);

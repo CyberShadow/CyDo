@@ -1,13 +1,21 @@
-import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("draft persists across page reload", async ({ page, agentType }) => {
   await enterSession(page);
 
   // Send a message to establish the session and generate a title
   await sendMessage(page, 'Please reply with "draft-reload-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "draft-reload-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-reload-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Type a draft without sending
   const input = page.locator(".input-textarea:visible").first();
@@ -34,9 +42,9 @@ test("draft clears after sending message", async ({ page, agentType }) => {
 
   // Send a real message (this should clear the draft)
   await sendMessage(page, 'Please reply with "draft-clear-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "draft-clear-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-clear-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Wait for any draft-clear debounce
   await page.waitForTimeout(1000);
@@ -53,14 +61,18 @@ test("draft clears after sending message", async ({ page, agentType }) => {
   await expect(input).toHaveValue("");
 });
 
-test("draft syncs to second client via tasks_list", async ({ page, browser, agentType }) => {
+test("draft syncs to second client via tasks_list", async ({
+  page,
+  browser,
+  agentType,
+}) => {
   await enterSession(page);
 
   // Send a message to establish the session
   await sendMessage(page, 'Please reply with "draft-sync-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "draft-sync-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-sync-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Type a draft on page 1 (while session is alive, InputBox is visible)
   const input1 = page.locator(".input-textarea:visible").first();
@@ -88,14 +100,18 @@ test("draft syncs to second client via tasks_list", async ({ page, browser, agen
   await context2.close();
 });
 
-test("draft broadcasts live to subscribed clients", async ({ page, browser, agentType }) => {
+test("draft broadcasts live to subscribed clients", async ({
+  page,
+  browser,
+  agentType,
+}) => {
   await enterSession(page);
 
   // Send a message to establish the session
   await sendMessage(page, 'Please reply with "draft-live-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "draft-live-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-live-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Open page 2 on the same task URL before typing the draft
   const url = page.url();
@@ -127,14 +143,18 @@ test("draft broadcasts live to subscribed clients", async ({ page, browser, agen
   await context2.close();
 });
 
-test("draft broadcast does not overwrite local typing", async ({ page, browser, agentType }) => {
+test("draft broadcast does not overwrite local typing", async ({
+  page,
+  browser,
+  agentType,
+}) => {
   await enterSession(page);
 
   // Send a message to establish the session
   await sendMessage(page, 'Please reply with "draft-nooverwrite"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "draft-nooverwrite" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-nooverwrite")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Open page 2 on the same task URL
   const url = page.url();

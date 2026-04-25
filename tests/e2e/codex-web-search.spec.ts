@@ -13,7 +13,13 @@ import {
   writeFileSync,
 } from "fs";
 import { join } from "path";
-import { enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
+import {
+  enterSession,
+  sendMessage,
+  killSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 type RestartableBackend = {
   baseURL: string;
@@ -21,12 +27,18 @@ type RestartableBackend = {
   restart: () => Promise<void>;
 };
 
-async function waitForHttp(baseURL: string, proc?: ChildProcess, timeoutMs = 30_000) {
+async function waitForHttp(
+  baseURL: string,
+  proc?: ChildProcess,
+  timeoutMs = 30_000,
+) {
   const processExited = proc
     ? new Promise<never>((_, reject) => {
         if (proc.exitCode !== null) {
           reject(
-            new Error(`Backend process already exited with code ${proc.exitCode}`),
+            new Error(
+              `Backend process already exited with code ${proc.exitCode}`,
+            ),
           );
           return;
         }
@@ -85,7 +97,8 @@ function findRolloutJsonl(root: string): string | null {
       if (nested) return nested;
       continue;
     }
-    if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) return fullPath;
+    if (entry.startsWith("rollout-") && entry.endsWith(".jsonl"))
+      return fullPath;
   }
   return null;
 }
@@ -156,16 +169,16 @@ async function seedTaskAndLocateRollout(
   await input.fill('reply with "seed-history"');
   await page.locator(".btn-send:visible").first().click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "seed-history",
-    }),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(assistantText(page, "seed-history")).toBeVisible({
+    timeout: 90_000,
+  });
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
 
-  const rolloutPath = findRolloutJsonl(join(restartableBackend.codexHome, "sessions"));
+  const rolloutPath = findRolloutJsonl(
+    join(restartableBackend.codexHome, "sessions"),
+  );
   expect(rolloutPath).not.toBeNull();
 
   return { taskUrl, rolloutPath: rolloutPath! };
@@ -219,7 +232,10 @@ test("codex history replay renders web_search_call from rollout JSONL", async ({
   page,
   restartableBackend,
 }) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(page, restartableBackend);
+  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+    page,
+    restartableBackend,
+  );
 
   // Append a web_search_call event to the rollout JSONL
   appendFileSync(
@@ -249,11 +265,9 @@ test("codex history replay renders web_search_call from rollout JSONL", async ({
   await page.goto(taskUrl);
 
   // Verify seed message replays
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "seed-history",
-    }),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(assistantText(page, "seed-history")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Verify web search tool call renders from history
   const wsToolCall = page.locator(".tool-call").filter({

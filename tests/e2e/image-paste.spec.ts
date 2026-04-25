@@ -1,10 +1,19 @@
-import { test, expect, enterSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 // 1x1 red pixel PNG, base64-encoded
 const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
 
-async function pasteImage(page: import("@playwright/test").Page, base64: string) {
+async function pasteImage(
+  page: import("@playwright/test").Page,
+  base64: string,
+) {
   await page.evaluate((b64) => {
     const binary = atob(b64);
     const array = new Uint8Array(binary.length);
@@ -45,9 +54,9 @@ test.describe("image paste", () => {
     await page.locator(".btn-send:visible").first().click();
 
     // Step 4: Verify image appears in the user message in chat history
-    await expect(
-      page.locator(".message.user-message .user-image"),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(page.locator(".message.user-message .user-image")).toBeVisible(
+      { timeout: responseTimeout(agentType) },
+    );
 
     // Step 5: Verify user message text is also present
     await expect(
@@ -55,12 +64,9 @@ test.describe("image paste", () => {
     ).toContainText("describe this image");
 
     // Step 6: Verify mock API recognized the image and responded
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: "image received",
-
-      }),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(assistantText(page, "image received")).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
 
     // Step 7: Verify image preview was cleared from input area after send
     await expect(page.locator(".image-preview img")).not.toBeVisible();
@@ -96,10 +102,8 @@ test.describe("image paste", () => {
     await input.fill('reply with "text only works"');
     await page.locator(".btn-send:visible").first().click();
 
-    await expect(
-      page.locator(".message.assistant-message .text-content", {
-        hasText: "text only works",
-      }),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(assistantText(page, "text only works")).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
   });
 });

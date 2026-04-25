@@ -1,17 +1,27 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
-test("paste when input is unfocused populates session input", async ({ page, agentType }) => {
+test("paste when input is unfocused populates session input", async ({
+  page,
+  agentType,
+}) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "paste-unfocused-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "paste-unfocused-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "paste-unfocused-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Click on the message list to move focus away from the input
   await page.locator(".message-list").click();
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() =>
+    (document.activeElement as HTMLElement | null)?.blur(),
+  );
 
   // Dispatch a paste event to the document (not targeting the textarea)
   await page.evaluate(() => {
@@ -36,7 +46,9 @@ test("paste when input is unfocused on new-task page populates input", async ({
   await enterSession(page);
 
   // Blur whichever element currently has focus
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() =>
+    (document.activeElement as HTMLElement | null)?.blur(),
+  );
 
   // Dispatch a paste event to the document
   await page.evaluate(() => {

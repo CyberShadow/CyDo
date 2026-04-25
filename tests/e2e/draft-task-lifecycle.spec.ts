@@ -1,4 +1,10 @@
-import { test, expect, enterSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 import type { Page } from "./fixtures";
 
 async function snapshotTids(page: Page): Promise<Set<string>> {
@@ -75,11 +81,9 @@ test("draft task becomes active on send", async ({ page, agentType }) => {
   await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 5_000 });
 
   // Assert agent response arrives
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "draft-active-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "draft-active-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Assert sidebar item no longer has draft styling
   await expect(
@@ -165,11 +169,9 @@ test("fast type and send before task_created", async ({ page, agentType }) => {
   await input.press("Enter");
 
   // Assert agent response arrives (the atomic create+send path handled it)
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "fast-send-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "fast-send-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Assert no zombie draft tasks remain — any new sidebar items should not
   // have .draft-label (the sent task becomes active, not a lingering draft).
@@ -243,9 +245,9 @@ test("new task after draft clears form correctly", async ({ page }) => {
   await expect(page.locator(".session-loading")).not.toBeAttached({
     timeout: 5_000,
   });
-  await expect(
-    page.locator(".welcome-prompt:visible"),
-  ).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".welcome-prompt:visible")).toBeVisible({
+    timeout: 5_000,
+  });
 
   // Bug 1: Input should be empty in the new task form
   const newInput = page.locator(".input-textarea:visible").first();
@@ -255,9 +257,9 @@ test("new task after draft clears form correctly", async ({ page }) => {
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
 
   // Bug 2: Should show the task type picker (SessionConfig) on return
-  await expect(
-    page.locator(".welcome-prompt .task-type-picker"),
-  ).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible({
+    timeout: 5_000,
+  });
 
   // Bug 3: Clear input text — draft should be deleted from sidebar
   const draftInput = page.locator(".input-textarea:visible").first();
@@ -386,9 +388,9 @@ test("draft deletable after page reload", async ({ page }) => {
   });
 
   // Wait for re-adopt to complete (task type picker visible = onContentEnd wired)
-  await expect(
-    page.locator(".welcome-prompt .task-type-picker"),
-  ).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible({
+    timeout: 5_000,
+  });
 
   // Clear the text — this should trigger draft deletion
   await restoredInput.fill("");

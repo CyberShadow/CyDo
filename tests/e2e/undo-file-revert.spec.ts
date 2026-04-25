@@ -1,8 +1,22 @@
-import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  assistantText,
+} from "./fixtures";
 import { existsSync } from "fs";
 
-test("undo with file revert removes file created by agent", async ({ page, backend, agentType }) => {
-  test.skip(agentType !== "claude", "file revert only supported for Claude Code");
+test("undo with file revert removes file created by agent", async ({
+  page,
+  backend,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "file revert only supported for Claude Code",
+  );
 
   const testFile = `${backend.wsDir}/undo-revert-test.txt`;
   const testContent = "hello from undo-revert test";
@@ -10,13 +24,14 @@ test("undo with file revert removes file created by agent", async ({ page, backe
   await enterSession(page);
 
   // 1. Ask Claude to create a file — the "create file" pattern triggers a Write tool call
-  await sendMessage(page, `create file ${testFile} with content ${testContent}`);
+  await sendMessage(
+    page,
+    `create file ${testFile} with content ${testContent}`,
+  );
 
   // Wait for the Write tool call and its result to complete (the mock follows
   // up with a "Done." text response after the tool result)
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 30_000 });
 
   // 2. Verify the file was created on disk
   expect(existsSync(testFile), `File should exist at ${testFile}`).toBe(true);
@@ -39,7 +54,9 @@ test("undo with file revert removes file created by agent", async ({ page, backe
   await page.locator(".btn-undo").click();
 
   // 6. Wait for the undo to complete — the result banner confirms rewindFiles finished
-  await expect(page.locator(".undo-result-banner")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".undo-result-banner")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // 7. Verify the file was reverted (should no longer exist since it didn't
   //    exist before the undone message)

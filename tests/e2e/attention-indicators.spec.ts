@@ -4,6 +4,7 @@ import {
   enterSession,
   sendMessage,
   responseTimeout,
+  assistantText,
 } from "./fixtures";
 import type { Page } from "./fixtures";
 
@@ -88,11 +89,9 @@ test("hamburger button shows attention for any session on mobile", async ({
   // Create session 2 so we have a SessionView with a hamburger.
   await enterSession(page);
   await sendMessage(page, 'reply with "second"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "second",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "second")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Now shrink to mobile viewport — hamburger appears, sidebar hides.
   await page.setViewportSize({ width: 375, height: 667 });
@@ -115,11 +114,9 @@ test("active sessions sort attention-needing tasks first with attention styling"
   // Create first session - let it complete so it stays in active sessions without attention
   await enterSession(page);
   await sendMessage(page, 'reply with "first-task"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "first-task",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "first-task")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Create second session. Override document.hasFocus to prevent auto-dismiss
   // from firing (it gates on hasFocus()). This eliminates the race between

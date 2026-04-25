@@ -1,6 +1,16 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
-test("completed messages are not recreated when new messages arrive", async ({ page, agentType }) => {
+test("completed messages are not recreated when new messages arrive", async ({
+  page,
+  agentType,
+}) => {
   test.skip(agentType !== "claude", "claude-only: tests Preact memo stability");
 
   // Hook into Preact's render pipeline via __PREACT_DEVTOOLS__ to count
@@ -54,10 +64,10 @@ test("completed messages are not recreated when new messages arrive", async ({ p
   await expect(
     page.locator(".tool-result", { hasText: "rerender-test" }),
   ).toBeVisible({ timeout });
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
-  await expect(page.locator(".assistant-message.streaming")).toHaveCount(0, { timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
+  await expect(page.locator(".assistant-message.streaming")).toHaveCount(0, {
+    timeout,
+  });
   // Wait for forkable_uuids control message to arrive — under heavy CPU
   // load, this can arrive in a separate render cycle after the turn completes,
   // changing the `forkable` prop and causing spurious memo-breaking re-renders.
@@ -91,9 +101,7 @@ test("completed messages are not recreated when new messages arrive", async ({ p
 
   // Send a second message
   await sendMessage(page, 'reply with "second response"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "second response" }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "second response")).toBeVisible({ timeout });
   await page.waitForTimeout(500);
 
   // Collect results

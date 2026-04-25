@@ -1,6 +1,9 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("forked worktree spike task appears in sidebar", async ({ page, agentType }) => {
+test("forked worktree spike task appears in sidebar", async ({
+  page,
+  agentType,
+}) => {
   test.skip(agentType === "codex", "codex does not use git worktrees");
 
   // Track WebSocket events to reliably detect task creation/completion.
@@ -22,7 +25,10 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
             relation_type: data.relation_type,
           });
         } else if (data.type === "task_updated") {
-          taskUpdatedEvents.push({ tid: data.task.tid, alive: data.task.alive });
+          taskUpdatedEvents.push({
+            tid: data.task.tid,
+            alive: data.task.alive,
+          });
         }
       } catch {
         /* ignore non-JSON frames */
@@ -41,7 +47,9 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     expect(spike).toBeTruthy();
   }).toPass({ timeout: 60_000 });
 
-  const spikeTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
+  const spikeTid = taskCreatedEvents.find(
+    (e) => e.relation_type === "subtask",
+  )!.tid;
 
   // 3. Wait for the spike to actually complete (alive: true → alive: false).
   //    The first task_updated broadcast has alive: false (initial state before
@@ -56,7 +64,10 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     let completed = false;
     for (const e of spikeEvents) {
       if (e.alive) seenAlive = true;
-      else if (seenAlive) { completed = true; break; }
+      else if (seenAlive) {
+        completed = true;
+        break;
+      }
     }
     expect(completed).toBeTruthy();
   }).toPass({ timeout: 60_000 });
@@ -85,7 +96,7 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     // contains "worktree-fork-content" in its text-content block).
     await expect(
       page.locator(
-        "[style*='display: contents'] .message.assistant-message .text-content",
+        "[style*='display: contents'] [data-testid='assistant-text']",
         { hasText: "worktree-fork-content" },
       ),
     ).toBeVisible({ timeout: 10_000 });
@@ -113,7 +124,9 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
   // 7. Fork the spike task (re-resolve the locator fresh after the hover).
   await page
     .locator("[style*='display: contents'] .message-wrapper", {
-      has: page.locator(".assistant-message", { hasText: "worktree-fork-content" }),
+      has: page.locator(".assistant-message", {
+        hasText: "worktree-fork-content",
+      }),
     })
     .last()
     .locator(".fork-btn")
@@ -125,7 +138,9 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
     expect(fork).toBeTruthy();
   }).toPass({ timeout: 15_000 });
 
-  const forkTid = taskCreatedEvents.find((e) => e.relation_type === "fork")!.tid;
+  const forkTid = taskCreatedEvents.find(
+    (e) => e.relation_type === "fork",
+  )!.tid;
 
   // 9. The fork should auto-navigate via shouldFocus in the task_created handler.
   //    If auto-focus didn't fire (race condition), click the sidebar as fallback.
@@ -140,12 +155,17 @@ test("forked worktree spike task appears in sidebar", async ({ page, agentType }
       }
     }
     // Wait for the fork's URL.
-    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), { timeout: 5_000 });
+    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
+      timeout: 5_000,
+    });
     // Wait for the fork's content to be visible in the active session.
     await expect(
-      page.locator("[style*='display: contents'] .message.assistant-message .text-content", {
-        hasText: "worktree-fork-content",
-      }),
+      page.locator(
+        "[style*='display: contents'] [data-testid='assistant-text']",
+        {
+          hasText: "worktree-fork-content",
+        },
+      ),
     ).toBeVisible({ timeout: 5_000 });
   }).toPass({ timeout: 30_000 });
 });

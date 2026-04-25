@@ -1,10 +1,20 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("first message renders as collapsed system-user-message with entry point label", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType === "codex",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -12,7 +22,9 @@ test("first message renders as collapsed system-user-message with entry point la
   await sendMessage(page, messageText);
 
   // The first message should render as a system-user-message (template style)
-  const userMsg = page.locator(".message.user-message.system-user-message").first();
+  const userMsg = page
+    .locator(".message.user-message.system-user-message")
+    .first();
   await expect(userMsg).toBeVisible({ timeout: 15_000 });
 
   // The entry point label is shown in the header (exact name depends on default
@@ -42,7 +54,10 @@ test("system-user-message persists after agent confirms the message", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType === "codex",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -51,15 +66,15 @@ test("system-user-message persists after agent confirms the message", async ({
 
   // Wait for the agent to respond — this means the is_replay confirmation echo
   // has replaced the pending message, which is where the cydoMeta bug triggers.
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "system-msg-confirm-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "system-msg-confirm-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // After the agent has responded, the user message must still render as a
   // system-user-message with a label and the original text.
-  const userMsg = page.locator(".message.user-message.system-user-message").first();
+  const userMsg = page
+    .locator(".message.user-message.system-user-message")
+    .first();
   await expect(userMsg).toBeVisible();
 
   const headerText = await userMsg.locator(".system-user-header").innerText();

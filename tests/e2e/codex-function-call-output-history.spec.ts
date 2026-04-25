@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "fs";
 import { join } from "path";
+import { assistantText } from "./fixtures";
 
 type RestartableBackend = {
   baseURL: string;
@@ -21,12 +22,18 @@ type RestartableBackend = {
   restart: () => Promise<void>;
 };
 
-async function waitForHttp(baseURL: string, proc?: ChildProcess, timeoutMs = 30_000) {
+async function waitForHttp(
+  baseURL: string,
+  proc?: ChildProcess,
+  timeoutMs = 30_000,
+) {
   const processExited = proc
     ? new Promise<never>((_, reject) => {
         if (proc.exitCode !== null) {
           reject(
-            new Error(`Backend process already exited with code ${proc.exitCode}`),
+            new Error(
+              `Backend process already exited with code ${proc.exitCode}`,
+            ),
           );
           return;
         }
@@ -85,7 +92,8 @@ function findRolloutJsonl(root: string): string | null {
       if (nested) return nested;
       continue;
     }
-    if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) return fullPath;
+    if (entry.startsWith("rollout-") && entry.endsWith(".jsonl"))
+      return fullPath;
   }
   return null;
 }
@@ -156,16 +164,16 @@ async function seedTaskAndLocateRollout(
   await input.fill('reply with "seed-history"');
   await page.locator(".btn-send:visible").first().click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "seed-history",
-    }),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(assistantText(page, "seed-history")).toBeVisible({
+    timeout: 90_000,
+  });
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
 
-  const rolloutPath = findRolloutJsonl(join(restartableBackend.codexHome, "sessions"));
+  const rolloutPath = findRolloutJsonl(
+    join(restartableBackend.codexHome, "sessions"),
+  );
   expect(rolloutPath).not.toBeNull();
 
   return { taskUrl, rolloutPath: rolloutPath! };
@@ -179,11 +187,9 @@ async function replayAndFindTaskTool(
   await restartableBackend.restart();
   await page.goto(taskUrl);
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "seed-history",
-    }),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(assistantText(page, "seed-history")).toBeVisible({
+    timeout: 15_000,
+  });
 
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
@@ -213,7 +219,9 @@ test("live invalid child task_type returns structured task error payload", async
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 
-  const rolloutPath = findRolloutJsonl(join(restartableBackend.codexHome, "sessions"));
+  const rolloutPath = findRolloutJsonl(
+    join(restartableBackend.codexHome, "sessions"),
+  );
   expect(rolloutPath).not.toBeNull();
 
   const rawLines = readFileSync(rolloutPath!, "utf8")
@@ -245,7 +253,10 @@ test("codex history replay renders primitive task error as one message", async (
   page,
   restartableBackend,
 }) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(page, restartableBackend);
+  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+    page,
+    restartableBackend,
+  );
 
   const callId = "call_axv2WYmc7W5v0I3un7in9Hvl";
   const toolError =
@@ -278,7 +289,11 @@ test("codex history replay renders primitive task error as one message", async (
     ].join("\n"),
   );
 
-  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
+  const taskTool = await replayAndFindTaskTool(
+    page,
+    restartableBackend,
+    taskUrl,
+  );
   await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
@@ -288,7 +303,10 @@ test("codex history replay renders structured task error object cleanly", async 
   page,
   restartableBackend,
 }) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(page, restartableBackend);
+  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+    page,
+    restartableBackend,
+  );
 
   const callId = "call_structured_task_error";
   const toolError =
@@ -323,7 +341,11 @@ test("codex history replay renders structured task error object cleanly", async 
     ].join("\n"),
   );
 
-  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
+  const taskTool = await replayAndFindTaskTool(
+    page,
+    restartableBackend,
+    taskUrl,
+  );
   await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
@@ -333,7 +355,10 @@ test("codex history replay keeps successful structured task rendering", async ({
   page,
   restartableBackend,
 }) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(page, restartableBackend);
+  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+    page,
+    restartableBackend,
+  );
 
   const callId = "call_structured_task_success";
   appendFileSync(
@@ -371,8 +396,14 @@ test("codex history replay keeps successful structured task rendering", async ({
     ].join("\n"),
   );
 
-  const taskTool = await replayAndFindTaskTool(page, restartableBackend, taskUrl);
-  await expect(taskTool).toContainText("Task finished successfully", { timeout: 15_000 });
+  const taskTool = await replayAndFindTaskTool(
+    page,
+    restartableBackend,
+    taskUrl,
+  );
+  await expect(taskTool).toContainText("Task finished successfully", {
+    timeout: 15_000,
+  });
   await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
   await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
 });

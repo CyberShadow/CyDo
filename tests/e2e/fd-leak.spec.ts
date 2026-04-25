@@ -1,5 +1,13 @@
 import { readdirSync, readlinkSync } from "fs";
-import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 function getFdCount(pid: number): number {
   return readdirSync(`/proc/${pid}/fd`).length;
@@ -65,9 +73,9 @@ test("agent session teardown does not leak file descriptors", async ({
   // Spawn a session, send a message, wait for response, then kill the session
   await enterSession(page);
   await sendMessage(page, 'Please reply with "fd-leak-test"');
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "fd-leak-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "fd-leak-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
   await expect(page.locator(".suggestions")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
@@ -86,9 +94,9 @@ test("agent session teardown does not leak file descriptors", async ({
   expect(
     fdAfter,
     `FD count grew from ${fdBefore} to ${fdAfter} after session teardown (leak of ${fdAfter - fdBefore} FDs).\n` +
-    `Before (${fdBefore} FDs):\n${fdDetailsBefore.join("\n")}\n\n` +
-    `After (${fdAfter} FDs):\n${fdDetailsAfter.join("\n")}\n\n` +
-    `New FDs:\n${leakedFds.join("\n")}`,
+      `Before (${fdBefore} FDs):\n${fdDetailsBefore.join("\n")}\n\n` +
+      `After (${fdAfter} FDs):\n${fdDetailsAfter.join("\n")}\n\n` +
+      `New FDs:\n${leakedFds.join("\n")}`,
   ).toBeLessThanOrEqual(fdBefore);
 });
 
@@ -111,9 +119,9 @@ test("FD count stays stable across multiple session cycles", async ({
   for (let i = 0; i < cycles; i++) {
     await enterSession(page);
     await sendMessage(page, `Please reply with "cycle-${i}"`);
-    await expect(
-      page.locator(".message.assistant-message .text-content", { hasText: `cycle-${i}` }),
-    ).toBeVisible({ timeout: responseTimeout(agentType) });
+    await expect(assistantText(page, `cycle-${i}`)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
     await expect(page.locator(".suggestions")).toBeVisible({
       timeout: responseTimeout(agentType),
     });
@@ -130,6 +138,6 @@ test("FD count stays stable across multiple session cycles", async ({
   expect(
     fdFinal,
     `FD count drifted over ${cycles} cycles: ${fdCounts.join(" → ")}\n` +
-    `Final FDs (${fdFinal}):\n${fdDetailsAfter.join("\n")}`,
+      `Final FDs (${fdFinal}):\n${fdDetailsAfter.join("\n")}`,
   ).toBeLessThanOrEqual(fdBaseline + 1); // allow 1 FD of slack
 });

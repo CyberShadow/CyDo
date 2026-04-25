@@ -1,4 +1,4 @@
-import { type FunctionComponent } from "preact";
+import type { FunctionComponent } from "preact";
 import { memo } from "preact/compat";
 import { useMemo, useRef, useState } from "preact/hooks";
 import { createIncremarkParser } from "@incremark/core";
@@ -13,10 +13,12 @@ export { sourceOnIcon, sourceOffIcon };
 interface Props {
   text: string;
   class?: string;
+  "data-testid"?: string;
+  "data-block-type"?: string;
 }
 
 export const Markdown: FunctionComponent<Props> = memo(
-  ({ text, class: className }: Props) => {
+  ({ text, class: className, ...rest }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
     if (!text) return null;
 
@@ -82,7 +84,7 @@ export const Markdown: FunctionComponent<Props> = memo(
             </code>
           </CodePre>
         ) : (
-          <div class={`markdown ${className ?? ""}`}>
+          <div class={`markdown ${className ?? ""}`} {...rest}>
             <MdastRenderer ast={ast} />
           </div>
         )}

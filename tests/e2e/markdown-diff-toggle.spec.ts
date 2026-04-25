@@ -1,10 +1,21 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+  lastAssistantText,
+} from "./fixtures";
 
 test("markdown diff toggle button visible for .md file edit with structuredPatch", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "Claude-only: Edit tool with structuredPatch");
+  test.skip(
+    agentType !== "claude",
+    "Claude-only: Edit tool with structuredPatch",
+  );
 
   await enterSession(page);
 
@@ -13,9 +24,7 @@ test("markdown diff toggle button visible for .md file edit with structuredPatch
   // Prime Claude's file cache by reading README.md first; without this, the
   // Edit tool fails with "File has not been read yet" and returns no structuredPatch.
   await sendMessage(page, "read file README.md");
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Now edit the file — Claude has the file cached so the Edit succeeds and
   // returns structuredPatch in the tool result. With the old ternary order,
@@ -28,11 +37,11 @@ test("markdown diff toggle button visible for .md file edit with structuredPatch
   });
   await expect(toolCall).toBeVisible({ timeout });
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }).last(),
-  ).toBeVisible({ timeout });
+  await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
 
   // The markdown diff toggle button should be visible inside the Edit tool call.
-  const toggleBtn = toolCall.locator(".markdown-diff-wrap .markdown-toggle-btn");
+  const toggleBtn = toolCall.locator(
+    ".markdown-diff-wrap .markdown-toggle-btn",
+  );
   await expect(toggleBtn).toBeVisible({ timeout: 5_000 });
 });

@@ -136,6 +136,7 @@ interface Props {
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
   sessionId?: number;
+  semanticSelectors?: boolean;
 }
 
 export const AssistantMessage = memo(
@@ -146,11 +147,21 @@ export const AssistantMessage = memo(
     childrenByParent,
     onViewFile,
     sessionId,
+    semanticSelectors = true,
   }: Props) {
     const devMode = useDevMode();
     const isStreaming = message.streaming === true;
     const isSynthetic = message.model === "<synthetic>";
     const blocksToRender = resolvedBlocks;
+    const assistantTextAttrs: {
+      "data-testid"?: string;
+      "data-block-type"?: string;
+    } = semanticSelectors
+      ? {
+          "data-testid": "assistant-text",
+          "data-block-type": "assistant-text",
+        }
+      : {};
     return (
       <div
         class={`message assistant-message${isStreaming ? " streaming" : ""}${
@@ -205,9 +216,16 @@ export const AssistantMessage = memo(
             return (
               <Fragment key={itemId}>
                 {block.completed ? (
-                  <Markdown text={block.text} class="text-content" />
+                  <Markdown
+                    text={block.text}
+                    class="text-content"
+                    {...assistantTextAttrs}
+                  />
                 ) : (
-                  <div class="text-content streaming-text">
+                  <div
+                    class="text-content streaming-text"
+                    {...assistantTextAttrs}
+                  >
                     <Markdown text={block.text} />
                     <span class="cursor" />
                   </div>
@@ -283,6 +301,7 @@ export const AssistantMessage = memo(
                                   childrenByParent={childrenByParent}
                                   onViewFile={onViewFile}
                                   sessionId={sessionId}
+                                  semanticSelectors={false}
                                 />
                               </NestedMessageWrapper>
                             );
@@ -369,5 +388,6 @@ export const AssistantMessage = memo(
     prev.childrenByParent === next.childrenByParent &&
     prev.resolvedBlocksByMsg === next.resolvedBlocksByMsg &&
     prev.onViewFile === next.onViewFile &&
-    prev.sessionId === next.sessionId,
+    prev.sessionId === next.sessionId &&
+    prev.semanticSelectors === next.semanticSelectors,
 );

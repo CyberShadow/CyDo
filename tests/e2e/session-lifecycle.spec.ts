@@ -5,17 +5,16 @@ import {
   sendMessage,
   killSession,
   responseTimeout,
+  assistantText,
 } from "./fixtures";
 
 test("history survives page reload", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "persistent"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "persistent",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "persistent")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
 
@@ -38,11 +37,9 @@ test("no duplicate messages after reload", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "nodups"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "nodups",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "nodups")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
 
@@ -68,11 +65,9 @@ test("session stop shows resume button", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "before-stop"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "before-stop",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "before-stop")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
   await expect(page.locator(".btn-banner-resume")).toBeVisible();
@@ -82,11 +77,9 @@ test("resumed session starts in idle state", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "resume-idle"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "resume-idle",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "resume-idle")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
 
@@ -112,11 +105,9 @@ test("session resume continues conversation", async ({ page, agentType }) => {
   await enterSession(page);
   await sendMessage(page, 'Please reply with "pre-resume"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "pre-resume",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "pre-resume")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
 
@@ -139,11 +130,9 @@ test("session resume continues conversation", async ({ page, agentType }) => {
   });
   await page.locator(".btn-send").first().click();
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "post-resume",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "post-resume")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });
 
 test("sending message to stopped session auto-resumes it", async ({
@@ -153,22 +142,18 @@ test("sending message to stopped session auto-resumes it", async ({
   await enterSession(page);
   await sendMessage(page, 'Please reply with "before-auto"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "before-auto",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "before-auto")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
 
   // Instead of clicking Resume, send a message directly via the input box
   await sendMessage(page, 'Please reply with "after-auto"');
 
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "after-auto",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "after-auto")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });
 
 test("codex reload replays apply_patch tool call", async ({
@@ -179,11 +164,9 @@ test("codex reload replays apply_patch tool call", async ({
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "Done.",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   await killSession(page, agentType);
   await page.reload();

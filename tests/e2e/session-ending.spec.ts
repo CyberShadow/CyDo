@@ -1,10 +1,23 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
-test("End button shows ending state then session exits", async ({ page, agentType }) => {
+test("End button shows ending state then session exits", async ({
+  page,
+  agentType,
+}) => {
   // Codex's closeStdin() fires the exit callback synchronously, so the "Ending..."
   // state is only visible for < 1 ms — too brief for Playwright's polling to detect.
   // The codex synchronous-exit behaviour is a separate issue; skip here.
-  test.skip(agentType === "codex", "codex closeStdin exits synchronously; Ending... state is undetectable");
+  test.skip(
+    agentType === "codex",
+    "codex closeStdin exits synchronously; Ending... state is undetectable",
+  );
 
   await enterSession(page);
 
@@ -15,16 +28,22 @@ test("End button shows ending state then session exits", async ({ page, agentTyp
   await sendMessage(page, "run command sleep 5");
 
   // Wait for the agent to start processing (tool call visible)
-  await expect(page.locator(".tool-call")).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(page.locator(".tool-call")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Click the End button
   await page.locator(".btn-banner-end").click();
 
   // The End button should disappear (or be hidden)
-  await expect(page.locator(".btn-banner-end")).not.toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".btn-banner-end")).not.toBeVisible({
+    timeout: 5_000,
+  });
 
   // "Ending..." should appear in the banner
-  await expect(page.locator(".banner-processing", { hasText: "Ending..." })).toBeVisible({ timeout: 5_000 });
+  await expect(
+    page.locator(".banner-processing", { hasText: "Ending..." }),
+  ).toBeVisible({ timeout: 5_000 });
 
   // Kill button should still be visible (as a fallback)
   await expect(page.locator(".btn-banner-stop")).toBeVisible();
@@ -37,14 +56,22 @@ test("End button shows ending state then session exits", async ({ page, agentTyp
   await expect(page.locator(".btn-send").first()).toBeDisabled();
 
   // Eventually the session should exit and show the Archive button
-  await expect(page.locator(".btn-banner-archive")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".btn-banner-archive")).toBeVisible({
+    timeout: 30_000,
+  });
 
   // "Ending..." should no longer be visible
   await expect(page.locator(".banner-processing")).not.toBeVisible();
 });
 
-test("background command output re-enters processing state", async ({ page, agentType }) => {
-  test.skip(agentType === "copilot", "copilot does not support background commands");
+test("background command output re-enters processing state", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType === "copilot",
+    "copilot does not support background commands",
+  );
 
   // Track task_updated isProcessing transitions via WebSocket frames.
   // The re-entry window may be brief (< 200ms for Claude) so we can't rely on
@@ -60,7 +87,9 @@ test("background command output re-enters processing state", async ({ page, agen
             processingTransitions.push(data.task.isProcessing);
           }
         }
-      } catch { /* ignore non-JSON frames */ }
+      } catch {
+        /* ignore non-JSON frames */
+      }
     });
   });
 
@@ -68,17 +97,16 @@ test("background command output re-enters processing state", async ({ page, agen
 
   // Use a background command with quick yield - the turn completes fast,
   // then the command continues running in the background.
-  const cmd = agentType === "codex"
-    ? "run background command sleep 3"
-    : "run command with timeout 1000 sleep 5";
+  const cmd =
+    agentType === "codex"
+      ? "run background command sleep 3"
+      : "run command with timeout 1000 sleep 5";
   await sendMessage(page, cmd);
 
   const timeout = responseTimeout(agentType);
 
   // Wait for the turn to complete — "Done." text appears
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // After the first turn ends (isProcessing goes false), the background command
   // eventually completes and triggers a new turn — isProcessing goes true again.

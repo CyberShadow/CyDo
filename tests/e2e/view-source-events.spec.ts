@@ -1,10 +1,20 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("View Source shows item-level events in collapsible list", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "item/started and item/completed are claude-only events");
+  test.skip(
+    agentType !== "claude",
+    "item/started and item/completed are claude-only events",
+  );
 
   await enterSession(page);
   await sendMessage(page, "run command echo view-source-events-test");
@@ -17,13 +27,11 @@ test("View Source shows item-level events in collapsible list", async ({
   ).toBeVisible({ timeout });
 
   // Wait for the final "Done." response from the assistant
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Hover over the last assistant message to reveal action buttons
   const lastAssistantMsg = page.locator(".message-wrapper").filter({
-    has: page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+    has: assistantText(page, "Done."),
   });
   await lastAssistantMsg.hover();
 

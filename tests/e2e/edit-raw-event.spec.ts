@@ -1,4 +1,13 @@
-import { test, expect, enterSession, sendMessage, killSession, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  killSession,
+  responseTimeout,
+  assistantText,
+  lastAssistantText,
+} from "./fixtures";
 
 test("edit raw JSON event persists to disk across reload", async ({
   page,
@@ -15,9 +24,7 @@ test("edit raw JSON event persists to disk across reload", async ({
   ).toBeVisible({ timeout });
 
   // Wait for the final "Done." response
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Stop the session so we can edit
   await killSession(page, agentType);
@@ -26,7 +33,7 @@ test("edit raw JSON event persists to disk across reload", async ({
   const assistantMsg = page
     .locator(".message-wrapper")
     .filter({
-      has: page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+      has: assistantText(page, "Done."),
     })
     .last();
   await assistantMsg.hover();
@@ -37,7 +44,7 @@ test("edit raw JSON event persists to disk across reload", async ({
 
   // Use global locator for source-view since clicking view-source replaces
   // the text content, which breaks the scoped filter.
-  const sourceView = page.locator(".source-view").last();
+  const sourceView = page.locator(".source-view");
   await expect(sourceView).toBeVisible({ timeout: 5_000 });
 
   // Expand the first event
@@ -85,15 +92,15 @@ test("edit raw JSON event persists to disk across reload", async ({
   await page.locator(".edit-actions .btn-primary").click();
 
   // Session reloads — wait for messages to reappear
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(lastAssistantText(page, "Done.")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Verify the edit persisted: re-open source view and check the marker
   const assistantMsgAfter = page
     .locator(".message-wrapper")
     .filter({
-      has: page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
+      has: assistantText(page, "Done."),
     })
     .last();
   await assistantMsgAfter.hover();
@@ -102,7 +109,7 @@ test("edit raw JSON event persists to disk across reload", async ({
   await expect(viewSourceBtn2).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn2.click();
 
-  const sourceView2 = page.locator(".source-view").last();
+  const sourceView2 = page.locator(".source-view");
   const firstEventHeader2 = sourceView2.locator(".source-event-header").first();
   await expect(firstEventHeader2).toBeVisible({ timeout: 5_000 });
   await firstEventHeader2.click();
@@ -111,7 +118,9 @@ test("edit raw JSON event persists to disk across reload", async ({
   await expect(rawTab2).toBeVisible({ timeout: 5_000 });
   await rawTab2.click();
 
-  await expect(sourceView2.locator(".code-pre-wrap").first()).toBeVisible({ timeout: 10_000 });
+  await expect(sourceView2.locator(".code-pre-wrap").first()).toBeVisible({
+    timeout: 10_000,
+  });
   // The marker injected into the raw event must survive the JSONL round-trip
   await expect(
     sourceView2.locator(".code-pre-wrap", { hasText: marker }),

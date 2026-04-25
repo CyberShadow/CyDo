@@ -18,7 +18,7 @@ test("codex stderr view source keeps tabs and shows abstract stderr payload", as
   await sendMessage(page, "codex filechange create fixture");
   await expect(
     page
-      .locator(".message.assistant-message .text-content", {
+      .locator('[data-testid="assistant-text"]', {
         hasText: "Done.",
       })
       .last(),

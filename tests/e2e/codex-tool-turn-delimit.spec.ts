@@ -1,4 +1,11 @@
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 // Regression test for tool turn delimiting in Codex sessions.
 //
@@ -30,9 +37,7 @@ test("codex tool turn produces separate assistant messages for tool call and res
   const timeout = responseTimeout(agentType);
 
   // Wait for the turn to complete — "Done." text response appears
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Verify two separate assistant messages were created (one for the tool call,
   // one for "Done."). The intermediate turn/stop from thread/tokenUsage/updated
@@ -41,12 +46,14 @@ test("codex tool turn produces separate assistant messages for tool call and res
   await expect(assistantMessages).toHaveCount(2, { timeout: 5_000 });
 
   // First message should contain the tool call block (commandExecution)
-  await expect(
-    assistantMessages.first().locator(".tool-call"),
-  ).toBeVisible({ timeout: 5_000 });
+  await expect(assistantMessages.first().locator(".tool-call")).toBeVisible({
+    timeout: 5_000,
+  });
 
   // Second message should contain the "Done." text
   await expect(
-    assistantMessages.nth(1).locator(".text-content", { hasText: "Done." }),
+    assistantMessages.nth(1).locator('[data-testid="assistant-text"]', {
+      hasText: "Done.",
+    }),
   ).toBeVisible({ timeout: 5_000 });
 });

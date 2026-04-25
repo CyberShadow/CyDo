@@ -17,7 +17,14 @@
  * Expected order:  [user] [assistant]
  * Actual order:    [assistant] [user]
  */
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("user message appears above assistant response during live session", async ({
   page,
@@ -29,16 +36,14 @@ test("user message appears above assistant response during live session", async 
   await sendMessage(page, 'reply with "hello-order-test"');
 
   // Wait for the assistant response to appear in the DOM
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "hello-order-test",
-    }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "hello-order-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // Wait for the confirmed (non-pending) user message
-  await expect(
-    page.locator(".message.user-message:not(.pending)"),
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".message.user-message:not(.pending)")).toBeVisible(
+    { timeout: 15_000 },
+  );
 
   // Check DOM order: user message must come BEFORE assistant in the same
   // message list.  Use compareDocumentPosition to avoid relying on
@@ -50,7 +55,8 @@ test("user message appears above assistant response during live session", async 
       const msgList = userEl.closest(".message-list");
       if (!msgList) return { ok: false, reason: "no .message-list ancestor" };
       const assistantEl = msgList.querySelector(".message.assistant-message");
-      if (!assistantEl) return { ok: false, reason: "no .message.assistant-message in list" };
+      if (!assistantEl)
+        return { ok: false, reason: "no .message.assistant-message in list" };
       // DOCUMENT_POSITION_FOLLOWING (4): assistantEl comes after userEl in DOM
       const pos = userEl.compareDocumentPosition(assistantEl);
       const ok = (pos & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;

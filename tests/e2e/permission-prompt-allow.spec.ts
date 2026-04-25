@@ -1,7 +1,17 @@
 import { writeFileSync } from "fs";
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
-test("permission_policy allow auto-approves tool calls via PermissionPrompt", async ({ page, agentType }) => {
+test("permission_policy allow auto-approves tool calls via PermissionPrompt", async ({
+  page,
+  agentType,
+}) => {
   test.skip(agentType !== "claude", "claude-only test");
 
   // Configure the workspace with permission_policy: allow so the backend passes
@@ -20,15 +30,18 @@ workspaces:
   await page.waitForTimeout(500);
 
   await enterSession(page);
-  await sendMessage(page, "run command echo permission-allow-test > .claude/test-allow.md");
+  await sendMessage(
+    page,
+    "run command echo permission-allow-test > .claude/test-allow.md",
+  );
 
   // The Bash tool should execute successfully.
-  await expect(
-    page.locator(".tool-name", { hasText: "Bash" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(page.locator(".tool-name", { hasText: "Bash" })).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 
   // The session should complete with "Done." from the mock LLM.
-  await expect(
-    page.locator(".message.assistant-message .text-content", { hasText: "Done." }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  await expect(assistantText(page, "Done.")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
 });

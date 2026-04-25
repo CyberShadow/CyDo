@@ -4,6 +4,7 @@ import {
   enterSession,
   sendMessage,
   responseTimeout,
+  assistantText,
 } from "./fixtures";
 
 // Helper: send a message and wait for the assistant's response text.
@@ -14,9 +15,7 @@ async function sendAndWait(
 ) {
   await sendMessage(page, msg);
   await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: msg.match(/reply with "([^"]*)"/)?.[1] ?? msg,
-    }),
+    assistantText(page, msg.match(/reply with "([^"]*)"/)?.[1] ?? msg),
   ).toBeVisible({ timeout: responseTimeout(agentType as any) });
 }
 
