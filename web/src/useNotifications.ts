@@ -161,13 +161,6 @@ export function useNotifications(
     };
   }, [activeTaskId, tasks]);
 
-  // Request Notification permission
-  useEffect(() => {
-    if ("Notification" in window && Notification.permission === "default") {
-      void Notification.requestPermission();
-    }
-  }, []);
-
   // Start SharedWorker and report focus state
   useEffect(() => {
     startWorker();
@@ -189,4 +182,11 @@ export function useNotifications(
   }, []);
 
   return attention;
+}
+
+export function requestNotificationPermissionFromGesture() {
+  if (typeof window === "undefined") return;
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "default") return;
+  void Notification.requestPermission();
 }

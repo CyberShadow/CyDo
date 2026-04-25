@@ -23,6 +23,7 @@ import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
 import { PermissionPromptForm } from "./PermissionPromptForm";
 import { FileViewer } from "./FileViewer";
+import { requestNotificationPermissionFromGesture } from "../useNotifications";
 
 interface Props {
   task: TaskState;
@@ -152,6 +153,7 @@ function SessionViewInner({
 
   const handleSend = useCallback(
     (text: string, images?: ImageAttachment[]) => {
+      requestNotificationPermissionFromGesture();
       if (isDraft) {
         onSend(
           text,
