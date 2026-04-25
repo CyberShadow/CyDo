@@ -94,6 +94,52 @@ async function assertTurnPresence(
   }
 }
 
+test("claude live idle undo latest turn avoids UUID truncation alert", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "Claude-only regression for live latest-turn undo alert",
+  );
+
+  const timeout = responseTimeout(agentType);
+  await enterSession(page);
+
+  await sendMessage(page, 'Please reply with "alert-one"');
+  await expect(assistantText(page, "alert-one")).toBeVisible({ timeout });
+
+  await sendMessage(page, 'Please reply with "alert-two"');
+  await expect(assistantText(page, "alert-two")).toBeVisible({ timeout });
+
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.message());
+    dialog.dismiss().catch(() => {});
+  });
+
+  await openUndoDialogForTurn(page, "alert-two");
+  const revertFilesCheckbox = page
+    .locator(".undo-dialog-options label", { hasText: "Revert file changes" })
+    .locator('input[type="checkbox"]');
+  if ((await revertFilesCheckbox.count()) > 0) {
+    await revertFilesCheckbox.first().uncheck();
+  }
+
+  await page.locator(".btn-undo").click();
+
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(async () => {
+    await assertTurnPresence(page, ["alert-one"], true);
+    await assertTurnPresence(page, ["alert-two"], false);
+  }).toPass({ timeout: 15_000 });
+
+  expect(
+    dialogs.filter((message) => message.includes("UUID not found for truncation")),
+  ).toEqual([]);
+});
+
 test("claude live idle undo on turn three removes only turns three through five", async ({
   page,
   agentType,

@@ -3273,8 +3273,28 @@ class App : ToolsBackend
 		auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
 		jsonlTracker.clearUndoJsonl(tid);
 
+		bool snapshotContainsUndoAnchor(string snapshot, string forkId)
+		{
+			import std.string : lineSplitter;
+
+			if (snapshot.length == 0 || forkId.length == 0)
+				return false;
+
+			int lnum = 0;
+			foreach (rawLine; snapshot.lineSplitter)
+			{
+				lnum++;
+				if (rawLine.length == 0)
+					continue;
+				if (ta.forkIdMatchesLine(rawLine, lnum, forkId))
+					return true;
+			}
+			return false;
+		}
+
 		td.processQueue.setGoal(ProcessState.Dead).then(() {
-			if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0)
+			if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0 &&
+				snapshotContainsUndoAnchor(jsonlSnap, json.after_uuid))
 			{
 				import std.file : write;
 				write(jsonlPathSnap, jsonlSnap);
