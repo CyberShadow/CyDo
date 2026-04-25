@@ -1,5 +1,11 @@
 import { memo } from "preact/compat";
-import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type { TypeInfo } from "../useSessionManager";
 import { ensureIconStyles } from "./TaskTypeIcon";
 import { isPlainLeftClick } from "../utils";
@@ -591,6 +597,97 @@ export const Sidebar = memo(function Sidebar({
       ?.scrollIntoView({ block: "nearest" });
   }, [visible, activeTaskId]);
 
+  // Track off-screen attention/asking items for edge glow indicators.
+  const [glowState, setGlowState] = useState({
+    attentionAbove: false,
+    attentionBelow: false,
+    askingAbove: false,
+    askingBelow: false,
+  });
+
+  useEffect(() => {
+    const container = listRef.current;
+    if (!container) return;
+
+    const attentionEls = container.querySelectorAll<HTMLElement>(
+      ".sidebar-item.attention, .sidebar-item.asking",
+    );
+
+    if (attentionEls.length === 0) {
+      setGlowState({
+        attentionAbove: false,
+        attentionBelow: false,
+        askingAbove: false,
+        askingBelow: false,
+      });
+      return;
+    }
+
+    type EntryState = {
+      above: boolean;
+      isAsking: boolean;
+      isIntersecting: boolean;
+    };
+    const stateMap = new Map<Element, EntryState>();
+
+    const updateGlow = () => {
+      let attentionAbove = false,
+        attentionBelow = false,
+        askingAbove = false,
+        askingBelow = false;
+      for (const [, s] of stateMap) {
+        if (s.isIntersecting) continue;
+        if (s.above) {
+          attentionAbove = true;
+          if (s.isAsking) askingAbove = true;
+        } else {
+          attentionBelow = true;
+          if (s.isAsking) askingBelow = true;
+        }
+      }
+      setGlowState({
+        attentionAbove,
+        attentionBelow,
+        askingAbove,
+        askingBelow,
+      });
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const isAsking = entry.target.classList.contains("asking");
+          let above = false;
+          if (!entry.isIntersecting && entry.rootBounds) {
+            // Compare actual pixel positions: above means item's bottom edge
+            // is above the container's top edge.
+            above = entry.boundingClientRect.bottom < entry.rootBounds.top + 1;
+          }
+          stateMap.set(entry.target, {
+            isIntersecting: entry.isIntersecting,
+            above,
+            isAsking,
+          });
+        }
+        updateGlow();
+      },
+      { root: container, threshold: 0 },
+    );
+
+    for (const el of attentionEls) {
+      stateMap.set(el, {
+        isIntersecting: true,
+        above: false,
+        isAsking: el.classList.contains("asking"),
+      });
+      observer.observe(el);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [flatItems, attention]);
+
   return (
     <div class="sidebar">
       <div class="sidebar-header">
@@ -683,43 +780,51 @@ export const Sidebar = memo(function Sidebar({
           )}
         </div>
       </div>
-      <div class="sidebar-list" ref={listRef}>
-        <a
-          href={newTaskHref}
-          class={`sidebar-item sidebar-new-task${
-            activeTaskId === null ? " active" : ""
-          }`}
-          title="New Task (Ctrl+Shift+O)"
-          onClick={(e: MouseEvent) => {
-            if (!isPlainLeftClick(e)) return;
-            onNewTask();
-          }}
-        >
-          <span class="task-type-icon task-type-icon-plus" />
-          <span class="sidebar-label">New Task</span>
-        </a>
-        {flatItems
-          .map((item) => (
-            <SidebarItem
-              key={item.id}
-              id={item.id}
-              depth={item.depth}
-              guides={item.guides}
-              relationType={item.relationType}
-              statusClass={item.statusClass}
-              title={item.title}
-              iconName={item.iconName}
-              isArchive={item.isArchive}
-              isActive={item.id === activeTaskId}
-              hasAttention={attention.has(item.tid)}
-              hasPendingQuestion={item.hasPendingQuestion}
-              archiving={item.archiving}
-              href={getTaskHref(item.id)}
-              onSelect={handleSelect}
-              onArchive={handleArchive}
-            />
-          ))
-          .reverse()}
+      <div
+        class="sidebar-list-wrapper"
+        data-attention-above={glowState.attentionAbove ? "" : undefined}
+        data-attention-below={glowState.attentionBelow ? "" : undefined}
+        data-asking-above={glowState.askingAbove ? "" : undefined}
+        data-asking-below={glowState.askingBelow ? "" : undefined}
+      >
+        <div class="sidebar-list" ref={listRef}>
+          <a
+            href={newTaskHref}
+            class={`sidebar-item sidebar-new-task${
+              activeTaskId === null ? " active" : ""
+            }`}
+            title="New Task (Ctrl+Shift+O)"
+            onClick={(e: MouseEvent) => {
+              if (!isPlainLeftClick(e)) return;
+              onNewTask();
+            }}
+          >
+            <span class="task-type-icon task-type-icon-plus" />
+            <span class="sidebar-label">New Task</span>
+          </a>
+          {flatItems
+            .map((item) => (
+              <SidebarItem
+                key={item.id}
+                id={item.id}
+                depth={item.depth}
+                guides={item.guides}
+                relationType={item.relationType}
+                statusClass={item.statusClass}
+                title={item.title}
+                iconName={item.iconName}
+                isArchive={item.isArchive}
+                isActive={item.id === activeTaskId}
+                hasAttention={attention.has(item.tid)}
+                hasPendingQuestion={item.hasPendingQuestion}
+                archiving={item.archiving}
+                href={getTaskHref(item.id)}
+                onSelect={handleSelect}
+                onArchive={handleArchive}
+              />
+            ))
+            .reverse()}
+        </div>
       </div>
     </div>
   );

@@ -339,6 +339,65 @@ body,
   color: var(--accent);
 }
 
+.sidebar-list-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.sidebar-list-wrapper::before,
+.sidebar-list-wrapper::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 62px;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.sidebar-list-wrapper::before {
+  top: 0;
+  background: linear-gradient(to bottom, rgba(76, 175, 80, 0.25), transparent);
+}
+
+.sidebar-list-wrapper::after {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(76, 175, 80, 0.25), transparent);
+}
+
+.sidebar-list-wrapper[data-attention-above]::before,
+.sidebar-list-wrapper[data-asking-above]::before {
+  opacity: 1;
+}
+
+.sidebar-list-wrapper[data-attention-below]::after,
+.sidebar-list-wrapper[data-asking-below]::after {
+  opacity: 1;
+}
+
+/* Orange takes priority when asking items are off-screen */
+.sidebar-list-wrapper[data-asking-above]::before {
+  background: linear-gradient(to bottom, rgba(255, 152, 0, 0.25), transparent);
+}
+
+.sidebar-list-wrapper[data-asking-below]::after {
+  background: linear-gradient(to top, rgba(255, 152, 0, 0.25), transparent);
+}
+
+[data-theme="light"] .sidebar-list-wrapper[data-asking-above]::before {
+  background: linear-gradient(to bottom, rgba(180, 120, 0, 0.25), transparent);
+}
+
+[data-theme="light"] .sidebar-list-wrapper[data-asking-below]::after {
+  background: linear-gradient(to top, rgba(180, 120, 0, 0.25), transparent);
+}
+
 .sidebar-list {
   flex: 1;
   overflow-y: auto;
