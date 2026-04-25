@@ -98,6 +98,27 @@ function findRolloutJsonl(root: string): string | null {
   return null;
 }
 
+function readFunctionCallOutputs(rolloutPath: string): string[] {
+  const rawLines = readFileSync(rolloutPath, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0);
+  const outputPayloads: string[] = [];
+  for (const line of rawLines) {
+    const row = JSON.parse(line) as {
+      type?: string;
+      payload?: { type?: string; output?: string };
+    };
+    if (
+      row.type === "response_item" &&
+      row.payload?.type === "function_call_output" &&
+      typeof row.payload.output === "string"
+    ) {
+      outputPayloads.push(row.payload.output);
+    }
+  }
+  return outputPayloads;
+}
+
 const test = base.extend<{ restartableBackend: RestartableBackend }>({
   restartableBackend: async ({}, use, testInfo) => {
     test.skip(testInfo.project.name !== "codex", "codex-only regression");
@@ -224,24 +245,7 @@ test("live invalid child task_type returns structured task error payload", async
   );
   expect(rolloutPath).not.toBeNull();
 
-  const rawLines = readFileSync(rolloutPath!, "utf8")
-    .split("\n")
-    .filter((line) => line.trim().length > 0);
-  const outputPayloads: string[] = [];
-  for (const line of rawLines) {
-    const row = JSON.parse(line) as {
-      type?: string;
-      payload?: { type?: string; output?: string };
-    };
-    if (
-      row.type === "response_item" &&
-      row.payload?.type === "function_call_output" &&
-      typeof row.payload.output === "string"
-    ) {
-      outputPayloads.push(row.payload.output);
-    }
-  }
-
+  const outputPayloads = readFunctionCallOutputs(rolloutPath!);
   const invalidTaskOutput = outputPayloads.find((out) =>
     out.includes("not in creatable_tasks"),
   );
@@ -407,68 +411,59 @@ test("codex history replay keeps successful structured task rendering", async ({
   await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
   await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
 });
-
-test("codex history replay parses prefixed task output JSON string", async ({
+test("codex history replay renders live task output from organic rollout", async ({
   page,
   restartableBackend,
 }) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
+  test.setTimeout(180_000);
 
-  const callId = "call_prefixed_task_output";
-  const output = `Wall time: 141.4575 seconds\nOutput:\n${JSON.stringify({
-    tasks: [
-      {
-        status: "answered",
-        tid: 15706,
-        title: "Reproduce notification warning",
-        message:
-          "Commands run for the reproducer:\n\n1. Initial fixture-based spec\n`nix develop -ic env -C tests playwright test e2e/notification-permission.spec.ts --project=claude`",
-        note: "Use Ask(question, 15706) for further follow-ups.",
-      },
-    ],
-  })}`;
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
 
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-03-27T07:35:23.000Z",
-        type: "response_item",
-        payload: {
-          type: "function_call",
-          call_id: callId,
-          name: "mcp__cydo__Task",
-          arguments:
-            '{"tasks":[{"task_type":"plan","prompt":"reproduce warning","description":"Task result replay"}]}',
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-03-27T07:35:23.428Z",
-        type: "response_item",
-        payload: {
-          type: "function_call_output",
-          call_id: callId,
-          output,
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
 
-  const taskTool = await replayAndFindTaskTool(
-    page,
-    restartableBackend,
-    taskUrl,
-  );
-  await expect(taskTool).toContainText("status:", { timeout: 15_000 });
-  await expect(taskTool).toContainText("answered", { timeout: 15_000 });
+  const markdownItem = "Organic rollout markdown item";
+  await input.fill(`call task research reply with "1. ${markdownItem}"`);
+  await page.locator(".btn-send:visible").first().click();
+
+  const taskTool = page.locator(".tool-call").filter({
+    has: page.locator(".tool-name", { hasText: "Task" }),
+  });
+  await expect(taskTool).toContainText("tid:", { timeout: 90_000 });
+  await expect(taskTool).toContainText(markdownItem, { timeout: 90_000 });
   await expect(
     taskTool.locator(".text-content ol li", {
-      hasText: "Initial fixture-based spec",
+      hasText: markdownItem,
     }),
   ).toBeVisible({ timeout: 15_000 });
-  await expect(taskTool).not.toContainText("Wall time:");
+
+  const taskUrl = page.url();
+  await page.waitForTimeout(1_000);
+
+  const rolloutPath = findRolloutJsonl(
+    join(restartableBackend.codexHome, "sessions"),
+  );
+  expect(rolloutPath).not.toBeNull();
+  const organicTaskOutput = readFunctionCallOutputs(rolloutPath!).find((out) =>
+    out.includes(markdownItem),
+  );
+  expect(organicTaskOutput).toBeTruthy();
+
+  await restartableBackend.restart();
+  await page.goto(taskUrl);
+
+  const replayedTaskTool = page.locator(".tool-call").filter({
+    has: page.locator(".tool-name", { hasText: "Task" }),
+  });
+  await expect(replayedTaskTool).toContainText("tid:", { timeout: 15_000 });
+  await expect(replayedTaskTool).toContainText(markdownItem, {
+    timeout: 15_000,
+  });
+  await expect(
+    replayedTaskTool.locator(".text-content ol li", {
+      hasText: markdownItem,
+    }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(replayedTaskTool).not.toContainText("Wall time:");
 });
