@@ -407,3 +407,68 @@ test("codex history replay keeps successful structured task rendering", async ({
   await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
   await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
 });
+
+test("codex history replay parses prefixed task output JSON string", async ({
+  page,
+  restartableBackend,
+}) => {
+  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+    page,
+    restartableBackend,
+  );
+
+  const callId = "call_prefixed_task_output";
+  const output = `Wall time: 141.4575 seconds\nOutput:\n${JSON.stringify({
+    tasks: [
+      {
+        status: "answered",
+        tid: 15706,
+        title: "Reproduce notification warning",
+        message:
+          "Commands run for the reproducer:\n\n1. Initial fixture-based spec\n`nix develop -ic env -C tests playwright test e2e/notification-permission.spec.ts --project=claude`",
+        note: "Use Ask(question, 15706) for further follow-ups.",
+      },
+    ],
+  })}`;
+
+  appendFileSync(
+    rolloutPath,
+    [
+      JSON.stringify({
+        timestamp: "2026-03-27T07:35:23.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: callId,
+          name: "mcp__cydo__Task",
+          arguments:
+            '{"tasks":[{"task_type":"plan","prompt":"reproduce warning","description":"Task result replay"}]}',
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-03-27T07:35:23.428Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: callId,
+          output,
+        },
+      }),
+      "",
+    ].join("\n"),
+  );
+
+  const taskTool = await replayAndFindTaskTool(
+    page,
+    restartableBackend,
+    taskUrl,
+  );
+  await expect(taskTool).toContainText("status:", { timeout: 15_000 });
+  await expect(taskTool).toContainText("answered", { timeout: 15_000 });
+  await expect(
+    taskTool.locator(".text-content ol li", {
+      hasText: "Initial fixture-based spec",
+    }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(taskTool).not.toContainText("Wall time:");
+});

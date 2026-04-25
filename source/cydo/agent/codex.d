@@ -2992,6 +2992,43 @@ string[] translateRolloutToolUse(string callId, string toolName, string inputJso
 }
 
 /// Translate a tool_result response_item → item/result.
+Nullable!string tryExtractRolloutOutputJson(string outputJson)
+{
+	import std.json : parseJSON;
+	import std.string : indexOf, strip;
+
+	enum outputMarker = "Output:\n";
+	if (outputJson.length == 0 || outputJson[0] != '"')
+		return Nullable!string.init;
+
+	string decoded;
+	try
+		decoded = jsonParse!string(outputJson);
+	catch (Exception)
+	{
+		return Nullable!string.init;
+	}
+
+	auto markerPos = indexOf(decoded, outputMarker);
+	if (markerPos < 0)
+		return Nullable!string.init;
+
+	auto extracted = decoded[markerPos + outputMarker.length .. $].strip();
+	if (extracted.length == 0)
+		return Nullable!string.init;
+	if (extracted[0] != '{' && extracted[0] != '[')
+		return Nullable!string.init;
+
+	try
+		parseJSON(extracted);
+	catch (Exception)
+	{
+		return Nullable!string.init;
+	}
+
+	return Nullable!string(extracted);
+}
+
 string translateRolloutToolResult(string callId, string outputJson)
 {
 	import cydo.agent.protocol : ItemResultEvent;
@@ -2999,7 +3036,13 @@ string translateRolloutToolResult(string callId, string outputJson)
 	ItemResultEvent ev;
 	ev.item_id = callId;
 	if (outputJson.length > 0 && outputJson[0] == '"')
-		ev.content = JSONFragment(`[{"type":"text","text":` ~ outputJson ~ `}]`);
+	{
+		auto extracted = tryExtractRolloutOutputJson(outputJson);
+		if (!extracted.isNull)
+			ev.content = JSONFragment(`[{"type":"text","text":` ~ toJson(extracted.get) ~ `}]`);
+		else
+			ev.content = JSONFragment(`[{"type":"text","text":` ~ outputJson ~ `}]`);
+	}
 	else
 		ev.content = JSONFragment(outputJson);
 	return toJson(ev);
