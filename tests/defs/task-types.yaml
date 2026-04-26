@@ -22,6 +22,14 @@ user_entry_points:
     worktree: require
     description: "Own worktree with sub-agent support"
     prompt_template: prompts/isolated.md
+  system_prompt_test:
+    task_type: test_system_prompt
+    description: "Session with task system prompt"
+    prompt_template: prompts/blank.md
+  sysprompt_mode_a:
+    task_type: test_sysprompt_mode_a
+    description: "Session with system prompt mode A"
+    prompt_template: prompts/blank.md
 
 task_types:
   blank:
@@ -169,10 +177,18 @@ task_types:
         task_type: test_sysprompt_mode_b
         keep_context: true
         prompt_template: prompts/test_sysprompt_check_b.md
+      check_new_autonomous:
+        task_type: test_sysprompt_mode_b
+        keep_context: true
+        prompt_template: prompts/test_sysprompt_check_b_autonomous.md
       check_old_absent:
         task_type: test_sysprompt_mode_b
         keep_context: true
         prompt_template: prompts/test_sysprompt_check_a.md
+      check_old_user_absent:
+        task_type: blank
+        keep_context: true
+        prompt_template: prompts/test_sysprompt_check_user_a.md
 
   test_sysprompt_mode_b:
     model_class: small

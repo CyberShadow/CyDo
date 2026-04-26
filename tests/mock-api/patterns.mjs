@@ -285,6 +285,12 @@ export function matchPattern(userText) {
   if (match)
     return { type: "check_user_text", needle: match[1] };
 
+  // Autonomous compaction reminder fixture: force a SwitchMode tool call with
+  // a huge token count so the follow-up keep-context continuation compacts
+  // without any additional user message.
+  if (/autonomous compaction reminder fixture/i.test(userText))
+    return { type: "autonomous_compaction_switchmode" };
+
   // Decompose continuation fixture: if the resumed keep-context prompt uses the
   // strengthened decompose handoff instructions, dispatch a deterministic
   // sub-task.

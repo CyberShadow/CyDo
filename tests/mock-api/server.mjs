@@ -333,7 +333,7 @@ function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
   }, delayMs);
 }
 
-function oaiStreamFunctionCallResponse(res, name, args) {
+function oaiStreamFunctionCallResponse(res, name, args, totalTokensOverride) {
   const respId = nextRespId();
   const callId = nextCallId();
   oaiSseEvent(res, "response.created", {
@@ -358,7 +358,7 @@ function oaiStreamFunctionCallResponse(res, name, args) {
         input_tokens_details: null,
         output_tokens: 20,
         output_tokens_details: null,
-        total_tokens: 30,
+        total_tokens: totalTokensOverride ?? 30,
       },
     },
   });
@@ -542,17 +542,51 @@ function oaiStreamWebSearchCallResponse(res, query, queries) {
 }
 
 // Extract the last user text from the Responses API input array.
+function isCydoTaskReminderText(text) {
+  return (
+    typeof text === "string" &&
+    text.trimStart().startsWith("[CYDO TASK MODE REMINDER]")
+  );
+}
+
+function isModeAReminderText(text) {
+  return (
+    isCydoTaskReminderText(text) &&
+    text.includes("CYDO_SYSTEM_PROMPT_MODE_A_MARKER")
+  );
+}
+
+function isModeBReminderText(text) {
+  return (
+    isCydoTaskReminderText(text) &&
+    text.includes("CYDO_SYSTEM_PROMPT_MODE_B_MARKER")
+  );
+}
+
+function extractUserTextSpan(item) {
+  if (!item || item.type !== "message" || item.role !== "user") return null;
+  if (Array.isArray(item.content)) {
+    for (const span of item.content) {
+      if (span.type === "input_text") return span.text;
+    }
+  }
+  if (typeof item.content === "string") return item.content;
+  return null;
+}
+
 function extractLastUserTextFromInput(input) {
   for (let i = input.length - 1; i >= 0; i--) {
-    const item = input[i];
-    if (item.type === "message" && item.role === "user") {
-      if (Array.isArray(item.content)) {
-        for (const span of item.content) {
-          if (span.type === "input_text") return span.text;
-        }
-      }
-      if (typeof item.content === "string") return item.content;
-    }
+    const text = extractUserTextSpan(input[i]);
+    if (text !== null) return text;
+  }
+  return null;
+}
+
+function extractLastNonReminderUserTextFromInput(input) {
+  for (let i = input.length - 1; i >= 0; i--) {
+    const text = extractUserTextSpan(input[i]);
+    if (text === null) continue;
+    if (!isCydoTaskReminderText(text)) return text;
   }
   return null;
 }
@@ -563,7 +597,16 @@ function extractLastUserTextFromInput(input) {
 function hasToolOutput(input) {
   let lastUserIdx = -1;
   for (let i = input.length - 1; i >= 0; i--) {
-    if (input[i].type === "message" && input[i].role === "user") {
+    const text = extractUserTextSpan(input[i]);
+    if (text === null) continue;
+    if (isCydoTaskReminderText(text)) continue;
+    lastUserIdx = i;
+    break;
+  }
+  if (lastUserIdx === -1) {
+    for (let i = input.length - 1; i >= 0; i--) {
+      const text = extractUserTextSpan(input[i]);
+      if (text === null) continue;
       lastUserIdx = i;
       break;
     }
@@ -595,11 +638,28 @@ function handleResponses(req, res) {
     const input = parsed.input || [];
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserTextFromInput(input);
+    const intentText =
+      isCydoTaskReminderText(userText)
+        ? (extractLastNonReminderUserTextFromInput(input) ?? userText)
+        : userText;
     const isToolOutput = hasToolOutput(input);
-    const intent = userText === null ? null : matchPattern(userText);
+    const intent = intentText === null ? null : matchPattern(intentText);
     console.log(
-      `[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} isToolOutput=${isToolOutput} inputLen=${input.length}`,
+      `[mock-api] [responses] model=${requestedModel} userText=${JSON.stringify(userText)} intentText=${JSON.stringify(intentText)} isToolOutput=${isToolOutput} inputLen=${input.length}`,
     );
+
+    // Codex compaction reminder fixture:
+    // `call switchmode check_old_user_absent` should only proceed when the
+    // in-flight reminder already reached the model request.
+    if (
+      intent?.type === "tool_call" &&
+      intent.name === "mcp__cydo__SwitchMode" &&
+      intent.input?.continuation === "check_old_user_absent" &&
+      !isModeAReminderText(userText)
+    ) {
+      oaiStreamTextResponse(res, "switchmode-reminder-missing");
+      return;
+    }
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -612,7 +672,9 @@ function handleResponses(req, res) {
     if (isToolOutput) {
       // Multi-background-command: if original message was "run two background
       // commands" and we've only sent one exec_command so far, send the second.
-      const origText = extractLastUserTextFromInput(input);
+      const origText =
+        extractLastNonReminderUserTextFromInput(input) ??
+        extractLastUserTextFromInput(input);
       if (origText && /run two background commands/i.test(origText)) {
         const fcOutputCount = input.filter(
           (i) => i.type === "function_call_output",
@@ -654,6 +716,18 @@ function handleResponses(req, res) {
     }
 
     if (intent.type === "check_context") {
+      const isAutonomousContinuationProbe =
+        typeof intentText === "string" &&
+        intentText.includes("AUTONOMOUS_REMINDER_PROBE");
+      if (isAutonomousContinuationProbe) {
+        oaiStreamTextResponse(
+          res,
+          isModeBReminderText(userText)
+            ? "autonomous-reminder-observed"
+            : "autonomous-reminder-missing",
+        );
+        return;
+      }
       const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
       const haystack = JSON.stringify(parsed);
       const found = haystack.includes(needle);
@@ -700,6 +774,13 @@ function handleResponses(req, res) {
       // deferral mechanism is exercised even with a single Answer call.
       const first = intent.tool_calls[0];
       oaiStreamFunctionCallResponse(res, first.name, first.input);
+    } else if (intent.type === "autonomous_compaction_switchmode") {
+      oaiStreamFunctionCallResponse(
+        res,
+        "mcp__cydo__SwitchMode",
+        { continuation: "check_new_autonomous" },
+        500000,
+      );
     } else if (intent.name === "apply_patch") {
       oaiStreamCustomToolCallResponse(res, intent.name, intent.input);
     } else if (intent.type === "web_search") {

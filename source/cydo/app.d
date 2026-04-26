@@ -3658,6 +3658,43 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
+	/// Broadcast a pending user message bubble without writing to agent stdin.
+	/// Used for internal steering paths that must send to the agent immediately.
+	private void broadcastPendingTaskMessageOnly(int tid, const(ContentBlock)[] content,
+		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null)
+	{
+		import cydo.agent.protocol : ItemStartedEvent;
+
+		auto td = &tasks[tid];
+		auto uiContent = broadcastContent !is null ? broadcastContent : content;
+		ItemStartedEvent ev;
+		ev.item_id   = "cc-user-msg";
+		ev.item_type = "user_message";
+		ev.text      = extractContentText(uiContent);
+		ev.content   = uiContent.dup;
+		ev.pending   = true;
+		auto userEvent = toJson(ev);
+		if (cydoMeta.length > 0)
+			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
+		auto data = Data(toJson(UnconfirmedUserEventEnvelope(
+			tid,
+			JSONFragment(userEvent))).representation);
+		if (tid in tasks)
+		{
+			ensureHistoryLoaded(tid);
+			tasks[tid].appendHistory(data, null);
+		}
+		sendToSubscribed(tid, data);
+		td.isProcessing = true;
+		touchTask(tid);
+		td.needsAttention = false;
+		persistence.setNeedsAttention(tid, false);
+		td.notificationBody = "";
+		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
+		td.suggestGeneration++;
+		broadcastTaskUpdate(tid);
+	}
+
 	private string taskSystemPromptForMessage(int tid, TaskTypeDef* typeDef)
 	{
 		if (typeDef is null)
@@ -3677,6 +3714,137 @@ class App : ToolsBackend
 			return promptText;
 		return "[TASK SYSTEM PROMPT]\n" ~ systemPrompt
 			~ "\n\n[END TASK SYSTEM PROMPT]\n\n[TASK PROMPT]\n" ~ promptText;
+	}
+
+	private string buildPostCompactionReminder(int tid)
+	{
+		if (tid !in tasks)
+			return null;
+		auto td = &tasks[tid];
+		TaskTypeDef* typeDef = null;
+		if (auto cache = td.projectPath in taskTypesByProject)
+			typeDef = cache.types.byName(td.taskType);
+		if (typeDef is null)
+			typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
+		auto systemPrompt = taskSystemPromptForMessage(tid, typeDef);
+		if (systemPrompt.length == 0)
+			return null;
+		return "[CYDO TASK MODE REMINDER]\n\n"
+			~ "This is CyDo task metadata, not project or user content.\n\n"
+			~ "Active task mode: " ~ td.taskType
+			~ "\n\n[TASK SYSTEM PROMPT]\n" ~ systemPrompt
+			~ "\n[END TASK SYSTEM PROMPT]\n\n"
+			~ "Use this as the active CyDo task mode metadata for interpreting what kind of work to do next.\n\n";
+	}
+
+	private static bool isCompactionReminderTriggerEvent(string translated)
+	{
+		import std.algorithm : canFind;
+
+		if (translated.length == 0)
+			return false;
+		if (translated.canFind(`"type":"session/compacted"`))
+			return true;
+		if (!translated.canFind(`"type":"session/status"`))
+			return false;
+
+		@JSONPartial static struct SessionStatusProbe
+		{
+			string type;
+			@JSONOptional string status;
+		}
+		try
+		{
+			auto probe = jsonParse!SessionStatusProbe(translated);
+			if (probe.type == "session/status" && probe.status.length > 0
+				&& probe.status.canFind("Compacting context"))
+				return true;
+		}
+		catch (Exception)
+		{
+			// Fall back to a substring match if the payload shape changes.
+		}
+		return translated.canFind("Compacting context");
+	}
+
+	private static bool isCompactionReminderTriggerRaw(string raw)
+	{
+		import std.algorithm : canFind;
+
+		return raw.length > 0
+			&& raw.canFind(`"method":"item/started"`)
+			&& raw.canFind(`"type":"contextCompaction"`);
+	}
+
+	private static bool isCompactionReminderEchoEvent(string translated)
+	{
+		import std.algorithm : canFind, startsWith;
+
+		if (!translated.canFind(`"type":"item/started"`)
+			|| !translated.canFind(`"item_type":"user_message"`))
+			return false;
+		auto text = extractMessageText(translated);
+		return text.startsWith("[CYDO TASK MODE REMINDER]");
+	}
+
+	private static bool isCompactionReminderSteerFailureEvent(string translated)
+	{
+		import std.algorithm : canFind;
+
+		if (translated.length == 0 || !translated.canFind(`"type":"agent/error"`))
+			return false;
+
+		@JSONPartial static struct AgentErrorProbe
+		{
+			string type;
+			@JSONOptional string message;
+		}
+		try
+		{
+			auto probe = jsonParse!AgentErrorProbe(translated);
+			if (probe.type == "agent/error" && probe.message.length > 0
+				&& probe.message.canFind("no active turn to steer"))
+				return true;
+		}
+		catch (Exception)
+		{
+			// Fall back to substring matching if payload shape changes.
+		}
+		return translated.canFind("no active turn to steer");
+	}
+
+	/// Send post-compaction reminder as an in-flight steering message when possible.
+	/// Returns true if reminder was queued to the agent.
+	private bool maybeSendCompactionReminderSteering(int tid)
+	{
+		if (tid !in tasks)
+			return false;
+
+		auto td = &tasks[tid];
+		if (td.compactionReminderInFlight)
+			return false;
+		if (td.session is null || !td.session.alive)
+			return false;
+		if (td.processQueue.goalState != ProcessState.Alive)
+			return false;
+
+		auto reminder = buildPostCompactionReminder(tid);
+		if (reminder.length == 0)
+			return false;
+		td.compactionReminderInFlight = true;
+
+		import std.algorithm : filter;
+		import std.array : array;
+		auto reminderBlocks = [ContentBlock("text", reminder)];
+		const(ContentBlock)[] toSend = td.session.supportsImages
+			? reminderBlocks
+			: reminderBlocks.filter!(b => b.type != "image").array;
+		td.session.sendMessage(toSend);
+
+		auto reminderMeta = buildCydoMeta("Post-compaction task mode reminder",
+			["task_type": td.taskType], "task_type", true);
+		broadcastPendingTaskMessageOnly(tid, reminderBlocks, null, reminderMeta);
+		return true;
 	}
 
 	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude",
@@ -4016,6 +4184,7 @@ class App : ToolsBackend
 		td.hadTurnResult = false;
 		td.stdinClosed = false;
 		td.clearLastSessionStatus();
+		td.compactionReminderInFlight = false;
 
 		// Look up the correct agent for this task's agent type
 		auto taskAgent = agentForTask(tid);
@@ -4050,6 +4219,7 @@ class App : ToolsBackend
 				// Turn completed — no longer processing, but still alive.
 				td.isProcessing = false;
 				td.hadTurnResult = true;
+				td.compactionReminderInFlight = false;
 
 				// Re-try JSONL watch if not yet established (Codex may
 				// not have the file at session-start time).
@@ -4175,7 +4345,7 @@ class App : ToolsBackend
 				}
 				broadcastTaskUpdate(tid);
 			}
-		};
+			};
 
 		string lastStderr;
 
@@ -5608,19 +5778,28 @@ class App : ToolsBackend
 		// Extract agent session ID from translated event
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, ev.translated);
+		if (tid in tasks && isCompactionReminderEchoEvent(ev.translated))
+			tasks[tid].compactionReminderInFlight = true;
+		auto shouldSendCompactionReminder = tid in tasks
+			&& (isCompactionReminderTriggerRaw(ev.raw)
+				|| isCompactionReminderTriggerEvent(ev.translated));
+		if (shouldSendCompactionReminder)
+			maybeSendCompactionReminderSteering(tid);
 
 		// Intercept queue-operation events for steering message handling
 		if (isQueueOperation(ev.translated))
 		{
-			if (auto td = tid in tasks)
-			{
-				import ae.utils.json : jsonParse;
-				auto op = jsonParse!QueueOperationProbe(ev.translated);
-				if (op.operation == "enqueue")
+				if (auto td = tid in tasks)
 				{
-					td.enqueueSteering(op.content, ev.translated);
-					return; // already displayed via unconfirmedUserEvent
-				}
+					import ae.utils.json : jsonParse;
+					auto op = jsonParse!QueueOperationProbe(ev.translated);
+					if (op.operation == "enqueue")
+					{
+						if (op.content.startsWith("[CYDO TASK MODE REMINDER]"))
+							td.compactionReminderInFlight = true;
+						td.enqueueSteering(op.content, ev.translated);
+						return; // already displayed via unconfirmedUserEvent
+					}
 
 				// Compacted back-to-back queue operations can leave one dequeued
 				// steering turn without a following user echo; flush it now.
@@ -5712,6 +5891,8 @@ class App : ToolsBackend
 				}
 			}
 		}
+		if (tid in tasks && isCompactionReminderSteerFailureEvent(ev.translated))
+			tasks[tid].compactionReminderInFlight = false;
 
 		appendAndBroadcastTaskEvent(tid, ev);
 	}

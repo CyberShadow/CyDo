@@ -207,6 +207,7 @@ struct TaskData
 	VisibleTurnAnchor[] visibleTurnAnchors;
 	string pendingDequeuedSteeringText;
 	string pendingDequeuedSteeringRawLine;
+	bool compactionReminderInFlight;
 
 	invariant (history.length == rawSource.length, "history/rawSource length mismatch");
 	invariant (enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length, "steering texts/rawLines length mismatch");

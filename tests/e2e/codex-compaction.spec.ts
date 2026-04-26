@@ -118,3 +118,97 @@ test("codex reconnect during active turn does not replay stale compacting status
     timeout,
   });
 });
+
+test("codex compaction reminder steers active turn before keep_context continuation", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: post-compaction continuation");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await page.locator(".task-type-row", { hasText: "sysprompt_mode_a" }).click();
+  await expect(
+    page.locator(".task-type-row.selected .task-type-name"),
+  ).toHaveText("sysprompt_mode_a");
+
+  await sendMessage(page, "trigger compaction");
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "Ready for compaction.",
+    }),
+  ).toBeVisible({ timeout });
+
+  await sendMessage(page, "call switchmode check_old_user_absent");
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "context-check-failed",
+    }).last(),
+  ).toBeVisible({ timeout });
+
+  await expect(
+    page.locator(".message.user-message", {
+      hasText: "[CYDO TASK MODE REMINDER]",
+    }).first(),
+  ).toBeVisible({ timeout });
+
+  const order = await page.locator(".message").evaluateAll((nodes) => {
+    const reminderIdx = nodes.findIndex((n) =>
+      n.classList.contains("user-message") &&
+      n.textContent?.includes("[CYDO TASK MODE REMINDER]"),
+    );
+    const resultIdx = nodes.findIndex((n) =>
+      n.classList.contains("assistant-message") &&
+      n.textContent?.includes("context-check-failed"),
+    );
+    return { reminderIdx, resultIdx };
+  });
+  expect(order.reminderIdx).toBeGreaterThanOrEqual(0);
+  expect(order.resultIdx).toBeGreaterThanOrEqual(0);
+  expect(order.reminderIdx).toBeLessThan(order.resultIdx);
+});
+
+test("codex compaction reminder steers autonomous continuation without extra user message", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: autonomous compaction continuation");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await page.locator(".task-type-row", { hasText: "sysprompt_mode_a" }).click();
+  await expect(
+    page.locator(".task-type-row.selected .task-type-name"),
+  ).toHaveText("sysprompt_mode_a");
+
+  await sendMessage(page, "autonomous compaction reminder fixture");
+
+  await expect(
+    page.locator(".message.assistant-message .text-content", {
+      hasText: "autonomous-reminder-observed",
+    }).last(),
+  ).toBeVisible({ timeout });
+
+  await expect(
+    page.locator(".message.user-message", {
+      hasText: "[CYDO TASK MODE REMINDER]",
+    }).first(),
+  ).toBeVisible({ timeout });
+
+  const order = await page.locator(".message").evaluateAll((nodes) => {
+    const reminderIdx = nodes.findIndex((n) =>
+      n.classList.contains("user-message") &&
+      n.textContent?.includes("[CYDO TASK MODE REMINDER]"),
+    );
+    const resultIdx = nodes.findIndex((n) =>
+      n.classList.contains("assistant-message") &&
+      n.textContent?.includes("autonomous-reminder-observed"),
+    );
+    return { reminderIdx, resultIdx };
+  });
+  expect(order.reminderIdx).toBeGreaterThanOrEqual(0);
+  expect(order.resultIdx).toBeGreaterThanOrEqual(0);
+  expect(order.reminderIdx).toBeLessThan(order.resultIdx);
+});
