@@ -117,3 +117,50 @@ test("cumulative diff shows net change after codex create and update", async ({
     "hello from update fixture",
   );
 });
+
+test("rendered markdown view includes all collected partial hunks", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: partial markdown rendering");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  // Send two update-only patch fixtures for the same Markdown file. There is no
+  // full file content available, so the viewer must compose the fragments it has
+  // collected from both edits.
+  await sendMessage(page, "codex markdown partial first hunk fixture");
+  await expect(
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout });
+  await sendMessage(page, "codex markdown partial second hunk fixture");
+  await expect(
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }),
+  ).toHaveCount(2, { timeout });
+
+  // Reload history so the apply_patch tool calls are reconstructed from Codex's
+  // rollout file, matching the update-only partial-data path.
+  await killSession(page, agentType);
+  await page.reload();
+
+  const tools = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) });
+  await expect(tools).toHaveCount(2, { timeout });
+  await tools.last().locator(".tool-view-file").dispatchEvent("click");
+
+  const contentViewer = page.locator(".file-viewer .content-viewer");
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(
+    contentViewer.getByRole("button", { name: "Rendered" }),
+  ).toHaveClass(/active/);
+
+  const renderedBody = contentViewer.locator(".content-viewer-body");
+  await expect(renderedBody).toContainText("second collected fragment");
+  await expect(renderedBody).toContainText("first collected fragment");
+
+  await page.locator(".file-viewer .edit-history-item").first().click();
+  await expect(renderedBody).toContainText("first collected fragment");
+  await expect(renderedBody).not.toContainText("second collected fragment");
+});

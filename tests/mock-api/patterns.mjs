@@ -108,6 +108,26 @@ export function matchPattern(userText) {
       },
     };
   }
+  if (/codex markdown partial first hunk fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Update File: tmp/codex-rendered-fragments.md\n@@ -1,3 +1,3 @@\n # Existing title\n-old first paragraph\n+first collected fragment\n keep line\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex markdown partial second hunk fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Update File: tmp/codex-rendered-fragments.md\n@@ -20,3 +20,3 @@\n ## Existing later section\n-old second paragraph\n+second collected fragment\n keep later line\n*** End Patch\n",
+      },
+    };
+  }
   if (/codex filechange delete fixture/i.test(userText)) {
     return {
       type: "tool_call",

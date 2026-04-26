@@ -338,6 +338,32 @@ function resolveFileContent(
   };
 }
 
+function composeResolvedHunksThrough(
+  file: TrackedFile,
+  resolvedEdits: Map<number, ResolvedEdit>,
+  endIdx: number,
+): PatchHunk[] | null {
+  let cumulative: PatchHunk[] = [];
+  for (let i = 0; i <= endIdx; i++) {
+    const r = resolvedEdits.get(i);
+    if (!r?.patchHunks.length) continue;
+    if (file.edits[i]?.status === "cancelled") continue;
+    cumulative = composeHunks(cumulative, r.patchHunks);
+  }
+  return cumulative.length === 0 ? null : cumulative;
+}
+
+function collectedSourceThrough(
+  source: SourceContent,
+  file: TrackedFile,
+  resolvedEdits: Map<number, ResolvedEdit>,
+  endIdx: number,
+): SourceContent {
+  if (source.complete) return source;
+  const cumulative = composeResolvedHunksThrough(file, resolvedEdits, endIdx);
+  return cumulative ? hunksToSource(cumulative) : source;
+}
+
 function computeDiffstatFromHunks(hunks: PatchHunk[]): {
   added: number;
   removed: number;
@@ -887,15 +913,35 @@ export function FileViewer({
     }
   }
 
-  // Compute displaySource for Source/Rendered tabs
-  const displaySource: SourceContent = selectedResolvedEdit
+  const selectedDisplaySource: SourceContent | null = selectedResolvedEdit
     ? selectedResolvedEdit.isDeleted
       ? selectedResolvedEdit.sourceBefore
       : selectedResolvedEdit.sourceAfter
+    : null;
+
+  // Compute displaySource for Source/Rendered tabs
+  const displaySource: SourceContent = selectedDisplaySource
+    ? selectedDisplaySource.complete
+      ? selectedDisplaySource
+      : file && resolved && selectedEditIndex != null
+        ? collectedSourceThrough(
+            selectedDisplaySource,
+            file,
+            resolved.resolved,
+            selectedEditIndex,
+          )
+        : { fragments: [], complete: true }
     : resolved
       ? resolved.isDeleted
         ? (resolved.deletedSource ?? resolved.originalSource)
-        : resolved.currentSource
+        : file
+          ? collectedSourceThrough(
+              resolved.currentSource,
+              file,
+              resolved.resolved,
+              file.edits.length - 1,
+            )
+          : resolved.currentSource
       : { fragments: [], complete: true };
 
   // Compute diffHunks for Diff tab
@@ -905,15 +951,8 @@ export function FileViewer({
   // Compute cumulativeHunks for Cumulative tab — always via composeHunks
   const cumulativeHunks = useMemo(() => {
     if (!file || !resolved) return null;
-    let cumulative: PatchHunk[] = [];
     const endIdx = selectedEditIndex ?? file.edits.length - 1;
-    for (let i = 0; i <= endIdx; i++) {
-      const r = resolved.resolved.get(i);
-      if (!r?.patchHunks.length) continue;
-      if (file.edits[i]?.status === "cancelled") continue;
-      cumulative = composeHunks(cumulative, r.patchHunks);
-    }
-    return cumulative.length === 0 ? null : cumulative;
+    return composeResolvedHunksThrough(file, resolved.resolved, endIdx);
   }, [file, resolved, selectedEditIndex]);
 
   const handlePointerDown = (e: PointerEvent) => {
