@@ -2056,6 +2056,30 @@ class CodexSession : AgentSession
 			ItemResultEvent resEv;
 			resEv.item_id = itemId;
 			resEv.is_error = ev.is_error;
+			string toolErrorMessage;
+			if (resEv.is_error && params.item.error.json !is null)
+			{
+				@JSONPartial
+				static struct ItemErrorPayload
+				{
+					@JSONOptional string message;
+				}
+
+				try
+				{
+					toolErrorMessage = jsonParse!ItemErrorPayload(params.item.error.json).message;
+				}
+				catch (Exception) {}
+
+				if (toolErrorMessage.length == 0)
+				{
+					try
+					{
+						toolErrorMessage = jsonParse!string(params.item.error.json);
+					}
+					catch (Exception) {}
+				}
+			}
 
 			// Item type is now an explicit field.
 			string itemTypeName = params.item.type;
@@ -2091,7 +2115,10 @@ class CodexSession : AgentSession
 					{
 						// Pass Codex web search data as structured tool_result for the frontend
 						// to interpret. Set content to empty text (required field).
-						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
+						if (toolErrorMessage.length > 0)
+							resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(toolErrorMessage) ~ `}]`);
+						else
+							resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 
 						import std.array : appender;
 						auto tr = appender!string;
@@ -2125,6 +2152,8 @@ class CodexSession : AgentSession
 						tr ~= `}`;
 						resEv.tool_result = JSONFragment(tr.data);
 					}
+					else if (toolErrorMessage.length > 0)
+						resEv.content = JSONFragment(`[{"type":"text","text":` ~ toJson(toolErrorMessage) ~ `}]`);
 					else
 						resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
 				}
@@ -3428,5 +3457,72 @@ unittest
 			&& lateDeltaEvent.delta_type == "output_delta"
 			&& lateDeltaEvent.content == "late-output-marker\n",
 		"expected late Codex output_delta to keep its itemId after turn completion",
+	);
+}
+
+unittest
+{
+	@JSONPartial
+	struct StartedNotification
+	{
+		ItemStartedParams params;
+	}
+
+	@JSONPartial
+	struct CompletedNotification
+	{
+		ItemCompletedParams params;
+	}
+
+	@JSONPartial
+	struct EmittedResultEvent
+	{
+		string type;
+		string item_id;
+		@JSONOptional bool is_error;
+		JSONFragment content;
+	}
+
+	@JSONPartial
+	struct TextContentBlock
+	{
+		string type;
+		@JSONOptional string text;
+	}
+
+	enum startedPayload =
+		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thread-task-failed","turnId":"turn-task-failed","item":{"id":"call_qQ5hScvoPoBX2kntB3IYtUM9","type":"mcpToolCall","server":"cydo","tool":"Task","arguments":{"tasks":[{"description":"demo","prompt":"demo","task_type":"review"}]}}}}`;
+
+	enum completedPayload =
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-task-failed","item":{"id":"call_qQ5hScvoPoBX2kntB3IYtUM9","status":"failed","type":"mcpToolCall","result":null,"server":"cydo","tool":"Task","error":{"message":"tool call error: tool call failed for cydo/Task\n\nCaused by:\n    Transport closed"}}}}`;
+
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	string[] emitted;
+	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
+	session.onOutput(&sink);
+
+	auto started = jsonParse!StartedNotification(startedPayload);
+	session.handleItemStarted(started.params, startedPayload);
+
+	auto completed = jsonParse!CompletedNotification(completedPayload);
+	session.handleItemCompleted(completed.params, completedPayload);
+
+	auto resultEvent = jsonParse!EmittedResultEvent(emitted[$ - 1]);
+	auto blocks = jsonParse!(TextContentBlock[])(resultEvent.content.json);
+	auto actualResult = blocks.length > 0 ? blocks[0].text : "<empty>";
+
+	const marker = "Transport closed";
+	const hasTransportClosed =
+		actualResult.length >= marker.length
+		&& actualResult[$ - marker.length .. $] == marker;
+
+	assert(
+		resultEvent.type == "item/result"
+			&& resultEvent.item_id == "call_qQ5hScvoPoBX2kntB3IYtUM9"
+			&& resultEvent.is_error
+			&& blocks.length == 1
+			&& blocks[0].type == "text"
+			&& hasTransportClosed,
+		"expected failed mcp tool result to surface error text; actual result=" ~ actualResult,
 	);
 }
