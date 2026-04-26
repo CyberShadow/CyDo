@@ -1,4 +1,4 @@
-import type { PatchHunk } from "../components/ToolCall";
+import type { PatchHunk } from "./patches";
 
 /** A single operation in a diff's operation stream. */
 type Op =

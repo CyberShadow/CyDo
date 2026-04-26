@@ -47,6 +47,12 @@ test("file viewer shows diff content for codex update without prior create", asy
     .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) })
     .last();
   await expect(tool).toBeVisible({ timeout });
+  if ((await tool.locator(".tool-input-formatted").count()) === 0) {
+    await tool.locator(".tool-header").click();
+  }
+  await expect(tool).toContainText(
+    "*** Update File: tmp/codex-fileviewer-create.txt",
+  );
   await tool.locator(".tool-view-file").dispatchEvent("click");
 
   await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
@@ -163,4 +169,130 @@ test("rendered markdown view includes all collected partial hunks", async ({
   await page.locator(".file-viewer .edit-history-item").first().click();
   await expect(renderedBody).toContainText("first collected fragment");
   await expect(renderedBody).not.toContainText("second collected fragment");
+});
+
+test("live codex fileChange markdown add renders inline preview and rendered viewer tab", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: markdown inline parity");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "codex markdown add fixture");
+  await expect(
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout });
+
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /fileChange/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout });
+  await expect(tool.locator(".write-content-markdown")).toContainText(
+    "Inline Preview",
+  );
+
+  await tool.locator(".tool-view-file").dispatchEvent("click");
+  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+
+  const contentViewer = page.locator(".file-viewer .content-viewer");
+  await expect(
+    contentViewer.getByRole("button", { name: "Rendered" }),
+  ).toHaveClass(/active/);
+  await expect(contentViewer.locator(".content-viewer-body")).toContainText(
+    "Inline Preview",
+  );
+});
+
+test("replayed apply_patch markdown sections render per-file previews and fallbacks", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: apply_patch markdown parity");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "codex markdown update fixture");
+  await expect(
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout });
+  const assistantCountBeforeAmbiguous = await page
+    .locator(".assistant-message")
+    .count();
+  await sendMessage(page, "codex markdown ambiguous fixture");
+  await expect(page.locator(".assistant-message")).toHaveCount(
+    assistantCountBeforeAmbiguous + 1,
+    { timeout },
+  );
+
+  await killSession(page, agentType);
+  await page.reload();
+
+  const tools = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) });
+  await expect(tools).toHaveCount(2, { timeout });
+
+  const updateTool = tools.first();
+  if (
+    (await updateTool
+      .locator(".markdown-diff-wrap .markdown-toggle-btn")
+      .count()) === 0
+  ) {
+    await updateTool.locator(".tool-header").click();
+  }
+  await expect(
+    updateTool.locator(".markdown-diff-wrap .markdown-toggle-btn"),
+  ).toBeVisible({ timeout: 5_000 });
+  await expect(updateTool).toContainText(
+    "*** Update File: tmp/codex-inline-preview.md",
+  );
+  await expect(updateTool).toContainText("@@ -1,3 +1,3 @@");
+
+  const ambiguousTool = tools.nth(1);
+  if ((await ambiguousTool.locator(".tool-input-formatted").count()) === 0) {
+    await ambiguousTool.locator(".tool-header").click();
+  }
+  await expect(
+    ambiguousTool.locator(".markdown-diff-wrap .markdown-toggle-btn"),
+  ).toHaveCount(0);
+  await expect(ambiguousTool).toContainText("*broken-line");
+});
+
+test("replayed multi-file apply_patch keeps markdown preview scoped to markdown sections", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "codex", "codex-only: multi-file sectioned previews");
+
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "codex markdown mixed multi-file fixture");
+  await expect(
+    page.locator('[data-testid="assistant-text"]', { hasText: "Done." }).last(),
+  ).toBeVisible({ timeout });
+
+  await killSession(page, agentType);
+  await page.reload();
+
+  const tool = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: /apply_patch/i }) })
+    .last();
+  await expect(tool).toBeVisible({ timeout });
+  if ((await tool.locator(".write-content-markdown").count()) === 0) {
+    await tool.locator(".tool-header").click();
+  }
+  await expect(tool).toContainText("2 files");
+  await expect(tool.locator(".write-content-markdown")).toContainText(
+    "Multi Markdown",
+  );
+  await expect(tool.locator(".write-content-markdown")).not.toContainText(
+    "new text",
+  );
+  await expect(tool).toContainText("new text");
 });

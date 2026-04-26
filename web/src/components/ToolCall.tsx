@@ -1,17 +1,40 @@
 import { h, Fragment, ComponentChildren } from "preact";
 import { memo } from "preact/compat";
 import { useState, useMemo, useEffect } from "preact/hooks";
-import { diffLines, diffWordsWithSpace, type Change } from "diff";
-import HtmlDiff from "htmldiff-js";
 import { marked } from "marked";
 import type { ToolResult, ToolResultContent } from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
 import { sanitizeHtml } from "../sanitize";
-import type { ThemedToken } from "../highlight";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
-import { Markdown, sourceOnIcon, sourceOffIcon } from "./Markdown";
+import { Markdown } from "./Markdown";
 import { CodePre } from "./CopyButton";
+import { DiffView, PatchView } from "./diff/DiffView";
+import {
+  FileContentPreview,
+  SvgPreview,
+} from "./file-preview/FileContentPreview";
+import { MarkdownDiffPreview } from "./file-preview/MarkdownDiffPreview";
+import { SvgDiffPreview } from "./file-preview/SvgDiffPreview";
+import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
+import {
+  detectRenderableFormat,
+  isMarkdownPath,
+  isSvgPath,
+  looksLikeSvg,
+  stripCatLineNumbers,
+} from "../lib/fileFormats";
+import {
+  getApplyPatchFileChanges,
+  getNormalizedFilePaths,
+  parseCodexFileChanges,
+  type NormalizedFileChange,
+} from "../lib/fileChanges";
+import {
+  looksLikePatchText,
+  parsePatchTextFromInput,
+  type PatchHunk,
+} from "../lib/patches";
 
 /**
  * Tool Result Rendering Principles
@@ -91,82 +114,6 @@ function extractResultText(
   return texts.length > 0 ? texts.join("") : null;
 }
 
-/** Strip cat -n line number prefixes ("    1→" or "    1\t") from text. */
-function stripCatLineNumbers(text: string): string {
-  return text.replace(/^\s*\d+[\u2192\t]/gm, "");
-}
-
-/**
- * Check if text content looks like a valid SVG document.
- * Used for content-sniffing when no filePath is available.
- */
-function looksLikeSvg(text: string): boolean {
-  const trimmed = text.trim();
-  const body = trimmed.startsWith("<?xml")
-    ? trimmed.slice(trimmed.indexOf("?>") + 2).trim()
-    : trimmed;
-  if (!body.startsWith("<svg")) return false;
-  if (!body.includes("</svg>")) return false;
-  return true;
-}
-
-/** Detected renderable file format. */
-type FileFormat = "markdown" | "svg" | null;
-
-/** Detect renderable format from file path, or content-sniff if no path. */
-function detectFormat(filePath?: string | null, content?: string): FileFormat {
-  if (filePath) {
-    const lang = langFromPath(filePath);
-    if (lang === "markdown" || lang === "mdx") return "markdown";
-    if (filePath.endsWith(".svg")) return "svg";
-  }
-  if (content && looksLikeSvg(stripCatLineNumbers(content).trim()))
-    return "svg";
-  return null;
-}
-
-/** Inline SVG rendered from raw SVG content string. */
-function SvgPreview({ content }: { content: string }) {
-  const dataUri = `data:image/svg+xml,${encodeURIComponent(content.trim())}`;
-  return (
-    <div class="tool-result-images">
-      <img src={dataUri} alt="SVG preview" class="tool-result-image" />
-    </div>
-  );
-}
-
-/** Toggle wrapper for source/rendered views. */
-function SourceRenderedToggle({
-  defaultSource,
-  sourceView,
-  renderedView,
-}: {
-  defaultSource: boolean;
-  sourceView: h.JSX.Element;
-  renderedView: h.JSX.Element;
-}) {
-  const [showSource, setShowSource] = useState(defaultSource);
-  return (
-    <div class="markdown-diff-wrap">
-      <button
-        class="markdown-toggle-btn"
-        onClick={() => {
-          setShowSource(!showSource);
-        }}
-        title={showSource ? "Show rendered" : "Show source"}
-      >
-        <span
-          class="action-icon"
-          dangerouslySetInnerHTML={{
-            __html: showSource ? sourceOnIcon : sourceOffIcon,
-          }}
-        />
-      </button>
-      {showSource ? sourceView : renderedView}
-    </div>
-  );
-}
-
 interface Props {
   name: string;
   toolServer?: string;
@@ -181,7 +128,10 @@ interface Props {
 }
 
 /** Render an array of token lines (no trailing newline). */
-function renderTokenLines(tokens: ThemedToken[][]): h.JSX.Element {
+function renderTokenLines(
+  tokens: ReturnType<typeof useHighlight>,
+): h.JSX.Element {
+  if (!tokens) return <></>;
   return (
     <Fragment>
       {tokens.map((line, i) => (
@@ -192,102 +142,6 @@ function renderTokenLines(tokens: ThemedToken[][]): h.JSX.Element {
       ))}
     </Fragment>
   );
-}
-
-/** Split a diffLines change value into individual line strings. */
-function splitChangeLines(value: string): string[] {
-  const lines = value.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
-
-function parsePatchTextFromInput(
-  input: Record<string, unknown>,
-): string | null {
-  const direct = [input.input, input.patchText, input.patch, input.diff];
-  for (const candidate of direct) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function parseApplyPatchPaths(patchText: string): string[] {
-  const lines = patchText.split("\n");
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  const addPath = (path: string | null) => {
-    if (!path || path === "/dev/null" || seen.has(path)) return;
-    seen.add(path);
-    paths.push(
-      path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path,
-    );
-  };
-
-  let lastOld: string | null = null;
-  for (const line of lines) {
-    if (line.startsWith("*** Add File: ")) {
-      addPath(line.slice("*** Add File: ".length).trim());
-      continue;
-    }
-    if (line.startsWith("*** Update File: ")) {
-      addPath(line.slice("*** Update File: ".length).trim());
-      continue;
-    }
-    if (line.startsWith("*** Delete File: ")) {
-      addPath(line.slice("*** Delete File: ".length).trim());
-      continue;
-    }
-    if (line.startsWith("--- ")) {
-      lastOld = line.slice(4).trim();
-      continue;
-    }
-    if (line.startsWith("+++ ")) {
-      const nextPath = line.slice(4).trim();
-      if (nextPath === "/dev/null") addPath(lastOld);
-      else addPath(nextPath);
-    }
-  }
-  return paths;
-}
-
-interface ApplyPatchLine {
-  kind: "header" | "added" | "removed" | "context" | "plain";
-  text: string; // full original line text (with prefix)
-  content: string; // line content without prefix (for highlighting)
-}
-
-function parseApplyPatchLines(patchText: string): {
-  lines: ApplyPatchLine[];
-  lang: string | null;
-} {
-  const rawLines = patchText.split("\n");
-  const result: ApplyPatchLine[] = [];
-  let lang: string | null = null;
-
-  for (const line of rawLines) {
-    if (line.startsWith("*** ")) {
-      // Extract file path from Add/Update/Delete markers for lang detection
-      if (lang === null) {
-        const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
-        if (m) lang = langFromPath(m[1]!.trim());
-      }
-      result.push({ kind: "header", text: line, content: line });
-    } else if (line.startsWith("@@")) {
-      result.push({ kind: "header", text: line, content: line });
-    } else if (line.startsWith("+")) {
-      result.push({ kind: "added", text: line, content: line.slice(1) });
-    } else if (line.startsWith("-")) {
-      result.push({ kind: "removed", text: line, content: line.slice(1) });
-    } else if (line.startsWith(" ")) {
-      result.push({ kind: "context", text: line, content: line.slice(1) });
-    } else {
-      result.push({ kind: "plain", text: line, content: line });
-    }
-  }
-
-  return { lines: result, lang };
 }
 
 function getToolCallFilePaths(
@@ -311,574 +165,75 @@ function getToolCallFilePaths(
       : null,
   );
 
-  if (
-    toolIs(name, agentType, undefined, "codex/fileChange") &&
-    Array.isArray(input.changes)
-  ) {
-    for (const change of input.changes) {
-      if (!change || typeof change !== "object" || Array.isArray(change))
-        continue;
-      const c = change as Record<string, unknown>;
-      addPath(
-        typeof c.file_path === "string"
-          ? c.file_path
-          : typeof c.path === "string"
-            ? c.path
-            : null,
-      );
-    }
+  if (toolIs(name, agentType, undefined, "codex/fileChange")) {
+    const parsed = parseCodexFileChanges(input);
+    for (const path of getNormalizedFilePaths(parsed.changes)) addPath(path);
   }
 
   if (toolIs(name, agentType, undefined, "codex/apply_patch")) {
-    const patchText = parsePatchTextFromInput(input);
-    if (patchText) {
-      for (const path of parseApplyPatchPaths(patchText)) addPath(path);
-    }
+    const rows = getApplyPatchFileChanges(input);
+    for (const path of getNormalizedFilePaths(rows)) addPath(path);
   }
 
   return paths;
 }
 
-interface AnnotatedSpan {
-  content: string;
-  color?: string;
-  emphasized: boolean;
-}
-
-/**
- * Overlay word-level diff segments onto syntax highlighting tokens.
- * Both cover the same text split at different boundaries; we walk both
- * in parallel, splitting at whichever boundary comes first.
- */
-function overlayDiff(
-  syntaxTokens: ThemedToken[] | null,
-  wordChanges: Change[],
-  side: "old" | "new",
-): AnnotatedSpan[] {
-  const relevant = wordChanges.filter((c) =>
-    side === "old" ? !c.added : !c.removed,
-  );
-
-  if (!syntaxTokens) {
-    return relevant.map((c) => ({
-      content: c.value,
-      emphasized: side === "old" ? c.removed : c.added,
-    }));
-  }
-
-  const result: AnnotatedSpan[] = [];
-  let tIdx = 0;
-  let tOff = 0;
-
-  for (const change of relevant) {
-    let remaining = change.value.length;
-    const emphasized = side === "old" ? change.removed : change.added;
-
-    while (remaining > 0 && tIdx < syntaxTokens.length) {
-      const token = syntaxTokens[tIdx]!;
-      const available = token.content.length - tOff;
-      const take = Math.min(remaining, available);
-
-      result.push({
-        content: token.content.slice(tOff, tOff + take),
-        color: token.color,
-        emphasized,
-      });
-
-      remaining -= take;
-      tOff += take;
-      if (tOff >= token.content.length) {
-        tIdx++;
-        tOff = 0;
-      }
-    }
-  }
-
-  return result;
-}
-
-function renderAnnotatedSpans(
-  spans: AnnotatedSpan[],
-  side: "removed" | "added",
-): h.JSX.Element {
-  return (
-    <Fragment>
-      {spans.map((s, i) => (
-        <span
-          key={i}
-          class={
-            s.emphasized
-              ? side === "removed"
-                ? "diff-word-removed"
-                : "diff-word-added"
-              : undefined
-          }
-          style={s.color ? { color: s.color } : undefined}
-        >
-          {s.content}
-        </span>
-      ))}
-    </Fragment>
-  );
-}
-
-/** Dice coefficient: ratio of shared content between two sides of a word diff. */
-function wordDiffSimilarity(wordChanges: Change[]): number {
-  let commonLen = 0;
-  let oldLen = 0;
-  let newLen = 0;
-  for (const c of wordChanges) {
-    if (!c.added && !c.removed) {
-      commonLen += c.value.length;
-      oldLen += c.value.length;
-      newLen += c.value.length;
-    } else if (c.removed) {
-      oldLen += c.value.length;
-    } else {
-      newLen += c.value.length;
-    }
-  }
-  const total = oldLen + newLen;
-  return total > 0 ? (2 * commonLen) / total : 1;
-}
-
-const WORD_DIFF_THRESHOLD = 0.4;
-
-export function DiffView({
-  oldStr,
-  newStr,
-  filePath,
-}: {
-  oldStr: string;
-  newStr: string;
-  filePath?: string;
-}) {
-  const lang = filePath ? langFromPath(filePath) : null;
-  const oldTokens = useHighlight(oldStr, lang);
-  const newTokens = useHighlight(newStr, lang);
-
-  const changes = diffLines(oldStr, newStr);
-
-  const elements: h.JSX.Element[] = [];
-  let oldLineIdx = 0;
-  let newLineIdx = 0;
-
-  for (let ci = 0; ci < changes.length; ci++) {
-    const change = changes[ci]!;
-    const lines = splitChangeLines(change.value);
-
-    if (!change.added && !change.removed) {
-      // Context
-      for (let i = 0; i < lines.length; i++) {
-        const idx = oldLineIdx++;
-        newLineIdx++;
-        elements.push(
-          <div key={`c${idx}`} class="diff-context">
-            {"  "}
-            {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-          </div>,
-        );
-      }
-    } else if (change.removed) {
-      const next = ci + 1 < changes.length ? changes[ci + 1] : null;
-
-      if (next?.added) {
-        // Adjacent removed+added block: compute word-level diffs for
-        // positional pairs, but only apply emphasis when similarity is
-        // above threshold. Always render removed-first, added-second.
-        const addedLines = splitChangeLines(next.value);
-        const pairCount = Math.min(lines.length, addedLines.length);
-
-        // Pre-compute word diffs and similarity for each pair
-        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
-        for (let i = 0; i < pairCount; i++) {
-          const wc = diffWordsWithSpace(lines[i]!, addedLines[i]!);
-          wordDiffs.push({
-            changes: wc,
-            similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
-          });
-        }
-
-        // All removed lines (with word emphasis on similar pairs)
-        for (let i = 0; i < lines.length; i++) {
-          const idx = oldLineIdx + i;
-          if (i < pairCount && wordDiffs[i]!.similar) {
-            const spans = overlayDiff(
-              oldTokens?.[idx] ?? null,
-              wordDiffs[i]!.changes,
-              "old",
-            );
-            elements.push(
-              <div key={`r${idx}`} class="diff-removed">
-                {"- "}
-                {renderAnnotatedSpans(spans, "removed")}
-              </div>,
-            );
-          } else {
-            elements.push(
-              <div key={`r${idx}`} class="diff-removed">
-                {"- "}
-                {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-              </div>,
-            );
-          }
-        }
-
-        // All added lines (with word emphasis on similar pairs)
-        for (let i = 0; i < addedLines.length; i++) {
-          const idx = newLineIdx + i;
-          if (i < pairCount && wordDiffs[i]!.similar) {
-            const spans = overlayDiff(
-              newTokens?.[idx] ?? null,
-              wordDiffs[i]!.changes,
-              "new",
-            );
-            elements.push(
-              <div key={`a${idx}`} class="diff-added">
-                {"+ "}
-                {renderAnnotatedSpans(spans, "added")}
-              </div>,
-            );
-          } else {
-            elements.push(
-              <div key={`a${idx}`} class="diff-added">
-                {"+ "}
-                {newTokens?.[idx]
-                  ? renderTokens(newTokens[idx])
-                  : addedLines[i]}
-              </div>,
-            );
-          }
-        }
-
-        oldLineIdx += lines.length;
-        newLineIdx += addedLines.length;
-        ci++; // skip the paired added change
-      } else {
-        // Pure removed lines
-        for (let i = 0; i < lines.length; i++) {
-          const idx = oldLineIdx++;
-          elements.push(
-            <div key={`r${idx}`} class="diff-removed">
-              {"- "}
-              {oldTokens?.[idx] ? renderTokens(oldTokens[idx]) : lines[i]}
-            </div>,
-          );
-        }
-      }
-    } else {
-      // Pure added lines
-      for (let i = 0; i < lines.length; i++) {
-        const idx = newLineIdx++;
-        elements.push(
-          <div key={`a${idx}`} class="diff-added">
-            {"+ "}
-            {newTokens?.[idx] ? renderTokens(newTokens[idx]) : lines[i]}
-          </div>,
-        );
-      }
-    }
-  }
-
-  const oldLineCount = oldStr.split("\n").length;
-  const newLineCount = newStr.split("\n").length;
-
-  return (
-    <div class="diff-view">
-      <div class="diff-header">
-        @@ -{oldLineCount} +{newLineCount} @@
-      </div>
-      {elements}
-    </div>
-  );
-}
-
-export interface PatchHunk {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-  lines: string[];
-}
-
-export function PatchView({
-  hunks,
-  filePath,
-}: {
-  hunks: PatchHunk[];
-  filePath?: string;
-}) {
-  const lang = filePath ? langFromPath(filePath) : null;
-
-  // Compute gutter width from max line number across all hunks
-  let maxLineNum = 0;
-  for (const hunk of hunks) {
-    maxLineNum = Math.max(
-      maxLineNum,
-      hunk.oldStart + hunk.oldLines,
-      hunk.newStart + hunk.newLines,
-    );
-  }
-  const gutterWidth = `${String(maxLineNum).length}ch`;
-
-  // Build old/new text for syntax highlighting
-  const oldLinesList: string[] = [];
-  const newLinesList: string[] = [];
+function deriveHunkTextPair(
+  hunks: PatchHunk[] | undefined,
+): { oldText: string; newText: string } | null {
+  if (!hunks || hunks.length === 0) return null;
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
   for (const hunk of hunks) {
     for (const line of hunk.lines) {
       const prefix = line[0];
       const content = line.slice(1);
-      if (prefix === " " || prefix === "-") oldLinesList.push(content);
-      if (prefix === " " || prefix === "+") newLinesList.push(content);
+      if (prefix === " " || prefix === "-") oldLines.push(content);
+      if (prefix === " " || prefix === "+") newLines.push(content);
     }
   }
-
-  const oldText = oldLinesList.join("\n");
-  const newText = newLinesList.join("\n");
-  const oldTokens = useHighlight(oldText, lang);
-  const newTokens = useHighlight(newText, lang);
-
-  const elements: h.JSX.Element[] = [];
-  let rowKey = 0;
-  let oldTokenIdx = 0;
-  let newTokenIdx = 0;
-
-  for (let hi = 0; hi < hunks.length; hi++) {
-    const hunk = hunks[hi]!;
-    const keyPrefix = `h${hi}`;
-    elements.push(
-      <div key={`${keyPrefix}-${rowKey++}`} class="diff-header">
-        @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
-      </div>,
-    );
-
-    let oldLineNum = hunk.oldStart;
-    let newLineNum = hunk.newStart;
-    const lines = hunk.lines;
-    let li = 0;
-
-    while (li < lines.length) {
-      const prefix = lines[li]![0];
-      if (prefix === " ") {
-        const content = lines[li]!.slice(1);
-        const oldIdx = oldTokenIdx++;
-        newTokenIdx++;
-        const oNum = oldLineNum++;
-        const nNum = newLineNum++;
-        elements.push(
-          <div key={`${keyPrefix}-${rowKey++}`} class="diff-context">
-            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-              {oNum}
-            </span>
-            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-              {nNum}
-            </span>
-            {"  "}
-            {oldTokens?.[oldIdx] ? renderTokens(oldTokens[oldIdx]) : content}
-          </div>,
-        );
-        li++;
-      } else if (prefix === "-") {
-        // Collect consecutive removed lines
-        const removeStart = li;
-        while (li < lines.length && lines[li]![0] === "-") li++;
-        const removedContents = lines
-          .slice(removeStart, li)
-          .map((l) => l.slice(1));
-
-        // Collect adjacent added lines
-        const addStart = li;
-        while (li < lines.length && lines[li]![0] === "+") li++;
-        const addedContents = lines.slice(addStart, li).map((l) => l.slice(1));
-
-        const pairCount = Math.min(
-          removedContents.length,
-          addedContents.length,
-        );
-        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
-        for (let p = 0; p < pairCount; p++) {
-          const wc = diffWordsWithSpace(removedContents[p]!, addedContents[p]!);
-          wordDiffs.push({
-            changes: wc,
-            similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
-          });
-        }
-
-        for (let p = 0; p < removedContents.length; p++) {
-          const oldIdx = oldTokenIdx++;
-          const oNum = oldLineNum++;
-          if (p < pairCount && wordDiffs[p]!.similar) {
-            const spans = overlayDiff(
-              oldTokens?.[oldIdx] ?? null,
-              wordDiffs[p]!.changes,
-              "old",
-            );
-            elements.push(
-              <div key={`${keyPrefix}-${rowKey++}`} class="diff-removed">
-                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-                  {oNum}
-                </span>
-                <span
-                  class="diff-gutter"
-                  style={{ minWidth: gutterWidth }}
-                ></span>
-                {"- "}
-                {renderAnnotatedSpans(spans, "removed")}
-              </div>,
-            );
-          } else {
-            elements.push(
-              <div key={`${keyPrefix}-${rowKey++}`} class="diff-removed">
-                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-                  {oNum}
-                </span>
-                <span
-                  class="diff-gutter"
-                  style={{ minWidth: gutterWidth }}
-                ></span>
-                {"- "}
-                {oldTokens?.[oldIdx]
-                  ? renderTokens(oldTokens[oldIdx])
-                  : removedContents[p]}
-              </div>,
-            );
-          }
-        }
-
-        for (let p = 0; p < addedContents.length; p++) {
-          const newIdx = newTokenIdx++;
-          const nNum = newLineNum++;
-          if (p < pairCount && wordDiffs[p]!.similar) {
-            const spans = overlayDiff(
-              newTokens?.[newIdx] ?? null,
-              wordDiffs[p]!.changes,
-              "new",
-            );
-            elements.push(
-              <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
-                <span
-                  class="diff-gutter"
-                  style={{ minWidth: gutterWidth }}
-                ></span>
-                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-                  {nNum}
-                </span>
-                {"+ "}
-                {renderAnnotatedSpans(spans, "added")}
-              </div>,
-            );
-          } else {
-            elements.push(
-              <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
-                <span
-                  class="diff-gutter"
-                  style={{ minWidth: gutterWidth }}
-                ></span>
-                <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-                  {nNum}
-                </span>
-                {"+ "}
-                {newTokens?.[newIdx]
-                  ? renderTokens(newTokens[newIdx])
-                  : addedContents[p]}
-              </div>,
-            );
-          }
-        }
-      } else if (prefix === "+") {
-        // Pure added line (no preceding removed block)
-        const content = lines[li]!.slice(1);
-        const newIdx = newTokenIdx++;
-        const nNum = newLineNum++;
-        elements.push(
-          <div key={`${keyPrefix}-${rowKey++}`} class="diff-added">
-            <span class="diff-gutter" style={{ minWidth: gutterWidth }}></span>
-            <span class="diff-gutter" style={{ minWidth: gutterWidth }}>
-              {nNum}
-            </span>
-            {"+ "}
-            {newTokens?.[newIdx] ? renderTokens(newTokens[newIdx]) : content}
-          </div>,
-        );
-        li++;
-      } else {
-        li++;
-      }
-    }
-  }
-
-  return <div class="diff-view">{elements}</div>;
+  if (oldLines.length === 0 && newLines.length === 0) return null;
+  return { oldText: oldLines.join("\n"), newText: newLines.join("\n") };
 }
 
-function MarkdownDiffView({
-  oldStr,
-  newStr,
-}: {
-  oldStr: string;
-  newStr: string;
-}) {
-  const diffHtml = useMemo(() => {
-    const oldHtml = marked.parse(oldStr, { async: false });
-    const newHtml = marked.parse(newStr, { async: false });
-    return sanitizeHtml(HtmlDiff.execute(oldHtml, newHtml));
-  }, [oldStr, newStr]);
+function hasSufficientPatchContextForRenderedPreview(
+  hunks: PatchHunk[] | undefined,
+): boolean {
+  if (!hunks || hunks.length === 0) return false;
+  const first = hunks[0]!;
+  if (first.oldStart !== 1 || first.newStart !== 1) return false;
 
+  let expectedOldStart = 1;
+  let expectedNewStart = 1;
+  for (const hunk of hunks) {
+    if (
+      hunk.oldStart !== expectedOldStart ||
+      hunk.newStart !== expectedNewStart
+    ) {
+      return false;
+    }
+    expectedOldStart += Math.max(hunk.oldLines, 1);
+    expectedNewStart += Math.max(hunk.newLines, 1);
+  }
+  return true;
+}
+
+function ChangePatchFallback({ change }: { change: NormalizedFileChange }) {
+  const patchText = change.patchText ?? "";
+  const tokens = useHighlight(patchText, "diff");
   return (
-    <SourceRenderedToggle
-      defaultSource={true}
-      sourceView={
-        <DiffView oldStr={oldStr} newStr={newStr} filePath="diff.md" />
-      }
-      renderedView={
-        <div
-          class="markdown markdown-diff"
-          dangerouslySetInnerHTML={{ __html: diffHtml }}
-        />
-      }
-    />
+    <CodePre class="write-content" copyText={patchText}>
+      {tokens ? renderTokenLines(tokens) : patchText}
+    </CodePre>
   );
 }
 
-function SvgDiffView({
-  oldStr,
-  newStr,
-  originalFile,
-}: {
-  oldStr: string;
-  newStr: string;
-  originalFile: string | null;
-}) {
-  const fullBefore = originalFile ?? oldStr;
-  const fullAfter = useMemo(() => {
-    if (!originalFile) return newStr;
-    const idx = originalFile.indexOf(oldStr);
-    if (idx < 0) return newStr;
-    return (
-      originalFile.slice(0, idx) +
-      newStr +
-      originalFile.slice(idx + oldStr.length)
-    );
-  }, [originalFile, oldStr, newStr]);
-
+function ApplyPatchFallback({ patchText }: { patchText: string }) {
+  const patchTokens = useHighlight(patchText, "diff");
   return (
-    <SourceRenderedToggle
-      defaultSource={true}
-      sourceView={
-        <DiffView oldStr={oldStr} newStr={newStr} filePath="diff.svg" />
-      }
-      renderedView={
-        <div class="svg-diff-preview">
-          <div class="svg-diff-side">
-            <div class="svg-diff-label">Before</div>
-            <SvgPreview content={fullBefore} />
-          </div>
-          <div class="svg-diff-side">
-            <div class="svg-diff-label">After</div>
-            <SvgPreview content={fullAfter} />
-          </div>
-        </div>
-      }
-    />
+    <CodePre class="write-content" copyText={patchText}>
+      {patchTokens ? renderTokenLines(patchTokens) : patchText}
+    </CodePre>
   );
 }
 
@@ -893,7 +248,7 @@ function EditInput({
   const newString = input.new_string as string;
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
-  const format = detectFormat(filePath);
+  const format = detectRenderableFormat(filePath);
   const remaining = Object.entries(input).filter(
     ([k]) =>
       !["file_path", "old_string", "new_string", "replace_all"].includes(k),
@@ -915,11 +270,16 @@ function EditInput({
         </div>
       ))}
       {format === "markdown" ? (
-        <MarkdownDiffView oldStr={oldString} newStr={newString} />
+        <MarkdownDiffPreview
+          oldText={oldString}
+          newText={newString}
+          filePath={filePath}
+        />
       ) : format === "svg" ? (
-        <SvgDiffView
-          oldStr={oldString}
-          newStr={newString}
+        <SvgDiffPreview
+          oldText={oldString}
+          newText={newString}
+          filePath={filePath}
           originalFile={originalFile}
         />
       ) : Array.isArray(patchHunks) && patchHunks.length > 0 ? (
@@ -935,17 +295,8 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   const content = input.content as string;
   const filePath =
     typeof input.file_path === "string" ? input.file_path : undefined;
-  const format = detectFormat(filePath);
-  const lang = filePath ? langFromPath(filePath) : null;
-  const tokens = useHighlight(content, format === "markdown" ? null : lang);
   const remaining = Object.entries(input).filter(
     ([k]) => !["file_path", "content"].includes(k),
-  );
-
-  const codeView = (
-    <CodePre class="write-content" copyText={content}>
-      {tokens ? renderTokenLines(tokens) : content}
-    </CodePre>
   );
 
   return (
@@ -956,350 +307,168 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
           <span class="field-value">{String(v)}</span>
         </div>
       ))}
-      {format === "svg" ? (
-        <SourceRenderedToggle
-          defaultSource={false}
-          sourceView={codeView}
-          renderedView={<SvgPreview content={content} />}
-        />
-      ) : format === "markdown" ? (
-        <Markdown text={content} class="write-content-markdown" />
-      ) : (
-        codeView
-      )}
+      <FileContentPreview
+        filePath={filePath}
+        content={content}
+        defaultSource={false}
+      />
     </div>
   );
 }
 
-interface FileChangeRowData {
-  path: string | null;
-  operationLabel: string;
-  mode: "diff" | "patch" | "content";
-  oldStr?: string;
-  newStr?: string;
-  patchHunks?: PatchHunk[];
-  content?: string;
-}
-
-function looksLikePatchText(text: string): boolean {
-  const trimmed = text.trimStart();
-  return (
-    trimmed.startsWith("*** Begin Patch") ||
-    trimmed.startsWith("@@") ||
-    trimmed.startsWith("--- ") ||
-    trimmed.startsWith("diff --git ") ||
-    /\n@@/.test(text)
-  );
-}
-
-export function parsePatchHunksFromText(text: string): PatchHunk[] | null {
-  const lines = text.split("\n");
-  const hunks: PatchHunk[] = [];
-  let sawMalformedLine = false;
-  let nextBareOldStart = 1;
-  let nextBareNewStart = 1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (!line.startsWith("@@")) continue;
-    const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-
-    const hunkLines: string[] = [];
-    i++;
-    while (i < lines.length) {
-      const current = lines[i]!;
-      if (current.startsWith("@@")) {
-        i--;
-        break;
-      }
-      if (
-        current.startsWith("*** End Patch") ||
-        current.startsWith("*** Update File: ") ||
-        current.startsWith("*** Add File: ") ||
-        current.startsWith("*** Delete File: ") ||
-        current.startsWith("diff --git ") ||
-        current.startsWith("--- ") ||
-        current.startsWith("+++ ")
-      ) {
-        break;
-      }
-      if (current.startsWith("\\ No newline at end of file")) {
-        i++;
-        continue;
-      }
-      // Allow a terminal trailing newline after the final hunk body.
-      if (current === "" && i === lines.length - 1) {
-        break;
-      }
-
-      const prefix = current[0];
-      if (prefix === " " || prefix === "+" || prefix === "-") {
-        hunkLines.push(current);
-        i++;
-        continue;
-      }
-      sawMalformedLine = true;
-      break;
-    }
-
-    if (sawMalformedLine) {
-      return null;
-    }
-    if (!match && hunkLines.length === 0) {
-      return null;
-    }
-
-    let oldStart: number;
-    let oldLines = 0;
-    let newStart: number;
-    let newLines = 0;
-
-    if (match) {
-      oldStart = Number(match[1]);
-      oldLines = match[2] != null ? Number(match[2]) : 1;
-      newStart = Number(match[3]);
-      newLines = match[4] != null ? Number(match[4]) : 1;
-      nextBareOldStart = oldStart + Math.max(oldLines, 1);
-      nextBareNewStart = newStart + Math.max(newLines, 1);
-    } else {
-      for (const hunkLine of hunkLines) {
-        const prefix = hunkLine[0];
-        if (prefix === " " || prefix === "-") oldLines++;
-        if (prefix === " " || prefix === "+") newLines++;
-      }
-      oldStart = nextBareOldStart;
-      newStart = nextBareNewStart;
-      nextBareOldStart += Math.max(oldLines, 1);
-      nextBareNewStart += Math.max(newLines, 1);
-    }
-
-    hunks.push({
-      oldStart,
-      oldLines,
-      newStart,
-      newLines,
-      lines: hunkLines,
-    });
-  }
-
-  return hunks.length > 0 ? hunks : null;
-}
-
-function parseFileChangeOperation(
-  kind: unknown,
-  op: unknown,
-  diffText: string | null,
-): {
-  label: string;
-  type: "add" | "update" | "delete" | "other";
-} {
-  const opType = typeof op === "string" ? op : null;
-  const kindType =
-    kind &&
-    typeof kind === "object" &&
-    !Array.isArray(kind) &&
-    typeof (kind as Record<string, unknown>).type === "string"
-      ? ((kind as Record<string, unknown>).type as string)
-      : typeof kind === "string"
-        ? kind
-        : null;
-  const normalized = (kindType ?? opType)?.trim().toLowerCase();
-
-  if (normalized === "add" || normalized === "create" || normalized === "new") {
-    return { label: "Add", type: "add" };
-  }
-  if (
-    normalized === "update" ||
-    normalized === "patch" ||
-    normalized === "modify" ||
-    normalized === "edit"
-  ) {
-    return { label: "Patch", type: "update" };
-  }
-  if (normalized === "delete" || normalized === "remove") {
-    return { label: "Delete", type: "delete" };
-  }
-
-  if (diffText && looksLikePatchText(diffText)) {
-    return { label: "Patch", type: "update" };
-  }
-  if (normalized && normalized.length > 0) {
-    const label = normalized[0]!.toUpperCase() + normalized.slice(1);
-    return { label, type: "other" };
-  }
-  return { label: "Change", type: "other" };
-}
-
-function parseFileChangeRows(input: Record<string, unknown>): {
-  rows: FileChangeRowData[];
-  unparsedChanges: unknown[];
-} {
-  if (!Array.isArray(input.changes)) return { rows: [], unparsedChanges: [] };
-  const rows: FileChangeRowData[] = [];
-  const unparsedChanges: unknown[] = [];
-
-  for (const rawChange of input.changes) {
-    if (
-      !rawChange ||
-      typeof rawChange !== "object" ||
-      Array.isArray(rawChange)
-    ) {
-      unparsedChanges.push(rawChange);
-      continue;
-    }
-    const change = rawChange as Record<string, unknown>;
-    const path =
-      typeof change.path === "string"
-        ? change.path
-        : typeof change.file_path === "string"
-          ? change.file_path
-          : null;
-    const diffText = typeof change.diff === "string" ? change.diff : null;
-    const patchText =
-      typeof change.patchText === "string" ? change.patchText : null;
-    const contentText =
-      typeof change.content === "string" ? change.content : null;
-    const oldString =
-      typeof change.old_string === "string"
-        ? change.old_string
-        : typeof change.oldString === "string"
-          ? change.oldString
-          : null;
-    const newString =
-      typeof change.new_string === "string"
-        ? change.new_string
-        : typeof change.newString === "string"
-          ? change.newString
-          : null;
-    const hasOperation =
-      typeof change.op === "string" ||
-      typeof change.kind === "string" ||
-      (change.kind &&
-        typeof change.kind === "object" &&
-        !Array.isArray(change.kind) &&
-        typeof (change.kind as Record<string, unknown>).type === "string");
-    const hasBodyLike =
-      typeof diffText === "string" ||
-      typeof patchText === "string" ||
-      typeof contentText === "string" ||
-      typeof oldString === "string" ||
-      typeof newString === "string";
-    if (!path && !hasOperation && !hasBodyLike) {
-      unparsedChanges.push(rawChange);
-      continue;
-    }
-    const bodyText = diffText ?? patchText ?? contentText;
-    const body = typeof bodyText === "string" ? bodyText : null;
-    const operation = parseFileChangeOperation(
-      change.kind,
-      change.op,
-      bodyText,
-    );
-    if (operation.type === "add") {
-      const newStr = newString ?? contentText ?? diffText ?? patchText ?? "";
-      rows.push({
-        path,
-        operationLabel: operation.label,
-        mode: "diff",
-        oldStr: "",
-        newStr,
-      });
-      continue;
-    }
-    if (operation.type === "delete") {
-      const oldStr = oldString ?? diffText ?? contentText ?? patchText ?? "";
-      rows.push({
-        path,
-        operationLabel: operation.label,
-        mode: "diff",
-        oldStr,
-        newStr: "",
-      });
-      continue;
-    }
-
-    if (typeof oldString === "string" && typeof newString === "string") {
-      rows.push({
-        path,
-        operationLabel: operation.label,
-        mode: "diff",
-        oldStr: oldString,
-        newStr: newString,
-      });
-      continue;
-    }
-
-    if (body && looksLikePatchText(body)) {
-      const patchHunks = parsePatchHunksFromText(body);
-      if (patchHunks) {
-        rows.push({
-          path,
-          operationLabel: operation.label,
-          mode: "patch",
-          patchHunks,
-        });
-      } else {
-        rows.push({
-          path,
-          operationLabel: operation.label,
-          mode: "content",
-          content: body,
-        });
-      }
-      continue;
-    }
-
-    if (body) {
-      rows.push({
-        path,
-        operationLabel: operation.label,
-        mode: "content",
-        content: body,
-      });
-      continue;
-    }
-
-    unparsedChanges.push(rawChange);
-  }
-
-  return { rows, unparsedChanges };
-}
-
 function FileChangeRow({
-  row,
+  change,
   showMeta,
+  preservePatchSource = false,
 }: {
-  row: FileChangeRowData;
+  change: NormalizedFileChange;
   showMeta: boolean;
+  preservePatchSource?: boolean;
 }) {
-  const lang = row.path ? langFromPath(row.path) : null;
-  const contentText = row.content ?? "";
-  const contentLang = looksLikePatchText(contentText) ? "diff" : lang;
+  const path = change.path ?? undefined;
+  const renderableContentFormat = detectRenderableFormat(path, change.content);
+  const canRenderAddedContent =
+    change.op === "add" &&
+    typeof change.content === "string" &&
+    renderableContentFormat != null;
+  const patchTextPair = deriveHunkTextPair(change.patchHunks);
+  const hasRenderablePatchContext = hasSufficientPatchContextForRenderedPreview(
+    change.patchHunks,
+  );
+  const canRenderPatchMarkdown =
+    isMarkdownPath(path) &&
+    patchTextPair != null &&
+    (patchTextPair.oldText.length > 0 || patchTextPair.newText.length > 0) &&
+    hasRenderablePatchContext;
+  const canRenderPatchSvg =
+    isSvgPath(path) &&
+    patchTextPair != null &&
+    looksLikeSvg(patchTextPair.oldText) &&
+    looksLikeSvg(patchTextPair.newText) &&
+    hasRenderablePatchContext;
+  const canRenderDiffMarkdown =
+    typeof change.oldText === "string" &&
+    typeof change.newText === "string" &&
+    isMarkdownPath(path);
+  const canRenderDiffSvg =
+    typeof change.oldText === "string" &&
+    typeof change.newText === "string" &&
+    isSvgPath(path);
+  const contentText = change.content ?? "";
+  const contentLang = looksLikePatchText(contentText)
+    ? "diff"
+    : path
+      ? langFromPath(path)
+      : null;
   const contentTokens = useHighlight(contentText, contentLang);
+  const shouldSuppressContentFallback =
+    preservePatchSource && typeof change.patchText === "string";
 
   return (
     <div class="filechange-change">
       {showMeta && (
         <div class="tool-input-field filechange-meta">
-          <span class="tool-subtitle-tag">{row.operationLabel}</span>
-          <span class="tool-subtitle-path">{row.path ?? "(unknown file)"}</span>
+          <span class="tool-subtitle-tag">{change.label}</span>
+          <span class="tool-subtitle-path">
+            {change.path ?? "(unknown file)"}
+          </span>
         </div>
       )}
-      {row.mode === "diff" && (
-        <DiffView
-          oldStr={row.oldStr ?? ""}
-          newStr={row.newStr ?? ""}
-          filePath={row.path ?? undefined}
+      {canRenderAddedContent && (
+        <FileContentPreview
+          filePath={path}
+          content={change.content ?? ""}
+          defaultSource={false}
         />
       )}
-      {row.mode === "patch" && row.patchHunks && (
-        <PatchView hunks={row.patchHunks} filePath={row.path ?? undefined} />
+      {!canRenderAddedContent && canRenderDiffMarkdown && (
+        <MarkdownDiffPreview
+          oldText={change.oldText ?? ""}
+          newText={change.newText ?? ""}
+          filePath={path}
+          defaultSource={true}
+        />
       )}
-      {row.mode === "content" && row.content && (
-        <CodePre class="write-content" copyText={row.content}>
-          {contentTokens ? renderTokenLines(contentTokens) : row.content}
-        </CodePre>
+      {!canRenderAddedContent && canRenderDiffSvg && (
+        <SvgDiffPreview
+          oldText={change.oldText ?? ""}
+          newText={change.newText ?? ""}
+          filePath={path}
+          defaultSource={true}
+        />
       )}
+      {!canRenderAddedContent &&
+        !canRenderDiffMarkdown &&
+        !canRenderDiffSvg &&
+        typeof change.oldText === "string" &&
+        typeof change.newText === "string" && (
+          <DiffView
+            oldStr={change.oldText}
+            newStr={change.newText}
+            filePath={path}
+          />
+        )}
+      {!canRenderAddedContent && canRenderPatchMarkdown && (
+        <MarkdownDiffPreview
+          oldText={patchTextPair.oldText}
+          newText={patchTextPair.newText}
+          filePath={path}
+          sourceText={preservePatchSource ? change.patchText : undefined}
+          defaultSource={true}
+        />
+      )}
+      {!canRenderAddedContent && canRenderPatchSvg && (
+        <SvgDiffPreview
+          oldText={patchTextPair.oldText}
+          newText={patchTextPair.newText}
+          filePath={path}
+          sourceText={preservePatchSource ? change.patchText : undefined}
+          defaultSource={true}
+        />
+      )}
+      {!canRenderAddedContent &&
+        !canRenderPatchMarkdown &&
+        !canRenderPatchSvg &&
+        !preservePatchSource &&
+        change.patchHunks &&
+        change.patchHunks.length > 0 && (
+          <PatchView hunks={change.patchHunks} filePath={path} />
+        )}
+      {!canRenderAddedContent &&
+        !canRenderPatchMarkdown &&
+        !canRenderPatchSvg &&
+        typeof change.patchText === "string" &&
+        (preservePatchSource ||
+          !change.patchHunks ||
+          change.patchHunks.length === 0) && (
+          <ChangePatchFallback change={change} />
+        )}
+      {!canRenderAddedContent &&
+        typeof change.content === "string" &&
+        !canRenderDiffMarkdown &&
+        !canRenderDiffSvg &&
+        !canRenderPatchMarkdown &&
+        !canRenderPatchSvg &&
+        !shouldSuppressContentFallback &&
+        renderableContentFormat != null && (
+          <FileContentPreview
+            filePath={path}
+            content={change.content}
+            defaultSource={false}
+          />
+        )}
+      {!canRenderAddedContent &&
+        typeof change.content === "string" &&
+        renderableContentFormat == null &&
+        !canRenderDiffMarkdown &&
+        !canRenderDiffSvg &&
+        !canRenderPatchMarkdown &&
+        !canRenderPatchSvg &&
+        !shouldSuppressContentFallback && (
+          <CodePre class="write-content" copyText={change.content}>
+            {contentTokens ? renderTokenLines(contentTokens) : change.content}
+          </CodePre>
+        )}
     </div>
   );
 }
@@ -1307,37 +476,37 @@ function FileChangeRow({
 function getSingleFileChangeHeaderSubtitle(
   input: Record<string, unknown>,
 ): h.JSX.Element | null {
-  const { rows, unparsedChanges } = parseFileChangeRows(input);
-  if (rows.length !== 1 || unparsedChanges.length > 0) return null;
+  const { changes, unparsed } = parseCodexFileChanges(input);
+  if (changes.length !== 1 || unparsed.length > 0) return null;
 
-  const row = rows[0]!;
-  if (!row.path) return null;
+  const change = changes[0]!;
+  if (!change.path) return null;
 
   return (
     <Fragment>
-      <span class="tool-subtitle-tag">{row.operationLabel}</span>
-      <span class="tool-subtitle-path">{row.path}</span>
+      <span class="tool-subtitle-tag">{change.label}</span>
+      <span class="tool-subtitle-path">{change.path}</span>
     </Fragment>
   );
 }
 
 function FileChangeInput({ input }: { input: Record<string, unknown> }) {
-  const { rows, unparsedChanges } = parseFileChangeRows(input);
-  if (rows.length === 0) return formatGenericInput(input);
-  const showRowMeta = rows.length > 1 || unparsedChanges.length > 0;
+  const { changes, unparsed } = parseCodexFileChanges(input);
+  if (changes.length === 0) return formatGenericInput(input);
+  const showRowMeta = changes.length > 1 || unparsed.length > 0;
 
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
     if (k !== "changes") remaining[k] = v;
   }
-  if (unparsedChanges.length > 0) {
-    remaining.changes = unparsedChanges;
+  if (unparsed.length > 0) {
+    remaining.changes = unparsed;
   }
   return formatGenericInput(
     remaining,
     <div class="filechange-list">
-      {rows.map((row, i) => (
-        <FileChangeRow key={i} row={row} showMeta={showRowMeta} />
+      {changes.map((change, i) => (
+        <FileChangeRow key={i} change={change} showMeta={showRowMeta} />
       ))}
     </div>,
   );
@@ -1346,148 +515,7 @@ function FileChangeInput({ input }: { input: Record<string, unknown> }) {
 function ApplyPatchInput({ input }: { input: Record<string, unknown> }) {
   const patchText = parsePatchTextFromInput(input);
   if (!patchText) return formatGenericInput(input);
-
-  const { lines: patchLines, lang } = useMemo(
-    () => parseApplyPatchLines(patchText),
-    [patchText],
-  );
-
-  const { oldText, newText } = useMemo(() => {
-    const oldLines: string[] = [];
-    const newLines: string[] = [];
-    for (const pl of patchLines) {
-      if (pl.kind === "removed" || pl.kind === "context")
-        oldLines.push(pl.content);
-      if (pl.kind === "added" || pl.kind === "context")
-        newLines.push(pl.content);
-    }
-    return { oldText: oldLines.join("\n"), newText: newLines.join("\n") };
-  }, [patchLines]);
-
-  const oldTokens = useHighlight(oldText, lang);
-  const newTokens = useHighlight(newText, lang);
-
-  const elements: h.JSX.Element[] = [];
-  let oldTokenIdx = 0;
-  let newTokenIdx = 0;
-
-  let i = 0;
-  while (i < patchLines.length) {
-    const pl = patchLines[i]!;
-
-    if (pl.kind === "header" || pl.kind === "plain") {
-      elements.push(
-        <div key={i} class={pl.kind === "header" ? "diff-header" : ""}>
-          {pl.text}
-        </div>,
-      );
-      i++;
-      continue;
-    }
-
-    if (pl.kind === "context") {
-      const oldIdx = oldTokenIdx++;
-      newTokenIdx++;
-      elements.push(
-        <div key={i} class="diff-context">
-          {" "}
-          {oldTokens?.[oldIdx] ? renderTokens(oldTokens[oldIdx]) : pl.content}
-        </div>,
-      );
-      i++;
-      continue;
-    }
-
-    if (pl.kind === "removed") {
-      // Collect consecutive removed lines
-      const removeStart = i;
-      while (i < patchLines.length && patchLines[i]!.kind === "removed") i++;
-      const removedSlice = patchLines.slice(removeStart, i);
-
-      // Collect adjacent added lines
-      const addStart = i;
-      while (i < patchLines.length && patchLines[i]!.kind === "added") i++;
-      const addedSlice = patchLines.slice(addStart, i);
-
-      const pairCount = Math.min(removedSlice.length, addedSlice.length);
-      const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
-      for (let p = 0; p < pairCount; p++) {
-        const wc = diffWordsWithSpace(
-          removedSlice[p]!.content,
-          addedSlice[p]!.content,
-        );
-        wordDiffs.push({
-          changes: wc,
-          similar: wordDiffSimilarity(wc) >= WORD_DIFF_THRESHOLD,
-        });
-      }
-
-      for (let p = 0; p < removedSlice.length; p++) {
-        const oldIdx = oldTokenIdx++;
-        const key = removeStart + p;
-        if (p < pairCount && wordDiffs[p]!.similar) {
-          const spans = overlayDiff(
-            oldTokens?.[oldIdx] ?? null,
-            wordDiffs[p]!.changes,
-            "old",
-          );
-          elements.push(
-            <div key={key} class="diff-removed">
-              {"-"}
-              {renderAnnotatedSpans(spans, "removed")}
-            </div>,
-          );
-        } else {
-          elements.push(
-            <div key={key} class="diff-removed">
-              {"-"}
-              {oldTokens?.[oldIdx]
-                ? renderTokens(oldTokens[oldIdx])
-                : removedSlice[p]!.content}
-            </div>,
-          );
-        }
-      }
-
-      for (let p = 0; p < addedSlice.length; p++) {
-        const newIdx = newTokenIdx++;
-        const key = addStart + p;
-        if (p < pairCount && wordDiffs[p]!.similar) {
-          const spans = overlayDiff(
-            newTokens?.[newIdx] ?? null,
-            wordDiffs[p]!.changes,
-            "new",
-          );
-          elements.push(
-            <div key={key} class="diff-added">
-              {"+"}
-              {renderAnnotatedSpans(spans, "added")}
-            </div>,
-          );
-        } else {
-          elements.push(
-            <div key={key} class="diff-added">
-              {"+"}
-              {newTokens?.[newIdx]
-                ? renderTokens(newTokens[newIdx])
-                : addedSlice[p]!.content}
-            </div>,
-          );
-        }
-      }
-      continue;
-    }
-
-    // Pure added line (no preceding removed block)
-    const newIdx = newTokenIdx++;
-    elements.push(
-      <div key={i} class="diff-added">
-        {"+"}
-        {newTokens?.[newIdx] ? renderTokens(newTokens[newIdx]) : pl.content}
-      </div>,
-    );
-    i++;
-  }
+  const changes = getApplyPatchFileChanges(input);
 
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
@@ -1496,7 +524,27 @@ function ApplyPatchInput({ input }: { input: Record<string, unknown> }) {
     remaining[k] = v;
   }
 
-  return formatGenericInput(remaining, <div class="diff-view">{elements}</div>);
+  if (changes.length === 0) {
+    return formatGenericInput(
+      remaining,
+      <ApplyPatchFallback patchText={patchText} />,
+    );
+  }
+
+  const showRowMeta = changes.length > 1;
+  return formatGenericInput(
+    remaining,
+    <div class="filechange-list">
+      {changes.map((change, i) => (
+        <FileChangeRow
+          key={i}
+          change={change}
+          showMeta={showRowMeta}
+          preservePatchSource={true}
+        />
+      ))}
+    </div>,
+  );
 }
 
 function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
@@ -1533,7 +581,7 @@ function ReadResult({
   content: string;
   filePath: string;
 }) {
-  const format = detectFormat(filePath);
+  const format = detectRenderableFormat(filePath);
   const lang = langFromPath(filePath);
 
   const rawLines = content.split("\n");
@@ -2769,7 +1817,7 @@ function SmartResultPre({
   content: string;
   isError?: boolean;
 }) {
-  const format = detectFormat(null, content);
+  const format = detectRenderableFormat(null, content);
   const tokens = useHighlight(content, format === "svg" ? "xml" : null);
 
   if (!format) {

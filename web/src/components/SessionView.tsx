@@ -25,6 +25,7 @@ import { PermissionPromptForm } from "./PermissionPromptForm";
 import { FileViewer } from "./FileViewer";
 import { requestNotificationPermissionFromGesture } from "../useNotifications";
 import { LogoBanner } from "./LogoBanner";
+import { isMarkdownPath } from "../lib/fileFormats";
 
 interface Props {
   task: TaskState;
@@ -221,7 +222,7 @@ function SessionViewInner({
         tracked && tracked.edits.length > 0 ? tracked.edits.length - 1 : null,
       viewMode:
         prev?.viewMode ??
-        (/\.(md|mdx)$/i.test(absolutePath) ? "rendered" : "source"),
+        (isMarkdownPath(absolutePath) ? "rendered" : "source"),
       height: prev?.height ?? 300,
     }));
   }, []); // stable — reads latest values from refs

@@ -37,6 +37,12 @@ import type {
   TurnDeltaEvent,
   StderrMessage,
 } from "./protocol";
+import {
+  fileEditPayloadFromNormalizedChange,
+  getApplyPatchFileChanges,
+  parseCodexFileChanges,
+  toFileEditOperation,
+} from "./lib/fileChanges";
 
 function getExtras(msg: {
   extras?: Record<string, unknown>;
@@ -78,119 +84,11 @@ function appendRawSource(
   }
 }
 
-interface ParsedPatchPath {
-  path: string;
-  op: "add" | "update" | "delete";
-  addedContent?: string;
-  patchText?: string;
-}
-
-function normalizePath(path: string): string {
-  if (path.startsWith("a/") || path.startsWith("b/")) return path.slice(2);
-  return path;
-}
-
 function toAbsolutePath(path: string, cwd?: string): string {
   if (path.startsWith("/")) return path;
   if (!cwd || cwd.length === 0) return path;
   const base = cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
   return `${base}/${path}`;
-}
-
-function parseDiffHeaderPath(line: string, prefix: string): string | null {
-  if (!line.startsWith(prefix)) return null;
-  const value = line.slice(prefix.length).trim();
-  if (!value || value === "/dev/null") return value;
-  return normalizePath(value);
-}
-
-function parseApplyPatchPaths(patchText: string): ParsedPatchPath[] {
-  const lines = patchText.split("\n");
-  const out: ParsedPatchPath[] = [];
-  const seen = new Set<string>();
-  const pushPath = (
-    path: string,
-    op: "add" | "update" | "delete",
-    addedContent?: string,
-    patchText?: string,
-  ) => {
-    if (!path || path === "/dev/null") return;
-    const key = `${op}:${path}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ path, op, addedContent, patchText });
-  };
-
-  let lastOld: string | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.startsWith("*** Add File: ")) {
-      const path = line.slice("*** Add File: ".length).trim();
-      const contentLines: string[] = [];
-      const sectionLines = [line];
-      for (let j = i + 1; j < lines.length; j++) {
-        const next = lines[j]!;
-        if (next.startsWith("*** ")) {
-          i = j - 1;
-          break;
-        }
-        sectionLines.push(next);
-        if (next.startsWith("+")) contentLines.push(next.slice(1));
-        else if (next.startsWith(" ")) contentLines.push(next.slice(1));
-        if (j === lines.length - 1) i = j;
-      }
-      pushPath(path, "add", contentLines.join("\n"), sectionLines.join("\n"));
-      continue;
-    }
-    if (line.startsWith("*** Update File: ")) {
-      const path = line.slice("*** Update File: ".length).trim();
-      const sectionLines = [line];
-      for (let j = i + 1; j < lines.length; j++) {
-        const next = lines[j]!;
-        if (next.startsWith("*** ")) {
-          i = j - 1;
-          break;
-        }
-        sectionLines.push(next);
-        if (j === lines.length - 1) i = j;
-      }
-      pushPath(path, "update", undefined, sectionLines.join("\n"));
-      continue;
-    }
-    if (line.startsWith("*** Delete File: ")) {
-      const path = line.slice("*** Delete File: ".length).trim();
-      pushPath(path, "delete", undefined, line);
-      continue;
-    }
-    const oldPath = parseDiffHeaderPath(line, "--- ");
-    if (oldPath != null) {
-      lastOld = oldPath;
-      continue;
-    }
-    const newPath = parseDiffHeaderPath(line, "+++ ");
-    if (newPath != null) {
-      if (newPath === "/dev/null") {
-        if (lastOld && lastOld !== "/dev/null") pushPath(lastOld, "delete");
-      } else if (lastOld === "/dev/null") {
-        pushPath(newPath, "add");
-      } else {
-        pushPath(newPath, "update");
-      }
-    }
-  }
-  return out;
-}
-
-function parsePatchTextFromInput(
-  input: Record<string, unknown>,
-): string | null {
-  const direct = [input.input, input.patchText, input.patch, input.diff];
-  for (const candidate of direct) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 interface BuildEditsParams {
@@ -230,31 +128,30 @@ function buildEditsFromApplyPatchInput(
   status: FileEditStatus,
   cwd?: string,
 ): FileEdit[] {
-  const patchText = parsePatchTextFromInput(input);
-  if (!patchText) return [];
-  const parsedPaths = parseApplyPatchPaths(patchText);
-  return parsedPaths.map((p, idx) =>
-    buildFileEdit(
-      {
-        toolUseId,
-        messageId,
-        status,
-        source: "codex-apply_patch-history",
-        cwd,
-      },
-      p.path,
-      p.op,
-      p.op === "add" && typeof p.addedContent === "string"
-        ? { mode: "full_content", content: p.addedContent }
-        : p.op === "delete"
-          ? { mode: "full_content", content: "" }
-          : {
-              mode: "patch_text",
-              patchText: p.patchText ?? patchText,
-            },
-      idx,
-    ),
-  );
+  const changes = getApplyPatchFileChanges(input);
+  const edits: FileEdit[] = [];
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i]!;
+    const path = change.path;
+    if (!path) continue;
+    const op = toFileEditOperation(change.op) ?? "update";
+    edits.push(
+      buildFileEdit(
+        {
+          toolUseId,
+          messageId,
+          status,
+          source: "codex-apply_patch-history",
+          cwd,
+        },
+        path,
+        op,
+        fileEditPayloadFromNormalizedChange(change),
+        i,
+      ),
+    );
+  }
+  return edits;
 }
 
 function buildEditsFromCodexFileChangeEvent(
@@ -282,31 +179,13 @@ function buildEditsFromCodexFileChangeEvent(
   const turnId = typeof params?.turnId === "string" ? params.turnId : undefined;
   if (!item || !Array.isArray(item.changes)) return [];
 
-  const rawChanges = item.changes as unknown[];
+  const { changes } = parseCodexFileChanges({ changes: item.changes });
   const edits: FileEdit[] = [];
-  for (let i = 0; i < rawChanges.length; i++) {
-    const ch = rawChanges[i];
-    if (!ch || typeof ch !== "object" || Array.isArray(ch)) continue;
-    const change = ch as Record<string, unknown>;
-    const path = typeof change.path === "string" ? change.path : null;
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i]!;
+    const path = change.path;
     if (!path) continue;
-    const kind =
-      change.kind &&
-      typeof change.kind === "object" &&
-      !Array.isArray(change.kind)
-        ? (change.kind as Record<string, unknown>)
-        : null;
-    const kindType = kind?.type;
-    const op: "add" | "update" | "delete" =
-      kindType === "add" || kindType === "update" || kindType === "delete"
-        ? kindType
-        : "update";
-    const payload: FileChangePayload =
-      typeof change.diff === "string"
-        ? op === "update"
-          ? { mode: "patch_text", patchText: change.diff }
-          : { mode: "full_content", content: change.diff }
-        : { mode: "none" };
+    const op = toFileEditOperation(change.op) ?? "update";
     edits.push(
       buildFileEdit(
         {
@@ -319,7 +198,7 @@ function buildEditsFromCodexFileChangeEvent(
         },
         path,
         op,
-        payload,
+        fileEditPayloadFromNormalizedChange(change),
         i,
       ),
     );

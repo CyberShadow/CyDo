@@ -7,9 +7,11 @@ import { applyPatch, structuredPatch } from "diff";
 import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
-import { PatchView, parsePatchHunksFromText } from "./ToolCall";
-import type { PatchHunk } from "./ToolCall";
+import { PatchView } from "./diff/DiffView";
 import { composeHunks } from "../lib/composeHunks";
+import type { PatchHunk } from "../lib/patches";
+import { parsePatchHunksFromText, toUnifiedPatch } from "../lib/patches";
+import { isMarkdownPath } from "../lib/fileFormats";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 
@@ -239,40 +241,6 @@ interface ResolvedFileContent {
   resolved: Map<number, ResolvedEdit>;
   isDeleted: boolean;
   deletedSource: SourceContent | null;
-}
-
-function toUnifiedPatch(patchText: string): string | null {
-  const lines = patchText.split("\n");
-  if (lines.length === 0) return null;
-  const header = lines[0]!;
-  if (!header.startsWith("*** Update File: ")) return null;
-  const path = header.slice("*** Update File: ".length).trim();
-  if (!path) return null;
-
-  // Parse hunks to get proper line numbers; bare @@ headers (no numbers) are
-  // not accepted by the diff library's applyPatch, so we rebuild them.
-  const hunks = parsePatchHunksFromText(patchText);
-  if (hunks && hunks.length > 0) {
-    const hunkParts = hunks.map(
-      (h) =>
-        `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n${h.lines.join("\n")}`,
-    );
-    return `--- a/${path}\n+++ b/${path}\n${hunkParts.join("\n")}\n`;
-  }
-
-  const bodyLines: string[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (
-      line.startsWith("*** Begin Patch") ||
-      line.startsWith("*** End Patch")
-    ) {
-      continue;
-    }
-    bodyLines.push(line);
-  }
-  const body = bodyLines.join("\n");
-  return `--- a/${path}\n+++ b/${path}\n${body}\n`;
 }
 
 /** Resolve all edits for a file and return the current (latest) content. */
@@ -658,7 +626,7 @@ function FragmentMarkdownView({
     );
   }
 
-  const isMarkdown = /\.(md|mdx)$/i.test(filePath);
+  const isMarkdown = isMarkdownPath(filePath);
   if (!isMarkdown) {
     return <FragmentSourceView source={source} filePath={filePath} />;
   }
@@ -730,7 +698,7 @@ const ContentViewer = memo(function ContentViewer({
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
 }) {
-  const isMarkdown = /\.(md|mdx)$/i.test(filePath);
+  const isMarkdown = isMarkdownPath(filePath);
 
   return (
     <div class="content-viewer">

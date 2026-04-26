@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { structuredPatch } from "diff";
-import type { PatchHunk } from "../components/ToolCall";
+import type { PatchHunk } from "./patches";
 import {
   hunksToOps,
   composeOps,

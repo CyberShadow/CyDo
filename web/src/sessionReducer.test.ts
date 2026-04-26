@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { reduceMessage } from "./sessionReducer";
 import { makeTaskState } from "./types";
 
+function asEvent(event: object): Parameters<typeof reduceMessage>[1] {
+  return event as Parameters<typeof reduceMessage>[1];
+}
+
 function makeState() {
   return {
     ...makeTaskState(1),
@@ -77,5 +81,108 @@ describe("session/status reducer", () => {
       },
     );
     expect(afterExit.sessionStatus).toBeNull();
+  });
+});
+
+describe("tracked file edits", () => {
+  it("tracks codex fileChange markdown add events as full-content edits", () => {
+    const state = { ...makeState(), agentType: "codex" };
+    const next = reduceMessage(
+      state,
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "fc-1",
+        name: "fileChange",
+        input: {
+          changes: [
+            {
+              path: "docs/new.md",
+              kind: { type: "add" },
+              diff: "# New markdown\n",
+            },
+          ],
+        },
+      }),
+    );
+
+    const tracked = next.trackedFiles.get("/tmp/project/docs/new.md");
+    expect(tracked).toBeTruthy();
+    expect(tracked?.edits).toHaveLength(1);
+    expect(tracked?.edits[0]?.source).toBe("codex-fileChange");
+    expect(tracked?.edits[0]?.status).toBe("pending");
+    expect(tracked?.edits[0]?.payload).toEqual({
+      mode: "full_content",
+      content: "# New markdown\n",
+    });
+  });
+
+  it("tracks codex apply_patch markdown update events as patch-text edits", () => {
+    const state = { ...makeState(), agentType: "codex" };
+    const next = reduceMessage(
+      state,
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "ap-1",
+        name: "apply_patch",
+        input: {
+          input: [
+            "*** Begin Patch",
+            "*** Update File: docs/readme.md",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "*** End Patch",
+            "",
+          ].join("\n"),
+        },
+      }),
+    );
+
+    const tracked = next.trackedFiles.get("/tmp/project/docs/readme.md");
+    expect(tracked).toBeTruthy();
+    expect(tracked?.edits).toHaveLength(1);
+    expect(tracked?.edits[0]?.source).toBe("codex-apply_patch-history");
+    expect(tracked?.edits[0]?.payload).toEqual({
+      mode: "patch_text",
+      patchText: "*** Update File: docs/readme.md\n@@ -1 +1 @@\n-old\n+new",
+    });
+  });
+
+  it("keeps claude Write tracking behavior", () => {
+    const started = reduceMessage(
+      { ...makeState(), agentType: "claude" },
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "write-1",
+        name: "Write",
+        input: {
+          file_path: "/tmp/project/notes.md",
+          content: "# Hello",
+        },
+      }),
+    );
+
+    const next = reduceMessage(
+      started,
+      asEvent({
+        type: "item/result",
+        item_id: "write-1",
+        content: [{ type: "text", text: "ok" }],
+        is_error: false,
+      }),
+    );
+
+    const tracked = next.trackedFiles.get("/tmp/project/notes.md");
+    expect(tracked).toBeTruthy();
+    expect(tracked?.edits).toHaveLength(1);
+    expect(tracked?.edits[0]?.source).toBe("claude-tool");
+    expect(tracked?.edits[0]?.status).toBe("applied");
+    expect(tracked?.edits[0]?.payload).toEqual({
+      mode: "full_content",
+      content: "# Hello",
+    });
   });
 });

@@ -23,8 +23,14 @@ export function matchPattern(userText) {
     // Extract the conversation body (everything after "Conversation:\n")
     // so tests can assert on assistant entries (A: ...) too.
     const convStart = userText.indexOf("Conversation:\n");
-    const convBody = convStart >= 0 ? userText.slice(convStart + "Conversation:\n".length).trim() : "";
-    return { type: "text", text: JSON.stringify(["run the tests", header, convBody]) };
+    const convBody =
+      convStart >= 0
+        ? userText.slice(convStart + "Conversation:\n".length).trim()
+        : "";
+    return {
+      type: "text",
+      text: JSON.stringify(["run the tests", header, convBody]),
+    };
   }
 
   // Title generation subprocess — extract a recognizable title from the prompt.
@@ -37,16 +43,29 @@ export function matchPattern(userText) {
   // [SYSTEM: Follow-up question from parent task (qid=N)] — backend wraps Ask
   // messages in SYSTEM tags. Extract qid from the subject and respond with Answer.
   {
-    let m = userText.match(/\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\][\s\S]*deferred-test/);
+    let m = userText.match(
+      /\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\][\s\S]*deferred-test/,
+    );
     if (m)
       return {
         type: "multi_tool_call",
         tool_calls: [
-          { name: "mcp__cydo__Answer", input: { qid: parseInt(m[1]), message: "deferred-answer-result" } },
-          { name: "Bash", input: { command: "echo post-answer-work", description: "Post-answer work" } },
+          {
+            name: "mcp__cydo__Answer",
+            input: { qid: parseInt(m[1]), message: "deferred-answer-result" },
+          },
+          {
+            name: "Bash",
+            input: {
+              command: "echo post-answer-work",
+              description: "Post-answer work",
+            },
+          },
         ],
       };
-    m = userText.match(/\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\]/);
+    m = userText.match(
+      /\[SYSTEM: Follow-up question from parent task \(qid=(\d+)\)\]/,
+    );
     if (m)
       return {
         type: "tool_call",
@@ -68,7 +87,9 @@ export function matchPattern(userText) {
   // \n{2,} before [/SYSTEM]: the body may end with a trailing newline from
   // the prompt template, producing three newlines before the closing tag.
   {
-    const m = userText.match(/\[SYSTEM: (?:(?:Task prompt|Session start|Mode switch|Handoff)(?:: [^\]\n]+)?)\]\n\n([\s\S]*)\n{2,}\[\/SYSTEM\]/);
+    const m = userText.match(
+      /\[SYSTEM: (?:(?:Task prompt|Session start|Mode switch|Handoff)(?:: [^\]\n]+)?)\]\n\n([\s\S]*)\n{2,}\[\/SYSTEM\]/,
+    );
     if (m) {
       if (process.env.MOCK_STALL_SYSTEM) return { type: "stall" };
       return matchPattern(m[1]);
@@ -131,6 +152,46 @@ export function matchPattern(userText) {
       input: {
         input:
           "*** Begin Patch\n*** Update File: tmp/codex-rendered-fragments.md\n@@ -20,3 +20,3 @@\n ## Existing later section\n-old second paragraph\n+second collected fragment\n keep later line\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex markdown add fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Add File: tmp/codex-inline-preview.md\n+# Inline Preview\n+\n+This is **markdown** from Codex.\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex markdown update fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Update File: tmp/codex-inline-preview.md\n@@ -1,3 +1,3 @@\n-# Inline Preview\n+# Inline Preview Updated\n \n-This is **markdown** from Codex.\n+This is **updated markdown** from Codex.\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex markdown ambiguous fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Update File: tmp/codex-inline-preview.md\n@@ -1,1 +1,1 @@\n*broken-line\n*** End Patch\n",
+      },
+    };
+  }
+  if (/codex markdown mixed multi-file fixture/i.test(userText)) {
+    return {
+      type: "tool_call",
+      name: "apply_patch",
+      input: {
+        input:
+          "*** Begin Patch\n*** Add File: tmp/multi-preview.md\n+# Multi Markdown\n+\n+first paragraph\n*** Update File: tmp/multi-preview.txt\n@@ -1 +1 @@\n-old text\n+new text\n*** End Patch\n",
       },
     };
   }
@@ -222,8 +283,16 @@ export function matchPattern(userText) {
       name: "mcp__cydo__Task",
       input: {
         tasks: [
-          { task_type: match[1], prompt: 'reply with "normal-child-done"', description: "Normal child" },
-          { task_type: match[1], prompt: "call ask what approach should I use?", description: "Questioning child" },
+          {
+            task_type: match[1],
+            prompt: 'reply with "normal-child-done"',
+            description: "Normal child",
+          },
+          {
+            task_type: match[1],
+            prompt: "call ask what approach should I use?",
+            description: "Questioning child",
+          },
         ],
       },
     };
@@ -235,8 +304,16 @@ export function matchPattern(userText) {
       name: "mcp__cydo__Task",
       input: {
         tasks: [
-          { task_type: "research", prompt: "stall session", description: "Stalling child" },
-          { task_type: "research", prompt: "call ask am I doing this right?", description: "Questioning child" },
+          {
+            task_type: "research",
+            prompt: "stall session",
+            description: "Stalling child",
+          },
+          {
+            task_type: "research",
+            prompt: "call ask am I doing this right?",
+            description: "Questioning child",
+          },
         ],
       },
     };
@@ -251,8 +328,16 @@ export function matchPattern(userText) {
       name: "mcp__cydo__Task",
       input: {
         tasks: [
-          { task_type: "research", prompt: "call task research stall session", description: "Busy child" },
-          { task_type: "research", prompt: "call ask any updates?", description: "Helper child" },
+          {
+            task_type: "research",
+            prompt: "call task research stall session",
+            description: "Busy child",
+          },
+          {
+            task_type: "research",
+            prompt: "call ask any updates?",
+            description: "Helper child",
+          },
         ],
       },
     };
@@ -266,7 +351,11 @@ export function matchPattern(userText) {
       name: "mcp__cydo__Task",
       input: {
         tasks: [
-          { task_type: "research", prompt: 'reply with "first-child-done"', description: "Fast child" },
+          {
+            task_type: "research",
+            prompt: 'reply with "first-child-done"',
+            description: "Fast child",
+          },
           {
             task_type: "research",
             prompt: "run command sleep 20 && echo second-child-done",
@@ -278,12 +367,20 @@ export function matchPattern(userText) {
 
   // "spawn task <prompt>" → Claude's built-in Task tool (triggers native sub-agent)
   match = userText.match(/spawn task (.*)/is);
-  if (match) return { type: "tool_call", name: "Task", input: { description: "test subtask", prompt: match[1].trim(), subagent_type: "general-purpose" } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "Task",
+      input: {
+        description: "test subtask",
+        prompt: match[1].trim(),
+        subagent_type: "general-purpose",
+      },
+    };
 
   // "check context contains <base64>" — check if decoded string appears in request
   match = userText.match(/check context contains ([A-Za-z0-9+/]+=*)/i);
-  if (match)
-    return { type: "check_context", needle: match[1] };
+  if (match) return { type: "check_context", needle: match[1] };
 
   // "check user text contains <base64>" — check if decoded string appears in
   // the final user message text itself (proves prompt text arrived via input).
@@ -348,7 +445,12 @@ export function matchPattern(userText) {
 
   // "run command with timeout <N> <cmd>" — Bash tool call with timeout_ms
   match = userText.match(/run command with timeout (\d+) (.+)/i);
-  if (match) return { type: "timed_shell", command: match[2].trim(), timeout: parseInt(match[1]) };
+  if (match)
+    return {
+      type: "timed_shell",
+      command: match[2].trim(),
+      timeout: parseInt(match[1]),
+    };
 
   // "run command <cmd>"
   match = userText.match(/run command (.+)/i);
@@ -356,7 +458,16 @@ export function matchPattern(userText) {
 
   // "edit file <path> replace <old> with <new>"
   match = userText.match(/edit file (\S+) replace (.+?) with (.+)/i);
-  if (match) return { type: "tool_call", name: "Edit", input: { file_path: match[1], old_string: match[2], new_string: match[3] } };
+  if (match)
+    return {
+      type: "tool_call",
+      name: "Edit",
+      input: {
+        file_path: match[1],
+        old_string: match[2],
+        new_string: match[3],
+      },
+    };
 
   // "create file <path> with content <text>"
   match = userText.match(/create file (\S+) with content (.+)/is);
@@ -435,7 +546,8 @@ export function matchPattern(userText) {
 
   // "use builtin view <path>" → Copilot built-in view tool (triggers permission.requested)
   match = userText.match(/use builtin view (\S+)/i);
-  if (match) return { type: "builtin_tool", name: "view", input: { path: match[1] } };
+  if (match)
+    return { type: "builtin_tool", name: "view", input: { path: match[1] } };
 
   // "web search <query>" — trigger a web_search_call response
   match = userText.match(/web search (.+)/i);
