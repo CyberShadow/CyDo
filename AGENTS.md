@@ -39,8 +39,9 @@ This applies after every unit of work — not just `git commit`, but also
 tree. No work is considered complete until the full suite passes.
 
 - If a test fails and the failure looks flaky (non-deterministic, unrelated to
-  your changes), retry `nix flake check`. If it fails consistently, treat it as
-  a real regression and fix it before proceeding.
+  your changes), retry with `nix --option keep-going true flake check`.
+  If it fails consistently, treat it as a real regression and fix it before
+  proceeding.
 - **`--no-verify` is BANNED.** Never use it to bypass the pre-commit hook or
   any other check. The `nix flake check` gate is non-negotiable.
 - Do not skip or substitute with partial checks.
