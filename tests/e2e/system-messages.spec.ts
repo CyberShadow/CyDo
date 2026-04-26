@@ -83,3 +83,53 @@ test("system-user-message persists after agent confirms the message", async ({
   const body = userMsg.locator(".system-user-body, .user-text");
   await expect(body.first()).toContainText(messageText);
 });
+
+test("session-start system message stays collapsed after reload", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType === "codex",
+    "agent-agnostic, runs in claude project only",
+  );
+
+  await enterSession(page);
+  const messageText = 'Please reply with "session-start-replay"';
+  await sendMessage(page, messageText);
+  await expect(assistantText(page, "session-start-replay")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  await page.reload();
+  await expect(
+    page.locator(".system-user-message", { hasText: "Session start:" }).first(),
+  ).toBeVisible({ timeout: 30_000 });
+});
+
+test("task prompt system message keeps task type label after reload", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType === "codex",
+    "agent-agnostic, runs in claude project only",
+  );
+
+  await enterSession(page);
+  await sendMessage(page, 'call task research reply with "task-prompt-replay"');
+
+  await page.locator('.sidebar-item[data-tid="2"]').waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(
+    page.locator(".system-user-message", { hasText: "Task prompt: research" }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await page.reload();
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(
+    page.locator(".system-user-message", { hasText: "Task prompt: research" }),
+  ).toBeVisible({ timeout: 30_000 });
+});

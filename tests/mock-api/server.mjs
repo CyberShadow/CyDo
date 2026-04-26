@@ -545,7 +545,7 @@ function oaiStreamWebSearchCallResponse(res, query, queries) {
 function isCydoTaskReminderText(text) {
   return (
     typeof text === "string" &&
-    text.trimStart().startsWith("[CYDO TASK MODE REMINDER]")
+    text.trimStart().startsWith("[SYSTEM: Post-compaction task mode reminder]")
   );
 }
 

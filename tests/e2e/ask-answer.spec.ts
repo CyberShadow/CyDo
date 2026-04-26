@@ -44,6 +44,27 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       .getByText("follow-up-answered", { exact: true })
       .last(),
   ).toBeVisible({ timeout: 90_000 });
+
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(
+    page.locator('[style*="display: contents"] .system-user-message', {
+      hasText: "Follow-up from parent",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await page.reload();
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(
+    page.locator('[style*="display: contents"] .system-user-message', {
+      hasText: "Follow-up from parent",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
 test("Ask/Answer: child asks parent, parent answers", async ({
@@ -127,6 +148,16 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
       .getByText("what approach should I use?")
       .last(),
   ).toBeVisible({ timeout: 90_000 });
+
+  // Wait for the parent's turn to complete after returning the question.
+  // Sending Answer while this turn is still finalizing can race and skip
+  // the expected batch-result shape.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
 
   // Parent answers child B using qid=1 (first question allocated in fresh session).
   await sendMessage(page, "call answer 1 use approach A");
@@ -403,6 +434,15 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   });
 
   // Yield enforcement sends a system message with label "Sub-task waiting for answer"
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/sub-task waiting for answer/i)
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  await page.reload();
+  await page.locator('.sidebar-item[data-tid="2"]').click();
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')

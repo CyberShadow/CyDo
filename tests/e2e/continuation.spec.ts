@@ -49,6 +49,27 @@ test("keep_context SwitchMode preface uses continuation key", async ({
   ).toBeVisible({ timeout: 30_000 });
 });
 
+test("mode switch replay rebuilds known system message metadata", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = agentType === "copilot" ? 60_000 : 30_000;
+
+  await sendMessage(page, "call switchmode plan");
+  await expect(
+    assistantText(page, "SwitchMode to plan successful."),
+  ).toBeVisible({ timeout });
+
+  await page.reload();
+
+  await expect(
+    page.locator(".result-divider.system-user-message", {
+      hasText: "Mode switch: plan_mode",
+    }),
+  ).toBeVisible({ timeout });
+});
+
 test("unsent steer is either recovered into input box or shown in history after kill", async ({
   page,
   agentType,
@@ -130,6 +151,63 @@ test("handoff continuation exit navigates to grandparent, not completed parent",
   await expect(page).toHaveURL(new RegExp(`/task/${tidG}$`), {
     timeout: 30_000,
   });
+});
+
+test("handoff replay rebuilds known system message metadata", async ({
+  page,
+  agentType,
+}) => {
+  const taskCreatedEvents: Array<{ tid: number; relation_type?: string }> = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
+            tid: data.tid,
+            relation_type: data.relation_type,
+          });
+        }
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
+
+  await enterSession(page);
+  const timeout = agentType === "copilot" ? 60_000 : 30_000;
+
+  await sendMessage(
+    page,
+    "call task test_handoff call handoff done test-prompt",
+  );
+
+  await expect(async () => {
+    const continuationTask = taskCreatedEvents.find(
+      (e) => e.relation_type === "continuation",
+    );
+    expect(continuationTask).toBeTruthy();
+  }).toPass({ timeout });
+
+  const continuationTid = taskCreatedEvents.find(
+    (e) => e.relation_type === "continuation",
+  )!.tid;
+  await page.locator(`.sidebar-item[data-tid="${continuationTid}"]`).click();
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${continuationTid}"].active`),
+  ).toBeVisible({ timeout });
+  await expect(
+    page.locator(".system-user-message", { hasText: "Handoff: blank" }).last(),
+  ).toBeVisible({ timeout });
+
+  await page.reload();
+  await page.locator(`.sidebar-item[data-tid="${continuationTid}"]`).click();
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${continuationTid}"].active`),
+  ).toBeVisible({ timeout });
+  await expect(
+    page.locator(".system-user-message", { hasText: "Handoff: blank" }).last(),
+  ).toBeVisible({ timeout });
 });
 
 test("SwitchMode from sub-task sends is_continuation flag", async ({

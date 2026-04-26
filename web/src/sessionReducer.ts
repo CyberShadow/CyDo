@@ -15,6 +15,7 @@ import type {
   FileEditSource,
   FileEditStatus,
   Block,
+  CydoMeta,
 } from "./types";
 import { toolIs } from "./toolIdentity";
 import type {
@@ -935,6 +936,7 @@ function reduceItemStartedUserMessage(
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
   // removes it from the message list.
   const pendingMsg = s.messages.find((m) => m.pending && m.type === "user");
+  const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
 
   let state = s;
 
@@ -962,6 +964,7 @@ function reduceItemStartedUserMessage(
       rawSource: event,
       seq,
       uuid: event.uuid,
+      cydoMeta: eventCydoMeta,
       ts,
     };
     const messages = event.is_meta
@@ -991,7 +994,7 @@ function reduceItemStartedUserMessage(
       rawSource: event,
       seq,
       uuid: event.uuid,
-      cydoMeta: pendingMsg?.cydoMeta,
+      cydoMeta: pendingMsg?.cydoMeta ?? eventCydoMeta,
       ts,
     };
     const filtered = state.messages.filter(

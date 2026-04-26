@@ -134,21 +134,25 @@ test("codex compaction reminder steers active turn before keep_context continuat
   ).toHaveText("sysprompt_mode_a");
 
   await sendMessage(page, "trigger compaction");
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "Ready for compaction.",
-    }),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "Ready for compaction.")).toBeVisible({
+    timeout,
+  });
 
   await sendMessage(page, "call switchmode check_old_user_absent");
-  await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "context-check-failed",
-    }).last(),
-  ).toBeVisible({ timeout });
+  await expect(assistantText(page, "context-check-failed")).toBeVisible({
+    timeout,
+  });
 
+  const reminderDivider = page
+    .locator(".result-divider.system-user-message", {
+      hasText: "Post-compaction task mode reminder",
+    })
+    .first();
+  await expect(reminderDivider).toBeVisible({ timeout });
+  await expect(reminderDivider).not.toContainText("[CYDO TASK MODE REMINDER]");
+  await reminderDivider.click();
   await expect(
-    page.locator(".message.user-message", {
+    page.locator(".message.user-message.system-user-expanded", {
       hasText: "[CYDO TASK MODE REMINDER]",
     }).first(),
   ).toBeVisible({ timeout });
@@ -186,13 +190,19 @@ test("codex compaction reminder steers autonomous continuation without extra use
   await sendMessage(page, "autonomous compaction reminder fixture");
 
   await expect(
-    page.locator(".message.assistant-message .text-content", {
-      hasText: "autonomous-reminder-observed",
-    }).last(),
+    assistantText(page, "autonomous-reminder-observed"),
   ).toBeVisible({ timeout });
 
+  const reminderDivider = page
+    .locator(".result-divider.system-user-message", {
+      hasText: "Post-compaction task mode reminder",
+    })
+    .first();
+  await expect(reminderDivider).toBeVisible({ timeout });
+  await expect(reminderDivider).not.toContainText("[CYDO TASK MODE REMINDER]");
+  await reminderDivider.click();
   await expect(
-    page.locator(".message.user-message", {
+    page.locator(".message.user-message.system-user-expanded", {
       hasText: "[CYDO TASK MODE REMINDER]",
     }).first(),
   ).toBeVisible({ timeout });

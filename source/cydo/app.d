@@ -38,7 +38,7 @@ import cydo.inotify : RefCountedINotify;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
-	QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
+	ItemStartedEvent, QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
@@ -1245,9 +1245,14 @@ class App : ToolsBackend
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
 			renderedPrompt = prependTaskSystemPrompt(renderedPrompt,
 				taskSystemPromptForMessage(childTid, ctd));
-			auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
+			auto taskPromptMsgSubject = taskPromptSubject(resolvedTaskType);
+			auto subtaskMeta = buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.taskPrompt,
+				taskPromptMsgSubject,
+				["task_description": prompt], "task_description", true);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", wrapSystemMessage("Task prompt", renderedPrompt))], null, subtaskMeta);
+				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
+					KnownSystemMessageKind.taskPrompt, renderedPrompt, taskPromptMsgSubject))], null, subtaskMeta);
 			}).ignoreResult();
 
 			if (description.length == 0)
@@ -1717,11 +1722,15 @@ class App : ToolsBackend
 
 			// Resume child process and send follow-up message with qid
 			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
-				auto msg = wrapSystemMessage(
-					"Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")",
+				auto followUpMsgSubject = followUpFromParentSubject(qid);
+				auto msg = wrapKnownSystemMessage(
+					KnownSystemMessageKind.followUpFromParent,
 					message
-						~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
-				auto followUpMeta = buildCydoMeta("Follow-up from parent",
+						~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
+					followUpMsgSubject);
+				auto followUpMeta = buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.followUpFromParent,
+					followUpMsgSubject,
 					["message": message], "message", true);
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
@@ -1801,10 +1810,14 @@ class App : ToolsBackend
 				persistence.setStatus(childTid, "active");
 				broadcastTaskUpdate(childTid);
 				broadcastFocusHint(parentTid, childTid);
-				auto followUpMsg = wrapSystemMessage(
-					"Follow-up question from parent task (qid=" ~ to!string(qid) ~ ")",
-					message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
-				auto followUpMeta = buildCydoMeta("Follow-up from parent",
+				auto followUpMsgSubject = followUpFromParentSubject(qid);
+				auto followUpMsg = wrapKnownSystemMessage(
+					KnownSystemMessageKind.followUpFromParent,
+					message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
+					followUpMsgSubject);
+				auto followUpMeta = buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.followUpFromParent,
+					followUpMsgSubject,
 					["message": message], "message", true);
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
@@ -2352,6 +2365,7 @@ class App : ToolsBackend
 			auto typeDef = taskTypes.byName(td.taskType);
 			auto textContent = extractContentText(blocks);
 			auto messageToSend = blocks;
+			string sessionStartMsgSubject;
 			if (typeDef !is null)
 			{
 				import std.algorithm : filter;
@@ -2359,8 +2373,11 @@ class App : ToolsBackend
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
 				rendered = prependTaskSystemPrompt(rendered,
 					taskSystemPromptForMessage(tid, typeDef));
+				auto sessionStartLabelSource = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				sessionStartMsgSubject = sessionStartSubject(sessionStartLabelSource);
 				// Preserve image blocks alongside the rendered text prompt.
-				messageToSend = ContentBlock("text", rendered)
+				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
+					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 			}
 			// Record text so ensureHistoryLoaded can produce correct synthetics
@@ -2368,7 +2385,10 @@ class App : ToolsBackend
 			td.pendingSteeringTexts ~= textContent;
 			auto msgContent = blocks;
 			auto msgMeta = typeDef !is null
-				? buildCydoMeta(json.entry_point, ["task_description": textContent], "task_description", false)
+				? buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.sessionStart,
+					sessionStartMsgSubject,
+					["task_description": textContent], "task_description", false)
 				: null;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid, messageToSend, msgContent, msgMeta);
@@ -2452,7 +2472,8 @@ class App : ToolsBackend
 					// (handles compacted back-to-back dequeues)
 					if (lastDequeuedText.length > 0)
 					{
-						result ~= TranslatedEvent(toJson(buildSyntheticUserEvent(lastDequeuedText)),
+						auto synEv = buildSyntheticUserEvent(lastDequeuedText);
+						result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(lastDequeuedText, synEv),
 							lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
 						lastDequeuedText = null;
 						lastDequeuedRawLine = null;
@@ -2475,7 +2496,7 @@ class App : ToolsBackend
 							auto enqueueUuid = format!"enqueue-%d"(enqLineNum);
 							auto synEv = buildSyntheticUserEvent(text, true);
 							synEv.uuid = enqueueUuid;
-							result ~= TranslatedEvent(toJson(synEv),
+							result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(text, synEv),
 								enqRaw.length > 0 ? enqRaw : null);
 						}
 						else
@@ -2532,7 +2553,7 @@ class App : ToolsBackend
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
 					auto synEv = buildSyntheticUserEvent(lastDequeuedText, true);
 					synEv.uuid = enqueueUuid;
-					auto synthetic = toJson(synEv);
+					auto synthetic = toJsonWithSyntheticUserMeta(lastDequeuedText, synEv);
 					auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
@@ -2577,7 +2598,7 @@ class App : ToolsBackend
 				synEv.uuid = uuid;
 				td.appendHistory(Data(
 					toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-						JSONFragment(toJson(synEv)))).representation), null);
+						JSONFragment(toJsonWithSyntheticUserMeta(text, synEv)))).representation), null);
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -2609,6 +2630,7 @@ class App : ToolsBackend
 				continue;
 			}
 			import cydo.task : extractTsFromEnvelope;
+			event = normalizeKnownSystemMessageMeta(event);
 			auto clientEnvelope = toJson(TaskEventSeqEnvelope(
 				tid,
 				cast(int) i,
@@ -2711,12 +2733,17 @@ class App : ToolsBackend
 					td.outputPath, entryPointTemplate);
 				rendered = prependTaskSystemPrompt(rendered,
 					taskSystemPromptForMessage(tid, typeDef));
+				auto sessionStartLabelSource = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				auto sessionStartMsgSubject = sessionStartSubject(sessionStartLabelSource);
 				// Preserve image blocks alongside the rendered text prompt.
-				messageToSend = ContentBlock("text", wrapSystemMessage("Session start", rendered))
+				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
+					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 				// Attach metadata so the frontend can render this as a collapsible system message.
-				auto label = "Session start: " ~ (td.entryPoint.length > 0 ? td.entryPoint : td.taskType);
-				userMsgMeta = buildCydoMeta(label, ["task_description": textContent], "task_description", false);
+				userMsgMeta = buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.sessionStart,
+					sessionStartMsgSubject,
+					["task_description": textContent], "task_description", false);
 			}
 		}
 		td.lastSuggestions = null;
@@ -3610,6 +3637,17 @@ class App : ToolsBackend
 	private void sendTaskMessage(int tid, const(ContentBlock)[] content,
 		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null)
 	{
+		sendPreparedTaskMessage(tid, content, broadcastContent, cydoMeta, true);
+	}
+
+	/// Send a prepared message to the agent and emit the matching pending UI echo.
+	///
+	/// System messages are ordinary prepared messages with a stable wrapper format
+	/// and CyDo metadata for collapsed rendering.
+	private void sendPreparedTaskMessage(int tid, const(ContentBlock)[] content,
+		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
+		bool captureUndoSnapshot = true)
+	{
 		import std.algorithm : min, filter;
 		import std.array : array;
 		import cydo.agent.protocol : ItemStartedEvent;
@@ -3643,48 +3681,12 @@ class App : ToolsBackend
 		// Agents like Codex may compact the JSONL on the first streaming event
 		// (response.created), invalidating line-based fork IDs.  Capturing here,
 		// before any agent write, preserves the pre-compaction content for undo.
-		jsonlTracker.captureUndoSnapshot(tid);
+		if (captureUndoSnapshot)
+			jsonlTracker.captureUndoSnapshot(tid);
 		const(ContentBlock)[] toSend = td.session.supportsImages
 			? content
 			: content.filter!(b => b.type != "image").array;
 		td.session.sendMessage(toSend);
-		td.isProcessing = true;
-		touchTask(tid);
-		td.needsAttention = false;
-		persistence.setNeedsAttention(tid, false);
-		td.notificationBody = "";
-		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
-		td.suggestGeneration++;
-		broadcastTaskUpdate(tid);
-	}
-
-	/// Broadcast a pending user message bubble without writing to agent stdin.
-	/// Used for internal steering paths that must send to the agent immediately.
-	private void broadcastPendingTaskMessageOnly(int tid, const(ContentBlock)[] content,
-		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null)
-	{
-		import cydo.agent.protocol : ItemStartedEvent;
-
-		auto td = &tasks[tid];
-		auto uiContent = broadcastContent !is null ? broadcastContent : content;
-		ItemStartedEvent ev;
-		ev.item_id   = "cc-user-msg";
-		ev.item_type = "user_message";
-		ev.text      = extractContentText(uiContent);
-		ev.content   = uiContent.dup;
-		ev.pending   = true;
-		auto userEvent = toJson(ev);
-		if (cydoMeta.length > 0)
-			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		auto data = Data(toJson(UnconfirmedUserEventEnvelope(
-			tid,
-			JSONFragment(userEvent))).representation);
-		if (tid in tasks)
-		{
-			ensureHistoryLoaded(tid);
-			tasks[tid].appendHistory(data, null);
-		}
-		sendToSubscribed(tid, data);
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
@@ -3716,6 +3718,331 @@ class App : ToolsBackend
 			~ "\n\n[END TASK SYSTEM PROMPT]\n\n[TASK PROMPT]\n" ~ promptText;
 	}
 
+	private enum KnownSystemMessageKind
+	{
+		taskPrompt,
+		sessionStart,
+		followUpFromParent,
+		subTaskWaitingForAnswer,
+		missingRequiredOutputs,
+		handoff,
+		subTaskResults,
+		restartNudge,
+		postCompactionTaskModeReminder,
+		modeSwitch,
+	}
+
+	private struct KnownSystemMessageMatch
+	{
+		KnownSystemMessageKind kind;
+		string label;
+		Nullable!int qid;
+		Nullable!int tid;
+		Nullable!string title;
+	}
+
+	private static string systemMessageSubject(KnownSystemMessageKind kind)
+	{
+		final switch (kind)
+		{
+		case KnownSystemMessageKind.taskPrompt:
+			return "Task prompt";
+		case KnownSystemMessageKind.sessionStart:
+			return "Session start";
+		case KnownSystemMessageKind.followUpFromParent:
+			return "Follow-up question from parent task";
+		case KnownSystemMessageKind.subTaskWaitingForAnswer:
+			return "Sub-task waiting for answer";
+		case KnownSystemMessageKind.missingRequiredOutputs:
+			return "Missing required outputs";
+		case KnownSystemMessageKind.handoff:
+			return "Handoff";
+		case KnownSystemMessageKind.subTaskResults:
+			return "Sub-task results";
+		case KnownSystemMessageKind.restartNudge:
+			return "Restart nudge";
+		case KnownSystemMessageKind.postCompactionTaskModeReminder:
+			return "Post-compaction task mode reminder";
+		case KnownSystemMessageKind.modeSwitch:
+			return "Mode switch";
+		}
+	}
+
+	private static string taskPromptSubject(string taskType)
+	{
+		return systemMessageSubject(KnownSystemMessageKind.taskPrompt) ~ ": " ~ taskType;
+	}
+
+	private static string sessionStartSubject(string entryPointOrTaskType)
+	{
+		return systemMessageSubject(KnownSystemMessageKind.sessionStart) ~ ": " ~ entryPointOrTaskType;
+	}
+
+	private static string followUpFromParentSubject(int qid)
+	{
+		import std.conv : to;
+		return systemMessageSubject(KnownSystemMessageKind.followUpFromParent)
+			~ " (qid=" ~ to!string(qid) ~ ")";
+	}
+
+	private static string subTaskWaitingForAnswerSubject(string title, int tid, int qid)
+	{
+		import std.conv : to;
+		return "Sub-task \"" ~ title ~ "\" (tid=" ~ to!string(tid)
+			~ ") is waiting for your answer (qid=" ~ to!string(qid) ~ ")";
+	}
+
+	private static string modeSwitchSubject(string taskType)
+	{
+		return systemMessageSubject(KnownSystemMessageKind.modeSwitch) ~ ": " ~ taskType;
+	}
+
+	private static string handoffSubject(string taskType)
+	{
+		return systemMessageSubject(KnownSystemMessageKind.handoff) ~ ": " ~ taskType;
+	}
+
+	private static string systemMessagePrefix(KnownSystemMessageKind kind)
+	{
+		return "[SYSTEM: " ~ systemMessageSubject(kind) ~ "]";
+	}
+
+	private string wrapKnownSystemMessage(KnownSystemMessageKind kind, string body = null,
+		string subject = null)
+	{
+		auto resolvedSubject = subject.length > 0 ? subject : systemMessageSubject(kind);
+		return wrapSystemMessage(resolvedSubject, body);
+	}
+
+	private string buildKnownSystemMessageMeta(KnownSystemMessageKind kind, string subject = null,
+		string[string] vars = null, string bodyVar = null, bool bodyMarkdown = false)
+	{
+		auto resolvedSubject = subject.length > 0 ? subject : systemMessageSubject(kind);
+		KnownSystemMessageMatch match;
+		auto label = tryKnownSystemMessageMatch(resolvedSubject, match)
+			? match.label
+			: resolvedSubject;
+		return buildCydoMeta(label, vars, bodyVar, bodyMarkdown);
+	}
+
+	private static bool tryParseStrictPositiveInt(string text, out int value)
+	{
+		import std.conv : to;
+
+		if (text.length == 0)
+			return false;
+		foreach (ch; text)
+			if (ch < '0' || ch > '9')
+				return false;
+		try
+			value = to!int(text);
+		catch (Exception)
+			return false;
+		return true;
+	}
+
+	private static bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch match)
+	{
+		import std.algorithm : startsWith, endsWith;
+		import std.algorithm.searching : countUntil;
+
+		match = KnownSystemMessageMatch.init;
+
+		enum taskPromptPrefix = "Task prompt: ";
+		if (subject.startsWith(taskPromptPrefix) && subject.length > taskPromptPrefix.length)
+		{
+			match.kind = KnownSystemMessageKind.taskPrompt;
+			match.label = subject;
+			return true;
+		}
+
+		enum sessionStartPrefix = "Session start: ";
+		if (subject.startsWith(sessionStartPrefix) && subject.length > sessionStartPrefix.length)
+		{
+			match.kind = KnownSystemMessageKind.sessionStart;
+			match.label = subject;
+			return true;
+		}
+
+		enum modeSwitchPrefix = "Mode switch: ";
+		if (subject.startsWith(modeSwitchPrefix) && subject.length > modeSwitchPrefix.length)
+		{
+			match.kind = KnownSystemMessageKind.modeSwitch;
+			match.label = subject;
+			return true;
+		}
+
+		enum handoffPrefix = "Handoff: ";
+		if (subject.startsWith(handoffPrefix) && subject.length > handoffPrefix.length)
+		{
+			match.kind = KnownSystemMessageKind.handoff;
+			match.label = subject;
+			return true;
+		}
+
+		enum followUpPrefix = "Follow-up question from parent task (qid=";
+		enum followUpSuffix = ")";
+		if (subject.startsWith(followUpPrefix) && subject.endsWith(followUpSuffix))
+		{
+			auto qidText = subject[followUpPrefix.length .. $ - followUpSuffix.length];
+			int qid;
+			if (!tryParseStrictPositiveInt(qidText, qid))
+				return false;
+			match.kind = KnownSystemMessageKind.followUpFromParent;
+			match.label = "Follow-up from parent";
+			match.qid = Nullable!int(qid);
+			return true;
+		}
+
+		enum waitingPrefix = "Sub-task \"";
+		enum waitingTitleSuffix = "\" (tid=";
+		enum waitingMid = ") is waiting for your answer (qid=";
+		enum waitingSuffix = ")";
+		if (subject.startsWith(waitingPrefix) && subject.endsWith(waitingSuffix))
+		{
+			auto tail = subject[waitingPrefix.length .. $];
+			auto titleEnd = tail.countUntil(waitingTitleSuffix);
+			if (titleEnd < 0)
+				return false;
+			auto titleLen = cast(size_t) titleEnd;
+			auto title = tail[0 .. titleLen];
+			auto afterTitle = tail[titleLen + waitingTitleSuffix.length .. $];
+
+			auto midPos = afterTitle.countUntil(waitingMid);
+			if (midPos < 0)
+				return false;
+			auto tidText = afterTitle[0 .. cast(size_t) midPos];
+			auto qidText = afterTitle[cast(size_t) midPos + waitingMid.length .. $ - waitingSuffix.length];
+			int tid, qid;
+			if (!tryParseStrictPositiveInt(tidText, tid) || !tryParseStrictPositiveInt(qidText, qid))
+				return false;
+			match.kind = KnownSystemMessageKind.subTaskWaitingForAnswer;
+			match.label = "Sub-task waiting for answer";
+			match.tid = Nullable!int(tid);
+			match.qid = Nullable!int(qid);
+			match.title = Nullable!string(title);
+			return true;
+		}
+
+		if (subject == systemMessageSubject(KnownSystemMessageKind.missingRequiredOutputs))
+		{
+			match.kind = KnownSystemMessageKind.missingRequiredOutputs;
+			match.label = subject;
+			return true;
+		}
+		if (subject == systemMessageSubject(KnownSystemMessageKind.subTaskResults))
+		{
+			match.kind = KnownSystemMessageKind.subTaskResults;
+			match.label = subject;
+			return true;
+		}
+		if (subject == systemMessageSubject(KnownSystemMessageKind.restartNudge))
+		{
+			match.kind = KnownSystemMessageKind.restartNudge;
+			match.label = subject;
+			return true;
+		}
+		if (subject == systemMessageSubject(KnownSystemMessageKind.postCompactionTaskModeReminder))
+		{
+			match.kind = KnownSystemMessageKind.postCompactionTaskModeReminder;
+			match.label = subject;
+			return true;
+		}
+		return false;
+	}
+
+	private static bool tryExtractSystemMessageSubject(string text, out string subject)
+	{
+		import std.algorithm : startsWith;
+		import std.algorithm.searching : countUntil;
+
+		enum prefix = "[SYSTEM: ";
+		if (!text.startsWith(prefix))
+			return false;
+		auto remaining = text[prefix.length .. $];
+		auto closeIndex = remaining.countUntil("]");
+		if (closeIndex <= 0)
+			return false;
+		subject = remaining[0 .. cast(size_t) closeIndex];
+		return true;
+	}
+
+	private static bool tryExtractWrappedSystemBody(string text, string subject, out string body)
+	{
+		import std.algorithm : startsWith, endsWith;
+
+		auto prefix = "[SYSTEM: " ~ subject ~ "]\n\n";
+		enum suffix = "\n\n[/SYSTEM]";
+		if (!text.startsWith(prefix) || !text.endsWith(suffix) || text.length <= prefix.length + suffix.length)
+			return false;
+		body = text[prefix.length .. $ - suffix.length];
+		return body.length > 0;
+	}
+
+	private static bool tryExtractTaskDescriptionFromWrappedBody(string body, out string taskDescription)
+	{
+		import std.string : strip, lastIndexOf;
+
+		enum promptSeparator = "\n\n--------------------------------------------------------------------------------\n\n";
+		auto sepPos = body.lastIndexOf(promptSeparator);
+		if (sepPos < 0)
+			return false;
+
+		auto start = cast(size_t) sepPos + promptSeparator.length;
+		auto candidate = body[start .. $].strip;
+		if (candidate.length == 0)
+			return false;
+		taskDescription = candidate;
+		return true;
+	}
+
+	private string cydoMetaForKnownSystemSubject(string subject, string text)
+	{
+		KnownSystemMessageMatch match;
+		if (!tryKnownSystemMessageMatch(subject, match))
+			return null;
+
+		switch (match.kind)
+		{
+		case KnownSystemMessageKind.taskPrompt:
+		case KnownSystemMessageKind.sessionStart:
+			string wrappedBody;
+			string taskDescription;
+			if (tryExtractWrappedSystemBody(text, subject, wrappedBody)
+				&& tryExtractTaskDescriptionFromWrappedBody(wrappedBody, taskDescription))
+			{
+				return buildCydoMeta(match.label, ["task_description": taskDescription], "task_description",
+					match.kind == KnownSystemMessageKind.taskPrompt);
+			}
+			break;
+		default:
+			break;
+		}
+
+		return buildCydoMeta(match.label);
+	}
+
+	private string normalizeKnownSystemMessageMeta(string translated)
+	{
+		import std.algorithm : canFind;
+
+		if (translated.length == 0
+			|| translated.canFind(`"meta":`)
+			|| !translated.canFind(`"type":"item/started"`)
+			|| !translated.canFind(`"item_type":"user_message"`))
+			return translated;
+
+		string subject;
+		auto text = extractMessageText(translated);
+		if (!tryExtractSystemMessageSubject(text, subject))
+			return translated;
+
+		auto meta = cydoMetaForKnownSystemSubject(subject, text);
+		if (meta.length == 0)
+			return translated;
+		return translated[0 .. $ - 1] ~ `,"meta":` ~ meta ~ `}`;
+	}
+
 	private string buildPostCompactionReminder(int tid)
 	{
 		if (tid !in tasks)
@@ -3729,12 +4056,13 @@ class App : ToolsBackend
 		auto systemPrompt = taskSystemPromptForMessage(tid, typeDef);
 		if (systemPrompt.length == 0)
 			return null;
-		return "[CYDO TASK MODE REMINDER]\n\n"
+		auto body = "[CYDO TASK MODE REMINDER]\n\n"
 			~ "This is CyDo task metadata, not project or user content.\n\n"
 			~ "Active task mode: " ~ td.taskType
 			~ "\n\n[TASK SYSTEM PROMPT]\n" ~ systemPrompt
 			~ "\n[END TASK SYSTEM PROMPT]\n\n"
 			~ "Use this as the active CyDo task mode metadata for interpreting what kind of work to do next.\n\n";
+		return wrapKnownSystemMessage(KnownSystemMessageKind.postCompactionTaskModeReminder, body);
 	}
 
 	private static bool isCompactionReminderTriggerEvent(string translated)
@@ -3784,7 +4112,17 @@ class App : ToolsBackend
 			|| !translated.canFind(`"item_type":"user_message"`))
 			return false;
 		auto text = extractMessageText(translated);
-		return text.startsWith("[CYDO TASK MODE REMINDER]");
+		return text.startsWith(systemMessagePrefix(KnownSystemMessageKind.postCompactionTaskModeReminder));
+	}
+
+	private string toJsonWithSyntheticUserMeta(string text, ItemStartedEvent ev)
+	{
+		import std.algorithm : startsWith;
+
+		auto translated = toJson(ev);
+		return text.startsWith("[SYSTEM:")
+			? normalizeKnownSystemMessageMeta(translated)
+			: translated;
 	}
 
 	private static bool isCompactionReminderSteerFailureEvent(string translated)
@@ -3836,14 +4174,9 @@ class App : ToolsBackend
 		import std.algorithm : filter;
 		import std.array : array;
 		auto reminderBlocks = [ContentBlock("text", reminder)];
-		const(ContentBlock)[] toSend = td.session.supportsImages
-			? reminderBlocks
-			: reminderBlocks.filter!(b => b.type != "image").array;
-		td.session.sendMessage(toSend);
-
-		auto reminderMeta = buildCydoMeta("Post-compaction task mode reminder",
-			["task_type": td.taskType], "task_type", true);
-		broadcastPendingTaskMessageOnly(tid, reminderBlocks, null, reminderMeta);
+		auto reminderMeta = buildKnownSystemMessageMeta(
+			KnownSystemMessageKind.postCompactionTaskModeReminder);
+		sendPreparedTaskMessage(tid, reminderBlocks, null, reminderMeta, false);
 		return true;
 	}
 
@@ -4289,6 +4622,7 @@ class App : ToolsBackend
 					{
 						import std.conv : to;
 						string reminder;
+						string reminderSubject;
 						string pendingQuestion;
 						foreach (cTid; batch.childTids)
 						{
@@ -4296,18 +4630,21 @@ class App : ToolsBackend
 							{
 								auto childTd = &tasks[cTid];
 								pendingQuestion = childTd.pendingAskQuestion;
-								reminder = wrapSystemMessage(
-									"Sub-task \"" ~ childTd.title ~ "\" (tid="
-										~ to!string(cTid) ~ ") is waiting for your answer (qid="
-										~ to!string(childTd.pendingAskQid) ~ ")",
+								reminderSubject = subTaskWaitingForAnswerSubject(
+									childTd.title, cTid, childTd.pendingAskQid);
+								reminder = wrapKnownSystemMessage(
+									KnownSystemMessageKind.subTaskWaitingForAnswer,
 									"Question: " ~ childTd.pendingAskQuestion ~ "\n\n"
 										~ "Use Answer(" ~ to!string(childTd.pendingAskQid)
-										~ ", \"your answer\") to respond. You must answer before you can complete your turn.");
+										~ ", \"your answer\") to respond. You must answer before you can complete your turn.",
+									reminderSubject);
 								break;
 							}
 						}
 						auto reminderBlocks = [ContentBlock("text", reminder)];
-						auto askReminderMeta = buildCydoMeta("Sub-task waiting for answer",
+						auto askReminderMeta = buildKnownSystemMessageMeta(
+							KnownSystemMessageKind.subTaskWaitingForAnswer,
+							reminderSubject,
 							["question": pendingQuestion], "question", true);
 						sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 					}
@@ -4534,12 +4871,13 @@ class App : ToolsBackend
 					infof("Output enforcement: tid=%d missing outputs, resuming: %s", tid, missing);
 					auto enfMissing = missing;
 					tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-						auto msg = wrapSystemMessage("Missing required outputs",
+						auto msg = wrapKnownSystemMessage(KnownSystemMessageKind.missingRequiredOutputs,
 							"Your task type declares outputs that were not produced:\n"
 								~ enfMissing ~ "\n\n"
 								~ "Please produce the missing output(s) before finishing. "
 								~ "Write your report to your output file if you haven't already.");
-						auto outputsMeta = buildCydoMeta("Missing required outputs");
+						auto outputsMeta = buildKnownSystemMessageMeta(
+							KnownSystemMessageKind.missingRequiredOutputs);
 						sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
 					}).ignoreResult();
 					return; // Don't complete yet — wait for the agent to try again
@@ -4719,9 +5057,14 @@ class App : ToolsBackend
 					~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			renderedContinuationPrompt = prependTaskSystemPrompt(
 				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef));
-			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
+			auto modeSwitchMsgSubject = modeSwitchSubject(contDef.task_type);
+			auto contMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.modeSwitch,
+				modeSwitchMsgSubject);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(tid, [ContentBlock("text", wrapSystemMessage("Mode switch", renderedContinuationPrompt))], null, contMeta);
+				sendTaskMessage(tid,
+					[ContentBlock("text", wrapKnownSystemMessage(
+						KnownSystemMessageKind.modeSwitch, renderedContinuationPrompt, modeSwitchMsgSubject))],
+					null, contMeta);
 			}).ignoreResult();
 		}
 		else
@@ -4778,10 +5121,12 @@ class App : ToolsBackend
 				["result_text": resultText]);
 			renderedSuccessorPrompt = prependTaskSystemPrompt(renderedSuccessorPrompt,
 				taskSystemPromptForMessage(childTid, newTypeDef));
-			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
-				["task_description": successorPrompt], "task_description", false);
+			auto handoffMsgSubject = handoffSubject(contDef.task_type);
+			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
+				handoffMsgSubject, ["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", wrapSystemMessage("Handoff", renderedSuccessorPrompt))], null, handoffMeta);
+				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
+					KnownSystemMessageKind.handoff, renderedSuccessorPrompt, handoffMsgSubject))], null, handoffMeta);
 			}).ignoreResult();
 
 			broadcastTaskUpdate(tid);
@@ -5104,14 +5449,14 @@ class App : ToolsBackend
 
 		// Deliver single batch message
 		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto msg = wrapSystemMessage("Sub-task results",
+		auto msg = wrapKnownSystemMessage(KnownSystemMessageKind.subTaskResults,
 			"The following sub-task(s) completed while your session was interrupted. "
 				~ "Their results are provided below exactly as they would have been "
 				~ "returned by the Task tool.\n\n"
 				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
 				~ "Continue from where you left off. Process these results as if they "
 				~ "were returned normally by the Task tool.");
-		auto resultsMeta = buildCydoMeta("Sub-task results");
+		auto resultsMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.subTaskResults);
 		sendTaskMessage(parentTid, [ContentBlock("text", msg)], null, resultsMeta);
 
 		// Clean up all deps
@@ -5228,10 +5573,11 @@ class App : ToolsBackend
 			auto td = &tasks[tid];
 			if (td.session is null || !td.session.alive)
 				return;
-			enum nudgeText = "[SYSTEM: Your session was interrupted by a backend restart. "
+			enum nudgeBody = "Your session was interrupted by a backend restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
-				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.]";
-			auto nudgeMeta = buildCydoMeta("restart nudge");
+				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.";
+			auto nudgeText = wrapKnownSystemMessage(KnownSystemMessageKind.restartNudge, nudgeBody);
+			auto nudgeMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.restartNudge);
 			sendTaskMessage(tid, [ContentBlock("text", nudgeText)], null, nudgeMeta);
 		});
 	}
@@ -5778,6 +6124,7 @@ class App : ToolsBackend
 		// Extract agent session ID from translated event
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, ev.translated);
+		ev.translated = normalizeKnownSystemMessageMeta(ev.translated);
 		if (tid in tasks && isCompactionReminderEchoEvent(ev.translated))
 			tasks[tid].compactionReminderInFlight = true;
 		auto shouldSendCompactionReminder = tid in tasks
@@ -5795,7 +6142,8 @@ class App : ToolsBackend
 					auto op = jsonParse!QueueOperationProbe(ev.translated);
 					if (op.operation == "enqueue")
 					{
-						if (op.content.startsWith("[CYDO TASK MODE REMINDER]"))
+						if (op.content.startsWith(systemMessagePrefix(
+							KnownSystemMessageKind.postCompactionTaskModeReminder)))
 							td.compactionReminderInFlight = true;
 						td.enqueueSteering(op.content, ev.translated);
 						return; // already displayed via unconfirmedUserEvent
@@ -5811,7 +6159,7 @@ class App : ToolsBackend
 					{
 						auto pendingSteeringEv = buildSyntheticUserEvent(pendingText, true);
 						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJson(pendingSteeringEv),
+							TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, pendingSteeringEv),
 								pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
 					}
 				}
@@ -5833,7 +6181,7 @@ class App : ToolsBackend
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
 						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJson(steeringEv),
+							TranslatedEvent(toJsonWithSyntheticUserMeta(text, steeringEv),
 								enqueueRaw.length > 0 ? enqueueRaw : null, ev.ts));
 					}
 					return;
@@ -5853,7 +6201,7 @@ class App : ToolsBackend
 				{
 					auto steeringEv = buildSyntheticUserEvent(pendingText, true);
 					appendAndBroadcastTaskEvent(tid,
-						TranslatedEvent(toJson(steeringEv),
+						TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, steeringEv),
 							pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
 				}
 			}

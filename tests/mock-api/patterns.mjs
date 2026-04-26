@@ -58,11 +58,17 @@ export function matchPattern(userText) {
   // [SYSTEM: Task prompt / Session start / Mode switch / Handoff] wraps
   // executable content. Extract the body and re-match so task-level patterns
   // (call task, reply with, stall, etc.) remain visible to the mock.
+  // Newer CyDo builds encode label detail in the subject:
+  //   [SYSTEM: Task prompt: <task_type>]
+  //   [SYSTEM: Session start: <entry_point_or_task_type>]
+  //   [SYSTEM: Mode switch: <task_type>]
+  //   [SYSTEM: Handoff: <task_type>]
+  // Keep matching both legacy and subject-encoded forms.
   // No ^ or $ anchors: Copilot prepends <current_datetime> before the tag.
   // \n{2,} before [/SYSTEM]: the body may end with a trailing newline from
   // the prompt template, producing three newlines before the closing tag.
   {
-    const m = userText.match(/\[SYSTEM: (?:Task prompt|Session start|Mode switch|Handoff)\]\n\n([\s\S]*)\n{2,}\[\/SYSTEM\]/);
+    const m = userText.match(/\[SYSTEM: (?:(?:Task prompt|Session start|Mode switch|Handoff)(?:: [^\]\n]+)?)\]\n\n([\s\S]*)\n{2,}\[\/SYSTEM\]/);
     if (m) {
       if (process.env.MOCK_STALL_SYSTEM) return { type: "stall" };
       return matchPattern(m[1]);
