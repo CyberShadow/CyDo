@@ -13,7 +13,7 @@ for (const theme of ['dark', 'light'] as const) {
     test('main-page', async ({ page }) => {
       await page.goto('/');
       // Wait for welcome page with project list
-      await page.locator('.welcome-page-header h1').waitFor({ state: 'visible', timeout: 30_000 });
+      await page.locator('.welcome-page-header .logo-banner').waitFor({ state: 'visible', timeout: 30_000 });
       await page.screenshot({ path: `${OUTPUT_DIR}/main-page-${theme}.png` });
     });
 
@@ -137,7 +137,7 @@ for (const theme of ['dark', 'light'] as const) {
     test('mobile-main-page', async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto('/');
-      await page.locator('.welcome-page-header h1').waitFor({ state: 'visible', timeout: 30_000 });
+      await page.locator('.welcome-page-header .logo-banner').waitFor({ state: 'visible', timeout: 30_000 });
       await page.screenshot({ path: `${OUTPUT_DIR}/mobile-main-page-${theme}.png` });
     });
 
