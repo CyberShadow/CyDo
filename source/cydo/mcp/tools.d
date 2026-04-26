@@ -95,7 +95,7 @@ interface CydoTools
 		~ "Available task types:\n\n{{creatable_task_types}}\n\n"
 		~ "## Follow-up\n"
 		~ "- Each result includes a `tid` field identifying the sub-task\n"
-		~ "- Use Ask(message, tid) to ask follow-up questions to completed sub-tasks\n"
+		~ "- Use Ask(message, tid) to ask follow-up questions to same-workspace tasks by tid\n"
 		~ "- If a sub-task asks you a question, the Task/Ask call returns early with "
 		~ "a question result including a `qid`. Answer with Answer(qid, answer).\n"
 	)
@@ -162,12 +162,13 @@ interface CydoTools
 	    ~ "## Ask your parent (tid omitted)\n"
 	    ~ "Call Ask(message) to ask your parent task a question. Your execution "
 	    ~ "pauses until the parent answers with Answer(qid, response).\n\n"
-	    ~ "## Ask a completed sub-task (follow-up)\n"
-	    ~ "After a Task call completes, use Ask(message, tid) to ask a follow-up "
-	    ~ "question. The sub-task is resumed with your question and must answer "
-	    ~ "with Answer(qid, response).\n\n"
+	    ~ "## Ask any same-workspace task (explicit tid)\n"
+	    ~ "Call Ask(message, tid) to ask another task in the same workspace. "
+	    ~ "Your execution pauses until that target task answers with "
+	    ~ "Answer(qid, response).\n\n"
+	    ~ "Self-targets and importable targets are invalid.\n\n"
 	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
-	    ~ "If a sub-task has a pending question, use Answer instead of Ask."
+	    ~ "If a direct sub-task has a pending question, use Answer instead of Ask."
 	)
 	@McpName("Ask")
 	McpResult ask(
@@ -180,12 +181,10 @@ interface CydoTools
 
 	@Description(
 	    "Answer a question from a related task.\n\n"
-	    ~ "When a sub-task asks you a question (returned from Task or Ask with "
-	    ~ "a qid), use Answer(qid, message) to respond.\n\n"
-	    ~ "When your parent asks you a follow-up question (delivered with a qid), "
-	    ~ "use Answer(qid, message) to respond.\n\n"
-	    ~ "After answering a sub-task's question, this call blocks until the "
-	    ~ "batch completes or another question arrives."
+	    ~ "Only the task that received the qid-bearing question may answer it.\n\n"
+	    ~ "When answering a child-to-parent question, this call can block while "
+	    ~ "the parent batch continues.\n\n"
+	    ~ "For other questions, Answer returns immediate delivery confirmation."
 	)
 	@McpName("Answer")
 	McpResult answer(

@@ -80,6 +80,36 @@ private struct BatchHandle
 	ulong batchId;
 }
 
+private enum QuestionDelivery { batchQuestion, injectedMessage }
+private enum QuestionWait { directPromise, batchLoop }
+private enum QuestionAfterAnswer
+{
+	continueBatch,
+	completeAnswererOnIdle,
+	leaveAnswererAlive,
+}
+
+private struct QuestionRoute
+{
+	int qid;
+	int askerTid;
+	int answererTid;
+	QuestionDelivery delivery;
+	QuestionWait wait;
+	QuestionAfterAnswer afterAnswer;
+	bool hasBatch;
+	ulong batchId;
+	size_t batchSlot;
+	int batchChildTid;
+	bool delivered;
+}
+
+private struct QuestionRegistration
+{
+	int qid;
+	Promise!McpResult promise;
+}
+
 private string resolveTaskTypesPath()
 {
 	import ae.utils.path : findProgramDirectory;
@@ -565,8 +595,7 @@ class App : ToolsBackend
 	// App-global question ID counter and registry
 	private int nextQid = 1;
 	private Promise!McpResult[int] pendingQuestions;  // qid → promise waiting for answer
-	private int[int] questionToTask;                   // qid → tid of the task that asked
-	private ulong[int] questionToBatch;                // qid → originating parent batch id
+	private QuestionRoute[int] questionRoutes;         // qid → route metadata
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// inotify watches for config file hot-reload
@@ -1843,6 +1872,331 @@ class App : ToolsBackend
 		return promise;
 	}
 
+	private QuestionRegistration registerQuestionRoute(QuestionRoute route)
+	{
+		int qid = nextQid++;
+		auto promise = new Promise!McpResult;
+		route.qid = qid;
+		pendingQuestions[qid] = promise;
+		questionRoutes[qid] = route;
+		return QuestionRegistration(qid, promise);
+	}
+
+	private void clearQuestionRoute(int qid)
+	{
+		if (auto routePtr = qid in questionRoutes)
+		{
+			auto askerTid = (*routePtr).askerTid;
+			if (auto askTd = askerTid in tasks)
+			{
+				if (askTd.pendingAskQid == qid)
+				{
+					askTd.pendingAskPromise = null;
+					askTd.pendingAskQuestion = null;
+					askTd.pendingAskQid = 0;
+				}
+			}
+			questionRoutes.remove(qid);
+		}
+		pendingQuestions.remove(qid);
+	}
+
+	private void failQuestionRoute(int qid, string message)
+	{
+		if (auto qp = qid in pendingQuestions)
+			(*qp).fulfill(McpResult(message, true));
+		clearQuestionRoute(qid);
+	}
+
+	private void failQuestionsForTask(int tid, string message)
+	{
+		int[] qids;
+		foreach (qid, route; questionRoutes)
+		{
+			if (route.askerTid == tid || route.answererTid == tid)
+				qids ~= qid;
+		}
+		foreach (qid; qids)
+			failQuestionRoute(qid, message);
+	}
+
+	private string taskWorkspaceLabel(ref TaskData td)
+	{
+		if (td.workspace.length > 0)
+			return td.workspace;
+		if (td.projectPath.length > 0)
+			return td.projectPath;
+		return "(none)";
+	}
+
+	private bool workspaceHasProjectPath(string workspaceName, string projectPath)
+	{
+		if (workspaceName.length == 0 || projectPath.length == 0)
+			return false;
+		foreach (ref wi; workspacesInfo)
+		{
+			if (wi.name != workspaceName)
+				continue;
+			foreach (ref project; wi.projects)
+				if (project.path == projectPath)
+					return true;
+			break;
+		}
+		return false;
+	}
+
+	private void discoveredWorkspacesForProjectPath(string projectPath, ref bool[string] names)
+	{
+		if (projectPath.length == 0)
+			return;
+		foreach (ref wi; workspacesInfo)
+		{
+			foreach (ref project; wi.projects)
+			{
+				if (project.path == projectPath)
+				{
+					names[wi.name] = true;
+					break;
+				}
+			}
+		}
+	}
+
+	private bool tasksShareWorkspace(ref TaskData a, ref TaskData b)
+	{
+		if (a.workspace.length > 0 && b.workspace.length > 0)
+			return a.workspace == b.workspace;
+
+		if (a.workspace.length > 0 || b.workspace.length > 0)
+		{
+			auto pinnedWorkspace = a.workspace.length > 0 ? a.workspace : b.workspace;
+			auto unpinnedProjectPath = a.workspace.length == 0 ? a.projectPath : b.projectPath;
+			return workspaceHasProjectPath(pinnedWorkspace, unpinnedProjectPath);
+		}
+
+		bool[string] aWorkspaces;
+		bool[string] bWorkspaces;
+		discoveredWorkspacesForProjectPath(a.projectPath, aWorkspaces);
+		discoveredWorkspacesForProjectPath(b.projectPath, bWorkspaces);
+		foreach (wsName, _; aWorkspaces)
+			if (wsName in bWorkspaces)
+				return true;
+
+		// Legacy fallback for tasks created before workspace pinning.
+		return a.projectPath.length > 0 && a.projectPath == b.projectPath;
+	}
+
+	private string makeQuestionMessage(int askerTid, int qid, string message)
+	{
+		import std.conv : to;
+		return wrapSystemMessage(
+			"Question from task " ~ to!string(askerTid) ~ " (qid=" ~ to!string(qid) ~ ")",
+			message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
+	}
+
+	private void deliverInjectedQuestion(QuestionRoute route, string message)
+	{
+		import std.conv : to;
+
+		auto sendQuestion = (QuestionRoute currentRoute) {
+			if (currentRoute.qid !in questionRoutes)
+				return;
+			if (currentRoute.answererTid !in tasks || !tasks[currentRoute.answererTid].alive)
+			{
+				failQuestionRoute(currentRoute.qid, "Session ended while waiting for Ask response");
+				return;
+			}
+
+			auto answererTd = &tasks[currentRoute.answererTid];
+			answererTd.status = "active";
+			persistence.setStatus(currentRoute.answererTid, "active");
+			broadcastTaskUpdate(currentRoute.answererTid);
+			broadcastFocusHint(currentRoute.askerTid, currentRoute.answererTid);
+
+			string prompt;
+			string label;
+			string meta;
+			if (currentRoute.afterAnswer == QuestionAfterAnswer.completeAnswererOnIdle)
+			{
+				auto followUpMsgSubject = followUpFromParentSubject(currentRoute.qid);
+				prompt = wrapKnownSystemMessage(
+					KnownSystemMessageKind.followUpFromParent,
+					message ~ "\n\nAnswer with Answer(" ~ to!string(currentRoute.qid) ~ ", \"your response\").",
+					followUpMsgSubject);
+				label = "Follow-up from parent";
+				meta = buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.followUpFromParent,
+					followUpMsgSubject,
+					["message": message], "message", true);
+			}
+			else
+			{
+				prompt = makeQuestionMessage(currentRoute.askerTid, currentRoute.qid, message);
+				label = "Question from task";
+				meta = buildCydoMeta(label,
+					["from_tid": to!string(currentRoute.askerTid), "message": message], "message", true);
+			}
+			sendTaskMessage(currentRoute.answererTid, [ContentBlock("text", prompt)], null, meta);
+
+			if (auto routePtr = currentRoute.qid in questionRoutes)
+				(*routePtr).delivered = true;
+		};
+
+		if (route.answererTid !in tasks)
+		{
+			failQuestionRoute(route.qid, "Target task not found: " ~ to!string(route.answererTid));
+			return;
+		}
+
+		auto answererTd = &tasks[route.answererTid];
+		if (answererTd.status == "waiting")
+		{
+			answererTd.onIdleCallbacks ~= () {
+				auto routePtr = route.qid in questionRoutes;
+				if (routePtr is null)
+					return;
+				if ((*routePtr).answererTid !in tasks || !tasks[(*routePtr).answererTid].alive)
+				{
+					failQuestionRoute((*routePtr).qid, "Session ended while waiting for Ask response");
+					return;
+				}
+				sendQuestion(*routePtr);
+			};
+			return;
+		}
+
+		answererTd.processQueue.setGoal(ProcessState.Alive).then(() {
+			auto routePtr = route.qid in questionRoutes;
+			if (routePtr is null)
+				return;
+			sendQuestion(*routePtr);
+		}).ignoreResult();
+	}
+
+	private void deferOrDeliverAnswer(QuestionRoute route, McpResult answerResult)
+	{
+		if (route.answererTid !in tasks)
+		{
+			failQuestionRoute(route.qid, "Session ended while waiting for Ask response");
+			return;
+		}
+
+		tasks[route.answererTid].onIdleCallbacks ~= () {
+			auto routePtr = route.qid in questionRoutes;
+			if (routePtr is null)
+				return;
+
+			auto currentRoute = *routePtr;
+			if (currentRoute.answererTid !in tasks || !tasks[currentRoute.answererTid].alive)
+			{
+				failQuestionRoute(currentRoute.qid, "Session ended while waiting for Ask response");
+				return;
+			}
+
+			if (auto qp = currentRoute.qid in pendingQuestions)
+				(*qp).fulfill(answerResult);
+
+			if (currentRoute.afterAnswer == QuestionAfterAnswer.completeAnswererOnIdle)
+			{
+				// Parent-follow-up compatibility: complete child after delivering answer.
+				if (currentRoute.answererTid in tasks)
+				{
+					tasks[currentRoute.answererTid].status = "completed";
+					persistence.setStatus(currentRoute.answererTid, "completed");
+					persistence.setResultText(currentRoute.answererTid,
+						tasks[currentRoute.answererTid].resultText);
+					broadcastTaskUpdate(currentRoute.answererTid);
+				}
+				if (currentRoute.answererTid in pendingSubTasks)
+					pendingSubTasks.remove(currentRoute.answererTid);
+				if (auto parentTidPtr = currentRoute.answererTid in taskDeps)
+					removeTaskDependency(*parentTidPtr, currentRoute.answererTid);
+				broadcastFocusHint(currentRoute.answererTid, currentRoute.askerTid);
+				clearQuestionRoute(currentRoute.qid);
+				return;
+			}
+
+			if (currentRoute.askerTid in tasks)
+			{
+				auto askerTd = &tasks[currentRoute.askerTid];
+				askerTd.status = "active";
+				askerTd.notificationBody = "";
+				persistence.setStatus(currentRoute.askerTid, "active");
+				broadcastTaskUpdate(currentRoute.askerTid);
+			}
+			broadcastFocusHint(currentRoute.answererTid, currentRoute.askerTid);
+			clearQuestionRoute(currentRoute.qid);
+		};
+	}
+
+	private Promise!McpResult startQuestionRoute(QuestionRoute route, string message)
+	{
+		import std.conv : to;
+
+		if (route.wait == QuestionWait.batchLoop && !route.hasBatch)
+			return resolve(makeInternalBatchError("missing batch metadata for batch-loop Ask route"));
+		if (route.delivery == QuestionDelivery.batchQuestion && !route.hasBatch)
+			return resolve(makeInternalBatchError("missing batch metadata for question-signal Ask route"));
+
+		auto reg = registerQuestionRoute(route);
+		int qid = reg.qid;
+		auto promise = reg.promise;
+
+		auto routePtr = qid in questionRoutes;
+		assert(routePtr !is null);
+		auto currentRoute = *routePtr;
+
+		if (currentRoute.afterAnswer == QuestionAfterAnswer.continueBatch)
+		{
+			auto askerTd = &tasks[currentRoute.askerTid];
+			askerTd.pendingAskPromise = promise;
+			askerTd.pendingAskQuestion = message;
+			askerTd.pendingAskQid = qid;
+		}
+
+		if (currentRoute.wait == QuestionWait.batchLoop)
+		{
+			auto handle = BatchHandle(currentRoute.askerTid, currentRoute.batchId);
+			auto slot = currentRoute.batchSlot;
+			auto childTid = currentRoute.batchChildTid;
+			promise.then((McpResult r) {
+				enqueueChildDoneSignal(handle, slot, childTid, r);
+				clearQuestionRoute(qid);
+			});
+		}
+
+		if (currentRoute.askerTid in tasks)
+		{
+			auto askerTd = &tasks[currentRoute.askerTid];
+			askerTd.status = "waiting";
+			if (currentRoute.afterAnswer == QuestionAfterAnswer.continueBatch)
+				askerTd.notificationBody = "Asking parent: " ~ truncateTitle(message, 100);
+			else if (currentRoute.afterAnswer == QuestionAfterAnswer.leaveAnswererAlive)
+				askerTd.notificationBody = "Asking task " ~ to!string(currentRoute.answererTid)
+					~ ": " ~ truncateTitle(message, 100);
+			persistence.setStatus(currentRoute.askerTid, "waiting");
+			broadcastTaskUpdate(currentRoute.askerTid);
+		}
+
+		broadcastFocusHint(currentRoute.askerTid, currentRoute.answererTid);
+
+		if (currentRoute.delivery == QuestionDelivery.batchQuestion)
+		{
+			enqueueQuestionSignal(
+				BatchHandle(currentRoute.answererTid, currentRoute.batchId),
+				currentRoute.batchSlot,
+				currentRoute.batchChildTid,
+				message,
+				currentRoute.qid);
+		}
+		else
+			deliverInjectedQuestion(currentRoute, message);
+
+		if (currentRoute.wait == QuestionWait.batchLoop)
+			return awaitBatchLoop(currentRoute.askerTid, currentRoute.batchId);
+		return promise;
+	}
+
 	Promise!McpResult handleAsk(string callerTidStr, string message, int targetTid)
 	{
 		import std.conv : to;
@@ -1852,6 +2206,7 @@ class App : ToolsBackend
 
 		auto callerTd = callerTidInt in tasks;
 		if (callerTd is null) return resolve(McpResult("Task not found", true));
+		bool explicitTarget = targetTid != -1;
 
 		// Resolve tid: -1 means "ask parent"
 		if (targetTid == -1)
@@ -1865,204 +2220,118 @@ class App : ToolsBackend
 		if (targetTd is null)
 			return resolve(McpResult("Target task not found: " ~ to!string(targetTid), true));
 
-		// Direction 1: caller is parent of target (ask completed child for follow-up)
-		if (targetTd.parentTid == callerTidInt)
-			return handleAskChild(callerTidInt, targetTid, message);
+		if (targetTid == callerTidInt)
+			return resolve(McpResult("Ask target must be a different task", true));
 
-		// Direction 2: target is caller's parent (ask parent)
-		if (callerTd.parentTid == targetTid)
-			return handleAskParent(callerTidInt, targetTid, message);
-
-		return resolve(McpResult(
-			"Ask target must be a sub-task or parent task (tid="
-			~ to!string(targetTid) ~ " is neither)", true));
-	}
-
-	private Promise!McpResult handleAskChild(int parentTid, int childTid, string message)
-	{
-		import std.conv : to;
-		auto childTd = &tasks[childTid];
-
-		// Child has a pending question — tell parent to use Answer instead
-		if (childTd.pendingAskPromise !is null)
+		if (explicitTarget && targetTd.status == "importable")
 		{
 			return resolve(McpResult(
-				"Sub-task has a pending question (qid=" ~ to!string(childTd.pendingAskQid)
-				~ "). Use Answer(qid, message) instead.", true));
+				"Cannot Ask importable task " ~ to!string(targetTid)
+				~ "; import or resume it first", true));
 		}
 
-		// Child completed/failed/active → resume or send follow-up
-		if (childTd.status == "completed" || childTd.status == "failed" || childTd.status == "active")
+		if (!tasksShareWorkspace(*callerTd, *targetTd))
 		{
-			int qid = nextQid++;
-			auto promise = new Promise!McpResult;
-			pendingQuestions[qid] = promise;
-			questionToTask[qid] = parentTid;
-
-			auto subTaskPromise = new Promise!McpResult;
-			pendingSubTasks[childTid] = subTaskPromise;
-			taskDeps[childTid] = parentTid;
-			persistence.addTaskDep(parentTid, childTid);
-
-			tasks[parentTid].status = "waiting";
-			persistence.setStatus(parentTid, "waiting");
-			broadcastTaskUpdate(parentTid);
-
-			childTd.status = "active";
-			persistence.setStatus(childTid, "active");
-			broadcastTaskUpdate(childTid);
-			broadcastFocusHint(parentTid, childTid);
-
-			// Register a single-child batch so we can reuse awaitBatchLoop
-			BatchHandle batchHandle;
-			string batchError;
-			if (!createActiveBatch(parentTid, [childTid], batchHandle, batchError))
-				return resolve(makeInternalBatchError(batchError));
-
-			// Hook the promise into the event queue
-			subTaskPromise.then((McpResult r) { enqueueChildDoneSignal(batchHandle, 0, childTid, r); });
-
-			// Resume child process and send follow-up message with qid
-			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
-				auto followUpMsgSubject = followUpFromParentSubject(qid);
-				auto msg = wrapKnownSystemMessage(
-					KnownSystemMessageKind.followUpFromParent,
-					message
-						~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
-					followUpMsgSubject);
-				auto followUpMeta = buildKnownSystemMessageMeta(
-					KnownSystemMessageKind.followUpFromParent,
-					followUpMsgSubject,
-					["message": message], "message", true);
-				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
-			}).ignoreResult();
-
-			// When child calls Answer(qid, ...), the promise is fulfilled directly.
-			// We still need to await the batch in case child exits without answering.
-			// The Answer handler will fulfill pendingQuestions[qid] which resolves promise.
-			// We return the promise that's fulfilled when child answers.
-			// But we must also enter awaitBatchLoop so the parent waits properly.
-			// Wire: when promise is fulfilled (child answers), deliver to parent via awaitBatchLoop.
-			promise.then((McpResult r) {
-				// Child answered the follow-up — deliver as batch result
-				enqueueChildDoneSignal(batchHandle, 0, childTid, r);
-				pendingQuestions.remove(qid);
-				questionToTask.remove(qid);
-				questionToBatch.remove(qid);
-			});
-
-			return awaitBatchLoop(parentTid, batchHandle.batchId);
+			return resolve(McpResult(
+				"Ask target must be in the same workspace (caller="
+				~ taskWorkspaceLabel(*callerTd) ~ ", target="
+				~ taskWorkspaceLabel(*targetTd) ~ ")", true));
 		}
 
-		// Child is busy (waiting on its own sub-tasks, etc.) — enqueue for delivery when idle.
+		QuestionRoute route;
+		route.askerTid = callerTidInt;
+		route.answererTid = targetTid;
+
+		// Child asking parent (compatibility path for Ask(message)).
+		if (callerTd.parentTid == targetTid)
 		{
-			int qid = nextQid++;
-			auto promise = new Promise!McpResult;
-			pendingQuestions[qid] = promise;
-			questionToTask[qid] = parentTid;
+			auto batch = targetTid in activeBatches;
+			if (batch is null)
+			{
+				return resolve(makeInternalBatchError(
+					format!"no active batch for parent tid=%d while child tid=%d asked parent"(targetTid, callerTidInt)));
+			}
+
+			size_t slot;
+			if (!batch.trySlotForChild(callerTidInt, slot))
+			{
+				return resolve(makeInternalBatchError(
+					format!"active batch for parent tid=%d does not own child tid=%d"(targetTid, callerTidInt)));
+			}
+
+			route.delivery = QuestionDelivery.batchQuestion;
+			route.wait = QuestionWait.directPromise;
+			route.afterAnswer = QuestionAfterAnswer.continueBatch;
+			route.hasBatch = true;
+			route.batchId = batch.batchId;
+			route.batchSlot = slot;
+			route.batchChildTid = callerTidInt;
+			return startQuestionRoute(route, message);
+		}
+
+		// Parent asking direct child follow-up.
+		if (targetTd.parentTid == callerTidInt)
+		{
+			if (targetTd.pendingAskPromise !is null)
+			{
+				return resolve(McpResult(
+					"Sub-task has a pending question (qid=" ~ to!string(targetTd.pendingAskQid)
+					~ "). Use Answer(qid, message) instead.", true));
+			}
+
+			route.delivery = QuestionDelivery.injectedMessage;
+			route.wait = QuestionWait.batchLoop;
+			route.afterAnswer = QuestionAfterAnswer.completeAnswererOnIdle;
+			route.batchChildTid = targetTid;
 
 			BatchHandle batchHandle;
 			size_t childSlot;
-			if (auto batch = parentTid in activeBatches)
-			{
-				if (!batch.trySlotForChild(childTid, childSlot))
-				{
-					return resolve(makeInternalBatchError(
-						format!"active batch for parent tid=%d does not own child tid=%d"(parentTid, childTid)));
-				}
-				batchHandle = BatchHandle(parentTid, batch.batchId);
-			}
-			else
+			if (targetTd.status == "completed" || targetTd.status == "failed" || targetTd.status == "active")
 			{
 				string batchError;
-				if (!createActiveBatch(parentTid, [childTid], batchHandle, batchError))
+				if (!createActiveBatch(callerTidInt, [targetTid], batchHandle, batchError))
 					return resolve(makeInternalBatchError(batchError));
+
+				auto subTaskPromise = new Promise!McpResult;
+				pendingSubTasks[targetTid] = subTaskPromise;
+				taskDeps[targetTid] = callerTidInt;
+				persistence.addTaskDep(callerTidInt, targetTid);
+				subTaskPromise.then((McpResult r) {
+					enqueueChildDoneSignal(batchHandle, 0, targetTid, r);
+				});
 				childSlot = 0;
 			}
-
-			// Wire the question promise to fire a batch signal when answered
-			promise.then((McpResult r) {
-				enqueueChildDoneSignal(batchHandle, childSlot, childTid, r);
-				pendingQuestions.remove(qid);
-				questionToTask.remove(qid);
-				questionToBatch.remove(qid);
-			});
-
-			// Set parent to waiting
-			tasks[parentTid].status = "waiting";
-			persistence.setStatus(parentTid, "waiting");
-			broadcastTaskUpdate(parentTid);
-
-			// Attach a callback that delivers the question when the child becomes idle
-			childTd.onIdleCallbacks ~= () {
-				if (childTid !in tasks || !tasks[childTid].alive)
-				{
-					// Child died before question could be delivered
-					if (auto qp = qid in pendingQuestions)
-					{
-						(*qp).fulfill(McpResult("Sub-task exited before the queued question could be delivered", true));
-						pendingQuestions.remove(qid);
-						questionToTask.remove(qid);
-						questionToBatch.remove(qid);
-					}
-					return;
-				}
-				auto ctd = &tasks[childTid];
-				ctd.status = "active";
-				persistence.setStatus(childTid, "active");
-				broadcastTaskUpdate(childTid);
-				broadcastFocusHint(parentTid, childTid);
-				auto followUpMsgSubject = followUpFromParentSubject(qid);
-				auto followUpMsg = wrapKnownSystemMessage(
-					KnownSystemMessageKind.followUpFromParent,
-					message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
-					followUpMsgSubject);
-				auto followUpMeta = buildKnownSystemMessageMeta(
-					KnownSystemMessageKind.followUpFromParent,
-					followUpMsgSubject,
-					["message": message], "message", true);
-				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
-			};
-
-			return awaitBatchLoop(parentTid, batchHandle.batchId);
-		}
-	}
-
-	private Promise!McpResult handleAskParent(int childTid, int parentTid, string message)
-	{
-		auto childTd = &tasks[childTid];
-
-		// Allocate a qid for this question
-		int qid = nextQid++;
-		auto promise = new Promise!McpResult;
-		childTd.pendingAskPromise = promise;
-		childTd.pendingAskQuestion = message;
-		childTd.pendingAskQid = qid;
-		pendingQuestions[qid] = promise;
-		questionToTask[qid] = childTid;
-
-		// Inject question into parent's batch event queue
-		if (auto batch = parentTid in activeBatches)
-		{
-			size_t slot;
-			if (batch.trySlotForChild(childTid, slot))
-			{
-				questionToBatch[qid] = batch.batchId;
-				enqueueQuestionSignal(BatchHandle(parentTid, batch.batchId), slot, childTid, message, qid);
-			}
 			else
-				errorf("dropping question for parent tid=%d child tid=%d: child not in active batch",
-					parentTid, childTid);
+			{
+				if (auto batch = callerTidInt in activeBatches)
+				{
+					if (!batch.trySlotForChild(targetTid, childSlot))
+					{
+						return resolve(makeInternalBatchError(
+							format!"active batch for parent tid=%d does not own child tid=%d"(callerTidInt, targetTid)));
+					}
+					batchHandle = BatchHandle(callerTidInt, batch.batchId);
+				}
+				else
+				{
+					string batchError;
+					if (!createActiveBatch(callerTidInt, [targetTid], batchHandle, batchError))
+						return resolve(makeInternalBatchError(batchError));
+					childSlot = 0;
+				}
+			}
+
+			route.hasBatch = true;
+			route.batchId = batchHandle.batchId;
+			route.batchSlot = childSlot;
+			return startQuestionRoute(route, message);
 		}
 
-		// Update child status
-		childTd.status = "waiting";
-		childTd.notificationBody = "Asking parent: " ~ truncateTitle(message, 100);
-		persistence.setStatus(childTid, "waiting");
-		broadcastTaskUpdate(childTid);
-		broadcastFocusHint(childTid, parentTid);
-
-		return promise;
+		// Arbitrary same-workspace route.
+		route.delivery = QuestionDelivery.injectedMessage;
+		route.wait = QuestionWait.directPromise;
+		route.afterAnswer = QuestionAfterAnswer.leaveAnswererAlive;
+		return startQuestionRoute(route, message);
 	}
 
 	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
@@ -2076,115 +2345,75 @@ class App : ToolsBackend
 		if (callerTidInt !in tasks)
 			return resolve(McpResult("Task not found", true));
 
+		auto routePtr = qid in questionRoutes;
+		if (routePtr is null)
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+		auto route = *routePtr;
+		if (callerTidInt != route.answererTid)
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+
 		auto questionPromise = qid in pendingQuestions;
 		if (questionPromise is null)
 			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
 
-		auto askingTaskTid = qid in questionToTask;
-		if (askingTaskTid is null)
-			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
-
-		int askTid = *askingTaskTid;
-		auto askTd = askTid in tasks;
-
-		// Determine direction:
-		// - Parent answering child's question: askTid is a child of callerTidInt
-		// - Child answering parent's follow-up: askTid is the parent of callerTidInt
-		bool parentAnsweringChild = askTd !is null && askTd.parentTid == callerTidInt;
-		bool childAnsweringParent = askTd !is null && tasks[callerTidInt].parentTid == askTid;
-
-		if (parentAnsweringChild)
+		final switch (route.afterAnswer)
 		{
-			auto expectedBatchIdPtr = qid in questionToBatch;
-			if (expectedBatchIdPtr is null)
+			case QuestionAfterAnswer.continueBatch:
 			{
-				return resolve(makeInternalBatchError(
-					format!"missing originating batch for child question: parent tid=%d qid=%d"(callerTidInt, qid)));
-			}
-			auto expectedBatchId = *expectedBatchIdPtr;
-
-			auto batch = callerTidInt in activeBatches;
-			if (batch is null)
-			{
-				return resolve(makeInternalBatchError(
-					format!"no active batch while answering child question: parent tid=%d qid=%d"(callerTidInt, qid)));
-			}
-			if (batch.batchId != expectedBatchId)
-			{
-				return resolve(makeInternalBatchError(
-					format!"batch mismatch while answering child question: parent tid=%d qid=%d expected=%s got=%s"(callerTidInt, qid, expectedBatchId, batch.batchId)));
-			}
-
-			// Fulfill child's blocking Ask call with the answer
-			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
-				tasks[callerTidInt].title, message,
-				"Use Ask(question) to ask follow-up questions."));
-			(*questionPromise).fulfill(McpResult.structured(answerJson));
-
-			// Clean up child state
-			if (askTd.pendingAskPromise !is null)
-			{
-				askTd.pendingAskPromise = null;
-				askTd.pendingAskQuestion = null;
-				askTd.pendingAskQid = 0;
-			}
-			pendingQuestions.remove(qid);
-			questionToTask.remove(qid);
-			questionToBatch.remove(qid);
-
-			// Update child status
-			askTd.status = "active";
-			askTd.notificationBody = "";
-			persistence.setStatus(askTid, "active");
-			broadcastTaskUpdate(askTid);
-			broadcastFocusHint(callerTidInt, askTid);
-
-			// Re-enter the batch wait loop — blocks until next event
-			return awaitBatchLoop(callerTidInt, expectedBatchId);
-		}
-		else if (childAnsweringParent)
-		{
-			// Child answering parent's follow-up question.
-			// Defer fulfillment until the child's turn completes (becomes idle),
-			// so the parent doesn't receive the answer mid-turn.
-			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
-				tasks[callerTidInt].title, message,
-				"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
-			auto answerResult = McpResult.structured(answerJson);
-			int childTid = callerTidInt;
-
-			tasks[childTid].onIdleCallbacks ~= () {
-				// Fulfill the promise — handleAskChild's .then() delivers to parent's batch.
-				if (auto qp = qid in pendingQuestions)
-					(*qp).fulfill(answerResult);
-				// pendingQuestions/questionToTask cleanup done in handleAskChild's .then()
-
-				// Complete the child task.
-				if (childTid in tasks)
+				if (!route.hasBatch)
 				{
-					tasks[childTid].status = "completed";
-					persistence.setStatus(childTid, "completed");
-					persistence.setResultText(childTid, tasks[childTid].resultText);
+					return resolve(makeInternalBatchError(
+						format!"missing originating batch for child question: parent tid=%d qid=%d"(callerTidInt, qid)));
 				}
-				if (childTid in pendingSubTasks)
-					pendingSubTasks.remove(childTid);
-				if (auto parentTidPtr = childTid in taskDeps)
+				auto batch = callerTidInt in activeBatches;
+				if (batch is null)
 				{
-					auto parentTid2 = *parentTidPtr;
-					removeTaskDependency(parentTid2, childTid);
+					return resolve(makeInternalBatchError(
+						format!"no active batch while answering child question: parent tid=%d qid=%d"(callerTidInt, qid)));
 				}
-				broadcastFocusHint(childTid, askTid);
-			};
+				if (batch.batchId != route.batchId)
+				{
+					return resolve(makeInternalBatchError(
+						format!"batch mismatch while answering child question: parent tid=%d qid=%d expected=%s got=%s"(callerTidInt, qid, route.batchId, batch.batchId)));
+				}
 
-			// Return simple success to the child immediately.
-			auto deliveredJson = toJson(AnswerResult("delivered", askTid, qid,
-				null, null, "Answer delivered to parent task. End the session now."));
-			return resolve(McpResult.structured(deliveredJson));
-		}
-		else
-		{
-			return resolve(McpResult(
-				"Unknown question ID: " ~ to!string(qid), true));
+				auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+					tasks[callerTidInt].title, message,
+					"Use Ask(question) to ask follow-up questions."));
+				(*questionPromise).fulfill(McpResult.structured(answerJson));
+				clearQuestionRoute(qid);
+
+				if (route.askerTid in tasks)
+				{
+					auto askTd = &tasks[route.askerTid];
+					askTd.status = "active";
+					askTd.notificationBody = "";
+					persistence.setStatus(route.askerTid, "active");
+					broadcastTaskUpdate(route.askerTid);
+				}
+				broadcastFocusHint(route.answererTid, route.askerTid);
+				return awaitBatchLoop(route.answererTid, route.batchId);
+			}
+			case QuestionAfterAnswer.completeAnswererOnIdle:
+			{
+				auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+					tasks[callerTidInt].title, message,
+					"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
+				deferOrDeliverAnswer(route, McpResult.structured(answerJson));
+				auto deliveredJson = toJson(AnswerResult("delivered", route.askerTid, qid,
+					null, null, "Answer delivered to parent task. End the session now."));
+				return resolve(McpResult.structured(deliveredJson));
+			}
+			case QuestionAfterAnswer.leaveAnswererAlive:
+			{
+				auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
+					tasks[callerTidInt].title, message,
+					"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for follow-up questions."));
+				deferOrDeliverAnswer(route, McpResult.structured(answerJson));
+				auto deliveredJson = toJson(AnswerResult("delivered", route.askerTid, qid,
+					null, null, "Answer delivered to asking task."));
+				return resolve(McpResult.structured(deliveredJson));
+			}
 		}
 	}
 
@@ -5006,19 +5235,7 @@ class App : ToolsBackend
 					cb();
 			}
 
-			// Fulfill pending Ask promise with error if child exits while waiting
-			if (tasks[tid].pendingAskPromise !is null)
-			{
-				int qid = tasks[tid].pendingAskQid;
-				tasks[tid].pendingAskPromise.fulfill(
-					McpResult("Session ended while waiting for Ask response", true));
-				tasks[tid].pendingAskPromise = null;
-				tasks[tid].pendingAskQuestion = null;
-				tasks[tid].pendingAskQid = 0;
-				pendingQuestions.remove(qid);
-				questionToTask.remove(qid);
-				questionToBatch.remove(qid);
-			}
+			failQuestionsForTask(tid, "Session ended while waiting for Ask response");
 
 			// Kill any in-flight one-shot subprocesses (title/suggestion generation).
 			if (tasks[tid].titleGenKill !is null)
