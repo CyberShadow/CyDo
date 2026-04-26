@@ -2943,6 +2943,7 @@ const defaultExpandedTools = new Set([
   "claude/AskUserQuestion",
   "claude/WebFetch",
   "claude/Task",
+  "cydo:Task",
   "copilot/task",
   "cydo:Ask",
   "cydo:Answer",
