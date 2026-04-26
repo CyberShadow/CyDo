@@ -165,6 +165,11 @@ interface Agent
 	/// When false, the UI should hide/disable the file revert option.
 	@property bool supportsFileRevert();
 
+	/// Whether this agent reliably supports task system prompts in the
+	/// developer/system channel.
+	/// When false, CyDo prepends rendered task system prompts to user input.
+	@property bool supportsDeveloperPrompt();
+
 	/// Revert files to the state after a given message UUID.
 	/// Only called when supportsFileRevert is true.
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,

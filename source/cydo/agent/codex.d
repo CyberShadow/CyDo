@@ -916,12 +916,9 @@ class CodexAgent : Agent
 		return workspace ~ "\n" ~ launch.executablePath ~ "\n" ~ prefixSig;
 	}
 
-	private static string buildDeveloperInstructions(string appendSystemPrompt)
+	private static string buildDeveloperInstructions()
 	{
-		string devInstructions = appendSystemPrompt;
-		if (devInstructions.length > 0)
-			devInstructions ~= "\n\n";
-		devInstructions ~= "IMPORTANT: Do NOT use the following tools: "
+		string devInstructions = "IMPORTANT: Do NOT use the following tools: "
 			~ "spawn_agent,update_plan,request_user_input"
 			~ ". If you attempt to use them, they will fail.";
 		return devInstructions;
@@ -939,7 +936,7 @@ class CodexAgent : Agent
 		auto workDir = launch.workDir.length > 0
 			? launch.workDir
 			: (config.workDir.length > 0 ? config.workDir : ".");
-		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
+		auto devInstructions = buildDeveloperInstructions();
 
 		// Build config override (reasoning summary + MCP tools).
 		auto configOverride = buildConfigOverride(tid,
@@ -1035,7 +1032,7 @@ class CodexAgent : Agent
 		auto workDir = launch.workDir.length > 0
 			? launch.workDir
 			: (config.workDir.length > 0 ? config.workDir : ".");
-		auto devInstructions = buildDeveloperInstructions(config.appendSystemPrompt);
+		auto devInstructions = buildDeveloperInstructions();
 		auto configOverride = buildConfigOverride(tid,
 			config.creatableTaskTypes, config.switchModes, config.handoffs,
 			config.includeTools, config.mcpSocketPath);
@@ -1400,6 +1397,11 @@ class CodexAgent : Agent
 
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return false; }
+	// https://github.com/openai/codex/issues/19045
+	// Codex app-server developerInstructions are unreliable after
+	// thread/resume and keep-context mode switches, so task system prompts
+	// must be delivered via normal user input instead.
+	@property bool supportsDeveloperPrompt() { return false; }
 
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
 		ProcessLaunch launch = ProcessLaunch.init)

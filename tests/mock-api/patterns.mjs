@@ -279,6 +279,35 @@ export function matchPattern(userText) {
   if (match)
     return { type: "check_context", needle: match[1] };
 
+  // "check user text contains <base64>" — check if decoded string appears in
+  // the final user message text itself (proves prompt text arrived via input).
+  match = userText.match(/check user text contains ([A-Za-z0-9+/]+=*)/i);
+  if (match)
+    return { type: "check_user_text", needle: match[1] };
+
+  // Decompose continuation fixture: if the resumed keep-context prompt uses the
+  // strengthened decompose handoff instructions, dispatch a deterministic
+  // sub-task.
+  if (
+    userText.includes("`SwitchMode` to `decompose` succeeded.") &&
+    userText.includes("You are already in decompose mode.") &&
+    userText.includes("Do not re-run triage")
+  ) {
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            prompt: 'reply with "decompose-child-created"',
+            description: "Decompose child",
+          },
+        ],
+      },
+    };
+  }
+
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };

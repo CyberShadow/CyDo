@@ -688,6 +688,7 @@ class CopilotAgent : Agent
 
 	@property bool needsBash() { return true; }
 	@property bool supportsFileRevert() { return false; }
+	@property bool supportsDeveloperPrompt() { return true; }
 
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
 		ProcessLaunch launch = ProcessLaunch.init)
@@ -1867,4 +1868,3 @@ string extractResultText(JSONFragment frag)
 	catch (Exception) {}
 	return "";
 }
-

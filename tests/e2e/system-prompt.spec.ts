@@ -39,3 +39,30 @@ test("system_prompt_template is sent to the LLM API", async ({
       .first(),
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
+
+test("codex sends task system prompt through user input text", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "codex",
+    "Codex-specific regression for developer prompt fallback",
+  );
+
+  await enterSession(page);
+
+  const marker = Buffer.from("CYDO_TEST_SYSTEM_PROMPT_MARKER").toString("base64");
+
+  await sendMessage(
+    page,
+    `call task test_system_prompt check user text contains ${marker}`,
+  );
+
+  await expect(
+    page
+      .locator(".tool-result-container .text-content:visible", {
+        hasText: "context-check-passed",
+      })
+      .first(),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+});

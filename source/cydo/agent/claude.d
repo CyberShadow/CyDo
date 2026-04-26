@@ -515,6 +515,7 @@ class ClaudeCodeAgent : Agent
 
 	@property bool needsBash() { return false; }
 	@property bool supportsFileRevert() { return true; }
+	@property bool supportsDeveloperPrompt() { return true; }
 
 	RewindResult rewindFiles(string sessionId, string afterUuid, string cwd,
 		ProcessLaunch launch = ProcessLaunch.init)

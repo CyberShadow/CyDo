@@ -57,6 +57,8 @@ task_types:
         prompt_template: prompts/blank.md
       test_sysprompt_mode_a:
         prompt_template: prompts/blank.md
+      triage:
+        prompt_template: prompts/blank.md
     continuations:
       plan:
         task_type: plan_mode
@@ -91,6 +93,26 @@ task_types:
         task_type: conversation
         keep_context: true
         prompt_template: prompts/return_from_write.md
+
+  triage:
+    icon: triage
+    model_class: large
+    read_only: true
+    output_type: [report]
+    continuations:
+      decompose:
+        task_type: decompose
+        keep_context: true
+        prompt_template: prompts/enter_decompose.md
+
+  decompose:
+    icon: decompose
+    model_class: large
+    read_only: true
+    output_type: []
+    creatable_tasks:
+      research:
+        prompt_template: prompts/blank.md
 
   isolated:
     icon: crate

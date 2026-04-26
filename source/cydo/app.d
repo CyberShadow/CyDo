@@ -1243,6 +1243,8 @@ class App : ToolsBackend
 
 			// Configure and spawn child agent
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
+			renderedPrompt = prependTaskSystemPrompt(renderedPrompt,
+				taskSystemPromptForMessage(childTid, ctd));
 			auto subtaskMeta = buildCydoMeta(resolvedTaskType, ["task_description": prompt], "task_description", true);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapSystemMessage("Task prompt", renderedPrompt))], null, subtaskMeta);
@@ -2355,6 +2357,8 @@ class App : ToolsBackend
 				import std.algorithm : filter;
 				import std.array : array;
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
+				rendered = prependTaskSystemPrompt(rendered,
+					taskSystemPromptForMessage(tid, typeDef));
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", rendered)
 					~ blocks.filter!(b => b.type == "image").array;
@@ -2705,6 +2709,8 @@ class App : ToolsBackend
 				}
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath),
 					td.outputPath, entryPointTemplate);
+				rendered = prependTaskSystemPrompt(rendered,
+					taskSystemPromptForMessage(tid, typeDef));
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", wrapSystemMessage("Session start", rendered))
 					~ blocks.filter!(b => b.type == "image").array;
@@ -3652,6 +3658,27 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
+	private string taskSystemPromptForMessage(int tid, TaskTypeDef* typeDef)
+	{
+		if (typeDef is null)
+			return null;
+
+		auto taskAgent = agentForTask(tid);
+		if (taskAgent.supportsDeveloperPrompt)
+			return null;
+
+		auto td = &tasks[tid];
+		return loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), td.outputPath);
+	}
+
+	private static string prependTaskSystemPrompt(string promptText, string systemPrompt)
+	{
+		if (systemPrompt.length == 0)
+			return promptText;
+		return "[TASK SYSTEM PROMPT]\n" ~ systemPrompt
+			~ "\n\n[END TASK SYSTEM PROMPT]\n\n[TASK PROMPT]\n" ~ promptText;
+	}
+
 	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude",
 		string entryPoint = "")
 	{
@@ -3852,7 +3879,9 @@ class App : ToolsBackend
 		if (typeDef !is null)
 		{
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
-			sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), td.outputPath);
+			if (taskAgent.supportsDeveloperPrompt)
+				sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef,
+					promptSearchPath(td.projectPath), td.outputPath);
 		}
 		auto taskTypes = getTaskTypesForProject(td.projectPath);
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
@@ -4518,6 +4547,8 @@ class App : ToolsBackend
 			if (switchModeContinuation.length > 0)
 				renderedContinuationPrompt = "`SwitchMode` to `" ~ switchModeContinuation
 					~ "` successful.\n\n" ~ renderedContinuationPrompt;
+			renderedContinuationPrompt = prependTaskSystemPrompt(
+				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef));
 			auto contMeta = buildCydoMeta("Mode switch: " ~ contDef.task_type);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid, [ContentBlock("text", wrapSystemMessage("Mode switch", renderedContinuationPrompt))], null, contMeta);
@@ -4575,6 +4606,8 @@ class App : ToolsBackend
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
 				promptSearchPath(childTd.projectPath), childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
+			renderedSuccessorPrompt = prependTaskSystemPrompt(renderedSuccessorPrompt,
+				taskSystemPromptForMessage(childTid, newTypeDef));
 			auto handoffMeta = buildCydoMeta("Handoff: " ~ contDef.task_type,
 				["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {

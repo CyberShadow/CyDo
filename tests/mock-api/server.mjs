@@ -659,6 +659,11 @@ function handleResponses(req, res) {
       const found = haystack.includes(needle);
       oaiStreamTextResponse(res, found ? "context-check-passed" : "context-check-failed");
       return;
+    } else if (intent.type === "check_user_text") {
+      const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
+      const found = typeof userText === "string" && userText.includes(needle);
+      oaiStreamTextResponse(res, found ? "context-check-passed" : "context-check-failed");
+      return;
     } else if (intent.type === "stall") {
       // Send response.created to begin the stream, then stall indefinitely.
       // The session stays alive (waiting for LLM) so tests can kill it.
@@ -846,6 +851,11 @@ function handleMessages(req, res) {
       const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
       const haystack = JSON.stringify(parsed);
       const found = haystack.includes(needle);
+      streamTextResponse(res, found ? "context-check-passed" : "context-check-failed", model);
+      return;
+    } else if (intent.type === "check_user_text") {
+      const needle = Buffer.from(intent.needle, "base64").toString("utf-8");
+      const found = typeof userText === "string" && userText.includes(needle);
       streamTextResponse(res, found ? "context-check-passed" : "context-check-failed", model);
       return;
     } else if (intent.type === "stall") {
