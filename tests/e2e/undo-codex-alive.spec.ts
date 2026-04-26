@@ -6,6 +6,34 @@ import {
   assistantText,
 } from "./fixtures";
 
+async function openUndoDialogForUserMessage(
+  page: import("@playwright/test").Page,
+  userText: string,
+) {
+  const userMsg = page
+    .locator(".message-wrapper:visible", {
+      has: page.locator(
+        ".message.user-message:visible:not(.pending):not(.meta-message)",
+        { hasText: userText },
+      ),
+    })
+    .last();
+  await userMsg.hover();
+  await expect(userMsg.locator(".undo-btn")).toBeVisible({ timeout: 5_000 });
+  await userMsg.locator(".undo-btn").click();
+  await expect(page.locator(".undo-dialog:visible")).toBeVisible({
+    timeout: 5_000,
+  });
+}
+
+async function undoUserMessage(
+  page: import("@playwright/test").Page,
+  userText: string,
+) {
+  await openUndoDialogForUserMessage(page, userText);
+  await page.locator(".btn-undo:visible").click();
+}
+
 test("codex alive-path undo: session stays alive after undo", async ({
   page,
   agentType,
@@ -47,23 +75,7 @@ test("codex alive-path undo: session stays alive after undo", async ({
     timeout: 15_000,
   });
 
-  // Hover over the third user message to reveal the undo button.
-  const thirdUserMsg = page
-    .locator(".message-wrapper:visible", {
-      has: page.locator(".user-message:visible", { hasText: "alive-three" }),
-    })
-    .last();
-  await thirdUserMsg.hover();
-
-  await expect(thirdUserMsg.locator(".undo-btn")).toBeVisible({
-    timeout: 5_000,
-  });
-  await thirdUserMsg.locator(".undo-btn").click();
-
-  await expect(page.locator(".undo-dialog:visible")).toBeVisible({
-    timeout: 5_000,
-  });
-  await page.locator(".btn-undo:visible").click();
+  await undoUserMessage(page, 'Please reply with "alive-three"');
 
   // After undo: exactly turns 1-2 remain.
   await expect(
@@ -112,4 +124,73 @@ test("codex alive-path undo: session stays alive after undo", async ({
   await expect(assistantText(page, "alive-six")).toBeVisible({
     timeout: 90_000,
   });
+});
+
+test("codex alive-path undo counts only active turns after prior rollback", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "codex",
+    "Codex-only regression for repeated live rollback counting",
+  );
+
+  await enterSession(page);
+
+  for (const marker of [
+    "rolled-count-one",
+    "rolled-count-two",
+    "rolled-count-three",
+  ]) {
+    await sendMessage(page, `Please reply with "${marker}"`);
+    await expect(assistantText(page, marker)).toBeVisible({
+      timeout: 90_000,
+    });
+  }
+
+  await undoUserMessage(page, 'Please reply with "rolled-count-three"');
+  await expect(
+    page.locator(
+      ".message.user-message:visible:not(.pending):not(.meta-message)",
+    ),
+  ).toHaveCount(2, { timeout: 15_000 });
+
+  await sendMessage(page, 'Please reply with "rolled-count-four"');
+  await expect(assistantText(page, "rolled-count-four")).toBeVisible({
+    timeout: 90_000,
+  });
+
+  await openUndoDialogForUserMessage(page, 'Please reply with "rolled-count-two"');
+  await expect(page.locator(".undo-dialog-count:visible")).toContainText(
+    "2 messages will be removed.",
+  );
+  await page.locator(".btn-undo:visible").click();
+
+  await expect(
+    page.locator(
+      ".message.user-message:visible:not(.pending):not(.meta-message)",
+    ),
+  ).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator(".message.assistant-message:visible")).toHaveCount(
+    1,
+    { timeout: 15_000 },
+  );
+
+  await expect(
+    page.locator(".message.user-message:visible", {
+      hasText: "rolled-count-one",
+    }),
+  ).toBeVisible();
+  await expect(assistantText(page, "rolled-count-one")).toBeVisible();
+
+  for (const marker of [
+    "rolled-count-two",
+    "rolled-count-three",
+    "rolled-count-four",
+  ]) {
+    await expect(
+      page.locator(".message.user-message:visible", { hasText: marker }),
+    ).not.toBeVisible();
+    await expect(assistantText(page, marker)).not.toBeVisible();
+  }
 });

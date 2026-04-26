@@ -1376,42 +1376,7 @@ class CodexAgent : Agent
 
 	ForkableIdInfo[] extractForkableIdsWithInfo(string content, int lineOffset = 0)
 	{
-		import std.conv : to;
-		import std.string : lineSplitter;
-
-		ForkableIdInfo[] ids;
-		int lineNum = lineOffset;
-		// Codex prepends system context as a role=user response_item before the
-		// first task_started event.  Skip role=user lines until task_started is
-		// seen so the system context is not treated as a forkable user message.
-		// lineOffset > 0 means we're reading past the startup section already.
-		bool seenTaskStarted = lineOffset > 0;
-		foreach (line; content.lineSplitter)
-		{
-			lineNum++;
-			if (line.length == 0)
-				continue;
-			auto probe = parseRolloutLineProbe(line);
-			if (!seenTaskStarted && probe.isTaskStarted)
-			{
-				seenTaskStarted = true;
-				continue;
-			}
-			// Handle ThreadRolledBack markers: remove last N user-turn groups
-			if (probe.isThreadRolledBack)
-			{
-				if (probe.rollbackNumTurns > 0)
-					ids = applyRollbackToIdsWithInfo(ids, probe.rollbackNumTurns);
-				continue;
-			}
-			if (!probe.isForkableMessage)
-				continue;
-			// Skip pre-session role=user lines (system context injected before task_started).
-			if (probe.isUserMessage && !seenTaskStarted)
-				continue;
-			ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), probe.isUserMessage);
-		}
-		return ids;
+		return extractForkableIdsWithInfoImpl(content, lineOffset);
 	}
 
 	bool forkIdMatchesLine(string line, int lineNum, string forkId)
@@ -2416,6 +2381,101 @@ ForkableIdInfo[] applyRollbackToIdsWithInfo(ForkableIdInfo[] ids, uint numTurns)
 	return [];
 }
 
+private ForkableIdInfo[] extractForkableIdsWithInfoImpl(string content, int lineOffset = 0)
+{
+	import std.conv : to;
+	import std.string : lineSplitter;
+
+	ForkableIdInfo[] ids;
+	int lineNum = lineOffset;
+	// Codex prepends system context as a role=user response_item before the
+	// first task_started event. Skip role=user lines until task_started is seen
+	// so the system context is not treated as a forkable user message.
+	bool seenTaskStarted = lineOffset > 0;
+	foreach (line; content.lineSplitter)
+	{
+		lineNum++;
+		if (line.length == 0)
+			continue;
+		auto probe = parseRolloutLineProbe(line);
+		if (!seenTaskStarted && probe.isTaskStarted)
+		{
+			seenTaskStarted = true;
+			continue;
+		}
+		if (probe.isThreadRolledBack)
+		{
+			if (probe.rollbackNumTurns > 0)
+				ids = applyRollbackToIdsWithInfo(ids, probe.rollbackNumTurns);
+			continue;
+		}
+		if (!probe.isForkableMessage)
+			continue;
+		if (probe.isUserMessage && !seenTaskStarted)
+			continue;
+		ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), probe.isUserMessage);
+	}
+	return ids;
+}
+
+enum CodexActiveUserTurnsAfterStatus
+{
+	ok,
+	targetMissing,
+	targetNotUser,
+}
+
+struct CodexActiveUserTurnsAfterResult
+{
+	CodexActiveUserTurnsAfterStatus status;
+	int count;
+	int visibleCount;
+}
+
+/// Count active (marker-aware) user turns after `forkId` in Codex JSONL content.
+/// Returns status `ok` with count for valid user targets, otherwise a status
+/// describing whether the target is missing from active history or non-user.
+CodexActiveUserTurnsAfterResult countActiveUserTurnsAfterForkId(string content, string forkId)
+{
+	auto ids = extractForkableIdsWithInfoImpl(content);
+
+	size_t targetIdx = size_t.max;
+	foreach (i, ref idInfo; ids)
+	{
+		if (idInfo.id == forkId)
+		{
+			targetIdx = i;
+			break;
+		}
+	}
+
+	if (targetIdx == size_t.max)
+		return CodexActiveUserTurnsAfterResult(CodexActiveUserTurnsAfterStatus.targetMissing, 0, 0);
+	if (!ids[targetIdx].isUser)
+		return CodexActiveUserTurnsAfterResult(CodexActiveUserTurnsAfterStatus.targetNotUser, 0, 0);
+
+	int count = 0;
+	int visibleCount = 0;
+	// Codex rollback counts active user segments. For UI preview, also provide
+	// visible-turn counting where consecutive user lines are collapsed.
+	bool inUserTurn = true;
+	foreach (ref idInfo; ids[targetIdx + 1 .. $])
+	{
+		if (idInfo.isUser)
+		{
+			count++;
+			if (!inUserTurn)
+				visibleCount++;
+			inUserTurn = true;
+		}
+		else
+		{
+			inUserTurn = false;
+		}
+	}
+	return CodexActiveUserTurnsAfterResult(CodexActiveUserTurnsAfterStatus.ok, count, visibleCount);
+}
+
 /// Check if a JSONL line is a ThreadRolledBack event_msg.
 bool isRollbackMarker(string line)
 {
@@ -2540,6 +2600,55 @@ unittest
 
 	auto rolledAll = applyRollbackToIdsWithInfo(ids, 10);
 	assert(rolledAll.length == 0, "rollback > total should remove everything");
+
+	// Test countActiveUserTurnsAfterForkId with rollback markers
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`;
+
+		auto ok = countActiveUserTurnsAfterForkId(jsonl, "line:4");
+		assert(ok.status == CodexActiveUserTurnsAfterStatus.ok);
+		assert(ok.count == 1, "only visible user turn after line:4 should be counted");
+		assert(ok.visibleCount == 1, "visible turn count should match collapsed user runs");
+
+		auto hidden = countActiveUserTurnsAfterForkId(jsonl, "line:6");
+		assert(hidden.status == CodexActiveUserTurnsAfterStatus.targetMissing);
+
+		auto assistant = countActiveUserTurnsAfterForkId(jsonl, "line:5");
+		assert(assistant.status == CodexActiveUserTurnsAfterStatus.targetNotUser);
+	}
+
+	// Count user-turn groups, not raw user lines, after rollback.
+	{
+		string jsonl =
+			`{"type":"event_msg","payload":{"type":"task_started"}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}` ~ "\n" ~
+			`{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}` ~ "\n" ~
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}`;
+
+		auto afterSecond = countActiveUserTurnsAfterForkId(jsonl, "line:4");
+		assert(afterSecond.status == CodexActiveUserTurnsAfterStatus.ok);
+		assert(afterSecond.count == 2,
+			"rollback count should include all active user segments");
+		assert(afterSecond.visibleCount == 1,
+			"consecutive user lines for one turn must collapse in preview count");
+	}
 
 	// Test isRollbackMarker
 	assert(isRollbackMarker(`{"timestamp":"2025-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}}`));

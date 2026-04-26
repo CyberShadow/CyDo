@@ -3118,6 +3118,7 @@ class App : ToolsBackend
 	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
+		import cydo.agent.codex : CodexAgent;
 
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
@@ -3132,7 +3133,36 @@ class App : ToolsBackend
 		auto ta = agentForTask(tid);
 		if (json.dry_run)
 		{
-				auto count = countLinesAfterForkId(
+			if (cast(CodexAgent) ta !is null)
+			{
+				import std.file : exists, readText;
+				import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
+
+				auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+				if (jsonlPath.length == 0 || !exists(jsonlPath))
+				{
+					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+					return;
+				}
+
+				auto result = countActiveUserTurnsAfterForkId(readText(jsonlPath), json.after_uuid);
+				final switch (result.status)
+				{
+					case CodexActiveUserTurnsAfterStatus.targetMissing:
+						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+						return;
+					case CodexActiveUserTurnsAfterStatus.targetNotUser:
+						ws.send(Data(toJson(ErrorMessage("error", "Undo target is not a user message", tid)).representation));
+						return;
+					case CodexActiveUserTurnsAfterStatus.ok:
+						break;
+				}
+				// +1 to include the target user message itself
+				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, result.visibleCount + 1)).representation));
+				return;
+			}
+
+			auto count = countLinesAfterForkId(
 				ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid,
 				&ta.forkIdMatchesLine,
 				&ta.isForkableLine);
@@ -3149,54 +3179,36 @@ class App : ToolsBackend
 			if (td.session && td.session.alive)
 			{
 				// Codex alive path: use thread/rollback RPC instead of killing
-				import cydo.agent.codex : CodexAgent, ThreadRollbackOutcome;
+				import cydo.agent.codex : ThreadRollbackOutcome;
 				if (auto ca = cast(CodexAgent) ta)
 				{
-					auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+					import std.file : exists, readText;
+					import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
 
-					// Count user messages from the undo point to the end
-					auto userMsgCount = countLinesAfterForkId(
-						jsonlPath, json.after_uuid,
-						&ta.forkIdMatchesLine,
-						&ta.isUserMessageLine);
-					if (userMsgCount < 0)
+					auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+					if (jsonlPath.length == 0 || !exists(jsonlPath))
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 						return;
 					}
 
-					// Verify the undo target is actually a user-message line.
-					// A non-user target (e.g. assistant line) means rollback would
-					// remove the wrong number of turns — fall back to kill+truncate.
+					auto result = countActiveUserTurnsAfterForkId(readText(jsonlPath), json.after_uuid);
+					final switch (result.status)
 					{
-						import std.file : exists, readText;
-						import std.string : lineSplitter;
-						bool targetIsUserMsg = false;
-						if (jsonlPath.length > 0 && exists(jsonlPath))
-						{
-							int lnum = 0;
-							foreach (rawLine; readText(jsonlPath).lineSplitter)
-							{
-								lnum++;
-								if (rawLine.length == 0) continue;
-								if (ta.forkIdMatchesLine(rawLine, lnum, json.after_uuid))
-								{
-									targetIsUserMsg = ta.isUserMessageLine(rawLine);
-									break;
-								}
-							}
-						}
-						if (!targetIsUserMsg)
-						{
+						case CodexActiveUserTurnsAfterStatus.targetMissing:
+							ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
+							return;
+						case CodexActiveUserTurnsAfterStatus.targetNotUser:
 							warningf("tid=%d: thread/rollback invariant: after_uuid=%s is not a user-message line — falling back to kill+truncate",
 								tid, json.after_uuid);
 							fallbackUndoKillAndTruncate(ws, tid, json);
 							return;
-						}
+						case CodexActiveUserTurnsAfterStatus.ok:
+							break;
 					}
 
 					// +1: include the target turn itself
-					auto numTurns = cast(uint)(userMsgCount + 1);
+					auto numTurns = cast(uint)(result.count + 1);
 
 					ca.rollbackThread(td.agentSessionId, numTurns, td.launch, td.workspace)
 						.then((r) {
