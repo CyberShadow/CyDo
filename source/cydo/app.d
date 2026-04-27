@@ -1147,7 +1147,7 @@ class App : ToolsBackend
 			auto parsedTid = to!int(call.tid);
 			if (auto tdp = parsedTid in tasks)
 			{
-				if (tdp.pendingContinuation.length > 0)
+				if (tdp.pendingContinuation !is null)
 				{
 					tdp.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 					tdp.session.interrupt();
@@ -1188,7 +1188,7 @@ class App : ToolsBackend
 		{
 			if (auto tdp = parsedTid in tasks)
 			{
-				if (tdp.pendingContinuation.length > 0)
+				if (tdp.pendingContinuation !is null)
 					return resolve(McpResult(
 						"Tool call rejected: you already called SwitchMode/Handoff. "
 						~ "Yield your turn immediately — do not make any more tool calls.",
@@ -1579,7 +1579,7 @@ class App : ToolsBackend
 				td.taskType ~ "'. Available modes: " ~ (validModes.length > 0 ? validModes : "(none)") ~ ".", true);
 		}
 
-		td.pendingContinuation = continuation;
+		td.pendingContinuation = new PendingContinuation(PendingContinuation.Kind.switchMode, continuation);
 		infof("SwitchMode: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
@@ -1620,8 +1620,28 @@ class App : ToolsBackend
 		if (prompt.length == 0)
 			return McpResult("Handoff requires a non-empty prompt for the successor task.", true);
 
-		td.pendingContinuation = continuation;
-		td.handoffPrompt = prompt;
+		// Reject Handoff while the current task owns unanswered child questions.
+		// A handoff successor does not inherit batch ownership or question-answer
+		// authority; the question would be permanently stranded.
+		if (auto batch = tid in activeBatches)
+		{
+			foreach (cTid; batch.childTids)
+			{
+				if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+				{
+					auto childTd = &tasks[cTid];
+					import std.conv : to;
+					return McpResult(
+						"Handoff cannot continue while sub-task question qid="
+						~ to!string(childTd.pendingAskQid)
+						~ " is waiting for your answer. "
+						~ "Use Answer(...) first, or SwitchMode if you need a different mode before answering.",
+						true);
+				}
+			}
+		}
+
+		td.pendingContinuation = new PendingContinuation(PendingContinuation.Kind.handoff, continuation, prompt);
 		infof("Handoff: tid=%d continuation=%s (type %s → %s)",
 			tid, continuation, td.taskType, contDef.task_type);
 
@@ -3858,6 +3878,54 @@ class App : ToolsBackend
 			~ ") is waiting for your answer (qid=" ~ to!string(qid) ~ ")";
 	}
 
+	/// Find the first child of tid that has an unanswered Ask question.
+	/// Returns true if found; sets childTid, question, and qid via out params.
+	private bool findPendingChildQuestion(int tid, out int childTid, out string question, out int qid)
+	{
+		auto batch = tid in activeBatches;
+		if (batch is null)
+			return false;
+		foreach (cTid; batch.childTids)
+		{
+			if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+			{
+				childTid = cTid;
+				question = tasks[cTid].pendingAskQuestion;
+				qid = tasks[cTid].pendingAskQid;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/// Send a "Sub-task waiting for answer" reminder for the first pending child
+	/// question owned by tid. Does nothing if no such question exists.
+	private void sendPendingChildAnswerReminder(int tid)
+	{
+		import std.conv : to;
+
+		int childTid;
+		string question;
+		int qid;
+		if (!findPendingChildQuestion(tid, childTid, question, qid))
+			return;
+		auto childTd = &tasks[childTid];
+		auto reminderSubject = subTaskWaitingForAnswerSubject(
+			childTd.title, childTid, qid);
+		auto reminder = wrapKnownSystemMessage(
+			KnownSystemMessageKind.subTaskWaitingForAnswer,
+			"Question: " ~ question ~ "\n\n"
+				~ "Use Answer(" ~ to!string(qid)
+				~ ", \"your answer\") to respond. You must answer before you can complete your turn.",
+			reminderSubject);
+		auto reminderBlocks = [ContentBlock("text", reminder)];
+		auto askReminderMeta = buildKnownSystemMessageMeta(
+			KnownSystemMessageKind.subTaskWaitingForAnswer,
+			reminderSubject,
+			["question": question], "question", true);
+		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
+	}
+
 	private static string modeSwitchSubject(string taskType)
 	{
 		return systemMessageSubject(KnownSystemMessageKind.modeSwitch) ~ ": " ~ taskType;
@@ -4562,7 +4630,7 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "Handoff";
 		if (taskTypes.isInteractive(getEntryPointsForProject(td.projectPath), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
-		if (sessionConfig.creatableTaskTypes.length > 0 || td.parentTid > 0)
+		if (sessionConfig.creatableTaskTypes.length > 0 || td.parentTid > 0 || tid in activeBatches)
 		{
 			sessionConfig.includeTools ~= "Ask";
 			sessionConfig.includeTools ~= "Answer";
@@ -4636,7 +4704,7 @@ class App : ToolsBackend
 				// Also close stdin for tasks with on_yield (they auto-continue on exit).
 				auto onYieldTypeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
-				if (tid in pendingSubTasks || td.pendingContinuation.length > 0
+				if (tid in pendingSubTasks || td.pendingContinuation !is null
 					|| tid in taskDeps || hasOnYield || td.onIdleCallbacks.length > 0)
 				{
 					// Drain idle callbacks if any — they take priority over normal completion.
@@ -4658,7 +4726,7 @@ class App : ToolsBackend
 					}
 					else if (tid in pendingSubTasks)
 					{
-						if (td.pendingContinuation.length == 0 && !hasOnYield)
+						if (td.pendingContinuation is null && !hasOnYield)
 						{
 							auto missingOutputs = checkDeclaredOutputs(tid);
 							if (missingOutputs is null)
@@ -4669,50 +4737,20 @@ class App : ToolsBackend
 						}
 					}
 
-					// Check for unanswered child questions before closing stdin
-					auto batch = tid in activeBatches;
-					bool hasUnansweredQuestions = false;
-					if (batch !is null)
-					{
-						foreach (cTid; batch.childTids)
-						{
-							if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
-							{
-								hasUnansweredQuestions = true;
-								break;
-							}
-						}
-					}
+					// If a pendingContinuation (SwitchMode/Handoff) was accepted, this is a
+					// backend-requested terminal yield — close stdin and let onExit handle it.
+					// Otherwise, enforce unanswered child questions: send the reminder instead
+					// of closing stdin so the agent answers before completing its turn.
+					int _pcChildTid;
+					string _pcQuestion;
+					int _pcQid;
+					bool hasPendingChildQuestion =
+						td.pendingContinuation is null &&
+						findPendingChildQuestion(tid, _pcChildTid, _pcQuestion, _pcQid);
 
-					if (hasUnansweredQuestions)
+					if (hasPendingChildQuestion)
 					{
-						import std.conv : to;
-						string reminder;
-						string reminderSubject;
-						string pendingQuestion;
-						foreach (cTid; batch.childTids)
-						{
-							if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
-							{
-								auto childTd = &tasks[cTid];
-								pendingQuestion = childTd.pendingAskQuestion;
-								reminderSubject = subTaskWaitingForAnswerSubject(
-									childTd.title, cTid, childTd.pendingAskQid);
-								reminder = wrapKnownSystemMessage(
-									KnownSystemMessageKind.subTaskWaitingForAnswer,
-									"Question: " ~ childTd.pendingAskQuestion ~ "\n\n"
-										~ "Use Answer(" ~ to!string(childTd.pendingAskQid)
-										~ ", \"your answer\") to respond. You must answer before you can complete your turn.",
-									reminderSubject);
-								break;
-							}
-						}
-						auto reminderBlocks = [ContentBlock("text", reminder)];
-						auto askReminderMeta = buildKnownSystemMessageMeta(
-							KnownSystemMessageKind.subTaskWaitingForAnswer,
-							reminderSubject,
-							["question": pendingQuestion], "question", true);
-						sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
+						sendPendingChildAnswerReminder(tid);
 					}
 					else
 					{
@@ -4776,15 +4814,15 @@ class App : ToolsBackend
 			ev.code = exitCode;
 			// Compute hasOnYield from task type alone — independent of exit code,
 			// since killAfterTimeout may produce non-zero exits for valid continuations.
-			auto onYieldDef = (tasks[tid].pendingContinuation.length == 0)
+			auto onYieldDef = (tasks[tid].pendingContinuation is null)
 				? getTaskTypesForProject(tasks[tid].projectPath).byName(tasks[tid].taskType) : null;
 			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
 			// Treat intentional kills as clean when there's a pending continuation
 			// or on_yield — we know we killed the process via killAfterTimeout.
 			// Explicit user kills are never clean regardless.
-			auto cleanExit = (exitCode == 0 || tasks[tid].pendingContinuation.length > 0 || hasOnYield)
+			auto cleanExit = (exitCode == 0 || tasks[tid].pendingContinuation !is null || hasOnYield)
 				&& !tasks[tid].wasKilledByUser;
-			if (cleanExit && (tasks[tid].pendingContinuation.length > 0 || hasOnYield))
+			if (cleanExit && (tasks[tid].pendingContinuation !is null || hasOnYield))
 				ev.is_continuation = true;
 			// Suppress auto-navigation when yield enforcement is active:
 			// if a child has an unanswered Ask question, the process was
@@ -4911,7 +4949,7 @@ class App : ToolsBackend
 			}
 
 			// Continuation: transition to successor instead of completing
-			if (cleanExit && tasks[tid].pendingContinuation.length > 0)
+			if (cleanExit && tasks[tid].pendingContinuation !is null)
 			{
 				spawnContinuation(tid);
 				return;
@@ -5131,6 +5169,9 @@ class App : ToolsBackend
 					[ContentBlock("text", wrapKnownSystemMessage(
 						KnownSystemMessageKind.modeSwitch, renderedContinuationPrompt, modeSwitchMsgSubject))],
 					null, contMeta);
+				// If a child question is still pending (the agent switched modes before
+				// answering), send the reminder now so the resumed mode can answer it.
+				sendPendingChildAnswerReminder(tid);
 			}).ignoreResult();
 		}
 		else
@@ -5205,10 +5246,9 @@ class App : ToolsBackend
 	{
 		auto td = &tasks[tid];
 		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		auto contKey = td.pendingContinuation;
-		auto hPrompt = td.handoffPrompt;
+		auto contKey = td.pendingContinuation.key;
+		auto hPrompt = td.pendingContinuation.handoffPrompt;
 		td.pendingContinuation = null;
-		td.handoffPrompt = null;
 
 		if (typeDef is null)
 		{

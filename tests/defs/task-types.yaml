@@ -67,6 +67,8 @@ task_types:
         prompt_template: prompts/blank.md
       triage:
         prompt_template: prompts/blank.md
+      test_handoff_with_children:
+        prompt_template: prompts/blank.md
     continuations:
       plan:
         task_type: plan_mode
@@ -194,3 +196,14 @@ task_types:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt_b.md
+
+  test_handoff_with_children:
+    model_class: small
+    output_type: []
+    creatable_tasks:
+      research:
+        prompt_template: prompts/blank.md
+    continuations:
+      done:
+        task_type: blank
+        prompt_template: prompts/blank.md

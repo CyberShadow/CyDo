@@ -66,6 +66,16 @@ struct VisibleTurnAnchor
 enum ProcessState : bool { Dead = false, Alive = true }
 enum ArchiveState : bool { Unarchived = false, Archived = true }
 
+/// Pending SwitchMode or Handoff continuation, set by the tool handler and
+/// consumed by onExit. Null when no continuation is pending.
+struct PendingContinuation
+{
+	enum Kind { switchMode, handoff }
+	Kind kind;
+	string key;           // continuation key (was pendingContinuation)
+	string handoffPrompt; // only set for Kind.handoff
+}
+
 struct TaskData
 {
 	int tid;
@@ -192,8 +202,7 @@ struct TaskData
 	string notificationBody;
 	string resultText;    // result from the "result" event (canonical sub-task output)
 	string resultNote;        // note from the creatable_tasks edge, returned with result
-	string pendingContinuation; // continuation key set by SwitchMode/Handoff, consumed by onExit
-	string handoffPrompt;      // prompt for the successor task (Handoff only)
+	PendingContinuation* pendingContinuation; // null when not set, consumed by onExit
 	bool titleGenDone; // true after LLM title generation completed
 	Promise!string titleGenHandle;   // prevent GC while running
 	void delegate() titleGenKill;    // cancel one-shot subprocess; null if not running

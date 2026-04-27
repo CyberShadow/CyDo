@@ -914,6 +914,44 @@ function handleMessages(req, res) {
           return;
         }
       }
+      if (origText && /switchmode after child asks/i.test(origText) && messages.length <= 3) {
+        // Step 2: parent receives Task tool result containing the child's question.
+        // Only fire on the first tool result (messages.length == 3: initial user,
+        // assistant Task call, user Task result with question). Subsequent tool results
+        // in the same session (e.g. the SwitchMode result itself at messages.length==5)
+        // must fall through to "Done." so the session can exit and the mode switch fires.
+        // The guard also prevents the plan_mode continuation (which carries over the full
+        // history) from looping back and calling SwitchMode('plan') again.
+        streamToolUseResponse(res, "mcp__cydo__SwitchMode", { continuation: "plan" }, model);
+        return;
+      }
+      if (origText &&
+          /handoff while child asks/i.test(origText) &&
+          origText.includes("Task prompt: test_handoff_with_children")) {
+        // This is the test_handoff_with_children child task (not the parent conversation).
+        // Step 2: child receives Task result with grandchild question → try Handoff (rejected).
+        // Step 3: child receives Handoff error → answer the pending question (qid=1).
+        // Steps distinguished by message count.
+        if (messages.length <= 3) {
+          // First tool result: question arrived, try Handoff.
+          streamToolUseResponse(
+            res,
+            "mcp__cydo__Handoff",
+            { continuation: "done", prompt: "handoff-while-child-asks-prompt" },
+            model,
+          );
+          return;
+        } else if (messages.length <= 5) {
+          // Second tool result: Handoff was rejected, answer the grandchild's question.
+          streamToolUseResponse(
+            res,
+            "mcp__cydo__Answer",
+            { qid: 1, message: "handoff-test-answered" },
+            model,
+          );
+          return;
+        }
+      }
       streamTextResponse(res, "Done.", model);
       return;
     }

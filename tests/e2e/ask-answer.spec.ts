@@ -499,3 +499,119 @@ test("Ask/Answer: Answer with invalid qid returns error", async ({
       .last(),
   ).toBeVisible({ timeout: 60_000 });
 });
+
+test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
+  page,
+  agentType,
+}) => {
+  // Claude-specific: only the Anthropic mock can reliably return SwitchMode
+  // after a Task tool result in a deterministic sequence.
+  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
+  test.setTimeout(TALK_TIMEOUT * 2);
+
+  await enterSession(page);
+
+  // "switchmode after child asks" creates a research child that calls Ask.
+  // When the parent receives the Task result (child question), the mock returns SwitchMode(plan).
+  // The backend must allow the mode switch and send a Sub-task waiting for answer reminder
+  // in the new mode. The new mode then answers with Answer(qid, switch-mode-answer).
+  await sendMessage(page, "switchmode after child asks");
+
+  // Wait for the SwitchMode tool call to appear in parent's message list.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list .tool-name', {
+        hasText: "SwitchMode",
+      })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  // Wait for the mode-switch system message divider.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list .system-user-message', {
+        hasText: /Mode switch: plan_mode/i,
+      })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // The resumed plan_mode receives the Sub-task waiting reminder and calls Answer.
+  // Wait for the Answer tool call to appear — confirms the fix is working.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list .tool-name', {
+        hasText: "Answer",
+      })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  // Wait for the child task (tid=2) to show as completed in the sidebar.
+  // Research sub-tasks are resumable after completion, so accept either status class.
+  await expect(
+    page.locator(
+      '.sidebar-item[data-tid="2"] .task-type-icon.completed, .sidebar-item[data-tid="2"] .task-type-icon.resumable',
+    ),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // Wait for the final Task tool result (batch completed) to appear in the parent.
+  await expect(
+    page
+      .locator(
+        '[style*="display: contents"] .message-list .cydo-task-spec',
+      )
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+});
+
+test("Ask/Answer: Handoff rejected while child question is pending", async ({
+  page,
+  agentType,
+}) => {
+  // Claude-specific: only the Anthropic mock can reliably return Handoff then Answer
+  // after a Task tool result in a deterministic multi-step sequence.
+  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
+  test.setTimeout(TALK_TIMEOUT * 2);
+
+  await enterSession(page);
+
+  // Create a test_handoff_with_children sub-task whose prompt is "handoff while child asks".
+  // The sub-task (tid=2) creates a research grandchild (tid=3) that calls Ask.
+  // When tid=2 receives the Task result with the pending question, the mock calls Handoff.
+  // The backend must reject Handoff with a recoverable error and NOT create a continuation.
+  // The mock then answers the pending question, which lets the grandchild complete.
+  await sendMessage(
+    page,
+    "call task test_handoff_with_children handoff while child asks",
+  );
+
+  // Wait for the grandchild (tid=3) to appear in the sidebar.
+  await page.locator('.sidebar-item[data-tid="3"]').waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  // No continuation (tid=4) should be created — Handoff must be rejected.
+  // Check immediately: if the backend incorrectly accepted Handoff, tid=4 would
+  // appear quickly. Use not.toBeVisible() with a short timeout so the test
+  // doesn't wait 90 seconds for something that should never appear.
+  await expect(
+    page.locator('.sidebar-item[data-tid="4"]'),
+  ).not.toBeVisible();
+
+  // After the Handoff rejection, the mock calls Answer which fulfills the
+  // grandchild's Ask. Wait for tid=3 to complete: this proves the recovery
+  // path worked (Handoff rejected → child answered the pending question).
+  // Research sub-tasks are resumable after completion, so accept either status class.
+  await expect(
+    page.locator(
+      '.sidebar-item[data-tid="3"] .task-type-icon.completed, .sidebar-item[data-tid="3"] .task-type-icon.resumable',
+    ),
+  ).toBeVisible({ timeout: 90_000 });
+
+  // Wait for the child task (tid=2) to complete — confirms it recovered fully.
+  await expect(
+    page.locator(
+      '.sidebar-item[data-tid="2"] .task-type-icon.completed, .sidebar-item[data-tid="2"] .task-type-icon.resumable',
+    ),
+  ).toBeVisible({ timeout: 60_000 });
+});

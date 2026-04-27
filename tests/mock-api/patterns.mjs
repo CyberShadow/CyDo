@@ -96,6 +96,21 @@ export function matchPattern(userText) {
     }
   }
 
+  // [SYSTEM: Sub-task "..." (tid=N) is waiting for your answer (qid=M)]
+  // When the body contains "switch-mode-question", this is the post-SwitchMode reminder
+  // from the switchmode-after-child-asks fixture. Extract qid and answer.
+  {
+    const m = userText.match(
+      /\[SYSTEM: Sub-task "[^"]*" \(tid=\d+\) is waiting for your answer \(qid=(\d+)\)\][\s\S]*switch-mode-question/,
+    );
+    if (m)
+      return {
+        type: "tool_call",
+        name: "mcp__cydo__Answer",
+        input: { qid: parseInt(m[1]), message: "switch-mode-answer" },
+      };
+  }
+
   // Backend restart nudge and other system injections — acknowledge with Done.
   // Uses includes() for the same reason as SUGGESTION MODE above.
   // When MOCK_STALL_SYSTEM is set, stall instead (for screenshot chain tasks).
@@ -510,6 +525,42 @@ export function matchPattern(userText) {
   match = userText.match(/read file (\S+)/i);
   if (match)
     return { type: "tool_call", name: "read_file", input: { path: match[1] } };
+
+  // "handoff while child asks" — create a research child that calls Ask,
+  // then the parent tries Handoff (which should be rejected with a pending-question error).
+  // The multi-step handler in server.mjs returns Handoff on the first tool_result,
+  // then Answer after the rejection.
+  if (/handoff while child asks/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            prompt: "call ask handoff-test-question",
+            description: "Asking child",
+          },
+        ],
+      },
+    };
+
+  // "switchmode after child asks" — create a research child that calls Ask,
+  // then the parent calls SwitchMode (reproduces the pending-question + mode-switch bug).
+  if (/switchmode after child asks/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            prompt: "call ask switch-mode-question",
+            description: "Asking child",
+          },
+        ],
+      },
+    };
 
   // "run orphan then switchmode" — timed bash (sleep 999) followed by switchmode
   if (/run orphan then switchmode/i.test(userText))
