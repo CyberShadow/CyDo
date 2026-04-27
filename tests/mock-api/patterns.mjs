@@ -417,6 +417,26 @@ export function matchPattern(userText) {
     };
   }
 
+  // "semantic shell cat <path>" — run cat on a file for semantic shell tests
+  match = userText.match(/semantic shell cat (\S+)/i);
+  if (match) return { type: "shell", command: `cat ${match[1]}` };
+
+  // "semantic shell nl <path>" — run nl on a file
+  match = userText.match(/semantic shell nl (\S+)/i);
+  if (match) return { type: "shell", command: `nl -ba ${match[1]}` };
+
+  // "semantic shell heredoc" — cat heredoc writing markdown
+  if (/semantic shell heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "cat > /tmp/test-output.md <<EOF\n# Hello World\n\nThis is **markdown** content.\nEOF",
+    };
+
+  // "semantic shell pipe <path>" — piped command (should NOT get semantic rendering)
+  match = userText.match(/semantic shell pipe (\S+)/i);
+  if (match) return { type: "shell", command: `cat ${match[1]} | head -5` };
+
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };

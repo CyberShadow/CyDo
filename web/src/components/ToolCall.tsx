@@ -35,6 +35,10 @@ import {
   parsePatchTextFromInput,
   type PatchHunk,
 } from "../lib/patches";
+import {
+  parseShellSemantic,
+  type ShellHeredocWriteSemantic,
+} from "../lib/shellSemantic";
 
 /**
  * Tool Result Rendering Principles
@@ -564,11 +568,54 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
       : typeof input.cmd === "string"
         ? input.cmd
         : null;
+  const semantic = useMemo(
+    () => (command ? parseShellSemantic(command) : null),
+    [command],
+  );
+  const isHeredocWrite =
+    semantic?.ok === true && semantic.value.kind === "write";
+  const headerText = isHeredocWrite
+    ? ((
+        semantic as { ok: true; value: ShellHeredocWriteSemantic }
+      ).value.segments.find((s) => s.kind === "command-header")?.text ?? "")
+    : "";
+  // All useHighlight calls must be unconditional (hooks rules).
   const tokens = useHighlight(command ?? "", "bash");
+  const headerTokens = useHighlight(headerText.trimEnd(), "bash");
   const consumedKeys = new Set(["command", "cmd", "description"]);
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
     if (!consumedKeys.has(k)) remaining[k] = v;
+  }
+
+  // Heredoc write: render header/content/footer
+  if (isHeredocWrite) {
+    const writeVal = (
+      semantic as { ok: true; value: ShellHeredocWriteSemantic }
+    ).value;
+    const writeSegment = writeVal.segments.find(
+      (s) => s.kind === "write-content",
+    );
+    const footerText =
+      writeVal.segments.find((s) => s.kind === "command-footer")?.text ?? "";
+    return formatGenericInput(
+      remaining,
+      <div class="semantic-shell-command" data-testid="semantic-shell-write">
+        <CodePre class="write-content" copyText={command!}>
+          {headerTokens ? renderTokenLines(headerTokens) : headerText.trimEnd()}
+        </CodePre>
+        {writeSegment && (
+          <FileContentPreview
+            filePath={writeVal.filePath}
+            content={writeSegment.text}
+            defaultSource={false}
+          />
+        )}
+        <CodePre class="write-content semantic-command-footer" copyText="">
+          {footerText.replace(/^\n/, "")}
+        </CodePre>
+      </div>,
+    );
   }
 
   return formatGenericInput(
@@ -1770,6 +1817,24 @@ function parseExecCommandOutput(text: string): string {
   return text.slice(outputMarker + "Output:\n".length);
 }
 
+function extractShellStdout(
+  name: string,
+  toolServer: string | undefined,
+  agentType: string | undefined,
+  result: ToolResult | undefined,
+): string | null {
+  if (!result || result.isError) return null;
+  if (toolIs(name, agentType, toolServer, "claude/Bash")) {
+    const tr = result.toolResult as Record<string, unknown> | undefined;
+    return typeof tr?.stdout === "string" ? tr.stdout : null;
+  }
+  if (toolIs(name, agentType, toolServer, "codex/exec_command")) {
+    const text = extractResultText(result.content);
+    return text != null ? parseExecCommandOutput(text) : null;
+  }
+  return extractResultText(result.content);
+}
+
 function ExecCommandResult({ content }: { content: string }) {
   const output = parseExecCommandOutput(content);
   return <ResultPre content={output} />;
@@ -2171,6 +2236,41 @@ export const ToolCall = memo(
       result != null &&
       result.toolResult != null &&
       typeof result.toolResult === "object";
+    const shellCommand = isShellTool(name, agentType, toolServer)
+      ? typeof input.command === "string"
+        ? input.command
+        : typeof input.cmd === "string"
+          ? input.cmd
+          : null
+      : null;
+    const shellSemantic = useMemo(
+      () => (shellCommand ? parseShellSemantic(shellCommand) : null),
+      [shellCommand],
+    );
+    const useSemanticShellRead =
+      shellSemantic?.ok === true &&
+      shellSemantic.value.kind === "read" &&
+      result != null &&
+      !result.isError;
+    const semanticShellStdout = useSemanticShellRead
+      ? extractShellStdout(name, toolServer, agentType, result)
+      : null;
+    const semanticReadFilePath =
+      shellSemantic?.ok === true && shellSemantic.value.kind === "read"
+        ? shellSemantic.value.filePath
+        : null;
+    // Auto-expand codex commandExecution when semantic shell read is detected
+    // (these default to collapsed when hasReadOnlyCommandActions is true).
+    useEffect(() => {
+      if (
+        useSemanticShellRead &&
+        resultOpenOverride === null &&
+        toolIs(name, agentType, toolServer, "codex/commandExecution") &&
+        hasReadOnlyCommandActions(result)
+      ) {
+        setResultOpenOverride(true);
+      }
+    }, [useSemanticShellRead]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;
@@ -2319,7 +2419,15 @@ export const ToolCall = memo(
               <>
                 <div class="tool-result-container">
                   {!useReadHighlight && resultImagesElement}
-                  {cydoTaskItems ? (
+                  {semanticShellStdout != null &&
+                  semanticReadFilePath != null ? (
+                    <div data-testid="semantic-shell-read">
+                      <ReadResult
+                        content={semanticShellStdout}
+                        filePath={semanticReadFilePath}
+                      />
+                    </div>
+                  ) : cydoTaskItems ? (
                     <div class="tool-input-formatted">
                       {cydoTaskItems.map((item, i) => {
                         if (
@@ -2397,7 +2505,8 @@ export const ToolCall = memo(
                   ) : taskStopElement ? (
                     taskStopElement
                   ) : useBashResult ? (
-                    (result.toolResult as Record<string, unknown>).stdout ? (
+                    (result.toolResult as Record<string, unknown>).stdout &&
+                    !useSemanticShellRead ? (
                       <SmartResultPre
                         content={
                           (result.toolResult as Record<string, unknown>)
