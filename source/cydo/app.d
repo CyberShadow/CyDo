@@ -3,6 +3,24 @@ module cydo.app;
 import core.lifetime : move;
 import core.time : seconds;
 
+// Write end of the shutdown self-pipe; written to by the C signal handler.
+// Initialised in setupShutdownPipe() before socketManager.loop() runs.
+private shared int shutdownPipeFd = -1;
+
+/// Async-signal-safe SIGTERM/SIGINT handler: writes one byte to the self-pipe
+/// so the event loop thread picks it up without any GC interaction.
+extern(C) private nothrow @nogc
+void shutdownSignalHandler(int sig) @system
+{
+    import core.sys.posix.unistd : write;
+    int fd = shutdownPipeFd;
+    if (fd >= 0)
+    {
+        ubyte[1] b = [1];
+        write(fd, b.ptr, 1);
+    }
+}
+
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
 import std.logger : tracef, infof, warningf, errorf, fatalf;
@@ -41,6 +59,7 @@ import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow,
 	ItemStartedEvent, QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
+import cydo.agent.terminal : TerminalProcess;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
@@ -84,16 +103,19 @@ static:
 		auto app = new App();
 		app.start();
 
-		// On SIGTERM, terminate all agent sessions so child processes flush their
-		// persistent state before the backend exits.  ae.net.shutdown delivers the
-		// callback inside the event loop thread, so we can use normal async stop().
-		// killAfterTimeout (daemon timers) escalates to SIGKILL after ~2s, then
-		// forceClosePipes() disconnects any lingering pipe FDs so the event loop
-		// drains cleanly without needing alarm().
-		import ae.net.shutdown : addShutdownHandler;
-		addShutdownHandler((scope const(char)[]) {
-			app.shutdown();
-		});
+		// Install signal-safe SIGTERM/SIGINT handlers using a self-pipe.
+		//
+		// ae.net.shutdown (and ae.sys.shutdown) calls thread_suspendAll() inside
+		// the signal handler to acquire the GC lock before invoking callbacks.
+		// When SIGTERM fires while the main thread holds the GC lock (e.g. during
+		// a GC allocation), thread_suspendAll() deadlocks and App.shutdown() is
+		// never called, leaving the event loop hanging indefinitely.
+		//
+		// Instead we bypass that mechanism entirely: a raw POSIX signal handler
+		// writes one byte to a pipe (write(2) is async-signal-safe), and a daemon
+		// FileConnection on the read end calls app.shutdown() from inside the
+		// event loop thread — no GC lock involved.
+		setupShutdownPipe(app);
 
 		socketManager.loop();
 	}
@@ -422,6 +444,55 @@ static:
 	}
 }
 
+/// Self-pipe shutdown: installs signal handlers that write to a pipe; a
+/// daemon FileConnection on the read end drives App.shutdown() from within
+/// the event loop thread without acquiring the GC lock.
+// pipe2 is Linux-only; declare it directly rather than relying on druntime bindings.
+private extern(C) int pipe2(int* pipefd, int flags) nothrow @nogc @system;
+
+private void setupShutdownPipe(App app)
+{
+	import core.sys.posix.fcntl : O_CLOEXEC, O_NONBLOCK;
+	import core.sys.posix.signal : SIGTERM, SIGINT, sigaction, sigaction_t, sigemptyset, SA_RESETHAND;
+	import ae.net.asockets : FileConnection;
+	import ae.sys.data : Data;
+
+	// pipe2 with O_CLOEXEC|O_NONBLOCK: FDs are not inherited by child processes
+	// (claude, codex, etc.) and the write end never blocks in the signal handler.
+	int[2] fds;
+	pipe2(fds.ptr, O_CLOEXEC | O_NONBLOCK);
+
+	// Store write fd globally for the C-level signal handler.
+	shutdownPipeFd = fds[1];
+
+	// Daemon read connection — does not keep the event loop alive by itself.
+	auto readConn = new FileConnection(fds[0]);
+	readConn.daemonRead = true;
+	bool shutdownTriggered;
+	readConn.handleReadData = (Data) {
+		import std.logger : infof;
+		if (!shutdownTriggered)
+		{
+			shutdownTriggered = true;
+			infof("shutdown pipe fired, calling app.shutdown()");
+			app.shutdown();
+			infof("app.shutdown() returned");
+		}
+	};
+	readConn.handleDisconnect = (string reason, DisconnectType) {
+		import std.logger : infof;
+		infof("shutdown pipe read end disconnected: %s", reason);
+	};
+
+	// Install raw signal handler — no D runtime involved, no GC.
+	sigaction_t sa;
+	sa.sa_handler = &shutdownSignalHandler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESETHAND; // reset to SIG_DFL after first delivery
+	sigaction(SIGTERM, &sa, null);
+	sigaction(SIGINT,  &sa, null);
+}
+
 void usageFun(string usage)
 {
 	stderr.writeln(usage, funoptDispatchUsage!Program);
@@ -515,6 +586,10 @@ class App : ToolsBackend
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
+
+	// Active TerminalProcess instances (Bash MCP tool calls in flight).
+	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
+	private TerminalProcess[] activeTerminals;
 
 	/// Result from background discovery thread for a single session.
 	private struct DiscoveryResult
@@ -840,15 +915,23 @@ class App : ToolsBackend
 	}
 
 	/// Graceful shutdown: stop all agent sessions and close servers.
-	/// Called from the ae.net.shutdown handler (runs in the event loop thread).
+	/// Called from the self-pipe shutdown handler (runs in the event loop thread).
 	void shutdown()
 	{
+		infof("shutdown() called, cleaning up resources");
 		shuttingDown = true;
 		foreach (ref td; tasks)
 		{
-			if (td.session && td.session.alive)
+			if (td.session)
 			{
-				td.session.stop();
+				// stop() only if the process is still alive; killAfterTimeout is
+				// always needed — when bwrap exits from the process-group SIGTERM
+				// before shutdown() runs, asyncWait fires first (exited=true, alive=false)
+				// but an orphaned child inside the namespace may still hold the pipe
+				// write-ends open.  killAfterTimeout's forceClosePipes (2.5 s) closes
+				// the backend side of the pipes so the event loop can drain.
+				if (td.session.alive)
+					td.session.stop();
 				import core.time : seconds;
 				td.session.killAfterTimeout(0.seconds);
 			}
@@ -863,6 +946,9 @@ class App : ToolsBackend
 				td.suggestGenKill = null;
 			}
 		}
+		// SIGKILL any in-flight Bash MCP tool calls so the event loop can drain.
+		foreach (t; activeTerminals)
+			t.forceKill();
 		jsonlTracker.stopAllWatches();
 		{
 			import cydo.agent.codex : CodexAgent;
@@ -885,16 +971,39 @@ class App : ToolsBackend
 		server.close();
 		// server.close() only disconnects idle connections; force-close any
 		// remaining active ones (e.g. in-flight HTTP requests) so the event
-		// loop can drain.
+		// loop can drain. WebSocket-upgraded connections have conn = null
+		// (set during upgrade in ae's BaseHttpServerConnection), so guard
+		// against that before accessing conn.state.
 		{
 			import std.array : array;
 			import ae.net.asockets : disconnectable;
 			foreach (c; server.connections.iterator.array)
-				if (c.conn.state.disconnectable)
+				if (c.conn !is null && c.conn.state.disconnectable)
 					c.conn.disconnect("shutting down");
 		}
+		// WebSocket-upgraded connections have conn=null but retain a non-daemon
+		// idle TimerTask in ae's mainTimer, which prevents the event loop from
+		// exiting. Cancel those timers so the event loop can drain cleanly.
+		{
+			import std.array : array;
+			foreach (c; server.connections.iterator.array)
+				if (c.conn is null && c.timer !is null && !c.timer.when().isNull)
+					c.timer.cancelIdleTimeout();
+		}
 		if (mcpServer)
+		{
 			mcpServer.close();
+			// mcpServer.close() only disconnects idle connections; force-close any
+			// remaining active ones (e.g. in-flight MCP tool calls) so the event
+			// loop can drain.
+			{
+				import std.array : array;
+				import ae.net.asockets : disconnectable;
+				foreach (c; mcpServer.connections.iterator.array)
+					if (c.conn !is null && c.conn.state.disconnectable)
+						c.conn.disconnect("shutting down");
+			}
+		}
 		// Remove inotify watches so the event loop can exit.
 		if (configFileWatchActive)
 		{
@@ -912,6 +1021,7 @@ class App : ToolsBackend
 		foreach (projectPath, handle; projectDirWatches)
 			projectINotify.remove(handle);
 		projectDirWatches = null;
+		infof("shutdown() complete");
 	}
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
@@ -1710,8 +1820,6 @@ class App : ToolsBackend
 
 	Promise!McpResult handleBash(string callerTid, string command)
 	{
-		import cydo.agent.terminal : TerminalProcess;
-
 		auto terminal = new TerminalProcess(
 			["/bin/sh", "-c", command],
 			null,   // inherit env
@@ -1719,8 +1827,12 @@ class App : ToolsBackend
 			1024 * 1024
 		);
 
+		activeTerminals ~= terminal;
+
 		auto promise = new Promise!McpResult;
 		terminal.onExit = () {
+			import std.algorithm : remove;
+			activeTerminals = activeTerminals.remove!(t => t is terminal);
 			auto output = terminal.output();
 			promise.fulfill(McpResult(output, terminal.exitCode() != 0));
 		};
@@ -4690,10 +4802,16 @@ class App : ToolsBackend
 
 				// Re-try JSONL watch if not yet established (Codex may
 				// not have the file at session-start time).
-				jsonlTracker.startJsonlWatch(tid);
+				// Guard against calling startJsonlWatch after shutdown() has
+				// already removed all watches — a new watch would re-open the
+				// inotify fd and create a non-daemon FileConnection, keeping
+				// the event loop alive indefinitely after SIGTERM.
+				if (!shuttingDown)
+					jsonlTracker.startJsonlWatch(tid);
 
 				// Broadcast forkable UUIDs now that JSONL should exist.
-				jsonlTracker.broadcastForkableUuidsFromFile(tid);
+				if (!shuttingDown)
+					jsonlTracker.broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
 				td.resultText = taskAgent.extractResultText(ev.translated);
@@ -5091,6 +5209,8 @@ class App : ToolsBackend
 
 		if (goal == ProcessState.Alive)
 		{
+			if (shuttingDown)
+				return reject!ProcessState(new Exception("Shutting down"));
 			try
 				spawnTaskSession(tid);
 			catch (Exception e)
@@ -6447,7 +6567,8 @@ class App : ToolsBackend
 		{
 			tasks[tid].agentSessionId = sessionId;
 			persistence.setAgentSessionId(tid, sessionId);
-			jsonlTracker.startJsonlWatch(tid);
+			if (!shuttingDown)
+				jsonlTracker.startJsonlWatch(tid);
 		}
 	}
 

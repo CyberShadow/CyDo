@@ -8,7 +8,7 @@ import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
-import { assistantText } from "./fixtures";
+import { assistantText, killBackend } from "./fixtures";
 
 // ---------------------------------------------------------------------------
 // Custom fixture
@@ -130,8 +130,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     }
 
     const stop = async () => {
-      process.kill(-proc.pid!, "SIGTERM");
-      await new Promise<void>((r) => proc.on("exit", () => r()));
+      await killBackend(proc);
       // Brief drain for agent children to finish writing JSONL —
       // restart tests read JSONL on the next start.
       await new Promise((r) => setTimeout(r, 5000));
@@ -149,10 +148,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     await use({ port: 3940, baseURL, workDir, stop, start, restart });
 
-    try {
-      process.kill(-proc.pid!, "SIGTERM");
-    } catch {}
-    await new Promise<void>((r) => proc.on("exit", () => r()));
+    await killBackend(proc);
   },
   baseURL: async ({ restartableBackend }, use) => {
     await use(restartableBackend.baseURL);

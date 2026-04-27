@@ -19,6 +19,7 @@ import {
   killSession,
   responseTimeout,
   assistantText,
+  killBackend,
 } from "./fixtures";
 
 type RestartableBackend = {
@@ -130,10 +131,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
     await waitForHttp(baseURL, proc);
 
     const stop = async () => {
-      try {
-        process.kill(-proc.pid!, "SIGTERM");
-      } catch {}
-      await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
+      await killBackend(proc);
       // Brief drain for codex to finish writing rollout JSONL
       await new Promise((r) => setTimeout(r, 5000));
     };
@@ -146,10 +144,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     await use({ baseURL, codexHome, restart });
 
-    try {
-      process.kill(-proc.pid!, "SIGTERM");
-    } catch {}
-    await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
+    await killBackend(proc);
   },
 
   baseURL: async ({ restartableBackend }, use) => {

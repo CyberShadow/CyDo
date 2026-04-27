@@ -240,17 +240,19 @@ class SdkProcess
 	/// Terminate the underlying SDK process and defer exit handlers until the
 	/// process has actually exited.  The copilot binary may spawn children that
 	/// hold the stdout pipe open, preventing AgentProcess.tryFireExit from ever
-	/// firing.  We bypass pipe-based exit detection by using asyncWait (SIGCHLD)
-	/// directly, which fires as soon as the process exits — guaranteeing the
-	/// binary has flushed its session files (events.jsonl) before onExit runs.
+	/// firing.  We use killAfterTimeout to force-close all pipes after 3 s via
+	/// daemon timers, which guarantees the event loop drains even if orphaned
+	/// children hold write-ends of the stdout/stderr pipes open.
+	///
+	/// NOTE: we deliberately do NOT call asyncWait here.  If the AgentProcess
+	/// asyncWait (installed in the constructor) fires first it reaps the pid
+	/// via waitpid(2), making any subsequent asyncWait for the same pid return
+	/// ECHILD indefinitely — leaving a non-daemon ThreadAnchor that never
+	/// closes and hangs the event loop forever.
 	void shutdown()
 	{
 		if (dead)
 			return;
-		// Prevent AgentProcess.tryFireExit from double-firing.
-		process.onExit = null;
-		process.closeStdin();
-		process.terminate();
 		state_ = State.dead;
 
 		// Snapshot sessions — the map may be mutated by handleExit.
@@ -263,21 +265,19 @@ class SdkProcess
 				session.handleExit(1);
 		}
 
-		// Wait for actual process exit (SIGCHLD) before firing handlers.
-		// This ensures the binary has flushed its files (events.jsonl).
-		import ae.sys.process : asyncWait;
-		import ae.sys.timing : setTimeout;
-		import core.time : msecs;
-		asyncWait(process.processId, (int) { fireExit(); });
-		// Safety net: if asyncWait never fires (zombie), SIGKILL and timeout after 3s.
-		setTimeout({
-			if (!process.dead)
-			{
-				import core.sys.posix.signal : SIGKILL;
-				process.sendSignal(SIGKILL);
-			}
-			fireExit();
-		}, 3000.msecs);
+		// Route the existing pipe-drain exit notification through fireExit.
+		// AgentProcess.tryFireExit calls onExit once stdout+stderr reach EOF
+		// and the process has exited — this is the correct place to fire.
+		process.onExit = (int) { fireExit(); };
+		process.closeStdin();
+		process.terminate();
+
+		// Daemon timers: SIGKILL at +3 s, forceClosePipes at +3.5 s.
+		// These are daemon so they do not prevent the event loop from exiting,
+		// but the non-daemon stdout/stderr FileConnections keep it alive until
+		// the pipes actually close (either naturally or via forceClosePipes).
+		import core.time : seconds;
+		process.killAfterTimeout(3.seconds);
 	}
 
 	/// Queue an action for when the server is ready. Runs immediately if

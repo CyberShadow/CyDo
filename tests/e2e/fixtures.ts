@@ -1,6 +1,7 @@
 import { test as base, expect } from "@playwright/test";
 import type { Locator, Page, TestInfo } from "@playwright/test";
 import { spawn } from "child_process";
+import type { ChildProcess } from "child_process";
 import { mkdirSync, symlinkSync } from "fs";
 
 type AgentType = "claude" | "codex" | "copilot";
@@ -113,13 +114,16 @@ export const test = base.extend<TestFixtures>({
       wsDir: "/tmp/cydo-test-workspace",
     });
 
-    // Teardown — SIGTERM the process group
-    try {
-      process.kill(-proc.pid!, "SIGTERM");
-    } catch {
-      // already gone
+    // Teardown — SIGTERM the process group and wait for exit.
+    const exitResult = new Promise<{ code: number | null; signal: string | null }>(
+      (r) => proc.on("exit", (code, signal) => r({ code, signal })),
+    );
+    await killBackend(proc);
+    const { signal } = await exitResult;
+    const crashSignals = ["SIGSEGV", "SIGABRT", "SIGBUS"];
+    if (signal && crashSignals.includes(signal)) {
+      throw new Error(`Backend crashed during shutdown: ${signal}`);
     }
-    await new Promise<void>((r) => proc.on("exit", r));
   },
 
   baseURL: async ({ backend }, use) => {
@@ -196,6 +200,17 @@ export const test = base.extend<TestFixtures>({
     }
   },
 });
+
+/** Send SIGTERM to a backend process group and wait for it to exit. */
+export async function killBackend(proc: ChildProcess): Promise<void> {
+  const exitPromise = new Promise<void>((r) => proc.on("exit", () => r()));
+  try {
+    process.kill(-proc.pid!, "SIGTERM");
+  } catch {
+    // already gone
+  }
+  await exitPromise;
+}
 
 export { expect } from "@playwright/test";
 export type { Page } from "@playwright/test";
