@@ -3912,8 +3912,8 @@ class App : ToolsBackend
 	{
 		if (systemPrompt.length == 0)
 			return promptText;
-		return "[TASK SYSTEM PROMPT]\n" ~ systemPrompt
-			~ "\n\n[END TASK SYSTEM PROMPT]\n\n[TASK PROMPT]\n" ~ promptText;
+		return "[TASK DESCRIPTION]\n" ~ systemPrompt
+			~ "\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\n" ~ promptText;
 	}
 
 	private enum KnownSystemMessageKind
@@ -4305,8 +4305,8 @@ class App : ToolsBackend
 		auto body = "[CYDO TASK MODE REMINDER]\n\n"
 			~ "This is CyDo task metadata, not project or user content.\n\n"
 			~ "Active task mode: " ~ td.taskType
-			~ "\n\n[TASK SYSTEM PROMPT]\n" ~ systemPrompt
-			~ "\n[END TASK SYSTEM PROMPT]\n\n"
+			~ "\n\n[TASK DESCRIPTION]\n" ~ systemPrompt
+			~ "\n[END TASK DESCRIPTION]\n\n"
 			~ "Use this as the active CyDo task mode metadata for interpreting what kind of work to do next.\n\n";
 		return wrapKnownSystemMessage(KnownSystemMessageKind.postCompactionTaskModeReminder, body);
 	}
