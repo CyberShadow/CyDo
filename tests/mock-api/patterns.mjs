@@ -433,9 +433,17 @@ export function matchPattern(userText) {
         "cat > /tmp/test-output.md <<EOF\n# Hello World\n\nThis is **markdown** content.\nEOF",
     };
 
-  // "semantic shell pipe <path>" — piped command (should NOT get semantic rendering)
-  match = userText.match(/semantic shell pipe (\S+)/i);
+  // "semantic shell pipe read <path>" — pipe that SHOULD get semantic rendering
+  match = userText.match(/semantic shell pipe read (\S+)/i);
   if (match) return { type: "shell", command: `cat ${match[1]} | head -5` };
+
+  // "semantic shell pipe reject <path>" — pipe with unrecognized stage (should NOT get semantic rendering)
+  match = userText.match(/semantic shell pipe reject (\S+)/i);
+  if (match) return { type: "shell", command: `cat ${match[1]} | rm -rf /` };
+
+  // Legacy: "semantic shell pipe <path>" — keep for backwards compatibility
+  match = userText.match(/semantic shell pipe (\S+)/i);
+  if (match) return { type: "shell", command: `cat ${match[1]} | rm -rf /` };
 
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);

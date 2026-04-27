@@ -36,7 +36,7 @@ import {
   type PatchHunk,
 } from "../lib/patches";
 import {
-  parseShellSemantic,
+  useShellSemantic,
   type ShellHeredocWriteSemantic,
 } from "../lib/shellSemantic";
 
@@ -568,10 +568,7 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
       : typeof input.cmd === "string"
         ? input.cmd
         : null;
-  const semantic = useMemo(
-    () => (command ? parseShellSemantic(command) : null),
-    [command],
-  );
+  const semantic = useShellSemantic(command);
   const isHeredocWrite =
     semantic?.ok === true && semantic.value.kind === "write";
   const headerText = isHeredocWrite
@@ -2243,10 +2240,7 @@ export const ToolCall = memo(
           ? input.cmd
           : null
       : null;
-    const shellSemantic = useMemo(
-      () => (shellCommand ? parseShellSemantic(shellCommand) : null),
-      [shellCommand],
-    );
+    const shellSemantic = useShellSemantic(shellCommand);
     const useSemanticShellRead =
       shellSemantic?.ok === true &&
       shellSemantic.value.kind === "read" &&

@@ -79,22 +79,49 @@ test("semantic shell: heredoc write renders header/body/footer", async ({
 });
 
 /**
- * Test 3: rejection fallback
+ * Test 3: pipe-read (accepted)
  *
- * Sends a prompt that triggers a piped command (cat README.md | head -5).
- * The pipe makes the parser reject it, so the output should render through
- * the normal .tool-result path — no semantic-shell-read container.
+ * Sends a prompt that triggers `cat README.md | head -5`. With the v2 parser,
+ * this pipeline is classified as a Read and renders through the semantic
+ * shell read pipeline (data-testid="semantic-shell-read").
  */
-test("semantic shell: pipe command falls back to normal rendering", async ({
+test("semantic shell: pipe read renders through file content preview", async ({
   page,
   agentType,
 }) => {
   await enterSession(page);
   const timeout = responseTimeout(agentType);
 
-  await sendMessage(page, "semantic shell pipe README.md");
+  await sendMessage(page, "semantic shell pipe read README.md");
 
-  // Wait for the tool call to appear
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
+  const toolCall = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: toolName }) })
+    .last();
+  await expect(toolCall).toBeVisible({ timeout });
+
+  // Assert semantic-shell-read container is visible
+  const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
+  await expect(semanticRead).toBeVisible({ timeout });
+});
+
+/**
+ * Test 4: rejection fallback
+ *
+ * Sends a prompt that triggers `cat README.md | rm -rf /`. The pipe stage
+ * "rm" is not in the formatting allowlist, so the parser rejects it and
+ * output renders through the normal .tool-result path.
+ */
+test("semantic shell: unrecognized pipe stage falls back to normal rendering", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell pipe reject README.md");
+
   const toolName = agentType === "codex" ? "commandExecution" : "Bash";
   const toolCall = page
     .locator(".tool-call")
