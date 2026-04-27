@@ -2065,6 +2065,7 @@ const defaultExpandedTools = new Set([
   "claude/Edit",
   "claude/Write",
   "codex/fileChange",
+  "codex/apply_patch",
   "claude/Bash",
   "codex/commandExecution",
   "codex/local_shell_call",
