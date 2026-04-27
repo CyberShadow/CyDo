@@ -31,10 +31,8 @@ test("semantic shell: cat read renders through file content preview", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Assert the command input shows the cat command
-  await expect(toolCall).toContainText("cat README.md", { timeout });
-
-  // Assert semantic-shell-read container is visible (result is expanded by default)
+  // Assert semantic-shell-read container is visible (result is expanded by default,
+  // input is collapsed for reads per Phase 1 auto-expand/collapse)
   const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
   await expect(semanticRead).toBeVisible({ timeout });
 });

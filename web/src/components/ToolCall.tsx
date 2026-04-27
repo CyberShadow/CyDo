@@ -1,6 +1,6 @@
 import { h, Fragment, ComponentChildren } from "preact";
 import { memo } from "preact/compat";
-import { useState, useMemo, useEffect } from "preact/hooks";
+import { useState, useMemo, useEffect, useRef } from "preact/hooks";
 import { marked } from "marked";
 import type { ToolResult, ToolResultContent } from "../types";
 import { qualifiedToolKey, toolIs } from "../toolIdentity";
@@ -2179,6 +2179,8 @@ export const ToolCall = memo(
     const [resultOpenOverride, setResultOpenOverride] = useState<
       boolean | null
     >(null);
+    const userToggledInput = useRef(false);
+    const userToggledResult = useRef(false);
     const resultOpen =
       resultOpenOverride ??
       defaultResultExpanded(name, toolServer, agentType, result);
@@ -2275,18 +2277,21 @@ export const ToolCall = memo(
       shellSemantic?.ok === true && shellSemantic.value.kind === "read"
         ? shellSemantic.value.filePath
         : null;
-    // Auto-expand codex commandExecution when semantic shell read is detected
-    // (these default to collapsed when hasReadOnlyCommandActions is true).
+    // Semantic shell: adjust input/result expand defaults after classification.
+    // Reads → collapse input (command is secondary), expand result (file content primary).
+    // Writes → keep input expanded, collapse result (usually empty).
     useEffect(() => {
-      if (
-        useSemanticShellRead &&
-        resultOpenOverride === null &&
-        toolIs(name, agentType, toolServer, "codex/commandExecution") &&
-        hasReadOnlyCommandActions(result)
-      ) {
-        setResultOpenOverride(true);
+      if (!shellSemantic?.ok) return;
+      const kind = shellSemantic.value.kind;
+      if (kind === "read") {
+        if (!userToggledInput.current) setInputOpen(false);
+        if (!userToggledResult.current && resultOpenOverride === null)
+          setResultOpenOverride(true);
+      } else {
+        if (!userToggledResult.current && resultOpenOverride === null)
+          setResultOpenOverride(false);
       }
-    }, [useSemanticShellRead]);
+    }, [shellSemantic?.ok ? shellSemantic.value.kind : null]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;
@@ -2339,6 +2344,7 @@ export const ToolCall = memo(
         <div
           class="tool-header"
           onClick={() => {
+            userToggledInput.current = true;
             setInputOpen(!inputOpen);
           }}
         >
@@ -2426,6 +2432,7 @@ export const ToolCall = memo(
             <div
               class="tool-result-header"
               onClick={() => {
+                userToggledResult.current = true;
                 setResultOpenOverride(!resultOpen);
               }}
             >
