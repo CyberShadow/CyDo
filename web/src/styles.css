@@ -2558,6 +2558,18 @@ body,
   margin-top: 6px;
 }
 
+/* Offset inner toggle button when nested inside an outer SourceRenderedToggle */
+.markdown-diff-wrap .markdown-diff-wrap > .markdown-toggle-btn,
+.markdown-diff-wrap .markdown-wrap > .markdown-toggle-btn {
+  right: 23px;
+}
+
+/* Offset copy button further when inside a nested toggle */
+.markdown-diff-wrap .markdown-diff-wrap > .code-pre-wrap > .btn-copy,
+.markdown-diff-wrap .markdown-wrap > .code-pre-wrap > .btn-copy {
+  right: 46px;
+}
+
 .markdown-diff {
   padding: 8px;
   background: var(--overlay-faint);

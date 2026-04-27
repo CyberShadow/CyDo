@@ -385,13 +385,27 @@ function FileChangeRow({
           </span>
         </div>
       )}
-      {canRenderAddedContent && (
+      {canRenderAddedContent &&
+      preservePatchSource &&
+      typeof change.patchText === "string" ? (
+        <SourceRenderedToggle
+          defaultSource={false}
+          sourceView={<ChangePatchFallback change={change} />}
+          renderedView={
+            <FileContentPreview
+              filePath={path}
+              content={change.content ?? ""}
+              defaultSource={false}
+            />
+          }
+        />
+      ) : canRenderAddedContent ? (
         <FileContentPreview
           filePath={path}
           content={change.content ?? ""}
           defaultSource={false}
         />
-      )}
+      ) : null}
       {!canRenderAddedContent && canRenderDiffMarkdown && (
         <MarkdownDiffPreview
           oldText={change.oldText ?? ""}

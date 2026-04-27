@@ -1,4 +1,6 @@
+import { Fragment } from "preact";
 import { useMemo } from "preact/hooks";
+import { useHighlight, renderTokens } from "../../highlight";
 import { DiffView } from "../diff/DiffView";
 import { CodePre } from "../CopyButton";
 import { SvgPreview } from "./FileContentPreview";
@@ -31,13 +33,22 @@ export function SvgDiffPreview({
     );
   }, [originalFile, oldText, newText]);
 
+  const patchTokens = useHighlight(sourceText ?? "", "diff");
+
   return (
     <SourceRenderedToggle
       defaultSource={defaultSource}
       sourceView={
         sourceText != null ? (
           <CodePre class="write-content" copyText={sourceText}>
-            {sourceText}
+            {patchTokens
+              ? patchTokens.map((line, i) => (
+                  <Fragment key={i}>
+                    {i > 0 && "\n"}
+                    {renderTokens(line)}
+                  </Fragment>
+                ))
+              : sourceText}
           </CodePre>
         ) : (
           <DiffView
