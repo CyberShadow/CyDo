@@ -4,6 +4,7 @@ import { tokenizeWithScopes } from "../highlight";
 import type {
   ShellReadSemantic,
   ShellHeredocWriteSemantic,
+  ShellDiffSemantic,
 } from "./shellSemantic";
 
 // ---------------------------------------------------------------------------
@@ -458,5 +459,163 @@ describe("rejected forms", () => {
   it("variable in heredoc: cat <<EOF > $FILE\\nhello\\nEOF → reject", async () => {
     const r = await parseShellSemantic("cat <<EOF > $FILE\nhello\nEOF");
     expect(r.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// git diff / git show / git log -p / diff binary (ShellDiffSemantic)
+// ---------------------------------------------------------------------------
+
+describe("git diff commands (should succeed as diff)", () => {
+  it("git diff → diff, subcommand: diff", async () => {
+    const r = await parseShellSemantic("git diff");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+    const v = r.value as ShellDiffSemantic;
+    expect(v.commandName).toBe("git");
+    expect(v.subcommand).toBe("diff");
+  });
+
+  it("git diff HEAD~1 → diff", async () => {
+    const r = await parseShellSemantic("git diff HEAD~1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff --cached → diff", async () => {
+    const r = await parseShellSemantic("git diff --cached");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff --staged → diff", async () => {
+    const r = await parseShellSemantic("git diff --staged");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff branch1..branch2 → diff", async () => {
+    const r = await parseShellSemantic("git diff branch1..branch2");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git show abc123 → diff, subcommand: show", async () => {
+    const r = await parseShellSemantic("git show abc123");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+    const v = r.value as ShellDiffSemantic;
+    expect(v.subcommand).toBe("show");
+  });
+
+  it("git log -p -1 → diff, subcommand: log", async () => {
+    const r = await parseShellSemantic("git log -p -1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+    const v = r.value as ShellDiffSemantic;
+    expect(v.subcommand).toBe("log");
+  });
+
+  it("git log --patch -1 → diff", async () => {
+    const r = await parseShellSemantic("git log --patch -1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+});
+
+describe("diff binary (should succeed as diff)", () => {
+  it("diff -u old.txt new.txt → diff, commandName: diff", async () => {
+    const r = await parseShellSemantic("diff -u old.txt new.txt");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+    const v = r.value as ShellDiffSemantic;
+    expect(v.commandName).toBe("diff");
+  });
+
+  it("diff file1 file2 → diff", async () => {
+    const r = await parseShellSemantic("diff file1 file2");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+});
+
+describe("git show HEAD:file (should succeed as read)", () => {
+  it("git show HEAD:src/main.ts → read, filePath: src/main.ts", async () => {
+    const r = await parseShellSemantic("git show HEAD:src/main.ts");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("src/main.ts");
+  });
+
+  it("git show abc123:README.md → read, filePath: README.md", async () => {
+    const r = await parseShellSemantic("git show abc123:README.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("README.md");
+  });
+});
+
+describe("git diff pipelines (should succeed as diff)", () => {
+  it("git diff | head -100 → diff (pipeline with formatting)", async () => {
+    const r = await parseShellSemantic("git diff | head -100");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff | sed -n '1,260p' → diff (pipeline with formatting)", async () => {
+    const r = await parseShellSemantic("git diff | sed -n '1,260p'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+});
+
+describe("unsupported git commands (should reject)", () => {
+  it("git push origin main → reject", async () => {
+    const r = await parseShellSemantic("git push origin main");
+    expect(r.ok).toBe(false);
+  });
+
+  it("git commit -m 'msg' → reject", async () => {
+    const r = await parseShellSemantic("git commit -m 'msg'");
+    expect(r.ok).toBe(false);
+  });
+
+  it("git log (without -p) → reject", async () => {
+    const r = await parseShellSemantic("git log");
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("shell wrapper with git/diff commands", () => {
+  it("sh -c 'git diff' → diff", async () => {
+    const r = await parseShellSemantic("sh -c 'git diff'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("bash -lc 'git show HEAD:file.ts' → read", async () => {
+    const r = await parseShellSemantic("bash -lc 'git show HEAD:file.ts'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("file.ts");
   });
 });

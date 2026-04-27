@@ -146,3 +146,35 @@ test("semantic shell: unrecognized pipe stage falls back to normal rendering", a
   const normalResult = toolCall.locator(".tool-result");
   await expect(normalResult).toBeVisible({ timeout });
 });
+
+
+/**
+ * Test N: git diff renders through PatchView (semantic-shell-diff)
+ *
+ * Sends a prompt that triggers `git log -p -1 --no-color -- README.md`.
+ * Asserts that the result renders through the semantic shell diff pipeline
+ * (data-testid="semantic-shell-diff") rather than plain terminal output,
+ * and that the result section is expanded by default.
+ */
+test("semantic shell: git diff renders through patch view", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell diff");
+
+  // Wait for the tool call to appear
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
+  const toolCall = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: toolName }) })
+    .last();
+  await expect(toolCall).toBeVisible({ timeout });
+
+  // Assert semantic-shell-diff container is visible (result is expanded by default,
+  // input is collapsed for diffs per auto-expand/collapse)
+  const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
+  await expect(semanticDiff).toBeVisible({ timeout });
+});

@@ -460,6 +460,10 @@ export function matchPattern(userText) {
   match = userText.match(/semantic shell pipe (\S+)/i);
   if (match) return { type: "shell", command: `cat ${match[1]} | rm -rf /` };
 
+  // "semantic shell diff" — git log -p for semantic diff rendering tests
+  if (/semantic shell diff/i.test(userText))
+    return { type: "shell", command: "git log -p -1 --no-color -- README.md" };
+
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };

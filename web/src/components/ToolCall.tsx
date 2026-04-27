@@ -32,7 +32,9 @@ import {
 } from "../lib/fileChanges";
 import {
   looksLikePatchText,
+  parsePatchHunksFromText,
   parsePatchTextFromInput,
+  parseApplyPatchSections,
   type PatchHunk,
 } from "../lib/patches";
 import {
@@ -1851,6 +1853,33 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
+function DiffResult({ content }: { content: string }) {
+  const tokens = useHighlight(content, "diff");
+  const sections = parseApplyPatchSections(content);
+  if (sections.length > 0) {
+    return (
+      <>
+        {sections.map((section, i) => {
+          const hunks = parsePatchHunksFromText(section.patchText);
+          if (hunks && hunks.length > 0) {
+            return <PatchView key={i} hunks={hunks} filePath={section.path} />;
+          }
+          return null;
+        })}
+      </>
+    );
+  }
+  const hunks = parsePatchHunksFromText(content);
+  if (hunks && hunks.length > 0) {
+    return <PatchView hunks={hunks} />;
+  }
+  return (
+    <ResultPre content={content}>
+      {tokens ? renderTokenLines(tokens) : content}
+    </ResultPre>
+  );
+}
+
 /** Extract and render image blocks from tool result content. */
 function renderResultImages(
   content: ToolResultContent | null | undefined,
@@ -2277,13 +2306,21 @@ export const ToolCall = memo(
       shellSemantic?.ok === true && shellSemantic.value.kind === "read"
         ? shellSemantic.value.filePath
         : null;
+    const useSemanticShellDiff =
+      shellSemantic?.ok === true &&
+      shellSemantic.value.kind === "diff" &&
+      result != null &&
+      !result.isError;
+    const semanticShellDiffStdout = useSemanticShellDiff
+      ? extractShellStdout(name, toolServer, agentType, result)
+      : null;
     // Semantic shell: adjust input/result expand defaults after classification.
-    // Reads → collapse input (command is secondary), expand result (file content primary).
+    // Reads/diffs → collapse input (command is secondary), expand result (file content primary).
     // Writes → keep input expanded, collapse result (usually empty).
     useEffect(() => {
       if (!shellSemantic?.ok) return;
       const kind = shellSemantic.value.kind;
-      if (kind === "read") {
+      if (kind === "read" || kind === "diff") {
         if (!userToggledInput.current) setInputOpen(false);
         if (!userToggledResult.current && resultOpenOverride === null)
           setResultOpenOverride(true);
@@ -2450,6 +2487,10 @@ export const ToolCall = memo(
                         filePath={semanticReadFilePath}
                       />
                     </div>
+                  ) : semanticShellDiffStdout != null ? (
+                    <div data-testid="semantic-shell-diff">
+                      <DiffResult content={semanticShellDiffStdout} />
+                    </div>
                   ) : cydoTaskItems ? (
                     <div class="tool-input-formatted">
                       {cydoTaskItems.map((item, i) => {
@@ -2529,7 +2570,8 @@ export const ToolCall = memo(
                     taskStopElement
                   ) : useBashResult ? (
                     (result.toolResult as Record<string, unknown>).stdout &&
-                    !useSemanticShellRead ? (
+                    !useSemanticShellRead &&
+                    !useSemanticShellDiff ? (
                       <SmartResultPre
                         content={
                           (result.toolResult as Record<string, unknown>)

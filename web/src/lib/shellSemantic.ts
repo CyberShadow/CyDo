@@ -7,7 +7,7 @@ import { useCurrentTheme } from "../useTheme";
 // Public types (API contract — do not change)
 // ---------------------------------------------------------------------------
 
-type ReadCommandName = "cat" | "nl" | "sed" | "head" | "tail";
+type ReadCommandName = "cat" | "nl" | "sed" | "head" | "tail" | "git";
 
 export type RejectCode =
   | "empty"
@@ -58,7 +58,17 @@ export interface ShellHeredocWriteSemantic {
   >;
 }
 
-export type ShellSemantic = ShellReadSemantic | ShellHeredocWriteSemantic;
+export interface ShellDiffSemantic {
+  kind: "diff";
+  commandName: "git" | "diff";
+  command: string;
+  subcommand?: string; // "diff", "show", "log" (for git commands)
+}
+
+export type ShellSemantic =
+  | ShellReadSemantic
+  | ShellHeredocWriteSemantic
+  | ShellDiffSemantic;
 
 export type ShellSemanticResult =
   | { ok: true; value: ShellSemantic }
@@ -766,7 +776,7 @@ function classifyReadCommand(
 }
 
 /**
- * Classify a pipeline as a read, applying the small-formatting-allowlist logic.
+ * Classify a pipeline as a read or diff, applying the small-formatting-allowlist logic.
  */
 function classifyPipeline(
   stages: SimpleCommand[],
@@ -775,6 +785,7 @@ function classifyPipeline(
   let primaryIdx = -1;
   let primaryResult: ShellSemanticResult | null = null;
 
+  // Try read primary stage first
   for (let i = 0; i < stages.length; i++) {
     const stage = stages[i]!;
     if (!stage.name || !READ_COMMANDS.has(stage.name)) continue;
@@ -791,10 +802,34 @@ function classifyPipeline(
     }
   }
 
+  // If no read primary found, try git/diff primary stage
+  if (primaryIdx < 0) {
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i]!;
+      if (!stage.name) continue;
+      if (stage.name !== "git" && stage.name !== "diff") continue;
+
+      const r =
+        stage.name === "git"
+          ? classifyGitCommand(stage, originalCommand)
+          : classifyDiffCommand(stage, originalCommand);
+
+      if (r.ok && r.value.kind === "diff") {
+        if (primaryIdx >= 0)
+          return reject(
+            "unsafe_shell_syntax",
+            "pipeline has multiple diff stages",
+          );
+        primaryIdx = i;
+        primaryResult = r;
+      }
+    }
+  }
+
   if (primaryIdx < 0 || !primaryResult)
     return reject(
       "unsafe_shell_syntax",
-      "pipeline has no recognized file-reading stage",
+      "pipeline has no recognized file-reading or diff stage",
     );
 
   for (let i = 0; i < stages.length; i++) {
@@ -874,11 +909,14 @@ function classifyCdList(
   const r = classifyReadCommand(commands[readIdx]!, originalCommand);
   if (!r.ok) return r;
 
-  const resolved = cdPath ? cdPath + "/" + r.value.filePath : r.value.filePath;
+  const readValue = r.value as ShellReadSemantic;
+  const resolved = cdPath
+    ? cdPath + "/" + readValue.filePath
+    : readValue.filePath;
 
   return {
     ok: true,
-    value: { ...(r.value as ShellReadSemantic), filePath: resolved },
+    value: { ...readValue, filePath: resolved },
   };
 }
 
@@ -937,6 +975,99 @@ function classifyHeredoc(
   };
 }
 
+/**
+ * Classify a `git` command: diff, show, log -p, or show HEAD:file (→ read).
+ */
+function classifyGitCommand(
+  cmd: SimpleCommand,
+  originalCommand: string,
+): ShellSemanticResult {
+  const valueArgs = cmd.args.filter((a) => a.kind === "value");
+  const subcommand = valueArgs[0]?.text;
+
+  if (!subcommand)
+    return reject("unsupported_command", "bare git without subcommand");
+
+  if (subcommand === "diff") {
+    return {
+      ok: true,
+      value: {
+        kind: "diff",
+        commandName: "git",
+        command: originalCommand,
+        subcommand: "diff",
+      },
+    };
+  }
+
+  if (subcommand === "show") {
+    // Check if any value arg (after the subcommand) contains ':' → file content read
+    const showArgs = valueArgs.slice(1);
+    const colonArg = showArgs.find((a) => a.text.includes(":"));
+    if (colonArg) {
+      const colonIdx = colonArg.text.indexOf(":");
+      const filePath = colonArg.text.slice(colonIdx + 1);
+      return {
+        ok: true,
+        value: {
+          kind: "read",
+          commandName: "git",
+          command: originalCommand,
+          filePath,
+          range: { type: "all" },
+          presentation: { lineNumbers: false },
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "diff",
+        commandName: "git",
+        command: originalCommand,
+        subcommand: "show",
+      },
+    };
+  }
+
+  if (subcommand === "log") {
+    const flags = cmd.args.filter((a) => a.kind === "flag").map((a) => a.text);
+    if (flags.includes("-p") || flags.includes("--patch")) {
+      return {
+        ok: true,
+        value: {
+          kind: "diff",
+          commandName: "git",
+          command: originalCommand,
+          subcommand: "log",
+        },
+      };
+    }
+    return reject(
+      "unsupported_command",
+      "git log without -p/--patch is not diff-producing",
+    );
+  }
+
+  return reject(
+    "unsupported_command",
+    `unsupported git subcommand: ${subcommand}`,
+  );
+}
+
+/**
+ * Classify a `diff` binary invocation (not git diff).
+ */
+function classifyDiffCommand(
+  _cmd: SimpleCommand,
+  originalCommand: string,
+): ShellSemanticResult {
+  return {
+    ok: true,
+    value: { kind: "diff", commandName: "diff", command: originalCommand },
+  };
+}
+
 export function classifyAST(
   ast: ShellAST,
   originalCommand: string,
@@ -950,10 +1081,13 @@ export function classifyAST(
   if (ast.type === "simple") {
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
+    if (name === "git") return classifyGitCommand(ast.command, originalCommand);
+    if (name === "diff")
+      return classifyDiffCommand(ast.command, originalCommand);
     if (!READ_COMMANDS.has(name))
       return reject(
         "unsupported_command",
-        "only cat, nl, sed, head, and tail are recognized",
+        "only cat, nl, sed, head, tail, git, and diff are recognized",
       );
     return classifyReadCommand(ast.command, originalCommand);
   }
