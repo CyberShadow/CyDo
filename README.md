@@ -111,6 +111,9 @@ Instead of interacting with one agent at a time in a terminal, you get:
 - **Multi-agent support** — Not locked to a single AI provider.
   Supports Claude Code, OpenAI Codex, and GitHub Copilot CLI as agent backends, selectable per workspace or task.
 
+- **Export to HTML** — Export any task (and its subtask tree) as a self-contained HTML file
+  for offline viewing, sharing, or archival.
+
 - **Mobile-friendly** — Responsive layout with a slide-out sidebar for use on phones and tablets.
 
 <p align="center">
