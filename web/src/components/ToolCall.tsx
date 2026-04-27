@@ -205,6 +205,7 @@ function hasSufficientPatchContextForRenderedPreview(
 
   let expectedOldStart = 1;
   let expectedNewStart = 1;
+  let sawContextLine = false;
   for (const hunk of hunks) {
     if (
       hunk.oldStart !== expectedOldStart ||
@@ -212,10 +213,16 @@ function hasSufficientPatchContextForRenderedPreview(
     ) {
       return false;
     }
+    for (const line of hunk.lines) {
+      if (line.startsWith(" ")) {
+        sawContextLine = true;
+        break;
+      }
+    }
     expectedOldStart += Math.max(hunk.oldLines, 1);
     expectedNewStart += Math.max(hunk.newLines, 1);
   }
-  return true;
+  return sawContextLine;
 }
 
 function ChangePatchFallback({ change }: { change: NormalizedFileChange }) {

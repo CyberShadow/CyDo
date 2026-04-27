@@ -198,6 +198,33 @@ describe("patches", () => {
     expect(sections[1]).toMatchObject({ path: "docs/two.md", op: "update" });
   });
 
+  it("parses old/new-labeled non-git multi-file unified diffs as separate sections", () => {
+    const patchText = [
+      "--- old/docs/one.md",
+      "+++ new/docs/one.md",
+      "@@ -1 +1 @@",
+      "-old one",
+      "+new one",
+      "--- old/docs/two.md",
+      "+++ new/docs/two.md",
+      "@@ -1 +1 @@",
+      "-old two",
+      "+new two",
+      "",
+    ].join("\n");
+
+    const sections = parseApplyPatchSections(patchText);
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).toMatchObject({
+      path: "new/docs/one.md",
+      op: "update",
+    });
+    expect(sections[1]).toMatchObject({
+      path: "new/docs/two.md",
+      op: "update",
+    });
+  });
+
   it("keeps removed line content that serializes as exactly '--- '", () => {
     const patchText = [
       "--- a/docs/readme.md",
@@ -282,5 +309,27 @@ describe("patches", () => {
       path: "docs/readme.md",
       op: "update",
     });
+  });
+
+  it("does not treat non-timestamp tab headers as new unified sections", () => {
+    const patchText = [
+      "--- a/docs/readme.md",
+      "+++ b/docs/readme.md",
+      "@@ -1,1 +1,1 @@",
+      "-old",
+      "+new",
+      "--- fake\tpayload",
+      "+++ fake\tpayload",
+      "",
+    ].join("\n");
+
+    expect(parsePatchHunksFromText(patchText)).toBeNull();
+    const sections = parseApplyPatchSections(patchText);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]).toMatchObject({
+      path: "docs/readme.md",
+      op: "update",
+    });
+    expect(sections[0]?.patchText).not.toContain("--- fake\tpayload");
   });
 });

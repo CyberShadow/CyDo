@@ -37,7 +37,19 @@ function parseDiffHeaderPath(line: string, prefix: string): string | null {
 function parseRawDiffHeaderToken(line: string, prefix: string): string | null {
   if (!line.startsWith(prefix)) return null;
   const rawValue = line.slice(prefix.length).trim();
-  const token = rawValue.split("\t", 1)[0]?.trim() ?? "";
+  const tabIndex = rawValue.indexOf("\t");
+  const token = (tabIndex >= 0 ? rawValue.slice(0, tabIndex) : rawValue).trim();
+  if (tabIndex >= 0) {
+    const trailing = rawValue.slice(tabIndex + 1).trim();
+    if (
+      trailing.length > 0 &&
+      !/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s+[+-]\d{4})?$/.test(
+        trailing,
+      )
+    ) {
+      return null;
+    }
+  }
   return token || null;
 }
 
@@ -45,16 +57,23 @@ function isWhitespaceFreeToken(token: string): boolean {
   return !/\s/.test(token);
 }
 
+function isLikelyPathToken(token: string): boolean {
+  return (
+    token === "/dev/null" ||
+    token.includes("/") ||
+    token.includes(".") ||
+    token.startsWith("a/") ||
+    token.startsWith("b/")
+  );
+}
+
 function isLikelyUnifiedHeaderPair(lines: string[], index: number): boolean {
   if (index + 1 >= lines.length) return false;
   const oldLine = lines[index]!;
   const newLine = lines[index + 1]!;
-  if (
-    parseDiffHeaderPath(oldLine, "--- ") == null ||
-    parseDiffHeaderPath(newLine, "+++ ") == null
-  ) {
-    return false;
-  }
+  const oldPath = parseDiffHeaderPath(oldLine, "--- ");
+  const newPath = parseDiffHeaderPath(newLine, "+++ ");
+  if (oldPath == null || newPath == null) return false;
 
   const oldToken = parseRawDiffHeaderToken(oldLine, "--- ");
   const newToken = parseRawDiffHeaderToken(newLine, "+++ ");
@@ -70,7 +89,8 @@ function isLikelyUnifiedHeaderPair(lines: string[], index: number): boolean {
     return false;
   }
   if (oldIsDevNull || newIsDevNull) return true;
-  return oldToken === newToken;
+  if (oldPath === newPath) return true;
+  return isLikelyPathToken(oldToken) && isLikelyPathToken(newToken);
 }
 
 export function parsePatchTextFromInput(
@@ -292,9 +312,12 @@ function parseUnifiedDiffSections(patchText: string): ApplyPatchSection[] {
   const sections: ApplyPatchSection[] = [];
 
   for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]!.startsWith("--- ")) continue;
+    if (i + 1 >= lines.length) continue;
+    if (!isLikelyUnifiedHeaderPair(lines, i)) continue;
+
     const oldPath = parseDiffHeaderPath(lines[i]!, "--- ");
     if (oldPath == null) continue;
-    if (i + 1 >= lines.length) continue;
 
     const next = lines[i + 1]!;
     const newPath = parseDiffHeaderPath(next, "+++ ");
@@ -335,8 +358,11 @@ function parseUnifiedDiffSections(patchText: string): ApplyPatchSection[] {
         end++;
         continue;
       }
-      if (line.startsWith("--- ") && isLikelyUnifiedHeaderPair(lines, end)) {
-        break;
+      if (line.startsWith("--- ")) {
+        const nextLine = end + 1 < lines.length ? lines[end + 1]! : null;
+        if (nextLine?.startsWith("+++ ")) {
+          break;
+        }
       }
       end++;
     }
