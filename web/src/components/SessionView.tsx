@@ -68,6 +68,7 @@ interface Props {
   defaultTaskType?: string;
   onContentStart?: (entryPointName: string, agentType: string) => void;
   onContentEnd?: () => void;
+  exportMode?: boolean;
 }
 
 function SessionViewInner({
@@ -103,6 +104,7 @@ function SessionViewInner({
   defaultTaskType,
   onContentStart,
   onContentEnd,
+  exportMode,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -421,6 +423,7 @@ function SessionViewInner({
         onSetArchived={onSetArchived ? handleSetArchived : undefined}
         resumable={task.resumable}
         onResume={onResume}
+        exportMode={exportMode}
       />
       {fileViewerState && (
         <FileViewer
@@ -581,7 +584,7 @@ function SessionViewInner({
           onSubmit={handleAskUserSubmit}
           onAbort={handleAskUserAbort}
         />
-      ) : isDraft && entryPoints ? null : (
+      ) : isDraft && entryPoints ? null : exportMode ? null : (
         <InputBox
           onSend={handleSend}
           onInterrupt={onInterrupt}

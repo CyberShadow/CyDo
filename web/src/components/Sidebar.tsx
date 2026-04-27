@@ -502,8 +502,8 @@ interface Props {
   activeTaskId: string | null;
   attention: Set<number>;
   onSelectTask: (id: string) => void;
-  onNewTask: () => void;
-  newTaskHref: string;
+  onNewTask?: () => void;
+  newTaskHref?: string;
   showBackButton?: boolean;
   onBack?: () => void;
   backHref?: string;
@@ -720,7 +720,7 @@ export const Sidebar = memo(function Sidebar({
             title={projectName || "Tasks"}
             onClick={(e: MouseEvent) => {
               if (!isPlainLeftClick(e)) return;
-              onNewTask();
+              onNewTask?.();
             }}
           >
             {(() => {
@@ -790,20 +790,22 @@ export const Sidebar = memo(function Sidebar({
         data-asking-below={glowState.askingBelow ? "" : undefined}
       >
         <div class="sidebar-list" ref={listRef}>
-          <a
-            href={newTaskHref}
-            class={`sidebar-item sidebar-new-task${
-              activeTaskId === null ? " active" : ""
-            }`}
-            title="New Task (Ctrl+Shift+O)"
-            onClick={(e: MouseEvent) => {
-              if (!isPlainLeftClick(e)) return;
-              onNewTask();
-            }}
-          >
-            <span class="task-type-icon task-type-icon-plus" />
-            <span class="sidebar-label">New Task</span>
-          </a>
+          {onNewTask && (
+            <a
+              href={newTaskHref}
+              class={`sidebar-item sidebar-new-task${
+                activeTaskId === null ? " active" : ""
+              }`}
+              title="New Task (Ctrl+Shift+O)"
+              onClick={(e: MouseEvent) => {
+                if (!isPlainLeftClick(e)) return;
+                onNewTask();
+              }}
+            >
+              <span class="task-type-icon task-type-icon-plus" />
+              <span class="sidebar-label">New Task</span>
+            </a>
+          )}
           {flatItems
             .map((item) => (
               <SidebarItem

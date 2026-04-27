@@ -51,8 +51,6 @@ export function ExportApp() {
           activeTaskId={activeTaskId}
           attention={new Set()}
           onSelectTask={handleSidebarSelect}
-          onNewTask={noop}
-          newTaskHref="#"
           showBackButton={false}
           getTaskHref={getTaskHref}
           taskTypes={typeInfo}
@@ -78,6 +76,7 @@ export function ExportApp() {
             theme={theme}
             onToggleTheme={toggleTheme}
             onToggleSidebar={handleToggleSidebar}
+            exportMode={true}
           />
         ) : (
           <div class="session-empty">

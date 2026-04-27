@@ -55,7 +55,7 @@ test("export-html creates viewable HTML file", async ({ page, backend, agentType
     const sidebarItems = page.locator(".sidebar-item");
     expect(await sidebarItems.count()).toBeGreaterThan(0);
 
-    await expect(page.locator(".input-textarea")).toBeDisabled();
+    await expect(page.locator(".input-textarea")).toHaveCount(0);
   } finally {
     try {
       unlinkSync(outputPath);

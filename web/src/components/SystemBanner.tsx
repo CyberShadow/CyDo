@@ -25,6 +25,7 @@ interface Props {
   onSetArchived?: () => void;
   resumable?: boolean;
   onResume?: () => void;
+  exportMode?: boolean;
 }
 
 export function normalizeSessionStatus(status?: string | null): string | null {
@@ -58,6 +59,7 @@ export function SystemBanner({
   onSetArchived,
   resumable,
   onResume,
+  exportMode,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const liveStatus = normalizeSessionStatus(sessionStatus);
@@ -180,7 +182,7 @@ export function SystemBanner({
         <span
           class={`banner-status ${connected ? "connected" : "disconnected"}`}
         >
-          {connected ? "Connected" : "Disconnected"}
+          {exportMode ? "Exported" : connected ? "Connected" : "Disconnected"}
         </span>
         <button
           class="theme-toggle"

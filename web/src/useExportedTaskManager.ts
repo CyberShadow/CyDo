@@ -7,7 +7,7 @@ import {
   useCallback,
   useMemo,
 } from "preact/hooks";
-import type { TaskManager } from "./useSessionManager";
+import type { TaskManager, TypeInfo } from "./useSessionManager";
 import type { AgnosticEvent } from "./protocol";
 import { makeTaskState } from "./types";
 import type { TaskState } from "./types";
@@ -43,6 +43,7 @@ interface ExportEventEnvelope {
 interface ExportData {
   tasks: ExportTaskEntry[];
   events?: Record<string, ExportEventEnvelope[]>;
+  typeInfo?: TypeInfo[];
 }
 
 function buildTasksFromExportData(data: ExportData): Map<number, TaskState> {
@@ -87,6 +88,7 @@ export function useExportedTaskManager(): TaskManager {
   const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
   const [activeTaskId, setActiveTaskIdState] = useState<string | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
+  const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
 
   useEffect(() => {
     const el = document.getElementById("cydo-export-data");
@@ -99,6 +101,7 @@ export function useExportedTaskManager(): TaskManager {
     }
     const taskMap = buildTasksFromExportData(data);
     setTasks(taskMap);
+    if (data.typeInfo) setTypeInfo(data.typeInfo);
 
     const hash = window.location.hash;
     const match = hash.match(/^#task\/(\d+)$/);
@@ -190,7 +193,7 @@ export function useExportedTaskManager(): TaskManager {
     sidebarTasks,
     workspaces: [],
     entryPoints: [],
-    typeInfo: [],
+    typeInfo,
     agentTypes: [],
     defaultAgentType: "claude",
     defaultTaskType: "",

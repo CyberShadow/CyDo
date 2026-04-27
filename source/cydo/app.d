@@ -42,7 +42,7 @@ import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
-import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask,
+import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	prepareProcessLaunch, resolveExecutablePath,
@@ -353,10 +353,10 @@ static:
 		import std.format : format;
 		import std.path : buildPath;
 
-		import ae.sys.paths : getDataDir;
 		import ae.utils.path : findProgramDirectory;
 
 		import cydo.export_ : buildExportHtml, collectTaskTree, exportTaskData;
+		import cydo.persist : openDatabase;
 
 		if (tids.length == 0)
 		{
@@ -366,11 +366,9 @@ static:
 		}
 
 		// Open database
-		auto dataDir = getDataDir("cydo");
-		auto dbPath = buildPath(dataDir, "cydo.db");
 		Persistence persistence;
 		try
-			persistence = Persistence(dbPath);
+			persistence = openDatabase();
 		catch (Exception e)
 		{
 			stderr.writeln("Error: could not open database: ", e.msg);
@@ -395,9 +393,6 @@ static:
 			if (tid !in foundTids)
 				stderr.writeln("Warning: task ID ", tid, " not found in database");
 
-		// Export task data as JSON
-		auto jsonData = exportTaskData(persistence, taskRows);
-
 		// Locate the export HTML template
 		auto baseDir = findProgramDirectory("defs/task-types.yaml");
 		if (baseDir is null)
@@ -407,6 +402,18 @@ static:
 			exit(1);
 		}
 		auto templatePath = buildPath(baseDir, "web/dist-export/export.html");
+
+		// Load task type definitions for icon info
+		import cydo.task : TypeInfoEntry;
+		import cydo.tasktype : loadTaskTypes;
+		auto taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
+		auto taskTypeConfig = loadTaskTypes(taskTypesPath);
+		TypeInfoEntry[] typeInfo;
+		foreach (ref def; taskTypeConfig.types)
+			typeInfo ~= TypeInfoEntry(def.name, def.icon);
+
+		// Export task data as JSON
+		auto jsonData = exportTaskData(persistence, taskRows, typeInfo);
 
 		// Inject data and write output
 		auto html = buildExportHtml(templatePath, jsonData);
@@ -622,19 +629,7 @@ class App : ToolsBackend
 			webDistDir = buildPath(baseDir, "web/dist/");
 		}
 		{
-			import ae.sys.paths : getDataDir;
-			import std.path : buildPath;
-			auto xdgDataDir = getDataDir("cydo");
-			auto xdgDbPath = buildPath(xdgDataDir, "cydo.db");
-			string dataDir;
-			if (exists("data/cydo.db"))
-			{
-				warningf("Warning: using legacy database at data/cydo.db — move it to %s to silence this warning", xdgDbPath);
-				dataDir = "data";
-			}
-			else
-				dataDir = xdgDataDir;
-			persistence = Persistence(buildPath(dataDir, "cydo.db"));
+			persistence = openDatabase();
 			import cydo.sandbox : runtimeDir;
 			createPidFile("cydo.pid", runtimeDir());
 		}

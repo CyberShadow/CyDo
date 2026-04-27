@@ -13,6 +13,28 @@ import ae.utils.json : JSONFragment, toJson;
 
 import cydo.agent.protocol : TaskEventEnvelope, TranslatedEvent;
 
+/// Open the cydo database, preferring the legacy data/cydo.db if present.
+Persistence openDatabase()
+{
+	import std.file : exists;
+	import std.path : buildPath;
+
+	import ae.sys.paths : getDataDir;
+	import std.logger : warningf;
+
+	auto xdgDataDir = getDataDir("cydo");
+	string dbPath;
+	if (exists("data/cydo.db"))
+	{
+		dbPath = "data/cydo.db";
+		warningf("Warning: using legacy database at data/cydo.db — move it to %s to silence this warning",
+			buildPath(xdgDataDir, "cydo.db"));
+	}
+	else
+		dbPath = buildPath(xdgDataDir, "cydo.db");
+	return Persistence(dbPath);
+}
+
 struct Persistence
 {
 	Database db;

@@ -5,6 +5,7 @@ import ae.utils.json : JSONFragment, toJson;
 import cydo.agent.agent : Agent;
 import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.persist : Persistence, loadTaskHistory;
+import cydo.task : TypeInfoEntry;
 
 /// Recursively collect all tasks reachable from rootTids via parent_tid.
 /// Returns the deduplicated set (roots + all descendants).
@@ -51,8 +52,9 @@ Persistence.TaskRow[] collectTaskTree(ref Persistence persistence, int[] rootTid
 }
 
 /// Serialize task metadata and event history as the export JSON blob.
-/// Format: {"tasks": [...], "events": {"<tid>": [TaskEventSeqEnvelope, ...]}}
-string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRows)
+/// Format: {"tasks": [...], "events": {"<tid>": [TaskEventSeqEnvelope, ...]}, "typeInfo": [...]}
+string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRows,
+	TypeInfoEntry[] typeInfo = null)
 {
 	import std.format : format;
 
@@ -159,7 +161,8 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 	}
 	eventsJson ~= "}";
 
-	return `{"tasks":` ~ toJson(taskExports) ~ `,"events":` ~ eventsJson ~ `}`;
+	return `{"tasks":` ~ toJson(taskExports) ~ `,"events":` ~ eventsJson
+		~ `,"typeInfo":` ~ toJson(typeInfo) ~ `}`;
 }
 
 /// Read the export HTML template and inject jsonData by replacing
