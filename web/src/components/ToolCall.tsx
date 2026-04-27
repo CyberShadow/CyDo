@@ -1901,12 +1901,29 @@ function SmartResultPre({
   isError?: boolean;
 }) {
   const format = detectRenderableFormat(null, content);
-  const tokens = useHighlight(content, format === "svg" ? "xml" : null);
+  const trimmed = content.trimStart();
+  const isJson =
+    !format &&
+    (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
+    (() => {
+      try {
+        JSON.parse(content);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  const highlightLang = format === "svg" ? "xml" : isJson ? "json" : null;
+  const tokens = useHighlight(content, highlightLang);
 
   if (!format) {
     return (
       <ResultPre content={content} isError={isError}>
-        {hasAnsi(content) ? renderAnsi(content) : content}
+        {tokens
+          ? renderTokenLines(tokens)
+          : hasAnsi(content)
+            ? renderAnsi(content)
+            : content}
       </ResultPre>
     );
   }
@@ -1945,17 +1962,7 @@ function renderResultContent(
     .map((block) => block.text!)
     .join("\n");
 
-  // Pretty-print compact JSON strings
-  let display = text;
-  if (text.startsWith("{") || text.startsWith("[")) {
-    try {
-      display = JSON.stringify(JSON.parse(text), null, 2);
-    } catch {
-      /* not JSON, use as-is */
-    }
-  }
-
-  return <SmartResultPre content={display} isError={isError} />;
+  return <SmartResultPre content={text} isError={isError} />;
 }
 
 /**
