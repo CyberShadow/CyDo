@@ -149,6 +149,45 @@ test("semantic shell: unrecognized pipe stage falls back to normal rendering", a
 
 
 /**
+ * Test 5: heredoc script execution
+ *
+ * Sends a prompt that triggers a heredoc Python script execution.
+ * Asserts that the command input renders as three parts: header, script
+ * content, and terminator, using the semantic-shell-script container.
+ */
+test("semantic shell: heredoc script renders with syntax-highlighted body", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell script");
+
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
+  const toolCall = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: toolName }) })
+    .last();
+  await expect(toolCall).toBeVisible({ timeout });
+
+  // Assert semantic-shell-script container is visible in the input area
+  const semanticScript = toolCall.locator(
+    '[data-testid="semantic-shell-script"]',
+  );
+  await expect(semanticScript).toBeVisible({ timeout });
+
+  // The header should contain the python3 command
+  await expect(semanticScript).toContainText("python3");
+
+  // The script content should be visible
+  await expect(semanticScript).toContainText("import json");
+
+  // The terminator should be visible as the footer
+  await expect(semanticScript).toContainText("PY");
+});
+
+/**
  * Test N: git diff renders through PatchView (semantic-shell-diff)
  *
  * Sends a prompt that triggers `git log -p -1 --no-color -- README.md`.

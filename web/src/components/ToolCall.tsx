@@ -40,6 +40,7 @@ import {
 import {
   useShellSemantic,
   type ShellHeredocWriteSemantic,
+  type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
 
 /**
@@ -237,6 +238,21 @@ function ChangePatchFallback({ change }: { change: NormalizedFileChange }) {
   return (
     <CodePre class="write-content" copyText={patchText}>
       {tokens ? renderTokenLines(tokens) : patchText}
+    </CodePre>
+  );
+}
+
+function ScriptContentPreview({
+  content,
+  language,
+}: {
+  content: string;
+  language: string;
+}) {
+  const tokens = useHighlight(content, language);
+  return (
+    <CodePre class="write-content" copyText={content}>
+      {tokens ? renderTokenLines(tokens) : content}
     </CodePre>
   );
 }
@@ -587,11 +603,17 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
   const semantic = useShellSemantic(command);
   const isHeredocWrite =
     semantic?.ok === true && semantic.value.kind === "write";
+  const isScriptExec =
+    semantic?.ok === true && semantic.value.kind === "script-exec";
   const headerText = isHeredocWrite
     ? ((
         semantic as { ok: true; value: ShellHeredocWriteSemantic }
       ).value.segments.find((s) => s.kind === "command-header")?.text ?? "")
-    : "";
+    : isScriptExec
+      ? ((
+          semantic as { ok: true; value: ShellScriptExecSemantic }
+        ).value.segments.find((s) => s.kind === "command-header")?.text ?? "")
+      : "";
   // All useHighlight calls must be unconditional (hooks rules).
   const tokens = useHighlight(command ?? "", "bash");
   const headerTokens = useHighlight(headerText.trimEnd(), "bash");
@@ -622,6 +644,38 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
             filePath={writeVal.filePath}
             content={writeSegment.text}
             defaultSource={false}
+          />
+        )}
+        <CodePre class="write-content semantic-command-footer" copyText="">
+          {footerText.replace(/^\n/, "")}
+        </CodePre>
+      </div>,
+    );
+  }
+
+  // Heredoc script-exec: render header/script-content/footer
+  if (
+    isScriptExec &&
+    (semantic as { ok: true; value: ShellScriptExecSemantic }).value
+      .scriptSource.type === "heredoc"
+  ) {
+    const scriptVal = (semantic as { ok: true; value: ShellScriptExecSemantic })
+      .value;
+    const scriptSegment = scriptVal.segments.find(
+      (s) => s.kind === "script-content",
+    );
+    const footerText =
+      scriptVal.segments.find((s) => s.kind === "command-footer")?.text ?? "";
+    return formatGenericInput(
+      remaining,
+      <div class="semantic-shell-command" data-testid="semantic-shell-script">
+        <CodePre class="write-content" copyText={command!}>
+          {headerTokens ? renderTokenLines(headerTokens) : headerText.trimEnd()}
+        </CodePre>
+        {scriptSegment && (
+          <ScriptContentPreview
+            content={scriptSegment.text}
+            language={scriptVal.language}
           />
         )}
         <CodePre class="write-content semantic-command-footer" copyText="">
@@ -2324,10 +2378,11 @@ export const ToolCall = memo(
         if (!userToggledInput.current) setInputOpen(false);
         if (!userToggledResult.current && resultOpenOverride === null)
           setResultOpenOverride(true);
-      } else {
+      } else if (kind === "write") {
         if (!userToggledResult.current && resultOpenOverride === null)
           setResultOpenOverride(false);
       }
+      // script-exec: no override, use defaults (both expanded)
     }, [shellSemantic?.ok ? shellSemantic.value.kind : null]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)

@@ -5,6 +5,7 @@ import type {
   ShellReadSemantic,
   ShellHeredocWriteSemantic,
   ShellDiffSemantic,
+  ShellScriptExecSemantic,
 } from "./shellSemantic";
 
 // ---------------------------------------------------------------------------
@@ -617,5 +618,144 @@ describe("shell wrapper with git/diff commands", () => {
     expect(r.value.kind).toBe("read");
     const v = r.value as ShellReadSemantic;
     expect(v.filePath).toBe("file.ts");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Script execution — heredoc
+// ---------------------------------------------------------------------------
+
+describe("script-exec: heredoc", () => {
+  it("python - <<'PY' → script-exec, language python", async () => {
+    const cmd = "python - <<'PY'\nimport json\nprint(\"hi\")\nPY";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("python");
+    expect(v.commandName).toBe("python");
+    expect(v.scriptSource.type).toBe("heredoc");
+    if (v.scriptSource.type === "heredoc") {
+      expect(v.scriptSource.content).toBe('import json\nprint("hi")');
+      expect(v.scriptSource.quoted).toBe(true);
+      expect(v.scriptSource.delimiter).toBe("PY");
+    }
+  });
+
+  it("python3 - <<'PYTHON' → script-exec, language python", async () => {
+    const cmd = "python3 - <<'PYTHON'\nprint(\"hello\")\nPYTHON";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("python");
+    expect(v.commandName).toBe("python3");
+  });
+
+  it("node - <<'JS' → script-exec, language javascript", async () => {
+    const cmd = "node - <<'JS'\nconsole.log(42)\nJS";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("javascript");
+    expect(v.commandName).toBe("node");
+  });
+
+  it("ruby - <<'RUBY' → script-exec, language ruby", async () => {
+    const cmd = "ruby - <<'RUBY'\nputs \"hello\"\nRUBY";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("ruby");
+  });
+
+  it("ruby - <<RUBY (unquoted delimiter) → script-exec", async () => {
+    const cmd = 'ruby - <<RUBY\nputs "hello"\nRUBY';
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    if (v.scriptSource.type === "heredoc") {
+      expect(v.scriptSource.quoted).toBe(false);
+    }
+  });
+
+  it("segments concatenate back to original command", async () => {
+    const cmd = "python3 - <<'PY'\nprint(42)\nPY";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as ShellScriptExecSemantic;
+    const joined = v.segments.map((s) => s.text).join("");
+    // header ends with \n, content is the body, footer starts with \n
+    expect(joined).toBe("python3 - <<'PY'\nprint(42)\nPY");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Script execution — inline -c/-e
+// ---------------------------------------------------------------------------
+
+describe("script-exec: inline", () => {
+  it("python3 -c '...' → script-exec, language python", async () => {
+    const cmd = "python3 -c 'import sys; print(sys.version)'";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("python");
+    expect(v.scriptSource.type).toBe("inline");
+    if (v.scriptSource.type === "inline") {
+      expect(v.scriptSource.flag).toBe("-c");
+      expect(v.scriptSource.content).toBe("import sys; print(sys.version)");
+    }
+  });
+
+  it("node -e 'console.log(42)' → script-exec, language javascript", async () => {
+    const cmd = "node -e 'console.log(42)'";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("javascript");
+    if (v.scriptSource.type === "inline") {
+      expect(v.scriptSource.flag).toBe("-e");
+    }
+  });
+
+  it("perl -e 'print \"hello\\n\"' → script-exec, language perl", async () => {
+    const cmd = "perl -e 'print \"hello\\n\"'";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    const v = r.value as ShellScriptExecSemantic;
+    expect(v.language).toBe("perl");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Script execution — rejections
+// ---------------------------------------------------------------------------
+
+describe("script-exec: rejections", () => {
+  it("python script.py → reject (running a file, not embedding code)", async () => {
+    const r = await parseShellSemantic("python script.py");
+    expect(r.ok).toBe(false);
+  });
+
+  it("unknown_interpreter - <<'EOF' → reject (not in INTERPRETER_LANG)", async () => {
+    const cmd = "unknown_interpreter - <<'EOF'\ncode\nEOF";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(false);
   });
 });

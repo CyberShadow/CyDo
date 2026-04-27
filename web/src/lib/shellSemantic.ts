@@ -65,10 +65,37 @@ export interface ShellDiffSemantic {
   subcommand?: string; // "diff", "show", "log" (for git commands)
 }
 
+export interface ShellScriptExecSemantic {
+  kind: "script-exec";
+  commandName: string;
+  command: string;
+  language: string;
+  scriptSource:
+    | {
+        type: "heredoc";
+        delimiter: string;
+        quoted: boolean;
+        content: string;
+        terminator: string;
+        commandLine: string;
+      }
+    | {
+        type: "inline";
+        flag: string;
+        content: string;
+      };
+  segments: Array<
+    | { kind: "command-header"; text: string }
+    | { kind: "script-content"; text: string; language: string }
+    | { kind: "command-footer"; text: string }
+  >;
+}
+
 export type ShellSemantic =
   | ShellReadSemantic
   | ShellHeredocWriteSemantic
-  | ShellDiffSemantic;
+  | ShellDiffSemantic
+  | ShellScriptExecSemantic;
 
 export type ShellSemanticResult =
   | { ok: true; value: ShellSemantic }
@@ -533,6 +560,19 @@ function buildHeredocAST(tokens: ShellToken[], rawCommand: string): ShellAST {
 
 const READ_COMMANDS = new Set<string>(["cat", "nl", "sed", "head", "tail"]);
 
+const INTERPRETER_LANG: Record<string, string> = {
+  python: "python",
+  python3: "python",
+  node: "javascript",
+  nodejs: "javascript",
+  ruby: "ruby",
+  perl: "perl",
+  lua: "lua",
+  php: "php",
+  Rscript: "r",
+  R: "r",
+};
+
 // Commands that are always formatting (never a primary read with file operand)
 const ALWAYS_FORMATTING = new Set<string>([
   "wc",
@@ -921,19 +961,31 @@ function classifyCdList(
 }
 
 /**
- * Classify a heredoc AST node into a ShellHeredocWriteSemantic.
+ * Classify a heredoc AST node — dispatches to cat-write or script-exec.
  */
 function classifyHeredoc(
   cmd: SimpleCommand,
   heredoc: HeredocInfo,
   originalCommand: string,
 ): ShellSemanticResult {
-  if (cmd.name !== "cat")
-    return reject(
-      "unsupported_command",
-      "only cat heredoc writes are recognized",
-    );
+  if (cmd.name === "cat")
+    return classifyCatHeredoc(cmd, heredoc, originalCommand);
+  const lang = cmd.name ? INTERPRETER_LANG[cmd.name] : undefined;
+  if (lang) return classifyScriptHeredoc(cmd, heredoc, originalCommand, lang);
+  return reject(
+    "unsupported_command",
+    "only cat heredoc writes and interpreter script heredocs are recognized",
+  );
+}
 
+/**
+ * Classify a `cat <<EOF > file` heredoc write.
+ */
+function classifyCatHeredoc(
+  cmd: SimpleCommand,
+  heredoc: HeredocInfo,
+  originalCommand: string,
+): ShellSemanticResult {
   if (cmd.args.length > 0)
     return reject("invalid_heredoc", "unexpected arguments in heredoc command");
 
@@ -973,6 +1025,98 @@ function classifyHeredoc(
       ],
     },
   };
+}
+
+/**
+ * Classify an interpreter heredoc script: `python3 - <<'PY' ... PY`
+ */
+function classifyScriptHeredoc(
+  cmd: SimpleCommand,
+  heredoc: HeredocInfo,
+  originalCommand: string,
+  language: string,
+): ShellSemanticResult {
+  // Must not have a > redirect (that would be writing to a file, not executing)
+  if (cmd.redirects.some((r) => r.op === ">" || r.op === ">>"))
+    return reject(
+      "invalid_heredoc",
+      "interpreter heredoc must not redirect output to a file",
+    );
+
+  const lines = originalCommand.replace(/\r\n/g, "\n").split("\n");
+  const commandLine = lines[0] ?? "";
+
+  return {
+    ok: true,
+    value: {
+      kind: "script-exec",
+      command: originalCommand,
+      commandName: cmd.name!,
+      language,
+      scriptSource: {
+        type: "heredoc",
+        delimiter: heredoc.delimiter,
+        quoted: heredoc.quoted,
+        content: heredoc.content,
+        terminator: heredoc.terminator,
+        commandLine,
+      },
+      segments: [
+        { kind: "command-header", text: `${commandLine}\n` },
+        { kind: "script-content", text: heredoc.content, language },
+        { kind: "command-footer", text: `\n${heredoc.terminator}` },
+      ],
+    },
+  };
+}
+
+/**
+ * Classify an interpreter command with inline -c/-e script.
+ * e.g. `python3 -c 'import sys; print(sys.version)'`
+ */
+function classifyInterpreterCommand(
+  cmd: SimpleCommand,
+  originalCommand: string,
+): ShellSemanticResult {
+  const name = cmd.name!;
+  const language = INTERPRETER_LANG[name]!;
+
+  // Look for -c or -e flag
+  for (let i = 0; i < cmd.args.length; i++) {
+    const arg = cmd.args[i]!;
+    if (arg.kind === "flag" && (arg.text === "-c" || arg.text === "-e")) {
+      const next = cmd.args[i + 1];
+      if (!next || next.kind !== "value")
+        return reject(
+          "unsupported_option",
+          `${arg.text} requires a script argument`,
+        );
+      return {
+        ok: true,
+        value: {
+          kind: "script-exec",
+          command: originalCommand,
+          commandName: name,
+          language,
+          scriptSource: {
+            type: "inline",
+            flag: arg.text,
+            content: next.text,
+          },
+          segments: [
+            { kind: "command-header", text: originalCommand },
+            { kind: "script-content", text: next.text, language },
+          ],
+        },
+      };
+    }
+  }
+
+  // No -c/-e flag: running a file (e.g. python script.py) — not embedded code
+  return reject(
+    "unsupported_command",
+    `${name} without -c/-e flag is running a file, not an embedded script`,
+  );
 }
 
 /**
@@ -1084,10 +1228,12 @@ export function classifyAST(
     if (name === "git") return classifyGitCommand(ast.command, originalCommand);
     if (name === "diff")
       return classifyDiffCommand(ast.command, originalCommand);
+    if (INTERPRETER_LANG[name])
+      return classifyInterpreterCommand(ast.command, originalCommand);
     if (!READ_COMMANDS.has(name))
       return reject(
         "unsupported_command",
-        "only cat, nl, sed, head, tail, git, and diff are recognized",
+        "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
       );
     return classifyReadCommand(ast.command, originalCommand);
   }

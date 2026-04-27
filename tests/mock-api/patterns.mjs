@@ -464,6 +464,14 @@ export function matchPattern(userText) {
   if (/semantic shell diff/i.test(userText))
     return { type: "shell", command: "git log -p -1 --no-color -- README.md" };
 
+  // "semantic shell script" — heredoc Python script for semantic script-exec tests
+  if (/semantic shell script/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "python3 - <<PY\nimport json\nprint(json.dumps({\"result\": 42}))\nPY",
+    };
+
   // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
