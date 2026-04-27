@@ -51,6 +51,7 @@ struct CydoConfig
 	@Optional string default_task_type;
 	@Optional AgentConfig[string] agents;
 	@Optional bool dev_mode;
+	@Optional string system_keyword = "SYSTEM";
 }
 
 string configPath()

@@ -4048,9 +4048,9 @@ class App : ToolsBackend
 		return systemMessageSubject(KnownSystemMessageKind.handoff) ~ ": " ~ taskType;
 	}
 
-	private static string systemMessagePrefix(KnownSystemMessageKind kind)
+	private string systemMessagePrefix(KnownSystemMessageKind kind)
 	{
-		return "[SYSTEM: " ~ systemMessageSubject(kind) ~ "]";
+		return "[" ~ config.system_keyword ~ ": " ~ systemMessageSubject(kind) ~ "]";
 	}
 
 	private string wrapKnownSystemMessage(KnownSystemMessageKind kind, string body = null,
@@ -4197,12 +4197,12 @@ class App : ToolsBackend
 		return false;
 	}
 
-	private static bool tryExtractSystemMessageSubject(string text, out string subject)
+	private bool tryExtractSystemMessageSubject(string text, out string subject)
 	{
 		import std.algorithm : startsWith;
 		import std.algorithm.searching : countUntil;
 
-		enum prefix = "[SYSTEM: ";
+		auto prefix = "[" ~ config.system_keyword ~ ": ";
 		if (!text.startsWith(prefix))
 			return false;
 		auto remaining = text[prefix.length .. $];
@@ -4213,12 +4213,12 @@ class App : ToolsBackend
 		return true;
 	}
 
-	private static bool tryExtractWrappedSystemBody(string text, string subject, out string body)
+	private bool tryExtractWrappedSystemBody(string text, string subject, out string body)
 	{
 		import std.algorithm : startsWith, endsWith;
 
-		auto prefix = "[SYSTEM: " ~ subject ~ "]\n\n";
-		enum suffix = "\n\n[/SYSTEM]";
+		auto prefix = "[" ~ config.system_keyword ~ ": " ~ subject ~ "]\n\n";
+		auto suffix = "\n\n[/" ~ config.system_keyword ~ "]";
 		if (!text.startsWith(prefix) || !text.endsWith(suffix) || text.length <= prefix.length + suffix.length)
 			return false;
 		body = text[prefix.length .. $ - suffix.length];
@@ -4350,7 +4350,7 @@ class App : ToolsBackend
 			&& raw.canFind(`"type":"contextCompaction"`);
 	}
 
-	private static bool isCompactionReminderEchoEvent(string translated)
+	private bool isCompactionReminderEchoEvent(string translated)
 	{
 		import std.algorithm : canFind, startsWith;
 
@@ -4366,7 +4366,7 @@ class App : ToolsBackend
 		import std.algorithm : startsWith;
 
 		auto translated = toJson(ev);
-		return text.startsWith("[SYSTEM:")
+		return text.startsWith("[" ~ config.system_keyword ~ ":")
 			? normalizeKnownSystemMessageMeta(translated)
 			: translated;
 	}
@@ -6071,9 +6071,10 @@ class App : ToolsBackend
 	/// injected by CyDo, not typed by the user.
 	private string wrapSystemMessage(string subject, string body = null)
 	{
+		auto kw = config.system_keyword;
 		if (body is null || body.length == 0)
-			return "[SYSTEM: " ~ subject ~ "]";
-		return "[SYSTEM: " ~ subject ~ "]\n\n" ~ body ~ "\n\n[/SYSTEM]";
+			return "[" ~ kw ~ ": " ~ subject ~ "]";
+		return "[" ~ kw ~ ": " ~ subject ~ "]\n\n" ~ body ~ "\n\n[/" ~ kw ~ "]";
 	}
 
 	/// Build metadata JSON for a system-generated user message.
