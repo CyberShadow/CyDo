@@ -488,6 +488,7 @@ function FileChangeRow({
         )}
       {!canRenderAddedContent &&
         typeof change.content === "string" &&
+        typeof change.oldText !== "string" &&
         !canRenderDiffMarkdown &&
         !canRenderDiffSvg &&
         !canRenderPatchMarkdown &&
@@ -502,6 +503,7 @@ function FileChangeRow({
         )}
       {!canRenderAddedContent &&
         typeof change.content === "string" &&
+        typeof change.oldText !== "string" &&
         renderableContentFormat == null &&
         !canRenderDiffMarkdown &&
         !canRenderDiffSvg &&
