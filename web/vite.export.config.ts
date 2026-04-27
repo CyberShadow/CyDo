@@ -7,7 +7,8 @@ export default defineConfig({
   plugins: [preact(), viteSingleFile()],
   resolve: {
     alias: {
-      shiki: path.resolve(__dirname, "src/shiki-stub.ts"),
+      shiki: path.resolve(__dirname, "src/shiki-cdn.ts"),
+      mermaid: path.resolve(__dirname, "src/mermaid-cdn.ts"),
     },
   },
   build: {
