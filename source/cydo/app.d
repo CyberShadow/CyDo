@@ -5525,11 +5525,43 @@ class App : ToolsBackend
 		return SandboxConfig.init;
 	}
 
+	/// Get the HEAD SHA of the parent task's working directory.
+	/// Returns empty string if the parent path cannot be determined or git fails.
+	private string getParentHead(ref TaskData td)
+	{
+		import std.process : execute;
+		import std.string : strip;
+
+		string parentPath;
+		if (td.parentTid > 0 && td.parentTid in tasks)
+		{
+			auto parentTd = &tasks[td.parentTid];
+			if (parentTd.hasWorktree)
+				parentPath = parentTd.worktreePath;
+			else
+				parentPath = parentTd.projectPath;
+		}
+		if (parentPath.length == 0)
+			parentPath = td.projectPath;
+		if (parentPath.length == 0)
+			return "";
+
+		auto result = execute(["git", "-C", parentPath, "rev-parse", "HEAD"]);
+		if (result.status != 0)
+		{
+			warningf("getParentHead: git rev-parse HEAD failed in %s: %s", parentPath, result.output);
+			return "";
+		}
+		return result.output.strip;
+	}
+
 	/// Check whether a completing task has produced all declared outputs.
 	/// Returns null if all outputs are present, or a message describing what's missing.
 	private string checkDeclaredOutputs(int tid)
 	{
 		import std.file : exists;
+		import std.process : execute;
+		import std.string : strip;
 
 		auto td = &tasks[tid];
 		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
@@ -5548,11 +5580,56 @@ class App : ToolsBackend
 				break;
 
 			case OutputType.worktree:
-				// TODO: implement worktree/commit checks
+				if (!td.hasWorktree)
+				{
+					missing ~= "worktree (no worktree)";
+					break;
+				}
+				{
+					auto wtPath = td.worktreePath;
+					auto parentHead = getParentHead(*td);
+					bool hasCommits;
+					if (parentHead.length > 0)
+					{
+						auto logResult = execute(["git", "-C", wtPath, "log",
+							"--oneline", parentHead ~ "..HEAD"]);
+						hasCommits = logResult.status == 0 && logResult.output.strip.length > 0;
+					}
+					auto statusResult = execute(["git", "-C", wtPath, "status", "--porcelain"]);
+					bool hasDirtyChanges = statusResult.status != 0
+						|| statusResult.output.strip.length > 0;
+					if (!hasCommits && !hasDirtyChanges)
+						missing ~= "worktree (no changes — commit or leave uncommitted changes)";
+				}
 				break;
 
 			case OutputType.commit:
-				// TODO: implement worktree/commit checks
+				if (!td.hasWorktree)
+				{
+					missing ~= "commit (no worktree)";
+					break;
+				}
+				{
+					auto wtPath = td.worktreePath;
+					auto statusResult = execute(["git", "-C", wtPath, "status", "--porcelain"]);
+					if (statusResult.status == 0 && statusResult.output.strip.length > 0)
+					{
+						missing ~= "commit (worktree has uncommitted changes"
+							~ " — commit all changes before finishing)";
+						break;
+					}
+					auto parentHead = getParentHead(*td);
+					if (parentHead.length == 0)
+					{
+						missing ~= "commit (could not determine parent HEAD)";
+						break;
+					}
+					auto logResult = execute(["git", "-C", wtPath, "log",
+						"--oneline", parentHead ~ "..HEAD"]);
+					if (logResult.status != 0 || logResult.output.strip.length == 0)
+						missing ~= "commit (no commits since worktree base"
+							~ " — make at least one commit)";
+				}
 				break;
 			}
 		}
@@ -5566,8 +5643,13 @@ class App : ToolsBackend
 
 	private TaskResult buildTaskResult(int tid)
 	{
+		import std.algorithm : canFind;
+		import std.array : join;
 		import std.conv : to;
 		import std.file : exists;
+		import std.process : execute;
+		import std.range : retro;
+		import std.string : splitLines, strip;
 		auto td = &tasks[tid];
 		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
 		bool hasWorktree = td.hasWorktree;
@@ -5588,6 +5670,25 @@ class App : ToolsBackend
 			isFailed ? td.resultText : null,
 		);
 		result.tid = tid;
+
+		// For commit output types, extract commit SHAs from the worktree.
+		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
+		if (typeDef !is null && typeDef.output_type.canFind(OutputType.commit) && td.hasWorktree)
+		{
+			auto parentHead = getParentHead(*td);
+			if (parentHead.length > 0)
+			{
+				auto logResult = execute(["git", "-C", td.worktreePath,
+					"log", "--format=%H", parentHead ~ "..HEAD"]);
+				if (logResult.status == 0 && logResult.output.strip.length > 0)
+					result.commits = logResult.output.strip.splitLines;
+			}
+			if (result.commits.length > 0)
+				note = "Cherry-pick commits from the worktree: git cherry-pick "
+					~ result.commits.retro.join(" ") ~ talkNote;
+			result.note = note.length > 0 ? note : td.resultNote;
+		}
+
 		return result;
 	}
 

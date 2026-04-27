@@ -759,6 +759,7 @@ struct TaskResult
 	@JSONOptional string error;       // canonical per-task error message
 	@JSONOptional int tid;            // child task ID for follow-up via Ask
 	@JSONOptional int qid;            // question ID, present when status=="question"
+	@JSONOptional string[] commits;   // commit SHAs from worktree (for commit output type)
 }
 
 struct McpContentItem
