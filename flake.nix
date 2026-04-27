@@ -58,10 +58,12 @@
         fileset = lib.fileset.unions [
           ./web/src
           ./web/index.html
+          ./web/export.html
           ./web/package.json
           ./web/package-lock.json
           ./web/tsconfig.json
           ./web/vite.config.ts
+          ./web/vite.export.config.ts
           ./web/vitest.config.ts
           ./web/eslint.config.mjs
           ./web/.prettierignore
@@ -159,12 +161,20 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+
+            buildPhase = ''
+              runHook preBuild
+              npm run build
+              npm run build:export
+              runHook postBuild
+            '';
 
             installPhase = ''
               runHook preInstall
-              mkdir -p $out
-              cp -r dist/. $out/
+              mkdir -p $out/dist $out/dist-export
+              cp -r dist/. $out/dist/
+              cp -r dist-export/. $out/dist-export/
               runHook postInstall
             '';
           };
@@ -234,7 +244,8 @@ EOF
               runHook preInstall
               mkdir -p $out/bin $out/share/cydo/web
               install -Dm755 ${backendPkg}/bin/cydo $out/share/cydo/
-              cp -r ${frontend}/. $out/share/cydo/web/dist/
+              cp -r ${frontend}/dist/. $out/share/cydo/web/dist/
+              cp -r ${frontend}/dist-export/. $out/share/cydo/web/dist-export/
               cp -r ${defs}/. $out/share/cydo/defs/
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo
@@ -739,7 +750,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
 
             buildPhase = ''
               runHook preBuild
@@ -756,7 +767,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
 
             buildPhase = ''
               runHook preBuild
@@ -773,7 +784,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
 
             buildPhase = ''
               runHook preBuild
@@ -812,7 +823,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-Ro0iN0OhmbgrvA79e4aEk6e+99gM48ugadO13wm4BZs=";
+            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
 
             buildPhase = ''
               runHook preBuild

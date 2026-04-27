@@ -9,7 +9,7 @@ import std.logger : tracef, infof, warningf, errorf, fatalf;
 import std.stdio : File, stderr;
 import std.string : representation;
 
-import ae.utils.funopt : funopt, funoptDispatch, funoptDispatchUsage, FunOptConfig, Parameter;
+import ae.utils.funopt : funopt, funoptDispatch, funoptDispatchUsage, FunOptConfig, Option, Parameter;
 import ae.utils.main : main;
 
 import ae.net.asockets : socketManager, DisconnectType;
@@ -341,6 +341,77 @@ static:
 			import core.stdc.stdlib : exit;
 			exit(1);
 		}
+	}
+
+	@(`Export tasks as a self-contained HTML file.`)
+	void exportHtml(
+		Parameter!(int[], "Task IDs to export.") tids,
+		Option!(string, "Output file path (default: export.html).") output = "export.html",
+	)
+	{
+		import std.file : write;
+		import std.format : format;
+		import std.path : buildPath;
+
+		import ae.sys.paths : getDataDir;
+		import ae.utils.path : findProgramDirectory;
+
+		import cydo.export_ : buildExportHtml, collectTaskTree, exportTaskData;
+
+		if (tids.length == 0)
+		{
+			stderr.writeln("Error: at least one task ID is required");
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+
+		// Open database
+		auto dataDir = getDataDir("cydo");
+		auto dbPath = buildPath(dataDir, "cydo.db");
+		Persistence persistence;
+		try
+			persistence = Persistence(dbPath);
+		catch (Exception e)
+		{
+			stderr.writeln("Error: could not open database: ", e.msg);
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+
+		// Collect task tree
+		auto taskRows = collectTaskTree(persistence, tids);
+		if (taskRows.length == 0)
+		{
+			stderr.writeln("Error: no tasks found for the given IDs");
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+
+		// Check for invalid TIDs
+		bool[int] foundTids;
+		foreach (ref t; taskRows)
+			foundTids[t.tid] = true;
+		foreach (tid; tids)
+			if (tid !in foundTids)
+				stderr.writeln("Warning: task ID ", tid, " not found in database");
+
+		// Export task data as JSON
+		auto jsonData = exportTaskData(persistence, taskRows);
+
+		// Locate the export HTML template
+		auto baseDir = findProgramDirectory("defs/task-types.yaml");
+		if (baseDir is null)
+		{
+			stderr.writeln("Error: could not locate application directory");
+			import core.stdc.stdlib : exit;
+			exit(1);
+		}
+		auto templatePath = buildPath(baseDir, "web/dist-export/export.html");
+
+		// Inject data and write output
+		auto html = buildExportHtml(templatePath, jsonData);
+		write(output, html);
+		stderr.writeln(format!"Exported %d task(s) to %s"(taskRows.length, output));
 	}
 }
 

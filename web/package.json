@@ -4,6 +4,7 @@
   "scripts": {
     "generate": "cd .. && dub run cydo:protocol-codegen -- web/src/generated/protocol.ts",
     "build": "vite build",
+    "build:export": "vite build --config vite.export.config.ts",
     "dev": "vite",
     "fmt": "prettier --write src/",
     "fmt:check": "prettier --check src/",
@@ -30,6 +31,7 @@
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.57.1",
     "vite": "^7.3.1",
+    "vite-plugin-singlefile": "^2.3.3",
     "vitest": "^3.2.3"
   }
 }
