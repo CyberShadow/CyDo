@@ -101,3 +101,52 @@ test("undo moves user message text to input box", async ({
     timeout: 15_000,
   });
 });
+
+test("undo on first Claude message restores draft input", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "claude-only: first message is replayed as template text",
+  );
+
+  await enterSession(page);
+
+  const prompt = 'Please reply with "first-undo-draft"';
+  await sendMessage(page, prompt);
+  await expect(assistantText(page, "first-undo-draft")).toBeVisible({
+    timeout: 30_000,
+  });
+
+  await killSession(page, agentType);
+
+  const firstUserMsg = page
+    .locator(".message-wrapper", {
+      has: page.locator(".user-message", { hasText: "first-undo-draft" }),
+    })
+    .last();
+  await expect(firstUserMsg).toBeVisible({ timeout: 15_000 });
+  await firstUserMsg.hover();
+
+  await expect(firstUserMsg.locator(".undo-btn")).toBeVisible({
+    timeout: 5_000,
+  });
+  await firstUserMsg.locator(".undo-btn").click();
+
+  await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
+  await page.locator(".btn-undo").click();
+
+  await expect(
+    page.locator(".message.user-message:not(.pending)", {
+      hasText: "first-undo-draft",
+    }),
+  ).toHaveCount(0, { timeout: 15_000 });
+  await expect(assistantText(page, "first-undo-draft")).toHaveCount(0, {
+    timeout: 15_000,
+  });
+
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeVisible({ timeout: 15_000 });
+  await expect(input).toHaveValue(prompt, { timeout: 15_000 });
+});

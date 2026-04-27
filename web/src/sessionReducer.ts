@@ -18,6 +18,7 @@ import type {
   CydoMeta,
 } from "./types";
 import { toolIs } from "./toolIdentity";
+import { canonicalUserTextFromContentAndMeta } from "./userText";
 import type {
   AgnosticEvent,
   AssistantContentBlock,
@@ -803,10 +804,6 @@ function reduceItemStartedUserMessage(
   ts?: number,
 ): SessionState {
   const content = event.content ?? [];
-  const text = content
-    .filter((b): b is { type: "text"; text: string } => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
   const blocks: AssistantContentBlock[] =
     content.length > 0
       ? (content as AssistantContentBlock[])
@@ -816,6 +813,10 @@ function reduceItemStartedUserMessage(
   // removes it from the message list.
   const pendingMsg = s.messages.find((m) => m.pending && m.type === "user");
   const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
+  const replayText = canonicalUserTextFromContentAndMeta(
+    content,
+    pendingMsg?.cydoMeta ?? eventCydoMeta,
+  );
 
   let state = s;
 
@@ -886,11 +887,14 @@ function reduceItemStartedUserMessage(
   }
 
   // Draft recovery
-  if (state.preReloadDrafts && state.preReloadDrafts.length > 0 && text) {
-    if (state.preReloadDrafts.includes(text)) {
+  if (state.preReloadDrafts && state.preReloadDrafts.length > 0 && replayText) {
+    if (state.preReloadDrafts.includes(replayText)) {
       state = {
         ...state,
-        confirmedDuringReplay: [...(state.confirmedDuringReplay ?? []), text],
+        confirmedDuringReplay: [
+          ...(state.confirmedDuringReplay ?? []),
+          replayText,
+        ],
       };
     }
   }
