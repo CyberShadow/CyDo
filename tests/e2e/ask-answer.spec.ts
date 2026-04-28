@@ -1,7 +1,95 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
+import type { Locator, Page } from "@playwright/test";
 
 // All ask/answer tests require launching sub-tasks which takes more time.
 const TALK_TIMEOUT = 120_000;
+
+type TaskResultItem = Record<string, unknown>;
+type ItemResultEventLike = {
+  type?: string;
+  tool_result?: { tasks?: unknown };
+  content?: unknown;
+};
+
+function currentMessageList(page: Page): Locator {
+  return page.locator('[style*="display: contents"] .message-list');
+}
+
+function lastTaskTool(page: Page): Locator {
+  return currentMessageList(page)
+    .locator(".message-wrapper")
+    .filter({
+      has: page.locator(".tool-call", {
+        has: page.locator(".tool-name", { hasText: "Task" }),
+      }),
+    })
+    .last();
+}
+
+function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | null {
+  if (Array.isArray(event.tool_result?.tasks)) {
+    return event.tool_result.tasks as TaskResultItem[];
+  }
+
+  const content = event.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter(
+              (block): block is { type: string; text: string } =>
+                typeof block === "object" &&
+                block !== null &&
+                (block as { type?: unknown }).type === "text" &&
+                typeof (block as { text?: unknown }).text === "string",
+            )
+            .map((block) => block.text)
+            .join("")
+        : null;
+  if (!text) return null;
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (Array.isArray(parsed)) return parsed as TaskResultItem[];
+    if (parsed && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.tasks)) return obj.tasks as TaskResultItem[];
+      return [obj];
+    }
+  } catch {
+    // Ignore non-JSON tool result text.
+  }
+  return null;
+}
+
+function observeTaskResultItems(page: Page, tid = 1): TaskResultItem[][] {
+  const taskResults: TaskResultItem[][] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      try {
+        const data = JSON.parse(frame.payload.toString()) as {
+          tid?: number;
+          event?: ItemResultEventLike;
+        };
+        if (data.tid === tid && data.event?.type === "item/result") {
+          const items = parseTaskResultItems(data.event);
+          if (items) taskResults.push(items);
+        }
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return taskResults;
+}
+
+async function waitForLatestTaskResultItems(
+  observed: TaskResultItem[][],
+): Promise<TaskResultItem[]> {
+  await expect.poll(() => observed.length).toBeGreaterThan(0);
+  return observed[observed.length - 1]!;
+}
 
 test("Ask/Answer: follow-up to completed sub-task", async ({
   page,
@@ -72,6 +160,7 @@ test("Ask/Answer: child asks parent, parent answers", async ({
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
+  const observedTaskResults = observeTaskResultItems(page);
 
   await enterSession(page);
 
@@ -103,6 +192,13 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
+    status: "question",
+    qid: 1,
+    tid: 2,
+    message: "what approach should I use?",
+  });
+
   // Wait for parent's Turn 2 to complete (mock responds "Done." after seeing the
   // Task result with the question). This prevents a race where the Answer
   // arrives before Turn 2 finishes processing the Task result.
@@ -125,6 +221,73 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       )
       .last(),
   ).toBeVisible({ timeout: 90_000 });
+});
+
+test("Ask/Answer: completed task result exposes success status and preserved fields", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "Live structured status wrapper is currently emitted on Claude-backed Task results only",
+  );
+  test.setTimeout(TALK_TIMEOUT);
+  const observedTaskResults = observeTaskResultItems(page);
+
+  await enterSession(page);
+  await sendMessage(page, 'call task research reply with "structured-success"');
+
+  const taskTool = lastTaskTool(page);
+  await expect(taskTool).toContainText("structured-success", {
+    timeout: 90_000,
+  });
+
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
+    status: "success",
+    tid: 2,
+    summary: "structured-success",
+    note: "Read the output file for findings.",
+  });
+});
+
+test("Ask/Answer: task validation errors expose error status and error field", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "Live structured status wrapper is currently emitted on Claude-backed Task results only",
+  );
+  test.setTimeout(TALK_TIMEOUT);
+  const observedTaskResults = observeTaskResultItems(page);
+
+  await enterSession(page);
+  await sendMessage(page, "call task invalid_type reproduce the bug");
+
+  const taskTool = lastTaskTool(page);
+  await expect(taskTool).toContainText(/not in creatable_tasks/i, {
+    timeout: 90_000,
+  });
+
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
+    status: "error",
+    error: expect.stringContaining("invalid_type"),
+  });
+});
+
+test("Ask/Answer: task summaries unwrap serialized JSON child final text", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+
+  await enterSession(page);
+  await sendMessage(page, "call task research reply with json-summary-fixture");
+
+  const taskTool = lastTaskTool(page);
+  await expect(taskTool).toContainText("Summary", { timeout: 90_000 });
+  await expect(taskTool).toContainText("Hello", { timeout: 15_000 });
+  await expect(taskTool).not.toContainText('{"qid":3,"message":"**Summary**');
 });
 
 test("Ask/Answer: batch with one completing child and one asking child", async ({

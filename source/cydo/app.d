@@ -1326,7 +1326,11 @@ class App : ToolsBackend
 
 		McpResult structuredTaskError(string message)
 		{
-			auto taskResultJson = toJson(TaskResult(message, null, null, null, message));
+			auto taskResultJson = toJson(TaskResult(
+				summary: message,
+				error: message,
+				status: "error",
+			));
 			return McpResult.structured(taskResultJson, true);
 		}
 
@@ -2246,6 +2250,39 @@ class App : ToolsBackend
 		auto childTitle = (childTid in tasks) ? tasks[childTid].title : null;
 		auto questionJson = toJson(QuestionResult("question", childTid, qid, childTitle, questionText));
 		return McpResult.structured(questionJson);
+	}
+
+	private static string normalizeTaskResultSummary(string summary)
+	{
+		import std.json : parseJSON;
+		import std.string : stripLeft;
+
+		auto trimmed = summary.stripLeft();
+		if (trimmed.length == 0 || trimmed[0] != '{')
+			return summary;
+
+		try
+		{
+			auto parsed = parseJSON(summary);
+			foreach (field; ["message", "summary", "result"])
+			{
+				if (auto value = field in parsed)
+				{
+					try
+					{
+						return value.str;
+					}
+					catch (Exception)
+					{
+					}
+				}
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return summary;
 	}
 
 	private void removeTaskDependency(int parentTid, int childTid)
@@ -4818,7 +4855,7 @@ class App : ToolsBackend
 					jsonlTracker.broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
-				td.resultText = taskAgent.extractResultText(ev.translated);
+				td.resultText = normalizeTaskResultSummary(taskAgent.extractResultText(ev.translated));
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
@@ -5661,6 +5698,7 @@ class App : ToolsBackend
 		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
+		auto summary = normalizeTaskResultSummary(td.resultText);
 		auto talkNote = " Use Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
 		string note;
 		if (hasOutput && hasWorktree)
@@ -5670,11 +5708,12 @@ class App : ToolsBackend
 		else if (hasWorktree)
 			note = "The worktree contains the implementation." ~ talkNote;
 		auto result = TaskResult(
-			td.resultText,
-			hasOutput ? td.outputPath : null,
-			hasWorktree ? td.worktreePath : null,
-			note.length > 0 ? note : td.resultNote,
-			isFailed ? td.resultText : null,
+			summary: summary,
+			output_file: hasOutput ? td.outputPath : null,
+			worktree: hasWorktree ? td.worktreePath : null,
+			note: note.length > 0 ? note : td.resultNote,
+			error: isFailed ? summary : null,
+			status: isFailed ? "error" : "success",
 		);
 		result.tid = tid;
 

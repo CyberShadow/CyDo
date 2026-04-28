@@ -473,6 +473,13 @@ export function matchPattern(userText) {
     };
 
   // "reply with "<text>""
+  if (/reply with json-summary-fixture/i.test(userText)) {
+    return {
+      type: "text",
+      text: '{"qid":3,"message":"**Summary**\\n\\nHello"}',
+    };
+  }
+
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
 

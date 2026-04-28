@@ -411,6 +411,7 @@ struct AnswerResult
 }
 
 /// Wrapper for batch task results.
+/// Each entry is a discriminated result object.
 struct BatchResultEnvelope
 {
 	JSONFragment[] tasks;
