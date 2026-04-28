@@ -8,7 +8,9 @@ import { sanitizeHtml } from "../sanitize";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { Markdown } from "./Markdown";
-import { CodePre } from "./CopyButton";
+import { CodePre, CopyButton } from "./CopyButton";
+import checkIcon from "../icons/check.svg?raw";
+import errorIcon from "../icons/error.svg?raw";
 import { DiffView, PatchView } from "./diff/DiffView";
 import {
   FileContentPreview,
@@ -1402,6 +1404,31 @@ function formatToolUseResult(
   );
 }
 
+function PathDisplay({ path }: { path: string }) {
+  const slash = path.lastIndexOf("/");
+  return (
+    <span class="tool-path-wrap">
+      <span class="tool-subtitle-path">
+        {slash === -1 ? (
+          path
+        ) : (
+          <>
+            <span class="tool-path-prefix">{path.slice(0, slash)}/</span>
+            <span class="tool-path-leaf">{path.slice(slash + 1)}</span>
+          </>
+        )}
+      </span>
+      <span
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <CopyButton text={path} />
+      </span>
+    </span>
+  );
+}
+
 function getHeaderSubtitle(
   name: string,
   toolServer: string | undefined,
@@ -1414,13 +1441,13 @@ function getHeaderSubtitle(
   if (toolIs(name, agentType, toolServer, "claude/Edit") && filePath) {
     return (
       <Fragment>
-        <span class="tool-subtitle-path">{filePath}</span>
+        <PathDisplay path={filePath} />
         {input.replace_all && <span class="tool-subtitle-tag">all</span>}
       </Fragment>
     );
   }
   if (isFileWriteTool(name, agentType) && filePath) {
-    return <span class="tool-subtitle-path">{filePath}</span>;
+    return <PathDisplay path={filePath} />;
   }
   if (toolIs(name, agentType, toolServer, "codex/fileChange")) {
     const singleFileSubtitle = getSingleFileChangeHeaderSubtitle(input);
@@ -1431,7 +1458,7 @@ function getHeaderSubtitle(
   }
   if (toolIs(name, agentType, toolServer, "codex/apply_patch")) {
     if (viewPaths.length === 1) {
-      return <span class="tool-subtitle-path">{viewPaths[0]}</span>;
+      return <PathDisplay path={viewPaths[0]!} />;
     }
     if (viewPaths.length > 1) {
       return <span class="tool-subtitle">{viewPaths.length} files</span>;
@@ -1450,7 +1477,7 @@ function getHeaderSubtitle(
             : null;
     return (
       <Fragment>
-        <span class="tool-subtitle-path">{filePath}</span>
+        <PathDisplay path={filePath} />
         {range && <span class="tool-subtitle">{range}</span>}
       </Fragment>
     );
@@ -1468,7 +1495,7 @@ function getHeaderSubtitle(
           : null;
     return (
       <Fragment>
-        <span class="tool-subtitle-path">{input.path}</span>
+        <PathDisplay path={input.path} />
         {range && <span class="tool-subtitle">{range}</span>}
       </Fragment>
     );
@@ -1491,7 +1518,7 @@ function getHeaderSubtitle(
         {path && (
           <Fragment>
             {" in "}
-            <code class="tool-subtitle-path">{path}</code>
+            <PathDisplay path={path} />
           </Fragment>
         )}
       </Fragment>
@@ -2433,7 +2460,9 @@ export const ToolCall = memo(
     return (
       <div
         id={toolUseId ? `tool-${toolUseId}` : undefined}
-        class={`tool-call${streaming ? " streaming" : ""}${result?.isError ? " tool-error" : ""}`}
+        class={`tool-call${streaming ? " streaming" : ""}${
+          result?.isError ? " tool-error" : ""
+        }`}
       >
         <div
           class="tool-header"
@@ -2443,7 +2472,45 @@ export const ToolCall = memo(
           }}
         >
           <span class="tool-icon">
-            {result ? (result.isError ? "!" : "\u2713") : "\u2026"}
+            {result ? (
+              result.isError ? (
+                <span
+                  class="action-icon"
+                  dangerouslySetInnerHTML={{ __html: errorIcon }}
+                />
+              ) : (
+                <span
+                  class="action-icon"
+                  dangerouslySetInnerHTML={{ __html: checkIcon }}
+                />
+              )
+            ) : (
+              <svg
+                class="tool-icon-spinner"
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+              >
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  fill="none"
+                  stroke-width="2"
+                  stroke="var(--border)"
+                />
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  fill="none"
+                  stroke-width="2"
+                  stroke="var(--accent)"
+                  stroke-dasharray="12 26"
+                  stroke-linecap="round"
+                />
+              </svg>
+            )}
           </span>
           {toolServer === "cydo" && (
             <svg
@@ -2467,7 +2534,6 @@ export const ToolCall = memo(
           )}
           <span class="tool-name">{name}</span>
           {subtitle}
-          {!result && <span class="tool-spinner" />}
           {(toolIs(name, agentType, toolServer, "claude/Edit") ||
             toolIs(name, agentType, toolServer, "codex/apply_patch") ||
             isFileWriteTool(name, agentType)) &&

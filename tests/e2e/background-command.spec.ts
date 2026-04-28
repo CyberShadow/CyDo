@@ -46,14 +46,14 @@ test("background command spinner disappears after command completes", async ({
 
   // At this point the turn has completed but `sleep 3` is still running.
   // The spinner should still be visible.
-  await expect(page.locator(".tool-spinner")).toBeVisible();
+  await expect(page.locator(".tool-icon-spinner")).toBeVisible();
 
   // Wait for the command to finish (sleep 3 = ~3s from start, plus buffer).
   // After completion, the spinner should disappear and a result should appear.
   //
   // BUG: The spinner never disappears because item/completed is dropped by
   // the backend (activeItemId_ was cleared by handleTurnCompleted).
-  await expect(page.locator(".tool-spinner")).not.toBeVisible({
+  await expect(page.locator(".tool-icon-spinner")).not.toBeVisible({
     timeout: 10_000,
   });
 });
@@ -100,7 +100,7 @@ test("multiple background command spinners all disappear after completion", asyn
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   // Both commands are still running; spinners should be visible.
-  const spinners = page.locator(".tool-spinner");
+  const spinners = page.locator(".tool-icon-spinner");
   await expect(spinners).toHaveCount(2);
 
   // Wait for both commands to finish.
