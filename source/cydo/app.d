@@ -5559,6 +5559,7 @@ class App : ToolsBackend
 	/// Returns null if all outputs are present, or a message describing what's missing.
 	private string checkDeclaredOutputs(int tid)
 	{
+		import std.algorithm : min;
 		import std.file : exists;
 		import std.process : execute;
 		import std.string : strip;
@@ -5615,7 +5616,8 @@ class App : ToolsBackend
 					if (statusResult.status == 0 && statusResult.output.strip.length > 0)
 					{
 						missing ~= "commit (worktree has uncommitted changes"
-							~ " — commit all changes before finishing)";
+							~ " — commit all changes before finishing)\n"
+							~ "git status:\n" ~ statusResult.output.strip;
 						break;
 					}
 					auto parentHead = getParentHead(*td);
@@ -5627,7 +5629,8 @@ class App : ToolsBackend
 					auto logResult = execute(["git", "-C", wtPath, "log",
 						"--oneline", parentHead ~ "..HEAD"]);
 					if (logResult.status != 0 || logResult.output.strip.length == 0)
-						missing ~= "commit (no commits since worktree base"
+						missing ~= "commit (no commits since worktree base "
+							~ parentHead[0 .. min(8, $)]
 							~ " — make at least one commit)";
 				}
 				break;
