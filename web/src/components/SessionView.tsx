@@ -446,6 +446,16 @@ function SessionViewInner({
       {!task.historyLoaded ? (
         <div class="session-loading">
           <span>Loading session…</span>
+          {task.historyTotal != null && task.historyTotal > 0 && (
+            <div class="session-loading-progress">
+              <div
+                class="session-loading-bar"
+                style={{
+                  width: `${Math.min(100, ((task.historyReceived ?? 0) / task.historyTotal) * 100)}%`,
+                }}
+              />
+            </div>
+          )}
         </div>
       ) : task.messages.length === 0 && !task.isProcessing ? (
         isDraft && entryPoints ? (

@@ -201,6 +201,10 @@ export interface TaskState {
   title?: string;
   /** Whether the task's JSONL history has been loaded from the backend. */
   historyLoaded: boolean;
+  /** Total number of history events expected (from task_history_start). */
+  historyTotal?: number;
+  /** Number of history events received so far during loading. */
+  historyReceived?: number;
   /** User message texts from before a reload, not yet matched by file replay. */
   preReloadDrafts?: string[];
   /** Confirmed user texts accumulated during history replay (cleared at history_end). */

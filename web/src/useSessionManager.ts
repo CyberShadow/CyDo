@@ -590,7 +590,13 @@ export function useTaskManager(
       if (deletedDraftTid.current === tid) return;
       const t = liveStates.get(tid);
       const prev = t ?? makeTaskState(tid, true);
-      const updated = reduceMessage(prev, msg, seq, ts);
+      let updated = reduceMessage(prev, msg, seq, ts);
+      if (!updated.historyLoaded && updated.historyTotal !== undefined) {
+        updated = {
+          ...updated,
+          historyReceived: (updated.historyReceived ?? 0) + 1,
+        };
+      }
       liveStates.set(tid, updated);
 
       setTasks((map) => {
@@ -998,6 +1004,20 @@ export function useTaskManager(
           }
           break;
         }
+        case "task_history_start": {
+          const { tid, total } = msg;
+          let t = liveStates.get(tid);
+          if (!t) break;
+          t = { ...t, historyTotal: total, historyReceived: 0 };
+          liveStates.set(tid, t);
+          setTasks((prev) => {
+            if (!prev.has(tid)) return prev;
+            const next = new Map(prev);
+            next.set(tid, t);
+            return next;
+          });
+          break;
+        }
         case "task_history_end": {
           const { tid } = msg;
           let t = liveStates.get(tid);
@@ -1028,6 +1048,8 @@ export function useTaskManager(
           t = {
             ...t,
             historyLoaded: true,
+            historyTotal: undefined,
+            historyReceived: undefined,
             preReloadDrafts: undefined,
             confirmedDuringReplay: undefined,
             inputDraft,

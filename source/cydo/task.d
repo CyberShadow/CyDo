@@ -452,6 +452,13 @@ struct TaskData
 	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 
+struct TaskHistoryStartMessage
+{
+	string type = "task_history_start";
+	int tid;
+	int total;
+}
+
 struct TaskHistoryEndMessage
 {
 	string type = "task_history_end";

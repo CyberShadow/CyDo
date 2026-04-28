@@ -47,6 +47,7 @@ export class Connection {
           raw.type === "task_updated" ||
           raw.type === "task_reload" ||
           raw.type === "title_update" ||
+          raw.type === "task_history_start" ||
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||

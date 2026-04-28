@@ -246,6 +246,11 @@ export interface TitleUpdateMessage {
   tid: number;
   title: string;
 }
+export interface TaskHistoryStartMessage {
+  type: "task_history_start";
+  tid: number;
+  total: number;
+}
 export interface TaskHistoryEndMessage {
   type: "task_history_end";
   tid: number;
@@ -391,6 +396,7 @@ export type ControlMessage =
   | TaskReloadMessage
   | FocusHintMessage
   | TitleUpdateMessage
+  | TaskHistoryStartMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage

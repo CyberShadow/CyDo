@@ -2815,6 +2815,10 @@ class App : ToolsBackend
 
 		ensureHistoryLoaded(tid);
 
+		// Send start marker with total count for progress tracking
+		ws.send(Data(toJson(TaskHistoryStartMessage("task_history_start", tid,
+			cast(int) td.history.length)).representation));
+
 		// Send unified history to requesting client (add _seq)
 		import cydo.task : extractEventFromEnvelope;
 		foreach (i, ref msg; td.history)

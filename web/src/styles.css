@@ -1557,6 +1557,7 @@ body,
 
 .session-loading {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   flex: 1;
@@ -1569,6 +1570,22 @@ body,
 
 .session-loading span {
   color: var(--text-dim);
+}
+
+.session-loading-progress {
+  width: 200px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.session-loading-bar {
+  height: 100%;
+  background: var(--text-dim);
+  border-radius: 2px;
+  transition: width 0.15s ease-out;
 }
 
 .resume-bar {
