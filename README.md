@@ -64,6 +64,8 @@ Instead of interacting with one agent at a time in a terminal, you get:
   </picture>
 </p>
 
+- **Cross-task communication** — Tasks can send questions to their parents and children and receive answers through Ask/Answer tools, keeping related work coordinated without leaving the workflow.
+
 - **Sandbox isolation** — Agent sessions run inside [bubblewrap](https://github.com/containers/bubblewrap) sandboxes with configurable read-only and read-write filesystem paths.
   Agents can't escape their workspace.
 
