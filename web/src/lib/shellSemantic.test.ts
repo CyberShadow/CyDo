@@ -759,3 +759,137 @@ describe("script-exec: rejections", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("batch 1 wrapper quoting and heredoc source preservation", () => {
+  it("zsh -cl wrapper is supported", async () => {
+    const r = await parseShellSemantic("zsh -cl 'cat README.md'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+  });
+
+  it("single-quoted wrapper payload supports close/escape/reopen syntax", async () => {
+    const r = await parseShellSemantic("zsh -lc 'printf '\\''hello'\\'''");
+    expect(r.ok).toBe(false);
+  });
+
+  it("conservative double-quoted wrapper rejects dynamic expansions", async () => {
+    const bad = [
+      '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
+      '/run/current-system/sw/bin/zsh -lc "cat $(pwd)/README.md"',
+      '/run/current-system/sw/bin/zsh -lc "cat ${x}"',
+      '/run/current-system/sw/bin/zsh -lc "cat `pwd`/README.md"',
+    ];
+    for (const cmd of bad) {
+      const r = await parseShellSemantic(cmd);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it("wrapped python heredoc preserves exact command and wrapper segments", async () => {
+    const cmd =
+      "/run/current-system/sw/bin/zsh -lc \"python - <<'PY'\nprint('x')\nPY\"";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("script-exec");
+    expect(r.value.command).toBe(cmd);
+    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
+    expect(joined).toBe(cmd);
+  });
+
+  it("wrapped markdown heredoc with trailing ls -l && sed gets output plan", async () => {
+    const cmd =
+      "/run/current-system/sw/bin/zsh -lc \"mkdir -p /tmp/a\ncat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\nls -l /tmp/a/output.md && sed -n '1,80p' /tmp/a/output.md\"";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("write");
+    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
+      ["listing", "sed-output"],
+    );
+    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
+    expect(joined).toBe(cmd);
+  });
+
+  it("wrapped markdown heredoc with ls -1 dir has no markdown output plan", async () => {
+    const cmd =
+      "/run/current-system/sw/bin/zsh -lc \"mkdir -p /tmp/a\ncat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\nls -1 /tmp/a\"";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("write");
+    expect(r.value.outputPlan).toBeUndefined();
+  });
+});
+
+describe("batch 1 rg/sed/structured output plans", () => {
+  it("supported rg -n emits search semantic and line-number plan", async () => {
+    const r = await parseShellSemantic(
+      'rg -n "formatGenericInput" web/src/components/ToolCall.tsx',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("search");
+    const v = r.value;
+    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
+    expect(v.outputPlan?.blocks[0]?.location).toEqual({
+      kind: "whole-output",
+      validator: "rg-line-number-prefixed",
+    });
+  });
+
+  it("unsupported rg forms reject", async () => {
+    const bad = [
+      "rg --json foo README.md",
+      "rg -n foo .",
+      "rg -n foo README.md package.json",
+      "rg -n -A3 foo README.md",
+    ];
+    for (const cmd of bad) {
+      const r = await parseShellSemantic(cmd);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it("single sed read includes whole-output plan", async () => {
+    const r = await parseShellSemantic("sed -n '1,20p' README.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    expect(r.value.outputPlan?.blocks[0]?.id).toBe("sed-output");
+  });
+
+  it("ls -l same-file && sed emits structured-output with listing + sed blocks", async () => {
+    const r = await parseShellSemantic(
+      "ls -l README.md && sed -n '1,20p' README.md",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const v = r.value;
+    expect(v.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual([
+      "listing",
+      "sed-output",
+    ]);
+  });
+
+  it("sed/printf multiline list emits unique-literal separator anchors", async () => {
+    const cmd = [
+      "sed -n '1,20p' /tmp/a.md",
+      "printf '\\n--- spike ---\\n'",
+      "sed -n '1,20p' /tmp/b.md",
+    ].join("\n");
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    expect(
+      r.value.outputPlan?.blocks.some(
+        (b: { location: { kind: string } }) =>
+          b.location.kind === "unique-literal",
+      ),
+    ).toBe(true);
+  });
+});

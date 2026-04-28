@@ -1,6 +1,15 @@
 import { useState, useEffect } from "preact/hooks";
-import { tokenizeWithScopes, type TokenWithScopes } from "../highlight";
+import {
+  tokenizeWithScopes,
+  type TokenWithScopes,
+  langFromPath,
+} from "../highlight";
 import type { ShikiTheme } from "../highlight";
+import type {
+  OutputPlan,
+  OutputBlockPlan,
+  SpanValidatorId,
+} from "./shellOutputPlan";
 import { useCurrentTheme } from "../useTheme";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +46,102 @@ export interface ShellReadSemantic {
     lineNumbers: false | { style: "nl"; width?: number; separator?: string };
   };
 }
+
+export interface ShellSourceSpan {
+  start: number;
+  end: number;
+  rawText: string;
+}
+
+export type ShellEscapingScheme =
+  | { kind: "shell-single-quote" }
+  | { kind: "shell-double-quote"; conservative: true }
+  | {
+      kind: "shell-heredoc";
+      delimiter: string;
+      quoted: boolean;
+      supportsExitReentry: false;
+    };
+
+export interface ShellEmbeddedContent {
+  id: string;
+  language: string;
+  source: ShellSourceSpan;
+  decodedText?: string;
+  segments: ShellEmbeddedContentSegment[];
+}
+
+export type ShellEmbeddedContentSegment =
+  | { kind: "text"; text: string; source: ShellSourceSpan }
+  | {
+      kind: "embed";
+      role: "shell-wrapper-payload" | "inline-script" | "heredoc-body";
+      escaping: ShellEscapingScheme;
+      content: ShellEmbeddedContent;
+      source: ShellSourceSpan;
+    };
+
+export type ShellInputSegment =
+  | {
+      kind:
+        | "wrapper-prefix"
+        | "command-header"
+        | "heredoc-terminator"
+        | "command-trailing"
+        | "wrapper-suffix"
+        | "shell-text";
+      text: string;
+      source: ShellSourceSpan;
+      language?: "bash" | "shell-output" | "text";
+    }
+  | {
+      kind: "embedded-content";
+      role: "write-content" | "script-content" | "heredoc-body";
+      text: string;
+      source: ShellSourceSpan;
+      language: string;
+      filePath?: string;
+      contentNodeId: string;
+    };
+
+export type ShellSemanticEffect =
+  | {
+      kind: "write-file";
+      order: number;
+      targetPath: string;
+      contentNodeId: string;
+    }
+  | {
+      kind: "execute-script";
+      order: number;
+      commandName: string;
+      language: string;
+      contentNodeId: string;
+    }
+  | {
+      kind: "search";
+      order: number;
+      commandName: "rg";
+      pattern: string;
+      filePath: string;
+    }
+  | {
+      kind: "read-file";
+      order: number;
+      commandName: "sed" | "cat" | "head" | "tail";
+      filePath: string;
+      range?: ShellReadSemantic["range"];
+    }
+  | { kind: "plain-output"; order: number; commandName: string };
+
+export type ShellSemanticBase = {
+  command: string;
+  source?: ShellSourceSpan;
+  inputSegments?: ShellInputSegment[];
+  embeddedContent?: ShellEmbeddedContent[];
+  effects?: ShellSemanticEffect[];
+  outputPlan?: OutputPlan;
+};
 
 export interface ShellHeredocWriteSemantic {
   kind: "write";
@@ -91,11 +196,27 @@ export interface ShellScriptExecSemantic {
   >;
 }
 
+export interface ShellSearchSemantic {
+  kind: "search";
+  commandName: "rg";
+  command: string;
+  pattern: string;
+  filePath: string;
+}
+
+export interface ShellStructuredOutputSemantic {
+  kind: "structured-output";
+  commandName: string;
+  command: string;
+}
+
 export type ShellSemantic =
-  | ShellReadSemantic
-  | ShellHeredocWriteSemantic
-  | ShellDiffSemantic
-  | ShellScriptExecSemantic;
+  | (ShellReadSemantic & ShellSemanticBase)
+  | (ShellHeredocWriteSemantic & ShellSemanticBase)
+  | (ShellDiffSemantic & ShellSemanticBase)
+  | (ShellScriptExecSemantic & ShellSemanticBase)
+  | (ShellSearchSemantic & ShellSemanticBase)
+  | (ShellStructuredOutputSemantic & ShellSemanticBase);
 
 export type ShellSemanticResult =
   | { ok: true; value: ShellSemantic }
@@ -802,6 +923,27 @@ function classifyReadCommand(
 
   void doubleDash;
 
+  const effects: ShellSemanticEffect[] = [];
+  if (name === "sed" || name === "cat" || name === "head" || name === "tail") {
+    effects.push({
+      kind: "read-file",
+      order: 0,
+      commandName: name,
+      filePath,
+      range: name === "sed" ? range : undefined,
+    });
+  }
+  const language = langFromPath(filePath) || "text";
+  const outputPlan =
+    name === "sed"
+      ? buildWholeOutputContentPlan(
+          "sed-output",
+          language,
+          { commandIndex: 0, commandName: "sed", filePath },
+          "non-empty",
+        )
+      : undefined;
+
   return {
     ok: true,
     value: {
@@ -811,6 +953,8 @@ function classifyReadCommand(
       filePath,
       range,
       presentation,
+      effects: effects.length > 0 ? effects : undefined,
+      outputPlan,
     },
   };
 }
@@ -1212,6 +1356,142 @@ function classifyDiffCommand(
   };
 }
 
+function isDynamicShellValue(value: string): boolean {
+  return (
+    value.includes("$") ||
+    value.includes("`") ||
+    value.includes("$(") ||
+    value.includes("${")
+  );
+}
+
+function buildWholeOutputContentPlan(
+  blockId: string,
+  language: string,
+  source?: OutputBlockPlan["source"],
+  validator?: SpanValidatorId,
+): OutputPlan {
+  return {
+    version: 1,
+    blocks: [
+      {
+        id: blockId,
+        source,
+        format: { kind: "content", language },
+        location: { kind: "whole-output", validator },
+      },
+    ],
+  };
+}
+
+function classifyRgCommand(
+  cmd: SimpleCommand,
+  originalCommand: string,
+): ShellSemanticResult {
+  if (cmd.redirects.length > 0) {
+    return reject("unsafe_shell_syntax", "rg redirections are not supported");
+  }
+  const hasContextFlags = cmd.args.some(
+    (a) =>
+      a.kind === "flag" &&
+      (/^-A\d*$/.test(a.text) ||
+        /^-B\d*$/.test(a.text) ||
+        /^-C\d*$/.test(a.text) ||
+        a.text === "-A" ||
+        a.text === "-B" ||
+        a.text === "-C"),
+  );
+  if (hasContextFlags) {
+    return reject("unsupported_option", "rg context modes are not supported");
+  }
+  const hasUnsupportedFlags = cmd.args.some(
+    (a) =>
+      a.kind === "flag" &&
+      [
+        "--json",
+        "--vimgrep",
+        "--heading",
+        "--multiline",
+        "-U",
+        "--replace",
+        "-r",
+        "--color",
+      ].includes(a.text),
+  );
+  if (hasUnsupportedFlags) {
+    return reject("unsupported_option", "unsupported rg option");
+  }
+
+  const hasLineNumbers = cmd.args.some(
+    (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
+  );
+  if (!hasLineNumbers) {
+    return reject("unsupported_option", "rg must include -n/--line-number");
+  }
+
+  const values = cmd.args
+    .filter((a): a is { kind: "value"; text: string } => a.kind === "value")
+    .map((a) => a.text);
+  if (values.length !== 2) {
+    return reject(
+      values.length < 2 ? "missing_path" : "multiple_paths",
+      "rg -n requires exactly one pattern and one file operand",
+    );
+  }
+  const [pattern, filePath] = values;
+  if (
+    !pattern ||
+    !filePath ||
+    isDynamicShellValue(pattern) ||
+    isDynamicShellValue(filePath)
+  ) {
+    return reject("variable_path", "rg pattern/path must be literal");
+  }
+  if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
+    return reject("unsupported_command", "rg target must be a file path");
+  }
+  const language = langFromPath(filePath) || "text";
+  return {
+    ok: true,
+    value: {
+      kind: "search",
+      commandName: "rg",
+      command: originalCommand,
+      pattern,
+      filePath,
+      effects: [
+        {
+          kind: "search",
+          order: 0,
+          commandName: "rg",
+          pattern,
+          filePath,
+        },
+      ],
+      outputPlan: {
+        version: 1,
+        blocks: [
+          {
+            id: "rg-results",
+            source: { commandIndex: 0, commandName: "rg", filePath },
+            format: {
+              kind: "individual-lines",
+              format: {
+                kind: "line-number-prefixed",
+                format: { kind: "content", language },
+              },
+            },
+            location: {
+              kind: "whole-output",
+              validator: "rg-line-number-prefixed",
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 export function classifyAST(
   ast: ShellAST,
   originalCommand: string,
@@ -1225,6 +1505,7 @@ export function classifyAST(
   if (ast.type === "simple") {
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
+    if (name === "rg") return classifyRgCommand(ast.command, originalCommand);
     if (name === "git") return classifyGitCommand(ast.command, originalCommand);
     if (name === "diff")
       return classifyDiffCommand(ast.command, originalCommand);
@@ -1246,12 +1527,795 @@ export function classifyAST(
 }
 
 // ---------------------------------------------------------------------------
-// Shell wrapper stripping
+// Shell wrapper + Batch 1 structured parsing helpers
 // ---------------------------------------------------------------------------
 
-function stripShellWrapper(command: string): string {
-  const m = command.match(/^(?:.*\/)?(?:sh|bash|zsh)\s+-l?c\s+'([\s\S]*)'\s*$/);
-  return m ? m[1]! : command;
+interface WrapperParse {
+  decodedPayload: string;
+  rawPayload: string;
+  escaping: ShellEscapingScheme;
+  prefix: ShellSourceSpan;
+  payload: ShellSourceSpan;
+  suffix: ShellSourceSpan;
+}
+
+type WrapperParseResult =
+  | { kind: "wrapper"; value: WrapperParse }
+  | { kind: "none" }
+  | { kind: "reject"; code: RejectCode; reason: string };
+
+function sourceSpan(
+  source: string,
+  start: number,
+  end: number,
+): ShellSourceSpan {
+  return { start, end, rawText: source.slice(start, end) };
+}
+
+function shellBasename(name: string): string {
+  const parts = name.split("/");
+  return parts[parts.length - 1] ?? name;
+}
+
+function decodeShellSingleQuotedPayload(raw: string): string {
+  return raw.replace(/'\\''/g, "'");
+}
+
+function decodeShellDoubleQuotedPayloadConservative(
+  source: string,
+  quoteStart: number,
+):
+  | { decoded: string; closingQuote: number }
+  | { reject: string; code: RejectCode } {
+  let i = quoteStart + 1;
+  let decoded = "";
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === '"') {
+      return { decoded, closingQuote: i };
+    }
+    if (ch === "\\") {
+      const next = source[i + 1];
+      if (!next) {
+        return {
+          reject: "unterminated double-quoted payload",
+          code: "unterminated_quote",
+        };
+      }
+      if (next !== '"' && next !== "\\" && next !== "$" && next !== "`") {
+        return {
+          reject: `unsupported double-quote escape \\${next}`,
+          code: "unsafe_shell_syntax",
+        };
+      }
+      decoded += next;
+      i += 2;
+      continue;
+    }
+    if (ch === "$") {
+      return {
+        reject:
+          "dynamic expansion in double-quoted wrapper payload is not supported",
+        code: "unsafe_shell_syntax",
+      };
+    }
+    if (ch === "`") {
+      return {
+        reject: "backticks in double-quoted wrapper payload are not supported",
+        code: "unsafe_shell_syntax",
+      };
+    }
+    decoded += ch;
+    i++;
+  }
+  return {
+    reject: "unterminated double-quoted payload",
+    code: "unterminated_quote",
+  };
+}
+
+function parseShellWrapper(command: string): WrapperParseResult {
+  const trimmed = command.trim();
+  if (!trimmed) return { kind: "none" };
+  const leadWs = command.match(/^\s*/)?.[0].length ?? 0;
+  if (leadWs !== 0) return { kind: "none" };
+  const firstWs = command.search(/\s/);
+  if (firstWs <= 0) return { kind: "none" };
+  const shellToken = command.slice(0, firstWs);
+  const base = shellBasename(shellToken);
+  if (base !== "sh" && base !== "bash" && base !== "zsh") {
+    return { kind: "none" };
+  }
+
+  let i = firstWs;
+  while (i < command.length && /\s/.test(command[i]!)) i++;
+  const flagStart = i;
+  while (i < command.length && !/\s/.test(command[i]!)) i++;
+  const flag = command.slice(flagStart, i);
+  if (flag !== "-c" && flag !== "-lc" && flag !== "-cl") {
+    return { kind: "none" };
+  }
+
+  while (i < command.length && /\s/.test(command[i]!)) i++;
+  if (i >= command.length) {
+    return {
+      kind: "reject",
+      code: "unsafe_shell_syntax",
+      reason: "shell wrapper requires exactly one quoted payload",
+    };
+  }
+  const quoteChar = command[i]!;
+  if (quoteChar !== "'" && quoteChar !== '"') {
+    return {
+      kind: "reject",
+      code: "unsafe_shell_syntax",
+      reason: "shell wrapper payload must be single or double quoted",
+    };
+  }
+
+  if (quoteChar === "'") {
+    const close = command.lastIndexOf("'");
+    if (close <= i) {
+      return {
+        kind: "reject",
+        code: "unterminated_quote",
+        reason: "unterminated single-quoted wrapper payload",
+      };
+    }
+    const trailer = command.slice(close + 1);
+    if (trailer.trim().length > 0) {
+      return {
+        kind: "reject",
+        code: "unsafe_shell_syntax",
+        reason: "extra positional args after wrapper payload are not supported",
+      };
+    }
+    const rawPayload = command.slice(i + 1, close);
+    return {
+      kind: "wrapper",
+      value: {
+        decodedPayload: decodeShellSingleQuotedPayload(rawPayload),
+        rawPayload,
+        escaping: { kind: "shell-single-quote" },
+        prefix: sourceSpan(command, 0, i + 1),
+        payload: sourceSpan(command, i + 1, close),
+        suffix: sourceSpan(command, close, command.length),
+      },
+    };
+  }
+
+  const decoded = decodeShellDoubleQuotedPayloadConservative(command, i);
+  if ("reject" in decoded) {
+    return { kind: "reject", code: decoded.code, reason: decoded.reject };
+  }
+  const trailer = command.slice(decoded.closingQuote + 1);
+  if (trailer.trim().length > 0) {
+    return {
+      kind: "reject",
+      code: "unsafe_shell_syntax",
+      reason: "extra positional args after wrapper payload are not supported",
+    };
+  }
+  return {
+    kind: "wrapper",
+    value: {
+      decodedPayload: decoded.decoded,
+      rawPayload: command.slice(i + 1, decoded.closingQuote),
+      escaping: { kind: "shell-double-quote", conservative: true },
+      prefix: sourceSpan(command, 0, i + 1),
+      payload: sourceSpan(command, i + 1, decoded.closingQuote),
+      suffix: sourceSpan(command, decoded.closingQuote, command.length),
+    },
+  };
+}
+
+function withWrapperInputSegments(
+  value: ShellSemantic,
+  command: string,
+  wrapper: WrapperParse | null,
+): ShellSemantic {
+  const baseSource = sourceSpan(command, 0, command.length);
+  if (!wrapper) {
+    return { ...value, source: value.source ?? baseSource };
+  }
+  const embeddedId = "wrapper-payload";
+  const embedded: ShellEmbeddedContent = {
+    id: embeddedId,
+    language: "bash",
+    source: wrapper.payload,
+    decodedText: wrapper.decodedPayload,
+    segments: [
+      {
+        kind: "text",
+        text: wrapper.rawPayload,
+        source: wrapper.payload,
+      },
+    ],
+  };
+  const defaultSegments: ShellInputSegment[] = [
+    {
+      kind: "wrapper-prefix",
+      text: wrapper.prefix.rawText,
+      source: wrapper.prefix,
+      language: "bash",
+    },
+    {
+      kind: "shell-text",
+      text: wrapper.payload.rawText,
+      source: wrapper.payload,
+      language: "bash",
+    },
+    {
+      kind: "wrapper-suffix",
+      text: wrapper.suffix.rawText,
+      source: wrapper.suffix,
+      language: "bash",
+    },
+  ];
+  return {
+    ...value,
+    source: value.source ?? baseSource,
+    inputSegments: value.inputSegments ?? defaultSegments,
+    embeddedContent: value.embeddedContent ?? [embedded],
+  };
+}
+
+function parseSedReadSpec(
+  command: string,
+): { start: number; end: number; filePath: string } | null {
+  const m = command.match(
+    /^\s*sed\s+-n\s+'([1-9]\d*),([1-9]\d*)p'\s+(\S+)\s*$/,
+  );
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  const filePath = m[3]!;
+  if (end < start || isDynamicShellValue(filePath)) return null;
+  return { start, end, filePath };
+}
+
+function parsePrintfLiteralSpec(
+  command: string,
+): { raw: string; decoded: string } | null {
+  const m = command.match(/^\s*printf\s+'([^']*)'\s*$/);
+  if (!m) return null;
+  const raw = m[1]!;
+  let decoded = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch !== "\\") {
+      decoded += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (!next) return null;
+    if (next === "n") decoded += "\n";
+    else if (next === "t") decoded += "\t";
+    else if (next === "r") decoded += "\r";
+    else if (next === "\\") decoded += "\\";
+    else return null;
+    i++;
+  }
+  return { raw, decoded };
+}
+
+function parseLsReadbackSpec(
+  command: string,
+): { filePath: string; sedStart: number; sedEnd: number } | null {
+  const m = command.match(
+    /^\s*ls\s+-l\s+(\S+)\s*&&\s*sed\s+-n\s+'([1-9]\d*),([1-9]\d*)p'\s+(\S+)\s*$/,
+  );
+  if (!m) return null;
+  const filePath = m[1]!;
+  const sedPath = m[4]!;
+  if (filePath !== sedPath) return null;
+  if (isDynamicShellValue(filePath)) return null;
+  const sedStart = Number(m[2]);
+  const sedEnd = Number(m[3]);
+  if (sedEnd < sedStart) return null;
+  return { filePath, sedStart, sedEnd };
+}
+
+function parseLsDirectoryListing(command: string): { dirPath: string } | null {
+  const m = command.match(/^\s*ls\s+-1\s+(\S+)\s*$/);
+  if (!m) return null;
+  return { dirPath: m[1]! };
+}
+
+function makeHeredocInputSegments(
+  originalCommand: string,
+  wrapper: WrapperParse | null,
+  leadingText: string,
+  commandHeader: string,
+  body: string,
+  terminator: string,
+  trailing: string,
+  bodyLanguage: string,
+  bodyRole: "write-content" | "script-content" | "heredoc-body",
+  filePath?: string,
+): { inputSegments: ShellInputSegment[]; embedded: ShellEmbeddedContent[] } {
+  const segments: ShellInputSegment[] = [];
+  const embeddedId = "heredoc-body";
+  const wrapperPrefixLength = wrapper ? wrapper.prefix.rawText.length : 0;
+  const headerText = `${leadingText}${commandHeader}\n`;
+  const terminatorText = `\n${terminator}`;
+  const trailingText = trailing.length > 0 ? `\n${trailing}` : "";
+  const bodyStart = wrapperPrefixLength + headerText.length;
+  const bodyEnd = bodyStart + body.length;
+  if (wrapper) {
+    segments.push({
+      kind: "wrapper-prefix",
+      text: wrapper.prefix.rawText,
+      source: wrapper.prefix,
+      language: "bash",
+    });
+  }
+  segments.push({
+    kind: "command-header",
+    text: headerText,
+    source: sourceSpan(
+      originalCommand,
+      wrapperPrefixLength,
+      wrapperPrefixLength + headerText.length,
+    ),
+    language: "bash",
+  });
+  segments.push({
+    kind: "embedded-content",
+    role: bodyRole,
+    text: body,
+    source: sourceSpan(originalCommand, bodyStart, bodyEnd),
+    language: bodyLanguage,
+    filePath,
+    contentNodeId: embeddedId,
+  });
+  segments.push({
+    kind: "heredoc-terminator",
+    text: terminatorText,
+    source: sourceSpan(
+      originalCommand,
+      bodyEnd,
+      bodyEnd + terminatorText.length,
+    ),
+    language: "bash",
+  });
+  if (trailingText.length > 0) {
+    const trailingStart = bodyEnd + terminatorText.length;
+    segments.push({
+      kind: "command-trailing",
+      text: trailingText,
+      source: sourceSpan(
+        originalCommand,
+        trailingStart,
+        trailingStart + trailingText.length,
+      ),
+      language: "bash",
+    });
+  }
+  if (wrapper) {
+    segments.push({
+      kind: "wrapper-suffix",
+      text: wrapper.suffix.rawText,
+      source: wrapper.suffix,
+      language: "bash",
+    });
+  }
+  return {
+    inputSegments: segments,
+    embedded: [
+      {
+        id: embeddedId,
+        language: bodyLanguage,
+        source: segments[2]!.source,
+        decodedText: body,
+        segments: [{ kind: "text", text: body, source: segments[2]!.source }],
+      },
+    ],
+  };
+}
+
+function classifyTrailingStructuredOutput(
+  trailing: string,
+): { effects?: ShellSemanticEffect[]; outputPlan?: OutputPlan } | null {
+  const readback = parseLsReadbackSpec(trailing);
+  if (readback) {
+    const language = langFromPath(readback.filePath) || "text";
+    return {
+      effects: [
+        { kind: "plain-output", order: 0, commandName: "ls" },
+        {
+          kind: "read-file",
+          order: 1,
+          commandName: "sed",
+          filePath: readback.filePath,
+          range: {
+            type: "lines",
+            start: readback.sedStart,
+            end: readback.sedEnd,
+          },
+        },
+      ],
+      outputPlan: {
+        version: 1,
+        blocks: [
+          {
+            id: "listing",
+            source: {
+              commandIndex: 0,
+              commandName: "ls",
+              filePath: readback.filePath,
+            },
+            format: { kind: "content", language: "shell-output" },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "line-count", count: 1 },
+              validator: "non-empty",
+            },
+          },
+          {
+            id: "sed-output",
+            source: {
+              commandIndex: 1,
+              commandName: "sed",
+              filePath: readback.filePath,
+            },
+            format: { kind: "content", language },
+            location: { kind: "whole-output", validator: "non-empty" },
+          },
+        ],
+      },
+    };
+  }
+
+  const lsDir = parseLsDirectoryListing(trailing);
+  if (lsDir) {
+    return {
+      effects: [{ kind: "plain-output", order: 0, commandName: "ls" }],
+    };
+  }
+  return null;
+}
+
+function classifyHeredocDocument(
+  innerCommand: string,
+  originalCommand: string,
+  wrapper: WrapperParse | null,
+): ShellSemanticResult | null {
+  const normalized = innerCommand.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const heredocLineIndexes = lines
+    .map((line, index) => ({ line, index }))
+    .filter((row) => row.line.includes("<<"))
+    .map((row) => row.index);
+  if (heredocLineIndexes.length === 0) return null;
+  if (heredocLineIndexes.length > 1) {
+    return reject(
+      "invalid_heredoc",
+      "multiple heredocs are not supported in this batch",
+    );
+  }
+  const heredocLineIndex = heredocLineIndexes[0]!;
+  const leading = lines.slice(0, heredocLineIndex);
+  if (
+    leading.some(
+      (line) => line.trim().length > 0 && !/^mkdir\s+-p\s+\S+\s*$/.test(line),
+    )
+  ) {
+    return reject(
+      "invalid_heredoc",
+      "only leading mkdir -p setup is supported before heredoc",
+    );
+  }
+
+  const commandLine = lines[heredocLineIndex] ?? "";
+  const opIndex = commandLine.indexOf("<<");
+  if (opIndex < 0) return null;
+  if (commandLine.startsWith("<<-", opIndex)) {
+    return reject("invalid_heredoc", "<<- heredoc is not supported");
+  }
+  let cursor = opIndex + 2;
+  while (cursor < commandLine.length && /\s/.test(commandLine[cursor]!))
+    cursor++;
+  let quoted = false;
+  let delimiter = "";
+  if (commandLine[cursor] === "'") {
+    quoted = true;
+    cursor++;
+    const close = commandLine.indexOf("'", cursor);
+    if (close < 0)
+      return reject(
+        "unterminated_quote",
+        "unterminated quoted heredoc delimiter",
+      );
+    delimiter = commandLine.slice(cursor, close);
+  } else {
+    const m = commandLine.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+    if (!m) return reject("invalid_heredoc", "invalid heredoc delimiter");
+    delimiter = m[1]!;
+  }
+  if (!delimiter) return reject("invalid_heredoc", "empty heredoc delimiter");
+  const terminatorIndex = lines.findIndex(
+    (line, idx) => idx > heredocLineIndex && line === delimiter,
+  );
+  if (terminatorIndex < 0) {
+    return reject("invalid_heredoc", "heredoc terminator line was not found");
+  }
+
+  const body = lines.slice(heredocLineIndex + 1, terminatorIndex).join("\n");
+  const trailing = lines
+    .slice(terminatorIndex + 1)
+    .join("\n")
+    .trim();
+  const leadingText =
+    leading.length > 0 ? `${leading.join("\n").replace(/\s+$/, "")}\n` : "";
+  const commandName = commandLine.trim().split(/\s+/)[0];
+  if (!commandName)
+    return reject("unsupported_command", "missing heredoc command name");
+
+  if (commandName === "cat") {
+    const redirect = commandLine.match(/(?:^|\s)>\s*(\S+)/);
+    if (!redirect) {
+      return reject("missing_path", "cat heredoc write requires > path");
+    }
+    const filePath = redirect[1]!;
+    if (isDynamicShellValue(filePath)) {
+      return reject("variable_path", "heredoc target path must be literal");
+    }
+    const writeValue: ShellSemantic = {
+      kind: "write",
+      command: originalCommand,
+      commandName: "cat",
+      filePath,
+      writeMode: "overwrite",
+      heredoc: {
+        delimiter,
+        quoted,
+        commandLine,
+        content: body,
+        terminator: delimiter,
+      },
+      segments: [
+        { kind: "command-header", text: `${commandLine}\n` },
+        { kind: "write-content", text: body, filePath },
+        { kind: "command-footer", text: `\n${delimiter}` },
+      ],
+      effects: [
+        {
+          kind: "write-file",
+          order: 0,
+          targetPath: filePath,
+          contentNodeId: "heredoc-body",
+        },
+      ],
+    };
+    const trailingStructured = trailing
+      ? classifyTrailingStructuredOutput(trailing)
+      : null;
+    if (trailing && !trailingStructured) {
+      return {
+        ok: true,
+        value: withWrapperInputSegments(writeValue, originalCommand, wrapper),
+      };
+    }
+    const heredocMeta = makeHeredocInputSegments(
+      originalCommand,
+      wrapper,
+      leadingText,
+      commandLine,
+      body,
+      delimiter,
+      trailing,
+      langFromPath(filePath) || "text",
+      "write-content",
+      filePath,
+    );
+    return {
+      ok: true,
+      value: {
+        ...writeValue,
+        inputSegments: heredocMeta.inputSegments,
+        embeddedContent: heredocMeta.embedded,
+        effects: [
+          ...(writeValue.effects ?? []),
+          ...(trailingStructured?.effects ?? []).map((e, idx) => ({
+            ...e,
+            order: idx + 1,
+          })),
+        ],
+        outputPlan: trailingStructured?.outputPlan,
+      },
+    };
+  }
+
+  const language = INTERPRETER_LANG[commandName];
+  if (!language) {
+    return reject("unsupported_command", "unsupported heredoc command");
+  }
+  const scriptValue: ShellSemantic = {
+    kind: "script-exec",
+    command: originalCommand,
+    commandName,
+    language,
+    scriptSource: {
+      type: "heredoc",
+      delimiter,
+      quoted,
+      content: body,
+      terminator: delimiter,
+      commandLine,
+    },
+    segments: [
+      { kind: "command-header", text: `${commandLine}\n` },
+      { kind: "script-content", text: body, language },
+      { kind: "command-footer", text: `\n${delimiter}` },
+    ],
+    effects: [
+      {
+        kind: "execute-script",
+        order: 0,
+        commandName,
+        language,
+        contentNodeId: "heredoc-body",
+      },
+    ],
+  };
+  const heredocMeta = makeHeredocInputSegments(
+    originalCommand,
+    wrapper,
+    leadingText,
+    commandLine,
+    body,
+    delimiter,
+    trailing,
+    language,
+    "script-content",
+  );
+  return {
+    ok: true,
+    value: {
+      ...scriptValue,
+      inputSegments: heredocMeta.inputSegments,
+      embeddedContent: heredocMeta.embedded,
+    },
+  };
+}
+
+function classifyStructuredCommandList(
+  innerCommand: string,
+  originalCommand: string,
+): ShellSemanticResult | null {
+  const normalized = innerCommand.replace(/\r\n/g, "\n");
+  const readback = parseLsReadbackSpec(normalized);
+  if (readback) {
+    const language = langFromPath(readback.filePath) || "text";
+    return {
+      ok: true,
+      value: {
+        kind: "structured-output",
+        commandName: "ls",
+        command: originalCommand,
+        effects: [
+          { kind: "plain-output", order: 0, commandName: "ls" },
+          {
+            kind: "read-file",
+            order: 1,
+            commandName: "sed",
+            filePath: readback.filePath,
+            range: {
+              type: "lines",
+              start: readback.sedStart,
+              end: readback.sedEnd,
+            },
+          },
+        ],
+        outputPlan: {
+          version: 1,
+          blocks: [
+            {
+              id: "listing",
+              source: {
+                commandIndex: 0,
+                commandName: "ls",
+                filePath: readback.filePath,
+              },
+              format: { kind: "content", language: "shell-output" },
+              location: {
+                kind: "from-cursor",
+                end: { kind: "line-count", count: 1 },
+                validator: "non-empty",
+              },
+            },
+            {
+              id: "sed-output",
+              source: {
+                commandIndex: 1,
+                commandName: "sed",
+                filePath: readback.filePath,
+              },
+              format: { kind: "content", language },
+              location: { kind: "whole-output", validator: "non-empty" },
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) return null;
+
+  const blocks: OutputBlockPlan[] = [];
+  const effects: ShellSemanticEffect[] = [];
+  const separatorTexts: string[] = [];
+  let hasUnsupported = false;
+  let hasSed = false;
+  const sedFileSet = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const sed = parseSedReadSpec(line);
+    if (sed) {
+      hasSed = true;
+      sedFileSet.add(sed.filePath);
+      effects.push({
+        kind: "read-file",
+        order: effects.length,
+        commandName: "sed",
+        filePath: sed.filePath,
+        range: { type: "lines", start: sed.start, end: sed.end },
+      });
+      blocks.push({
+        id: `sed-${i}`,
+        source: { commandIndex: i, commandName: "sed", filePath: sed.filePath },
+        format: {
+          kind: "content",
+          language: langFromPath(sed.filePath) || "text",
+        },
+        location: { kind: "whole-output", validator: "non-empty" },
+      });
+      continue;
+    }
+    const printf = parsePrintfLiteralSpec(line);
+    if (printf) {
+      effects.push({
+        kind: "plain-output",
+        order: effects.length,
+        commandName: "printf",
+      });
+      separatorTexts.push(printf.decoded);
+      blocks.push({
+        id: `printf-${i}`,
+        source: { commandIndex: i, commandName: "printf" },
+        format: { kind: "content", language: "shell-output" },
+        location: {
+          kind: "unique-literal",
+          text: printf.decoded,
+          include: "self",
+        },
+      });
+      continue;
+    }
+    hasUnsupported = true;
+    break;
+  }
+  if (hasUnsupported || !hasSed) return null;
+
+  const duplicateSeparator =
+    new Set(separatorTexts).size !== separatorTexts.length;
+  const allowPlan =
+    !duplicateSeparator && (sedFileSet.size <= 1 || separatorTexts.length > 0);
+  return {
+    ok: true,
+    value: {
+      kind: "structured-output",
+      commandName: "shell",
+      command: originalCommand,
+      effects,
+      outputPlan: allowPlan ? { version: 1, blocks } : undefined,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,15 +2328,45 @@ export async function parseShellSemantic(
 ): Promise<ShellSemanticResult> {
   if (!command.trim()) return reject("empty", "empty command");
 
-  const inner = stripShellWrapper(command);
+  const wrapperResult = parseShellWrapper(command);
+  if (wrapperResult.kind === "reject") {
+    return reject(wrapperResult.code, wrapperResult.reason);
+  }
+  const wrapper = wrapperResult.kind === "wrapper" ? wrapperResult.value : null;
+  const inner = wrapper ? wrapper.decodedPayload : command;
+
+  const heredocResult = classifyHeredocDocument(inner, command, wrapper);
+  if (heredocResult) {
+    return heredocResult.ok
+      ? {
+          ok: true,
+          value: withWrapperInputSegments(
+            heredocResult.value,
+            command,
+            wrapper,
+          ),
+        }
+      : heredocResult;
+  }
+
+  const structuredList = classifyStructuredCommandList(inner, command);
+  if (structuredList) {
+    return structuredList.ok
+      ? {
+          ok: true,
+          value: withWrapperInputSegments(
+            structuredList.value,
+            command,
+            wrapper,
+          ),
+        }
+      : structuredList;
+  }
 
   // For heredoc commands, only tokenize the first line (the command line).
   // Shiki tokenizes heredoc bodies with special heredoc scopes which we don't
   // need — body content is extracted via line splitting from the raw command.
-  const tokenizeLine =
-    inner.includes("\n") || inner.includes("<<")
-      ? inner.split("\n")[0]!
-      : inner;
+  const tokenizeLine = inner.includes("\n") ? inner.split("\n")[0]! : inner;
 
   const shikiLines = await tokenizeWithScopes(tokenizeLine, theme);
   if (!shikiLines)
@@ -1280,7 +2374,12 @@ export async function parseShellSemantic(
 
   const shellTokens = mapShikiTokens(shikiLines);
   const ast = buildAST(shellTokens, inner);
-  return classifyAST(ast, command);
+  const classified = classifyAST(ast, command);
+  if (!classified.ok) return classified;
+  return {
+    ok: true,
+    value: withWrapperInputSegments(classified.value, command, wrapper),
+  };
 }
 
 // ---------------------------------------------------------------------------
