@@ -1115,29 +1115,59 @@ function WebSearchResult({
   );
 }
 
-function parseCydoTaskResult(content: string): unknown[] | null {
-  try {
-    const parsed = JSON.parse(content) as unknown;
-    // Backend returns either a raw array or {"tasks": [...]} wrapper
-    const parsedObj =
-      !Array.isArray(parsed) && typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>)
+export function parseCydoTaskResultPayload(payload: unknown): unknown[] | null {
+  const parsedObj =
+    !Array.isArray(payload) && typeof payload === "object" && payload !== null
+      ? (payload as Record<string, unknown>)
+      : null;
+  if (parsedObj?.structuredContent !== undefined) {
+    const structuredItems = parseCydoTaskResultPayload(
+      parsedObj.structuredContent,
+    );
+    if (structuredItems) return structuredItems;
+  }
+  const arr: unknown[] | null = Array.isArray(payload)
+    ? payload
+    : Array.isArray(parsedObj?.tasks)
+      ? parsedObj.tasks
+      : parsedObj != null &&
+          [
+            "status",
+            "tid",
+            "qid",
+            "title",
+            "message",
+            "summary",
+            "error",
+            "note",
+            "output_file",
+            "worktree",
+            "commits",
+          ].some((key) => key in parsedObj)
+        ? [parsedObj]
         : null;
-    const arr: unknown[] | null = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsedObj?.tasks)
-        ? parsedObj.tasks
-        : // Single-object result (e.g. question from Ask)
-          parsedObj != null
-          ? [parsedObj]
-          : null;
-    return arr && arr.length > 0 ? arr : null;
+  return arr && arr.length > 0 ? arr : null;
+}
+
+export function parseCydoTaskResult(content: string): unknown[] | null {
+  try {
+    return parseCydoTaskResultPayload(JSON.parse(content) as unknown);
   } catch {
     return null;
   }
 }
 
-function formatCydoTaskResultItem(item: Record<string, unknown>): {
+export function getCydoTaskResultItems(
+  result: ToolResult | undefined,
+): unknown[] | null {
+  if (!result) return null;
+  const structuredItems = parseCydoTaskResultPayload(result.toolResult);
+  if (structuredItems) return structuredItems;
+  const resultText = extractResultText(result.content);
+  return resultText != null ? parseCydoTaskResult(resultText) : null;
+}
+
+export function formatCydoTaskResultItem(item: Record<string, unknown>): {
   fields: Record<string, unknown>;
   text: string | null;
 } {
@@ -1326,9 +1356,15 @@ const knownResultFields: Record<string, Set<string>> = {
     "structuredContent",
     "status",
     "tid",
+    "qid",
+    "summary",
+    "error",
     "title",
     "message",
     "note",
+    "output_file",
+    "worktree",
+    "commits",
   ]),
   "cydo:Ask": new Set([
     "tasks",
@@ -1337,9 +1373,14 @@ const knownResultFields: Record<string, Set<string>> = {
     "status",
     "tid",
     "qid",
+    "summary",
+    "error",
     "title",
     "message",
     "note",
+    "output_file",
+    "worktree",
+    "commits",
   ]),
   "cydo:Answer": new Set([
     "tasks",
@@ -1348,9 +1389,14 @@ const knownResultFields: Record<string, Set<string>> = {
     "status",
     "tid",
     "qid",
+    "summary",
+    "error",
     "title",
     "message",
     "note",
+    "output_file",
+    "worktree",
+    "commits",
   ]),
   "cydo:SwitchMode": new Set(["message"]),
   "cydo:Handoff": new Set(["message"]),
@@ -2309,19 +2355,16 @@ export const ToolCall = memo(
           ? input.path
           : null;
     const resultText = result ? extractResultText(result.content) : null;
-    const cydoTaskItems =
-      toolIs(
-        name,
-        agentType,
-        toolServer,
-        "cydo:Task",
-        "cydo:Ask",
-        "cydo:Answer",
-      ) &&
-      resultText != null &&
-      !result!.isError
-        ? parseCydoTaskResult(resultText)
-        : null;
+    const cydoTaskItems = toolIs(
+      name,
+      agentType,
+      toolServer,
+      "cydo:Task",
+      "cydo:Ask",
+      "cydo:Answer",
+    )
+      ? getCydoTaskResultItems(result)
+      : null;
     const useReadHighlight =
       toolIs(name, agentType, toolServer, "claude/Read", "copilot/view") &&
       filePath &&

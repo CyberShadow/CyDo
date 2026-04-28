@@ -7,7 +7,7 @@ const TALK_TIMEOUT = 120_000;
 type TaskResultItem = Record<string, unknown>;
 type ItemResultEventLike = {
   type?: string;
-  tool_result?: { tasks?: unknown };
+  tool_result?: unknown;
   content?: unknown;
 };
 
@@ -26,10 +26,23 @@ function lastTaskTool(page: Page): Locator {
     .last();
 }
 
-function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | null {
-  if (Array.isArray(event.tool_result?.tasks)) {
-    return event.tool_result.tasks as TaskResultItem[];
+function parseTaskResultItemsPayload(payload: unknown): TaskResultItem[] | null {
+  if (Array.isArray(payload)) return payload as TaskResultItem[];
+  if (payload && typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    if (obj.structuredContent !== undefined) {
+      const structured = parseTaskResultItemsPayload(obj.structuredContent);
+      if (structured) return structured;
+    }
+    if (Array.isArray(obj.tasks)) return obj.tasks as TaskResultItem[];
+    return [obj];
   }
+  return null;
+}
+
+function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | null {
+  const structured = parseTaskResultItemsPayload(event.tool_result);
+  if (structured) return structured;
 
   const content = event.content;
   const text =
@@ -50,17 +63,31 @@ function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | nu
   if (!text) return null;
 
   try {
-    const parsed = JSON.parse(text) as unknown;
-    if (Array.isArray(parsed)) return parsed as TaskResultItem[];
-    if (parsed && typeof parsed === "object") {
-      const obj = parsed as Record<string, unknown>;
-      if (Array.isArray(obj.tasks)) return obj.tasks as TaskResultItem[];
-      return [obj];
-    }
+    return parseTaskResultItemsPayload(JSON.parse(text) as unknown);
   } catch {
     // Ignore non-JSON tool result text.
   }
   return null;
+}
+
+function observeTaskResultEvents(page: Page, tid = 1): ItemResultEventLike[] {
+  const taskEvents: ItemResultEventLike[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      try {
+        const data = JSON.parse(frame.payload.toString()) as {
+          tid?: number;
+          event?: ItemResultEventLike;
+        };
+        if (data.tid === tid && data.event?.type === "item/result") {
+          taskEvents.push(data.event);
+        }
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return taskEvents;
 }
 
 function observeTaskResultItems(page: Page, tid = 1): TaskResultItem[][] {
@@ -87,6 +114,13 @@ function observeTaskResultItems(page: Page, tid = 1): TaskResultItem[][] {
 async function waitForLatestTaskResultItems(
   observed: TaskResultItem[][],
 ): Promise<TaskResultItem[]> {
+  await expect.poll(() => observed.length).toBeGreaterThan(0);
+  return observed[observed.length - 1]!;
+}
+
+async function waitForLatestTaskResultEvent(
+  observed: ItemResultEventLike[],
+): Promise<ItemResultEventLike> {
   await expect.poll(() => observed.length).toBeGreaterThan(0);
   return observed[observed.length - 1]!;
 }
@@ -227,12 +261,9 @@ test("Ask/Answer: completed task result exposes success status and preserved fie
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Live structured status wrapper is currently emitted on Claude-backed Task results only",
-  );
   test.setTimeout(TALK_TIMEOUT);
   const observedTaskResults = observeTaskResultItems(page);
+  const observedTaskEvents = observeTaskResultEvents(page);
 
   await enterSession(page);
   await sendMessage(page, 'call task research reply with "structured-success"');
@@ -242,22 +273,33 @@ test("Ask/Answer: completed task result exposes success status and preserved fie
     timeout: 90_000,
   });
 
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
-    status: "success",
-    tid: 2,
-    summary: "structured-success",
-    note: "Read the output file for findings.",
-  });
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
+    {
+      status: "success",
+      tid: 2,
+      summary: "structured-success",
+      note: "Read the output file for findings.",
+    },
+  );
+  if (agentType === "codex") {
+    expect(
+      parseTaskResultItems(await waitForLatestTaskResultEvent(observedTaskEvents)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "success",
+          tid: 2,
+          summary: "structured-success",
+        }),
+      ]),
+    );
+  }
 });
 
 test("Ask/Answer: task validation errors expose error status and error field", async ({
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Live structured status wrapper is currently emitted on Claude-backed Task results only",
-  );
   test.setTimeout(TALK_TIMEOUT);
   const observedTaskResults = observeTaskResultItems(page);
 
@@ -269,25 +311,33 @@ test("Ask/Answer: task validation errors expose error status and error field", a
     timeout: 90_000,
   });
 
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
-    status: "error",
-    error: expect.stringContaining("invalid_type"),
-  });
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
+    {
+      status: "error",
+      error: expect.stringContaining("invalid_type"),
+    },
+  );
 });
 
-test("Ask/Answer: task summaries unwrap serialized JSON child final text", async ({
+test("Ask/Answer: task summaries preserve literal JSON-looking child final text", async ({
   page,
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
+  const observedTaskResults = observeTaskResultItems(page);
 
   await enterSession(page);
   await sendMessage(page, "call task research reply with json-summary-fixture");
 
   const taskTool = lastTaskTool(page);
-  await expect(taskTool).toContainText("Summary", { timeout: 90_000 });
-  await expect(taskTool).toContainText("Hello", { timeout: 15_000 });
-  await expect(taskTool).not.toContainText('{"qid":3,"message":"**Summary**');
+  await expect(taskTool).toContainText("qid", { timeout: 90_000 });
+  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
+    {
+      status: "success",
+      tid: 2,
+      summary: '{"qid":3,"message":"**Summary**\\n\\nHello"}',
+    },
+  );
 });
 
 test("Ask/Answer: batch with one completing child and one asking child", async ({

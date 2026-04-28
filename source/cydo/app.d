@@ -2252,39 +2252,6 @@ class App : ToolsBackend
 		return McpResult.structured(questionJson);
 	}
 
-	private static string normalizeTaskResultSummary(string summary)
-	{
-		import std.json : parseJSON;
-		import std.string : stripLeft;
-
-		auto trimmed = summary.stripLeft();
-		if (trimmed.length == 0 || trimmed[0] != '{')
-			return summary;
-
-		try
-		{
-			auto parsed = parseJSON(summary);
-			foreach (field; ["message", "summary", "result"])
-			{
-				if (auto value = field in parsed)
-				{
-					try
-					{
-						return value.str;
-					}
-					catch (Exception)
-					{
-					}
-				}
-			}
-		}
-		catch (Exception)
-		{
-		}
-
-		return summary;
-	}
-
 	private void removeTaskDependency(int parentTid, int childTid)
 	{
 		persistence.removeTaskDep(parentTid, childTid);
@@ -4855,7 +4822,7 @@ class App : ToolsBackend
 					jsonlTracker.broadcastForkableUuidsFromFile(tid);
 
 				// Capture the canonical result text for sub-task output.
-				td.resultText = normalizeTaskResultSummary(taskAgent.extractResultText(ev.translated));
+				td.resultText = taskAgent.extractResultText(ev.translated);
 
 				// For sub-tasks and continuations: close stdin so the process exits cleanly.
 				// Interactive tasks stay open for user input — flag for attention.
@@ -5698,7 +5665,7 @@ class App : ToolsBackend
 		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
-		auto summary = normalizeTaskResultSummary(td.resultText);
+		auto summary = td.resultText;
 		auto talkNote = " Use Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
 		string note;
 		if (hasOutput && hasWorktree)

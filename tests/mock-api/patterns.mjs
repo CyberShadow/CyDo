@@ -472,7 +472,8 @@ export function matchPattern(userText) {
         "python3 - <<PY\nimport json\nprint(json.dumps({\"result\": 42}))\nPY",
     };
 
-  // "reply with "<text>""
+  // Compatibility fixture: JSON-looking final text should remain literal
+  // summary text instead of being reparsed as a nested CyDo result object.
   if (/reply with json-summary-fixture/i.test(userText)) {
     return {
       type: "text",

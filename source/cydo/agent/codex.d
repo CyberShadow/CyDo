@@ -2094,6 +2094,7 @@ class CodexSession : AgentSession
 				static struct ResultPayload
 				{
 					@JSONOptional JSONFragment content;
+					@JSONName("structuredContent") @JSONOptional JSONFragment structuredContent;
 				}
 
 				bool hasResultContent = false;
@@ -2107,6 +2108,8 @@ class CodexSession : AgentSession
 							resEv.content = payload.content;
 							hasResultContent = true;
 						}
+						if (payload.structuredContent.json !is null)
+							resEv.tool_result = payload.structuredContent;
 					}
 					catch (Exception) {}
 				}
@@ -3526,5 +3529,77 @@ unittest
 			&& blocks[0].type == "text"
 			&& hasTransportClosed,
 		"expected failed mcp tool result to surface error text; actual result=" ~ actualResult,
+	);
+}
+
+unittest
+{
+	@JSONPartial
+	struct StartedNotification
+	{
+		ItemStartedParams params;
+	}
+
+	@JSONPartial
+	struct CompletedNotification
+	{
+		ItemCompletedParams params;
+	}
+
+	@JSONPartial
+	struct EmittedResultEvent
+	{
+		string type;
+		string item_id;
+		@JSONOptional JSONFragment tool_result;
+		JSONFragment content;
+	}
+
+	@JSONPartial
+	struct TextContentBlock
+	{
+		string type;
+		@JSONOptional string text;
+	}
+
+	@JSONPartial
+	struct StructuredTaskResult
+	{
+		string status;
+		int tid;
+		string summary;
+	}
+
+	enum startedPayload =
+		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thread-task-structured","turnId":"turn-task-structured","item":{"id":"call_structuredTask","type":"mcpToolCall","server":"cydo","tool":"Task","arguments":{"tasks":[{"description":"demo","prompt":"demo","task_type":"review"}]}}}}`;
+
+	enum completedPayload =
+		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-task-structured","item":{"id":"call_structuredTask","status":"completed","type":"mcpToolCall","server":"cydo","tool":"Task","result":{"content":[{"type":"text","text":"{\"status\":\"success\",\"tid\":2,\"summary\":\"structured-success\"}"}],"structuredContent":{"status":"success","tid":2,"summary":"structured-success"}}}}}`;
+
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	string[] emitted;
+	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
+	session.onOutput(&sink);
+
+	auto started = jsonParse!StartedNotification(startedPayload);
+	session.handleItemStarted(started.params, startedPayload);
+
+	auto completed = jsonParse!CompletedNotification(completedPayload);
+	session.handleItemCompleted(completed.params, completedPayload);
+
+	auto resultEvent = jsonParse!EmittedResultEvent(emitted[$ - 1]);
+	auto blocks = jsonParse!(TextContentBlock[])(resultEvent.content.json);
+	auto structured = jsonParse!StructuredTaskResult(resultEvent.tool_result.json);
+
+	assert(
+		resultEvent.type == "item/result"
+			&& resultEvent.item_id == "call_structuredTask"
+			&& blocks.length == 1
+			&& blocks[0].type == "text"
+			&& blocks[0].text == `{"status":"success","tid":2,"summary":"structured-success"}`
+			&& structured.status == "success"
+			&& structured.tid == 2
+			&& structured.summary == "structured-success",
+		"expected structuredContent to populate tool_result while preserving text content",
 	);
 }
