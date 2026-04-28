@@ -1933,7 +1933,7 @@ class App : ToolsBackend
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
-					["message": message], "message", true);
+					["message": message], "message", false);
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
 
@@ -2020,7 +2020,7 @@ class App : ToolsBackend
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
-					["message": message], "message", true);
+					["message": message], "message", false);
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
 
@@ -4250,6 +4250,28 @@ class App : ToolsBackend
 		return true;
 	}
 
+	private static bool tryExtractFollowUpQuestionFromWrappedBody(string body, out string question)
+	{
+		import std.algorithm : startsWith, endsWith;
+		import std.string : strip, lastIndexOf;
+
+		enum answerInstructionPrefix = "\n\nAnswer with Answer(";
+		auto markerPos = body.lastIndexOf(answerInstructionPrefix);
+		auto candidate = body;
+		if (markerPos >= 0)
+		{
+			auto tail = body[cast(size_t) markerPos .. $];
+			if (tail.startsWith(answerInstructionPrefix) && tail.endsWith(")."))
+				candidate = body[0 .. cast(size_t) markerPos];
+		}
+
+		candidate = candidate.strip;
+		if (candidate.length == 0)
+			return false;
+		question = candidate;
+		return true;
+	}
+
 	private string cydoMetaForKnownSystemSubject(string subject, string text)
 	{
 		KnownSystemMessageMatch match;
@@ -4268,6 +4290,13 @@ class App : ToolsBackend
 				return buildCydoMeta(match.label, ["task_description": taskDescription], "task_description",
 					match.kind == KnownSystemMessageKind.taskPrompt);
 			}
+			break;
+		case KnownSystemMessageKind.followUpFromParent:
+			string wrappedBody;
+			string question;
+			if (tryExtractWrappedSystemBody(text, subject, wrappedBody)
+				&& tryExtractFollowUpQuestionFromWrappedBody(wrappedBody, question))
+				return buildCydoMeta(match.label, ["message": question], "message", false);
 			break;
 		default:
 			break;

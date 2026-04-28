@@ -171,22 +171,36 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
-  await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
-      hasText: "Follow-up from parent",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  const followUpMessage = page.locator(
+    '[style*="display: contents"] .message-list .message.user-message.system-user-message',
+    { hasText: "Follow-up from parent" },
+  ).last();
+  await expect(followUpMessage).toBeVisible({ timeout: 30_000 });
+  await expect(followUpMessage.locator(".system-user-body").first()).toContainText(
+    "any follow-up?",
+  );
+  const followUpDetails = followUpMessage.locator("details.system-user-full-text").first();
+  await expect(followUpDetails).toBeAttached();
+  await expect(followUpDetails).not.toHaveAttribute("open");
 
   await page.reload();
   await page.locator('.sidebar-item[data-tid="2"]').click();
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
+  const followUpMessageAfterReload = page.locator(
+    '[style*="display: contents"] .message-list .message.user-message.system-user-message',
+    { hasText: "Follow-up from parent" },
+  ).last();
+  await expect(followUpMessageAfterReload).toBeVisible({ timeout: 30_000 });
   await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
-      hasText: "Follow-up from parent",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+    followUpMessageAfterReload.locator(".system-user-body").first(),
+  ).toContainText("any follow-up?");
+  const followUpDetailsAfterReload = followUpMessageAfterReload
+    .locator("details.system-user-full-text")
+    .first();
+  await expect(followUpDetailsAfterReload).toBeAttached();
+  await expect(followUpDetailsAfterReload).not.toHaveAttribute("open");
 });
 
 test("Ask/Answer: child asks parent, parent answers", async ({
