@@ -594,6 +594,23 @@ private class CodexServerRouter : ICodexServer
 	}
 }
 
+private bool isSilentlyIgnoredCodexNotificationMethod(string method)
+{
+	// v1 legacy notifications duplicate v2 item/* / turn/* methods.
+	if (method.length >= 12 && method[0 .. 12] == "codex/event/")
+		return true;
+	// Codex app-server emits MCP startup status updates that are not useful
+	// for CyDo's translated session stream.
+	return method == "mcpServer/startupStatus/updated";
+}
+
+unittest
+{
+	assert(isSilentlyIgnoredCodexNotificationMethod("codex/event/item.started"));
+	assert(isSilentlyIgnoredCodexNotificationMethod("mcpServer/startupStatus/updated"));
+	assert(!isSilentlyIgnoredCodexNotificationMethod("mcpServer/other"));
+}
+
 // ---------------------------------------------------------------------------
 // AppServerProcess — manages a `codex app-server` process via JSON-RPC 2.0.
 // One instance per workspace, shared across multiple CodexSessions (threads).
@@ -631,9 +648,7 @@ class AppServerProcess
 		auto router = new CodexServerRouter(this);
 		serverDispatcher = jsonRpcDispatcher!ICodexServer(router);
 		codec.handleRequest = (JsonRpcRequest request) {
-			// Silently ignore v1 legacy notifications — they are always
-			// duplicates of v2 item/* / turn/* methods.
-			if (request.method.length >= 12 && request.method[0 .. 12] == "codex/event/")
+			if (isSilentlyIgnoredCodexNotificationMethod(request.method))
 				return resolve(JsonRpcResponse.init);
 			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
