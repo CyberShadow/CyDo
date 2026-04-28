@@ -1576,7 +1576,6 @@ body,
   width: 200px;
   height: 3px;
   background: var(--border);
-  border-radius: 2px;
   margin-top: 8px;
   overflow: hidden;
 }
@@ -1584,7 +1583,6 @@ body,
 .session-loading-bar {
   height: 100%;
   background: var(--text-dim);
-  border-radius: 2px;
   transition: width 0.15s ease-out;
 }
 
