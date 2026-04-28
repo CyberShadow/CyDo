@@ -391,7 +391,7 @@ describe("shell -c/-lc wrapper unwrapping", () => {
 
   it("/bin/zsh -lc 'sed -n '1,10p' Cargo.toml' → read", async () => {
     const r = await parseShellSemantic(
-      "/bin/zsh -lc 'sed -n '1,10p' Cargo.toml'",
+      `/bin/zsh -lc "sed -n '1,10p' Cargo.toml"`,
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -774,6 +774,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(false);
   });
 
+  it("single-quoted wrapper rejects adjacent payload pieces", async () => {
+    const r = await parseShellSemantic("zsh -lc 'cat README.md''x'");
+    expect(r.ok).toBe(false);
+  });
+
   it("conservative double-quoted wrapper rejects dynamic expansions", async () => {
     const bad = [
       '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
@@ -809,6 +814,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
       ["listing", "sed-output"],
     );
+    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
+      validator: "non-empty",
+    });
     const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
     expect(joined).toBe(cmd);
   });
@@ -821,6 +831,24 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
     expect(r.value.outputPlan).toBeUndefined();
+  });
+
+  it("heredoc body containing << does not trigger false multi-heredoc rejection", async () => {
+    const cmd =
+      "/run/current-system/sw/bin/zsh -lc \"mkdir -p /tmp/a\ncat > /tmp/a/output.md <<'EOF'\nline with << inside body\nEOF\nls -1 /tmp/a\"";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("write");
+  });
+
+  it("unwrapped heredoc embedded-content source span points to body text", async () => {
+    const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("write");
+    expect(r.value.embeddedContent?.[0]?.source.rawText).toBe("# Title");
   });
 });
 
@@ -846,6 +874,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "rg -n foo .",
       "rg -n foo README.md package.json",
       "rg -n -A3 foo README.md",
+      "rg -n --color=always foo README.md",
+      "rg -n --replace=bar foo README.md",
     ];
     for (const cmd of bad) {
       const r = await parseShellSemantic(cmd);
@@ -873,6 +903,11 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "listing",
       "sed-output",
     ]);
+    expect(v.outputPlan?.blocks[1]?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
+      validator: "non-empty",
+    });
   });
 
   it("sed/printf multiline list emits unique-literal separator anchors", async () => {
@@ -885,11 +920,29 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
+    const sedBlock = r.value.outputPlan?.blocks.find((b) => b.id === "sed-0");
+    expect(sedBlock?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "before-block", blockId: "printf-1" },
+      validator: "non-empty",
+    });
     expect(
       r.value.outputPlan?.blocks.some(
         (b: { location: { kind: string } }) =>
           b.location.kind === "unique-literal",
       ),
     ).toBe(true);
+  });
+
+  it("printf conversion forms are not accepted in structured sed/printf lists", async () => {
+    const cmd = [
+      "sed -n '1,20p' /tmp/a.md",
+      "printf '%s\\n'",
+      "sed -n '1,20p' /tmp/b.md",
+    ].join("\n");
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).not.toBe("structured-output");
   });
 });

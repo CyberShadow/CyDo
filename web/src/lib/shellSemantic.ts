@@ -1399,7 +1399,10 @@ function classifyRgCommand(
         /^-C\d*$/.test(a.text) ||
         a.text === "-A" ||
         a.text === "-B" ||
-        a.text === "-C"),
+        a.text === "-C" ||
+        a.text === "--after-context" ||
+        a.text === "--before-context" ||
+        a.text === "--context"),
   );
   if (hasContextFlags) {
     return reject("unsupported_option", "rg context modes are not supported");
@@ -1407,16 +1410,21 @@ function classifyRgCommand(
   const hasUnsupportedFlags = cmd.args.some(
     (a) =>
       a.kind === "flag" &&
-      [
-        "--json",
-        "--vimgrep",
-        "--heading",
-        "--multiline",
-        "-U",
-        "--replace",
-        "-r",
-        "--color",
-      ].includes(a.text),
+      (a.text === "--json" ||
+        a.text === "--vimgrep" ||
+        a.text === "--heading" ||
+        a.text === "--no-heading" ||
+        a.text === "--multiline" ||
+        a.text === "--multiline-dotall" ||
+        a.text === "-U" ||
+        a.text === "--replace" ||
+        a.text.startsWith("--replace=") ||
+        a.text === "-r" ||
+        /^-r[^-].+/.test(a.text) ||
+        a.text === "--color" ||
+        a.text.startsWith("--color=") ||
+        a.text === "--colors" ||
+        a.text.startsWith("--colors=")),
   );
   if (hasUnsupportedFlags) {
     return reject("unsupported_option", "unsupported rg option");
@@ -1557,10 +1565,6 @@ function shellBasename(name: string): string {
   return parts[parts.length - 1] ?? name;
 }
 
-function decodeShellSingleQuotedPayload(raw: string): string {
-  return raw.replace(/'\\''/g, "'");
-}
-
 function decodeShellDoubleQuotedPayloadConservative(
   source: string,
   quoteStart: number,
@@ -1654,34 +1658,45 @@ function parseShellWrapper(command: string): WrapperParseResult {
   }
 
   if (quoteChar === "'") {
-    const close = command.lastIndexOf("'");
-    if (close <= i) {
+    let cursor = i + 1;
+    let decodedPayload = "";
+    for (;;) {
+      const close = command.indexOf("'", cursor);
+      if (close < 0) {
+        return {
+          kind: "reject",
+          code: "unterminated_quote",
+          reason: "unterminated single-quoted wrapper payload",
+        };
+      }
+      decodedPayload += command.slice(cursor, close);
+      if (command.slice(close, close + 4) === "'\\''") {
+        decodedPayload += "'";
+        cursor = close + 4;
+        continue;
+      }
+      const trailer = command.slice(close + 1);
+      if (trailer.trim().length > 0) {
+        return {
+          kind: "reject",
+          code: "unsafe_shell_syntax",
+          reason:
+            "extra positional args after wrapper payload are not supported",
+        };
+      }
+      const rawPayload = command.slice(i + 1, close);
       return {
-        kind: "reject",
-        code: "unterminated_quote",
-        reason: "unterminated single-quoted wrapper payload",
+        kind: "wrapper",
+        value: {
+          decodedPayload,
+          rawPayload,
+          escaping: { kind: "shell-single-quote" },
+          prefix: sourceSpan(command, 0, i + 1),
+          payload: sourceSpan(command, i + 1, close),
+          suffix: sourceSpan(command, close, command.length),
+        },
       };
     }
-    const trailer = command.slice(close + 1);
-    if (trailer.trim().length > 0) {
-      return {
-        kind: "reject",
-        code: "unsafe_shell_syntax",
-        reason: "extra positional args after wrapper payload are not supported",
-      };
-    }
-    const rawPayload = command.slice(i + 1, close);
-    return {
-      kind: "wrapper",
-      value: {
-        decodedPayload: decodeShellSingleQuotedPayload(rawPayload),
-        rawPayload,
-        escaping: { kind: "shell-single-quote" },
-        prefix: sourceSpan(command, 0, i + 1),
-        payload: sourceSpan(command, i + 1, close),
-        suffix: sourceSpan(command, close, command.length),
-      },
-    };
   }
 
   const decoded = decodeShellDoubleQuotedPayloadConservative(command, i);
@@ -1780,6 +1795,7 @@ function parsePrintfLiteralSpec(
   const m = command.match(/^\s*printf\s+'([^']*)'\s*$/);
   if (!m) return null;
   const raw = m[1]!;
+  if (raw.includes("%")) return null;
   let decoded = "";
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i]!;
@@ -1860,11 +1876,12 @@ function makeHeredocInputSegments(
     ),
     language: "bash",
   });
+  const embeddedSource = sourceSpan(originalCommand, bodyStart, bodyEnd);
   segments.push({
     kind: "embedded-content",
     role: bodyRole,
     text: body,
-    source: sourceSpan(originalCommand, bodyStart, bodyEnd),
+    source: embeddedSource,
     language: bodyLanguage,
     filePath,
     contentNodeId: embeddedId,
@@ -1906,9 +1923,9 @@ function makeHeredocInputSegments(
       {
         id: embeddedId,
         language: bodyLanguage,
-        source: segments[2]!.source,
+        source: embeddedSource,
         decodedText: body,
-        segments: [{ kind: "text", text: body, source: segments[2]!.source }],
+        segments: [{ kind: "text", text: body, source: embeddedSource }],
       },
     ],
   };
@@ -1960,7 +1977,11 @@ function classifyTrailingStructuredOutput(
               filePath: readback.filePath,
             },
             format: { kind: "content", language },
-            location: { kind: "whole-output", validator: "non-empty" },
+            location: {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+              validator: "non-empty",
+            },
           },
         ],
       },
@@ -1983,18 +2004,8 @@ function classifyHeredocDocument(
 ): ShellSemanticResult | null {
   const normalized = innerCommand.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
-  const heredocLineIndexes = lines
-    .map((line, index) => ({ line, index }))
-    .filter((row) => row.line.includes("<<"))
-    .map((row) => row.index);
-  if (heredocLineIndexes.length === 0) return null;
-  if (heredocLineIndexes.length > 1) {
-    return reject(
-      "invalid_heredoc",
-      "multiple heredocs are not supported in this batch",
-    );
-  }
-  const heredocLineIndex = heredocLineIndexes[0]!;
+  const heredocLineIndex = lines.findIndex((line) => line.includes("<<"));
+  if (heredocLineIndex < 0) return null;
   const leading = lines.slice(0, heredocLineIndex);
   if (
     leading.some(
@@ -2018,6 +2029,7 @@ function classifyHeredocDocument(
     cursor++;
   let quoted = false;
   let delimiter = "";
+  let delimiterEnd: number;
   if (commandLine[cursor] === "'") {
     quoted = true;
     cursor++;
@@ -2028,17 +2040,34 @@ function classifyHeredocDocument(
         "unterminated quoted heredoc delimiter",
       );
     delimiter = commandLine.slice(cursor, close);
+    delimiterEnd = close + 1;
   } else {
     const m = commandLine.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
     if (!m) return reject("invalid_heredoc", "invalid heredoc delimiter");
     delimiter = m[1]!;
+    delimiterEnd = cursor + delimiter.length;
   }
   if (!delimiter) return reject("invalid_heredoc", "empty heredoc delimiter");
+  if (commandLine.slice(delimiterEnd).includes("<<")) {
+    return reject(
+      "invalid_heredoc",
+      "multiple heredocs are not supported in this batch",
+    );
+  }
   const terminatorIndex = lines.findIndex(
     (line, idx) => idx > heredocLineIndex && line === delimiter,
   );
   if (terminatorIndex < 0) {
     return reject("invalid_heredoc", "heredoc terminator line was not found");
+  }
+  const hasTrailingHeredoc = lines
+    .slice(terminatorIndex + 1)
+    .some((line) => line.includes("<<"));
+  if (hasTrailingHeredoc) {
+    return reject(
+      "invalid_heredoc",
+      "multiple heredocs are not supported in this batch",
+    );
   }
 
   const body = lines.slice(heredocLineIndex + 1, terminatorIndex).join("\n");
@@ -2233,7 +2262,11 @@ function classifyStructuredCommandList(
                 filePath: readback.filePath,
               },
               format: { kind: "content", language },
-              location: { kind: "whole-output", validator: "non-empty" },
+              location: {
+                kind: "from-cursor",
+                end: { kind: "end-of-output", requiresComplete: true },
+                validator: "non-empty",
+              },
             },
           ],
         },
@@ -2253,6 +2286,22 @@ function classifyStructuredCommandList(
   let hasUnsupported = false;
   let hasSed = false;
   const sedFileSet = new Set<string>();
+  let hasAdjacentSedWithoutSeparator = false;
+  const entries: Array<
+    | {
+        kind: "sed";
+        lineIndex: number;
+        blockId: string;
+        filePath: string;
+        language: string;
+      }
+    | {
+        kind: "printf";
+        lineIndex: number;
+        blockId: string;
+        decoded: string;
+      }
+  > = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const sed = parseSedReadSpec(line);
@@ -2266,14 +2315,15 @@ function classifyStructuredCommandList(
         filePath: sed.filePath,
         range: { type: "lines", start: sed.start, end: sed.end },
       });
-      blocks.push({
-        id: `sed-${i}`,
-        source: { commandIndex: i, commandName: "sed", filePath: sed.filePath },
-        format: {
-          kind: "content",
-          language: langFromPath(sed.filePath) || "text",
-        },
-        location: { kind: "whole-output", validator: "non-empty" },
+      if (entries[entries.length - 1]?.kind === "sed") {
+        hasAdjacentSedWithoutSeparator = true;
+      }
+      entries.push({
+        lineIndex: i,
+        kind: "sed",
+        blockId: `sed-${i}`,
+        filePath: sed.filePath,
+        language: langFromPath(sed.filePath) || "text",
       });
       continue;
     }
@@ -2285,15 +2335,11 @@ function classifyStructuredCommandList(
         commandName: "printf",
       });
       separatorTexts.push(printf.decoded);
-      blocks.push({
-        id: `printf-${i}`,
-        source: { commandIndex: i, commandName: "printf" },
-        format: { kind: "content", language: "shell-output" },
-        location: {
-          kind: "unique-literal",
-          text: printf.decoded,
-          include: "self",
-        },
+      entries.push({
+        lineIndex: i,
+        kind: "printf",
+        blockId: `printf-${i}`,
+        decoded: printf.decoded,
       });
       continue;
     }
@@ -2305,7 +2351,50 @@ function classifyStructuredCommandList(
   const duplicateSeparator =
     new Set(separatorTexts).size !== separatorTexts.length;
   const allowPlan =
-    !duplicateSeparator && (sedFileSet.size <= 1 || separatorTexts.length > 0);
+    !duplicateSeparator &&
+    !hasAdjacentSedWithoutSeparator &&
+    (sedFileSet.size <= 1 || separatorTexts.length > 0);
+  if (allowPlan) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i]!;
+      if (entry.kind === "printf") {
+        blocks.push({
+          id: entry.blockId,
+          source: { commandIndex: entry.lineIndex, commandName: "printf" },
+          format: { kind: "content", language: "shell-output" },
+          location: {
+            kind: "unique-literal",
+            text: entry.decoded,
+            include: "self",
+          },
+        });
+        continue;
+      }
+      const nextPrintf = entries
+        .slice(i + 1)
+        .find((item) => item.kind === "printf");
+      blocks.push({
+        id: entry.blockId,
+        source: {
+          commandIndex: entry.lineIndex,
+          commandName: "sed",
+          filePath: entry.filePath,
+        },
+        format: { kind: "content", language: entry.language },
+        location: nextPrintf
+          ? {
+              kind: "from-cursor",
+              end: { kind: "before-block", blockId: nextPrintf.blockId },
+              validator: "non-empty",
+            }
+          : {
+              kind: "from-cursor",
+              end: { kind: "end-of-output", requiresComplete: true },
+              validator: "non-empty",
+            },
+      });
+    }
+  }
   return {
     ok: true,
     value: {
