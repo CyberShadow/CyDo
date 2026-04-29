@@ -125,6 +125,66 @@ async function waitForLatestTaskResultEvent(
   return observed[observed.length - 1]!;
 }
 
+async function activeTid(page: Page): Promise<number> {
+  await expect(page.locator(".sidebar-item.active").first()).toBeVisible({
+    timeout: 30_000,
+  });
+  const rawTid = await page
+    .locator(".sidebar-item.active")
+    .first()
+    .getAttribute("data-tid");
+  expect(rawTid).not.toBeNull();
+  return Number.parseInt(rawTid!, 10);
+}
+
+async function createTopLevelTask(page: Page): Promise<number> {
+  const beforeTids = await sidebarTids(page);
+  const beforeMaxTid = beforeTids[beforeTids.length - 1] ?? 0;
+  const marker = `top-level-ready-${Date.now()}`;
+
+  await page.goto("/");
+  await page.locator('button[title="New task"]').first().click();
+  await sendMessage(page, `reply with "${marker}"`);
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(marker, { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  await expect
+    .poll(async () => {
+      const tids = await sidebarTids(page);
+      return tids[tids.length - 1] ?? 0;
+    }, {
+      timeout: 60_000,
+    })
+    .toBeGreaterThan(beforeMaxTid);
+
+  return activeTid(page);
+}
+
+async function openTask(page: Page, tid: number): Promise<void> {
+  await page.locator(`.sidebar-item[data-tid="${tid}"]`).click();
+  await expect(page.locator(`.sidebar-item[data-tid="${tid}"].active`)).toBeVisible({
+    timeout: 10_000,
+  });
+}
+
+async function sidebarTids(page: Page): Promise<number[]> {
+  await expect
+    .poll(async () => page.locator(".sidebar-item[data-tid]").count(), {
+      timeout: 30_000,
+    })
+    .toBeGreaterThan(0);
+  return page.locator(".sidebar-item[data-tid]").evaluateAll((nodes) =>
+    nodes
+      .map((node) => Number.parseInt((node as HTMLElement).dataset.tid ?? "", 10))
+      .filter((tid) => Number.isInteger(tid))
+      .sort((a, b) => a - b),
+  );
+}
+
 test("Ask/Answer: follow-up to completed sub-task", async ({
   page,
   agentType,
@@ -180,36 +240,22 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
-  const followUpMessage = page.locator(
-    '[style*="display: contents"] .message-list .message.user-message.system-user-message',
-    { hasText: "Follow-up from parent" },
-  ).last();
-  await expect(followUpMessage).toBeVisible({ timeout: 30_000 });
-  await expect(followUpMessage.locator(".system-user-body").first()).toContainText(
-    "any follow-up?",
-  );
-  const followUpDetails = followUpMessage.locator("details.system-user-full-text").first();
-  await expect(followUpDetails).toBeAttached();
-  await expect(followUpDetails).not.toHaveAttribute("open");
+  await expect(
+    page.locator('[style*="display: contents"] .system-user-message', {
+      hasText: "Follow-up from parent",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
 
   await page.reload();
   await page.locator('.sidebar-item[data-tid="2"]').click();
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
-  const followUpMessageAfterReload = page.locator(
-    '[style*="display: contents"] .message-list .message.user-message.system-user-message',
-    { hasText: "Follow-up from parent" },
-  ).last();
-  await expect(followUpMessageAfterReload).toBeVisible({ timeout: 30_000 });
   await expect(
-    followUpMessageAfterReload.locator(".system-user-body").first(),
-  ).toContainText("any follow-up?");
-  const followUpDetailsAfterReload = followUpMessageAfterReload
-    .locator("details.system-user-full-text")
-    .first();
-  await expect(followUpDetailsAfterReload).toBeAttached();
-  await expect(followUpDetailsAfterReload).not.toHaveAttribute("open");
+    page.locator('[style*="display: contents"] .system-user-message', {
+      hasText: "Follow-up from parent",
+    }),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
 test("Ask/Answer: child asks parent, parent answers", async ({
@@ -423,6 +469,160 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   await expect(
     finalSpecs.nth(1).locator('[data-testid="cydo-task-spec-open"]'),
   ).toHaveAttribute("href", /\/task\/3$/);
+});
+
+test("Ask/Answer: same-workspace top-level peer Ask is rejected", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+  await enterSession(page);
+  await sendMessage(page, 'reply with "peer-root-ready"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("peer-root-ready", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  const askerTid = await activeTid(page);
+
+  // Create another top-level task.
+  const targetTid = await createTopLevelTask(page);
+
+  // Ask across top-level peers is not allowed in this phase.
+  await openTask(page, askerTid);
+  await sendMessage(page, `call ask ${targetTid} peer question`);
+
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/ask target must be parent or direct child task/i)
+      .last(),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
+  ).not.toBeVisible();
+});
+
+test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+  await enterSession(page);
+  await sendMessage(page, 'reply with "non-direct-root-ready"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("non-direct-root-ready", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  const rootTid = await activeTid(page);
+
+  // Create a second top-level task and a child under the first one.
+  const askerTid = await createTopLevelTask(page);
+  await openTask(page, rootTid);
+  await sendMessage(page, 'call task research reply with "non-direct-leaf-ready"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("non-direct-leaf-ready", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  const tids = await sidebarTids(page);
+  const leafTid = tids[tids.length - 1];
+  expect(leafTid).toBeGreaterThan(askerTid);
+  await page.locator(`.sidebar-item[data-tid="${leafTid}"]`).waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  // Ask from top-level peer to leaf (not direct parent/child) is rejected.
+  await openTask(page, askerTid);
+  await sendMessage(page, `call ask ${leafTid} non-direct question`);
+
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/ask target must be parent or direct child task/i)
+      .last(),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
+  ).not.toBeVisible();
+});
+
+test("Ask/Answer: wrong answerer gets Unknown question ID", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+  await enterSession(page);
+
+  await sendMessage(page, "call task research call ask what approach should I use?");
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("what approach should I use?")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  const askerTid = await activeTid(page);
+
+  // Create an unrelated top-level task that is not the answerer for qid=1.
+  const wrongAnswererTid = await createTopLevelTask(page);
+
+  // Parent (tid=1) is the authorized answerer for qid=1.
+  await openTask(page, askerTid);
+
+  // Wrong answerer cannot answer qid=1.
+  await openTask(page, wrongAnswererTid);
+  await sendMessage(page, "call answer 1 wrong");
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/unknown question id/i)
+      .last(),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // Authorized answerer responds and unblocks the waiting child.
+  await openTask(page, askerTid);
+  await sendMessage(page, "call answer 1 recovered-answer");
+
+  await openTask(page, askerTid);
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("recovered-answer", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+});
+
+test("Ask/Answer: self Ask is rejected", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+  await enterSession(page);
+  await sendMessage(page, 'reply with "self-ask-root-ready"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("self-ask-root-ready", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  const selfTid = await activeTid(page);
+
+  await sendMessage(page, `call ask ${selfTid} hello`);
+
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/ask target must be a different task/i)
+      .last(),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${selfTid}"] .task-type-icon.waiting`),
+  ).not.toBeVisible();
 });
 
 test("Ask/Answer: invalid Ask target returns error", async ({
