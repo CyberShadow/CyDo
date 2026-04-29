@@ -74,29 +74,6 @@ export function matchPattern(userText) {
       };
   }
 
-  // [SYSTEM: Question from task X (qid=N)] — same-workspace Ask(message, tid)
-  {
-    let m = userText.match(/\[SYSTEM: Question from task (\d+) \(qid=(\d+)\)\][\s\S]*peer-deferred-test/);
-    if (m)
-      return {
-        type: "multi_tool_call",
-        tool_calls: [
-          { name: "mcp__cydo__Answer", input: { qid: parseInt(m[2]), message: "deferred-answer-result" } },
-          { name: "Bash", input: { command: "echo post-answer-work", description: "Post-answer work" } },
-        ],
-      };
-    m = userText.match(/\[SYSTEM: Question from task (\d+) \(qid=(\d+)\)\][\s\S]*manual-peer-question/);
-    if (m)
-      return { type: "text", text: "Done." };
-    m = userText.match(/\[SYSTEM: Question from task (\d+) \(qid=(\d+)\)\]/);
-    if (m)
-      return {
-        type: "tool_call",
-        name: "mcp__cydo__Answer",
-        input: { qid: parseInt(m[2]), message: "peer-answer-result" },
-      };
-  }
-
   // [SYSTEM: Task prompt / Session start / Mode switch / Handoff] wraps
   // executable content. Extract the body and re-match so task-level patterns
   // (call task, reply with, stall, etc.) remain visible to the mock.
