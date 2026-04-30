@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseCommandSourceTree } from "./sourceTree";
 import {
+  buildSourceRenderPieces,
   classifyEmbedRenderMode,
   isLineBoundaryEmbed,
 } from "./sourceTreeRenderPlan";
@@ -64,5 +65,21 @@ describe("source tree render plan", () => {
     if (!wrapper) return;
 
     expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
+  });
+
+  it("preserves escaped inner quotes when flattening wrapper payload pieces", () => {
+    const command =
+      '/run/current-system/sw/bin/zsh -lc "nl -ba source/cydo/app.d | sed -n \'720,790p\' && rg -n \\"CYDO_SKIP_LOAD_TASKS\\" -n source tests"';
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const rendered = buildSourceRenderPieces(parsed.value)
+      .map((piece) => piece.text)
+      .join("");
+
+    expect(rendered).toBe(command);
+    expect(rendered).toContain('\\"CYDO_SKIP_LOAD_TASKS\\"');
+    expect(parsed.value.text).toBe(command);
   });
 });

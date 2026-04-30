@@ -780,6 +780,25 @@ describe("source tree parsing and invariants", () => {
     expect(payload.content.text).toBe('program --some-flag -y "hello world"');
   });
 
+  it("double-quoted wrapper command keeps raw escaped source span", () => {
+    const cmd =
+      '/run/current-system/sw/bin/zsh -lc "nl -ba source/cydo/app.d | sed -n \'720,790p\' && rg -n \\"CYDO_SKIP_LOAD_TASKS\\" -n source tests"';
+    const parsed = parseCommandSourceTree(cmd);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.text).toBe(cmd);
+    const payload = parsed.value.segments.find((s) => s.kind === "embed");
+    expect(payload?.kind).toBe("embed");
+    if (!payload) return;
+
+    expect(parsed.value.text.slice(payload.span.start, payload.span.end)).toBe(
+      "nl -ba source/cydo/app.d | sed -n '720,790p' && rg -n \\\"CYDO_SKIP_LOAD_TASKS\\\" -n source tests",
+    );
+    expect(payload.content.text).toBe(
+      "nl -ba source/cydo/app.d | sed -n '720,790p' && rg -n \"CYDO_SKIP_LOAD_TASKS\" -n source tests",
+    );
+  });
+
   it("wrapper payload command remains semantic unsupported_command", async () => {
     const cmd =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";

@@ -75,15 +75,26 @@ function walkSourceRenderPieces(
 
     const mode = classifyEmbedRenderMode(node, segment);
     if (mode === "inline") {
-      const nextWrapperPayload =
-        wrapperPayload ||
+      const isShellWrapperPayload =
         segment.escaping.kind === "shell-single-quote" ||
         segment.escaping.kind === "shell-double-quote";
+      if (isShellWrapperPayload) {
+        const text = node.text.slice(segment.span.start, segment.span.end);
+        if (!text) continue;
+        pieces.push({
+          kind: "inline",
+          id: segPath,
+          text,
+          language: node.language,
+          wrapperPayload: true,
+        });
+        continue;
+      }
       walkSourceRenderPieces(
         segment.content,
         `${segPath}.content`,
         pieces,
-        nextWrapperPayload,
+        wrapperPayload,
       );
       continue;
     }
