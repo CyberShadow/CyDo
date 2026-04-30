@@ -10,6 +10,11 @@ import type {
   OutputBlockPlan,
   SpanValidatorId,
 } from "./shellOutputPlan";
+import {
+  parseCommandSourceTree,
+  type SourceNode,
+  type SourceSegment,
+} from "./sourceTree";
 import { useCurrentTheme } from "../useTheme";
 
 // ---------------------------------------------------------------------------
@@ -137,6 +142,7 @@ export type ShellSemanticEffect =
 export type ShellSemanticBase = {
   command: string;
   source?: ShellSourceSpan;
+  sourceTree?: SourceNode;
   inputSegments?: ShellInputSegment[];
   embeddedContent?: ShellEmbeddedContent[];
   effects?: ShellSemanticEffect[];
@@ -1525,11 +1531,6 @@ interface WrapperParse {
   suffix: ShellSourceSpan;
 }
 
-type WrapperParseResult =
-  | { kind: "wrapper"; value: WrapperParse }
-  | { kind: "none" }
-  | { kind: "reject"; code: RejectCode; reason: string };
-
 function sourceSpan(
   source: string,
   start: number,
@@ -1538,218 +1539,362 @@ function sourceSpan(
   return { start, end, rawText: source.slice(start, end) };
 }
 
-function shellBasename(name: string): string {
-  const parts = name.split("/");
-  return parts[parts.length - 1] ?? name;
+type SourceEmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
+
+interface LocatedEmbed {
+  id: string;
+  segment: SourceEmbedSegment;
+  absoluteStart: number;
+  absoluteEnd: number;
 }
 
-function decodeShellDoubleQuotedPayloadConservative(
-  source: string,
-  quoteStart: number,
-):
-  | { decoded: string; closingQuote: number }
-  | { reject: string; code: RejectCode } {
-  let i = quoteStart + 1;
-  let decoded = "";
-  while (i < source.length) {
-    const ch = source[i]!;
-    if (ch === '"') {
-      return { decoded, closingQuote: i };
+function findWrapperEmbed(root: SourceNode): LocatedEmbed | null {
+  const idx = root.segments.findIndex(
+    (segment) =>
+      segment.kind === "embed" &&
+      (segment.escaping.kind === "shell-single-quote" ||
+        segment.escaping.kind === "shell-double-quote"),
+  );
+  if (idx < 0) return null;
+  const segment = root.segments[idx] as SourceEmbedSegment;
+  return {
+    id: `embed-${idx}`,
+    segment,
+    absoluteStart: segment.span.start,
+    absoluteEnd: segment.span.end,
+  };
+}
+
+function findFirstHeredocEmbed(
+  root: SourceNode,
+  baseOffset = 0,
+  path: number[] = [],
+): LocatedEmbed | null {
+  for (let i = 0; i < root.segments.length; i++) {
+    const segment = root.segments[i]!;
+    if (segment.kind !== "embed") continue;
+    const absoluteStart = baseOffset + segment.span.start;
+    const absoluteEnd = baseOffset + segment.span.end;
+    const nextPath = path.concat(i);
+    if (segment.escaping.kind === "shell-heredoc") {
+      return {
+        id: `embed-${nextPath.join(".")}`,
+        segment,
+        absoluteStart,
+        absoluteEnd,
+      };
     }
-    if (ch === "\\") {
-      const next = source[i + 1];
-      if (!next) {
-        return {
-          reject: "unterminated double-quoted payload",
-          code: "unterminated_quote",
-        };
-      }
-      if (next !== '"' && next !== "\\" && next !== "$" && next !== "`") {
-        return {
-          reject: `unsupported double-quote escape \\${next}`,
-          code: "unsafe_shell_syntax",
-        };
-      }
-      decoded += next;
-      i += 2;
+    const nested = findFirstHeredocEmbed(
+      segment.content,
+      absoluteStart,
+      nextPath,
+    );
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function mapDecodedOffsetToRawOffset(
+  rawPayload: string,
+  decodedOffset: number,
+  escaping: Extract<
+    ShellEscapingScheme,
+    { kind: "shell-single-quote" } | { kind: "shell-double-quote" }
+  >,
+): number | null {
+  if (decodedOffset < 0) return null;
+  let raw = 0;
+  let decoded = 0;
+  while (decoded < decodedOffset && raw < rawPayload.length) {
+    if (
+      escaping.kind === "shell-single-quote" &&
+      rawPayload.slice(raw, raw + 4) === "'\\''"
+    ) {
+      raw += 4;
+      decoded += 1;
       continue;
     }
-    if (ch === "$") {
-      return {
-        reject:
-          "dynamic expansion in double-quoted wrapper payload is not supported",
-        code: "unsafe_shell_syntax",
-      };
+    if (
+      escaping.kind === "shell-double-quote" &&
+      rawPayload[raw] === "\\" &&
+      raw + 1 < rawPayload.length
+    ) {
+      raw += 2;
+      decoded += 1;
+      continue;
     }
-    if (ch === "`") {
-      return {
-        reject: "backticks in double-quoted wrapper payload are not supported",
-        code: "unsafe_shell_syntax",
-      };
+    raw += 1;
+    decoded += 1;
+  }
+  if (decoded !== decodedOffset) return null;
+  return raw;
+}
+
+function resolveHeredocEmbedForProjection(
+  root: SourceNode,
+): LocatedEmbed | null {
+  const wrapperEmbed = findWrapperEmbed(root);
+  if (
+    wrapperEmbed &&
+    (wrapperEmbed.segment.escaping.kind === "shell-single-quote" ||
+      wrapperEmbed.segment.escaping.kind === "shell-double-quote")
+  ) {
+    const childHeredoc = findFirstHeredocEmbed(wrapperEmbed.segment.content);
+    if (childHeredoc) {
+      const rawPayload = root.text.slice(
+        wrapperEmbed.absoluteStart,
+        wrapperEmbed.absoluteEnd,
+      );
+      const rawStart = mapDecodedOffsetToRawOffset(
+        rawPayload,
+        childHeredoc.segment.span.start,
+        wrapperEmbed.segment.escaping,
+      );
+      const rawEnd = mapDecodedOffsetToRawOffset(
+        rawPayload,
+        childHeredoc.segment.span.end,
+        wrapperEmbed.segment.escaping,
+      );
+      if (rawStart != null && rawEnd != null) {
+        return {
+          ...childHeredoc,
+          absoluteStart: wrapperEmbed.absoluteStart + rawStart,
+          absoluteEnd: wrapperEmbed.absoluteStart + rawEnd,
+        };
+      }
     }
-    decoded += ch;
-    i++;
+  }
+  return findFirstHeredocEmbed(root);
+}
+
+function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
+  const wrapperEmbed = findWrapperEmbed(root);
+  if (!wrapperEmbed) return null;
+  if (root.language !== "bash") return null;
+  if (wrapperEmbed.segment.content.language !== "bash") return null;
+  if (
+    wrapperEmbed.segment.escaping.kind !== "shell-single-quote" &&
+    wrapperEmbed.segment.escaping.kind !== "shell-double-quote"
+  ) {
+    return null;
   }
   return {
-    reject: "unterminated double-quoted payload",
-    code: "unterminated_quote",
+    decodedPayload: wrapperEmbed.segment.content.text,
+    rawPayload: root.text.slice(
+      wrapperEmbed.absoluteStart,
+      wrapperEmbed.absoluteEnd,
+    ),
+    escaping: wrapperEmbed.segment.escaping,
+    prefix: sourceSpan(root.text, 0, wrapperEmbed.absoluteStart),
+    payload: sourceSpan(
+      root.text,
+      wrapperEmbed.absoluteStart,
+      wrapperEmbed.absoluteEnd,
+    ),
+    suffix: sourceSpan(root.text, wrapperEmbed.absoluteEnd, root.text.length),
   };
 }
 
-function parseShellWrapper(command: string): WrapperParseResult {
-  const trimmed = command.trim();
-  if (!trimmed) return { kind: "none" };
-  const leadWs = command.match(/^\s*/)?.[0].length ?? 0;
-  if (leadWs !== 0) return { kind: "none" };
-  const firstWs = command.search(/\s/);
-  if (firstWs <= 0) return { kind: "none" };
-  const shellToken = command.slice(0, firstWs);
-  const base = shellBasename(shellToken);
-  if (base !== "sh" && base !== "bash" && base !== "zsh") {
-    return { kind: "none" };
-  }
-
-  let i = firstWs;
-  while (i < command.length && /\s/.test(command[i]!)) i++;
-  const flagStart = i;
-  while (i < command.length && !/\s/.test(command[i]!)) i++;
-  const flag = command.slice(flagStart, i);
-  if (flag !== "-c" && flag !== "-lc" && flag !== "-cl") {
-    return { kind: "none" };
-  }
-
-  while (i < command.length && /\s/.test(command[i]!)) i++;
-  if (i >= command.length) {
-    return {
-      kind: "reject",
-      code: "unsafe_shell_syntax",
-      reason: "shell wrapper requires exactly one quoted payload",
-    };
-  }
-  const quoteChar = command[i]!;
-  if (quoteChar !== "'" && quoteChar !== '"') {
-    return {
-      kind: "reject",
-      code: "unsafe_shell_syntax",
-      reason: "shell wrapper payload must be single or double quoted",
-    };
-  }
-
-  if (quoteChar === "'") {
-    let cursor = i + 1;
-    let decodedPayload = "";
-    for (;;) {
-      const close = command.indexOf("'", cursor);
-      if (close < 0) {
-        return {
-          kind: "reject",
-          code: "unterminated_quote",
-          reason: "unterminated single-quoted wrapper payload",
-        };
-      }
-      decodedPayload += command.slice(cursor, close);
-      if (command.slice(close, close + 4) === "'\\''") {
-        decodedPayload += "'";
-        cursor = close + 4;
-        continue;
-      }
-      const trailer = command.slice(close + 1);
-      if (trailer.trim().length > 0) {
-        return {
-          kind: "reject",
-          code: "unsafe_shell_syntax",
-          reason:
-            "extra positional args after wrapper payload are not supported",
-        };
-      }
-      const rawPayload = command.slice(i + 1, close);
-      return {
-        kind: "wrapper",
-        value: {
-          decodedPayload,
-          rawPayload,
-          escaping: { kind: "shell-single-quote" },
-          prefix: sourceSpan(command, 0, i + 1),
-          payload: sourceSpan(command, i + 1, close),
-          suffix: sourceSpan(command, close, command.length),
-        },
-      };
-    }
-  }
-
-  const decoded = decodeShellDoubleQuotedPayloadConservative(command, i);
-  if ("reject" in decoded) {
-    return { kind: "reject", code: decoded.code, reason: decoded.reject };
-  }
-  const trailer = command.slice(decoded.closingQuote + 1);
-  if (trailer.trim().length > 0) {
-    return {
-      kind: "reject",
-      code: "unsafe_shell_syntax",
-      reason: "extra positional args after wrapper payload are not supported",
-    };
-  }
+function makeEmbeddedContent(
+  root: SourceNode,
+  embed: LocatedEmbed,
+  id = embed.id,
+): ShellEmbeddedContent {
+  const source = sourceSpan(root.text, embed.absoluteStart, embed.absoluteEnd);
   return {
-    kind: "wrapper",
-    value: {
-      decodedPayload: decoded.decoded,
-      rawPayload: command.slice(i + 1, decoded.closingQuote),
-      escaping: { kind: "shell-double-quote", conservative: true },
-      prefix: sourceSpan(command, 0, i + 1),
-      payload: sourceSpan(command, i + 1, decoded.closingQuote),
-      suffix: sourceSpan(command, decoded.closingQuote, command.length),
-    },
-  };
-}
-
-function withWrapperInputSegments(
-  value: ShellSemantic,
-  command: string,
-  wrapper: WrapperParse | null,
-): ShellSemantic {
-  const baseSource = sourceSpan(command, 0, command.length);
-  if (!wrapper) {
-    return { ...value, source: value.source ?? baseSource };
-  }
-  const embeddedId = "wrapper-payload";
-  const embedded: ShellEmbeddedContent = {
-    id: embeddedId,
-    language: "bash",
-    source: wrapper.payload,
-    decodedText: wrapper.decodedPayload,
+    id,
+    language: embed.segment.content.language,
+    source,
+    decodedText: embed.segment.content.text,
     segments: [
       {
         kind: "text",
-        text: wrapper.rawPayload,
-        source: wrapper.payload,
+        text: embed.segment.content.text,
+        source,
       },
     ],
   };
-  const defaultSegments: ShellInputSegment[] = [
-    {
-      kind: "wrapper-prefix",
-      text: wrapper.prefix.rawText,
-      source: wrapper.prefix,
-      language: "bash",
-    },
+}
+
+function heredocRoleFromSemantic(
+  semantic?: ShellSemantic,
+): "write-content" | "script-content" | "heredoc-body" {
+  if (semantic?.kind === "write") return "write-content";
+  if (
+    semantic?.kind === "script-exec" &&
+    semantic.scriptSource.type === "heredoc"
+  ) {
+    return "script-content";
+  }
+  return "heredoc-body";
+}
+
+function splitTerminatorAndTrailing(shellSuffix: string): {
+  terminator: string;
+  trailing: string;
+} {
+  if (!shellSuffix) return { terminator: "", trailing: "" };
+  if (!shellSuffix.startsWith("\n")) {
+    return { terminator: shellSuffix, trailing: "" };
+  }
+  const secondNewline = shellSuffix.indexOf("\n", 1);
+  if (secondNewline < 0) return { terminator: shellSuffix, trailing: "" };
+  return {
+    terminator: shellSuffix.slice(0, secondNewline),
+    trailing: shellSuffix.slice(secondNewline),
+  };
+}
+
+export function sourceTreeToShellInputSegments(
+  root: SourceNode,
+  semantic?: ShellSemantic,
+): ShellInputSegment[] {
+  const wrapper = wrapperParseFromSourceTree(root);
+  const heredoc = resolveHeredocEmbedForProjection(root);
+  const role = heredocRoleFromSemantic(semantic);
+  const hasSemanticHeredocRole =
+    semantic?.kind === "write" ||
+    (semantic?.kind === "script-exec" &&
+      semantic.scriptSource.type === "heredoc");
+
+  if (heredoc && hasSemanticHeredocRole) {
+    const segments: ShellInputSegment[] = [];
+    const shellStart = wrapper ? wrapper.payload.start : 0;
+    const shellEnd = wrapper ? wrapper.payload.end : root.text.length;
+    if (wrapper) {
+      segments.push({
+        kind: "wrapper-prefix",
+        text: wrapper.prefix.rawText,
+        source: wrapper.prefix,
+        language: "bash",
+      });
+    }
+    if (heredoc.absoluteStart > shellStart) {
+      segments.push({
+        kind: "command-header",
+        text: root.text.slice(shellStart, heredoc.absoluteStart),
+        source: sourceSpan(root.text, shellStart, heredoc.absoluteStart),
+        language: "bash",
+      });
+    }
+    segments.push({
+      kind: "embedded-content",
+      role,
+      text: root.text.slice(heredoc.absoluteStart, heredoc.absoluteEnd),
+      source: sourceSpan(root.text, heredoc.absoluteStart, heredoc.absoluteEnd),
+      language: heredoc.segment.content.language,
+      filePath: semantic.kind === "write" ? semantic.filePath : undefined,
+      contentNodeId: "heredoc-body",
+    });
+    const suffix = root.text.slice(heredoc.absoluteEnd, shellEnd);
+    const { terminator, trailing } = splitTerminatorAndTrailing(suffix);
+    if (terminator.length > 0) {
+      segments.push({
+        kind: "heredoc-terminator",
+        text: terminator,
+        source: sourceSpan(
+          root.text,
+          heredoc.absoluteEnd,
+          heredoc.absoluteEnd + terminator.length,
+        ),
+        language: "bash",
+      });
+    }
+    if (trailing.length > 0) {
+      const trailingStart = heredoc.absoluteEnd + terminator.length;
+      segments.push({
+        kind: "command-trailing",
+        text: trailing,
+        source: sourceSpan(
+          root.text,
+          trailingStart,
+          trailingStart + trailing.length,
+        ),
+        language: "bash",
+      });
+    }
+    if (wrapper) {
+      segments.push({
+        kind: "wrapper-suffix",
+        text: wrapper.suffix.rawText,
+        source: wrapper.suffix,
+        language: "bash",
+      });
+    }
+    return segments;
+  }
+
+  if (wrapper) {
+    return [
+      {
+        kind: "wrapper-prefix",
+        text: wrapper.prefix.rawText,
+        source: wrapper.prefix,
+        language: "bash",
+      },
+      {
+        kind: "shell-text",
+        text: wrapper.payload.rawText,
+        source: wrapper.payload,
+        language: "bash",
+      },
+      {
+        kind: "wrapper-suffix",
+        text: wrapper.suffix.rawText,
+        source: wrapper.suffix,
+        language: "bash",
+      },
+    ];
+  }
+
+  return [
     {
       kind: "shell-text",
-      text: wrapper.payload.rawText,
-      source: wrapper.payload,
-      language: "bash",
-    },
-    {
-      kind: "wrapper-suffix",
-      text: wrapper.suffix.rawText,
-      source: wrapper.suffix,
+      text: root.text,
+      source: sourceSpan(root.text, 0, root.text.length),
       language: "bash",
     },
   ];
+}
+
+export function sourceTreeToShellEmbeddedContent(
+  root: SourceNode,
+  semantic?: ShellSemantic,
+): ShellEmbeddedContent[] {
+  const wrapperEmbed = findWrapperEmbed(root);
+  const heredocEmbed = resolveHeredocEmbedForProjection(root);
+  const hasSemanticHeredocRole =
+    semantic?.kind === "write" ||
+    (semantic?.kind === "script-exec" &&
+      semantic.scriptSource.type === "heredoc");
+
+  if (heredocEmbed && hasSemanticHeredocRole) {
+    return [makeEmbeddedContent(root, heredocEmbed, "heredoc-body")];
+  }
+  if (wrapperEmbed) {
+    return [makeEmbeddedContent(root, wrapperEmbed, "wrapper-payload")];
+  }
+  if (heredocEmbed) {
+    return [makeEmbeddedContent(root, heredocEmbed)];
+  }
+  return [];
+}
+
+function withSourceTreeCompatibility(
+  value: ShellSemantic,
+  command: string,
+  sourceTree: SourceNode,
+): ShellSemantic {
+  const baseSource = sourceSpan(command, 0, command.length);
   return {
     ...value,
     source: value.source ?? baseSource,
-    inputSegments: value.inputSegments ?? defaultSegments,
-    embeddedContent: value.embeddedContent ?? [embedded],
+    sourceTree,
+    inputSegments:
+      value.inputSegments ?? sourceTreeToShellInputSegments(sourceTree, value),
+    embeddedContent:
+      value.embeddedContent ??
+      sourceTreeToShellEmbeddedContent(sourceTree, value),
   };
 }
 
@@ -1814,99 +1959,6 @@ function parseLsDirectoryListing(command: string): { dirPath: string } | null {
   const m = command.match(/^\s*ls\s+-1\s+(\S+)\s*$/);
   if (!m) return null;
   return { dirPath: m[1]! };
-}
-
-function makeHeredocInputSegments(
-  originalCommand: string,
-  wrapper: WrapperParse | null,
-  leadingText: string,
-  commandHeader: string,
-  body: string,
-  terminator: string,
-  trailing: string,
-  bodyLanguage: string,
-  bodyRole: "write-content" | "script-content" | "heredoc-body",
-  filePath?: string,
-): { inputSegments: ShellInputSegment[]; embedded: ShellEmbeddedContent[] } {
-  const segments: ShellInputSegment[] = [];
-  const embeddedId = "heredoc-body";
-  const wrapperPrefixLength = wrapper ? wrapper.prefix.rawText.length : 0;
-  const headerText = `${leadingText}${commandHeader}\n`;
-  const terminatorText = `\n${terminator}`;
-  const trailingText = trailing.length > 0 ? `\n${trailing}` : "";
-  const bodyStart = wrapperPrefixLength + headerText.length;
-  const bodyEnd = bodyStart + body.length;
-  if (wrapper) {
-    segments.push({
-      kind: "wrapper-prefix",
-      text: wrapper.prefix.rawText,
-      source: wrapper.prefix,
-      language: "bash",
-    });
-  }
-  segments.push({
-    kind: "command-header",
-    text: headerText,
-    source: sourceSpan(
-      originalCommand,
-      wrapperPrefixLength,
-      wrapperPrefixLength + headerText.length,
-    ),
-    language: "bash",
-  });
-  const embeddedSource = sourceSpan(originalCommand, bodyStart, bodyEnd);
-  segments.push({
-    kind: "embedded-content",
-    role: bodyRole,
-    text: body,
-    source: embeddedSource,
-    language: bodyLanguage,
-    filePath,
-    contentNodeId: embeddedId,
-  });
-  segments.push({
-    kind: "heredoc-terminator",
-    text: terminatorText,
-    source: sourceSpan(
-      originalCommand,
-      bodyEnd,
-      bodyEnd + terminatorText.length,
-    ),
-    language: "bash",
-  });
-  if (trailingText.length > 0) {
-    const trailingStart = bodyEnd + terminatorText.length;
-    segments.push({
-      kind: "command-trailing",
-      text: trailingText,
-      source: sourceSpan(
-        originalCommand,
-        trailingStart,
-        trailingStart + trailingText.length,
-      ),
-      language: "bash",
-    });
-  }
-  if (wrapper) {
-    segments.push({
-      kind: "wrapper-suffix",
-      text: wrapper.suffix.rawText,
-      source: wrapper.suffix,
-      language: "bash",
-    });
-  }
-  return {
-    inputSegments: segments,
-    embedded: [
-      {
-        id: embeddedId,
-        language: bodyLanguage,
-        source: embeddedSource,
-        decodedText: body,
-        segments: [{ kind: "text", text: body, source: embeddedSource }],
-      },
-    ],
-  };
 }
 
 function classifyTrailingStructuredOutput(
@@ -1975,15 +2027,66 @@ function classifyTrailingStructuredOutput(
   return null;
 }
 
+function findHeredocOperatorIndex(line: string): number {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i + 1 < line.length; i++) {
+    const ch = line[i]!;
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < line.length) {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === "#") {
+      const prev = line[i - 1] ?? "";
+      if (prev !== "\\" && (i === 0 || /[\s;&|()<>]/.test(prev))) {
+        break;
+      }
+    }
+    if (
+      ch === "<" &&
+      line[i + 1] === "<" &&
+      line[i + 2] !== "<" &&
+      line[i - 1] !== "<"
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 function classifyHeredocDocument(
   innerCommand: string,
   originalCommand: string,
-  wrapper: WrapperParse | null,
 ): ShellSemanticResult | null {
   const normalized = innerCommand.replace(/\r\n/g, "\n");
   const lines = normalized.split("\n");
-  const heredocLineIndex = lines.findIndex((line) => line.includes("<<"));
-  if (heredocLineIndex < 0) return null;
+  let heredocLineIndex = -1;
+  let opIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const idx = findHeredocOperatorIndex(lines[i] ?? "");
+    if (idx >= 0) {
+      heredocLineIndex = i;
+      opIndex = idx;
+      break;
+    }
+  }
+  if (heredocLineIndex < 0 || opIndex < 0) return null;
   const leading = lines.slice(0, heredocLineIndex);
   if (
     leading.some(
@@ -1997,8 +2100,6 @@ function classifyHeredocDocument(
   }
 
   const commandLine = lines[heredocLineIndex] ?? "";
-  const opIndex = commandLine.indexOf("<<");
-  if (opIndex < 0) return null;
   if (commandLine.startsWith("<<-", opIndex)) {
     return reject("invalid_heredoc", "<<- heredoc is not supported");
   }
@@ -2026,7 +2127,7 @@ function classifyHeredocDocument(
     delimiterEnd = cursor + delimiter.length;
   }
   if (!delimiter) return reject("invalid_heredoc", "empty heredoc delimiter");
-  if (commandLine.slice(delimiterEnd).includes("<<")) {
+  if (findHeredocOperatorIndex(commandLine.slice(delimiterEnd)) >= 0) {
     return reject(
       "invalid_heredoc",
       "multiple heredocs are not supported in this batch",
@@ -2040,7 +2141,7 @@ function classifyHeredocDocument(
   }
   const hasTrailingHeredoc = lines
     .slice(terminatorIndex + 1)
-    .some((line) => line.includes("<<"));
+    .some((line) => findHeredocOperatorIndex(line) >= 0);
   if (hasTrailingHeredoc) {
     return reject(
       "invalid_heredoc",
@@ -2053,8 +2154,6 @@ function classifyHeredocDocument(
     .slice(terminatorIndex + 1)
     .join("\n")
     .trim();
-  const leadingText =
-    leading.length > 0 ? `${leading.join("\n").replace(/\s+$/, "")}\n` : "";
   const commandName = commandLine.trim().split(/\s+/)[0];
   if (!commandName)
     return reject("unsupported_command", "missing heredoc command name");
@@ -2099,29 +2198,12 @@ function classifyHeredocDocument(
       ? classifyTrailingStructuredOutput(trailing)
       : null;
     if (trailing && !trailingStructured) {
-      return {
-        ok: true,
-        value: withWrapperInputSegments(writeValue, originalCommand, wrapper),
-      };
+      return { ok: true, value: writeValue };
     }
-    const heredocMeta = makeHeredocInputSegments(
-      originalCommand,
-      wrapper,
-      leadingText,
-      commandLine,
-      body,
-      delimiter,
-      trailing,
-      langFromPath(filePath) || "text",
-      "write-content",
-      filePath,
-    );
     return {
       ok: true,
       value: {
         ...writeValue,
-        inputSegments: heredocMeta.inputSegments,
-        embeddedContent: heredocMeta.embedded,
         effects: [
           ...(writeValue.effects ?? []),
           ...(trailingStructured?.effects ?? []).map((e, idx) => ({
@@ -2166,24 +2248,9 @@ function classifyHeredocDocument(
       },
     ],
   };
-  const heredocMeta = makeHeredocInputSegments(
-    originalCommand,
-    wrapper,
-    leadingText,
-    commandLine,
-    body,
-    delimiter,
-    trailing,
-    language,
-    "script-content",
-  );
   return {
     ok: true,
-    value: {
-      ...scriptValue,
-      inputSegments: heredocMeta.inputSegments,
-      embeddedContent: heredocMeta.embedded,
-    },
+    value: scriptValue,
   };
 }
 
@@ -2395,25 +2462,30 @@ export async function parseShellSemantic(
 ): Promise<ShellSemanticResult> {
   if (!command.trim()) return reject("empty", "empty command");
 
-  const wrapperResult = parseShellWrapper(command);
-  if (wrapperResult.kind === "reject") {
-    return reject(wrapperResult.code, wrapperResult.reason);
+  const sourceTreeResult = parseCommandSourceTree(command);
+  if (!sourceTreeResult.ok) {
+    return reject(sourceTreeResult.code, sourceTreeResult.reason);
   }
-  const wrapper = wrapperResult.kind === "wrapper" ? wrapperResult.value : null;
-  const inner = wrapper ? wrapper.decodedPayload : command;
+  const sourceTree = sourceTreeResult.value;
+  const wrapperEmbed = findWrapperEmbed(sourceTree);
+  const wrapper = wrapperParseFromSourceTree(sourceTree);
+  const innerNode = wrapperEmbed ? wrapperEmbed.segment.content : sourceTree;
+  const inner = wrapper ? wrapper.decodedPayload : sourceTree.text;
 
-  const heredocResult = classifyHeredocDocument(inner, command, wrapper);
-  if (heredocResult) {
-    return heredocResult.ok
-      ? {
-          ok: true,
-          value: withWrapperInputSegments(
-            heredocResult.value,
-            command,
-            wrapper,
-          ),
-        }
-      : heredocResult;
+  if (findFirstHeredocEmbed(innerNode)) {
+    const heredocResult = classifyHeredocDocument(inner, command);
+    if (heredocResult) {
+      return heredocResult.ok
+        ? {
+            ok: true,
+            value: withSourceTreeCompatibility(
+              heredocResult.value,
+              command,
+              sourceTree,
+            ),
+          }
+        : heredocResult;
+    }
   }
 
   const structuredList = classifyStructuredCommandList(inner, command);
@@ -2421,10 +2493,10 @@ export async function parseShellSemantic(
     return structuredList.ok
       ? {
           ok: true,
-          value: withWrapperInputSegments(
+          value: withSourceTreeCompatibility(
             structuredList.value,
             command,
-            wrapper,
+            sourceTree,
           ),
         }
       : structuredList;
@@ -2451,7 +2523,7 @@ export async function parseShellSemantic(
   if (!classified.ok) return classified;
   return {
     ok: true,
-    value: withWrapperInputSegments(classified.value, command, wrapper),
+    value: withSourceTreeCompatibility(classified.value, command, sourceTree),
   };
 }
 
