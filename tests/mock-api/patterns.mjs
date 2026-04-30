@@ -488,6 +488,26 @@ export function matchPattern(userText) {
         '/run/current-system/sw/bin/zsh -lc "python - <<\'PY\'\nprint(\\"wrapped\\")\nPY"',
     };
 
+  if (/semantic shell quoted wrapper payload/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        '/run/current-system/sw/bin/zsh -lc \'program --some-flag -y "hello world"\'',
+    };
+
+  if (/semantic shell rejected dynamic wrapper payload/i.test(userText))
+    return {
+      type: "shell",
+      command: '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
+    };
+
+  if (/semantic shell wrapped markdown heredoc directory listing/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "bash -lc \"mkdir -p /tmp/cydo-semantic-shell\ncat > /tmp/cydo-semantic-shell/output.md <<'EOF'\n# Wrapped Markdown\n\nThis is **rendered** markdown.\nEOF\nls -1 /tmp/cydo-semantic-shell\"",
+    };
+
   if (/semantic shell wrapped markdown heredoc/i.test(userText))
     return {
       type: "shell",

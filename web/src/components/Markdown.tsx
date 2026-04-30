@@ -20,7 +20,6 @@ interface Props {
 export const Markdown: FunctionComponent<Props> = memo(
   ({ text, class: className, ...rest }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
-    if (!text) return null;
 
     const parserRef = useRef<IncremarkParser | null>(null);
     if (!parserRef.current) {
@@ -53,6 +52,7 @@ export const Markdown: FunctionComponent<Props> = memo(
       }
     }, [text]);
     const tokens = useHighlight(showRaw ? text : null, "markdown");
+    if (!text) return null;
 
     return (
       <div class={`markdown-wrap ${showRaw ? "markdown-raw" : ""}`}>

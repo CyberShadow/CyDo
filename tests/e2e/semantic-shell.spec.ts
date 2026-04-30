@@ -256,6 +256,55 @@ test("semantic shell: wrapped python heredoc preserves wrapper syntax and conten
   await expect(semanticScript).toContainText('"');
 });
 
+test("semantic shell: quoted wrapper payload renders source tree wrapper input", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell quoted wrapper payload");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const wrapperInput = toolCall.locator(
+    '[data-testid="semantic-shell-wrapper-input"]',
+  );
+  await expect(wrapperInput).toBeVisible({ timeout });
+  await expect(wrapperInput).toContainText("/run/current-system/sw/bin/zsh");
+  await expect(wrapperInput).toContainText("-lc");
+  await expect(wrapperInput).toContainText(
+    'program --some-flag -y "hello world"',
+  );
+  await expect(wrapperInput).toContainText(
+    '\'program --some-flag -y "hello world"\'',
+  );
+
+  const wrapperPayload = toolCall.locator(
+    '[data-testid="semantic-shell-wrapper-payload"]',
+  );
+  await expect(wrapperPayload).toBeVisible({ timeout });
+  await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-script"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-write"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-read"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-diff"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output-search"]'),
+  ).not.toBeVisible();
+});
+
 test("semantic shell: wrapped markdown heredoc renders semantic output with proven boundaries", async ({
   page,
   agentType,
@@ -281,6 +330,64 @@ test("semantic shell: wrapped markdown heredoc renders semantic output with prov
   await expect(semanticOut.locator(".markdown")).toContainText("Wrapped Markdown");
   await expect(semanticOut.locator(".markdown")).toHaveCount(1);
   await expect(semanticOut).toContainText("-rw");
+});
+
+test("semantic shell: wrapped markdown heredoc with directory listing keeps stdout raw", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell wrapped markdown heredoc directory listing");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  await expect(semanticWrite).toBeVisible({ timeout });
+  await expect(semanticWrite).toContainText("bash");
+  await expect(semanticWrite).toContainText("-lc");
+  await expect(semanticWrite).toContainText("<<'EOF'");
+  await expect(semanticWrite).toContainText("EOF");
+  await expect(semanticWrite).toContainText("ls -1");
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output-search"]'),
+  ).not.toBeVisible();
+
+  const result = toolCall.locator(".tool-result");
+  if (!(await result.first().isVisible())) {
+    const resultHeader = toolCall.locator(".tool-result-header");
+    if ((await resultHeader.count()) > 0) {
+      await resultHeader.click();
+    }
+  }
+  await expect(result.first()).toBeVisible({ timeout });
+  await expect(result).toContainText("output.md");
+  await expect(toolCall.locator(".tool-result .markdown")).toHaveCount(0);
+});
+
+test("semantic shell: dynamic wrapper payload falls back to normal command input", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell rejected dynamic wrapper payload");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-wrapper-input"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="source-tree-input"]'),
+  ).not.toBeVisible();
+  await expect(toolCall.locator(".write-content")).toContainText(
+    '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
+  );
 });
 
 test("semantic shell: rg structured output keeps per-line prefixes and independent line rendering", async ({

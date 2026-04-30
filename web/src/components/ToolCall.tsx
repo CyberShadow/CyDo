@@ -19,6 +19,7 @@ import {
 import { MarkdownDiffPreview } from "./file-preview/MarkdownDiffPreview";
 import { SvgDiffPreview } from "./file-preview/SvgDiffPreview";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
+import { SourceNodeView } from "./SourceNodeView";
 import {
   SemanticShellOutput,
   hasSemanticShellOutput,
@@ -49,6 +50,7 @@ import {
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
+import { parseCommandSourceTree, type SourceNode } from "../lib/sourceTree";
 
 /**
  * Tool Result Rendering Principles
@@ -657,6 +659,10 @@ function ShellCommandInput({
 }) {
   const command = extractSemanticShellCommand(input, result);
   const semantic = useShellSemantic(command);
+  const parsedSourceTree = useMemo(
+    () => (command ? parseCommandSourceTree(command) : null),
+    [command],
+  );
   const isHeredocWrite =
     semantic?.ok === true && semantic.value.kind === "write";
   const isScriptExec =
@@ -793,6 +799,24 @@ function ShellCommandInput({
     );
   }
 
+  if (command && parsedSourceTree?.ok) {
+    const sourceTreeView = (
+      <SourceNodeView
+        root={parsedSourceTree.value}
+        copyText={parsedSourceTree.value.text}
+      />
+    );
+    const isWrapperView = hasWrapperSourceTree(parsedSourceTree.value);
+    return formatGenericInput(
+      remaining,
+      isWrapperView ? (
+        <div data-testid="semantic-shell-wrapper-input">{sourceTreeView}</div>
+      ) : (
+        sourceTreeView
+      ),
+    );
+  }
+
   return formatGenericInput(
     remaining,
     command ? (
@@ -800,6 +824,15 @@ function ShellCommandInput({
         {tokens ? renderTokenLines(tokens) : command}
       </CodePre>
     ) : undefined,
+  );
+}
+
+function hasWrapperSourceTree(root: SourceNode): boolean {
+  return root.segments.some(
+    (segment) =>
+      segment.kind === "embed" &&
+      (segment.escaping.kind === "shell-single-quote" ||
+        segment.escaping.kind === "shell-double-quote"),
   );
 }
 
