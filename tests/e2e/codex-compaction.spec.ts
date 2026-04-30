@@ -67,25 +67,27 @@ test("codex reconnect during active turn does not replay stale compacting status
   });
 
   // Turn 2 keeps processing long enough to reconnect mid-turn.
-  await sendMessage(page, "run background command sleep 8");
+  // shell intent (not background_shell) delays response.completed by 5s.
+  await sendMessage(page, "run command sleep 5");
 
   // Wait until the live stream reports compacting before reloading.
   await expect
-    .poll(() =>
-      frames.some(
-        (msg) =>
-          msg?.event?.type === "session/status" &&
-          typeof msg?.event?.status === "string" &&
-          /compact/i.test(msg.event.status),
-      ),
+    .poll(
+      () =>
+        frames.some(
+          (msg) =>
+            msg?.event?.type === "session/status" &&
+            typeof msg?.event?.status === "string" &&
+            /compact/i.test(msg.event.status),
+        ),
+      { timeout },
     )
     .toBe(true);
 
   const beforeReloadIdx = frames.length;
   await page.reload();
   await page
-    .locator(".sidebar-item .sidebar-label", { hasText: "trigger compaction" })
-    .first()
+    .locator('.sidebar-item[data-tid="1"]')
     .click({ timeout: 15_000 });
 
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });

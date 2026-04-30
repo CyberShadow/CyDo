@@ -94,17 +94,27 @@ export const test = base.extend<TestFixtures>({
 
     // Poll for readiness
     const baseURL = "http://localhost:3940";
-    for (let i = 0; i < 60; i++) {
+    const READY_TIMEOUT_MS = 60_000;
+    const pollInterval = 500;
+    const maxAttempts = READY_TIMEOUT_MS / pollInterval;
+    let ready = false;
+    for (let i = 0; i < maxAttempts; i++) {
       try {
         const res = await fetch(baseURL);
-        if (res.ok || res.status < 500) break;
+        if (res.ok || res.status < 500) {
+          ready = true;
+          break;
+        }
       } catch {
         // not ready yet
       }
       if (proc.exitCode !== null) {
         throw new Error(`CyDo backend exited with code ${proc.exitCode}`);
       }
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (!ready) {
+      throw new Error(`Backend did not become ready within ${READY_TIMEOUT_MS}ms`);
     }
 
     await use({
