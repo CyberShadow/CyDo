@@ -3886,6 +3886,29 @@ pre.extra-field-value {
   margin-bottom: 4px;
 }
 
+.semantic-shell-output {
+  position: relative;
+}
+
+.semantic-shell-output-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.semantic-shell-output-toolbar .btn-copy {
+  position: static;
+  opacity: 1;
+}
+
+.semantic-shell-structured-piece + .semantic-shell-structured-piece {
+  margin-top: 8px;
+}
+
+.semantic-shell-raw {
+  margin-top: 6px;
+}
+
 .svg-diff-preview {
   display: flex;
   gap: 12px;

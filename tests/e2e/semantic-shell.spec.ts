@@ -4,7 +4,23 @@ import {
   enterSession,
   sendMessage,
   responseTimeout,
+  type Page,
+  type AgentType,
 } from "./fixtures";
+
+async function lastShellToolCall(
+  page: Page,
+  agentType: AgentType,
+  timeout: number,
+) {
+  const toolName = agentType === "codex" ? "commandExecution" : "Bash";
+  const toolCall = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: toolName }) })
+    .last();
+  await expect(toolCall).toBeVisible({ timeout });
+  return toolCall;
+}
 
 /**
  * Test 1: cat file read
@@ -216,4 +232,164 @@ test("semantic shell: git diff renders through patch view", async ({
   // input is collapsed for diffs per auto-expand/collapse)
   const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
   await expect(semanticDiff).toBeVisible({ timeout });
+});
+
+test("semantic shell: wrapped python heredoc preserves wrapper syntax and content", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell wrapped python heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticScript = toolCall.locator(
+    '[data-testid="semantic-shell-script"]',
+  );
+  await expect(semanticScript).toBeVisible({ timeout });
+  await expect(semanticScript).toContainText("/run/current-system/sw/bin/zsh");
+  await expect(semanticScript).toContainText("-lc");
+  await expect(semanticScript).toContainText("<<'PY'");
+  await expect(semanticScript).toContainText("PY");
+  await expect(semanticScript).toContainText('print("wrapped")');
+  await expect(semanticScript).toContainText('"');
+});
+
+test("semantic shell: wrapped markdown heredoc renders semantic output with proven boundaries", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell wrapped markdown heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  await expect(semanticWrite).toBeVisible({ timeout });
+  await expect(semanticWrite).toContainText("bash");
+  await expect(semanticWrite).toContainText("-lc");
+  await expect(semanticWrite).toContainText("mkdir -p");
+  await expect(semanticWrite).toContainText("<<'EOF'");
+  await expect(semanticWrite).toContainText("EOF");
+  await expect(semanticWrite).toContainText("ls -l");
+  await expect(semanticWrite).toContainText("sed -n");
+
+  const semanticOut = toolCall.locator('[data-testid="semantic-shell-output"]');
+  await expect(semanticOut).toBeVisible({ timeout });
+  await expect(semanticOut.locator(".markdown")).toContainText("Wrapped Markdown");
+  await expect(semanticOut.locator(".markdown")).toHaveCount(1);
+  await expect(semanticOut).toContainText("-rw");
+});
+
+test("semantic shell: rg structured output keeps per-line prefixes and independent line rendering", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell rg structured");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const searchRoot = toolCall.locator(
+    '[data-testid="semantic-shell-output-search"]',
+  );
+  await expect(searchRoot).toBeVisible({ timeout });
+
+  const prefixes = searchRoot.locator(
+    '[data-testid="semantic-shell-line-prefix"]',
+  );
+  await expect(prefixes.first()).toBeVisible({ timeout });
+  const count = await prefixes.count();
+  expect(count).toBeGreaterThanOrEqual(2);
+  const first = (await prefixes.first().innerText()).trim();
+  expect(first).toMatch(/^\d+:/);
+});
+
+test("semantic shell: unsupported rg fallback stays raw", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell rg fallback");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output-search"]'),
+  ).not.toBeVisible();
+  const rawResult = toolCall.locator(".tool-result").first();
+  if (!(await rawResult.isVisible())) {
+    const resultHeader = toolCall.locator(".tool-result-header");
+    if ((await resultHeader.count()) > 0) {
+      await resultHeader.click();
+    }
+  }
+  await expect(toolCall.locator(".tool-result")).toContainText(
+    /semantic shell|rg: command not found|rg: not found/,
+  );
+});
+
+test("semantic shell: sed/printf sections keep delimiter anchors", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell sections");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+  const root = toolCall.locator('[data-testid="semantic-shell-output"]');
+  await expect(root).toBeVisible({ timeout });
+
+  await expect(root.getByText("--- section ---")).toHaveCount(1);
+  const pieceCount = await root.locator(".semantic-shell-structured-piece").count();
+  expect(pieceCount).toBeGreaterThanOrEqual(2);
+
+  await page.context().grantPermissions(
+    ["clipboard-read", "clipboard-write"],
+    { origin: "http://localhost:3940" },
+  );
+  await page.bringToFront();
+  const copyButton = root.locator(".semantic-shell-output-toolbar .btn-copy");
+  await expect(copyButton).toBeVisible({ timeout });
+  const probe = await page.evaluate(async () => {
+    await navigator.clipboard.writeText("__cydo_clipboard_probe__");
+    return navigator.clipboard.readText();
+  });
+  expect(probe).toBe("__cydo_clipboard_probe__");
+  await copyButton.click({ force: true });
+  const expectedClipboard =
+    agentType === "claude"
+      ? "import {\n\n--- section ---\nimport {"
+      : "import {\n\n--- section ---\nimport {\n";
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(expectedClipboard);
+});
+
+test("semantic shell: duplicated section delimiters fall back without guessed markdown", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell sections fallback");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output"]'),
+  ).not.toBeVisible();
+  const rawResult = toolCall.locator(".tool-result").first();
+  if (!(await rawResult.isVisible())) {
+    const resultHeader = toolCall.locator(".tool-result-header");
+    if ((await resultHeader.count()) > 0) {
+      await resultHeader.click();
+    }
+  }
+  await expect(toolCall.locator(".tool-result")).toContainText("section");
 });

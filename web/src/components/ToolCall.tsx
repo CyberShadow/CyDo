@@ -20,6 +20,10 @@ import { MarkdownDiffPreview } from "./file-preview/MarkdownDiffPreview";
 import { SvgDiffPreview } from "./file-preview/SvgDiffPreview";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
 import {
+  SemanticShellOutput,
+  hasSemanticShellOutput,
+} from "./SemanticShellOutput";
+import {
   detectRenderableFormat,
   isMarkdownPath,
   isSvgPath,
@@ -41,6 +45,7 @@ import {
 } from "../lib/patches";
 import {
   useShellSemantic,
+  type ShellInputSegment,
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
@@ -121,6 +126,55 @@ function extractResultText(
     .filter((b) => b.type === "text" && b.text)
     .map((b) => b.text!);
   return texts.length > 0 ? texts.join("") : null;
+}
+
+function extractShellInputCommand(
+  input: Record<string, unknown>,
+): string | null {
+  if (typeof input.command === "string") return input.command;
+  if (typeof input.cmd === "string") return input.cmd;
+  return null;
+}
+
+function extractShellActionCommand(result?: ToolResult): string | null {
+  const toolResult =
+    result?.toolResult != null && typeof result.toolResult === "object"
+      ? (result.toolResult as Record<string, unknown>)
+      : null;
+  const actions = toolResult?.commandActions;
+  if (!Array.isArray(actions)) return null;
+  for (const action of actions) {
+    if (!action || typeof action !== "object" || Array.isArray(action))
+      continue;
+    const cmd = (action as Record<string, unknown>).command;
+    if (typeof cmd === "string" && cmd.trim().length > 0) return cmd;
+  }
+  return null;
+}
+
+function extractSemanticShellCommand(
+  input: Record<string, unknown>,
+  result?: ToolResult,
+): string | null {
+  const base = extractShellInputCommand(input);
+  const actionCommand = extractShellActionCommand(result);
+  if (!actionCommand) return base;
+  if (!base) return actionCommand;
+  const actionLooksLikeShellWrapper =
+    /^\s*(?:\S+\/)?(?:ba|z)?sh\s+-[cl]+\s+/i.test(actionCommand);
+  // Codex commandExecution often reports an outer `sh -c "..."` wrapper
+  // in input.command while commandActions[*].command can hold a normalized
+  // semantic command. For multiline wrappers, keep the wrapper payload intact
+  // so structured command-list parsing (e.g. sed/printf sections) can see all
+  // commands, not just the first parsed action.
+  if (/^\s*(?:\S+\/)?sh\s+-c\s+/i.test(base)) {
+    // Nested shell wrappers (e.g. sh -c "/run/.../zsh -lc 'python <<PY'")
+    // parse more reliably from commandActions than from heavily escaped input.
+    if (actionLooksLikeShellWrapper) return actionCommand;
+    if (base.includes("\n")) return base;
+    return actionCommand;
+  }
+  return base;
 }
 
 interface Props {
@@ -594,16 +648,14 @@ function ApplyPatchInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
-function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
-  // Different Codex formats use different field names for the command:
-  //   Bash/commandExecution/local_shell_call: "command"
-  //   exec_command: "cmd"
-  const command =
-    typeof input.command === "string"
-      ? input.command
-      : typeof input.cmd === "string"
-        ? input.cmd
-        : null;
+function ShellCommandInput({
+  input,
+  result,
+}: {
+  input: Record<string, unknown>;
+  result?: ToolResult;
+}) {
+  const command = extractSemanticShellCommand(input, result);
   const semantic = useShellSemantic(command);
   const isHeredocWrite =
     semantic?.ok === true && semantic.value.kind === "write";
@@ -631,17 +683,43 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
   if (isHeredocWrite) {
     const writeVal = (
       semantic as { ok: true; value: ShellHeredocWriteSemantic }
-    ).value;
+    ).value as ShellHeredocWriteSemantic & {
+      inputSegments?: ShellInputSegment[];
+    };
+    const semanticSegments: ShellInputSegment[] = writeVal.inputSegments ?? [];
+    const embeddedIdx = semanticSegments.findIndex(
+      (s) => s.kind === "embedded-content" && s.role === "write-content",
+    );
+    const preTextFromSegments =
+      embeddedIdx >= 0
+        ? semanticSegments
+            .slice(0, embeddedIdx)
+            .map((s) => s.text)
+            .join("")
+        : null;
+    const postTextFromSegments =
+      embeddedIdx >= 0
+        ? semanticSegments
+            .slice(embeddedIdx + 1)
+            .map((s) => s.text)
+            .join("")
+        : null;
     const writeSegment = writeVal.segments.find(
       (s) => s.kind === "write-content",
     );
     const footerText =
-      writeVal.segments.find((s) => s.kind === "command-footer")?.text ?? "";
+      postTextFromSegments ??
+      writeVal.segments.find((s) => s.kind === "command-footer")?.text ??
+      "";
     return formatGenericInput(
       remaining,
       <div class="semantic-shell-command" data-testid="semantic-shell-write">
         <CodePre class="write-content" copyText={command!}>
-          {headerTokens ? renderTokenLines(headerTokens) : headerText.trimEnd()}
+          {preTextFromSegments != null
+            ? preTextFromSegments.replace(/\n$/, "")
+            : headerTokens
+              ? renderTokenLines(headerTokens)
+              : headerText.trimEnd()}
         </CodePre>
         {writeSegment && (
           <FileContentPreview
@@ -664,17 +742,43 @@ function ShellCommandInput({ input }: { input: Record<string, unknown> }) {
       .scriptSource.type === "heredoc"
   ) {
     const scriptVal = (semantic as { ok: true; value: ShellScriptExecSemantic })
-      .value;
+      .value as ShellScriptExecSemantic & {
+      inputSegments?: ShellInputSegment[];
+    };
+    const semanticSegments: ShellInputSegment[] = scriptVal.inputSegments ?? [];
+    const embeddedIdx = semanticSegments.findIndex(
+      (s) => s.kind === "embedded-content" && s.role === "script-content",
+    );
+    const preTextFromSegments =
+      embeddedIdx >= 0
+        ? semanticSegments
+            .slice(0, embeddedIdx)
+            .map((s) => s.text)
+            .join("")
+        : null;
+    const postTextFromSegments =
+      embeddedIdx >= 0
+        ? semanticSegments
+            .slice(embeddedIdx + 1)
+            .map((s) => s.text)
+            .join("")
+        : null;
     const scriptSegment = scriptVal.segments.find(
       (s) => s.kind === "script-content",
     );
     const footerText =
-      scriptVal.segments.find((s) => s.kind === "command-footer")?.text ?? "";
+      postTextFromSegments ??
+      scriptVal.segments.find((s) => s.kind === "command-footer")?.text ??
+      "";
     return formatGenericInput(
       remaining,
       <div class="semantic-shell-command" data-testid="semantic-shell-script">
         <CodePre class="write-content" copyText={command!}>
-          {headerTokens ? renderTokenLines(headerTokens) : headerText.trimEnd()}
+          {preTextFromSegments != null
+            ? preTextFromSegments.replace(/\n$/, "")
+            : headerTokens
+              ? renderTokenLines(headerTokens)
+              : headerText.trimEnd()}
         </CodePre>
         {scriptSegment && (
           <ScriptContentPreview
@@ -1860,7 +1964,7 @@ function formatInput(
     isShellTool(name, agentType, toolServer) &&
     (typeof input.command === "string" || typeof input.cmd === "string")
   ) {
-    return <ShellCommandInput input={input} />;
+    return <ShellCommandInput input={input} result={result} />;
   }
   if (
     toolIs(name, agentType, toolServer, "claude/Read") &&
@@ -1969,6 +2073,25 @@ function extractShellStdout(
   if (toolIs(name, agentType, toolServer, "claude/Bash")) {
     const tr = result.toolResult as Record<string, unknown> | undefined;
     return typeof tr?.stdout === "string" ? tr.stdout : null;
+  }
+  if (
+    toolIs(
+      name,
+      agentType,
+      toolServer,
+      "codex/commandExecution",
+      "codex/local_shell_call",
+    )
+  ) {
+    const tr = result.toolResult as Record<string, unknown> | undefined;
+    const fromToolResult =
+      (typeof tr?.stdout === "string" && tr.stdout) ||
+      (typeof tr?.aggregatedOutput === "string" && tr.aggregatedOutput) ||
+      (typeof tr?.aggregated_output === "string" && tr.aggregated_output) ||
+      (typeof tr?.formattedOutput === "string" && tr.formattedOutput) ||
+      (typeof tr?.formatted_output === "string" && tr.formatted_output) ||
+      null;
+    if (fromToolResult != null) return fromToolResult;
   }
   if (toolIs(name, agentType, toolServer, "codex/exec_command")) {
     const text = extractResultText(result.content);
@@ -2413,11 +2536,7 @@ export const ToolCall = memo(
       result.toolResult != null &&
       typeof result.toolResult === "object";
     const shellCommand = isShellTool(name, agentType, toolServer)
-      ? typeof input.command === "string"
-        ? input.command
-        : typeof input.cmd === "string"
-          ? input.cmd
-          : null
+      ? extractSemanticShellCommand(input, result)
       : null;
     const shellSemantic = useShellSemantic(shellCommand);
     const useSemanticShellRead =
@@ -2440,22 +2559,50 @@ export const ToolCall = memo(
     const semanticShellDiffStdout = useSemanticShellDiff
       ? extractShellStdout(name, toolServer, agentType, result)
       : null;
+    const semanticOutputPlan =
+      shellSemantic?.ok === true ? shellSemantic.value.outputPlan : undefined;
+    const semanticOutputStdout =
+      semanticOutputPlan && result != null && !result.isError
+        ? extractShellStdout(name, toolServer, agentType, result)
+        : null;
+    const semanticOutputElement =
+      semanticOutputPlan != null &&
+      semanticOutputStdout != null &&
+      hasSemanticShellOutput(semanticOutputStdout, semanticOutputPlan) ? (
+        <SemanticShellOutput
+          stdout={semanticOutputStdout}
+          outputPlan={semanticOutputPlan}
+        />
+      ) : null;
+    const shouldRenderSemanticOutput = semanticOutputElement != null;
+    const semanticKind =
+      shellSemantic?.ok === true ? shellSemantic.value.kind : null;
+    const hasSemanticOutputPlan =
+      shellSemantic?.ok === true && shellSemantic.value.outputPlan != null;
     // Semantic shell: adjust input/result expand defaults after classification.
     // Reads/diffs → collapse input (command is secondary), expand result (file content primary).
     // Writes → keep input expanded, collapse result (usually empty).
     useEffect(() => {
-      if (!shellSemantic?.ok) return;
-      const kind = shellSemantic.value.kind;
+      if (semanticKind == null) return;
+      if (hasSemanticOutputPlan) {
+        if (!userToggledResult.current && resultOpenOverride === null)
+          setResultOpenOverride(true);
+      }
+      const kind = semanticKind;
       if (kind === "read" || kind === "diff") {
         if (!userToggledInput.current) setInputOpen(false);
         if (!userToggledResult.current && resultOpenOverride === null)
           setResultOpenOverride(true);
       } else if (kind === "write") {
-        if (!userToggledResult.current && resultOpenOverride === null)
+        if (
+          !hasSemanticOutputPlan &&
+          !userToggledResult.current &&
+          resultOpenOverride === null
+        )
           setResultOpenOverride(false);
       }
       // script-exec: no override, use defaults (both expanded)
-    }, [shellSemantic?.ok ? shellSemantic.value.kind : null]);
+    }, [semanticKind, hasSemanticOutputPlan]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;
@@ -2645,8 +2792,10 @@ export const ToolCall = memo(
               <>
                 <div class="tool-result-container">
                   {!useReadHighlight && resultImagesElement}
-                  {semanticShellStdout != null &&
-                  semanticReadFilePath != null ? (
+                  {shouldRenderSemanticOutput ? (
+                    semanticOutputElement
+                  ) : semanticShellStdout != null &&
+                    semanticReadFilePath != null ? (
                     <div data-testid="semantic-shell-read">
                       <ReadResult
                         content={semanticShellStdout}

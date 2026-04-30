@@ -770,8 +770,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
   });
 
   it("single-quoted wrapper payload supports close/escape/reopen syntax", async () => {
-    const r = await parseShellSemantic("zsh -lc 'printf '\\''hello'\\'''");
-    expect(r.ok).toBe(false);
+    const r = await parseShellSemantic("zsh -lc 'cat '\\''README.md'\\'''");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
   });
 
   it("single-quoted wrapper rejects adjacent payload pieces", async () => {
@@ -868,12 +871,30 @@ describe("batch 1 rg/sed/structured output plans", () => {
     });
   });
 
+  it("supported grep -n emits search semantic and line-number plan", async () => {
+    const r = await parseShellSemantic(
+      'grep -n "formatGenericInput" web/src/components/ToolCall.tsx',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("search");
+    const v = r.value;
+    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
+    expect(v.outputPlan?.blocks[0]?.location).toEqual({
+      kind: "whole-output",
+      validator: "rg-line-number-prefixed",
+    });
+  });
+
   it("unsupported rg forms reject", async () => {
     const bad = [
       "rg --json foo README.md",
       "rg -n foo .",
       "rg -n foo README.md package.json",
       "rg -n -A3 foo README.md",
+      "rg -n --context=3 foo README.md",
+      "rg -n --column foo README.md",
+      "rg -n --with-filename foo README.md",
       "rg -n --color=always foo README.md",
       "rg -n --replace=bar foo README.md",
     ];
@@ -941,8 +962,6 @@ describe("batch 1 rg/sed/structured output plans", () => {
       "sed -n '1,20p' /tmp/b.md",
     ].join("\n");
     const r = await parseShellSemantic(cmd);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).not.toBe("structured-output");
+    expect(r.ok).toBe(false);
   });
 });

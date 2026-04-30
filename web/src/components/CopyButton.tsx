@@ -6,14 +6,21 @@ import checkIcon from "../icons/check.svg?raw";
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
+  const setCopiedBriefly = useCallback(() => {
+    setCopied(true);
+    setTimeout(() => {
+      setCopied(false);
+    }, 1500);
+  }, []);
+
   const onClick = useCallback(() => {
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => {
-        setCopied(false);
-      }, 1500);
-    });
-  }, [text]);
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopiedBriefly();
+      })
+      .catch(() => {});
+  }, [setCopiedBriefly, text]);
 
   return (
     <button

@@ -481,6 +481,49 @@ export function matchPattern(userText) {
     };
   }
 
+  if (/semantic shell wrapped python heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        '/run/current-system/sw/bin/zsh -lc "python - <<\'PY\'\nprint(\\"wrapped\\")\nPY"',
+    };
+
+  if (/semantic shell wrapped markdown heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "bash -lc \"mkdir -p /tmp/cydo-semantic-shell\ncat > /tmp/cydo-semantic-shell/output.md <<'EOF'\n# Wrapped Markdown\n\nThis is **rendered** markdown.\nEOF\nls -l /tmp/cydo-semantic-shell/output.md && sed -n '1,80p' /tmp/cydo-semantic-shell/output.md\"",
+    };
+
+  if (/semantic shell rg structured/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "grep -n \"semantic shell\" /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
+  if (/semantic shell rg fallback/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "rg -n --context=3 \"semantic shell\" /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
+  if (/semantic shell sections fallback/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "sed -n '1,12p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '13,24p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '25,36p' /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
+  if (/semantic shell sections/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "sed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
+  // "reply with "<text>""
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
 

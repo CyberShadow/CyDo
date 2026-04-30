@@ -1388,53 +1388,27 @@ function classifyRgCommand(
   cmd: SimpleCommand,
   originalCommand: string,
 ): ShellSemanticResult {
+  const toolName = cmd.name === "grep" ? "grep" : "rg";
   if (cmd.redirects.length > 0) {
-    return reject("unsafe_shell_syntax", "rg redirections are not supported");
+    return reject(
+      "unsafe_shell_syntax",
+      `${toolName} redirections are not supported`,
+    );
   }
-  const hasContextFlags = cmd.args.some(
-    (a) =>
-      a.kind === "flag" &&
-      (/^-A\d*$/.test(a.text) ||
-        /^-B\d*$/.test(a.text) ||
-        /^-C\d*$/.test(a.text) ||
-        a.text === "-A" ||
-        a.text === "-B" ||
-        a.text === "-C" ||
-        a.text === "--after-context" ||
-        a.text === "--before-context" ||
-        a.text === "--context"),
+  const hasOtherFlags = cmd.args.some(
+    (a) => a.kind === "flag" && a.text !== "-n" && a.text !== "--line-number",
   );
-  if (hasContextFlags) {
-    return reject("unsupported_option", "rg context modes are not supported");
+  if (hasOtherFlags) {
+    return reject("unsupported_option", `unsupported ${toolName} option`);
   }
-  const hasUnsupportedFlags = cmd.args.some(
-    (a) =>
-      a.kind === "flag" &&
-      (a.text === "--json" ||
-        a.text === "--vimgrep" ||
-        a.text === "--heading" ||
-        a.text === "--no-heading" ||
-        a.text === "--multiline" ||
-        a.text === "--multiline-dotall" ||
-        a.text === "-U" ||
-        a.text === "--replace" ||
-        a.text.startsWith("--replace=") ||
-        a.text === "-r" ||
-        /^-r[^-].+/.test(a.text) ||
-        a.text === "--color" ||
-        a.text.startsWith("--color=") ||
-        a.text === "--colors" ||
-        a.text.startsWith("--colors=")),
-  );
-  if (hasUnsupportedFlags) {
-    return reject("unsupported_option", "unsupported rg option");
-  }
-
   const hasLineNumbers = cmd.args.some(
     (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
   );
   if (!hasLineNumbers) {
-    return reject("unsupported_option", "rg must include -n/--line-number");
+    return reject(
+      "unsupported_option",
+      `${toolName} must include -n/--line-number`,
+    );
   }
 
   const values = cmd.args
@@ -1443,7 +1417,7 @@ function classifyRgCommand(
   if (values.length !== 2) {
     return reject(
       values.length < 2 ? "missing_path" : "multiple_paths",
-      "rg -n requires exactly one pattern and one file operand",
+      `${toolName} -n requires exactly one pattern and one file operand`,
     );
   }
   const [pattern, filePath] = values;
@@ -1453,10 +1427,13 @@ function classifyRgCommand(
     isDynamicShellValue(pattern) ||
     isDynamicShellValue(filePath)
   ) {
-    return reject("variable_path", "rg pattern/path must be literal");
+    return reject("variable_path", `${toolName} pattern/path must be literal`);
   }
   if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
-    return reject("unsupported_command", "rg target must be a file path");
+    return reject(
+      "unsupported_command",
+      `${toolName} target must be a file path`,
+    );
   }
   const language = langFromPath(filePath) || "text";
   return {
@@ -1513,7 +1490,8 @@ export function classifyAST(
   if (ast.type === "simple") {
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
-    if (name === "rg") return classifyRgCommand(ast.command, originalCommand);
+    if (name === "rg" || name === "grep")
+      return classifyRgCommand(ast.command, originalCommand);
     if (name === "git") return classifyGitCommand(ast.command, originalCommand);
     if (name === "diff")
       return classifyDiffCommand(ast.command, originalCommand);
@@ -2450,6 +2428,12 @@ export async function parseShellSemantic(
           ),
         }
       : structuredList;
+  }
+  if (inner.includes("\n")) {
+    return reject(
+      "unsupported_command",
+      "unsupported multiline shell command list",
+    );
   }
 
   // For heredoc commands, only tokenize the first line (the command line).
