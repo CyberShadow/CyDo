@@ -11,12 +11,11 @@ import type {
   SpanValidatorId,
 } from "./shellOutputPlan";
 import {
-  isShellWrapperEscaping,
   parseCommandSourceTree,
   projectEmbedSpan,
+  type EscapingScheme,
   type SourceNode,
   type SourceSegment,
-  type ShellWordFragment,
 } from "./sourceTree";
 import { useCurrentTheme } from "../useTheme";
 
@@ -61,16 +60,7 @@ export interface ShellSourceSpan {
   rawText: string;
 }
 
-export type ShellEscapingScheme =
-  | { kind: "shell-single-quote" }
-  | { kind: "shell-double-quote"; conservative: true }
-  | { kind: "shell-word"; fragments: ShellWordFragment[] }
-  | {
-      kind: "shell-heredoc";
-      delimiter: string;
-      quoted: boolean;
-      supportsExitReentry: false;
-    };
+export type ShellEscapingScheme = EscapingScheme;
 
 export interface ShellEmbeddedContent {
   id: string;
@@ -1555,7 +1545,7 @@ interface LocatedEmbed {
 function findWrapperEmbed(root: SourceNode): LocatedEmbed | null {
   const idx = root.segments.findIndex(
     (segment) =>
-      segment.kind === "embed" && isShellWrapperEscaping(segment.escaping),
+      segment.kind === "embed" && segment.role === "inline-projected-payload",
   );
   if (idx < 0) return null;
   const segment = root.segments[idx] as SourceEmbedSegment;
@@ -1600,7 +1590,7 @@ function resolveHeredocEmbedForProjection(
   root: SourceNode,
 ): LocatedEmbed | null {
   const wrapperEmbed = findWrapperEmbed(root);
-  if (wrapperEmbed && isShellWrapperEscaping(wrapperEmbed.segment.escaping)) {
+  if (wrapperEmbed) {
     const childHeredoc = findFirstHeredocEmbed(wrapperEmbed.segment.content);
     if (childHeredoc) {
       const projected = projectEmbedSpan(
@@ -1624,7 +1614,7 @@ function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
   if (!wrapperEmbed) return null;
   if (root.language !== "bash") return null;
   if (wrapperEmbed.segment.content.language !== "bash") return null;
-  if (!isShellWrapperEscaping(wrapperEmbed.segment.escaping)) {
+  if (wrapperEmbed.segment.role !== "inline-projected-payload") {
     return null;
   }
   return {

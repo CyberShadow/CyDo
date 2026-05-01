@@ -1,5 +1,4 @@
 import {
-  isShellWrapperEscaping,
   projectDescendantSpan,
   type SourceNode,
   type SourceProjection,
@@ -100,7 +99,7 @@ function walkSourceRenderPieces(
       );
       if (!rawSubtreeSpan) return false;
       const childWrapperPayload =
-        wrapperPayload || isShellWrapperEscaping(segment.escaping);
+        wrapperPayload || segment.role === "inline-projected-payload";
       if (
         !walkInlineSubtree(
           root,

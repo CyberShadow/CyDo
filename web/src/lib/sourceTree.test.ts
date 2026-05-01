@@ -119,7 +119,8 @@ describe("sourceTree projection parser", () => {
     expect(wrapper?.kind).toBe("embed");
     if (!wrapper || wrapper.kind !== "embed") return;
 
-    expect(wrapper.escaping.kind).toBe("shell-word");
+    expect(wrapper.role).toBe("inline-projected-payload");
+    expect(wrapper.escaping.kind).toBe("projected");
     expect(wrapper.content.text).toBe(
       "cat <<'EOF'\nheredoc body with \"quotes\" and $literal\nEOF",
     );

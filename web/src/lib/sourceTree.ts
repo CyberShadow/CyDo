@@ -6,6 +6,8 @@ export interface SourceNode {
   segments: SourceSegment[];
 }
 
+export type SourceEmbedRole = "inline-projected-payload";
+
 export type SourceSegment =
   | { kind: "text"; span: SourceSpan }
   | {
@@ -14,6 +16,7 @@ export type SourceSegment =
       content: SourceNode;
       escaping: EscapingScheme;
       projection?: SourceProjection;
+      role?: SourceEmbedRole;
     };
 
 export interface SourceSpan {
@@ -30,20 +33,10 @@ export interface SourceProjectionPoint {
   parent: number;
 }
 
-export interface ShellWordFragment {
-  quote: "single" | "double" | "unquoted";
-  rawSpan: SourceSpan;
-  contentSpan: SourceSpan;
-  decodedSpan: SourceSpan;
-}
-
 export type EscapingScheme =
   | { kind: "shell-single-quote" }
   | { kind: "shell-double-quote"; conservative: true }
-  | {
-      kind: "shell-word";
-      fragments: ShellWordFragment[];
-    }
+  | { kind: "projected" }
   | {
       kind: "shell-heredoc";
       delimiter: string;
@@ -79,19 +72,6 @@ type WrapperParseResult =
   | { kind: "wrapper"; value: WrapperParse }
   | { kind: "none" }
   | { kind: "reject"; code: SourceTreeRejectCode; reason: string };
-
-export function isShellWrapperEscaping(
-  escaping: EscapingScheme,
-): escaping is
-  | { kind: "shell-single-quote" }
-  | { kind: "shell-double-quote"; conservative: true }
-  | { kind: "shell-word"; fragments: ShellWordFragment[] } {
-  return (
-    escaping.kind === "shell-single-quote" ||
-    escaping.kind === "shell-double-quote" ||
-    escaping.kind === "shell-word"
-  );
-}
 
 const INTERPRETER_LANG: Record<string, string> = {
   sh: "bash",
@@ -503,48 +483,7 @@ function parseShellWrapperPayloadWord(
     if (fragments.length === 1 && fragments[0]?.quote === "double") {
       return { kind: "shell-double-quote", conservative: true };
     }
-    const shellWordFragments: ShellWordFragment[] = fragments.map(
-      (fragment) => {
-        const rawStart = Math.max(
-          0,
-          Math.min(
-            embedEndAbs - embedStartAbs,
-            fragment.rawSpanAbs.start - embedStartAbs,
-          ),
-        );
-        const rawEnd = Math.max(
-          rawStart,
-          Math.min(
-            embedEndAbs - embedStartAbs,
-            fragment.rawSpanAbs.end - embedStartAbs,
-          ),
-        );
-        const contentStart = Math.max(
-          0,
-          Math.min(
-            embedEndAbs - embedStartAbs,
-            fragment.contentSpanAbs.start - embedStartAbs,
-          ),
-        );
-        const contentEnd = Math.max(
-          contentStart,
-          Math.min(
-            embedEndAbs - embedStartAbs,
-            fragment.contentSpanAbs.end - embedStartAbs,
-          ),
-        );
-        return {
-          quote: fragment.quote,
-          rawSpan: span(rawStart, rawEnd),
-          contentSpan: span(contentStart, contentEnd),
-          decodedSpan: span(
-            fragment.decodedSpan.start,
-            fragment.decodedSpan.end,
-          ),
-        };
-      },
-    );
-    return { kind: "shell-word", fragments: shellWordFragments };
+    return { kind: "projected" };
   })();
 
   return {
@@ -813,6 +752,7 @@ function parseShellNode(text: string): SourceTreeParseResult {
       content: payloadNode.value,
       escaping: wrapper.value.escaping,
       projection: wrapper.value.projection,
+      role: "inline-projected-payload",
     });
     const suffix = textSegment(wrapper.value.payload.end, text.length);
     if (suffix) segments.push(suffix);

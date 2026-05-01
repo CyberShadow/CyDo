@@ -50,11 +50,7 @@ import {
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
-import {
-  isShellWrapperEscaping,
-  parseCommandSourceTree,
-  type SourceNode,
-} from "../lib/sourceTree";
+import { parseCommandSourceTree, type SourceNode } from "../lib/sourceTree";
 
 /**
  * Tool Result Rendering Principles
@@ -841,7 +837,7 @@ function ShellCommandInput({
 function hasWrapperSourceTree(root: SourceNode): boolean {
   return root.segments.some(
     (segment) =>
-      segment.kind === "embed" && isShellWrapperEscaping(segment.escaping),
+      segment.kind === "embed" && segment.role === "inline-projected-payload",
   );
 }
 
