@@ -1542,10 +1542,20 @@ interface LocatedEmbed {
   absoluteEnd: number;
 }
 
+function isStructuralWrapperEmbed(segment: SourceEmbedSegment): boolean {
+  if (segment.projection == null) return false;
+  if (segment.content.language !== "bash") return false;
+  return (
+    segment.escaping.kind === "projected" ||
+    segment.escaping.kind === "shell-single-quote" ||
+    segment.escaping.kind === "shell-double-quote"
+  );
+}
+
 function findWrapperEmbed(root: SourceNode): LocatedEmbed | null {
+  if (root.language !== "bash") return null;
   const idx = root.segments.findIndex(
-    (segment) =>
-      segment.kind === "embed" && segment.role === "inline-projected-payload",
+    (segment) => segment.kind === "embed" && isStructuralWrapperEmbed(segment),
   );
   if (idx < 0) return null;
   const segment = root.segments[idx] as SourceEmbedSegment;
@@ -1612,11 +1622,6 @@ function resolveHeredocEmbedForProjection(
 function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
   const wrapperEmbed = findWrapperEmbed(root);
   if (!wrapperEmbed) return null;
-  if (root.language !== "bash") return null;
-  if (wrapperEmbed.segment.content.language !== "bash") return null;
-  if (wrapperEmbed.segment.role !== "inline-projected-payload") {
-    return null;
-  }
   return {
     decodedPayload: wrapperEmbed.segment.content.text,
     rawPayload: root.text.slice(

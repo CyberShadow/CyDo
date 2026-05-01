@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseCommandSourceTree } from "./sourceTree";
+import { parseCommandSourceTree, type SourceNode } from "./sourceTree";
 import {
   buildSourceRenderPieces,
   classifyEmbedRenderMode,
@@ -212,5 +212,42 @@ describe("source tree render plan", () => {
     expect(rich.sourceText).toContain('\\"quotes\\" and "\'$literal');
     expect(rich.sourceSpan.end).toBeGreaterThan(rich.sourceSpan.start);
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+  });
+
+  it("treats projected inline embeds generically and preserves parent-owned source text", () => {
+    const root: SourceNode = {
+      language: "bash",
+      text: 'a\\"b',
+      segments: [
+        {
+          kind: "embed",
+          span: { start: 0, end: 4 },
+          escaping: { kind: "projected" },
+          projection: {
+            points: [
+              { child: 0, parent: 0 },
+              { child: 1, parent: 1 },
+              { child: 2, parent: 3 },
+              { child: 3, parent: 4 },
+            ],
+          },
+          content: {
+            language: "bash",
+            text: 'a"b',
+            segments: [{ kind: "text", span: { start: 0, end: 3 } }],
+          },
+        },
+      ],
+    };
+
+    const pieces = buildSourceRenderPieces(root);
+    expect(pieces).toHaveLength(1);
+    const piece = pieces[0];
+    expect(piece?.kind).toBe("inline");
+    if (!piece || piece.kind !== "inline") return;
+    expect(piece.text).toBe('a\\"b');
+    expect(piece.highlightText).toBe('a"b');
+    expect(piece.projection).toBeTruthy();
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(root.text);
   });
 });

@@ -98,8 +98,7 @@ function walkSourceRenderPieces(
         segment.span,
       );
       if (!rawSubtreeSpan) return false;
-      const childWrapperPayload =
-        wrapperPayload || segment.role === "inline-projected-payload";
+      const childWrapperPayload = wrapperPayload || segment.projection != null;
       if (
         !walkInlineSubtree(
           root,

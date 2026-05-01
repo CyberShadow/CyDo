@@ -6,8 +6,6 @@ export interface SourceNode {
   segments: SourceSegment[];
 }
 
-export type SourceEmbedRole = "inline-projected-payload";
-
 export type SourceSegment =
   | { kind: "text"; span: SourceSpan }
   | {
@@ -16,7 +14,6 @@ export type SourceSegment =
       content: SourceNode;
       escaping: EscapingScheme;
       projection?: SourceProjection;
-      role?: SourceEmbedRole;
     };
 
 export interface SourceSpan {
@@ -752,7 +749,6 @@ function parseShellNode(text: string): SourceTreeParseResult {
       content: payloadNode.value,
       escaping: wrapper.value.escaping,
       projection: wrapper.value.projection,
-      role: "inline-projected-payload",
     });
     const suffix = textSegment(wrapper.value.payload.end, text.length);
     if (suffix) segments.push(suffix);
