@@ -35,19 +35,25 @@ export function SvgPreview({ content }: { content: string }) {
 export function FileContentPreview({
   filePath,
   content,
+  sourceContent,
   defaultSource = false,
 }: {
   filePath?: string;
   content: string;
+  sourceContent?: string;
   defaultSource?: boolean;
 }) {
   const format = detectRenderableFormat(filePath, content);
   const lang = filePath ? langFromPath(filePath) : null;
-  const codeTokens = useHighlight(content, format === "markdown" ? null : lang);
+  const sourceText = sourceContent ?? content;
+  const codeTokens = useHighlight(
+    sourceText,
+    format === "markdown" ? null : lang,
+  );
 
   const sourceView = (
-    <CodePre class="write-content" copyText={content}>
-      {codeTokens ? renderTokenLines(codeTokens) : content}
+    <CodePre class="write-content" copyText={sourceText}>
+      {codeTokens ? renderTokenLines(codeTokens) : sourceText}
     </CodePre>
   );
 

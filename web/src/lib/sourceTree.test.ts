@@ -103,6 +103,83 @@ describe("sourceTree projection parser", () => {
     expect(parsed.value.text.slice(mapped.start, mapped.end)).toBe("'\\''");
   });
 
+  it("parses mixed quoted wrapper payload words and preserves raw source with decoded heredoc body", () => {
+    const command =
+      "zsh -lc \"cat <<'EOF'\nheredoc body with \\\"quotes\\\" and \"'$literal\nEOF'";
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const wrapperIdx = parsed.value.segments.findIndex(
+      (s) => s.kind === "embed",
+    );
+    expect(wrapperIdx).toBeGreaterThanOrEqual(0);
+    if (wrapperIdx < 0) return;
+    const wrapper = parsed.value.segments[wrapperIdx];
+    expect(wrapper?.kind).toBe("embed");
+    if (!wrapper || wrapper.kind !== "embed") return;
+
+    expect(wrapper.escaping.kind).toBe("shell-word");
+    expect(wrapper.content.text).toBe(
+      "cat <<'EOF'\nheredoc body with \"quotes\" and $literal\nEOF",
+    );
+    expect(parsed.value.text).toContain('\\"quotes\\" and "\'$literal');
+
+    const heredocIdx = wrapper.content.segments.findIndex(
+      (segment) => segment.kind === "embed",
+    );
+    expect(heredocIdx).toBeGreaterThanOrEqual(0);
+    if (heredocIdx < 0) return;
+    const heredoc = wrapper.content.segments[heredocIdx];
+    expect(heredoc?.kind).toBe("embed");
+    if (!heredoc || heredoc.kind !== "embed") return;
+    expect(heredoc.content.text).toBe(
+      'heredoc body with "quotes" and $literal',
+    );
+
+    const projected = projectDescendantSpan(
+      parsed.value,
+      [wrapperIdx, heredocIdx],
+      { start: 0, end: heredoc.content.text.length },
+    );
+    expect(projected).not.toBeNull();
+    if (!projected) return;
+    expect(parsed.value.text.slice(projected.start, projected.end)).toContain(
+      '\\"quotes\\" and "\'$literal',
+    );
+  });
+
+  it("accepts adjacent quoted wrapper fragments as one payload word", () => {
+    const parsed = parseCommandSourceTree("zsh -lc 'cat README.md''x'");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const wrapper = findFirstEmbed(parsed.value.segments);
+    expect(wrapper?.kind).toBe("embed");
+    if (!wrapper) return;
+    expect(wrapper.content.text).toBe("cat README.mdx");
+  });
+
+  it("rejects wrapper payload fragments split by whitespace as extra argv", () => {
+    const parsed = parseCommandSourceTree("zsh -lc 'cat README.md' 'x'");
+    expect(parsed.ok).toBe(false);
+  });
+
+  it("rejects unsafe wrapper payload syntax", () => {
+    const bad = [
+      'zsh -lc "cat $HOME/README.md"',
+      'zsh -lc "cat `pwd`/README.md"',
+      "zsh -lc cat*README.md",
+      "zsh -lc cat;README.md",
+      "zsh -lc cat|README.md",
+      "zsh -lc cat>README.md",
+      'bash -lc "echo ok" x',
+    ];
+    for (const command of bad) {
+      const parsed = parseCommandSourceTree(command);
+      expect(parsed.ok).toBe(false);
+    }
+  });
+
   it("parses shell/bash heredoc bodies recursively and keeps markdown/xml heredocs as text nodes", () => {
     const directBashCommand = "bash <<'EOF'\ncat README.md\nEOF";
     const directBashParsed = parseCommandSourceTree(directBashCommand);

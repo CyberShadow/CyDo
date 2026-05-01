@@ -11,9 +11,12 @@ import type {
   SpanValidatorId,
 } from "./shellOutputPlan";
 import {
+  isShellWrapperEscaping,
   parseCommandSourceTree,
+  projectEmbedSpan,
   type SourceNode,
   type SourceSegment,
+  type ShellWordFragment,
 } from "./sourceTree";
 import { useCurrentTheme } from "../useTheme";
 
@@ -61,6 +64,7 @@ export interface ShellSourceSpan {
 export type ShellEscapingScheme =
   | { kind: "shell-single-quote" }
   | { kind: "shell-double-quote"; conservative: true }
+  | { kind: "shell-word"; fragments: ShellWordFragment[] }
   | {
       kind: "shell-heredoc";
       delimiter: string;
@@ -1551,9 +1555,7 @@ interface LocatedEmbed {
 function findWrapperEmbed(root: SourceNode): LocatedEmbed | null {
   const idx = root.segments.findIndex(
     (segment) =>
-      segment.kind === "embed" &&
-      (segment.escaping.kind === "shell-single-quote" ||
-        segment.escaping.kind === "shell-double-quote"),
+      segment.kind === "embed" && isShellWrapperEscaping(segment.escaping),
   );
   if (idx < 0) return null;
   const segment = root.segments[idx] as SourceEmbedSegment;
@@ -1594,72 +1596,22 @@ function findFirstHeredocEmbed(
   return null;
 }
 
-function mapDecodedOffsetToRawOffset(
-  rawPayload: string,
-  decodedOffset: number,
-  escaping: Extract<
-    ShellEscapingScheme,
-    { kind: "shell-single-quote" } | { kind: "shell-double-quote" }
-  >,
-): number | null {
-  if (decodedOffset < 0) return null;
-  let raw = 0;
-  let decoded = 0;
-  while (decoded < decodedOffset && raw < rawPayload.length) {
-    if (
-      escaping.kind === "shell-single-quote" &&
-      rawPayload.slice(raw, raw + 4) === "'\\''"
-    ) {
-      raw += 4;
-      decoded += 1;
-      continue;
-    }
-    if (
-      escaping.kind === "shell-double-quote" &&
-      rawPayload[raw] === "\\" &&
-      raw + 1 < rawPayload.length
-    ) {
-      raw += 2;
-      decoded += 1;
-      continue;
-    }
-    raw += 1;
-    decoded += 1;
-  }
-  if (decoded !== decodedOffset) return null;
-  return raw;
-}
-
 function resolveHeredocEmbedForProjection(
   root: SourceNode,
 ): LocatedEmbed | null {
   const wrapperEmbed = findWrapperEmbed(root);
-  if (
-    wrapperEmbed &&
-    (wrapperEmbed.segment.escaping.kind === "shell-single-quote" ||
-      wrapperEmbed.segment.escaping.kind === "shell-double-quote")
-  ) {
+  if (wrapperEmbed && isShellWrapperEscaping(wrapperEmbed.segment.escaping)) {
     const childHeredoc = findFirstHeredocEmbed(wrapperEmbed.segment.content);
     if (childHeredoc) {
-      const rawPayload = root.text.slice(
-        wrapperEmbed.absoluteStart,
-        wrapperEmbed.absoluteEnd,
+      const projected = projectEmbedSpan(
+        wrapperEmbed.segment,
+        childHeredoc.segment.span,
       );
-      const rawStart = mapDecodedOffsetToRawOffset(
-        rawPayload,
-        childHeredoc.segment.span.start,
-        wrapperEmbed.segment.escaping,
-      );
-      const rawEnd = mapDecodedOffsetToRawOffset(
-        rawPayload,
-        childHeredoc.segment.span.end,
-        wrapperEmbed.segment.escaping,
-      );
-      if (rawStart != null && rawEnd != null) {
+      if (projected) {
         return {
           ...childHeredoc,
-          absoluteStart: wrapperEmbed.absoluteStart + rawStart,
-          absoluteEnd: wrapperEmbed.absoluteStart + rawEnd,
+          absoluteStart: projected.start,
+          absoluteEnd: projected.end,
         };
       }
     }
@@ -1672,10 +1624,7 @@ function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
   if (!wrapperEmbed) return null;
   if (root.language !== "bash") return null;
   if (wrapperEmbed.segment.content.language !== "bash") return null;
-  if (
-    wrapperEmbed.segment.escaping.kind !== "shell-single-quote" &&
-    wrapperEmbed.segment.escaping.kind !== "shell-double-quote"
-  ) {
+  if (!isShellWrapperEscaping(wrapperEmbed.segment.escaping)) {
     return null;
   }
   return {

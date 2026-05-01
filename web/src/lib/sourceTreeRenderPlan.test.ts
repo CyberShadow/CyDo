@@ -190,4 +190,27 @@ describe("source tree render plan", () => {
     expect(rich.sourceText).toBe('<svg a=\\"b\\"></svg>');
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
   });
+
+  it("renders mixed-quoted wrapper heredoc with decoded rich text and projected raw source", () => {
+    const command =
+      "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\nheredoc body with \\\"quotes\\\" and \"'$literal\nEOF'";
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const rich = pieces.find(
+      (piece) =>
+        piece.kind === "rich" &&
+        piece.mode === "rich-markdown" &&
+        piece.language === "markdown",
+    );
+    expect(rich?.kind).toBe("rich");
+    if (!rich || rich.kind !== "rich") return;
+
+    expect(rich.text).toBe('heredoc body with "quotes" and $literal');
+    expect(rich.sourceText).toContain('\\"quotes\\" and "\'$literal');
+    expect(rich.sourceSpan.end).toBeGreaterThan(rich.sourceSpan.start);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+  });
 });

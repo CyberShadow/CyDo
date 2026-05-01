@@ -50,7 +50,11 @@ import {
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
-import { parseCommandSourceTree, type SourceNode } from "../lib/sourceTree";
+import {
+  isShellWrapperEscaping,
+  parseCommandSourceTree,
+  type SourceNode,
+} from "../lib/sourceTree";
 
 /**
  * Tool Result Rendering Principles
@@ -687,20 +691,20 @@ function ShellCommandInput({
 
   // Heredoc write: render header/content/footer
   if (isHeredocWrite) {
-    if (command && parsedSourceTree?.ok) {
-      return formatGenericInput(
-        remaining,
-        <div class="semantic-shell-command" data-testid="semantic-shell-write">
-          {renderSourceTreeCommand(parsedSourceTree.value)}
-        </div>,
-      );
-    }
-
     const writeVal = (
       semantic as { ok: true; value: ShellHeredocWriteSemantic }
     ).value as ShellHeredocWriteSemantic & {
       inputSegments?: ShellInputSegment[];
     };
+    if (command && parsedSourceTree?.ok) {
+      return formatGenericInput(
+        remaining,
+        <div class="semantic-shell-command" data-testid="semantic-shell-write">
+          {renderSourceTreeCommand(parsedSourceTree.value, writeVal.filePath)}
+        </div>,
+      );
+    }
+
     const semanticSegments: ShellInputSegment[] = writeVal.inputSegments ?? [];
     const embeddedIdx = semanticSegments.findIndex(
       (s) => s.kind === "embedded-content" && s.role === "write-content",
@@ -837,14 +841,21 @@ function ShellCommandInput({
 function hasWrapperSourceTree(root: SourceNode): boolean {
   return root.segments.some(
     (segment) =>
-      segment.kind === "embed" &&
-      (segment.escaping.kind === "shell-single-quote" ||
-        segment.escaping.kind === "shell-double-quote"),
+      segment.kind === "embed" && isShellWrapperEscaping(segment.escaping),
   );
 }
 
-function renderSourceTreeCommand(root: SourceNode): h.JSX.Element {
-  const sourceTreeView = <SourceNodeView root={root} copyText={root.text} />;
+function renderSourceTreeCommand(
+  root: SourceNode,
+  renderableFilePath?: string,
+): h.JSX.Element {
+  const sourceTreeView = (
+    <SourceNodeView
+      root={root}
+      copyText={root.text}
+      renderableFilePath={renderableFilePath}
+    />
+  );
   return hasWrapperSourceTree(root) ? (
     <div data-testid="semantic-shell-wrapper-input">{sourceTreeView}</div>
   ) : (

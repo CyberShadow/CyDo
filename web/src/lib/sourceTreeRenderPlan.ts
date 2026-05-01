@@ -1,4 +1,5 @@
 import {
+  isShellWrapperEscaping,
   projectDescendantSpan,
   type SourceNode,
   type SourceProjection,
@@ -99,9 +100,7 @@ function walkSourceRenderPieces(
       );
       if (!rawSubtreeSpan) return false;
       const childWrapperPayload =
-        wrapperPayload ||
-        segment.escaping.kind === "shell-single-quote" ||
-        segment.escaping.kind === "shell-double-quote";
+        wrapperPayload || isShellWrapperEscaping(segment.escaping);
       if (
         !walkInlineSubtree(
           root,

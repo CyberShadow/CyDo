@@ -504,6 +504,50 @@ export function matchPattern(userText) {
         '/run/current-system/sw/bin/zsh -lc "python - <<\'PY\'\nprint(\\"wrapped\\")\nPY"',
     };
 
+  if (/semantic shell mixed quoted wrapper heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        '/run/current-system/sw/bin/zsh -lc "cat <<\'EOF\'\nheredoc body with \\\\\\"quotes\\\\\\" and "\'$literal\nEOF\'',
+    };
+
+  if (/semantic shell mixed quoted markdown heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command: [
+        '/run/current-system/sw/bin/zsh -lc "cat > /tmp/cydo-heredoc-render.md <<\'EOF\'',
+        "# Heredoc Markdown Fixture",
+        "",
+        "This file was written by a shell heredoc.",
+        "",
+        '- quoted text: \\"hello world\\"',
+        '- literal dollars: "\'$CYDO_NOT_EXPANDED',
+        '- inline code: `program --some-flag -y "hello world"`',
+        "",
+        "```sh",
+        'printf \'"\'%s\\\\n\' \\"nested \\\\\\"quote\\\\\\"\\"',
+        '"\'```',
+        "EOF'",
+      ].join("\n"),
+    };
+
+  if (/semantic shell mixed quoted svg heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command: [
+        '/run/current-system/sw/bin/zsh -lc "cat > /tmp/cydo-heredoc-render.svg <<\'EOF\'',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><text y="20">"\'$literal</text></svg>',
+        "EOF'",
+      ].join("\n"),
+    };
+
+  if (/semantic shell reproduce svg heredoc payload/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        'cat > /tmp/cydo-heredoc-render.svg <<\'EOF\'\n<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="red" /></svg>\nEOF',
+    };
+
   if (/semantic shell quoted wrapper payload/i.test(userText))
     return {
       type: "shell",

@@ -11,6 +11,7 @@ import {
 import { useHighlight, renderTokens } from "../highlight";
 import { CodePre, CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
+import { FileContentPreview } from "./file-preview/FileContentPreview";
 
 function renderTokenLines(
   tokens: ReturnType<typeof useHighlight>,
@@ -71,9 +72,11 @@ export function SourceInlineEmbedView({
 export function SourceRichEmbedView({
   piece,
   preClass,
+  renderableFilePath,
 }: {
   piece: Extract<SourceRenderPiece, { kind: "rich" }>;
   preClass: string;
+  renderableFilePath?: string;
 }) {
   const tokens = useHighlight(
     piece.mode === "rich-code" ? piece.text : null,
@@ -82,6 +85,17 @@ export function SourceRichEmbedView({
 
   if (piece.mode === "rich-markdown") {
     return <Markdown text={piece.text} class="text-content" />;
+  }
+
+  if (renderableFilePath) {
+    return (
+      <FileContentPreview
+        filePath={renderableFilePath}
+        content={piece.text}
+        sourceContent={piece.sourceText}
+        defaultSource={false}
+      />
+    );
   }
 
   return (
@@ -218,10 +232,12 @@ export function SourceNodeView({
   root,
   copyText,
   preClass = "write-content",
+  renderableFilePath,
 }: {
   root: SourceNode;
   copyText: string;
   preClass?: string;
+  renderableFilePath?: string;
 }) {
   const pieces = buildSourceRenderPieces(root);
   const blocks = toRenderBlocks(pieces);
@@ -256,6 +272,7 @@ export function SourceNodeView({
             key={block.id}
             piece={block.piece}
             preClass={preClass}
+            renderableFilePath={renderableFilePath}
           />
         ),
       )}

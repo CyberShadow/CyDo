@@ -892,8 +892,16 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
   });
 
-  it("single-quoted wrapper rejects adjacent payload pieces", async () => {
+  it("adjacent wrapper payload fragments are parsed as one argv word", async () => {
     const r = await parseShellSemantic("zsh -lc 'cat README.md''x'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    expect((r.value as ShellReadSemantic).filePath).toBe("README.mdx");
+  });
+
+  it("wrapper payload split by whitespace is rejected as extra argv", async () => {
+    const r = await parseShellSemantic("zsh -lc 'cat README.md' 'x'");
     expect(r.ok).toBe(false);
   });
 
@@ -986,6 +994,30 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.value.embeddedContent?.[0]?.source.rawText).toBe("# T");
     const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
     expect(joined).toBe(cmd);
+  });
+
+  it("mixed-quoted wrapper heredoc emits wrapper segments and clean embedded content", async () => {
+    const cmd =
+      "/run/current-system/sw/bin/zsh -lc \"cat > /tmp/cydo-heredoc-render.md <<'EOF'\nheredoc body with \\\"quotes\\\" and \"'$literal\nEOF'";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("write");
+    expect((r.value.inputSegments ?? []).map((s) => s.kind)).toEqual([
+      "wrapper-prefix",
+      "command-header",
+      "embedded-content",
+      "heredoc-terminator",
+      "wrapper-suffix",
+    ]);
+    const body = (r.value.inputSegments ?? []).find(
+      (s) => s.kind === "embedded-content" && s.role === "write-content",
+    );
+    expect(body?.text).toContain('\\"quotes\\"');
+    expect(body?.text).toContain("\"'" + "$literal");
+    expect(r.value.embeddedContent?.[0]?.decodedText).toBe(
+      'heredoc body with "quotes" and $literal',
+    );
   });
 
   it("heredoc body containing << does not trigger false multi-heredoc rejection", async () => {

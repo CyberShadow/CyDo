@@ -30,9 +30,20 @@ export interface SourceProjectionPoint {
   parent: number;
 }
 
+export interface ShellWordFragment {
+  quote: "single" | "double" | "unquoted";
+  rawSpan: SourceSpan;
+  contentSpan: SourceSpan;
+  decodedSpan: SourceSpan;
+}
+
 export type EscapingScheme =
   | { kind: "shell-single-quote" }
   | { kind: "shell-double-quote"; conservative: true }
+  | {
+      kind: "shell-word";
+      fragments: ShellWordFragment[];
+    }
   | {
       kind: "shell-heredoc";
       delimiter: string;
@@ -68,6 +79,19 @@ type WrapperParseResult =
   | { kind: "wrapper"; value: WrapperParse }
   | { kind: "none" }
   | { kind: "reject"; code: SourceTreeRejectCode; reason: string };
+
+export function isShellWrapperEscaping(
+  escaping: EscapingScheme,
+): escaping is
+  | { kind: "shell-single-quote" }
+  | { kind: "shell-double-quote"; conservative: true }
+  | { kind: "shell-word"; fragments: ShellWordFragment[] } {
+  return (
+    escaping.kind === "shell-single-quote" ||
+    escaping.kind === "shell-double-quote" ||
+    escaping.kind === "shell-word"
+  );
+}
 
 const INTERPRETER_LANG: Record<string, string> = {
   sh: "bash",
@@ -243,65 +267,292 @@ function shellBasename(name: string): string {
   return parts[parts.length - 1] ?? name;
 }
 
-function decodeShellDoubleQuotedPayloadConservative(
-  source: string,
-  quoteStart: number,
-):
-  | { decoded: string; closingQuote: number; projection: SourceProjection }
-  | { reject: string; code: SourceTreeRejectCode } {
-  let i = quoteStart + 1;
+interface WrapperWordParse {
+  decodedPayload: string;
+  payload: SourceSpan;
+  escaping: EscapingScheme;
+  projection: SourceProjection;
+  wordEnd: number;
+}
+
+interface ShellWordFragmentTemp {
+  quote: "single" | "double" | "unquoted";
+  rawSpanAbs: SourceSpan;
+  contentSpanAbs: SourceSpan;
+  decodedSpan: SourceSpan;
+}
+
+function isSafeWrapperUnquotedChar(ch: string): boolean {
+  return /[A-Za-z0-9_./:@%+=,-]/.test(ch);
+}
+
+function parseShellWrapperPayloadWord(
+  command: string,
+  start: number,
+): WrapperWordParse | { reject: string; code: SourceTreeRejectCode } {
+  if (start >= command.length) {
+    return {
+      reject: "shell wrapper requires exactly one payload word",
+      code: "unsafe_shell_syntax",
+    };
+  }
+  if (/\s/.test(command[start]!)) {
+    return {
+      reject: "shell wrapper payload cannot start with whitespace",
+      code: "unsafe_shell_syntax",
+    };
+  }
+
+  const fragments: ShellWordFragmentTemp[] = [];
+  const pointsAbs: SourceProjectionPoint[] = [];
   let decoded = "";
   let child = 0;
-  let parent = 0;
-  const points: SourceProjectionPoint[] = [{ child: 0, parent: 0 }];
-  while (i < source.length) {
-    const ch = source[i]!;
-    if (ch === '"') {
-      return { decoded, closingQuote: i, projection: { points } };
-    }
-    if (ch === "\\") {
-      const next = source[i + 1];
-      if (!next) {
-        return {
-          reject: "unterminated double-quoted payload",
-          code: "unterminated_quote",
-        };
+  let i = start;
+
+  const startsQuoted = command[start] === "'" || command[start] === '"';
+  const embedStartAbs = startsQuoted ? start + 1 : start;
+  pointsAbs.push({ child: 0, parent: embedStartAbs });
+
+  const appendDecodedChar = (ch: string, parentAbs: number) => {
+    decoded += ch;
+    child += 1;
+    pointsAbs.push({ child, parent: parentAbs });
+  };
+
+  while (i < command.length) {
+    const ch = command[i]!;
+    if (/\s/.test(ch)) break;
+
+    if (ch === "'") {
+      const rawStartAbs = i + 1;
+      const decodedStart = child;
+      let cursor = i + 1;
+      for (;;) {
+        const close = command.indexOf("'", cursor);
+        if (close < 0) {
+          return {
+            reject: "unterminated single-quoted wrapper payload",
+            code: "unterminated_quote",
+          };
+        }
+        for (let j = cursor; j < close; j++) {
+          appendDecodedChar(command[j]!, j + 1);
+        }
+        if (command.slice(close, close + 4) === "'\\''") {
+          appendDecodedChar("'", close + 4);
+          cursor = close + 4;
+          continue;
+        }
+        fragments.push({
+          quote: "single",
+          rawSpanAbs: span(rawStartAbs, close),
+          contentSpanAbs: span(rawStartAbs, close),
+          decodedSpan: span(decodedStart, child),
+        });
+        i = close + 1;
+        break;
       }
-      if (next !== '"' && next !== "\\" && next !== "$" && next !== "`") {
+      continue;
+    }
+
+    if (ch === '"') {
+      const rawStartAbs = i + 1;
+      const decodedStart = child;
+      let cursor = i + 1;
+      for (;;) {
+        if (cursor >= command.length) {
+          return {
+            reject: "unterminated double-quoted payload",
+            code: "unterminated_quote",
+          };
+        }
+        const inner = command[cursor]!;
+        if (inner === '"') {
+          fragments.push({
+            quote: "double",
+            rawSpanAbs: span(rawStartAbs, cursor),
+            contentSpanAbs: span(rawStartAbs, cursor),
+            decodedSpan: span(decodedStart, child),
+          });
+          i = cursor + 1;
+          break;
+        }
+        if (inner === "$") {
+          return {
+            reject:
+              "dynamic expansion in double-quoted wrapper payload is not supported",
+            code: "unsafe_shell_syntax",
+          };
+        }
+        if (inner === "`") {
+          return {
+            reject:
+              "backticks in double-quoted wrapper payload are not supported",
+            code: "unsafe_shell_syntax",
+          };
+        }
+        if (inner === "\\") {
+          const next = command[cursor + 1];
+          if (!next) {
+            return {
+              reject: "unterminated double-quoted payload",
+              code: "unterminated_quote",
+            };
+          }
+          if (next === "\n") {
+            cursor += 2;
+            continue;
+          }
+          if (next === '"' || next === "\\" || next === "$" || next === "`") {
+            appendDecodedChar(next, cursor + 2);
+            cursor += 2;
+            continue;
+          }
+          appendDecodedChar("\\", cursor + 1);
+          appendDecodedChar(next, cursor + 2);
+          cursor += 2;
+          continue;
+        }
+        appendDecodedChar(inner, cursor + 1);
+        cursor += 1;
+      }
+      continue;
+    }
+
+    if (!isSafeWrapperUnquotedChar(ch)) {
+      return {
+        reject: `unsupported unquoted shell syntax in wrapper payload: ${ch}`,
+        code: "unsafe_shell_syntax",
+      };
+    }
+    const rawStartAbs = i;
+    const decodedStart = child;
+    while (i < command.length) {
+      const current = command[i]!;
+      if (/\s/.test(current) || current === "'" || current === '"') break;
+      if (!isSafeWrapperUnquotedChar(current)) {
         return {
-          reject: `unsupported double-quote escape \\${next}`,
+          reject: `unsupported unquoted shell syntax in wrapper payload: ${current}`,
           code: "unsafe_shell_syntax",
         };
       }
-      decoded += next;
-      child += 1;
-      parent += 2;
-      points.push({ child, parent });
-      i += 2;
-      continue;
+      appendDecodedChar(current, i + 1);
+      i += 1;
     }
-    if (ch === "$") {
-      return {
-        reject:
-          "dynamic expansion in double-quoted wrapper payload is not supported",
-        code: "unsafe_shell_syntax",
-      };
-    }
-    if (ch === "`") {
-      return {
-        reject: "backticks in double-quoted wrapper payload are not supported",
-        code: "unsafe_shell_syntax",
-      };
-    }
-    decoded += ch;
-    child += 1;
-    parent += 1;
-    points.push({ child, parent });
-    i++;
+    fragments.push({
+      quote: "unquoted",
+      rawSpanAbs: span(rawStartAbs, i),
+      contentSpanAbs: span(rawStartAbs, i),
+      decodedSpan: span(decodedStart, child),
+    });
   }
+
+  if (fragments.length === 0) {
+    return {
+      reject: "shell wrapper requires exactly one payload word",
+      code: "unsafe_shell_syntax",
+    };
+  }
+
+  const wordEnd = i;
+  const endsQuoted = (() => {
+    const last = fragments[fragments.length - 1];
+    return last != null && last.quote !== "unquoted";
+  })();
+  const embedEndAbs = endsQuoted ? wordEnd - 1 : wordEnd;
+  if (embedEndAbs < embedStartAbs) {
+    return {
+      reject: "invalid wrapper payload span",
+      code: "unsafe_shell_syntax",
+    };
+  }
+  if (decoded.length === 0 && embedEndAbs !== embedStartAbs) {
+    return {
+      reject: "wrapper payload decoding produced ambiguous zero-length span",
+      code: "unsafe_shell_syntax",
+    };
+  }
+
+  if (decoded.length > 0) {
+    const lastPoint = pointsAbs[pointsAbs.length - 1];
+    if (!lastPoint) {
+      return {
+        reject: "wrapper payload projection construction failed",
+        code: "unsafe_shell_syntax",
+      };
+    }
+    if (embedEndAbs < lastPoint.parent) {
+      return {
+        reject: "wrapper payload projection is not monotonic",
+        code: "unsafe_shell_syntax",
+      };
+    }
+    lastPoint.parent = embedEndAbs;
+  }
+
+  const points: SourceProjectionPoint[] = pointsAbs.map((point) => ({
+    child: point.child,
+    parent: point.parent - embedStartAbs,
+  }));
+  const projection: SourceProjection = { points };
+
+  const escaping: EscapingScheme = (() => {
+    if (fragments.length === 1 && fragments[0]?.quote === "single") {
+      return { kind: "shell-single-quote" };
+    }
+    if (fragments.length === 1 && fragments[0]?.quote === "double") {
+      return { kind: "shell-double-quote", conservative: true };
+    }
+    const shellWordFragments: ShellWordFragment[] = fragments.map(
+      (fragment) => {
+        const rawStart = Math.max(
+          0,
+          Math.min(
+            embedEndAbs - embedStartAbs,
+            fragment.rawSpanAbs.start - embedStartAbs,
+          ),
+        );
+        const rawEnd = Math.max(
+          rawStart,
+          Math.min(
+            embedEndAbs - embedStartAbs,
+            fragment.rawSpanAbs.end - embedStartAbs,
+          ),
+        );
+        const contentStart = Math.max(
+          0,
+          Math.min(
+            embedEndAbs - embedStartAbs,
+            fragment.contentSpanAbs.start - embedStartAbs,
+          ),
+        );
+        const contentEnd = Math.max(
+          contentStart,
+          Math.min(
+            embedEndAbs - embedStartAbs,
+            fragment.contentSpanAbs.end - embedStartAbs,
+          ),
+        );
+        return {
+          quote: fragment.quote,
+          rawSpan: span(rawStart, rawEnd),
+          contentSpan: span(contentStart, contentEnd),
+          decodedSpan: span(
+            fragment.decodedSpan.start,
+            fragment.decodedSpan.end,
+          ),
+        };
+      },
+    );
+    return { kind: "shell-word", fragments: shellWordFragments };
+  })();
+
   return {
-    reject: "unterminated double-quoted payload",
-    code: "unterminated_quote",
+    decodedPayload: decoded,
+    payload: span(embedStartAbs, embedEndAbs),
+    escaping,
+    projection,
+    wordEnd,
   };
 }
 
@@ -331,70 +582,14 @@ function parseShellWrapper(command: string): WrapperParseResult {
   if (i >= command.length) {
     return rejectWrapper(
       "unsafe_shell_syntax",
-      "shell wrapper requires exactly one quoted payload",
+      "shell wrapper requires exactly one payload word",
     );
   }
-  const quoteChar = command[i]!;
-  if (quoteChar !== "'" && quoteChar !== '"') {
-    return rejectWrapper(
-      "unsafe_shell_syntax",
-      "shell wrapper payload must be single or double quoted",
-    );
+  const payloadWord = parseShellWrapperPayloadWord(command, i);
+  if ("reject" in payloadWord) {
+    return rejectWrapper(payloadWord.code, payloadWord.reject);
   }
-
-  if (quoteChar === "'") {
-    let cursor = i + 1;
-    let decodedPayload = "";
-    let child = 0;
-    let parent = 0;
-    const points: SourceProjectionPoint[] = [{ child: 0, parent: 0 }];
-    for (;;) {
-      const close = command.indexOf("'", cursor);
-      if (close < 0) {
-        return rejectWrapper(
-          "unterminated_quote",
-          "unterminated single-quoted wrapper payload",
-        );
-      }
-      const literal = command.slice(cursor, close);
-      decodedPayload += literal;
-      if (literal.length > 0) {
-        child += literal.length;
-        parent += literal.length;
-        points.push({ child, parent });
-      }
-      if (command.slice(close, close + 4) === "'\\''") {
-        decodedPayload += "'";
-        child += 1;
-        parent += 4;
-        points.push({ child, parent });
-        cursor = close + 4;
-        continue;
-      }
-      const trailer = command.slice(close + 1);
-      if (trailer.trim().length > 0) {
-        return rejectWrapper(
-          "unsafe_shell_syntax",
-          "extra positional args after wrapper payload are not supported",
-        );
-      }
-      return {
-        kind: "wrapper",
-        value: {
-          decodedPayload,
-          payload: span(i + 1, close),
-          escaping: { kind: "shell-single-quote" },
-          projection: { points },
-        },
-      };
-    }
-  }
-
-  const decoded = decodeShellDoubleQuotedPayloadConservative(command, i);
-  if ("reject" in decoded) {
-    return rejectWrapper(decoded.code, decoded.reject);
-  }
-  const trailer = command.slice(decoded.closingQuote + 1);
+  const trailer = command.slice(payloadWord.wordEnd);
   if (trailer.trim().length > 0) {
     return rejectWrapper(
       "unsafe_shell_syntax",
@@ -404,10 +599,10 @@ function parseShellWrapper(command: string): WrapperParseResult {
   return {
     kind: "wrapper",
     value: {
-      decodedPayload: decoded.decoded,
-      payload: span(i + 1, decoded.closingQuote),
-      escaping: { kind: "shell-double-quote", conservative: true },
-      projection: decoded.projection,
+      decodedPayload: payloadWord.decodedPayload,
+      payload: payloadWord.payload,
+      escaping: payloadWord.escaping,
+      projection: payloadWord.projection,
     },
   };
 }

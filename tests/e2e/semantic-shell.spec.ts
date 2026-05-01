@@ -87,6 +87,7 @@ test("semantic shell: heredoc write renders header/body/footer", async ({
   // The body should render the heredoc content ("Hello World" appears in both
   // rendered and source views of the markdown)
   await expect(semanticWrite).toContainText("Hello World");
+  await expect(semanticWrite.locator(".markdown")).toBeVisible({ timeout });
 
   // The terminator (EOF) should be visible as the footer
   await expect(semanticWrite).toContainText("EOF");
@@ -281,7 +282,7 @@ test("semantic shell: quoted wrapper payload renders source tree wrapper input",
 
   const wrapperPayload = toolCall.locator(
     '[data-testid="semantic-shell-wrapper-payload"]',
-  );
+  ).first();
   await expect(wrapperPayload).toBeVisible({ timeout });
   await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
 
@@ -303,6 +304,91 @@ test("semantic shell: quoted wrapper payload renders source tree wrapper input",
   await expect(
     toolCall.locator('[data-testid="semantic-shell-output-search"]'),
   ).not.toBeVisible();
+});
+
+test("semantic shell: mixed-quoted wrapper heredoc stays shell-highlighted", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell mixed quoted wrapper heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const wrapperInput = toolCall.locator(
+    '[data-testid="semantic-shell-wrapper-input"]',
+  );
+  await expect(wrapperInput).toBeVisible({ timeout });
+  await expect(wrapperInput).toContainText("/run/current-system/sw/bin/zsh");
+  await expect(wrapperInput).toContainText("<<'EOF'");
+  await expect(wrapperInput).toContainText("heredoc body with");
+  await expect(wrapperInput).toContainText("quotes");
+  await expect(wrapperInput).toContainText("$literal");
+  await expect(wrapperInput).toContainText("EOF");
+
+  const wrapperPayload = toolCall.locator(
+    '[data-testid="semantic-shell-wrapper-payload"]',
+  ).first();
+  await expect(wrapperPayload).toBeVisible({ timeout });
+  await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
+});
+
+test("semantic shell: direct svg heredoc write offers rendered image preview", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell reproduce svg heredoc payload");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  await expect(semanticWrite).toBeVisible({ timeout });
+  await expect(semanticWrite.locator('img[alt="SVG preview"]')).toBeVisible({
+    timeout,
+  });
+});
+
+test("semantic shell: mixed-quoted markdown heredoc renders markdown body", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell mixed quoted markdown heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  await expect(semanticWrite).toBeVisible({ timeout });
+  await expect(semanticWrite.locator(".markdown h1")).toContainText(
+    "Heredoc Markdown Fixture",
+  );
+  await expect(semanticWrite.locator(".markdown")).toContainText(
+    "This file was written by a shell heredoc.",
+  );
+  await expect(semanticWrite.locator(".markdown")).toContainText(
+    'inline code: program --some-flag -y "hello world"',
+  );
+});
+
+test("semantic shell: mixed-quoted svg heredoc write offers rendered image preview", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell mixed quoted svg heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+
+  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  await expect(semanticWrite).toBeVisible({ timeout });
+  await expect(semanticWrite.locator('img[alt="SVG preview"]')).toBeVisible({
+    timeout,
+  });
 });
 
 test("semantic shell: wrapped markdown heredoc renders semantic output with proven boundaries", async ({
