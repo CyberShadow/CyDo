@@ -4,7 +4,12 @@ import {
   buildSourceRenderPieces,
   classifyEmbedRenderMode,
   isLineBoundaryEmbed,
+  type SourceRenderPiece,
 } from "./sourceTreeRenderPlan";
+
+function sourceTextOfPiece(piece: SourceRenderPiece): string {
+  return piece.kind === "rich" ? piece.sourceText : piece.text;
+}
 
 describe("source tree render plan", () => {
   it("isLineBoundaryEmbed returns false for quoted wrapper payload", () => {
@@ -67,19 +72,122 @@ describe("source tree render plan", () => {
     expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
   });
 
-  it("preserves escaped inner quotes when flattening wrapper payload pieces", () => {
-    const command =
-      '/run/current-system/sw/bin/zsh -lc "nl -ba source/cydo/app.d | sed -n \'720,790p\' && rg -n \\"CYDO_SKIP_LOAD_TASKS\\" -n source tests"';
+  it("renders deeply nested wrappers as recursive inline pieces", () => {
+    const command = 'zsh -lc "bash -lc \'sh -c \\"cat README.md\\"\'"';
     const parsed = parseCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
-    const rendered = buildSourceRenderPieces(parsed.value)
-      .map((piece) => piece.text)
-      .join("");
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const inlinePieces = pieces.filter((piece) => piece.kind === "inline");
 
-    expect(rendered).toBe(command);
-    expect(rendered).toContain('\\"CYDO_SKIP_LOAD_TASKS\\"');
+    expect(inlinePieces.length).toBeGreaterThan(1);
+    expect(inlinePieces.some((piece) => piece.text === command)).toBe(false);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
     expect(parsed.value.text).toBe(command);
+  });
+
+  it("keeps escaped wrapper source while exposing decoded highlight text", () => {
+    const command = 'zsh -lc "echo \\"CYDO_SKIP_LOAD_TASKS\\""';
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const inline = pieces.filter((piece) => piece.kind === "inline");
+    const escaped = inline.find((piece) =>
+      piece.text.includes('\\"CYDO_SKIP_LOAD_TASKS\\"'),
+    );
+    expect(escaped).toBeTruthy();
+    if (!escaped) return;
+    expect(escaped.highlightText).toContain('"CYDO_SKIP_LOAD_TASKS"');
+    expect(escaped.projection).toBeTruthy();
+  });
+
+  it("keeps single-quote close/reopen raw text with decoded apostrophe highlight", () => {
+    const command = "zsh -lc 'printf '\\''hi'\\'''";
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const inline = pieces.filter((piece) => piece.kind === "inline");
+    const escaped = inline.find((piece) => piece.text.includes("'\\''"));
+    expect(escaped).toBeTruthy();
+    if (!escaped) return;
+    expect(escaped.highlightText).toContain("'");
+    expect(escaped.projection).toBeTruthy();
+  });
+
+  it("renders markdown heredoc body as rich markdown and keeps shell suffix inline", () => {
+    const command =
+      "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\necho done\"";
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const richIndex = pieces.findIndex(
+      (piece) => piece.kind === "rich" && piece.mode === "rich-markdown",
+    );
+    expect(richIndex).toBeGreaterThanOrEqual(0);
+    const rich = richIndex >= 0 ? pieces[richIndex] : undefined;
+    expect(rich?.text).toBe("# Title");
+    const trailingInline = pieces
+      .slice(richIndex + 1)
+      .map((piece) => (piece.kind === "inline" ? piece.text : ""))
+      .join("");
+    expect(trailingInline.includes("EOF")).toBe(true);
+    expect(trailingInline.includes('echo done"')).toBe(true);
+    const joined = pieces.map(sourceTextOfPiece).join("");
+    expect(joined).toBe(command);
+  });
+
+  it("renders svg heredoc body as rich code and keeps wrapper/footer shell inline", () => {
+    const command =
+      "zsh -lc \"cat > /tmp/a/output.svg <<'EOF'\n<svg></svg>\nEOF\necho done\"";
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const richIndex = pieces.findIndex(
+      (piece) =>
+        piece.kind === "rich" &&
+        piece.mode === "rich-code" &&
+        piece.language === "xml",
+    );
+    expect(richIndex).toBeGreaterThanOrEqual(0);
+    const rich = richIndex >= 0 ? pieces[richIndex] : undefined;
+    expect(rich?.text).toBe("<svg></svg>");
+    const trailingInline = pieces
+      .slice(richIndex + 1)
+      .map((piece) => (piece.kind === "inline" ? piece.text : ""))
+      .join("");
+    expect(trailingInline.includes("EOF")).toBe(true);
+    expect(trailingInline.includes('echo done"')).toBe(true);
+    const joined = pieces.map(sourceTextOfPiece).join("");
+    expect(joined).toBe(command);
+  });
+
+  it("keeps escaped rich heredoc source text while rendering decoded body text", () => {
+    const command =
+      'zsh -lc "cat > /tmp/a/output.svg <<\'EOF\'\n<svg a=\\"b\\"></svg>\nEOF"';
+    const parsed = parseCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const rich = pieces.find(
+      (piece) =>
+        piece.kind === "rich" &&
+        piece.mode === "rich-code" &&
+        piece.language === "xml",
+    );
+    expect(rich?.kind).toBe("rich");
+    if (!rich || rich.kind !== "rich") return;
+    expect(rich.text).toBe('<svg a="b"></svg>');
+    expect(rich.sourceText).toBe('<svg a=\\"b\\"></svg>');
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
   });
 });

@@ -1,5 +1,9 @@
 import { h, Fragment } from "preact";
-import type { SourceNode } from "../lib/sourceTree";
+import {
+  projectSpan,
+  type SourceNode,
+  type SourceProjection,
+} from "../lib/sourceTree";
 import {
   buildSourceRenderPieces,
   type SourceRenderPiece,
@@ -25,23 +29,35 @@ function renderTokenLines(
 }
 
 export function SourceTextSpanView({
-  text,
-  language,
-  wrapperPayload,
+  piece,
 }: {
-  text: string;
-  language: string;
-  wrapperPayload: boolean;
+  piece: Extract<SourceRenderPiece, { kind: "inline" }>;
 }) {
-  const tokens = useHighlight(text, language);
-  if (wrapperPayload) {
-    return (
-      <span data-testid="semantic-shell-wrapper-payload" data-language="bash">
-        {tokens ? renderTokenLines(tokens) : text}
-      </span>
+  const decodedTokens = useHighlight(
+    piece.highlightText ?? piece.text,
+    piece.language,
+  );
+  const rawTokens = useHighlight(piece.text, piece.language);
+
+  let content: h.JSX.Element = (
+    <>{rawTokens ? renderTokenLines(rawTokens) : piece.text}</>
+  );
+
+  if (piece.highlightText && piece.projection && decodedTokens) {
+    const projected = renderProjectedTokenLines(
+      piece.text,
+      piece.projection,
+      decodedTokens,
     );
+    if (projected) content = projected;
   }
-  return <>{tokens ? renderTokenLines(tokens) : text}</>;
+
+  if (!piece.wrapperPayload) return content;
+  return (
+    <span data-testid="semantic-shell-wrapper-payload" data-language="bash">
+      {content}
+    </span>
+  );
 }
 
 export function SourceInlineEmbedView({
@@ -49,13 +65,7 @@ export function SourceInlineEmbedView({
 }: {
   piece: Extract<SourceRenderPiece, { kind: "inline" }>;
 }) {
-  return (
-    <SourceTextSpanView
-      text={piece.text}
-      language={piece.language}
-      wrapperPayload={piece.wrapperPayload}
-    />
-  );
+  return <SourceTextSpanView piece={piece} />;
 }
 
 export function SourceRichEmbedView({
@@ -92,6 +102,93 @@ type RichBlock = {
 };
 
 type RenderBlock = InlineBlock | RichBlock;
+
+function renderProjectedTokenLines(
+  rawText: string,
+  projection: SourceProjection,
+  tokens: NonNullable<ReturnType<typeof useHighlight>>,
+): h.JSX.Element | null {
+  let decodedOffset = 0;
+  const lines: h.JSX.Element[] = [];
+
+  for (let lineIndex = 0; lineIndex < tokens.length; lineIndex++) {
+    const line = tokens[lineIndex]!;
+    const lineStart = decodedOffset;
+    const lineLength = line.reduce(
+      (sum, token) => sum + token.content.length,
+      0,
+    );
+    const lineRawSpan = projectSpan(projection, {
+      start: lineStart,
+      end: lineStart + lineLength,
+    });
+    if (!lineRawSpan) return null;
+
+    let tokenOffset = lineStart;
+    let rawCursor = lineRawSpan.start;
+    const lineParts: h.JSX.Element[] = [];
+
+    for (let tokenIndex = 0; tokenIndex < line.length; tokenIndex++) {
+      const token = line[tokenIndex]!;
+      const tokenLength = token.content.length;
+      const tokenRawSpan = projectSpan(projection, {
+        start: tokenOffset,
+        end: tokenOffset + tokenLength,
+      });
+      if (
+        !tokenRawSpan ||
+        tokenRawSpan.start < rawCursor ||
+        tokenRawSpan.end < tokenRawSpan.start ||
+        tokenRawSpan.end > lineRawSpan.end
+      ) {
+        return null;
+      }
+
+      if (tokenRawSpan.start > rawCursor) {
+        lineParts.push(
+          <Fragment key={`gap-${lineIndex}-${tokenIndex}`}>
+            {rawText.slice(rawCursor, tokenRawSpan.start)}
+          </Fragment>,
+        );
+      }
+
+      const tokenRawText = rawText.slice(tokenRawSpan.start, tokenRawSpan.end);
+      if (tokenRawText.length > 0) {
+        lineParts.push(
+          <span
+            key={`token-${lineIndex}-${tokenIndex}`}
+            style={token.color ? { color: token.color } : undefined}
+          >
+            {tokenRawText}
+          </span>,
+        );
+      }
+
+      rawCursor = tokenRawSpan.end;
+      tokenOffset += tokenLength;
+    }
+
+    if (rawCursor < lineRawSpan.end) {
+      lineParts.push(
+        <Fragment key={`tail-${lineIndex}`}>
+          {rawText.slice(rawCursor, lineRawSpan.end)}
+        </Fragment>,
+      );
+    }
+
+    lines.push(
+      <Fragment key={lineIndex}>
+        {lineIndex > 0 && "\n"}
+        {lineParts}
+      </Fragment>,
+    );
+
+    decodedOffset += lineLength;
+    if (lineIndex + 1 < tokens.length) decodedOffset += 1;
+  }
+
+  return <Fragment>{lines}</Fragment>;
+}
 
 function toRenderBlocks(pieces: SourceRenderPiece[]): RenderBlock[] {
   const blocks: RenderBlock[] = [];

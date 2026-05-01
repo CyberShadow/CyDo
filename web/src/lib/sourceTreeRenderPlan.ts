@@ -1,4 +1,10 @@
-import type { SourceNode, SourceSpan, SourceSegment } from "./sourceTree";
+import {
+  projectDescendantSpan,
+  type SourceNode,
+  type SourceProjection,
+  type SourceSpan,
+  type SourceSegment,
+} from "./sourceTree";
 
 export type SourceEmbedRenderMode = "inline" | "rich-markdown" | "rich-code";
 
@@ -9,15 +15,21 @@ export type SourceRenderPiece =
       kind: "inline";
       id: string;
       text: string;
+      highlightText?: string;
       language: string;
       wrapperPayload: boolean;
+      sourceSpan: SourceSpan;
+      highlightSpan: SourceSpan;
+      projection?: SourceProjection;
     }
   | {
       kind: "rich";
       id: string;
       text: string;
+      sourceText: string;
       language: string;
       mode: Exclude<SourceEmbedRenderMode, "inline">;
+      sourceSpan: SourceSpan;
     };
 
 function isSupportedRichLanguage(language: string): boolean {
@@ -52,65 +64,218 @@ export function classifyEmbedRenderMode(
 }
 
 function walkSourceRenderPieces(
+  root: SourceNode,
   node: SourceNode,
   path: string,
-  pieces: SourceRenderPiece[],
+  embedPath: number[],
   wrapperPayload: boolean,
-): void {
+  pieces: SourceRenderPiece[],
+): boolean {
   for (let i = 0; i < node.segments.length; i++) {
     const segment = node.segments[i]!;
     const segPath = `${path}.${i}`;
     if (segment.kind === "text") {
-      const text = node.text.slice(segment.span.start, segment.span.end);
-      if (!text) continue;
-      pieces.push({
-        kind: "inline",
-        id: segPath,
-        text,
-        language: node.language,
-        wrapperPayload,
-      });
+      if (
+        !pushInlineTextPiece(
+          root,
+          node,
+          embedPath,
+          segPath,
+          wrapperPayload,
+          segment,
+          pieces,
+        )
+      )
+        return false;
       continue;
     }
 
     const mode = classifyEmbedRenderMode(node, segment);
     if (mode === "inline") {
-      const isShellWrapperPayload =
+      const rawSubtreeSpan = projectDescendantSpan(
+        root,
+        embedPath,
+        segment.span,
+      );
+      if (!rawSubtreeSpan) return false;
+      const childWrapperPayload =
+        wrapperPayload ||
         segment.escaping.kind === "shell-single-quote" ||
         segment.escaping.kind === "shell-double-quote";
-      if (isShellWrapperPayload) {
-        const text = node.text.slice(segment.span.start, segment.span.end);
-        if (!text) continue;
+      if (
+        !walkInlineSubtree(
+          root,
+          segment,
+          segPath,
+          embedPath,
+          i,
+          childWrapperPayload,
+          pieces,
+        )
+      ) {
+        const rawText = root.text.slice(
+          rawSubtreeSpan.start,
+          rawSubtreeSpan.end,
+        );
+        if (!rawText) continue;
         pieces.push({
           kind: "inline",
           id: segPath,
-          text,
+          text: rawText,
           language: node.language,
-          wrapperPayload: true,
+          wrapperPayload: childWrapperPayload,
+          sourceSpan: rawSubtreeSpan,
+          highlightSpan: segment.span,
         });
-        continue;
       }
-      walkSourceRenderPieces(
-        segment.content,
-        `${segPath}.content`,
-        pieces,
-        wrapperPayload,
-      );
       continue;
     }
 
+    const sourceSpan = projectDescendantSpan(root, embedPath, segment.span);
+    if (!sourceSpan) return false;
+    const rawText = root.text.slice(sourceSpan.start, sourceSpan.end);
+    if (!rawText) continue;
     pieces.push({
       kind: "rich",
       id: segPath,
       text: segment.content.text,
+      sourceText: rawText,
       language: segment.content.language,
       mode,
+      sourceSpan,
     });
   }
+  return true;
+}
+
+function walkInlineSubtree(
+  root: SourceNode,
+  segment: EmbedSegment,
+  segPath: string,
+  embedPath: number[],
+  segmentIndex: number,
+  wrapperPayload: boolean,
+  pieces: SourceRenderPiece[],
+): boolean {
+  const nestedPieces: SourceRenderPiece[] = [];
+  const nestedPath = [...embedPath, segmentIndex];
+  const ok = walkSourceRenderPieces(
+    root,
+    segment.content,
+    `${segPath}.content`,
+    nestedPath,
+    wrapperPayload,
+    nestedPieces,
+  );
+  if (!ok) return false;
+  pieces.push(...nestedPieces);
+  return true;
+}
+
+function pushInlineTextPiece(
+  root: SourceNode,
+  node: SourceNode,
+  embedPath: number[],
+  id: string,
+  wrapperPayload: boolean,
+  segment: Extract<SourceSegment, { kind: "text" }>,
+  pieces: SourceRenderPiece[],
+): boolean {
+  const highlightText = node.text.slice(segment.span.start, segment.span.end);
+  if (!highlightText) return true;
+  const sourceSpan = projectDescendantSpan(root, embedPath, segment.span);
+  if (!sourceSpan) return false;
+  const text = root.text.slice(sourceSpan.start, sourceSpan.end);
+  if (!text) return true;
+
+  if (text === highlightText) {
+    pieces.push({
+      kind: "inline",
+      id,
+      text,
+      language: node.language,
+      wrapperPayload,
+      sourceSpan,
+      highlightSpan: segment.span,
+    });
+    return true;
+  }
+
+  const projection = buildInlineProjection(
+    root,
+    embedPath,
+    segment.span,
+    sourceSpan,
+    highlightText.length,
+  );
+  if (!projection) return false;
+
+  pieces.push({
+    kind: "inline",
+    id,
+    text,
+    highlightText,
+    language: node.language,
+    wrapperPayload,
+    sourceSpan,
+    highlightSpan: segment.span,
+    projection,
+  });
+  return true;
+}
+
+function buildInlineProjection(
+  root: SourceNode,
+  embedPath: number[],
+  highlightSpan: SourceSpan,
+  sourceSpan: SourceSpan,
+  highlightLength: number,
+): SourceProjection | null {
+  const points: SourceProjection["points"] = [{ child: 0, parent: 0 }];
+  let lastParent = 0;
+  for (let i = 1; i <= highlightLength; i++) {
+    const mapped = projectDescendantSpan(root, embedPath, {
+      start: highlightSpan.start + i,
+      end: highlightSpan.start + i,
+    });
+    if (!mapped || mapped.start !== mapped.end) return null;
+    const parent = mapped.start - sourceSpan.start;
+    if (parent <= lastParent) return null;
+    points.push({ child: i, parent });
+    lastParent = parent;
+  }
+  if (points[points.length - 1]?.parent !== sourceSpan.end - sourceSpan.start) {
+    return null;
+  }
+  return { points };
 }
 
 export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
   const pieces: SourceRenderPiece[] = [];
-  walkSourceRenderPieces(root, "root", pieces, false);
+  const ok = walkSourceRenderPieces(root, root, "root", [], false, pieces);
+  if (!ok) {
+    return [
+      {
+        kind: "inline",
+        id: "root.0",
+        text: root.text,
+        language: root.language,
+        wrapperPayload: false,
+        sourceSpan: { start: 0, end: root.text.length },
+        highlightSpan: { start: 0, end: root.text.length },
+      },
+    ];
+  }
+  if (pieces.length > 0) return pieces;
+  if (!root.text) return pieces;
+  pieces.push({
+    kind: "inline",
+    id: "root.0",
+    text: root.text,
+    language: root.language,
+    wrapperPayload: false,
+    sourceSpan: { start: 0, end: root.text.length },
+    highlightSpan: { start: 0, end: root.text.length },
+  });
   return pieces;
 }
