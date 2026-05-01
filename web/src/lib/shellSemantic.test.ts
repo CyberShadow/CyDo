@@ -1107,6 +1107,18 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.value.outputPlan?.blocks[0]?.id).toBe("sed-output");
   });
 
+  it("single sed svg read carries source file identity in output plan", async () => {
+    const r = await parseShellSemantic(
+      "sed -n '1,20p' /tmp/cydo-heredoc-render.svg",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("read");
+    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe(
+      "/tmp/cydo-heredoc-render.svg",
+    );
+  });
+
   it("ls -l same-file && sed emits structured-output with listing + sed blocks", async () => {
     const r = await parseShellSemantic(
       "ls -l README.md && sed -n '1,20p' README.md",
@@ -1124,6 +1136,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
+    expect(v.outputPlan?.blocks[1]?.source?.filePath).toBe("README.md");
   });
 
   it("sed/printf multiline list emits unique-literal separator anchors", async () => {

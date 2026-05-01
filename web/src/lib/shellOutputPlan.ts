@@ -42,6 +42,7 @@ export type SegmentedOutputPiece =
       start: number;
       end: number;
       format: OutputFormat;
+      source?: OutputBlockPlan["source"];
     }
   | {
       kind: "raw";
@@ -242,13 +243,17 @@ export function segmentOutput(
       if (resolved.start > cursor) {
         pushRaw(cursor, resolved.start, "uncovered-gap");
       }
-      pieces.push({
+      const structuredPiece: SegmentedOutputPiece = {
         kind: "structured",
         blockId: block.id,
         start: resolved.start,
         end: resolved.end,
         format: block.format,
-      });
+      };
+      if (block.source) {
+        structuredPiece.source = block.source;
+      }
+      pieces.push(structuredPiece);
       acceptedStarts.set(block.id, resolved.start);
       cursor = resolved.end;
       continue;

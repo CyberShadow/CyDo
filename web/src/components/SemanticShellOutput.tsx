@@ -4,10 +4,14 @@ import { type ThemedToken, useHighlight, renderTokens } from "../highlight";
 import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
 import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
+import { FileContentPreview } from "./file-preview/FileContentPreview";
+import { detectRenderableFormat } from "../lib/fileFormats";
 import {
   segmentOutput,
   type OutputFormat,
   type OutputPlan,
+  type OutputBlockPlan,
+  type SegmentedOutputPiece,
 } from "../lib/shellOutputPlan";
 
 function renderTokenLines(tokens: ThemedToken[][] | null): h.JSX.Element {
@@ -103,9 +107,13 @@ function InlineFormatted({
 function StructuredContent({
   text,
   format,
+  sourceFilePath,
+  allowFilePreview,
 }: {
   text: string;
   format: OutputFormat;
+  sourceFilePath?: string;
+  allowFilePreview: boolean;
 }): h.JSX.Element {
   const codeLanguage =
     format.kind === "content" &&
@@ -120,6 +128,14 @@ function StructuredContent({
   );
 
   if (format.kind === "content") {
+    if (
+      allowFilePreview &&
+      sourceFilePath &&
+      detectRenderableFormat(sourceFilePath, text) != null
+    ) {
+      return <FileContentPreview filePath={sourceFilePath} content={text} />;
+    }
+
     if (format.language === "markdown") {
       return (
         <SourceRenderedToggle
@@ -156,6 +172,30 @@ function StructuredContent({
   );
 }
 
+function canRenderStructuredFilePreview(
+  piece: Extract<SegmentedOutputPiece, { kind: "structured" }>,
+  block: OutputBlockPlan | undefined,
+  stdoutLength: number,
+): boolean {
+  if (!piece.source?.filePath) return false;
+  if (!block) return false;
+
+  if (block.location.kind === "whole-output") {
+    return piece.start === 0 && piece.end === stdoutLength;
+  }
+
+  if (
+    block.id === "sed-output" &&
+    block.source?.commandName === "sed" &&
+    block.location.kind === "from-cursor" &&
+    block.location.end.kind === "end-of-output"
+  ) {
+    return piece.end === stdoutLength;
+  }
+
+  return false;
+}
+
 export function hasSemanticShellOutput(
   stdout: string,
   outputPlan: OutputPlan,
@@ -188,6 +228,11 @@ export function SemanticShellOutput({
   const hasSearchBlock = outputPlan.blocks.some(
     (b) => b.source?.commandName === "rg",
   );
+  const blockById = useMemo(() => {
+    const map = new Map<string, OutputBlockPlan>();
+    for (const block of outputPlan.blocks) map.set(block.id, block);
+    return map;
+  }, [outputPlan]);
 
   return (
     <div
@@ -210,13 +255,24 @@ export function SemanticShellOutput({
             </pre>
           );
         }
+        const block = blockById.get(piece.blockId);
+        const allowFilePreview = canRenderStructuredFilePreview(
+          piece,
+          block,
+          stdout.length,
+        );
         return (
           <div
             key={`${piece.blockId}:${i}`}
             class="semantic-shell-structured-piece"
             data-testid={`semantic-shell-block-${piece.blockId}`}
           >
-            <StructuredContent text={text} format={piece.format} />
+            <StructuredContent
+              text={text}
+              format={piece.format}
+              sourceFilePath={piece.source?.filePath}
+              allowFilePreview={allowFilePreview}
+            />
           </div>
         );
       })}

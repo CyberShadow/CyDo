@@ -90,6 +90,41 @@ describe("shellOutputPlan", () => {
     assertCoverage(stdout, segmented.pieces);
   });
 
+  it("preserves source metadata on structured pieces", () => {
+    const stdout = "<svg></svg>\n";
+    const plan: OutputPlan = {
+      version: 1,
+      blocks: [
+        {
+          id: "sed-output",
+          source: {
+            commandIndex: 0,
+            commandName: "sed",
+            filePath: "/tmp/cydo-heredoc-render.svg",
+          },
+          format: { kind: "content", language: "xml" },
+          location: { kind: "whole-output", validator: "non-empty" },
+        },
+      ],
+    };
+
+    const segmented = segmentOutput(stdout, plan, { kind: "complete" });
+    expect(segmented.pieces).toEqual([
+      {
+        kind: "structured",
+        blockId: "sed-output",
+        start: 0,
+        end: stdout.length,
+        format: { kind: "content", language: "xml" },
+        source: {
+          commandIndex: 0,
+          commandName: "sed",
+          filePath: "/tmp/cydo-heredoc-render.svg",
+        },
+      },
+    ]);
+  });
+
   it("falls back locally when whole-output validator fails", () => {
     const stdout = "   \n\t";
     const plan: OutputPlan = {
