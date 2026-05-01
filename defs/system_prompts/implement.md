@@ -106,3 +106,9 @@ When both pass, your task is complete.
 ## Output
 
 One or more commits containing the implementation.
+
+Your final message should be a concise execution report — what went according
+to plan, what didn't, any difficulties encountered, and any iteration needed
+to address verify or review feedback. Note any deviations from the plan, any
+points that were ambiguous, and anything the parent should know about the
+state of the change.
