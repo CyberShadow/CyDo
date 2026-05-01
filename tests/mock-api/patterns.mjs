@@ -40,6 +40,22 @@ export function matchPattern(userText) {
     return { type: "text", text: innerMatch ? innerMatch[1] : "Test Task" };
   }
 
+  // Semantic-shell section fixtures should match even when nested inside
+  // system-wrapped prompts (Codex/Copilot can wrap these differently).
+  if (/semantic shell sections fallback/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "sed -n '1,12p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '13,24p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '25,36p' /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
+  if (/semantic shell sections/i.test(userText))
+    return {
+      type: "shell",
+      command:
+        "sed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts",
+    };
+
   // [SYSTEM: Follow-up question from parent task (qid=N)] — backend wraps Ask
   // messages in SYSTEM tags. Extract qid from the subject and respond with Answer.
   {
@@ -527,20 +543,6 @@ export function matchPattern(userText) {
       type: "shell",
       command:
         "rg -n --context=3 \"semantic shell\" /tmp/tests/e2e/semantic-shell.spec.ts",
-    };
-
-  if (/semantic shell sections fallback/i.test(userText))
-    return {
-      type: "shell",
-      command:
-        "sed -n '1,12p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '13,24p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '25,36p' /tmp/tests/e2e/semantic-shell.spec.ts",
-    };
-
-  if (/semantic shell sections/i.test(userText))
-    return {
-      type: "shell",
-      command:
-        "sed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts\nprintf '\\n--- section ---\\n'\nsed -n '1,1p' /tmp/tests/e2e/semantic-shell.spec.ts",
     };
 
   // "reply with "<text>""

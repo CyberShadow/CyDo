@@ -13,11 +13,21 @@ export type SourceSegment =
       span: SourceSpan;
       content: SourceNode;
       escaping: EscapingScheme;
+      projection?: SourceProjection;
     };
 
 export interface SourceSpan {
   start: number;
   end: number;
+}
+
+export interface SourceProjection {
+  points: SourceProjectionPoint[];
+}
+
+export interface SourceProjectionPoint {
+  child: number;
+  parent: number;
 }
 
 export type EscapingScheme =
@@ -51,6 +61,7 @@ interface WrapperParse {
   decodedPayload: string;
   payload: SourceSpan;
   escaping: EscapingScheme;
+  projection: SourceProjection;
 }
 
 type WrapperParseResult =
@@ -59,6 +70,9 @@ type WrapperParseResult =
   | { kind: "reject"; code: SourceTreeRejectCode; reason: string };
 
 const INTERPRETER_LANG: Record<string, string> = {
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
   python: "python",
   python3: "python",
   node: "javascript",
@@ -87,6 +101,143 @@ function reject(
   return { ok: false, code, reason };
 }
 
+function isValidSourceSpan(span: SourceSpan): boolean {
+  return (
+    Number.isInteger(span.start) &&
+    Number.isInteger(span.end) &&
+    span.start >= 0 &&
+    span.end >= span.start
+  );
+}
+
+function validateProjection(
+  projection: SourceProjection,
+): { ok: true; maxChild: number } | { ok: false } {
+  const points = projection.points;
+  if (points.length < 1) return { ok: false };
+  for (const point of points) {
+    if (
+      !Number.isInteger(point.child) ||
+      !Number.isInteger(point.parent) ||
+      point.child < 0 ||
+      point.parent < 0
+    ) {
+      return { ok: false };
+    }
+  }
+  if (points[0]!.child !== 0 || points[0]!.parent !== 0) {
+    return { ok: false };
+  }
+  if (points.length === 1) return { ok: true, maxChild: 0 };
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1]!;
+    const curr = points[i]!;
+    if (curr.child <= prev.child) return { ok: false };
+    if (curr.parent <= prev.parent) return { ok: false };
+  }
+  return { ok: true, maxChild: points[points.length - 1]!.child };
+}
+
+export function projectOffset(
+  projection: SourceProjection,
+  offset: number,
+): number | null {
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  const validated = validateProjection(projection);
+  if (!validated.ok) return null;
+  if (offset > validated.maxChild) return null;
+  const points = projection.points;
+  for (const point of points) {
+    if (offset === point.child) return point.parent;
+  }
+  for (let i = 0; i + 1 < points.length; i++) {
+    const from = points[i]!;
+    const to = points[i + 1]!;
+    if (offset < from.child || offset > to.child) continue;
+    const childDelta = to.child - from.child;
+    const parentDelta = to.parent - from.parent;
+    if (childDelta <= 0 || parentDelta < 0) return null;
+    if (parentDelta !== childDelta) return null;
+    return from.parent + (offset - from.child);
+  }
+  return null;
+}
+
+export function projectSpan(
+  projection: SourceProjection,
+  inputSpan: SourceSpan,
+): SourceSpan | null {
+  if (!isValidSourceSpan(inputSpan)) return null;
+  const start = projectOffset(projection, inputSpan.start);
+  const end = projectOffset(projection, inputSpan.end);
+  if (start == null || end == null || end < start) return null;
+  return { start, end };
+}
+
+export function projectEmbedSpan(
+  segment: Extract<SourceSegment, { kind: "embed" }>,
+  childSpan: SourceSpan,
+): SourceSpan | null {
+  if (!isValidSourceSpan(childSpan)) return null;
+  const childLen = segment.content.text.length;
+  const parentLen = segment.span.end - segment.span.start;
+  if (childSpan.end > childLen) return null;
+  const local = (() => {
+    if (segment.projection == null) {
+      return { start: childSpan.start, end: childSpan.end };
+    }
+    const projectedStart = projectOffset(segment.projection, 0);
+    const projectedEnd = projectOffset(segment.projection, childLen);
+    if (
+      projectedStart !== 0 ||
+      projectedEnd == null ||
+      projectedEnd !== parentLen
+    ) {
+      return null;
+    }
+    return projectSpan(segment.projection, childSpan);
+  })();
+  if (!local) return null;
+  if (local.start < 0 || local.end < local.start || local.end > parentLen) {
+    return null;
+  }
+  return {
+    start: segment.span.start + local.start,
+    end: segment.span.start + local.end,
+  };
+}
+
+export function projectDescendantSpan(
+  ancestor: SourceNode,
+  embedPath: number[],
+  descendantSpan: SourceSpan,
+): SourceSpan | null {
+  if (!isValidSourceSpan(descendantSpan)) return null;
+  const embeds: Array<Extract<SourceSegment, { kind: "embed" }>> = [];
+  let node: SourceNode = ancestor;
+  for (const index of embedPath) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= node.segments.length
+    ) {
+      return null;
+    }
+    const segment = node.segments[index];
+    if (!segment || segment.kind !== "embed") return null;
+    embeds.push(segment);
+    node = segment.content;
+  }
+  if (descendantSpan.end > node.text.length) return null;
+  let current: SourceSpan = { ...descendantSpan };
+  for (let i = embeds.length - 1; i >= 0; i--) {
+    const projected = projectEmbedSpan(embeds[i]!, current);
+    if (!projected) return null;
+    current = projected;
+  }
+  return current;
+}
+
 function shellBasename(name: string): string {
   const parts = name.split("/");
   return parts[parts.length - 1] ?? name;
@@ -96,14 +247,17 @@ function decodeShellDoubleQuotedPayloadConservative(
   source: string,
   quoteStart: number,
 ):
-  | { decoded: string; closingQuote: number }
+  | { decoded: string; closingQuote: number; projection: SourceProjection }
   | { reject: string; code: SourceTreeRejectCode } {
   let i = quoteStart + 1;
   let decoded = "";
+  let child = 0;
+  let parent = 0;
+  const points: SourceProjectionPoint[] = [{ child: 0, parent: 0 }];
   while (i < source.length) {
     const ch = source[i]!;
     if (ch === '"') {
-      return { decoded, closingQuote: i };
+      return { decoded, closingQuote: i, projection: { points } };
     }
     if (ch === "\\") {
       const next = source[i + 1];
@@ -120,6 +274,9 @@ function decodeShellDoubleQuotedPayloadConservative(
         };
       }
       decoded += next;
+      child += 1;
+      parent += 2;
+      points.push({ child, parent });
       i += 2;
       continue;
     }
@@ -137,6 +294,9 @@ function decodeShellDoubleQuotedPayloadConservative(
       };
     }
     decoded += ch;
+    child += 1;
+    parent += 1;
+    points.push({ child, parent });
     i++;
   }
   return {
@@ -185,6 +345,9 @@ function parseShellWrapper(command: string): WrapperParseResult {
   if (quoteChar === "'") {
     let cursor = i + 1;
     let decodedPayload = "";
+    let child = 0;
+    let parent = 0;
+    const points: SourceProjectionPoint[] = [{ child: 0, parent: 0 }];
     for (;;) {
       const close = command.indexOf("'", cursor);
       if (close < 0) {
@@ -193,9 +356,18 @@ function parseShellWrapper(command: string): WrapperParseResult {
           "unterminated single-quoted wrapper payload",
         );
       }
-      decodedPayload += command.slice(cursor, close);
+      const literal = command.slice(cursor, close);
+      decodedPayload += literal;
+      if (literal.length > 0) {
+        child += literal.length;
+        parent += literal.length;
+        points.push({ child, parent });
+      }
       if (command.slice(close, close + 4) === "'\\''") {
         decodedPayload += "'";
+        child += 1;
+        parent += 4;
+        points.push({ child, parent });
         cursor = close + 4;
         continue;
       }
@@ -212,6 +384,7 @@ function parseShellWrapper(command: string): WrapperParseResult {
           decodedPayload,
           payload: span(i + 1, close),
           escaping: { kind: "shell-single-quote" },
+          projection: { points },
         },
       };
     }
@@ -234,6 +407,7 @@ function parseShellWrapper(command: string): WrapperParseResult {
       decodedPayload: decoded.decoded,
       payload: span(i + 1, decoded.closingQuote),
       escaping: { kind: "shell-double-quote", conservative: true },
+      projection: decoded.projection,
     },
   };
 }
@@ -428,6 +602,35 @@ function inferHeredocLanguage(
 }
 
 function parseShellNode(text: string): SourceTreeParseResult {
+  const wrapper = parseShellWrapper(text);
+  if (wrapper.kind === "reject") {
+    return reject(wrapper.code, wrapper.reason);
+  }
+  if (wrapper.kind === "wrapper") {
+    const payloadNode = parseShellNode(wrapper.value.decodedPayload);
+    if (!payloadNode.ok) return payloadNode;
+    const segments: SourceSegment[] = [];
+    const prefix = textSegment(0, wrapper.value.payload.start);
+    if (prefix) segments.push(prefix);
+    segments.push({
+      kind: "embed",
+      span: wrapper.value.payload,
+      content: payloadNode.value,
+      escaping: wrapper.value.escaping,
+      projection: wrapper.value.projection,
+    });
+    const suffix = textSegment(wrapper.value.payload.end, text.length);
+    if (suffix) segments.push(suffix);
+    return {
+      ok: true,
+      value: {
+        language: "bash",
+        text,
+        segments,
+      },
+    };
+  }
+
   const heredoc = parseHeredoc(text);
   if (heredoc.kind === "reject") {
     return reject(heredoc.code, heredoc.reason);
@@ -444,11 +647,22 @@ function parseShellNode(text: string): SourceTreeParseResult {
   }
 
   const bodyText = text.slice(heredoc.value.bodyStart, heredoc.value.bodyEnd);
-  const child: SourceNode = {
-    language: heredoc.value.language,
-    text: bodyText,
-    segments: [{ kind: "text", span: span(0, bodyText.length) }],
-  };
+  let child: SourceNode;
+  if (
+    heredoc.value.language === "bash" ||
+    heredoc.value.language === "shell" ||
+    heredoc.value.language === "shellscript"
+  ) {
+    const nested = parseShellNode(bodyText);
+    if (!nested.ok) return nested;
+    child = nested.value;
+  } else {
+    child = {
+      language: heredoc.value.language,
+      text: bodyText,
+      segments: [{ kind: "text", span: span(0, bodyText.length) }],
+    };
+  }
   const segments: SourceSegment[] = [];
   const before = textSegment(0, heredoc.value.bodyStart);
   if (before) segments.push(before);
@@ -477,34 +691,5 @@ function parseShellNode(text: string): SourceTreeParseResult {
 
 export function parseCommandSourceTree(command: string): SourceTreeParseResult {
   if (!command.trim()) return reject("empty", "empty command");
-
-  const wrapper = parseShellWrapper(command);
-  if (wrapper.kind === "reject") {
-    return reject(wrapper.code, wrapper.reason);
-  }
-  if (wrapper.kind === "none") {
-    return parseShellNode(command);
-  }
-
-  const payloadNode = parseShellNode(wrapper.value.decodedPayload);
-  if (!payloadNode.ok) return payloadNode;
-  const segments: SourceSegment[] = [];
-  const prefix = textSegment(0, wrapper.value.payload.start);
-  if (prefix) segments.push(prefix);
-  segments.push({
-    kind: "embed",
-    span: wrapper.value.payload,
-    content: payloadNode.value,
-    escaping: wrapper.value.escaping,
-  });
-  const suffix = textSegment(wrapper.value.payload.end, command.length);
-  if (suffix) segments.push(suffix);
-  return {
-    ok: true,
-    value: {
-      language: "bash",
-      text: command,
-      segments,
-    },
-  };
+  return parseShellNode(command);
 }
