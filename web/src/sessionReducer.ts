@@ -809,9 +809,12 @@ function reduceItemStartedUserMessage(
       ? (content as AssistantContentBlock[])
       : [{ type: "text" as const, text: "" }];
 
+  const isPendingUserMsg = (m: DisplayMessage) =>
+    m.type === "user" && m.ackState !== undefined && m.ackState > 1;
+
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
   // removes it from the message list.
-  const pendingMsg = s.messages.find((m) => m.pending && m.type === "user");
+  const pendingMsg = s.messages.find(isPendingUserMsg);
   const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
 
   let state = s;
@@ -819,7 +822,7 @@ function reduceItemStartedUserMessage(
   if (event.is_replay) {
     state = {
       ...state,
-      messages: state.messages.filter((m) => !(m.pending && m.type === "user")),
+      messages: state.messages.filter((m) => !isPendingUserMsg(m)),
     };
   }
 
@@ -829,6 +832,7 @@ function reduceItemStartedUserMessage(
       id,
       type: "user" as const,
       content: blocks,
+      ackState: 3,
       pending: true,
       isSidechain: event.is_sidechain,
       isSynthetic: event.is_synthetic || undefined,

@@ -26,9 +26,17 @@ export function UserMessage({ message }: Props) {
 
   const text = textParts.join("\n");
 
+  const ackClass =
+    message.ackState !== undefined ? ` ack-${message.ackState}` : "";
+  const pendingClass =
+    (message.ackState !== undefined && message.ackState >= 3) ||
+    (!message.ackState && message.pending)
+      ? " pending"
+      : "";
+
   return (
     <div
-      class={`message user-message${message.pending ? " pending" : ""}${
+      class={`message user-message${ackClass}${pendingClass}${
         message.isMeta ? " meta-message" : ""
       }${message.isSteering ? " steering-message" : ""}${
         message.isCompactSummary ? " compact-summary-message" : ""

@@ -41,6 +41,10 @@ export interface DisplayMessage {
     | "parse_error";
   content: AssistantContentBlock[];
   model?: string;
+  /** Ack level: 4=sent/no backend ack, 3=backend acked, 2=agent acked, 1=in LLM context. */
+  ackState?: 1 | 2 | 3 | 4;
+  /** Nonce correlating this message to a send; present on ackState≥3 messages. */
+  nonce?: string;
   pending?: boolean;
   /** Ordered block IDs for assistant messages — references blocks in TaskState.blocks. */
   blockIds?: string[];
