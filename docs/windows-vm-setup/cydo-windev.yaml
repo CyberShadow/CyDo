@@ -108,4 +108,14 @@ properties:
         id: 7zip.7zip
         source: winget
 
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: msys2
+      directives:
+        description: MSYS2 POSIX environment (provides rsync, awk, sed, etc.)
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        id: MSYS2.MSYS2
+        source: winget
+
     # === END PROJECT-SPECIFIC DEV DEPS ===================================

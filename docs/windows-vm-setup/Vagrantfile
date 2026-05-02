@@ -144,7 +144,14 @@ Vagrant.configure("2") do |config|
       }
     PWSH
 
-  # Provision step 4: install LDC (D compiler) — no winget manifest exists, so
+  # Provision step 4a: install MSYS2 userland packages we need (rsync etc.).
+  # Runs after winget-configure has installed MSYS2 itself.
+  config.vm.provision "shell",
+    name: "install-msys2-packages",
+    privileged: true,
+    path: "install-msys2-packages.ps1"
+
+  # Provision step 4b: install LDC (D compiler) — no winget manifest exists, so
   # we pull the Inno Setup installer from LDC's GitHub releases directly.
   config.vm.provision "shell",
     name: "install-ldc",
