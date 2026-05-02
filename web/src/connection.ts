@@ -12,8 +12,9 @@ export class Connection {
   onTaskMessage:
     | ((tid: number, event: AgnosticEvent, seq?: number, ts?: number) => void)
     | null = null;
-  onUnconfirmedUserMessage: ((tid: number, msg: AgnosticEvent) => void) | null =
-    null;
+  onUnconfirmedUserMessage:
+    | ((tid: number, msg: AgnosticEvent, correlationId?: string) => void)
+    | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -70,9 +71,14 @@ export class Connection {
           this.onControlMessage?.(raw as unknown as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {
           if ("unconfirmedUserEvent" in raw) {
+            const correlationId =
+              typeof raw.correlation_id === "string" && raw.correlation_id
+                ? raw.correlation_id
+                : undefined;
             this.onUnconfirmedUserMessage?.(
               raw.tid,
               raw.unconfirmedUserEvent as AgnosticEvent,
+              correlationId,
             );
           } else if ("event" in raw) {
             const event = raw.event as AgnosticEvent;
@@ -100,8 +106,15 @@ export class Connection {
     return false;
   }
 
-  sendMessage(tid: number, content: ContentBlock[]) {
-    this.send(JSON.stringify({ type: "message", tid, content }));
+  sendMessage(tid: number, content: ContentBlock[], nonce?: string) {
+    this.send(
+      JSON.stringify({
+        type: "message",
+        tid,
+        content,
+        ...(nonce ? { correlation_id: nonce } : {}),
+      }),
+    );
   }
 
   setTaskType(tid: number, taskType: string) {

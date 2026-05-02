@@ -24,6 +24,7 @@ import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
 import { canonicalUserTextFromDisplayMessage } from "./userText";
 import { drafts as inputDrafts } from "./components/InputBox";
+import { outbox } from "./outbox";
 
 export interface ImageAttachment {
   id: string;
@@ -569,7 +570,7 @@ export function useTaskManager(
   // Reduces against the mutable liveStates map (synchronous), fires
   // notifications, then enqueues a Preact state update for rendering.
   const handleUnconfirmedUserMessage = useCallback(
-    (tid: number, msg: AgnosticEvent) => {
+    (tid: number, msg: AgnosticEvent, correlationId?: string) => {
       const uuid = tidToUuid.get(tid);
       if (!uuid) return;
       const prev = liveStates.get(uuid) ?? {
@@ -584,16 +585,42 @@ export function useTaskManager(
         | undefined) ?? [
         { type: "text" as const, text: extractTextContent(msg) },
       ];
+
+      // If a local ackState=4 placeholder with this nonce exists, upgrade it
+      // to ackState=3 (backend acked). Otherwise insert a fresh ackState=3 bubble.
+      let messages = prev.messages;
+      if (correlationId) {
+        outbox.remove(correlationId);
+        const idx = messages.findIndex(
+          (m) => m.type === "user" && m.nonce === correlationId,
+        );
+        if (idx >= 0) {
+          messages = messages.map((m, i) =>
+            i === idx ? { ...m, ackState: 3 as const, pending: true } : m,
+          );
+          const updated = { ...prev, messages };
+          liveStates.set(uuid, updated);
+          setTasks((map) => {
+            const next = new Map(map);
+            next.set(uuid, updated);
+            return next;
+          });
+          return;
+        }
+      }
+
       const id = `pending-${++prev.msgIdCounter}`;
       const updated = {
         ...prev,
         messages: [
-          ...prev.messages,
+          ...messages,
           {
             id,
             type: "user" as const,
             content,
+            ackState: 3 as const,
             pending: true,
+            nonce: correlationId,
             cydoMeta: meta,
             rawSource: msg,
           },
@@ -1446,6 +1473,7 @@ export function useTaskManager(
           kind: "unconfirmed";
           tid: number;
           msg: AgnosticEvent;
+          correlationId?: string;
         }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
@@ -1463,7 +1491,7 @@ export function useTaskManager(
       for (const item of batch) {
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
-          handleUnconfirmedUserMessage(item.tid, item.msg);
+          handleUnconfirmedUserMessage(item.tid, item.msg, item.correlationId);
         else handleTaskMessage(item.tid, item.msg, item.seq, item.ts);
       }
     };
@@ -1531,8 +1559,8 @@ export function useTaskManager(
       buffer.push({ kind: "task", tid, msg, seq, ts });
       scheduleFlush();
     };
-    conn.onUnconfirmedUserMessage = (tid, msg) => {
-      buffer.push({ kind: "unconfirmed", tid, msg });
+    conn.onUnconfirmedUserMessage = (tid, msg, correlationId) => {
+      buffer.push({ kind: "unconfirmed", tid, msg, correlationId });
       scheduleFlush();
     };
     conn.onControlMessage = (msg) => {
@@ -1560,6 +1588,35 @@ export function useTaskManager(
       requestedHistoryRef.current.add(t.uuid);
     }
   }, [connected, activeTaskId, tasks]);
+
+  // Replay outbox entries after tasks_list arrives and WS is connected.
+  // The backend deduplicates by nonce, so replaying is safe.
+  const outboxReplayedRef = useRef(false);
+  useEffect(() => {
+    if (!connected || tasks.size === 0) return;
+    if (outboxReplayedRef.current) return;
+    outboxReplayedRef.current = true;
+    const entries = outbox.all();
+    if (entries.length === 0) return;
+    let dropped = 0;
+    for (const entry of entries) {
+      if (!tidToUuid.has(entry.tid)) {
+        outbox.remove(entry.nonce);
+        dropped++;
+        continue;
+      }
+      connRef.current?.sendMessage(
+        entry.tid,
+        entry.content as import("./protocol").AssistantContentBlock[],
+        entry.nonce,
+      );
+    }
+    if (dropped > 0) {
+      console.warn(
+        `[outbox] dropped ${dropped} unsent message(s): task no longer exists`,
+      );
+    }
+  }, [connected, tasks]);
 
   // Request project-specific task types when the active project changes
   useEffect(() => {
@@ -1661,7 +1718,30 @@ export function useTaskManager(
             connRef.current?.setEntryPoint(draftTid, entryPointName);
           if (agentType) connRef.current?.setAgentType(draftTid, agentType);
         }
-        connRef.current?.sendMessage(draftTid, content);
+        const nonce = crypto.randomUUID();
+        connRef.current?.sendMessage(draftTid, content, nonce);
+        outbox.add({ tid: draftTid, nonce, content, createdAt: Date.now() });
+        // Insert optimistic placeholder (ackState=4)
+        if (taskState) {
+          const msgId = `opt-${++taskState.msgIdCounter}`;
+          const withPlaceholder = {
+            ...taskState,
+            msgIdCounter: taskState.msgIdCounter,
+            messages: [
+              ...taskState.messages,
+              {
+                id: msgId,
+                type: "user" as const,
+                content:
+                  content as import("./protocol").AssistantContentBlock[],
+                ackState: 4 as const,
+                pending: true,
+                nonce,
+              },
+            ],
+          };
+          liveStates.set(uuid, withPlaceholder);
+        }
 
         if (
           isPromotedDraft &&
@@ -1688,7 +1768,12 @@ export function useTaskManager(
           const t = prev.get(uuid);
           if (!t) return prev;
           const next = new Map(prev);
-          next.set(uuid, { ...t, isProcessing: true, suggestions: undefined });
+          const cur = liveStates.get(uuid) ?? t;
+          next.set(uuid, {
+            ...cur,
+            isProcessing: true,
+            suggestions: undefined,
+          });
           return next;
         });
         return;
