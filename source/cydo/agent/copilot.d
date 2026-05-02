@@ -905,18 +905,12 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			activeTextItem = ActiveTextItem.init;
 			activeTools = null;
 
-			// Emit user message item so the frontend confirms the pending placeholder.
-			ContentBlock userCb;
-			userCb.type = "text";
-			userCb.text = text;
-			ItemStartedEvent userMsgEv;
-			userMsgEv.item_id   = "cp-user-msg";
-			userMsgEv.item_type = "user_message";
-			userMsgEv.content   = [userCb];
-			emitEvent(toJson(userMsgEv));
-
 			// SDK session.send returns immediately with messageId.
+			// Emit the synthetic user-echo and agent-ack only after the server
+			// accepts the message so we don't orphan a bubble on error.
 			// Turn completion comes via session.idle event.
+			auto sendCid = correlationId;
+			auto sendText = text;
 			SessionSendParams sendP;
 			sendP.sessionId = sessionId;
 			sendP.prompt    = text;
@@ -927,6 +921,19 @@ class CopilotSession : AgentSession, SdkSessionHandler
 					ProcessStderrEvent sendErrEv;
 					sendErrEv.text = "session.send error: " ~ resp.error.get.message;
 					emitEvent(toJson(sendErrEv));
+				}
+				else
+				{
+					if (sendCid.length > 0 && agentAckHandler_)
+						agentAckHandler_(sendCid);
+					ContentBlock userCb;
+					userCb.type = "text";
+					userCb.text = sendText;
+					ItemStartedEvent userMsgEv;
+					userMsgEv.item_id   = "cp-user-msg";
+					userMsgEv.item_type = "user_message";
+					userMsgEv.content   = [userCb];
+					emitEvent(toJson(userMsgEv));
 				}
 			});
 		}
