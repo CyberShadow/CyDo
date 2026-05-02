@@ -79,6 +79,22 @@
         src = ./tests/mock-api;
         filter = _path: _type: true;
       };
+
+      # Wrap a buildPhase body so it executes with /tmp on tmpfs.  The Nix
+      # sandbox chroot root sits on the host's btrfs filesystem (under
+      # /nix/store), and unredirected /tmp writes thrash that disk.
+      # Outer ns: --map-root-user to gain CAP_SYS_ADMIN for mounting.
+      # Inner ns: --map-user=1000 because some agent CLIs refuse to run
+      # as root.
+      runInTmpfsNs = pkgs: body: ''
+        ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
+        ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
+        chmod 1777 /tmp
+        ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'INNER_NS'
+        ${body}
+        INNER_NS
+        OUTER_NS
+      '';
     in
     {
       packages = forAllSystems (system:
@@ -338,17 +354,7 @@ EOF
                 [[ -n "$chdir" ]] && cd "$chdir"
                 exec "$@"
               '';
-            in ''
-              # Mount tmpfs over /tmp inside a nested user+mount namespace so
-              # screenshot scratch files don't thrash the btrfs disk backing
-              # the sandbox chroot root (which Nix places under /nix/store).
-              # Outer ns: map to root so we can mount.  Inner ns: map back to
-              # a non-root uid so software that refuses to run as root works.
-              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
-              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
-              chmod 1777 /tmp
-              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'UNSHARE_INNER'
-
+            in runInTmpfsNs pkgs ''
               mkdir -p /tmp/playwright-home
 
               # ── Claude CLI config ──────────────────────────────────────
@@ -470,8 +476,6 @@ EOF
               # Copy screenshots out of the tmpfs before the namespace exits.
               mkdir -p /build/screenshots-out
               cp /tmp/screenshots/*.png /build/screenshots-out/
-              UNSHARE_INNER
-              OUTER_NS
             '';
 
             installPhase = ''
@@ -571,17 +575,7 @@ EOF
             CYDO_AUTH_USER = "";
             CYDO_AUTH_PASS = "";
 
-            buildPhase = ''
-              # Mount tmpfs over /tmp inside a nested user+mount namespace so
-              # test scratch files don't thrash the btrfs disk backing the
-              # sandbox chroot root (which Nix places under /nix/store).
-              # Outer ns: map to root so we can mount.  Inner ns: map back to
-              # a non-root uid so software that refuses to run as root works.
-              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
-              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
-              chmod 1777 /tmp
-              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'UNSHARE_INNER'
-
+            buildPhase = runInTmpfsNs pkgs ''
               mkdir -p /tmp/playwright-home
 
               mkdir -p $CLAUDE_CONFIG_DIR
@@ -671,8 +665,6 @@ EOF
                 echo "Tests failed with exit code ''${TEST_RESULT}"
                 exit 1
               fi
-              UNSHARE_INNER
-              OUTER_NS
             '';
 
             installPhase = ''
@@ -769,18 +761,9 @@ EOF
 
             buildPhase = ''
               runHook preBuild
-              # Mount tmpfs over /tmp inside a nested user+mount namespace so
-              # test scratch files don't thrash the btrfs disk backing the
-              # sandbox chroot root (which Nix places under /nix/store).
-              # Outer ns: map to root so we can mount.  Inner ns: map back to
-              # a non-root uid so software that refuses to run as root works.
-              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
-              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
-              chmod 1777 /tmp
-              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'INNER_NS'
+            '' + runInTmpfsNs pkgs ''
               dub test --skip-registry=all
-              INNER_NS
-              OUTER_NS
+            '' + ''
               runHook postBuild
             '';
 
