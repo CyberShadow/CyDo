@@ -339,6 +339,16 @@ EOF
                 exec "$@"
               '';
             in ''
+              # Mount tmpfs over /tmp inside a nested user+mount namespace so
+              # screenshot scratch files don't thrash the btrfs disk backing
+              # the sandbox chroot root (which Nix places under /nix/store).
+              # Outer ns: map to root so we can mount.  Inner ns: map back to
+              # a non-root uid so software that refuses to run as root works.
+              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
+              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
+              chmod 1777 /tmp
+              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'UNSHARE_INNER'
+
               mkdir -p /tmp/playwright-home
 
               # ── Claude CLI config ──────────────────────────────────────
@@ -456,11 +466,17 @@ EOF
                 echo "Screenshot capture failed with exit code ''${CAPTURE_RESULT}"
                 exit 1
               fi
+
+              # Copy screenshots out of the tmpfs before the namespace exits.
+              mkdir -p /build/screenshots-out
+              cp /tmp/screenshots/*.png /build/screenshots-out/
+              UNSHARE_INNER
+              OUTER_NS
             '';
 
             installPhase = ''
               mkdir -p $out/docs/screenshots
-              cp /tmp/screenshots/*.png $out/docs/screenshots/
+              cp /build/screenshots-out/*.png $out/docs/screenshots/
             '';
           };
         in
@@ -556,6 +572,16 @@ EOF
             CYDO_AUTH_PASS = "";
 
             buildPhase = ''
+              # Mount tmpfs over /tmp inside a nested user+mount namespace so
+              # test scratch files don't thrash the btrfs disk backing the
+              # sandbox chroot root (which Nix places under /nix/store).
+              # Outer ns: map to root so we can mount.  Inner ns: map back to
+              # a non-root uid so software that refuses to run as root works.
+              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
+              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
+              chmod 1777 /tmp
+              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'UNSHARE_INNER'
+
               mkdir -p /tmp/playwright-home
 
               mkdir -p $CLAUDE_CONFIG_DIR
@@ -645,6 +671,8 @@ EOF
                 echo "Tests failed with exit code ''${TEST_RESULT}"
                 exit 1
               fi
+              UNSHARE_INNER
+              OUTER_NS
             '';
 
             installPhase = ''
@@ -741,7 +769,18 @@ EOF
 
             buildPhase = ''
               runHook preBuild
+              # Mount tmpfs over /tmp inside a nested user+mount namespace so
+              # test scratch files don't thrash the btrfs disk backing the
+              # sandbox chroot root (which Nix places under /nix/store).
+              # Outer ns: map to root so we can mount.  Inner ns: map back to
+              # a non-root uid so software that refuses to run as root works.
+              ${pkgs.util-linux}/bin/unshare --user --map-root-user --mount bash <<'OUTER_NS'
+              ${pkgs.util-linux}/bin/mount -t tmpfs tmpfs /tmp || { echo "FATAL: tmpfs mount failed" >&2; exit 1; }
+              chmod 1777 /tmp
+              ${pkgs.util-linux}/bin/unshare --user --map-user=1000 bash <<'INNER_NS'
               dub test --skip-registry=all
+              INNER_NS
+              OUTER_NS
               runHook postBuild
             '';
 
