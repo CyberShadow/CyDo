@@ -264,19 +264,28 @@ private Node deepMerge(Node base, Node overlay)
 
 string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string[] typesDirs = null)
 {
-	import std.file : exists;
+	import std.file : exists, readText;
 	import std.path : buildPath;
+	import cydo.system_message : validateTemplateSource;
 
 	string[] errors;
 
-	/// Check that a prompt_template file exists on disk.
+	/// Check that a prompt_template file exists on disk and has no adjacent placeholders.
 	void checkTemplateFile(string context, string tmpl)
 	{
 		if (tmpl.length == 0 || typesDirs.length == 0)
 			return;
 		foreach (dir; typesDirs)
-			if (exists(buildPath(dir, tmpl)))
+		{
+			auto fullPath = buildPath(dir, tmpl);
+			if (exists(fullPath))
+			{
+				auto templateText = readText(fullPath);
+				if (auto err = validateTemplateSource(templateText))
+					errors ~= format("%s: prompt_template '%s': %s", context, tmpl, err);
 				return;
+			}
+		}
 		errors ~= format("%s: prompt_template '%s' not found", context, tmpl);
 	}
 

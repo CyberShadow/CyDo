@@ -757,7 +757,7 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
   await expect(
     page
       .locator('[style*="display: contents"] .message-list .system-user-message', {
-        hasText: /Mode switch: plan_mode/i,
+        hasText: /Mode switch: plan/i,
       })
       .last(),
   ).toBeVisible({ timeout: 30_000 });

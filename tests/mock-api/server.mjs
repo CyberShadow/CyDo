@@ -927,7 +927,7 @@ function handleMessages(req, res) {
       }
       if (origText &&
           /handoff while child asks/i.test(origText) &&
-          origText.includes("Task prompt: test_handoff_with_children")) {
+          /Task prompt:.*test_handoff_with_children/.test(origText)) {
         // This is the test_handoff_with_children child task (not the parent conversation).
         // Step 2: child receives Task result with grandchild question → try Handoff (rejected).
         // Step 3: child receives Handoff error → answer the pending question (qid=1).

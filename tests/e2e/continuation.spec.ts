@@ -21,7 +21,7 @@ test("keep_context continuation injects prompt template", async ({
 
   await expect(
     page.locator(".result-divider.system-user-message", {
-      hasText: "Mode switch: plan_mode",
+      hasText: "Mode switch: plan",
     }),
   ).toBeVisible({ timeout: 30_000 });
 
@@ -40,7 +40,7 @@ test("keep_context SwitchMode preface uses continuation key", async ({
 
   await expect(
     page.locator(".result-divider.system-user-message", {
-      hasText: "Mode switch: write_mode",
+      hasText: "Mode switch: implement",
     }),
   ).toBeVisible({ timeout: 30_000 });
 
@@ -65,7 +65,7 @@ test("mode switch replay rebuilds known system message metadata", async ({
 
   await expect(
     page.locator(".result-divider.system-user-message", {
-      hasText: "Mode switch: plan_mode",
+      hasText: "Mode switch: plan",
     }),
   ).toBeVisible({ timeout });
 });
@@ -74,16 +74,6 @@ test("unsent steer is either recovered into input box or shown in history after 
   page,
   agentType,
 }) => {
-  // Codex and Copilot write turn/steer messages to their session files immediately upon
-  // receipt (before the LLM responds), so the preReloadDrafts confirmation logic
-  // incorrectly marks the steer as "confirmed" even though the LLM never processed it.
-  // The first message also fails to match because codex/copilot store the full rendered
-  // prompt template, not the raw text.
-  test.skip(
-    agentType === "codex" || agentType === "copilot",
-    "codex/copilot write steers eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers",
-  );
-
   await enterSession(page);
 
   await sendMessage(page, "run command sleep 60");
@@ -197,7 +187,7 @@ test("handoff replay rebuilds known system message metadata", async ({
     page.locator(`.sidebar-item[data-tid="${continuationTid}"].active`),
   ).toBeVisible({ timeout });
   await expect(
-    page.locator(".system-user-message", { hasText: "Handoff: blank" }).last(),
+    page.locator(".system-user-message", { hasText: "Handoff: done" }).last(),
   ).toBeVisible({ timeout });
 
   await page.reload();
@@ -206,7 +196,7 @@ test("handoff replay rebuilds known system message metadata", async ({
     page.locator(`.sidebar-item[data-tid="${continuationTid}"].active`),
   ).toBeVisible({ timeout });
   await expect(
-    page.locator(".system-user-message", { hasText: "Handoff: blank" }).last(),
+    page.locator(".system-user-message", { hasText: "Handoff: done" }).last(),
   ).toBeVisible({ timeout });
 });
 
@@ -390,7 +380,7 @@ test("input box stays empty after mode switch", async ({ page, agentType }) => {
 
   await expect(
     page.locator(".result-divider.system-user-message", {
-      hasText: "Mode switch: plan_mode",
+      hasText: "Mode switch: plan",
     }),
   ).toBeVisible({ timeout: 30_000 });
 

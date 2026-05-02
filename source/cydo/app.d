@@ -69,6 +69,10 @@ import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir,
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt, computeReachesWorktree, computeTreeReadOnly;
+import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage,
+	tryParseSystemFraming, tryExtractSubject,
+	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
+	tryMatchTemplate, validateTemplateSource;
 import cydo.task;
 import cydo.worktree;
 
@@ -590,6 +594,10 @@ class App : ToolsBackend
 	// Active TerminalProcess instances (Bash MCP tool calls in flight).
 	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
 	private TerminalProcess[] activeTerminals;
+
+	// Cache of compiled template regexes keyed on raw template source text.
+	// Avoids recompiling the same template on every history replay event.
+	private CompiledTemplate[string] compiledTemplateCache;
 
 	/// Result from background discovery thread for a single session.
 	private struct DiscoveryResult
@@ -1425,7 +1433,10 @@ class App : ToolsBackend
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
 			renderedPrompt = prependTaskSystemPrompt(renderedPrompt,
 				taskSystemPromptForMessage(childTid, ctd));
-			auto taskPromptMsgSubject = taskPromptSubject(resolvedTaskType);
+			// Encode edge identity in subject: "<parentType> -> <edgeName>".
+			// When ptd has no creatable_tasks (degenerate), fall back to no-arrow form.
+			auto parentTypeForSubject = (ptd !is null && ptd.creatable_tasks.length > 0) ? pd.taskType : "";
+			auto taskPromptMsgSubject = taskPromptSubject(parentTypeForSubject, taskType);
 			auto subtaskMeta = buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.taskPrompt,
 				taskPromptMsgSubject,
@@ -1925,10 +1936,14 @@ class App : ToolsBackend
 			// Resume child process and send follow-up message with qid
 			childTd.processQueue.setGoal(ProcessState.Alive).then(() {
 				auto followUpMsgSubject = followUpFromParentSubject(qid);
+				auto ctdRef = &tasks[childTid];
+				auto followUpBody = readPromptFile("prompts/follow_up_from_parent.md",
+					ctdRef.projectPath, ["message": message, "qid": to!string(qid)]);
+				if (followUpBody.length == 0)
+					followUpBody = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
 				auto msg = wrapKnownSystemMessage(
 					KnownSystemMessageKind.followUpFromParent,
-					message
-						~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
+					followUpBody,
 					followUpMsgSubject);
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
@@ -2013,9 +2028,13 @@ class App : ToolsBackend
 				broadcastTaskUpdate(childTid);
 				broadcastFocusHint(parentTid, childTid);
 				auto followUpMsgSubject = followUpFromParentSubject(qid);
+				auto followUpBody2 = readPromptFile("prompts/follow_up_from_parent.md",
+					ctd.projectPath, ["message": message, "qid": to!string(qid)]);
+				if (followUpBody2.length == 0)
+					followUpBody2 = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
 				auto followUpMsg = wrapKnownSystemMessage(
 					KnownSystemMessageKind.followUpFromParent,
-					message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").",
+					followUpBody2,
 					followUpMsgSubject);
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
@@ -2575,8 +2594,8 @@ class App : ToolsBackend
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
 				rendered = prependTaskSystemPrompt(rendered,
 					taskSystemPromptForMessage(tid, typeDef));
-				auto sessionStartLabelSource = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
-				sessionStartMsgSubject = sessionStartSubject(sessionStartLabelSource);
+				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
@@ -2675,7 +2694,7 @@ class App : ToolsBackend
 					if (lastDequeuedText.length > 0)
 					{
 						auto synEv = buildSyntheticUserEvent(lastDequeuedText);
-						result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(lastDequeuedText, synEv),
+						result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid),
 							lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
 						lastDequeuedText = null;
 						lastDequeuedRawLine = null;
@@ -2698,7 +2717,7 @@ class App : ToolsBackend
 							auto enqueueUuid = format!"enqueue-%d"(enqLineNum);
 							auto synEv = buildSyntheticUserEvent(text, true);
 							synEv.uuid = enqueueUuid;
-							result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(text, synEv),
+							result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(text, synEv, tid),
 								enqRaw.length > 0 ? enqRaw : null);
 						}
 						else
@@ -2755,7 +2774,7 @@ class App : ToolsBackend
 					auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
 					auto synEv = buildSyntheticUserEvent(lastDequeuedText, true);
 					synEv.uuid = enqueueUuid;
-					auto synthetic = toJsonWithSyntheticUserMeta(lastDequeuedText, synEv);
+					auto synthetic = toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid);
 					auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
 					lastDequeuedText = null;
 					lastDequeuedEnqueueLineNum = 0;
@@ -2800,7 +2819,7 @@ class App : ToolsBackend
 				synEv.uuid = uuid;
 				td.appendHistory(Data(
 					toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-						JSONFragment(toJsonWithSyntheticUserMeta(text, synEv)))).representation), null);
+						JSONFragment(toJsonWithSyntheticUserMeta(text, synEv, tid)))).representation), null);
 			}
 			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -2836,7 +2855,7 @@ class App : ToolsBackend
 				continue;
 			}
 			import cydo.task : extractTsFromEnvelope;
-			event = normalizeKnownSystemMessageMeta(event);
+			event = normalizeKnownSystemMessageMeta(event, tid);
 			auto clientEnvelope = toJson(TaskEventSeqEnvelope(
 				tid,
 				cast(int) i,
@@ -2939,8 +2958,8 @@ class App : ToolsBackend
 					td.outputPath, entryPointTemplate);
 				rendered = prependTaskSystemPrompt(rendered,
 					taskSystemPromptForMessage(tid, typeDef));
-				auto sessionStartLabelSource = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
-				auto sessionStartMsgSubject = sessionStartSubject(sessionStartLabelSource);
+				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
+				auto sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
@@ -3941,7 +3960,9 @@ class App : ToolsBackend
 	private struct KnownSystemMessageMatch
 	{
 		KnownSystemMessageKind kind;
-		string label;
+		string label;          // user-friendly collapsed label
+		string sourceType;     // populated when subject has "<source> -> <edge>" tail
+		string edgeName;       // populated for edge-bearing kinds
 		Nullable!int qid;
 		Nullable!int tid;
 		Nullable!string title;
@@ -3974,14 +3995,20 @@ class App : ToolsBackend
 		}
 	}
 
-	private static string taskPromptSubject(string taskType)
+	/// Build the task-prompt subject line encoding the edge identity.
+	/// When parentType and edgeName are both non-empty, encodes
+	/// "Task prompt: <parentType> -> <edgeName>". Otherwise degrades to
+	/// "Task prompt: <edgeName>" (degenerate — no edge traversed).
+	private static string taskPromptSubject(string parentType, string edgeName)
 	{
-		return systemMessageSubject(KnownSystemMessageKind.taskPrompt) ~ ": " ~ taskType;
+		if (parentType.length > 0 && edgeName.length > 0)
+			return "Task prompt: " ~ parentType ~ " -> " ~ edgeName;
+		return "Task prompt: " ~ (edgeName.length > 0 ? edgeName : parentType);
 	}
 
-	private static string sessionStartSubject(string entryPointOrTaskType)
+	private static string sessionStartSubject(string entryPointName)
 	{
-		return systemMessageSubject(KnownSystemMessageKind.sessionStart) ~ ": " ~ entryPointOrTaskType;
+		return "Session start: " ~ entryPointName;
 	}
 
 	private static string followUpFromParentSubject(int qid)
@@ -4032,11 +4059,16 @@ class App : ToolsBackend
 		auto childTd = &tasks[childTid];
 		auto reminderSubject = subTaskWaitingForAnswerSubject(
 			childTd.title, childTid, qid);
+		// Use tid's projectPath for template lookup (the parent asking the question)
+		auto reminderBody = readPromptFile("prompts/sub_task_waiting_for_answer.md",
+			tasks[tid].projectPath, ["question": question, "qid": to!string(qid)]);
+		if (reminderBody.length == 0)
+			reminderBody = "Question: " ~ question ~ "\n\n"
+				~ "Use Answer(" ~ to!string(qid)
+				~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
 		auto reminder = wrapKnownSystemMessage(
 			KnownSystemMessageKind.subTaskWaitingForAnswer,
-			"Question: " ~ question ~ "\n\n"
-				~ "Use Answer(" ~ to!string(qid)
-				~ ", \"your answer\") to respond. You must answer before you can complete your turn.",
+			reminderBody,
 			reminderSubject);
 		auto reminderBlocks = [ContentBlock("text", reminder)];
 		auto askReminderMeta = buildKnownSystemMessageMeta(
@@ -4046,14 +4078,14 @@ class App : ToolsBackend
 		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 	}
 
-	private static string modeSwitchSubject(string taskType)
+	private static string modeSwitchSubject(string sourceType, string edgeName)
 	{
-		return systemMessageSubject(KnownSystemMessageKind.modeSwitch) ~ ": " ~ taskType;
+		return "Mode switch: " ~ sourceType ~ " -> " ~ edgeName;
 	}
 
-	private static string handoffSubject(string taskType)
+	private static string handoffSubject(string sourceType, string edgeName)
 	{
-		return systemMessageSubject(KnownSystemMessageKind.handoff) ~ ": " ~ taskType;
+		return "Handoff: " ~ sourceType ~ " -> " ~ edgeName;
 	}
 
 	private string systemMessagePrefix(KnownSystemMessageKind kind)
@@ -4095,18 +4127,48 @@ class App : ToolsBackend
 		return true;
 	}
 
+	/// Try to match a system-message subject line to a known kind.
+	///
+	/// For edge-bearing kinds (taskPrompt, handoff, modeSwitch), the subject
+	/// encodes `<source> -> <edge>`. The label exposed to the frontend uses only
+	/// the edge name (e.g. "Mode switch: plan_mode") — the source type is an
+	/// internal routing detail that the user never sees.
+	///
+	/// Legacy subjects without "->" parse with edgeName == "" → label-only meta.
 	private static bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch match)
 	{
 		import std.algorithm : startsWith, endsWith;
 		import std.algorithm.searching : countUntil;
+		import std.string : indexOf;
 
 		match = KnownSystemMessageMatch.init;
+
+		/// Parse the suffix of an edge-bearing subject as either
+		/// "<source> -> <edge>" or "<single>", populating the match fields.
+		static void parseEdgeSuffix(string suffix, ref KnownSystemMessageMatch m, string kindLabel)
+		{
+			enum arrowSep = " -> ";
+			auto arrowIdx = suffix.indexOf(arrowSep);
+			if (arrowIdx >= 0)
+			{
+				m.sourceType = suffix[0 .. cast(size_t) arrowIdx];
+				m.edgeName = suffix[cast(size_t) arrowIdx + arrowSep.length .. $];
+				m.label = kindLabel ~ ": " ~ m.edgeName;
+			}
+			else
+			{
+				// Legacy format or degenerate path — single token, no edge
+				m.edgeName = "";
+				m.sourceType = "";
+				m.label = kindLabel ~ ": " ~ suffix;
+			}
+		}
 
 		enum taskPromptPrefix = "Task prompt: ";
 		if (subject.startsWith(taskPromptPrefix) && subject.length > taskPromptPrefix.length)
 		{
 			match.kind = KnownSystemMessageKind.taskPrompt;
-			match.label = subject;
+			parseEdgeSuffix(subject[taskPromptPrefix.length .. $], match, "Task prompt");
 			return true;
 		}
 
@@ -4114,6 +4176,8 @@ class App : ToolsBackend
 		if (subject.startsWith(sessionStartPrefix) && subject.length > sessionStartPrefix.length)
 		{
 			match.kind = KnownSystemMessageKind.sessionStart;
+			// Entry points are top-level — no source needed; edgeName is the entry point name
+			match.edgeName = subject[sessionStartPrefix.length .. $];
 			match.label = subject;
 			return true;
 		}
@@ -4122,7 +4186,7 @@ class App : ToolsBackend
 		if (subject.startsWith(modeSwitchPrefix) && subject.length > modeSwitchPrefix.length)
 		{
 			match.kind = KnownSystemMessageKind.modeSwitch;
-			match.label = subject;
+			parseEdgeSuffix(subject[modeSwitchPrefix.length .. $], match, "Mode switch");
 			return true;
 		}
 
@@ -4130,7 +4194,7 @@ class App : ToolsBackend
 		if (subject.startsWith(handoffPrefix) && subject.length > handoffPrefix.length)
 		{
 			match.kind = KnownSystemMessageKind.handoff;
-			match.label = subject;
+			parseEdgeSuffix(subject[handoffPrefix.length .. $], match, "Handoff");
 			return true;
 		}
 
@@ -4207,105 +4271,135 @@ class App : ToolsBackend
 
 	private bool tryExtractSystemMessageSubject(string text, out string subject)
 	{
-		import std.algorithm : startsWith;
-		import std.algorithm.searching : countUntil;
-
-		auto prefix = "[" ~ config.system_keyword ~ ": ";
-		if (!text.startsWith(prefix))
-			return false;
-		auto remaining = text[prefix.length .. $];
-		auto closeIndex = remaining.countUntil("]");
-		if (closeIndex <= 0)
-			return false;
-		subject = remaining[0 .. cast(size_t) closeIndex];
-		return true;
+		return tryExtractSubject(config.system_keyword, text, subject);
 	}
 
-	private bool tryExtractWrappedSystemBody(string text, string subject, out string body)
+	/// Return the template variable name that holds the body content for a given
+	/// kind, or null if the kind produces label-only meta.
+	private static string bodyVarForKind(KnownSystemMessageKind kind)
 	{
-		import std.algorithm : startsWith, endsWith;
-
-		auto prefix = "[" ~ config.system_keyword ~ ": " ~ subject ~ "]\n\n";
-		auto suffix = "\n\n[/" ~ config.system_keyword ~ "]";
-		if (!text.startsWith(prefix) || !text.endsWith(suffix) || text.length <= prefix.length + suffix.length)
-			return false;
-		body = text[prefix.length .. $ - suffix.length];
-		return body.length > 0;
-	}
-
-	private static bool tryExtractTaskDescriptionFromWrappedBody(string body, out string taskDescription)
-	{
-		import std.string : strip, lastIndexOf;
-
-		enum promptSeparator = "\n\n--------------------------------------------------------------------------------\n\n";
-		auto sepPos = body.lastIndexOf(promptSeparator);
-		if (sepPos < 0)
-			return false;
-
-		auto start = cast(size_t) sepPos + promptSeparator.length;
-		auto candidate = body[start .. $].strip;
-		if (candidate.length == 0)
-			return false;
-		taskDescription = candidate;
-		return true;
-	}
-
-	private static bool tryExtractFollowUpQuestionFromWrappedBody(string body, out string question)
-	{
-		import std.algorithm : startsWith, endsWith;
-		import std.string : strip, lastIndexOf;
-
-		enum answerInstructionPrefix = "\n\nAnswer with Answer(";
-		auto markerPos = body.lastIndexOf(answerInstructionPrefix);
-		auto candidate = body;
-		if (markerPos >= 0)
+		switch (kind)
 		{
-			auto tail = body[cast(size_t) markerPos .. $];
-			if (tail.startsWith(answerInstructionPrefix) && tail.endsWith(")."))
-				candidate = body[0 .. cast(size_t) markerPos];
+		case KnownSystemMessageKind.taskPrompt:
+		case KnownSystemMessageKind.sessionStart:
+		case KnownSystemMessageKind.handoff:
+			return "task_description";
+		case KnownSystemMessageKind.followUpFromParent:
+			return "message";
+		case KnownSystemMessageKind.subTaskWaitingForAnswer:
+			return "question";
+		default:
+			return null;
 		}
-
-		candidate = candidate.strip;
-		if (candidate.length == 0)
-			return false;
-		question = candidate;
-		return true;
 	}
 
-	private string cydoMetaForKnownSystemSubject(string subject, string text)
+	/// Resolve (sourceType, edgeName) → prompt-template path using the same
+	/// project-scoped task-type config the renderer used.
+	/// Returns null when the edge can't be resolved (renamed/removed/legacy).
+	private string resolveEdgePromptTemplate(string projectPath,
+		KnownSystemMessageKind kind, string sourceType, string edgeName)
+	{
+		switch (kind)
+		{
+		case KnownSystemMessageKind.taskPrompt:
+			if (sourceType.length == 0 || edgeName.length == 0) return null;
+			auto parentDef = getTaskTypesForProject(projectPath).byName(sourceType);
+			if (parentDef is null) return null;
+			auto edge = parentDef.creatable_tasks.byName(edgeName);
+			return edge !is null ? edge.prompt_template : null;
+
+		case KnownSystemMessageKind.sessionStart:
+			if (edgeName.length == 0) return null;
+			auto ep = getEntryPointsForProject(projectPath).byName(edgeName);
+			return ep !is null ? ep.prompt_template : null;
+
+		case KnownSystemMessageKind.handoff:
+		case KnownSystemMessageKind.modeSwitch:
+			if (sourceType.length == 0 || edgeName.length == 0) return null;
+			auto srcDef = getTaskTypesForProject(projectPath).byName(sourceType);
+			if (srcDef is null) return null;
+			if (edgeName == "on_yield")
+				return srcDef.on_yield.prompt_template;
+			if (auto contP = edgeName in srcDef.continuations)
+				return contP.prompt_template;
+			return null;
+
+		case KnownSystemMessageKind.followUpFromParent:
+			return "prompts/follow_up_from_parent.md";
+
+		case KnownSystemMessageKind.subTaskWaitingForAnswer:
+			return "prompts/sub_task_waiting_for_answer.md";
+
+		default:
+			return null;
+		}
+	}
+
+	/// Read a prompt template file from the search path without variable substitution.
+	private string readTemplateText(string templateName, string projectPath)
+	{
+		import std.file : exists, readText;
+		import std.path : buildPath;
+
+		foreach (dir; promptSearchPath(projectPath))
+		{
+			auto path = buildPath(dir, templateName);
+			if (exists(path))
+				return readText(path);
+		}
+		return null;
+	}
+
+	/// Reverse-extract meta from a known-system-message user event by matching
+	/// the rendered body against the template that produced it.
+	/// tid is used to look up the project path for template resolution.
+	private string cydoMetaForKnownSystemSubject(int tid, string subject, string text)
 	{
 		KnownSystemMessageMatch match;
 		if (!tryKnownSystemMessageMatch(subject, match))
 			return null;
 
-		switch (match.kind)
+		auto bodyVar = bodyVarForKind(match.kind);
+		if (bodyVar is null)
+			return buildCydoMeta(match.label);
+
+		ParsedSystemFraming framing;
+		if (!tryParseSystemFraming(config.system_keyword, text, framing))
+			return buildCydoMeta(match.label);
+
+		auto inner = stripTaskSystemPromptWrapper(framing.body);
+
+		string projectPath = (tid in tasks) ? tasks[tid].projectPath : null;
+		auto templatePath = resolveEdgePromptTemplate(projectPath, match.kind,
+			match.sourceType, match.edgeName);
+		if (templatePath.length == 0)
+			return buildCydoMeta(match.label);
+
+		auto templateText = readTemplateText(templatePath, projectPath);
+		if (templateText.length == 0)
 		{
-		case KnownSystemMessageKind.taskPrompt:
-		case KnownSystemMessageKind.sessionStart:
-			string wrappedBody;
-			string taskDescription;
-			if (tryExtractWrappedSystemBody(text, subject, wrappedBody)
-				&& tryExtractTaskDescriptionFromWrappedBody(wrappedBody, taskDescription))
-			{
-				return buildCydoMeta(match.label, ["task_description": taskDescription], "task_description",
-					match.kind == KnownSystemMessageKind.taskPrompt);
-			}
-			break;
-		case KnownSystemMessageKind.followUpFromParent:
-			string wrappedBody;
-			string question;
-			if (tryExtractWrappedSystemBody(text, subject, wrappedBody)
-				&& tryExtractFollowUpQuestionFromWrappedBody(wrappedBody, question))
-				return buildCydoMeta(match.label, ["message": question], "message", false);
-			break;
-		default:
-			break;
+			warningf("template '%s' not found on prompt search path; falling back to label-only meta",
+				templatePath);
+			return buildCydoMeta(match.label);
 		}
 
-		return buildCydoMeta(match.label);
+		if (templateText !in compiledTemplateCache)
+			compiledTemplateCache[templateText] = compileTemplate(templateText);
+		auto compiled = compiledTemplateCache[templateText];
+
+		string[string] vars;
+		if (!tryMatchTemplate(compiled, inner, vars))
+			return buildCydoMeta(match.label);
+
+		string[string] bodyVars;
+		if (auto v = bodyVar in vars)
+			bodyVars[bodyVar] = *v;
+
+		return buildCydoMeta(match.label, bodyVars, bodyVar,
+			match.kind == KnownSystemMessageKind.taskPrompt);
 	}
 
-	private string normalizeKnownSystemMessageMeta(string translated)
+	private string normalizeKnownSystemMessageMeta(string translated, int tid = -1)
 	{
 		import std.algorithm : canFind;
 
@@ -4320,7 +4414,7 @@ class App : ToolsBackend
 		if (!tryExtractSystemMessageSubject(text, subject))
 			return translated;
 
-		auto meta = cydoMetaForKnownSystemSubject(subject, text);
+		auto meta = cydoMetaForKnownSystemSubject(tid, subject, text);
 		if (meta.length == 0)
 			return translated;
 		return translated[0 .. $ - 1] ~ `,"meta":` ~ meta ~ `}`;
@@ -4398,13 +4492,13 @@ class App : ToolsBackend
 		return text.startsWith(systemMessagePrefix(KnownSystemMessageKind.postCompactionTaskModeReminder));
 	}
 
-	private string toJsonWithSyntheticUserMeta(string text, ItemStartedEvent ev)
+	private string toJsonWithSyntheticUserMeta(string text, ItemStartedEvent ev, int tid = -1)
 	{
 		import std.algorithm : startsWith;
 
 		auto translated = toJson(ev);
 		return text.startsWith("[" ~ config.system_keyword ~ ":")
-			? normalizeKnownSystemMessageMeta(translated)
+			? normalizeKnownSystemMessageMeta(translated, tid)
 			: translated;
 	}
 
@@ -5115,7 +5209,7 @@ class App : ToolsBackend
 			{
 				infof("on_yield: tid=%d type=%s → %s",
 					tid, tasks[tid].taskType, onYieldDef.on_yield.task_type);
-				executeContinuation(tid, onYieldDef.on_yield, tasks[tid].resultText);
+				executeContinuation(tid, onYieldDef.on_yield, tasks[tid].resultText, "on_yield");
 				return;
 			}
 
@@ -5275,8 +5369,9 @@ class App : ToolsBackend
 
 	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
 	/// and implicit (on_yield) paths.
+	/// edgeName is the YAML map key (or "on_yield") that identifies this edge.
 	private void executeContinuation(int tid, ContinuationDef contDef, string handoffPrompt,
-		string switchModeContinuation = null)
+		string edgeName)
 	{
 		import ae.utils.json : toJson;
 
@@ -5299,6 +5394,9 @@ class App : ToolsBackend
 
 		if (contDef.keep_context)
 		{
+			// Capture source type before mutating td.taskType
+			auto sourceTaskType = td.taskType;
+
 			// Mutate task type in-place, resume the same session
 			td.taskType = contDef.task_type;
 			persistence.setTaskType(tid, contDef.task_type);
@@ -5313,12 +5411,11 @@ class App : ToolsBackend
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", promptSearchPath(td.projectPath),
 				["result_text": resultText, "output_dir": td.taskDir]);
-			if (switchModeContinuation.length > 0)
-				renderedContinuationPrompt = "`SwitchMode` to `" ~ switchModeContinuation
-					~ "` successful.\n\n" ~ renderedContinuationPrompt;
+			renderedContinuationPrompt = "`SwitchMode` to `" ~ edgeName
+				~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			renderedContinuationPrompt = prependTaskSystemPrompt(
 				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef));
-			auto modeSwitchMsgSubject = modeSwitchSubject(contDef.task_type);
+			auto modeSwitchMsgSubject = modeSwitchSubject(sourceTaskType, edgeName);
 			auto contMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.modeSwitch,
 				modeSwitchMsgSubject);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
@@ -5385,7 +5482,7 @@ class App : ToolsBackend
 				["result_text": resultText]);
 			renderedSuccessorPrompt = prependTaskSystemPrompt(renderedSuccessorPrompt,
 				taskSystemPromptForMessage(childTid, newTypeDef));
-			auto handoffMsgSubject = handoffSubject(contDef.task_type);
+			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
 			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
 				handoffMsgSubject, ["task_description": successorPrompt], "task_description", false);
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
@@ -5427,8 +5524,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto switchModeKey = contDefP.keep_context ? contKey : null;
-		executeContinuation(tid, *contDefP, hPrompt, switchModeKey);
+		executeContinuation(tid, *contDefP, hPrompt, contKey);
 	}
 
 	private string defaultAgentType(string workspaceName)
@@ -6223,10 +6319,7 @@ class App : ToolsBackend
 	/// injected by CyDo, not typed by the user.
 	private string wrapSystemMessage(string subject, string body = null)
 	{
-		auto kw = config.system_keyword;
-		if (body is null || body.length == 0)
-			return "[" ~ kw ~ ": " ~ subject ~ "]";
-		return "[" ~ kw ~ ": " ~ subject ~ "]\n\n" ~ body ~ "\n\n[/" ~ kw ~ "]";
+		return wrapSystemMessageFn(config.system_keyword, subject, body);
 	}
 
 	/// Build metadata JSON for a system-generated user message.
@@ -6503,7 +6596,7 @@ class App : ToolsBackend
 		// Extract agent session ID from translated event
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, ev.translated);
-		ev.translated = normalizeKnownSystemMessageMeta(ev.translated);
+		ev.translated = normalizeKnownSystemMessageMeta(ev.translated, tid);
 		if (tid in tasks && isCompactionReminderEchoEvent(ev.translated))
 			tasks[tid].compactionReminderInFlight = true;
 		auto shouldSendCompactionReminder = tid in tasks
@@ -6538,7 +6631,7 @@ class App : ToolsBackend
 					{
 						auto pendingSteeringEv = buildSyntheticUserEvent(pendingText, true);
 						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, pendingSteeringEv),
+							TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, pendingSteeringEv, tid),
 								pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
 					}
 				}
@@ -6560,7 +6653,7 @@ class App : ToolsBackend
 						// Broadcast synthetic steering confirmation
 						auto steeringEv = buildSyntheticUserEvent(text, true);
 						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJsonWithSyntheticUserMeta(text, steeringEv),
+							TranslatedEvent(toJsonWithSyntheticUserMeta(text, steeringEv, tid),
 								enqueueRaw.length > 0 ? enqueueRaw : null, ev.ts));
 					}
 					return;
@@ -6580,7 +6673,7 @@ class App : ToolsBackend
 				{
 					auto steeringEv = buildSyntheticUserEvent(pendingText, true);
 					appendAndBroadcastTaskEvent(tid,
-						TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, steeringEv),
+						TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, steeringEv, tid),
 							pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
 				}
 			}
