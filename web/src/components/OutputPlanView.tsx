@@ -158,7 +158,13 @@ function StructuredContent({
               {text}
             </CodePre>
           }
-          renderedView={<Markdown text={text} class="text-content" />}
+          renderedView={
+            <Markdown
+              text={text}
+              class="text-content"
+              enableSourceToggle={false}
+            />
+          }
         />
       );
     }

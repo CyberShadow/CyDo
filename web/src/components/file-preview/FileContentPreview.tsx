@@ -46,10 +46,8 @@ export function FileContentPreview({
   const format = detectRenderableFormat(filePath, content);
   const lang = filePath ? langFromPath(filePath) : null;
   const sourceText = sourceContent ?? content;
-  const codeTokens = useHighlight(
-    sourceText,
-    format === "markdown" ? null : lang,
-  );
+  const sourceLang = format === "markdown" ? "markdown" : lang;
+  const codeTokens = useHighlight(sourceText, sourceLang);
 
   const sourceView = (
     <CodePre class="write-content" copyText={sourceText}>
@@ -58,7 +56,19 @@ export function FileContentPreview({
   );
 
   if (format === "markdown") {
-    return <Markdown text={content} class="write-content-markdown" />;
+    return (
+      <SourceRenderedToggle
+        defaultSource={defaultSource}
+        sourceView={sourceView}
+        renderedView={
+          <Markdown
+            text={content}
+            class="write-content-markdown"
+            enableSourceToggle={false}
+          />
+        }
+      />
+    );
   }
 
   if (format === "svg") {

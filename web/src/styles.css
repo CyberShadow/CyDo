@@ -1184,6 +1184,10 @@ body,
   overflow-y: visible;
 }
 
+.tool-result-container .code-pre-wrap {
+  --copy-button-top: 0px;
+}
+
 .tool-result-blocks {
   padding: 8px 12px;
   font-size: 12px;
@@ -1282,6 +1286,8 @@ body,
 
 /* Markdown */
 .markdown {
+  display: flow-root;
+  font-family: var(--font-sans);
   line-height: 1.6;
   word-break: break-word;
 }
@@ -1295,6 +1301,14 @@ body,
 }
 
 .markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
   margin-bottom: 0;
 }
 
@@ -1388,10 +1402,17 @@ body,
   width: 100%;
 }
 
+.markdown-wrap,
+.markdown-diff-wrap {
+  --toolbar-edge: 4px;
+  --toolbar-slot: 23px;
+  --toolbar-reserved-right: 0px;
+}
+
 .markdown-toggle-btn {
   position: absolute;
   top: 0;
-  right: 0;
+  right: var(--toolbar-reserved-right);
   opacity: 0;
   transition: none;
   z-index: 1;
@@ -1407,11 +1428,12 @@ body,
 /* Copy-to-clipboard button on code/pre blocks */
 .code-pre-wrap {
   position: relative;
+  --copy-button-top: 4px;
 }
 
 .btn-copy {
   position: absolute;
-  top: 4px;
+  top: var(--copy-button-top);
   right: 4px;
   opacity: 0;
   z-index: 1;
@@ -1432,7 +1454,7 @@ body,
 .markdown-wrap > .code-pre-wrap > .btn-copy,
 .markdown-diff-wrap > .code-pre-wrap > .btn-copy {
   top: 0;
-  right: 23px;
+  right: calc(var(--toolbar-reserved-right) + var(--toolbar-slot));
 }
 
 .markdown-wrap:hover > .code-pre-wrap > .btn-copy,
@@ -2601,9 +2623,7 @@ body,
 
 /* Write tool content preview */
 .write-content {
-  margin-top: 6px;
-  padding: 8px;
-  background: var(--overlay-faint);
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
@@ -2617,54 +2637,53 @@ body,
 }
 
 .source-tree-blocks {
-  margin-top: 6px;
-  padding: 8px;
-  background: var(--overlay-faint);
+  --copy-button-top: 0px;
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+.tool-input-field + .semantic-shell-command,
+.tool-input-field + [data-testid="source-tree-input"],
+.tool-input-field + .code-pre-wrap {
+  margin-top: 10px;
+}
+
+.semantic-shell-command .code-pre-wrap,
+.tool-input-formatted > .code-pre-wrap {
+  --copy-button-top: 0px;
+}
+
 .source-tree-blocks > .source-tree-block,
 .source-tree-blocks > .source-tree-rich-block,
 .source-tree-blocks > .source-tree-rich-block > .markdown-diff-wrap,
-.source-tree-blocks
-  > .source-tree-rich-block
-  > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .write-content,
-.source-tree-blocks > .source-tree-rich-block > .write-content,
 .source-tree-blocks > .source-tree-rich-block > .write-content-markdown {
   margin-top: 0;
   margin-bottom: 0;
 }
 
-.source-tree-blocks > .source-tree-block.write-content,
-.source-tree-blocks
-  > .source-tree-rich-block
-  > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .write-content,
-.source-tree-blocks > .source-tree-rich-block > .write-content,
 .source-tree-blocks > .source-tree-rich-block > .write-content-markdown {
   padding: 0;
   background: transparent;
 }
 
-.source-tree-blocks
-  > .source-tree-rich-block
-  > .markdown-diff-wrap
-  > .markdown-toggle-btn {
-  right: 27px;
+.source-tree-blocks > .source-tree-rich-block > .markdown-diff-wrap {
+  --toolbar-reserved-right: calc(var(--toolbar-edge) + var(--toolbar-slot));
 }
 
 .source-tree-blocks
   > .source-tree-rich-block
   > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .btn-copy {
-  right: 50px;
+  .markdown-wrap,
+.source-tree-blocks
+  > .source-tree-rich-block
+  > .markdown-diff-wrap
+  .markdown-diff-wrap {
+  --toolbar-reserved-right: calc(
+    var(--toolbar-edge) + var(--toolbar-slot) + var(--toolbar-slot)
+  );
 }
 
 /* Source/rendered toggle wrapper — layout only, no container styling */
@@ -2673,16 +2692,10 @@ body,
   margin-top: 6px;
 }
 
-/* Offset inner toggle button when nested inside an outer SourceRenderedToggle */
-.markdown-diff-wrap .markdown-diff-wrap > .markdown-toggle-btn,
-.markdown-diff-wrap .markdown-wrap > .markdown-toggle-btn {
-  right: 23px;
-}
-
-/* Offset copy button further when inside a nested toggle */
-.markdown-diff-wrap .markdown-diff-wrap > .code-pre-wrap > .btn-copy,
-.markdown-diff-wrap .markdown-wrap > .code-pre-wrap > .btn-copy {
-  right: 46px;
+/* Reserve one toolbar slot for wrappers nested inside another toggle. */
+.markdown-diff-wrap .markdown-diff-wrap,
+.markdown-diff-wrap .markdown-wrap {
+  --toolbar-reserved-right: var(--toolbar-slot);
 }
 
 .markdown-diff {
@@ -3945,7 +3958,6 @@ pre.extra-field-value {
 
 .semantic-shell-output-toolbar {
   position: absolute;
-  top: 4px;
   right: 4px;
   margin: 0;
   z-index: 2;
@@ -3959,20 +3971,27 @@ pre.extra-field-value {
 .semantic-shell-output
   > .semantic-shell-structured-piece
   > .code-pre-wrap
-  > .btn-copy,
+  > .btn-copy {
+  right: calc(var(--toolbar-edge, 4px) + var(--toolbar-slot, 23px));
+}
+
 .semantic-shell-output
   > .semantic-shell-structured-piece
-  > .markdown-diff-wrap
-  > .markdown-toggle-btn {
-  right: 27px;
+  > .markdown-diff-wrap {
+  --toolbar-reserved-right: calc(var(--toolbar-edge) + var(--toolbar-slot));
 }
 
 .semantic-shell-output
   > .semantic-shell-structured-piece
   > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .btn-copy {
-  right: 50px;
+  .markdown-wrap,
+.semantic-shell-output
+  > .semantic-shell-structured-piece
+  > .markdown-diff-wrap
+  .markdown-diff-wrap {
+  --toolbar-reserved-right: calc(
+    var(--toolbar-edge) + var(--toolbar-slot) + var(--toolbar-slot)
+  );
 }
 
 .output-plan-structured-piece
@@ -3985,8 +4004,6 @@ pre.extra-field-value {
   > .code-pre-wrap
   > .write-content {
   margin-top: 0;
-  padding: 0;
-  background: transparent;
 }
 
 .semantic-shell-raw {

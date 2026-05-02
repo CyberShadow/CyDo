@@ -12,6 +12,7 @@ import { useHighlight, renderTokens } from "../highlight";
 import { CodePre, CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { FileContentPreview } from "./file-preview/FileContentPreview";
+import { SourceRenderedToggle } from "./file-preview/SourceRenderedToggle";
 
 function renderTokenLines(
   tokens: ReturnType<typeof useHighlight>,
@@ -84,12 +85,30 @@ export function SourceRichEmbedView({
     piece.mode === "rich-code" ? piece.text : null,
     piece.mode === "rich-code" ? piece.language : null,
   );
+  const sourceTokens = useHighlight(
+    piece.mode === "rich-markdown" ? piece.sourceText : null,
+    piece.mode === "rich-markdown" ? "markdown" : null,
+  );
   const blockClassName = blockClass ? ` ${blockClass}` : "";
 
   if (piece.mode === "rich-markdown") {
     return (
       <div class={`source-tree-rich-block${blockClassName}`}>
-        <Markdown text={piece.text} class="text-content" />
+        <SourceRenderedToggle
+          defaultSource={false}
+          sourceView={
+            <CodePre class={preClass} copyText={piece.sourceText}>
+              {sourceTokens ? renderTokenLines(sourceTokens) : piece.sourceText}
+            </CodePre>
+          }
+          renderedView={
+            <Markdown
+              text={piece.text}
+              class="text-content"
+              enableSourceToggle={false}
+            />
+          }
+        />
       </div>
     );
   }
@@ -259,21 +278,6 @@ export function SourceNodeView({
 }) {
   const pieces = buildSourceRenderPieces(root);
   const blocks = toRenderBlocks(pieces);
-  const hasRich = blocks.some((b) => b.kind === "rich");
-  const onlyBlock = blocks.length === 1 ? blocks[0] : null;
-
-  if (!hasRich && onlyBlock?.kind === "inline") {
-    const inline = onlyBlock;
-    return (
-      <div data-testid="source-tree-input">
-        <CodePre class={preClass} copyText={copyText}>
-          {inline.pieces.map((piece) => (
-            <SourceInlineEmbedView key={piece.id} piece={piece} />
-          ))}
-        </CodePre>
-      </div>
-    );
-  }
 
   return (
     <div

@@ -13,12 +13,13 @@ export { sourceOnIcon, sourceOffIcon };
 interface Props {
   text: string;
   class?: string;
+  enableSourceToggle?: boolean;
   "data-testid"?: string;
   "data-block-type"?: string;
 }
 
 export const Markdown: FunctionComponent<Props> = memo(
-  ({ text, class: className, ...rest }: Props) => {
+  ({ text, class: className, enableSourceToggle = true, ...rest }: Props) => {
     const [showRaw, setShowRaw] = useState(false);
 
     const parserRef = useRef<IncremarkParser | null>(null);
@@ -53,6 +54,14 @@ export const Markdown: FunctionComponent<Props> = memo(
     }, [text]);
     const tokens = useHighlight(showRaw ? text : null, "markdown");
     if (!text) return null;
+
+    if (!enableSourceToggle) {
+      return (
+        <div class={`markdown ${className ?? ""}`} {...rest}>
+          <MdastRenderer ast={ast} />
+        </div>
+      );
+    }
 
     return (
       <div class={`markdown-wrap ${showRaw ? "markdown-raw" : ""}`}>
