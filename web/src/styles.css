@@ -1453,7 +1453,9 @@ body,
   line-height: 1.5;
 }
 
-/* Cursor animation */
+/* Cursor animation: appended inline at the end of the last streamed
+ * markdown block, with `.cursor` as a fallback for the empty-text case. */
+.streaming-text .markdown > *:last-child::after,
 .cursor::after {
   content: "\2588";
   animation: blink 1s step-end infinite;

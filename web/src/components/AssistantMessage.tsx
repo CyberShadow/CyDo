@@ -226,8 +226,11 @@ export const AssistantMessage = memo(
                     class="text-content streaming-text"
                     {...assistantTextAttrs}
                   >
-                    <Markdown text={block.text} />
-                    <span class="cursor" />
+                    {block.text ? (
+                      <Markdown text={block.text} />
+                    ) : (
+                      <span class="cursor" />
+                    )}
                   </div>
                 )}
                 {blockExtraEl}
