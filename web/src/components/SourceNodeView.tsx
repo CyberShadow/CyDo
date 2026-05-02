@@ -73,33 +73,44 @@ export function SourceRichEmbedView({
   piece,
   preClass,
   renderableFilePath,
+  blockClass,
 }: {
   piece: Extract<SourceRenderPiece, { kind: "rich" }>;
   preClass: string;
   renderableFilePath?: string;
+  blockClass?: string;
 }) {
   const tokens = useHighlight(
     piece.mode === "rich-code" ? piece.text : null,
     piece.mode === "rich-code" ? piece.language : null,
   );
+  const blockClassName = blockClass ? ` ${blockClass}` : "";
 
   if (piece.mode === "rich-markdown") {
-    return <Markdown text={piece.text} class="text-content" />;
+    return (
+      <div class={`source-tree-rich-block${blockClassName}`}>
+        <Markdown text={piece.text} class="text-content" />
+      </div>
+    );
   }
 
   if (renderableFilePath) {
     return (
-      <FileContentPreview
-        filePath={renderableFilePath}
-        content={piece.text}
-        sourceContent={piece.sourceText}
-        defaultSource={false}
-      />
+      <div class={`source-tree-rich-block${blockClassName}`}>
+        <FileContentPreview
+          filePath={renderableFilePath}
+          content={piece.text}
+          sourceContent={piece.sourceText}
+          defaultSource={false}
+        />
+      </div>
     );
   }
 
   return (
-    <pre class={preClass}>{tokens ? renderTokenLines(tokens) : piece.text}</pre>
+    <pre class={`${preClass}${blockClassName}`}>
+      {tokens ? renderTokenLines(tokens) : piece.text}
+    </pre>
   );
 }
 
@@ -228,6 +239,13 @@ function toRenderBlocks(pieces: SourceRenderPiece[]): RenderBlock[] {
   return blocks;
 }
 
+function sourceTreeBlockClass(index: number, count: number): string {
+  const classes = ["source-tree-block"];
+  if (index === 0) classes.push("source-tree-block-start");
+  if (index === count - 1) classes.push("source-tree-block-end");
+  return classes.join(" ");
+}
+
 export function SourceNodeView({
   root,
   copyText,
@@ -258,11 +276,15 @@ export function SourceNodeView({
   }
 
   return (
-    <div data-testid="source-tree-input" class="code-pre-wrap">
+    <div
+      data-testid="source-tree-input"
+      class="code-pre-wrap source-tree-blocks"
+    >
       <CopyButton text={copyText} />
-      {blocks.map((block) =>
-        block.kind === "inline" ? (
-          <pre key={block.id} class={preClass}>
+      {blocks.map((block, index) => {
+        const blockClass = sourceTreeBlockClass(index, blocks.length);
+        return block.kind === "inline" ? (
+          <pre key={block.id} class={`${preClass} ${blockClass}`}>
             {block.pieces.map((piece) => (
               <SourceInlineEmbedView key={piece.id} piece={piece} />
             ))}
@@ -273,9 +295,10 @@ export function SourceNodeView({
             piece={block.piece}
             preClass={preClass}
             renderableFilePath={renderableFilePath}
+            blockClass={blockClass}
           />
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }

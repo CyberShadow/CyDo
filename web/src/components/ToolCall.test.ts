@@ -40,6 +40,32 @@ vi.mock("../lib/shellSemantic", async () => {
         };
         return writeResult;
       }
+      if (command.startsWith("cat > /tmp/a/output.svg <<'EOF'")) {
+        const writeResult: ShellSemanticResult = {
+          ok: true,
+          value: {
+            kind: "write",
+            commandName: "cat",
+            command,
+            filePath: "/tmp/a/output.svg",
+            writeMode: "overwrite",
+            heredoc: {
+              delimiter: "EOF",
+              quoted: true,
+              commandLine: "cat > /tmp/a/output.svg <<'EOF'",
+              content: "<svg></svg>",
+              terminator: "EOF",
+            },
+            segments: [
+              {
+                kind: "command-header",
+                text: "cat > /tmp/a/output.svg <<'EOF'",
+              },
+            ],
+          },
+        };
+        return writeResult;
+      }
       if (command.startsWith("python - <<'PY'")) {
         const scriptResult: ShellSemanticResult = {
           ok: true,
@@ -238,5 +264,16 @@ describe("ToolCall shell source tree rendering", () => {
     const html = renderShellInput("zsh -lc 'cat README.md'");
     expect(html).toContain('data-testid="semantic-shell-wrapper-input"');
     expect(html).toContain('data-testid="source-tree-input"');
+  });
+
+  it("renders svg heredoc source tree blocks without spacer rows", () => {
+    const html = renderShellInput(
+      "cat > /tmp/a/output.svg <<'EOF'\n<svg></svg>\nEOF",
+    );
+    expect(html).toContain("source-tree-blocks");
+    expect(html).toContain("source-tree-block-start");
+    expect(html).toContain("source-tree-block-end");
+    expect(html).toContain('title="Show source"');
+    expect(html).toContain('alt="SVG preview"');
   });
 });

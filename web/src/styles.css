@@ -2616,6 +2616,66 @@ body,
   background: var(--overlay-faint);
 }
 
+.source-tree-blocks > .source-tree-block,
+.source-tree-blocks > .source-tree-rich-block,
+.source-tree-blocks > .source-tree-rich-block > .markdown-diff-wrap,
+.source-tree-blocks
+  > .source-tree-rich-block
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content,
+.source-tree-blocks > .source-tree-rich-block > .write-content,
+.source-tree-blocks > .source-tree-rich-block > .write-content-markdown {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.source-tree-blocks > .source-tree-block.write-content,
+.source-tree-blocks
+  > .source-tree-rich-block
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content,
+.source-tree-blocks > .source-tree-rich-block > .write-content {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.source-tree-blocks > .source-tree-block-start.write-content,
+.source-tree-blocks
+  > .source-tree-block-start
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content,
+.source-tree-blocks > .source-tree-block-start > .write-content {
+  padding-top: 8px;
+}
+
+.source-tree-blocks > .source-tree-block-end.write-content,
+.source-tree-blocks
+  > .source-tree-block-end
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content,
+.source-tree-blocks > .source-tree-block-end > .write-content {
+  padding-bottom: 8px;
+}
+
+.source-tree-blocks
+  > .source-tree-rich-block
+  > .markdown-diff-wrap
+  > .markdown-toggle-btn {
+  right: 23px;
+}
+
+.source-tree-blocks
+  > .source-tree-rich-block
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .btn-copy {
+  right: 46px;
+}
+
 /* Source/rendered toggle wrapper — layout only, no container styling */
 .markdown-diff-wrap {
   position: relative;
@@ -3905,10 +3965,6 @@ pre.extra-field-value {
 .semantic-shell-output-toolbar .btn-copy {
   position: static;
   opacity: 1;
-}
-
-.semantic-shell-structured-piece + .semantic-shell-structured-piece {
-  margin-top: 8px;
 }
 
 .semantic-shell-raw {
