@@ -50,7 +50,11 @@ import {
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
-import { parseCommandSourceTree, type SourceNode } from "../lib/sourceTree";
+import type { SourceNode } from "../lib/sourceTree";
+import {
+  parseShellCommandSourceTree,
+  isShellCommandWrapperEmbed,
+} from "../lib/shellSourceTree";
 
 /**
  * Tool Result Rendering Principles
@@ -660,7 +664,7 @@ function ShellCommandInput({
   const command = extractSemanticShellCommand(input, result);
   const semantic = useShellSemantic(command);
   const parsedSourceTree = useMemo(
-    () => (command ? parseCommandSourceTree(command) : null),
+    () => (command ? parseShellCommandSourceTree(command) : null),
     [command],
   );
   const isHeredocWrite =
@@ -838,12 +842,7 @@ function hasWrapperSourceTree(root: SourceNode): boolean {
   if (root.language !== "bash") return false;
   return root.segments.some(
     (segment) =>
-      segment.kind === "embed" &&
-      segment.projection != null &&
-      segment.content.language === "bash" &&
-      (segment.escaping.kind === "projected" ||
-        segment.escaping.kind === "shell-single-quote" ||
-        segment.escaping.kind === "shell-double-quote"),
+      segment.kind === "embed" && isShellCommandWrapperEmbed(segment),
   );
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
 import { SemanticShellOutput } from "./SemanticShellOutput";
-import type { OutputPlan } from "../lib/shellOutputPlan";
+import type { OutputPlan } from "../lib/outputPlan";
 
 function renderSemantic(stdout: string, outputPlan: OutputPlan): string {
   return renderToString(
@@ -22,8 +22,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         {
           id: "sed-output",
           source: {
-            commandIndex: 0,
-            commandName: "sed",
+            stepIndex: 0,
+            producerName: "sed",
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },
@@ -49,8 +49,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         {
           id: "listing",
           source: {
-            commandIndex: 0,
-            commandName: "ls",
+            stepIndex: 0,
+            producerName: "ls",
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "shell-output" },
@@ -63,8 +63,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         {
           id: "sed-output",
           source: {
-            commandIndex: 1,
-            commandName: "sed",
+            stepIndex: 1,
+            producerName: "sed",
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },
@@ -91,8 +91,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         {
           id: "sed-output",
           source: {
-            commandIndex: 0,
-            commandName: "sed",
+            stepIndex: 0,
+            producerName: "sed",
             filePath: "/tmp/cydo-heredoc-render.md",
           },
           format: { kind: "content", language: "markdown" },
@@ -116,8 +116,8 @@ describe("SemanticShellOutput renderable readback rendering", () => {
         {
           id: "sed-output",
           source: {
-            commandIndex: 0,
-            commandName: "sed",
+            stepIndex: 0,
+            producerName: "sed",
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },

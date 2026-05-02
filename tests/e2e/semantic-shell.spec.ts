@@ -281,7 +281,7 @@ test("semantic shell: quoted wrapper payload renders source tree wrapper input",
   );
 
   const wrapperPayload = toolCall.locator(
-    '[data-testid="semantic-shell-wrapper-payload"]',
+    '[data-testid="source-projected-inline"]',
   ).first();
   await expect(wrapperPayload).toBeVisible({ timeout });
   await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
@@ -328,7 +328,7 @@ test("semantic shell: mixed-quoted wrapper heredoc stays shell-highlighted", asy
   await expect(wrapperInput).toContainText("EOF");
 
   const wrapperPayload = toolCall.locator(
-    '[data-testid="semantic-shell-wrapper-payload"]',
+    '[data-testid="source-projected-inline"]',
   ).first();
   await expect(wrapperPayload).toBeVisible({ timeout });
   await expect(wrapperPayload).toHaveAttribute("data-language", "bash");

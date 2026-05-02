@@ -11,8 +11,8 @@ export type OutputPlan = {
 export type OutputBlockPlan = {
   id: string;
   source?: {
-    commandIndex?: number;
-    commandName?: string;
+    stepIndex?: number;
+    producerName?: string;
     filePath?: string;
   };
   format: OutputFormat;
@@ -29,7 +29,7 @@ export type BlockEndSpec =
   | { kind: "end-of-output"; requiresComplete: true }
   | { kind: "before-block"; blockId: string };
 
-export type SpanValidatorId = "non-empty" | "rg-line-number-prefixed";
+export type SpanValidatorId = "non-empty" | "colon-line-number-prefixed";
 
 export type OutputApplicationMode =
   | { kind: "complete" }
@@ -104,7 +104,7 @@ function validateSpan(
       return true;
     case "non-empty":
       return /\S/.test(text);
-    case "rg-line-number-prefixed": {
+    case "colon-line-number-prefixed": {
       const lines = text.split("\n");
       for (const rawLine of lines) {
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;

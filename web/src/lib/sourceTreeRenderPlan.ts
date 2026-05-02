@@ -17,7 +17,7 @@ export type SourceRenderPiece =
       text: string;
       highlightText?: string;
       language: string;
-      wrapperPayload: boolean;
+      projectedInline: boolean;
       sourceSpan: SourceSpan;
       highlightSpan: SourceSpan;
       projection?: SourceProjection;
@@ -32,12 +32,15 @@ export type SourceRenderPiece =
       sourceSpan: SourceSpan;
     };
 
-function isSupportedRichLanguage(language: string): boolean {
-  if (language === "markdown") return true;
-  if (language === "text") return false;
-  if (language === "shell-output") return false;
-  if (language === "bash") return false;
-  return language.length > 0;
+function getRichRenderModeForLanguage(
+  language: string,
+): Exclude<SourceEmbedRenderMode, "inline"> | null {
+  if (language === "markdown") return "rich-markdown";
+  if (language === "") return null;
+  if (language === "text" || language === "plain") return null;
+  if (language === "terminal-output" || language === "process-output")
+    return null;
+  return "rich-code";
 }
 
 export function isLineBoundaryEmbed(text: string, span: SourceSpan): boolean {
@@ -56,11 +59,8 @@ export function classifyEmbedRenderMode(
   segment: EmbedSegment,
 ): SourceEmbedRenderMode {
   if (!isLineBoundaryEmbed(parent.text, segment.span)) return "inline";
-  if (segment.escaping.kind !== "shell-heredoc") return "inline";
-  if (!isSupportedRichLanguage(segment.content.language)) return "inline";
-  return segment.content.language === "markdown"
-    ? "rich-markdown"
-    : "rich-code";
+  if (segment.presentation?.kind !== "rich") return "inline";
+  return getRichRenderModeForLanguage(segment.content.language) ?? "inline";
 }
 
 function walkSourceRenderPieces(
@@ -68,7 +68,7 @@ function walkSourceRenderPieces(
   node: SourceNode,
   path: string,
   embedPath: number[],
-  wrapperPayload: boolean,
+  projectedInline: boolean,
   pieces: SourceRenderPiece[],
 ): boolean {
   for (let i = 0; i < node.segments.length; i++) {
@@ -81,7 +81,7 @@ function walkSourceRenderPieces(
           node,
           embedPath,
           segPath,
-          wrapperPayload,
+          projectedInline,
           segment,
           pieces,
         )
@@ -98,7 +98,8 @@ function walkSourceRenderPieces(
         segment.span,
       );
       if (!rawSubtreeSpan) return false;
-      const childWrapperPayload = wrapperPayload || segment.projection != null;
+      const childProjectedInline =
+        projectedInline || segment.projection != null;
       if (
         !walkInlineSubtree(
           root,
@@ -106,7 +107,7 @@ function walkSourceRenderPieces(
           segPath,
           embedPath,
           i,
-          childWrapperPayload,
+          childProjectedInline,
           pieces,
         )
       ) {
@@ -120,7 +121,7 @@ function walkSourceRenderPieces(
           id: segPath,
           text: rawText,
           language: node.language,
-          wrapperPayload: childWrapperPayload,
+          projectedInline: childProjectedInline,
           sourceSpan: rawSubtreeSpan,
           highlightSpan: segment.span,
         });
@@ -151,7 +152,7 @@ function walkInlineSubtree(
   segPath: string,
   embedPath: number[],
   segmentIndex: number,
-  wrapperPayload: boolean,
+  projectedInline: boolean,
   pieces: SourceRenderPiece[],
 ): boolean {
   const nestedPieces: SourceRenderPiece[] = [];
@@ -161,7 +162,7 @@ function walkInlineSubtree(
     segment.content,
     `${segPath}.content`,
     nestedPath,
-    wrapperPayload,
+    projectedInline,
     nestedPieces,
   );
   if (!ok) return false;
@@ -174,7 +175,7 @@ function pushInlineTextPiece(
   node: SourceNode,
   embedPath: number[],
   id: string,
-  wrapperPayload: boolean,
+  projectedInline: boolean,
   segment: Extract<SourceSegment, { kind: "text" }>,
   pieces: SourceRenderPiece[],
 ): boolean {
@@ -191,7 +192,7 @@ function pushInlineTextPiece(
       id,
       text,
       language: node.language,
-      wrapperPayload,
+      projectedInline,
       sourceSpan,
       highlightSpan: segment.span,
     });
@@ -213,7 +214,7 @@ function pushInlineTextPiece(
     text,
     highlightText,
     language: node.language,
-    wrapperPayload,
+    projectedInline,
     sourceSpan,
     highlightSpan: segment.span,
     projection,
@@ -257,7 +258,7 @@ export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
         id: "root.0",
         text: root.text,
         language: root.language,
-        wrapperPayload: false,
+        projectedInline: false,
         sourceSpan: { start: 0, end: root.text.length },
         highlightSpan: { start: 0, end: root.text.length },
       },
@@ -270,7 +271,7 @@ export function buildSourceRenderPieces(root: SourceNode): SourceRenderPiece[] {
     id: "root.0",
     text: root.text,
     language: root.language,
-    wrapperPayload: false,
+    projectedInline: false,
     sourceSpan: { start: 0, end: root.text.length },
     highlightSpan: { start: 0, end: root.text.length },
   });

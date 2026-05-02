@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseCommandSourceTree, type SourceNode } from "./sourceTree";
+import type { SourceNode } from "./sourceTree";
+import { parseShellCommandSourceTree } from "./shellSourceTree";
 import {
   buildSourceRenderPieces,
   classifyEmbedRenderMode,
@@ -15,7 +16,7 @@ describe("source tree render plan", () => {
   it("isLineBoundaryEmbed returns false for quoted wrapper payload", () => {
     const command =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find(
@@ -30,7 +31,7 @@ describe("source tree render plan", () => {
 
   it("isLineBoundaryEmbed returns true for heredoc body spans", () => {
     const command = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const heredoc = parsed.value.segments.find(
@@ -44,7 +45,7 @@ describe("source tree render plan", () => {
 
   it("classifies heredoc body as rich markdown in safe heredoc context", () => {
     const command = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const heredoc = parsed.value.segments.find(
@@ -60,7 +61,7 @@ describe("source tree render plan", () => {
 
   it("does not promote non-heredoc embeds to rich", () => {
     const command = "/run/current-system/sw/bin/zsh -lc 'cat README.md'";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find(
@@ -74,7 +75,7 @@ describe("source tree render plan", () => {
 
   it("renders deeply nested wrappers as recursive inline pieces", () => {
     const command = 'zsh -lc "bash -lc \'sh -c \\"cat README.md\\"\'"';
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -89,7 +90,7 @@ describe("source tree render plan", () => {
 
   it("keeps escaped wrapper source while exposing decoded highlight text", () => {
     const command = 'zsh -lc "echo \\"CYDO_SKIP_LOAD_TASKS\\""';
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -106,7 +107,7 @@ describe("source tree render plan", () => {
 
   it("keeps single-quote close/reopen raw text with decoded apostrophe highlight", () => {
     const command = "zsh -lc 'printf '\\''hi'\\'''";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -122,7 +123,7 @@ describe("source tree render plan", () => {
   it("renders markdown heredoc body as rich markdown and keeps shell suffix inline", () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\necho done\"";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -146,7 +147,7 @@ describe("source tree render plan", () => {
   it("renders svg heredoc body as rich code and keeps wrapper/footer shell inline", () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.svg <<'EOF'\n<svg></svg>\nEOF\necho done\"";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -173,7 +174,7 @@ describe("source tree render plan", () => {
   it("keeps escaped rich heredoc source text while rendering decoded body text", () => {
     const command =
       'zsh -lc "cat > /tmp/a/output.svg <<\'EOF\'\n<svg a=\\"b\\"></svg>\nEOF"';
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -194,7 +195,7 @@ describe("source tree render plan", () => {
   it("renders mixed-quoted wrapper heredoc with decoded rich text and projected raw source", () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\nheredoc body with \\\"quotes\\\" and \"'$literal\nEOF'";
-    const parsed = parseCommandSourceTree(command);
+    const parsed = parseShellCommandSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -222,7 +223,11 @@ describe("source tree render plan", () => {
         {
           kind: "embed",
           span: { start: 0, end: 4 },
-          escaping: { kind: "projected" },
+          origin: {
+            language: "bash",
+            construct: "command-wrapper-payload",
+            attributes: { quote: "projected" },
+          },
           projection: {
             points: [
               { child: 0, parent: 0 },

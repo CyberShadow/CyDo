@@ -53,9 +53,9 @@ export function SourceTextSpanView({
     if (projected) content = projected;
   }
 
-  if (!piece.wrapperPayload) return content;
+  if (!piece.projectedInline) return content;
   return (
-    <span data-testid="semantic-shell-wrapper-payload" data-language="bash">
+    <span data-testid="source-projected-inline" data-language={piece.language}>
       {content}
     </span>
   );

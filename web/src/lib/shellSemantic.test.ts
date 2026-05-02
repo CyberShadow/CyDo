@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { parseShellSemantic, mapShikiTokens } from "./shellSemantic";
-import { parseCommandSourceTree } from "./sourceTree";
+import { parseShellCommandSourceTree } from "./shellSourceTree";
 import { tokenizeWithScopes } from "../highlight";
 import type {
   ShellReadSemantic,
@@ -765,7 +765,7 @@ describe("source tree parsing and invariants", () => {
   it("quoted wrapper command parses to a root shell node with payload embed", () => {
     const cmd =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.language).toBe("bash");
@@ -783,7 +783,7 @@ describe("source tree parsing and invariants", () => {
   it("double-quoted wrapper command keeps raw escaped source span", () => {
     const cmd =
       '/run/current-system/sw/bin/zsh -lc "nl -ba source/cydo/app.d | sed -n \'720,790p\' && rg -n \\"CYDO_SKIP_LOAD_TASKS\\" -n source tests"';
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.text).toBe(cmd);
@@ -811,7 +811,7 @@ describe("source tree parsing and invariants", () => {
   it("wrapped python heredoc creates nested wrapper + heredoc embeds", () => {
     const cmd =
       "/run/current-system/sw/bin/zsh -lc \"python - <<'PY'\nprint('x')\nPY\"";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find((s) => s.kind === "embed");
@@ -820,12 +820,16 @@ describe("source tree parsing and invariants", () => {
     const heredoc = wrapper.content.segments.find((s) => s.kind === "embed");
     expect(heredoc?.kind).toBe("embed");
     if (!heredoc) return;
-    expect(heredoc.escaping).toEqual({
-      kind: "shell-heredoc",
-      delimiter: "PY",
-      quoted: true,
-      supportsExitReentry: false,
+    expect(heredoc.origin).toEqual({
+      language: "bash",
+      construct: "heredoc-body",
+      attributes: {
+        delimiter: "PY",
+        quoted: true,
+        supportsExitReentry: false,
+      },
     });
+    expect(heredoc.presentation).toEqual({ kind: "rich" });
     expect(heredoc.content.language).toBe("python");
     expect(heredoc.content.text).toBe("print('x')");
     expect(parsed.value.text).toBe(cmd);
@@ -833,7 +837,7 @@ describe("source tree parsing and invariants", () => {
 
   it("segment spans are offsets into each containing node text", () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     for (const segment of parsed.value.segments) {
@@ -849,24 +853,26 @@ describe("source tree parsing and invariants", () => {
   });
 
   it("dynamic double-quoted wrapper payload rejects source-tree parsing", () => {
-    const parsed = parseCommandSourceTree(
+    const parsed = parseShellCommandSourceTree(
       '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
     );
     expect(parsed.ok).toBe(false);
   });
 
   it("multiple heredocs and <<- remain rejected safely", () => {
-    const multiple = parseCommandSourceTree("cat <<'A'\na\nA\ncat <<'B'\nb\nB");
+    const multiple = parseShellCommandSourceTree(
+      "cat <<'A'\na\nA\ncat <<'B'\nb\nB",
+    );
     expect(multiple.ok).toBe(false);
-    const tabs = parseCommandSourceTree("cat <<-EOF\nx\nEOF");
+    const tabs = parseShellCommandSourceTree("cat <<-EOF\nx\nEOF");
     expect(tabs.ok).toBe(false);
-    const missing = parseCommandSourceTree("cat <<'EOF'\nhello");
+    const missing = parseShellCommandSourceTree("cat <<'EOF'\nhello");
     expect(missing.ok).toBe(false);
   });
 
   it("quoted << literal remains parseable and keeps search semantic behavior", async () => {
     const cmd = "rg -n '<<' web/src/lib/sourceTree.ts";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const semantic = await parseShellSemantic(cmd);
     expect(semantic.ok).toBe(true);
@@ -1031,7 +1037,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing quoted << literal after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\necho '<<'";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1043,7 +1049,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing comment with << after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n# << comment";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1053,7 +1059,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing ;# comment with << after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n:;# << comment";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1064,7 +1070,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
   it("trailing here-string <<< after heredoc is not treated as second heredoc", async () => {
     const cmd =
       "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\ngrep foo <<< 'bar'";
-    const parsed = parseCommandSourceTree(cmd);
+    const parsed = parseShellCommandSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1094,7 +1100,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
     expect(v.outputPlan?.blocks[0]?.location).toEqual({
       kind: "whole-output",
-      validator: "rg-line-number-prefixed",
+      validator: "colon-line-number-prefixed",
     });
   });
 
@@ -1109,7 +1115,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
     expect(v.outputPlan?.blocks[0]?.location).toEqual({
       kind: "whole-output",
-      validator: "rg-line-number-prefixed",
+      validator: "colon-line-number-prefixed",
     });
   });
 

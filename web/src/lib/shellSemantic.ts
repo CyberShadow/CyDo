@@ -9,14 +9,17 @@ import type {
   OutputPlan,
   OutputBlockPlan,
   SpanValidatorId,
-} from "./shellOutputPlan";
+} from "./outputPlan";
 import {
-  parseCommandSourceTree,
   projectEmbedSpan,
-  type EscapingScheme,
   type SourceNode,
   type SourceSegment,
 } from "./sourceTree";
+import {
+  parseShellCommandSourceTree,
+  isShellCommandWrapperEmbed,
+  isShellHeredocEmbed,
+} from "./shellSourceTree";
 import { useCurrentTheme } from "../useTheme";
 
 // ---------------------------------------------------------------------------
@@ -60,7 +63,10 @@ export interface ShellSourceSpan {
   rawText: string;
 }
 
-export type ShellEscapingScheme = EscapingScheme;
+export type ShellEscapingScheme =
+  | { kind: "shell-single-quote" }
+  | { kind: "shell-double-quote"; conservative: true }
+  | { kind: "projected" };
 
 export interface ShellEmbeddedContent {
   id: string;
@@ -939,7 +945,7 @@ function classifyReadCommand(
       ? buildWholeOutputContentPlan(
           "sed-output",
           language,
-          { commandIndex: 0, commandName: "sed", filePath },
+          { stepIndex: 0, producerName: "sed", filePath },
           "non-empty",
         )
       : undefined;
@@ -1458,7 +1464,7 @@ function classifyRgCommand(
         blocks: [
           {
             id: "rg-results",
-            source: { commandIndex: 0, commandName: "rg", filePath },
+            source: { stepIndex: 0, producerName: "rg", filePath },
             format: {
               kind: "individual-lines",
               format: {
@@ -1468,7 +1474,7 @@ function classifyRgCommand(
             },
             location: {
               kind: "whole-output",
-              validator: "rg-line-number-prefixed",
+              validator: "colon-line-number-prefixed",
             },
           },
         ],
@@ -1542,20 +1548,22 @@ interface LocatedEmbed {
   absoluteEnd: number;
 }
 
-function isStructuralWrapperEmbed(segment: SourceEmbedSegment): boolean {
-  if (segment.projection == null) return false;
-  if (segment.content.language !== "bash") return false;
-  return (
-    segment.escaping.kind === "projected" ||
-    segment.escaping.kind === "shell-single-quote" ||
-    segment.escaping.kind === "shell-double-quote"
-  );
+function shellEscapingFromWrapperEmbed(
+  segment: SourceEmbedSegment,
+): ShellEscapingScheme {
+  const quote = segment.origin?.attributes?.quote;
+  if (quote === "single") return { kind: "shell-single-quote" };
+  if (quote === "double") {
+    return { kind: "shell-double-quote", conservative: true };
+  }
+  return { kind: "projected" };
 }
 
-function findWrapperEmbed(root: SourceNode): LocatedEmbed | null {
+function findShellCommandWrapperEmbed(root: SourceNode): LocatedEmbed | null {
   if (root.language !== "bash") return null;
   const idx = root.segments.findIndex(
-    (segment) => segment.kind === "embed" && isStructuralWrapperEmbed(segment),
+    (segment) =>
+      segment.kind === "embed" && isShellCommandWrapperEmbed(segment),
   );
   if (idx < 0) return null;
   const segment = root.segments[idx] as SourceEmbedSegment;
@@ -1578,7 +1586,7 @@ function findFirstHeredocEmbed(
     const absoluteStart = baseOffset + segment.span.start;
     const absoluteEnd = baseOffset + segment.span.end;
     const nextPath = path.concat(i);
-    if (segment.escaping.kind === "shell-heredoc") {
+    if (isShellHeredocEmbed(segment)) {
       return {
         id: `embed-${nextPath.join(".")}`,
         segment,
@@ -1599,7 +1607,7 @@ function findFirstHeredocEmbed(
 function resolveHeredocEmbedForProjection(
   root: SourceNode,
 ): LocatedEmbed | null {
-  const wrapperEmbed = findWrapperEmbed(root);
+  const wrapperEmbed = findShellCommandWrapperEmbed(root);
   if (wrapperEmbed) {
     const childHeredoc = findFirstHeredocEmbed(wrapperEmbed.segment.content);
     if (childHeredoc) {
@@ -1620,7 +1628,7 @@ function resolveHeredocEmbedForProjection(
 }
 
 function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
-  const wrapperEmbed = findWrapperEmbed(root);
+  const wrapperEmbed = findShellCommandWrapperEmbed(root);
   if (!wrapperEmbed) return null;
   return {
     decodedPayload: wrapperEmbed.segment.content.text,
@@ -1628,7 +1636,7 @@ function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
       wrapperEmbed.absoluteStart,
       wrapperEmbed.absoluteEnd,
     ),
-    escaping: wrapperEmbed.segment.escaping,
+    escaping: shellEscapingFromWrapperEmbed(wrapperEmbed.segment),
     prefix: sourceSpan(root.text, 0, wrapperEmbed.absoluteStart),
     payload: sourceSpan(
       root.text,
@@ -1805,7 +1813,7 @@ export function sourceTreeToShellEmbeddedContent(
   root: SourceNode,
   semantic?: ShellSemantic,
 ): ShellEmbeddedContent[] {
-  const wrapperEmbed = findWrapperEmbed(root);
+  const wrapperEmbed = findShellCommandWrapperEmbed(root);
   const heredocEmbed = resolveHeredocEmbedForProjection(root);
   const hasSemanticHeredocRole =
     semantic?.kind === "write" ||
@@ -1932,8 +1940,8 @@ function classifyTrailingStructuredOutput(
           {
             id: "listing",
             source: {
-              commandIndex: 0,
-              commandName: "ls",
+              stepIndex: 0,
+              producerName: "ls",
               filePath: readback.filePath,
             },
             format: { kind: "content", language: "shell-output" },
@@ -1946,8 +1954,8 @@ function classifyTrailingStructuredOutput(
           {
             id: "sed-output",
             source: {
-              commandIndex: 1,
-              commandName: "sed",
+              stepIndex: 1,
+              producerName: "sed",
               filePath: readback.filePath,
             },
             format: { kind: "content", language },
@@ -2232,8 +2240,8 @@ function classifyStructuredCommandList(
             {
               id: "listing",
               source: {
-                commandIndex: 0,
-                commandName: "ls",
+                stepIndex: 0,
+                producerName: "ls",
                 filePath: readback.filePath,
               },
               format: { kind: "content", language: "shell-output" },
@@ -2246,8 +2254,8 @@ function classifyStructuredCommandList(
             {
               id: "sed-output",
               source: {
-                commandIndex: 1,
-                commandName: "sed",
+                stepIndex: 1,
+                producerName: "sed",
                 filePath: readback.filePath,
               },
               format: { kind: "content", language },
@@ -2349,7 +2357,7 @@ function classifyStructuredCommandList(
       if (entry.kind === "printf") {
         blocks.push({
           id: entry.blockId,
-          source: { commandIndex: entry.lineIndex, commandName: "printf" },
+          source: { stepIndex: entry.lineIndex, producerName: "printf" },
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "unique-literal",
@@ -2365,8 +2373,8 @@ function classifyStructuredCommandList(
       blocks.push({
         id: entry.blockId,
         source: {
-          commandIndex: entry.lineIndex,
-          commandName: "sed",
+          stepIndex: entry.lineIndex,
+          producerName: "sed",
           filePath: entry.filePath,
         },
         format: { kind: "content", language: entry.language },
@@ -2406,12 +2414,12 @@ export async function parseShellSemantic(
 ): Promise<ShellSemanticResult> {
   if (!command.trim()) return reject("empty", "empty command");
 
-  const sourceTreeResult = parseCommandSourceTree(command);
+  const sourceTreeResult = parseShellCommandSourceTree(command);
   if (!sourceTreeResult.ok) {
     return reject(sourceTreeResult.code, sourceTreeResult.reason);
   }
   const sourceTree = sourceTreeResult.value;
-  const wrapperEmbed = findWrapperEmbed(sourceTree);
+  const wrapperEmbed = findShellCommandWrapperEmbed(sourceTree);
   const wrapper = wrapperParseFromSourceTree(sourceTree);
   const innerNode = wrapperEmbed ? wrapperEmbed.segment.content : sourceTree;
   const inner = wrapper ? wrapper.decodedPayload : sourceTree.text;

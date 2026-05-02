@@ -3,7 +3,7 @@ import {
   type OutputPlan,
   segmentOutput,
   type SegmentedOutputPiece,
-} from "./shellOutputPlan";
+} from "./outputPlan";
 
 function assertCoverage(stdout: string, pieces: SegmentedOutputPiece[]) {
   expect(pieces.length).toBeGreaterThan(0);
@@ -16,14 +16,14 @@ function assertCoverage(stdout: string, pieces: SegmentedOutputPiece[]) {
   expect(cursor).toBe(stdout.length);
 }
 
-describe("shellOutputPlan", () => {
+describe("outputPlan", () => {
   it("round-trips output plan through JSON", () => {
     const plan: OutputPlan = {
       version: 1,
       blocks: [
         {
           id: "listing",
-          source: { commandIndex: 0, commandName: "ls", filePath: "README.md" },
+          source: { stepIndex: 0, producerName: "ls", filePath: "README.md" },
           format: { kind: "content", language: "shell-output" },
           location: {
             kind: "from-cursor",
@@ -98,8 +98,8 @@ describe("shellOutputPlan", () => {
         {
           id: "sed-output",
           source: {
-            commandIndex: 0,
-            commandName: "sed",
+            stepIndex: 0,
+            producerName: "sed",
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },
@@ -117,8 +117,8 @@ describe("shellOutputPlan", () => {
         end: stdout.length,
         format: { kind: "content", language: "xml" },
         source: {
-          commandIndex: 0,
-          commandName: "sed",
+          stepIndex: 0,
+          producerName: "sed",
           filePath: "/tmp/cydo-heredoc-render.svg",
         },
       },
@@ -282,7 +282,7 @@ describe("shellOutputPlan", () => {
           location: {
             kind: "from-cursor",
             end: { kind: "line-count", count: 1 },
-            validator: "rg-line-number-prefixed",
+            validator: "colon-line-number-prefixed",
           },
         },
         {
