@@ -59,14 +59,24 @@ New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" `
     -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
     -PropertyType String -Force | Out-Null
 
-# Place the host's public key.
+# Place every host-supplied public key.
 #
 # Default `vagrant` user IS in the Administrators group on these boxes; for
 # Administrators, sshd reads from %ProgramData%\ssh\administrators_authorized_keys
 # (and IGNORES the user's ~/.ssh/authorized_keys). We write to both for
 # robustness - whichever the user ends up promoted/demoted to, ssh keeps working.
+#
+# Each operator/agent identity is uploaded as a separate *.pub by the
+# Vagrantfile; we install all of them. Adding another identity is a one-line
+# `provision "file"` change - no edits here required.
 
-$pubkey = Get-Content "C:\Users\vagrant\id_ed25519.pub" -Raw
+$pubFiles = Get-ChildItem -Path "C:\Users\vagrant\*.pub" -File
+if ($pubFiles.Count -eq 0) {
+    throw "No *.pub files found in C:\Users\vagrant - file provisioners did not run."
+}
+Write-Host "    Installing $($pubFiles.Count) public key(s):"
+$pubFiles | ForEach-Object { Write-Host "      $($_.Name)" }
+$pubkey = ($pubFiles | ForEach-Object { (Get-Content $_.FullName -Raw).TrimEnd() }) -join "`n"
 
 # 1) User-scope authorized_keys.
 $userSshDir = "C:\Users\vagrant\.ssh"

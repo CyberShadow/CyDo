@@ -15,15 +15,31 @@
 #   - vagrant + vagrant-libvirt plugin
 #
 # Files expected next to this Vagrantfile:
-#   - id_ed25519.pub      — host SSH public key (already provided)
-#   - bootstrap-ssh.ps1   — first-boot SSH setup script
-#   - cydo-windev.yaml    — winget configure DSC file
+#   - id_ed25519.pub          — host operator's SSH public key
+#   - agent_id_ed25519[.pub]  — agent SSH keypair (auto-generated, gitignored)
+#   - bootstrap-ssh.ps1       — first-boot SSH setup script
+#   - cydo-windev.yaml        — winget configure DSC file
 #
 # Usage:
 #   vagrant plugin install vagrant-libvirt    # one-time
 #   vagrant up --provider=libvirt
 #   vagrant snapshot save baseline
 #   ssh -p 2222 vagrant@127.0.0.1 'powershell -c $PSVersionTable.PSVersion'
+
+# Agent SSH keypair: a separate ed25519 key used by AI agents driving the VM,
+# kept distinct from the operator's personal key so that revoking agent
+# access is a single-file delete. Generated on demand next to this
+# Vagrantfile (privkey gitignored). Agents then:
+#   ssh -i docs/windows-vm-setup/agent_id_ed25519 vagrant@<vm-ip>
+agent_key     = File.join(__dir__, "agent_id_ed25519")
+agent_key_pub = "#{agent_key}.pub"
+unless File.exist?(agent_key_pub)
+  puts "==> Generating agent SSH keypair at #{agent_key}..."
+  unless system("ssh-keygen", "-t", "ed25519", "-f", agent_key, "-N", "",
+                "-C", "cydo-windev-agent")
+    abort "ssh-keygen failed; cannot continue without agent key"
+  end
+end
 
 Vagrant.configure("2") do |config|
   config.vm.box     = "gusztavvargadr/windows-11"
@@ -82,10 +98,16 @@ Vagrant.configure("2") do |config|
     lv.graphics_type  = "spice"
   end
 
-  # Provision step 1: copy host pubkey + winget DSC YAML into the guest.
+  # Provision step 1: copy host pubkeys + winget DSC YAML into the guest.
+  # bootstrap-ssh.ps1 installs every *.pub it finds in C:\Users\vagrant\,
+  # so adding a third identity is just another provision "file" line.
   config.vm.provision "file",
     source: "id_ed25519.pub",
     destination: "C:\\Users\\vagrant\\id_ed25519.pub"
+
+  config.vm.provision "file",
+    source: "agent_id_ed25519.pub",
+    destination: "C:\\Users\\vagrant\\agent_id_ed25519.pub"
 
   config.vm.provision "file",
     source: "cydo-windev.yaml",
