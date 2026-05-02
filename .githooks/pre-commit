@@ -56,7 +56,13 @@ if [[ -n "$NEEDS_BUILD" ]]; then
   echo "DO NOT USE --no-verify TO BYPASS THIS CHECK."
   echo "DO NOT USE git commit-tree TO BYPASS THIS CHECK."
   echo ""
-  echo "Derivations that need building:"
-  echo "$NEEDS_BUILD" | sed 's/^/  /'
+  TOTAL=$(echo "$NEEDS_BUILD" | wc -l)
+  if [[ $TOTAL -gt 10 ]]; then
+    echo "Derivations that need building (showing 10 of $TOTAL):"
+    echo "$NEEDS_BUILD" | head -n 10 | sed 's/^/  /'
+  else
+    echo "Derivations that need building:"
+    echo "$NEEDS_BUILD" | sed 's/^/  /'
+  fi
   exit 1
 fi
