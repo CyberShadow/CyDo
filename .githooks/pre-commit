@@ -54,6 +54,7 @@ if [[ -n "$NEEDS_BUILD" ]]; then
   echo "  nix flake check"
   echo ""
   echo "DO NOT USE --no-verify TO BYPASS THIS CHECK."
+  echo "DO NOT USE git commit-tree TO BYPASS THIS CHECK."
   echo ""
   echo "Derivations that need building:"
   echo "$NEEDS_BUILD" | sed 's/^/  /'
