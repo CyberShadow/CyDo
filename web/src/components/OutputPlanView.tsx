@@ -235,14 +235,13 @@ export function OutputPlanView({
     segmented.pieces[0]!.kind === "raw" &&
     segmented.pieces[0]!.start === 0 &&
     segmented.pieces[0]!.end === stdout.length;
-
-  if (isSingleRawFull || !hasStructured) return null;
-
   const blockById = useMemo(() => {
     const map = new Map<string, OutputBlockPlan>();
     for (const block of outputPlan.blocks) map.set(block.id, block);
     return map;
   }, [outputPlan]);
+
+  if (isSingleRawFull || !hasStructured) return null;
 
   return (
     <div class={className} data-testid={testId}>

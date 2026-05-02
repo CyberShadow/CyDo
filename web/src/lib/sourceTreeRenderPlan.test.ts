@@ -217,27 +217,27 @@ describe("source tree render plan", () => {
 
   it("treats projected inline embeds generically and preserves parent-owned source text", () => {
     const root: SourceNode = {
-      language: "bash",
-      text: 'a\\"b',
+      language: "json",
+      text: "a\\u0022b",
       segments: [
         {
           kind: "embed",
-          span: { start: 0, end: 4 },
+          span: { start: 0, end: 8 },
           origin: {
-            language: "bash",
-            construct: "command-wrapper-payload",
-            attributes: { quote: "projected" },
+            language: "json",
+            construct: "string-escape",
+            attributes: { escape: "unicode" },
           },
           projection: {
             points: [
               { child: 0, parent: 0 },
               { child: 1, parent: 1 },
-              { child: 2, parent: 3 },
-              { child: 3, parent: 4 },
+              { child: 2, parent: 7 },
+              { child: 3, parent: 8 },
             ],
           },
           content: {
-            language: "bash",
+            language: "json",
             text: 'a"b',
             segments: [{ kind: "text", span: { start: 0, end: 3 } }],
           },
@@ -250,7 +250,7 @@ describe("source tree render plan", () => {
     const piece = pieces[0];
     expect(piece?.kind).toBe("inline");
     if (!piece || piece.kind !== "inline") return;
-    expect(piece.text).toBe('a\\"b');
+    expect(piece.text).toBe("a\\u0022b");
     expect(piece.highlightText).toBe('a"b');
     expect(piece.projection).toBeTruthy();
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(root.text);
