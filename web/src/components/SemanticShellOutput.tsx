@@ -19,8 +19,7 @@ function canRenderStructuredFilePreview(
   }
 
   if (
-    block.id === "sed-output" &&
-    block.source?.producerName === "sed" &&
+    piece.source.producerName === "sed" &&
     block.location.kind === "from-cursor" &&
     block.location.end.kind === "end-of-output"
   ) {

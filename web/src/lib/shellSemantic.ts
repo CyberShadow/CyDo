@@ -1890,6 +1890,60 @@ function parsePrintfLiteralSpec(
   return { raw, decoded };
 }
 
+function splitTopLevelCommandList(command: string): string[] | null {
+  const items: string[] = [];
+  let start = 0;
+  let inSingle = false;
+  let inDouble = false;
+
+  const push = (end: number): boolean => {
+    const item = command.slice(start, end).trim();
+    if (!item) return false;
+    items.push(item);
+    return true;
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < command.length) {
+        i++;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === "\n") {
+      if (!push(i)) return null;
+      start = i + 1;
+      continue;
+    }
+    if (ch === "&" && command[i + 1] === "&") {
+      if (!push(i)) return null;
+      i++;
+      start = i + 1;
+      continue;
+    }
+  }
+
+  if (inSingle || inDouble) return null;
+  if (!push(command.length)) return null;
+  return items;
+}
+
 function parseLsReadbackSpec(
   command: string,
 ): { filePath: string; sedStart: number; sedEnd: number } | null {
@@ -2271,10 +2325,8 @@ function classifyStructuredCommandList(
     };
   }
 
-  const lines = normalized
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const lines = splitTopLevelCommandList(normalized);
+  if (!lines) return null;
   if (lines.length < 2) return null;
 
   const blocks: OutputBlockPlan[] = [];

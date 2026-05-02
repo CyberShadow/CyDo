@@ -1201,6 +1201,42 @@ describe("batch 1 rg/sed/structured output plans", () => {
     ).toBe(true);
   });
 
+  it("sed/printf && list emits structured blocks for mixed readbacks", async () => {
+    const cmd =
+      "sed -n '1,40p' /tmp/cydo-heredoc-render.md && printf '\\n--- svg ---\\n' && sed -n '1,20p' /tmp/cydo-heredoc-render.svg";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
+      ["sed-0", "printf-1", "sed-2"],
+    );
+    expect(r.value.outputPlan?.blocks[0]?.format).toEqual({
+      kind: "content",
+      language: "markdown",
+    });
+    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe(
+      "/tmp/cydo-heredoc-render.md",
+    );
+    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+      kind: "unique-literal",
+      text: "\n--- svg ---\n",
+      include: "self",
+    });
+    expect(r.value.outputPlan?.blocks[2]?.format).toEqual({
+      kind: "content",
+      language: "xml",
+    });
+    expect(r.value.outputPlan?.blocks[2]?.source?.filePath).toBe(
+      "/tmp/cydo-heredoc-render.svg",
+    );
+    expect(r.value.outputPlan?.blocks[2]?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
+      validator: "non-empty",
+    });
+  });
+
   it("printf conversion forms are not accepted in structured sed/printf lists", async () => {
     const cmd = [
       "sed -n '1,20p' /tmp/a.md",
