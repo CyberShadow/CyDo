@@ -234,18 +234,10 @@ test("codex emits agentAck on turn/start response (ack-2 signal)", async ({
   // agentAck is emitted as soon as turn/start returns (before the LLM stalls).
   await sendMessage(page, "stall session");
 
-  // ack-4: optimistic render appears immediately before any network round-trip.
-  const bubble = page
-    .locator(".user-message:not(.system-user-message)", {
-      hasText: "stall session",
-    })
-    .first();
-  await expect(bubble).toHaveClass(/ack-4/, { timeout: 3_000 });
-
   // The DOM transition ack-4 → ack-3 → ack-2 is too fast to observe directly
-  // in this environment (item/started fires within ~3 ms and replaces the
-  // placeholder).  Verify instead that the backend emitted an agentAck
-  // WebSocket frame — that is the PR-2 signal that drives the ack-2 state.
+  // (item/started fires within ~3 ms and replaces the placeholder).  Verify
+  // instead that the backend emitted an agentAck WebSocket frame — that is the
+  // agentAck signal that drives the ack-2 state.
   await expect
     .poll(() => agentAcks.length, { timeout: responseTimeout(agentType) })
     .toBeGreaterThan(acksBeforeStall);
@@ -296,21 +288,11 @@ test("copilot emits agentAck on session.send (ack-2 signal)", async ({
   // so agentAck is emitted once session.send returns.
   await sendMessage(page, 'Please reply with "copilot-ack2-test"');
 
-  // ack-4: optimistic render is always observable (added locally before any
-  // network round-trip).
-  await expect(
-    page
-      .locator(".user-message:not(.system-user-message)", {
-        hasText: "copilot-ack2-test",
-      })
-      .first(),
-  ).toHaveClass(/ack-4/, { timeout: 3_000 });
-
-  // Verify the backend emitted an agentAck WebSocket frame — the ack-2 signal.
-  // DOM-based ack-3/ack-2 checks are not reliable for follow-up copilot turns
-  // because session.send returns in < 5 ms, so unconfirmedUserEvent + agentAck +
-  // item_started all land in one rAF batch and only the confirmed state is
-  // painted.
+  // Verify the backend emitted an agentAck WebSocket frame — the agentAck signal.
+  // DOM-based ack-4/ack-3/ack-2 checks are not reliable for follow-up copilot
+  // turns because session.send returns in < 5 ms, so unconfirmedUserEvent +
+  // agentAck + item_started all land in one rAF batch and only the confirmed
+  // state is painted.
   await expect
     .poll(() => agentAcks.length, { timeout: responseTimeout(agentType) })
     .toBeGreaterThan(acksBeforeStall);

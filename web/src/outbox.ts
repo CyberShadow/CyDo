@@ -60,6 +60,10 @@ export const outbox = {
     notify();
   },
 
+  byTid(tid: number): OutboxEntry[] {
+    return read().filter((e) => e.tid === tid);
+  },
+
   subscribe(fn: Listener): () => void {
     listeners.add(fn);
     return () => listeners.delete(fn);
