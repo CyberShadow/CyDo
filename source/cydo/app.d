@@ -56,7 +56,7 @@ import cydo.inotify : RefCountedINotify;
 import cydo.logging : installRobustLogger;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
-import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
+import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
 	ItemStartedEvent, QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
@@ -4197,7 +4197,7 @@ class App : ToolsBackend
 		const(ContentBlock)[] toSend = td.session.supportsImages
 			? content
 			: content.filter!(b => b.type != "image").array;
-		td.session.sendMessage(toSend);
+		td.session.sendMessage(toSend, nonce);
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
@@ -5413,6 +5413,13 @@ class App : ToolsBackend
 				broadcastTaskUpdate(tid);
 			}
 			};
+
+		td.session.onAgentAck = (string nonce) {
+			if (nonce.length == 0)
+				return;
+			auto ackEnv = AgentAckEnvelope(tid, nonce);
+			sendToSubscribed(tid, Data(toJson(ackEnv).representation));
+		};
 
 		string lastStderr;
 

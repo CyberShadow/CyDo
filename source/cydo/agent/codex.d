@@ -1657,6 +1657,7 @@ class CodexSession : AgentSession
 	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
+	private void delegate(string nonce) agentAckHandler_;
 
 	this(AppServerProcess server, int tid, SessionConfig config)
 	{
@@ -1740,7 +1741,7 @@ class CodexSession : AgentSession
 
 	// ----- AgentSession interface -----
 
-	void sendMessage(const(ContentBlock)[] content)
+	void sendMessage(const(ContentBlock)[] content, string correlationId = null)
 	{
 		// Extract text (only text blocks supported; throw on others).
 		string text;
@@ -1847,6 +1848,7 @@ class CodexSession : AgentSession
 		return true;
 	}
 
+	@property void onAgentAck(void delegate(string nonce) dg) { agentAckHandler_ = dg; }
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }

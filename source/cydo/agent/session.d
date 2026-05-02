@@ -9,7 +9,8 @@ import cydo.agent.protocol : ContentBlock, TranslatedEvent;
 interface AgentSession
 {
 	/// Send a user message to the agent.
-	void sendMessage(const(ContentBlock)[] content);
+	/// correlationId is the nonce from the originating UI send (may be null).
+	void sendMessage(const(ContentBlock)[] content, string correlationId = null);
 
 	/// Whether this agent supports image content blocks.
 	@property bool supportsImages() const;
@@ -32,6 +33,11 @@ interface AgentSession
 
 	/// Force-kill the agent if it has not exited within `timeout` (SIGTERM, then SIGKILL after 2s).
 	void killAfterTimeout(Duration timeout);
+
+	/// Callback: called when the agent acknowledges a user message before it
+	/// enters the LLM context. Argument is the correlationId (nonce) from the
+	/// originating send. Only fired by agents with a separable ack signal.
+	@property void onAgentAck(void delegate(string nonce) dg);
 
 	/// Callback: called for each translated event from the agent.
 	@property void onOutput(void delegate(TranslatedEvent) dg);

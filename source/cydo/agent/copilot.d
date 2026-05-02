@@ -822,6 +822,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
 	private void delegate(int status) exitHandler_;
+	private void delegate(string nonce) agentAckHandler_;
 
 	this(SdkProcess server, int tid, string sessionId, string model, string workDir,
 		string[] cmdPrefix = null, ToolDispatchFn toolDispatch = null)
@@ -872,7 +873,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	// ----- AgentSession interface -----
 
-	void sendMessage(const(ContentBlock)[] content)
+	void sendMessage(const(ContentBlock)[] content, string correlationId = null)
 	{
 		// Extract text (only text blocks supported; throw on others).
 		string text;
@@ -987,6 +988,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		return false;
 	}
 
+	@property void onAgentAck(void delegate(string nonce) dg) { agentAckHandler_ = dg; }
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }

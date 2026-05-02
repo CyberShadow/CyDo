@@ -756,7 +756,10 @@ class ClaudeCodeSession : AgentSession
 	}
 
 	/// Send a user message formatted as Claude stream-json input.
-	void sendMessage(const(ContentBlock)[] content)
+	/// correlationId is accepted for interface compatibility but not used:
+	/// claude has no separable agent-ack signal between stdin-write and the
+	/// user-line echo, so state 2 is intentionally skipped.
+	void sendMessage(const(ContentBlock)[] content, string correlationId = null)
 	{
 		// Use plain string content when possible (single text block) for backward
 		// compatibility with Claude CLI's JSONL format.  Array content is only
@@ -812,6 +815,10 @@ class ClaudeCodeSession : AgentSession
 	{
 		return true;
 	}
+
+	// No-op: claude has no separable agent-ack signal; state 2 is skipped.
+	@property void onAgentAck(void delegate(string nonce) dg) {}
+
 
 	@property void onOutput(void delegate(TranslatedEvent) dg)
 	{

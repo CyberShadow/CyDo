@@ -381,6 +381,16 @@ struct UnconfirmedUserEventEnvelope
 	@JSONOptional string correlation_id;
 }
 
+/// Envelope signaling that the agent has acknowledged receipt of a user
+/// message but it has not yet entered the LLM context.
+/// Only emitted by agents that have a separable agent-ack signal (codex,
+/// copilot); skipped entirely by claude.
+struct AgentAckEnvelope
+{
+	int tid;
+	@JSONName("agentAck") string agentAck; // value: the correlation_id (nonce)
+}
+
 // ── Permission response structs ────────────────────────────────────────────
 
 /// Permission allow response sent to the agent.
