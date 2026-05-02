@@ -29,7 +29,7 @@ export function UserMessage({ message }: Props) {
   const ackClass =
     message.ackState !== undefined ? ` ack-${message.ackState}` : "";
   const pendingClass =
-    (message.ackState !== undefined && message.ackState >= 3) ||
+    (message.ackState !== undefined && message.ackState >= 2) ||
     (!message.ackState && message.pending)
       ? " pending"
       : "";

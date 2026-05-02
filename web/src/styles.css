@@ -909,6 +909,11 @@ body,
   transition: opacity 0.2s;
 }
 
+.user-message.ack-2 {
+  opacity: 0.75;
+  transition: opacity 0.2s;
+}
+
 .user-message.ack-4 {
   opacity: 0.5;
   border-left: 3px dashed var(--warning, #aaa);
