@@ -1949,6 +1949,7 @@ class App : ToolsBackend
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
 					["message": message], "message", false);
+				childTd.pendingSteeringTexts ~= msg;
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
 
@@ -2040,6 +2041,7 @@ class App : ToolsBackend
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
 					["message": message], "message", false);
+				ctd.pendingSteeringTexts ~= followUpMsg;
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
 
