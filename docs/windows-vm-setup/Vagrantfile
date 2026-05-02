@@ -119,6 +119,13 @@ Vagrant.configure("2") do |config|
     privileged: true,
     path: "bootstrap-ssh.ps1"
 
+  # Provision step 2b: disable guest power saving so the VM stays responsive
+  # during long provisioning runs and idle periods.
+  config.vm.provision "shell",
+    name: "configure-power",
+    privileged: true,
+    path: "configure-power.ps1"
+
   # Provision step 3: install dev deps via winget configure (DSC).
   config.vm.provision "shell",
     name: "winget-configure",
