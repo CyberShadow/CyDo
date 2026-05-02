@@ -373,10 +373,12 @@ struct TaskEventSeqEnvelope
 }
 
 /// Envelope for an unconfirmed user event broadcast.
+/// For type:"message" sends, correlation_id is the message nonce (optional).
 struct UnconfirmedUserEventEnvelope
 {
 	int tid;
 	@JSONName("unconfirmedUserEvent") JSONFragment unconfirmedUserEvent;
+	@JSONOptional string correlation_id;
 }
 
 // ── Permission response structs ────────────────────────────────────────────

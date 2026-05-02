@@ -3246,6 +3246,7 @@ class App : ToolsBackend
 			}
 		}
 		td.lastSuggestions = null;
+		auto msgNonce = json.correlation_id;
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
 			if (td.status == "alive")
@@ -3253,7 +3254,7 @@ class App : ToolsBackend
 				td.status = "active";
 				persistence.setStatus(tid, "active");
 			}
-			sendTaskMessage(tid, messageToSend, blocks, userMsgMeta);
+			sendTaskMessage(tid, messageToSend, blocks, userMsgMeta, msgNonce);
 		}).ignoreResult();
 
 		// Store first message as task description
@@ -4134,9 +4135,10 @@ class App : ToolsBackend
 	/// `content`.  Use this when the agent receives a rendered prompt template
 	/// but the UI should display the user's original text.
 	private void sendTaskMessage(int tid, const(ContentBlock)[] content,
-		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null)
+		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
+		string nonce = null)
 	{
-		sendPreparedTaskMessage(tid, content, broadcastContent, cydoMeta, true);
+		sendPreparedTaskMessage(tid, content, broadcastContent, cydoMeta, true, nonce);
 	}
 
 	/// Send a prepared message to the agent and emit the matching pending UI echo.
@@ -4145,7 +4147,7 @@ class App : ToolsBackend
 	/// and CyDo metadata for collapsed rendering.
 	private void sendPreparedTaskMessage(int tid, const(ContentBlock)[] content,
 		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
-		bool captureUndoSnapshot = true)
+		bool captureUndoSnapshot = true, string nonce = null)
 	{
 		import std.algorithm : min, filter;
 		import std.array : array;
@@ -4165,9 +4167,8 @@ class App : ToolsBackend
 		auto userEvent = toJson(ev);
 		if (cydoMeta.length > 0)
 			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		auto data = Data(toJson(UnconfirmedUserEventEnvelope(
-			tid,
-			JSONFragment(userEvent))).representation);
+		auto envelope = UnconfirmedUserEventEnvelope(tid, JSONFragment(userEvent), nonce);
+		auto data = Data(toJson(envelope).representation);
 		if (tid in tasks)
 		{
 			ensureHistoryLoaded(tid);
