@@ -1475,10 +1475,34 @@ export function useTaskManager(
           msg: AgnosticEvent;
           correlationId?: string;
         }
+      | { kind: "agentAck"; tid: number; nonce: string }
       | { kind: "control"; msg: ControlMessage };
     let buffer: BufferedMsg[] = [];
     let flushId: number | null = null;
     let flushTimerId: ReturnType<typeof setTimeout> | null = null;
+
+    const handleAgentAck = (tid: number, nonce: string) => {
+      const uuid = tidToUuid.get(tid);
+      if (!uuid) return;
+      const t = liveStates.get(uuid);
+      if (!t) return;
+      const idx = t.messages.findIndex(
+        (m) => m.type === "user" && m.nonce === nonce,
+      );
+      if (idx < 0) return;
+      const updated = {
+        ...t,
+        messages: t.messages.map((m, i) =>
+          i === idx ? { ...m, ackState: 2 as const } : m,
+        ),
+      };
+      liveStates.set(uuid, updated);
+      setTasks((map) => {
+        const next = new Map(map);
+        next.set(uuid, updated);
+        return next;
+      });
+    };
 
     const flush = () => {
       flushId = null;
@@ -1492,6 +1516,7 @@ export function useTaskManager(
         if (item.kind === "control") handleControlMessage(item.msg);
         else if (item.kind === "unconfirmed")
           handleUnconfirmedUserMessage(item.tid, item.msg, item.correlationId);
+        else if (item.kind === "agentAck") handleAgentAck(item.tid, item.nonce);
         else handleTaskMessage(item.tid, item.msg, item.seq, item.ts);
       }
     };
@@ -1561,6 +1586,10 @@ export function useTaskManager(
     };
     conn.onUnconfirmedUserMessage = (tid, msg, correlationId) => {
       buffer.push({ kind: "unconfirmed", tid, msg, correlationId });
+      scheduleFlush();
+    };
+    conn.onAgentAck = (tid, nonce) => {
+      buffer.push({ kind: "agentAck", tid, nonce });
       scheduleFlush();
     };
     conn.onControlMessage = (msg) => {

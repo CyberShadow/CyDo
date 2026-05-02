@@ -15,6 +15,7 @@ export class Connection {
   onUnconfirmedUserMessage:
     | ((tid: number, msg: AgnosticEvent, correlationId?: string) => void)
     | null = null;
+  onAgentAck: ((tid: number, nonce: string) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
 
@@ -80,6 +81,12 @@ export class Connection {
               raw.unconfirmedUserEvent as AgnosticEvent,
               correlationId,
             );
+          } else if (
+            "agentAck" in raw &&
+            typeof raw.agentAck === "string" &&
+            raw.agentAck
+          ) {
+            this.onAgentAck?.(raw.tid, raw.agentAck);
           } else if ("event" in raw) {
             const event = raw.event as AgnosticEvent;
             const seq = typeof raw.seq === "number" ? raw.seq : undefined;
