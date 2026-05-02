@@ -131,6 +131,17 @@ struct Persistence
 			// Migration 19: persist needs_attention flag
 			"ALTER TABLE tasks ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;",
 		]);
+
+		// In CI, disable durability to speed up tests. This trades crash-safety
+		// for speed: synchronous=OFF skips fsync, journal_mode=MEMORY keeps the
+		// rollback journal in RAM, temp_store=MEMORY keeps temp tables in RAM.
+		import std.process : environment;
+		if (environment.get("CI", "") != "")
+		{
+			db.db.exec("PRAGMA synchronous = OFF;");
+			db.db.exec("PRAGMA journal_mode = MEMORY;");
+			db.db.exec("PRAGMA temp_store = MEMORY;");
+		}
 	}
 
 	void addTaskDep(int parentTid, int childTid)

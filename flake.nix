@@ -308,6 +308,8 @@ EOF
             };
             HOME = "/tmp/playwright-home";
 
+            CI = "1";
+
             ANTHROPIC_BASE_URL = "http://127.0.0.1:9100";
             ANTHROPIC_API_KEY = "test-key-mock";
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
@@ -533,6 +535,8 @@ EOF
             };
             HOME = "/tmp/playwright-home";
 
+            CI = "1";
+
             ANTHROPIC_BASE_URL = "http://127.0.0.1:9000";
             ANTHROPIC_API_KEY = "test-key-mock";
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
@@ -726,6 +730,8 @@ EOF
 
             nativeBuildInputs = [ pkgs.git ];
             buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
+
+            CI = "1";
 
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
