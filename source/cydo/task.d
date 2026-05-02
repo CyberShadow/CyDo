@@ -179,6 +179,8 @@ struct TaskData
 	string draft;
 
 	// Runtime state (not persisted)
+	/// Nonces of messages accepted in this session lifetime; cleared on exit.
+	bool[string] recentNonces;
 	AgentSession session;
 	ProcessLaunch launch;
 	// --- history + rawSource: parallel arrays, mutate only via helpers below ---

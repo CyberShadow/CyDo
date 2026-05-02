@@ -3204,6 +3204,14 @@ class App : ToolsBackend
 			return;
 		assert(td.taskType.length > 0, "Task must have a task_type when receiving a message");
 
+		// Deduplicate: ignore a message whose nonce we've already processed.
+		if (json.correlation_id.length > 0)
+		{
+			if (json.correlation_id in td.recentNonces)
+				return;
+			td.recentNonces[json.correlation_id] = true;
+		}
+
 		ContentBlock[] blocks;
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
@@ -5519,6 +5527,7 @@ class App : ToolsBackend
 			// fork IDs from the file replace live-stream UUIDs.
 			tasks[tid].resetHistory();
 			tasks[tid].historyLoaded = false;
+			tasks[tid].recentNonces = null;
 			unsubscribeAll(tid);
 
 			// --- StateQueue notification ---
