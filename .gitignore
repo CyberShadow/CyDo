@@ -1,2 +1,9 @@
-/build/
-/data/
+# Backend build directory
+/build
+
+# Default / legacy data directory
+/data
+
+# Nix build result symlinks
+/result
+/result-*
