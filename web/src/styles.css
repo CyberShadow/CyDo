@@ -3890,12 +3890,16 @@ pre.extra-field-value {
 
 .semantic-shell-output {
   position: relative;
+  --semantic-shell-output-copy-offset: 23px;
 }
 
 .semantic-shell-output-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin: 0;
+  transform: translateX(var(--semantic-shell-output-copy-offset));
+  z-index: 2;
 }
 
 .semantic-shell-output-toolbar .btn-copy {
