@@ -457,7 +457,7 @@ private extern(C) int pipe2(int* pipefd, int flags) nothrow @nogc @system;
 private void setupShutdownPipe(App app)
 {
 	import core.sys.posix.fcntl : O_CLOEXEC, O_NONBLOCK;
-	import core.sys.posix.signal : SIGTERM, SIGINT, sigaction, sigaction_t, sigemptyset, SA_RESETHAND;
+	import core.sys.posix.signal : SIGTERM, SIGINT, SIGPIPE, SIG_IGN, sigaction, sigaction_t, sigemptyset, SA_RESETHAND;
 	import ae.net.asockets : FileConnection;
 	import ae.sys.data : Data;
 
@@ -495,6 +495,14 @@ private void setupShutdownPipe(App app)
 	sa.sa_flags = SA_RESETHAND; // reset to SIG_DFL after first delivery
 	sigaction(SIGTERM, &sa, null);
 	sigaction(SIGINT,  &sa, null);
+
+	// SIGPIPE: ignore. Writes to closed pipes return EPIPE which ae
+	// propagates as a normal disconnect; killing the process on SIGPIPE
+	// is never desirable for a long-lived event-loop server.
+	sigaction_t saPipe;
+	saPipe.sa_handler = SIG_IGN;
+	sigemptyset(&saPipe.sa_mask);
+	sigaction(SIGPIPE, &saPipe, null);
 }
 
 void usageFun(string usage)

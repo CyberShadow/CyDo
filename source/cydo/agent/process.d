@@ -8,7 +8,8 @@ import std.logger : tracef;
 import std.process : Pid, Pipe, Redirect, Config, spawnProcess, pipe, kill;
 import std.stdio : File;
 
-import ae.net.asockets : ConnectionAdapter, ConnectionState, DisconnectType, Duplex, FileConnection, IConnection, LineBufferedAdapter;
+import ae.net.asockets : ConnectionAdapter, ConnectionState, DisconnectType,
+    disconnectable, Duplex, FileConnection, IConnection, LineBufferedAdapter;
 import ae.sys.data : Data;
 import ae.sys.process : asyncWait;
 import ae.sys.timing : setTimeout, TimerTask;
@@ -217,7 +218,8 @@ class AgentProcess
 				{
 					auto lines = stderrLines;
 					stderrLines = null;
-					lines.disconnect("stderr drain timeout");
+					if (lines.state.disconnectable)
+						lines.disconnect("stderr drain timeout");
 				}
 				if (onExit)
 					onExit(exitStatus);
@@ -254,13 +256,15 @@ class AgentProcess
 		{
 			auto lines = stdoutLines;
 			stdoutLines = null;
-			lines.disconnect("force close after SIGKILL");
+			if (lines.state.disconnectable)
+				lines.disconnect("force close after SIGKILL");
 		}
 		if (stderrLines !is null)
 		{
 			auto lines = stderrLines;
 			stderrLines = null;
-			lines.disconnect("force close after SIGKILL");
+			if (lines.state.disconnectable)
+				lines.disconnect("force close after SIGKILL");
 		}
 		stdoutEOF = true;
 		stderrEOF = true;
@@ -279,7 +283,8 @@ class AgentProcess
 	{
 		if (stdinConn !is null)
 		{
-			stdinConn.disconnect("closing stdin");
+			if (stdinConn.state.disconnectable)
+				stdinConn.disconnect("closing stdin");
 			stdinConn = null;
 		}
 	}
