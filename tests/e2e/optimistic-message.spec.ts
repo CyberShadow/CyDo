@@ -5,13 +5,17 @@ import {
   sendMessage,
   responseTimeout,
   assistantText,
+  lastAssistantText,
 } from "./fixtures";
 
 test("user bubble appears immediately after Send (ack-4 optimistic render)", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -36,7 +40,10 @@ test("outbox replays unsent message after offline reload", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -90,7 +97,10 @@ test("backend deduplicates message sent twice with same nonce", async ({
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -128,7 +138,15 @@ test("backend deduplicates message sent twice with same nonce", async ({
 
   // Re-inject the SAME nonce into the outbox to simulate a stale replay.
   await page.evaluate(
-    ({ tid, nonce, content }: { tid: number; nonce: string; content: unknown }) => {
+    ({
+      tid,
+      nonce,
+      content,
+    }: {
+      tid: number;
+      nonce: string;
+      content: unknown;
+    }) => {
       const entry = { tid, nonce, content, createdAt: Date.now() - 1000 };
       localStorage.setItem("cydo.outbox.v1", JSON.stringify([entry]));
     },
@@ -149,11 +167,11 @@ test("backend deduplicates message sent twice with same nonce", async ({
   await expect(assistantText(page, "dedupe-test")).toHaveCount(1);
 });
 
-test("outbox entry evicted after backend ack", async ({
-  page,
-  agentType,
-}) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs in claude project only");
+test("outbox entry evicted after backend ack", async ({ page, agentType }) => {
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
@@ -170,12 +188,182 @@ test("outbox entry evicted after backend ack", async ({
   expect(outboxAfter).toHaveLength(0);
 });
 
+// ──── ack-2 state-transition specs ────────────────────────────────────────
+
+test("codex emits agentAck on turn/start response (ack-2 signal)", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "codex",
+    "codex-specific: tests turn/start agent-ack",
+  );
+
+  // Capture agentAck frames before page.goto so the WebSocket listener is in
+  // place when the connection is established.
+  const agentAcks: string[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (
+          "agentAck" in data &&
+          typeof data.agentAck === "string" &&
+          data.agentAck
+        ) {
+          agentAcks.push(data.agentAck);
+        }
+      } catch {
+        // ignore non-JSON frames
+      }
+    });
+  });
+
+  await enterSession(page);
+
+  // Establish session with a completing first turn so the second message uses
+  // the normal sendMessage path (with a nonce).
+  await sendMessage(page, 'Please reply with "codex-ack2-ready"');
+  await expect(assistantText(page, "codex-ack2-ready")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  const acksBeforeStall = agentAcks.length;
+
+  // Send a stalling second message — this starts a new turn via turn/start.
+  // agentAck is emitted as soon as turn/start returns (before the LLM stalls).
+  await sendMessage(page, "stall session");
+
+  // ack-4: optimistic render appears immediately before any network round-trip.
+  const bubble = page
+    .locator(".user-message:not(.system-user-message)", {
+      hasText: "stall session",
+    })
+    .first();
+  await expect(bubble).toHaveClass(/ack-4/, { timeout: 3_000 });
+
+  // The DOM transition ack-4 → ack-3 → ack-2 is too fast to observe directly
+  // in this environment (item/started fires within ~3 ms and replaces the
+  // placeholder).  Verify instead that the backend emitted an agentAck
+  // WebSocket frame — that is the PR-2 signal that drives the ack-2 state.
+  await expect
+    .poll(() => agentAcks.length, { timeout: responseTimeout(agentType) })
+    .toBeGreaterThan(acksBeforeStall);
+});
+
+test("copilot emits agentAck on session.send (ack-2 signal)", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "copilot",
+    "copilot-specific: tests session.send agent-ack and synthetic echo ordering",
+  );
+
+  // Capture agentAck frames before page.goto so the WebSocket listener is in
+  // place when the connection is established.
+  const agentAcks: string[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (
+          "agentAck" in data &&
+          typeof data.agentAck === "string" &&
+          data.agentAck
+        ) {
+          agentAcks.push(data.agentAck);
+        }
+      } catch {
+        // ignore non-JSON frames
+      }
+    });
+  });
+
+  await enterSession(page);
+
+  // Establish a real session by exchanging one message so the second message
+  // uses the normal handleUserMessage path (which attaches a nonce).
+  // create_task (first message) sends no nonce, so no agentAck is emitted.
+  await sendMessage(page, 'Please reply with "copilot-ack2-ready"');
+  await expect(assistantText(page, "copilot-ack2-ready")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  const acksBeforeStall = agentAcks.length;
+
+  // Send a second message — this uses handleUserMessage which attaches a nonce,
+  // so agentAck is emitted once session.send returns.
+  await sendMessage(page, 'Please reply with "copilot-ack2-test"');
+
+  // ack-4: optimistic render is always observable (added locally before any
+  // network round-trip).
+  await expect(
+    page
+      .locator(".user-message:not(.system-user-message)", {
+        hasText: "copilot-ack2-test",
+      })
+      .first(),
+  ).toHaveClass(/ack-4/, { timeout: 3_000 });
+
+  // Verify the backend emitted an agentAck WebSocket frame — the ack-2 signal.
+  // DOM-based ack-3/ack-2 checks are not reliable for follow-up copilot turns
+  // because session.send returns in < 5 ms, so unconfirmedUserEvent + agentAck +
+  // item_started all land in one rAF batch and only the confirmed state is
+  // painted.
+  await expect
+    .poll(() => agentAcks.length, { timeout: responseTimeout(agentType) })
+    .toBeGreaterThan(acksBeforeStall);
+
+  // Full round-trip confirmation.
+  await expect(lastAssistantText(page, "copilot-ack2-test")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+});
+
+test("claude skips ack-2 (no agent-ack signal)", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "claude-specific: guards against accidental ack-2 emission",
+  );
+
+  await enterSession(page);
+
+  const input = page.locator(".input-textarea:visible").first();
+  await input.click();
+  await input.fill("stall session");
+  const sendBtn = page.locator(".btn-send:visible").first();
+  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await sendBtn.click();
+
+  const bubble = page
+    .locator(".user-message:not(.system-user-message)", {
+      hasText: "stall session",
+    })
+    .first();
+
+  // ack-4 then ack-3: normal optimistic+backend flow
+  await expect(bubble).toHaveClass(/ack-4/, { timeout: 3_000 });
+  await expect(bubble).toHaveClass(/ack-3/, { timeout: 15_000 });
+
+  // Claude has no agent-ack signal — ack-2 must never appear.
+  // Wait slightly longer than the ack-3 round-trip to confirm stability.
+  await page.waitForTimeout(3_000);
+  await expect(bubble).not.toHaveClass(/ack-2/);
+});
+
 test("late-joining tab sees pending bubble from history", async ({
   page,
   browser,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs in claude project only");
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
 
   await enterSession(page);
 
