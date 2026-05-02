@@ -125,14 +125,24 @@ export const test = base.extend<TestFixtures>({
     });
 
     // Teardown — SIGTERM the process group and wait for exit.
+    // Acceptable outcomes:
+    //   - clean exit (code === 0, signal === null) — backend handled SIGTERM.
+    //   - terminated by SIGTERM (signal === "SIGTERM", code === null) — kernel
+    //     delivered the signal before the backend's handler ran, or the handler
+    //     re-raised. Both are normal.
+    // Any other exit (non-zero code, or any other signal) indicates an abnormal
+    // shutdown — including uncaught Throwables escaping main() (which exit with
+    // a non-zero code and no signal).
     const exitResult = new Promise<{ code: number | null; signal: string | null }>(
       (r) => proc.on("exit", (code, signal) => r({ code, signal })),
     );
     await killBackend(proc);
-    const { signal } = await exitResult;
-    const crashSignals = ["SIGSEGV", "SIGABRT", "SIGBUS"];
-    if (signal && crashSignals.includes(signal)) {
-      throw new Error(`Backend crashed during shutdown: ${signal}`);
+    const { code, signal } = await exitResult;
+    if (signal !== null && signal !== "SIGTERM") {
+      throw new Error(`Backend exited with unexpected signal: ${signal}`);
+    }
+    if (signal === null && code !== 0) {
+      throw new Error(`Backend exited abnormally with code ${code} (no signal)`);
     }
   },
 
