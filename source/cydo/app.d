@@ -5562,31 +5562,40 @@ class App : ToolsBackend
 		return SandboxConfig.init;
 	}
 
-	/// Get the HEAD SHA of the parent task's working directory.
-	/// Returns empty string if the parent path cannot be determined or git fails.
-	private string getParentHead(ref TaskData td)
+	/// Returns the HEAD SHA of the worktree (or main checkout) that the
+	/// caller's worktree was forked from, by walking up `td`'s parent chain
+	/// past any ancestors that share the same `worktreeTid`. Returns "" if
+	/// no suitable ancestor is found or git fails.
+	private string getWorktreeForkBaseHead(ref TaskData td)
 	{
 		import std.process : execute;
 		import std.string : strip;
 
-		string parentPath;
-		if (td.parentTid > 0 && td.parentTid in tasks)
+		string forkPath;
+		int current = td.parentTid;
+		while (current > 0 && current in tasks)
 		{
-			auto parentTd = &tasks[td.parentTid];
-			if (parentTd.hasWorktree)
-				parentPath = parentTd.worktreePath;
+			auto ancestor = &tasks[current];
+			if (td.worktreeTid > 0 && ancestor.worktreeTid == td.worktreeTid)
+			{
+				current = ancestor.parentTid;
+				continue;
+			}
+			if (ancestor.hasWorktree && ancestor.worktreeTid != td.worktreeTid)
+				forkPath = ancestor.worktreePath;
 			else
-				parentPath = parentTd.projectPath;
+				forkPath = ancestor.projectPath;
+			break;
 		}
-		if (parentPath.length == 0)
-			parentPath = td.projectPath;
-		if (parentPath.length == 0)
+		if (forkPath.length == 0)
+			forkPath = td.projectPath;
+		if (forkPath.length == 0)
 			return "";
 
-		auto result = execute(["git", "-C", parentPath, "rev-parse", "HEAD"]);
+		auto result = execute(["git", "-C", forkPath, "rev-parse", "HEAD"]);
 		if (result.status != 0)
 		{
-			warningf("getParentHead: git rev-parse HEAD failed in %s: %s", parentPath, result.output);
+			warningf("getWorktreeForkBaseHead: git rev-parse HEAD failed in %s: %s", forkPath, result.output);
 			return "";
 		}
 		return result.output.strip;
@@ -5625,7 +5634,7 @@ class App : ToolsBackend
 				}
 				{
 					auto wtPath = td.worktreePath;
-					auto parentHead = getParentHead(*td);
+					auto parentHead = getWorktreeForkBaseHead(*td);
 					bool hasCommits;
 					if (parentHead.length > 0)
 					{
@@ -5657,7 +5666,7 @@ class App : ToolsBackend
 							~ "git status:\n" ~ statusResult.output.strip;
 						break;
 					}
-					auto parentHead = getParentHead(*td);
+					auto parentHead = getWorktreeForkBaseHead(*td);
 					if (parentHead.length == 0)
 					{
 						missing ~= "commit (could not determine parent HEAD)";
@@ -5666,8 +5675,8 @@ class App : ToolsBackend
 					auto logResult = execute(["git", "-C", wtPath, "log",
 						"--oneline", parentHead ~ "..HEAD"]);
 					if (logResult.status != 0 || logResult.output.strip.length == 0)
-						missing ~= "commit (no commits since worktree base "
-							~ parentHead[0 .. min(8, $)]
+						missing ~= "commit (no commits in this worktree that aren't already in "
+							~ "the parent worktree at " ~ parentHead[0 .. min(8, $)]
 							~ " — make at least one commit)";
 				}
 				break;
@@ -5717,7 +5726,7 @@ class App : ToolsBackend
 		auto typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
 		if (typeDef !is null && typeDef.output_type.canFind(OutputType.commit) && td.hasWorktree)
 		{
-			auto parentHead = getParentHead(*td);
+			auto parentHead = getWorktreeForkBaseHead(*td);
 			if (parentHead.length > 0)
 			{
 				auto logResult = execute(["git", "-C", td.worktreePath,

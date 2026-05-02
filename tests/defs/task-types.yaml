@@ -135,6 +135,10 @@ task_types:
       test_commit_child:
         worktree: fork
         prompt_template: prompts/blank.md
+      test_commit_child_inherit:
+        task_type: test_commit_child
+        worktree: inherit
+        prompt_template: prompts/blank.md
 
   research:
     icon: research

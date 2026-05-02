@@ -127,3 +127,73 @@ test("commit output happy path: subtask commits and parent receives commits in r
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 });
+
+test("commit output enforcement walks past shared-worktree ancestors", async ({
+  page,
+  agentType,
+}) => {
+  // When a sub-task inherits its parent's worktree, the parent's HEAD is the
+  // sub-task's HEAD — comparing against it would always look empty. The
+  // enforcement check must walk up to the first ancestor with a different
+  // worktree (or the project path) and compare against that. This test
+  // commits in the shared worktree and asserts the missing-outputs prompt
+  // does not fire.
+  test.skip(
+    agentType !== "claude",
+    "claude-only: uses isolated shared-worktree subtask with git commit",
+  );
+  test.setTimeout(120_000);
+
+  let childTid: number | null = null;
+
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type === "task_created" && data.relation_type === "subtask") {
+          childTid = data.tid;
+        }
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
+
+  await enterSession(page);
+  await page.locator(".task-type-row", { hasText: "isolated" }).click();
+  await sendMessage(
+    page,
+    "call task test_commit_child_inherit run command" +
+      " echo shared > sharedfile.txt && git add . && git commit -m 'shared commit'",
+  );
+
+  await expect
+    .poll(() => childTid, {
+      message: "expected subtask to be created",
+      timeout: 30_000,
+    })
+    .not.toBeNull();
+
+  const parentItem = page.locator('.sidebar-item[data-tid="1"]');
+  const subtaskItem = page.locator(`.sidebar-item[data-tid="${childTid}"]`);
+
+  await parentItem.click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  // Sub-task must complete cleanly without the enforcement prompt firing.
+  await subtaskItem.click();
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Missing required outputs"),
+  ).toHaveCount(0);
+});
