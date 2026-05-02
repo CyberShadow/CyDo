@@ -1187,17 +1187,21 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			extResEv.content = JSONFragment(toJson(mcpResult.text));
 			emitEvent(toJson(extResEv), rawJson);
 
+			if (!alive_ || server.dead) return;
 			HandlePendingToolCallParams tcp;
 			tcp.sessionId = sessionId;
 			tcp.requestId = req.requestId;
 			tcp.result    = ToolCallResultInner(mcpResult.text, mcpResult.isError ? "failure" : "success");
-			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcp));
+			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcp))
+				.ignoreResult();
 		}, (Exception e) {
+			if (!alive_ || server.dead) return;
 			HandlePendingToolCallError tcpe;
 			tcpe.sessionId = sessionId;
 			tcpe.requestId = req.requestId;
 			tcpe.error     = e.msg;
-			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcpe));
+			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcpe))
+				.ignoreResult();
 		});
 	}
 
@@ -1223,11 +1227,13 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (req.resolvedByHook)
 			return;
 
+		if (!alive_ || server.dead) return;
 		HandlePermissionRequestParams prp;
 		prp.sessionId = sessionId;
 		prp.requestId = req.requestId;
 		prp.result    = PermissionKind("approved");
-		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp));
+		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp))
+			.ignoreResult();
 	}
 
 	/// Handle subagent.started — set the current sub-agent parent context
