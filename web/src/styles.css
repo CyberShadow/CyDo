@@ -2616,6 +2616,16 @@ body,
   background: var(--overlay-faint);
 }
 
+.source-tree-blocks {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--overlay-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .source-tree-blocks > .source-tree-block,
 .source-tree-blocks > .source-tree-rich-block,
 .source-tree-blocks > .source-tree-rich-block > .markdown-diff-wrap,
@@ -2636,36 +2646,17 @@ body,
   > .markdown-diff-wrap
   > .code-pre-wrap
   > .write-content,
-.source-tree-blocks > .source-tree-rich-block > .write-content {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.source-tree-blocks > .source-tree-block-start.write-content,
-.source-tree-blocks
-  > .source-tree-block-start
-  > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .write-content,
-.source-tree-blocks > .source-tree-block-start > .write-content {
-  padding-top: 8px;
-}
-
-.source-tree-blocks > .source-tree-block-end.write-content,
-.source-tree-blocks
-  > .source-tree-block-end
-  > .markdown-diff-wrap
-  > .code-pre-wrap
-  > .write-content,
-.source-tree-blocks > .source-tree-block-end > .write-content {
-  padding-bottom: 8px;
+.source-tree-blocks > .source-tree-rich-block > .write-content,
+.source-tree-blocks > .source-tree-rich-block > .write-content-markdown {
+  padding: 0;
+  background: transparent;
 }
 
 .source-tree-blocks
   > .source-tree-rich-block
   > .markdown-diff-wrap
   > .markdown-toggle-btn {
-  right: 23px;
+  right: 27px;
 }
 
 .source-tree-blocks
@@ -2673,7 +2664,7 @@ body,
   > .markdown-diff-wrap
   > .code-pre-wrap
   > .btn-copy {
-  right: 46px;
+  right: 50px;
 }
 
 /* Source/rendered toggle wrapper — layout only, no container styling */
@@ -3950,7 +3941,6 @@ pre.extra-field-value {
 
 .semantic-shell-output {
   position: relative;
-  --semantic-shell-output-copy-offset: 23px;
 }
 
 .semantic-shell-output-toolbar {
@@ -3958,13 +3948,45 @@ pre.extra-field-value {
   top: 4px;
   right: 4px;
   margin: 0;
-  transform: translateX(var(--semantic-shell-output-copy-offset));
   z-index: 2;
 }
 
 .semantic-shell-output-toolbar .btn-copy {
   position: static;
   opacity: 1;
+}
+
+.semantic-shell-output
+  > .semantic-shell-structured-piece
+  > .code-pre-wrap
+  > .btn-copy,
+.semantic-shell-output
+  > .semantic-shell-structured-piece
+  > .markdown-diff-wrap
+  > .markdown-toggle-btn {
+  right: 27px;
+}
+
+.semantic-shell-output
+  > .semantic-shell-structured-piece
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .btn-copy {
+  right: 50px;
+}
+
+.output-plan-structured-piece
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content,
+.semantic-shell-output
+  > .semantic-shell-structured-piece
+  > .markdown-diff-wrap
+  > .code-pre-wrap
+  > .write-content {
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .semantic-shell-raw {
