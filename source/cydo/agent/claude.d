@@ -701,6 +701,8 @@ class ClaudeCodeSession : AgentSession
 			"--verbose",
 			"--include-partial-messages",
 			"--replay-user-messages",
+			// Opt back into thinking content on Opus 4.7 (omitted by default since 4.7).
+			"--thinking-display", "summarized",
 			"--settings", `{"fileCheckpointingEnabled": true}`,
 		];
 
