@@ -1,0 +1,111 @@
+# yaml-language-server: $schema=https://aka.ms/configuration-dsc-schema/0.2
+#
+# CyDo Windows dev VM — WinGet Configuration (DSC) file.
+#
+# Apply with:
+#   winget configure --file cydo-windev.yaml \
+#     --accept-configuration-agreements --disable-interactivity
+#
+# This file is consumed by the Vagrantfile's winget-configure provisioner
+# during `vagrant up`. It is also useful standalone — running it on any
+# Win11 (>= 22000) machine sets up the same dev baseline.
+
+properties:
+  configurationVersion: 0.2.0
+
+  assertions:
+    - resource: Microsoft.Windows.Developer/OsVersion
+      directives:
+        description: Require Windows 11 (10.0.22000+)
+        allowPrerelease: true
+      settings:
+        MinVersion: "10.0.22000"
+
+  resources:
+    # --- General machine settings -----------------------------------------
+    - resource: Microsoft.Windows.Developer/DeveloperMode
+      id: developerMode
+      directives:
+        description: Enable Windows Developer Mode (needed for symlinks etc.)
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        Ensure: Present
+
+    # --- Baseline tooling (always wanted) ---------------------------------
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: gitInstall
+      directives:
+        description: Install Git for Windows
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        id: Git.Git
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: gh
+      directives:
+        description: GitHub CLI
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        id: GitHub.cli
+        source: winget
+
+    # === BEGIN PROJECT-SPECIFIC DEV DEPS =================================
+    # Edit this block to match the toolchains your port needs. Each entry
+    # is a Microsoft.WinGet.DSC/WinGetPackage resource with a winget
+    # package `id`. Find IDs with `winget search <name>` on a Win machine.
+    #
+    # Sample picks for the CyDo port (verify package IDs against your
+    # current winget index — these change occasionally):
+    #
+    #   - LDC (D compiler):      LDC.LDC                or LDC.LDC2
+    #   - Node.js LTS:           OpenJS.NodeJS.LTS
+    #   - Visual Studio 2022 BT: Microsoft.VisualStudio.2022.BuildTools
+    #   - VS C++ workload:       configured separately via vsconfig
+    #   - 7-Zip (handy):         7zip.7zip
+    #   - Python 3 (build deps): Python.Python.3.12
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: nodejs
+      directives:
+        description: Node.js LTS
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        id: OpenJS.NodeJS.LTS
+        source: winget
+
+    # - resource: Microsoft.WinGet.DSC/WinGetPackage
+    #   id: ldc
+    #   directives:
+    #     description: LDC D compiler
+    #     allowPrerelease: true
+    #     securityContext: elevated
+    #   settings:
+    #     id: LDC.LDC
+    #     source: winget
+
+    # - resource: Microsoft.WinGet.DSC/WinGetPackage
+    #   id: vsBuildTools
+    #   directives:
+    #     description: Visual Studio 2022 Build Tools (C/C++ toolchain)
+    #     allowPrerelease: true
+    #     securityContext: elevated
+    #   settings:
+    #     id: Microsoft.VisualStudio.2022.BuildTools
+    #     source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: sevenZip
+      directives:
+        description: 7-Zip
+        allowPrerelease: true
+        securityContext: elevated
+      settings:
+        id: 7zip.7zip
+        source: winget
+
+    # === END PROJECT-SPECIFIC DEV DEPS ===================================

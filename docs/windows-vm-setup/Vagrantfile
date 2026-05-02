@@ -1,0 +1,131 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# CyDo Windows 11 dev VM — NixOS-patched starter Vagrantfile.
+#
+# Pulls the gusztavvargadr/windows-11 box (Win 11 Enterprise 25H2 eval,
+# prebuilt by the publisher), brings it up on libvirt/QEMU, installs OpenSSH
+# server, injects the host's public key, then runs `winget configure` against
+# cydo-windev.yaml to install dev deps.
+#
+# Prereqs on the NixOS host:
+#   - virtualisation.libvirtd.enable = true;
+#   - virtualisation.libvirtd.qemu.swtpm.enable = true;
+#   - User in `libvirtd` group
+#   - vagrant + vagrant-libvirt plugin
+#
+# Files expected next to this Vagrantfile:
+#   - id_ed25519.pub      — host SSH public key (already provided)
+#   - bootstrap-ssh.ps1   — first-boot SSH setup script
+#   - cydo-windev.yaml    — winget configure DSC file
+#
+# Usage:
+#   vagrant plugin install vagrant-libvirt    # one-time
+#   vagrant up --provider=libvirt
+#   vagrant snapshot save baseline
+#   ssh -p 2222 vagrant@127.0.0.1 'powershell -c $PSVersionTable.PSVersion'
+
+Vagrant.configure("2") do |config|
+  config.vm.box     = "gusztavvargadr/windows-11"
+  config.vm.box_check_update = true
+
+  # Win11 first-boot is slow; default 300s WinRM wait is not enough.
+  config.vm.boot_timeout = 1200
+  config.vm.communicator = "winrm"
+  config.winrm.timeout   = 1200
+
+  # Forward SSH (after bootstrap-ssh.ps1 has enabled it) and RDP.
+  # Use id: "ssh" to override Vagrant's auto-added default rule rather than
+  # collide with it.
+  config.vm.network "forwarded_port", guest: 22,   host: 2222, host_ip: "127.0.0.1", id: "ssh"
+  config.vm.network "forwarded_port", guest: 3389, host: 3389, host_ip: "127.0.0.1", id: "rdp"
+
+  # Default /vagrant synced folder uses rsync, which isn't on Windows. We
+  # don't need it — provisioning copies specific files via "file" providers.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider :libvirt do |lv|
+    lv.driver         = "kvm"
+    lv.cpu_mode       = "host-passthrough"
+    lv.cpus           = 4
+    lv.memory         = 8192
+    lv.machine_type   = "q35"
+    lv.machine_arch   = "x86_64"
+
+    # UEFI firmware: do NOT set lv.loader / lv.nvram explicitly here.
+    #
+    # The gusztavvargadr/windows-11 box's bundled Vagrantfile already injects
+    # firmware via <qemu:commandline> (legacy `-drive if=pflash` form). If we
+    # also set lv.loader/lv.nvram, libvirt 12+ generates the modern
+    # blockdev+pflash form via <loader>/<nvram>, and QEMU receives BOTH —
+    # producing "clashes with -machine" at start.
+    #
+    # vagrant-libvirt's preflight check still requires VAGRANT_LIBVIRT_OVMF_CODE
+    # and VAGRANT_LIBVIRT_OVMF_VARS env vars to be set; export them in your
+    # shell before `vagrant up`:
+    #   export VAGRANT_LIBVIRT_OVMF_CODE=/run/libvirt/nix-ovmf/edk2-x86_64-code.fd
+    #   export VAGRANT_LIBVIRT_OVMF_VARS=/run/libvirt/nix-ovmf/edk2-i386-vars.fd
+
+    # TPM 2.0 — Win11 hard requirement (provided by swtpm.enable).
+    lv.tpm_version    = "2.0"
+    lv.tpm_model      = "tpm-crb"
+    lv.tpm_type       = "emulator"
+
+    lv.disk_bus       = "virtio"
+    lv.nic_model_type = "virtio"
+    lv.video_type     = "qxl"
+
+    # Local-time RTC: Windows expects this.
+    lv.clock_offset   = "localtime"
+
+    # SPICE so virt-viewer can attach if SSH/WinRM never come up.
+    lv.graphics_type  = "spice"
+  end
+
+  # Provision step 1: copy host pubkey + winget DSC YAML into the guest.
+  config.vm.provision "file",
+    source: "id_ed25519.pub",
+    destination: "C:\\Users\\vagrant\\id_ed25519.pub"
+
+  config.vm.provision "file",
+    source: "cydo-windev.yaml",
+    destination: "C:\\cydo-windev.yaml"
+
+  # Provision step 2: install OpenSSH server, place pubkey, open firewall.
+  config.vm.provision "shell",
+    name: "bootstrap-ssh",
+    privileged: true,
+    path: "bootstrap-ssh.ps1"
+
+  # Provision step 3: install dev deps via winget configure (DSC).
+  config.vm.provision "shell",
+    name: "winget-configure",
+    privileged: true,
+    inline: <<~PWSH
+      $ErrorActionPreference = "Stop"
+
+      Write-Host "winget version:"
+      winget --version
+
+      # winget's `configure` subcommand is gated behind an experimental flag
+      # that has to be enabled once per machine.
+      Write-Host "Enabling winget configure feature..."
+      winget configure --enable
+
+      Write-Host "Applying cydo-windev.yaml..."
+      winget configure `
+        --file "C:\\cydo-windev.yaml" `
+        --accept-configuration-agreements `
+        --disable-interactivity
+      if ($LASTEXITCODE -ne 0) {
+        throw "winget configure failed with exit code $LASTEXITCODE"
+      }
+    PWSH
+
+  # Provision step 4: install LDC (D compiler) — no winget manifest exists, so
+  # we pull the Inno Setup installer from LDC's GitHub releases directly.
+  config.vm.provision "shell",
+    name: "install-ldc",
+    privileged: true,
+    path: "install-ldc.ps1"
+end
