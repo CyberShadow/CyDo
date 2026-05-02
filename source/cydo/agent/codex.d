@@ -1768,11 +1768,15 @@ class CodexSession : AgentSession
 				pendingMessages ~= content.dup;
 				return;
 			}
+			auto steerCid = correlationId;
 			server.sendRequest("turn/steer",
 				toJson(TurnSteerParams(
 					threadId,
 					[TurnStartInput("text", text)],
-					activeTurnId_))).ignoreResult();
+					activeTurnId_))).then((JsonRpcResponse resp) {
+				if (!resp.isError && steerCid.length > 0 && agentAckHandler_)
+					agentAckHandler_(steerCid);
+			});
 		}
 		else
 		{
@@ -1782,6 +1786,7 @@ class CodexSession : AgentSession
 			activeItemTypes_ = null;
 			hadItemsSinceLastStop_ = false;
 
+			auto startCid = correlationId;
 			server.sendRequest("turn/start",
 				toJson(TurnStartParams(
 					threadId,
@@ -1792,6 +1797,8 @@ class CodexSession : AgentSession
 				{
 					auto result = resp.getResult!TurnStartResult();
 					handleTurnStarted(result.turn);
+					if (startCid.length > 0 && agentAckHandler_)
+						agentAckHandler_(startCid);
 				}
 				catch (Exception e)
 				{
