@@ -6,16 +6,19 @@ You have a plan. Decide how it should be executed.
 
 Choose one:
 
-- **implement** — The plan is implementation-ready and small enough for a
-  single implementation task. Use this only when the plan already tells the
-  implementer what to change, what direction to follow, and how success will
-  be judged.
+- **implement** — The plan is implementation-ready and fits a single focused
+  implementation pass. Use this when the plan already tells the implementer
+  what to change, what direction to follow, and how success will be judged,
+  *and* the work is one coherent unit — nothing is gained by pausing midway
+  to observe an intermediate result before committing to the next step.
 
-- **decompose** — The plan establishes the overall implementation direction,
-  but it is too large for one implementation task or still has bounded
-  unknowns that should be resolved per phase. Use this when the work can be
-  split into smaller, focused units and any remaining uncertainty can be
-  eliminated by producing implementation-ready sub-plans for those units.
+- **decompose** — The work benefits from orchestration: it has multiple
+  distinct units, and at least one downstream unit's right shape depends on
+  what an earlier unit produces (or the overall surface is large enough that
+  a single implementer would lose the thread). Prefer `decompose` whenever
+  intermediate results would meaningfully inform later steps — phased
+  rollouts, prerequisite-then-feature work, plans with bounded per-phase
+  unknowns, or work that spans clearly separable layers/features.
 
 - **refuse and return to parent** — The plan is not ready for execution at
   all. End the session with a clear explanation instead of forwarding it to
