@@ -1456,7 +1456,7 @@ class App : ToolsBackend
 			auto subtaskMeta = buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.taskPrompt,
 				taskPromptMsgSubject,
-				["task_description": prompt], "task_description", true);
+				["task_description": prompt], "task_description");
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
 					KnownSystemMessageKind.taskPrompt, renderedPrompt, taskPromptMsgSubject))], null, subtaskMeta);
@@ -1964,7 +1964,7 @@ class App : ToolsBackend
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
-					["message": message], "message", false);
+					["message": message], "message");
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
 
@@ -2055,7 +2055,7 @@ class App : ToolsBackend
 				auto followUpMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
-					["message": message], "message", false);
+					["message": message], "message");
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
 
@@ -2623,7 +2623,7 @@ class App : ToolsBackend
 				? buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.sessionStart,
 					sessionStartMsgSubject,
-					["task_description": textContent], "task_description", false)
+					["task_description": textContent], "task_description")
 				: null;
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid, messageToSend, msgContent, msgMeta);
@@ -2978,7 +2978,7 @@ class App : ToolsBackend
 				userMsgMeta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.sessionStart,
 					sessionStartMsgSubject,
-					["task_description": textContent], "task_description", false);
+					["task_description": textContent], "task_description");
 			}
 		}
 		td.lastSuggestions = null;
@@ -4114,7 +4114,7 @@ class App : ToolsBackend
 		auto askReminderMeta = buildKnownSystemMessageMeta(
 			KnownSystemMessageKind.subTaskWaitingForAnswer,
 			reminderSubject,
-			["question": question], "question", true);
+			["question": question], "question");
 		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 	}
 
@@ -4141,14 +4141,14 @@ class App : ToolsBackend
 	}
 
 	private string buildKnownSystemMessageMeta(KnownSystemMessageKind kind, string subject = null,
-		string[string] vars = null, string bodyVar = null, bool bodyMarkdown = false)
+		string[string] vars = null, string bodyVar = null)
 	{
 		auto resolvedSubject = subject.length > 0 ? subject : systemMessageSubject(kind);
 		KnownSystemMessageMatch match;
 		auto label = tryKnownSystemMessageMatch(resolvedSubject, match)
 			? match.label
 			: resolvedSubject;
-		return buildCydoMeta(label, vars, bodyVar, bodyMarkdown);
+		return buildCydoMeta(label, vars, bodyVar, bodyMarkdownForKind(kind));
 	}
 
 	private static bool tryParseStrictPositiveInt(string text, out int value)
@@ -4333,6 +4333,33 @@ class App : ToolsBackend
 		}
 	}
 
+	/// Whether the body of a known-system-message of this kind should be rendered
+	/// as Markdown.
+	///
+	/// Rule: Markdown for content originating from an LLM/agent or a .md prompt
+	/// file; plain text for content typed by the user. `sessionStart` is the only
+	/// kind whose body is user-typed (the user's first message wrapped into a
+	/// session-start system message); everything else carries agent-generated content.
+	private static bool bodyMarkdownForKind(KnownSystemMessageKind kind)
+	{
+		final switch (kind)
+		{
+		case KnownSystemMessageKind.taskPrompt:
+		case KnownSystemMessageKind.followUpFromParent:
+		case KnownSystemMessageKind.subTaskWaitingForAnswer:
+		case KnownSystemMessageKind.handoff:
+			return true;
+		case KnownSystemMessageKind.sessionStart:
+			return false;
+		case KnownSystemMessageKind.missingRequiredOutputs:
+		case KnownSystemMessageKind.subTaskResults:
+		case KnownSystemMessageKind.restartNudge:
+		case KnownSystemMessageKind.postCompactionTaskModeReminder:
+		case KnownSystemMessageKind.modeSwitch:
+			return false; // label-only kinds — no body, value is unused
+		}
+	}
+
 	/// Resolve (sourceType, edgeName) → prompt-template path using the same
 	/// project-scoped task-type config the renderer used.
 	/// Returns null when the edge can't be resolved (renamed/removed/legacy).
@@ -4436,7 +4463,7 @@ class App : ToolsBackend
 			bodyVars[bodyVar] = *v;
 
 		return buildCydoMeta(match.label, bodyVars, bodyVar,
-			match.kind == KnownSystemMessageKind.taskPrompt);
+			bodyMarkdownForKind(match.kind));
 	}
 
 	private string normalizeKnownSystemMessageMeta(string translated, int tid = -1)
@@ -5538,7 +5565,7 @@ class App : ToolsBackend
 				loadProjectMemory(newTypeDef, childTd.repoPath, promptSearchPath(childTd.projectPath)));
 			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
 			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
-				handoffMsgSubject, ["task_description": successorPrompt], "task_description", false);
+				handoffMsgSubject, ["task_description": successorPrompt], "task_description");
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
 					KnownSystemMessageKind.handoff, renderedSuccessorPrompt, handoffMsgSubject))], null, handoffMeta);
