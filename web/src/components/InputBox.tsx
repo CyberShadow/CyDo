@@ -267,7 +267,7 @@ export function InputBox({
         !text.trim() &&
         suggestions &&
         suggestions.length > 0 && (
-          <div class="suggestions">
+          <div key="suggestions" class="suggestions">
             {suggestions.map((s) => (
               <button
                 key={s}
@@ -293,7 +293,7 @@ export function InputBox({
           </div>
         )}
       {images.length > 0 && (
-        <div class="image-previews">
+        <div key="image-previews" class="image-previews">
           {images.map((img) => (
             <div key={img.id} class="image-preview">
               <img src={img.dataURL} alt="Attached" />
@@ -311,6 +311,7 @@ export function InputBox({
         </div>
       )}
       <textarea
+        key="textarea"
         ref={textareaRef}
         class="input-textarea"
         value={text}
@@ -335,11 +336,12 @@ export function InputBox({
         rows={1}
       />
       {isProcessing && (
-        <button class="btn btn-stop" onClick={onInterrupt}>
+        <button key="stop" class="btn btn-stop" onClick={onInterrupt}>
           Stop
         </button>
       )}
       <button
+        key="send"
         class="btn btn-send"
         onClick={send}
         disabled={
