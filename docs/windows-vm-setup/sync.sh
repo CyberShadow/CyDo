@@ -18,7 +18,7 @@ VM_IP="${CYDO_WINDEV_IP:-192.168.121.208}"
 VM_USER="vagrant"
 KEY_PATH="$(dirname "$(readlink -f "$0")")/agent_id_ed25519"
 CYDO_SRC="$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --show-toplevel)/"
-AE_SRC="${AE_SRC:-$HOME/work/ae/}"
+AE_SRC="${AE_SRC:-$HOME/work/ae-container/ae/}"
 
 if [[ ! -f "$KEY_PATH" ]]; then
     echo "Agent key not found at $KEY_PATH" >&2
