@@ -51,6 +51,7 @@ RSYNC_OPTS=(
     --exclude='web/node_modules/'
     --exclude='tests/node_modules/'
     --exclude='data/'
+    --exclude='.git/hooks/'
     -e "ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 )
 
