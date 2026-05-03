@@ -1957,7 +1957,6 @@ class App : ToolsBackend
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
 					["message": message], "message", false);
-				childTd.pendingSteeringTexts ~= msg;
 				sendTaskMessage(childTid, [ContentBlock("text", msg)], null, followUpMeta);
 			}).ignoreResult();
 
@@ -2049,7 +2048,6 @@ class App : ToolsBackend
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
 					["message": message], "message", false);
-				ctd.pendingSteeringTexts ~= followUpMsg;
 				sendTaskMessage(childTid, [ContentBlock("text", followUpMsg)], null, followUpMeta);
 			};
 
@@ -2611,9 +2609,6 @@ class App : ToolsBackend
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 			}
-			// Record text so ensureHistoryLoaded can produce correct synthetics
-			// for queue-operation:remove lines (same as handleUserMessage does).
-			td.pendingSteeringTexts ~= textContent;
 			auto msgContent = blocks;
 			auto msgMeta = typeDef !is null
 				? buildKnownSystemMessageMeta(
@@ -2940,11 +2935,6 @@ class App : ToolsBackend
 		if (json.content.json !is null)
 			blocks = jsonParse!(ContentBlock[])(json.content.json);
 		auto textContent = extractContentText(blocks);
-
-		// Record text for ensureHistoryLoaded, which needs it to produce correct
-		// synthetic confirmed events for queue-operation:remove lines (Claude's JSONL
-		// does not include message text in enqueue/remove entries).
-		td.pendingSteeringTexts ~= textContent;
 
 		// Wrap first message in prompt template (e.g. conversation.md)
 		auto messageToSend = blocks;
@@ -3910,6 +3900,9 @@ class App : ToolsBackend
 			tasks[tid].appendHistory(data, null);
 		}
 		sendToSubscribed(tid, data);
+
+		// Track every sent user-message text for reload accounting and queue-op synthetics.
+		td.pendingSteeringTexts ~= extractContentText(uiContent);
 
 		// --- send to agent ---
 		// Snapshot the JSONL before the agent processes the new message.

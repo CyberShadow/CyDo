@@ -436,9 +436,11 @@ struct TaskData
 	}
 
 	/// Texts of all messages sent to this task, in send order.
-	/// Populated in handleUserMessage; NOT cleared by history reset.
+	/// Populated by sendPreparedTaskMessage; NOT cleared by history reset.
 	/// Consumed by ensureHistoryLoaded to supply text for queue-operation:enqueue
-	/// lines (which Claude's JSONL does not include a content field for).
+	/// lines (which Claude's JSONL does not include a content field for), and for
+	/// reload replay of un-flushed user messages on agents without queue-ops
+	/// (e.g. Copilot).
 	string[] pendingSteeringTexts;
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
