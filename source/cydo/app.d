@@ -68,7 +68,7 @@ import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
-	loadSystemPrompt, computeReachesWorktree, computeTreeReadOnly;
+	loadSystemPrompt, loadProjectMemory, computeReachesWorktree, computeTreeReadOnly;
 import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage,
 	tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
@@ -1446,8 +1446,9 @@ class App : ToolsBackend
 
 			// Configure and spawn child agent
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
-			renderedPrompt = prependTaskSystemPrompt(renderedPrompt,
-				taskSystemPromptForMessage(childTid, ctd));
+			renderedPrompt = prependTaskFraming(renderedPrompt,
+				taskSystemPromptForMessage(childTid, ctd),
+				loadProjectMemory(childTd.repoPath, promptSearchPath(childTd.projectPath)));
 			// Encode edge identity in subject: "<parentType> -> <edgeName>".
 			// When ptd has no creatable_tasks (degenerate), fall back to no-arrow form.
 			auto parentTypeForSubject = (ptd !is null && ptd.creatable_tasks.length > 0) ? pd.taskType : "";
@@ -2611,8 +2612,9 @@ class App : ToolsBackend
 				import std.algorithm : filter;
 				import std.array : array;
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
-				rendered = prependTaskSystemPrompt(rendered,
-					taskSystemPromptForMessage(tid, typeDef));
+				rendered = prependTaskFraming(rendered,
+					taskSystemPromptForMessage(tid, typeDef),
+					loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
 				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
 				sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
@@ -2967,8 +2969,9 @@ class App : ToolsBackend
 				}
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath),
 					td.outputPath, entryPointTemplate);
-				rendered = prependTaskSystemPrompt(rendered,
-					taskSystemPromptForMessage(tid, typeDef));
+				rendered = prependTaskFraming(rendered,
+					taskSystemPromptForMessage(tid, typeDef),
+					loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
 				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
 				auto sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
@@ -3949,12 +3952,39 @@ class App : ToolsBackend
 		return loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), td.outputPath);
 	}
 
-	private static string prependTaskSystemPrompt(string promptText, string systemPrompt)
+	private static string prependTaskFraming(string promptText, string systemPrompt,
+		string projectMemory = null)
 	{
-		if (systemPrompt.length == 0)
+		string head;
+		if (projectMemory.length > 0)
+			head ~= projectMemory ~ "\n\n";
+		if (systemPrompt.length > 0)
+			head ~= "[TASK DESCRIPTION]\n" ~ systemPrompt
+				~ "\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\n";
+		if (head.length == 0)
 			return promptText;
-		return "[TASK DESCRIPTION]\n" ~ systemPrompt
-			~ "\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\n" ~ promptText;
+		return head ~ promptText;
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind, countUntil;
+
+		// system prompt alone — byte-for-byte matches old prependTaskSystemPrompt
+		assert(prependTaskFraming("text", "sys") ==
+			"[TASK DESCRIPTION]\nsys\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\ntext");
+		// neither — no-op
+		assert(prependTaskFraming("text", null, null) == "text");
+		// memory alone — no [TASK PROMPT] wrapper
+		assert(prependTaskFraming("text", null, "mem\n") ==
+			"mem\n\n\ntext");
+		// both — memory before task description, [TASK PROMPT] present
+		auto both = prependTaskFraming("text", "sys", "mem\n");
+		assert(both.canFind("mem\n"), both);
+		assert(both.canFind("[TASK DESCRIPTION]"), both);
+		assert(both.canFind("[TASK PROMPT]"), both);
+		// memory precedes task description
+		assert(both.countUntil("mem") < both.countUntil("[TASK DESCRIPTION]"), both);
 	}
 
 	private enum KnownSystemMessageKind
@@ -4444,6 +4474,7 @@ class App : ToolsBackend
 			typeDef = cache.types.byName(td.taskType);
 		if (typeDef is null)
 			typeDef = getTaskTypesForProject(td.projectPath).byName(td.taskType);
+
 		auto systemPrompt = taskSystemPromptForMessage(tid, typeDef);
 		if (systemPrompt.length == 0)
 			return null;
@@ -4869,6 +4900,17 @@ class App : ToolsBackend
 		// MCP socket must be accessible inside the sandbox
 		if (mcpSocketPath.length > 0)
 			sandbox.paths[mcpSocketPath] = PathMode.ro;
+
+		// Project memory carve-out — always_rw so it survives the read_only
+		// downgrade and the worktree-bound ro override (longer paths win in
+		// the sandbox path-sort). mkdirRecurse bootstraps a fresh project.
+		if (workDir.length > 0)
+		{
+			import std.file : mkdirRecurse;
+			auto memoryDir = buildPath(workDir, ".cydo", "memory");
+			mkdirRecurse(memoryDir);
+			sandbox.paths[memoryDir] = PathMode.always_rw;
+		}
 
 		// Set up shared /tmp: all tasks in a tree share the same host-backed directory
 		sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
@@ -5427,8 +5469,9 @@ class App : ToolsBackend
 				["result_text": resultText, "output_dir": td.taskDir]);
 			renderedContinuationPrompt = "`SwitchMode` to `" ~ edgeName
 				~ "` successful.\n\n" ~ renderedContinuationPrompt;
-			renderedContinuationPrompt = prependTaskSystemPrompt(
-				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef));
+			renderedContinuationPrompt = prependTaskFraming(
+				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef),
+				loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
 			auto modeSwitchMsgSubject = modeSwitchSubject(sourceTaskType, edgeName);
 			auto contMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.modeSwitch,
 				modeSwitchMsgSubject);
@@ -5494,8 +5537,9 @@ class App : ToolsBackend
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
 				promptSearchPath(childTd.projectPath), childTd.outputPath, contDef.prompt_template,
 				["result_text": resultText]);
-			renderedSuccessorPrompt = prependTaskSystemPrompt(renderedSuccessorPrompt,
-				taskSystemPromptForMessage(childTid, newTypeDef));
+			renderedSuccessorPrompt = prependTaskFraming(renderedSuccessorPrompt,
+				taskSystemPromptForMessage(childTid, newTypeDef),
+				loadProjectMemory(childTd.repoPath, promptSearchPath(childTd.projectPath)));
 			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
 			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
 				handoffMsgSubject, ["task_description": successorPrompt], "task_description", false);

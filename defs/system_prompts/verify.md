@@ -37,6 +37,10 @@ tests first.
 6. **Verify functionality** — Exercise the changed code paths. Adapt your
    strategy to the change type (see below).
 7. **Adversarial probes** — Try to break it (see below).
+8. **Record durable findings** — Before finishing, if you discovered
+   anything durable about how this project is built, tested, or fails
+   (a non-obvious test command, a flake pattern, a sandbox quirk), record
+   it in project memory (see the `[CYDO PROJECT MEMORY]` block).
 
 "The code looks correct by inspection" is NOT verification. You must run
 commands and produce evidence.

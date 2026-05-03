@@ -78,16 +78,37 @@ bool tryExtractSubject(string keyword, string text, out string subject)
     return true;
 }
 
-/// Strip the [TASK DESCRIPTION]...[TASK PROMPT]\n wrapper added by
-/// prependTaskSystemPrompt(), returning only the rendered prompt body.
-/// Returns the body unchanged if the wrapper is not present.
+/// Strip the framing added by prependTaskFraming(), returning only the
+/// rendered prompt body.  Handles three cases in order:
+///   1. [TASK DESCRIPTION]...[TASK PROMPT]\n prefix (system prompt present)
+///   2. [CYDO PROJECT MEMORY]...[/CYDO PROJECT MEMORY] prefix (memory only,
+///      no system prompt — the new path enabled by v2 injection)
+///   3. No framing — body returned unchanged.
 string stripTaskSystemPromptWrapper(string body)
 {
+    // Case 1: system prompt framing → strip up to and including [TASK PROMPT]\n
     enum taskPromptMarker = "\n[TASK PROMPT]\n";
     auto idx = body.indexOf(taskPromptMarker);
-    if (idx < 0)
-        return body;
-    return body[cast(size_t) idx + taskPromptMarker.length .. $];
+    if (idx >= 0)
+        return body[cast(size_t) idx + taskPromptMarker.length .. $];
+
+    // Case 2: memory-only framing (no system prompt) → strip the memory block
+    enum memoryOpenTag = "[CYDO PROJECT MEMORY]";
+    enum memoryCloseTag = "[/CYDO PROJECT MEMORY]";
+    if (body.startsWith(memoryOpenTag))
+    {
+        auto closeIdx = body.indexOf(memoryCloseTag);
+        if (closeIdx >= 0)
+        {
+            auto pos = cast(size_t) closeIdx + memoryCloseTag.length;
+            // Skip the newline separator inserted by prependTaskFraming
+            while (pos < body.length && (body[pos] == '\n' || body[pos] == '\r'))
+                pos++;
+            return body[pos .. $];
+        }
+    }
+
+    return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,9 +313,23 @@ unittest
 unittest
 {
     // --- 1d. stripTaskSystemPromptWrapper ---
+    // Case 1: system prompt framing
     auto withWrapper = "[TASK DESCRIPTION]\nsys prompt\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\nactual body";
     assert(stripTaskSystemPromptWrapper(withWrapper) == "actual body");
-    // No wrapper — returned as-is
+
+    // Case 1b: memory + system prompt (memory before [TASK DESCRIPTION], stripped at [TASK PROMPT])
+    auto withBoth = "[CYDO PROJECT MEMORY]\nmem\n[/CYDO PROJECT MEMORY]\n\n[TASK DESCRIPTION]\nsys\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\nactual body";
+    assert(stripTaskSystemPromptWrapper(withBoth) == "actual body");
+
+    // Case 2: memory only (no system prompt, no [TASK PROMPT] marker)
+    auto withMemoryOnly = "[CYDO PROJECT MEMORY]\nsome memory\n[/CYDO PROJECT MEMORY]\n\nactual body";
+    assert(stripTaskSystemPromptWrapper(withMemoryOnly) == "actual body");
+
+    // Case 2b: memory only with extra newlines after closing tag
+    auto withMemoryOnlyExtra = "[CYDO PROJECT MEMORY]\nmem\n[/CYDO PROJECT MEMORY]\n\n\nactual body";
+    assert(stripTaskSystemPromptWrapper(withMemoryOnlyExtra) == "actual body");
+
+    // Case 3: no framing — returned as-is
     assert(stripTaskSystemPromptWrapper("plain body") == "plain body");
 }
 

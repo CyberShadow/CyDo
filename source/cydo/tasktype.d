@@ -1162,6 +1162,81 @@ string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	return vars.length > 0 ? substituteVars(text, vars) : text;
 }
 
+/// Read the project's MEMORY.md (if present) and wrap it in a preamble block.
+/// Returns null when projectPath is empty or MEMORY.md does not exist.
+/// Re-reads from disk on every call — supports mid-session memory updates.
+string loadProjectMemory(string projectPath, string[] typesDirs)
+{
+	import std.file : exists, readText;
+	import std.path : buildPath;
+
+	if (projectPath.length == 0)
+		return null;
+
+	auto memoryDir = buildPath(projectPath, ".cydo", "memory");
+	auto memoryFile = buildPath(memoryDir, "MEMORY.md");
+	if (!exists(memoryFile))
+		return null;
+
+	auto contents = readText(memoryFile);
+
+	// Walk typesDirs for preamble template
+	string preamblePath;
+	foreach (dir; typesDirs)
+	{
+		auto candidate = buildPath(dir, "system_prompts/memory_preamble.md");
+		if (exists(candidate))
+		{
+			preamblePath = candidate;
+			break;
+		}
+	}
+
+	if (preamblePath.length == 0)
+		return "[CYDO PROJECT MEMORY]\n" ~ contents ~ "\n[/CYDO PROJECT MEMORY]\n";
+
+	return substituteVars(readText(preamblePath), [
+		"memory_dir": memoryDir,
+		"memory_contents": contents,
+	]);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto tmp = "/tmp/cydo-test-loadprojectmemory";
+	scope (exit) { if (exists(tmp)) rmdirRecurse(tmp); }
+	mkdirRecurse(tmp);
+
+	// projectPath empty → null
+	assert(loadProjectMemory("", []) is null);
+	// no MEMORY.md → null
+	assert(loadProjectMemory(tmp, []) is null);
+
+	// create MEMORY.md
+	auto memDir = buildPath(tmp, ".cydo", "memory");
+	mkdirRecurse(memDir);
+	write(buildPath(memDir, "MEMORY.md"), "- entry one\n");
+
+	// no preamble template → fallback framing
+	auto result = loadProjectMemory(tmp, []);
+	assert(result !is null);
+	assert(result.canFind("[CYDO PROJECT MEMORY]"), result);
+	assert(result.canFind("entry one"), result);
+	assert(result.canFind("[/CYDO PROJECT MEMORY]"), result);
+
+	// with preamble template → substitution
+	auto defsDir = buildPath(tmp, "defs");
+	mkdirRecurse(buildPath(defsDir, "system_prompts"));
+	write(buildPath(defsDir, "system_prompts", "memory_preamble.md"),
+		"{{memory_dir}}\n---\n{{memory_contents}}");
+	auto withPreamble = loadProjectMemory(tmp, [defsDir]);
+	assert(withPreamble.canFind(memDir), withPreamble);
+	assert(withPreamble.canFind("entry one"), withPreamble);
+}
+
 /// Render a continuation's prompt template. The continuation must have a
 /// prompt_template set (enforced by validation for keep_context continuations).
 string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, string[] typesDirs,

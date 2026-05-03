@@ -69,6 +69,23 @@ spawning a non-tree-read-only sub-task on a worktree that already has an alive
 writer is rejected with an error. Fork edges are always safe (they create an
 isolated worktree).
 
+## Project Memory
+
+Every task in a project has access to a project-scoped memory store at
+`<repoPath>/.cydo/memory/`. The contents of `MEMORY.md` (if present) are
+prepended to the first user message of every task, wrapped by the
+preamble at `defs/system_prompts/memory_preamble.md`. Memory is read
+once at task start; a mid-session write is visible to future tasks, not
+to the writer's own current session.
+
+The directory is sandbox-writable for all task types, including
+read-only ones, via an `always_rw` carve-out. Worktree-bound tasks
+reach the canonical store via the absolute path that the preamble
+exposes as `{{memory_dir}}`. When `MEMORY.md` does not exist, no memory
+block is injected.
+
+See `docs/memory.md` for content conventions.
+
 ## Flow Control
 
 Two mechanisms for chaining tasks:

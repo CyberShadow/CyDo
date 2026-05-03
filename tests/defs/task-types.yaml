@@ -65,6 +65,13 @@ task_types:
         prompt_template: prompts/blank.md
       test_sysprompt_mode_a:
         prompt_template: prompts/blank.md
+      test_memory_check:
+        prompt_template: prompts/blank.md
+      test_memory_check_ro:
+        prompt_template: prompts/blank.md
+      test_memory_write_wt:
+        worktree: fork
+        prompt_template: prompts/blank.md
       triage:
         prompt_template: prompts/blank.md
       test_handoff_with_children:
@@ -172,6 +179,19 @@ task_types:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt.md
+
+  test_memory_check:
+    model_class: small
+    output_type: []
+
+  test_memory_check_ro:
+    model_class: small
+    output_type: []
+    read_only: true
+
+  test_memory_write_wt:
+    model_class: small
+    output_type: []
 
   test_wt_child:
     model_class: small
