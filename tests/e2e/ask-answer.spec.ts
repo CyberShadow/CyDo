@@ -240,12 +240,13 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject({
+  const questionResult = (await waitForLatestTaskResultItems(observedTaskResults))[0]!;
+  expect(questionResult).toMatchObject({
     status: "question",
-    qid: 1,
     tid: 2,
     message: "what approach should I use?",
   });
+  const capturedQid = questionResult["qid"] as number;
 
   // Wait for parent's Turn 2 to complete (mock responds "Done." after seeing the
   // Task result with the question). This prevents a race where the Answer
@@ -257,8 +258,8 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Parent answers via Answer(qid=1, answer). First qid is always 1 in fresh session.
-  await sendMessage(page, "call answer 1 use approach A");
+  // Parent answers the pending question using the observed qid.
+  await sendMessage(page, `call answer ${capturedQid} use approach A`);
 
   // The child receives the answer, responds "Done." (isToolResult → mock), and exits.
   // Parent's Answer call returns with the batch completion result.
@@ -360,6 +361,8 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
 }) => {
   test.setTimeout(TALK_TIMEOUT);
 
+  const observedTaskResults = observeTaskResultItems(page);
+
   await enterSession(page);
 
   // "call mixed batch research" spawns two children:
@@ -386,8 +389,14 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Parent answers child B using qid=1 (first question allocated in fresh session).
-  await sendMessage(page, "call answer 1 use approach A");
+  // Capture the qid from child B's observed question result.
+  const questionResult = (await waitForLatestTaskResultItems(observedTaskResults)).find(
+    (item) => item["status"] === "question",
+  )!;
+  const capturedQid = questionResult["qid"] as number;
+
+  // Parent answers child B using the observed qid.
+  await sendMessage(page, `call answer ${capturedQid} use approach A`);
 
   // After child B completes, Answer returns with the full batch results
   // in original request order (Normal child, then Questioning child).
@@ -458,6 +467,8 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
 }) => {
   test.setTimeout(TALK_TIMEOUT);
 
+  const observedTaskResults = observeTaskResultItems(page);
+
   await enterSession(page);
 
   // Create two sub-tasks that both call Ask(question) with no tid (ask parent).
@@ -492,8 +503,14 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Answer the first child (qid=1 — first question allocated in fresh session).
-  await sendMessage(page, "call answer 1 answer one");
+  // Capture qid of the first question from the observed task result.
+  const firstQuestion = (await waitForLatestTaskResultItems(observedTaskResults)).find(
+    (item) => item["status"] === "question",
+  )!;
+  const firstQid = firstQuestion["qid"] as number;
+
+  // Answer the first child using the observed qid.
+  await sendMessage(page, `call answer ${firstQid} answer one`);
 
   // The second question (from the other child) should now be delivered as the Answer result.
   await expect(
@@ -511,8 +528,15 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // Answer the second child (qid=2 — second question allocated in fresh session).
-  await sendMessage(page, "call answer 2 answer two");
+  // Capture qid of the second question (latest item/result after answering the first).
+  await expect.poll(() => observedTaskResults.length).toBeGreaterThanOrEqual(2);
+  const secondQuestion = observedTaskResults[observedTaskResults.length - 1]!.find(
+    (item) => item["status"] === "question",
+  )!;
+  const secondQid = secondQuestion["qid"] as number;
+
+  // Answer the second child using the observed qid.
+  await sendMessage(page, `call answer ${secondQid} answer two`);
 
   // Both children complete → Task returns with batch results (cydo-task-spec items).
   await expect(

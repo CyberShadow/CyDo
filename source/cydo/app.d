@@ -574,8 +574,11 @@ class App : ToolsBackend
 	// Per-parent batch state, keyed by parent tid
 	private BatchState[int] activeBatches;
 	private ulong nextBatchId = 1;
-	// App-global question ID counter and registry
-	private int nextQid = 1;
+	// App-global question ID counter and registry. Seeded from Unix time in
+	// start() so qids stay monotonic across backend restarts — prevents a stale
+	// qid baked into an agent's resumed context from silently matching a freshly
+	// allocated question.
+	private int nextQid;
 	private Promise!McpResult[int] pendingQuestions;  // qid → promise waiting for answer
 	private int[int] questionToTask;                   // qid → tid of the task that asked
 	private ulong[int] questionToBatch;                // qid → originating parent batch id
@@ -704,6 +707,10 @@ class App : ToolsBackend
 	void start()
 	{
 		initLogLevel();
+		{
+			import std.datetime.systime : Clock;
+			nextQid = cast(int) Clock.currTime.toUnixTime;
+		}
 		{
 			import ae.utils.path : findProgramDirectory;
 			import std.path : buildPath;

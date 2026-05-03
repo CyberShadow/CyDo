@@ -943,10 +943,34 @@ function handleMessages(req, res) {
           return;
         } else if (messages.length <= 5) {
           // Second tool result: Handoff was rejected, answer the grandchild's question.
+          // Extract the real qid from the prior Task tool result that delivered the question.
+          const askedQid = (() => {
+            for (const m of messages) {
+              if (m.role !== "user" || !Array.isArray(m.content)) continue;
+              for (const part of m.content) {
+                if (part.type !== "tool_result") continue;
+                const text =
+                  typeof part.content === "string"
+                    ? part.content
+                    : Array.isArray(part.content)
+                      ? part.content.map((c) => c.text ?? "").join("")
+                      : "";
+                const match = text.match(
+                  /"status"\s*:\s*"question"[^}]*"qid"\s*:\s*(\d+)/,
+                );
+                if (match) return parseInt(match[1], 10);
+              }
+            }
+            return null;
+          })();
+          if (askedQid === null) {
+            streamTextResponse(res, "Done.", model);
+            return;
+          }
           streamToolUseResponse(
             res,
             "mcp__cydo__Answer",
-            { qid: 1, message: "handoff-test-answered" },
+            { qid: askedQid, message: "handoff-test-answered" },
             model,
           );
           return;
