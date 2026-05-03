@@ -683,7 +683,13 @@ function ShellCommandInput({
   // All useHighlight calls must be unconditional (hooks rules).
   const tokens = useHighlight(command ?? "", "bash");
   const headerTokens = useHighlight(headerText.trimEnd(), "bash");
-  const consumedKeys = new Set(["command", "cmd", "description"]);
+  const consumedKeys = new Set([
+    "command",
+    "cmd",
+    "description",
+    "timeout",
+    "run_in_background",
+  ]);
   const remaining: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(input)) {
     if (!consumedKeys.has(k)) remaining[k] = v;
@@ -1780,6 +1786,27 @@ function getHeaderSubtitle(
         {input.url}
       </a>
     );
+  }
+  if (toolIs(name, agentType, toolServer, "claude/Bash")) {
+    const description =
+      typeof input.description === "string" ? input.description : null;
+    const timeout = typeof input.timeout === "number" ? input.timeout : null;
+    const timeoutStr =
+      timeout != null
+        ? timeout >= 1000
+          ? `${timeout / 1000}s`
+          : `${timeout}ms`
+        : null;
+    const background = input.run_in_background === true;
+    if (description || timeoutStr || background) {
+      return (
+        <Fragment>
+          {description && <span class="tool-subtitle">{description}</span>}
+          {background && <span class="tool-subtitle-tag">background</span>}
+          {timeoutStr && <span class="tool-subtitle-tag">{timeoutStr}</span>}
+        </Fragment>
+      );
+    }
   }
   if (
     isShellTool(name, agentType, toolServer) &&

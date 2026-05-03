@@ -236,6 +236,78 @@ describe("CyDo task result helpers", () => {
   });
 });
 
+function renderBashInput(input: Record<string, unknown>): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "Bash",
+      agentType: "claude",
+      toolUseId: "tool-1",
+      input,
+      result: undefined,
+    }),
+  );
+}
+
+describe("claude/Bash subtitle badges", () => {
+  it("renders description only — no badge", () => {
+    const html = renderBashInput({ command: "ls", description: "list files" });
+    expect(html).toContain("list files");
+    expect(html).not.toContain("tool-subtitle-tag");
+  });
+
+  it("renders background badge when run_in_background is true", () => {
+    const html = renderBashInput({
+      command: "ls",
+      description: "list files",
+      run_in_background: true,
+    });
+    expect(html).toContain("list files");
+    expect(html).toContain("tool-subtitle-tag");
+    expect(html).toContain("background");
+  });
+
+  it("renders timeout in seconds when >= 1000ms", () => {
+    const html = renderBashInput({
+      command: "ls",
+      description: "list files",
+      timeout: 900000,
+    });
+    expect(html).toContain("900s");
+    expect(html).not.toContain("900000ms");
+  });
+
+  it("renders timeout in ms when < 1000ms", () => {
+    const html = renderBashInput({
+      command: "ls",
+      description: "list files",
+      timeout: 250,
+    });
+    expect(html).toContain("250ms");
+  });
+
+  it("renders both badges together", () => {
+    const html = renderBashInput({
+      command: "ls",
+      description: "list files",
+      run_in_background: true,
+      timeout: 900000,
+    });
+    expect(html).toContain("background");
+    expect(html).toContain("900s");
+  });
+
+  it("does not render run_in_background or timeout in KV body list", () => {
+    const html = renderBashInput({
+      command: "ls",
+      description: "list files",
+      run_in_background: true,
+      timeout: 900000,
+    });
+    expect(html).not.toContain(">run_in_background<");
+    expect(html).not.toContain(">timeout<");
+  });
+});
+
 function renderShellInput(command: string): string {
   return renderToString(
     h(ToolCall, {
