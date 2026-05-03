@@ -95,9 +95,9 @@ interface CydoTools
 		~ "Available task types:\n\n{{creatable_task_types}}\n\n"
 		~ "## Follow-up\n"
 		~ "- Each result includes a `tid` field identifying the sub-task\n"
-		~ "- Use Ask(message, tid) to ask follow-up questions to completed sub-tasks\n"
-		~ "- If a sub-task asks you a question, the Task/Ask call returns early with "
-		~ "a question result including a `qid`. Answer with Answer(qid, answer).\n"
+		~ "- Use mcp__cydo__Ask(message, tid) to ask follow-up questions to completed sub-tasks\n"
+		~ "- If a sub-task asks you a question, the mcp__cydo__Task or mcp__cydo__Ask call returns early with "
+		~ "a question result including a `qid`. Answer with mcp__cydo__Answer(qid, answer).\n"
 	)
 	@McpName("Task")
 	McpResult createTasks(
@@ -160,14 +160,14 @@ interface CydoTools
 	@Description(
 	    "Ask a question to a related task and wait for the answer.\n\n"
 	    ~ "## Ask your parent (tid omitted)\n"
-	    ~ "Call Ask(message) to ask your parent task a question. Your execution "
-	    ~ "pauses until the parent answers with Answer(qid, response).\n\n"
+	    ~ "Call mcp__cydo__Ask(message) to ask your parent task a question. Your execution "
+	    ~ "pauses until the parent answers with mcp__cydo__Answer(qid, response).\n\n"
 	    ~ "## Ask a completed sub-task (follow-up)\n"
-	    ~ "After a Task call completes, use Ask(message, tid) to ask a follow-up "
+	    ~ "After a mcp__cydo__Task call completes, use mcp__cydo__Ask(message, tid) to ask a follow-up "
 	    ~ "question. The sub-task is resumed with your question and must answer "
-	    ~ "with Answer(qid, response).\n\n"
+	    ~ "with mcp__cydo__Answer(qid, response).\n\n"
 	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
-	    ~ "If a sub-task has a pending question, use Answer instead of Ask."
+	    ~ "If a sub-task has a pending question, use mcp__cydo__Answer instead of mcp__cydo__Ask."
 	)
 	@McpName("Ask")
 	McpResult ask(
@@ -180,10 +180,10 @@ interface CydoTools
 
 	@Description(
 	    "Answer a question from a related task.\n\n"
-	    ~ "When a sub-task asks you a question (returned from Task or Ask with "
-	    ~ "a qid), use Answer(qid, message) to respond.\n\n"
+	    ~ "When a sub-task asks you a question (returned from mcp__cydo__Task or mcp__cydo__Ask with "
+	    ~ "a qid), use mcp__cydo__Answer(qid, message) to respond.\n\n"
 	    ~ "When your parent asks you a follow-up question (delivered with a qid), "
-	    ~ "use Answer(qid, message) to respond.\n\n"
+	    ~ "use mcp__cydo__Answer(qid, message) to respond.\n\n"
 	    ~ "After answering a sub-task's question, this call blocks until the "
 	    ~ "batch completes or another question arrives."
 	)

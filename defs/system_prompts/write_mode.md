@@ -37,7 +37,7 @@ If you were given a worktree path and commit hash to pull in:
 
 **Stay** for follow-up edits, testing, and iteration on the current change.
 
-**Leave** (`SwitchMode` with `back`) when the user's message is no longer
+**Leave** (`mcp__cydo__SwitchMode` with `back`) when the user's message is no longer
 about the current editing session. Exit if they:
 - Report a bug or unexpected behavior
 - Request a non-trivial change that needs planning or exploration

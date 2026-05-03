@@ -1768,7 +1768,7 @@ class App : ToolsBackend
 						"Handoff cannot continue while sub-task question qid="
 						~ to!string(childTd.pendingAskQid)
 						~ " is waiting for your answer. "
-						~ "Use Answer(...) first, or SwitchMode if you need a different mode before answering.",
+						~ "Use mcp__cydo__Answer(...) first, or mcp__cydo__SwitchMode if you need a different mode before answering.",
 						true);
 				}
 			}
@@ -1907,7 +1907,7 @@ class App : ToolsBackend
 		{
 			return resolve(McpResult(
 				"Sub-task has a pending question (qid=" ~ to!string(childTd.pendingAskQid)
-				~ "). Use Answer(qid, message) instead.", true));
+				~ "). Use mcp__cydo__Answer(qid, message) instead.", true));
 		}
 
 		// Child completed/failed/active → resume or send follow-up
@@ -1948,7 +1948,7 @@ class App : ToolsBackend
 				auto followUpBody = readPromptFile("prompts/follow_up_from_parent.md",
 					ctdRef.projectPath, ["message": message, "qid": to!string(qid)]);
 				if (followUpBody.length == 0)
-					followUpBody = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+					followUpBody = message ~ "\n\nAnswer with mcp__cydo__Answer(" ~ to!string(qid) ~ ", \"your response\").";
 				auto msg = wrapKnownSystemMessage(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpBody,
@@ -2039,7 +2039,7 @@ class App : ToolsBackend
 				auto followUpBody2 = readPromptFile("prompts/follow_up_from_parent.md",
 					ctd.projectPath, ["message": message, "qid": to!string(qid)]);
 				if (followUpBody2.length == 0)
-					followUpBody2 = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+					followUpBody2 = message ~ "\n\nAnswer with mcp__cydo__Answer(" ~ to!string(qid) ~ ", \"your response\").";
 				auto followUpMsg = wrapKnownSystemMessage(
 					KnownSystemMessageKind.followUpFromParent,
 					followUpBody2,
@@ -2145,7 +2145,7 @@ class App : ToolsBackend
 			// Fulfill child's blocking Ask call with the answer
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
-				"Use Ask(question) to ask follow-up questions."));
+				"Use mcp__cydo__Ask(question) to ask follow-up questions."));
 			(*questionPromise).fulfill(McpResult.structured(answerJson));
 
 			// Clean up child state
@@ -2176,7 +2176,7 @@ class App : ToolsBackend
 			// so the parent doesn't receive the answer mid-turn.
 			auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
 				tasks[callerTidInt].title, message,
-				"Use Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
+				"Use mcp__cydo__Ask(question, " ~ to!string(callerTidInt) ~ ") for further follow-ups."));
 			auto answerResult = McpResult.structured(answerJson);
 			int childTid = callerTidInt;
 
@@ -4067,7 +4067,7 @@ class App : ToolsBackend
 			tasks[tid].projectPath, ["question": question, "qid": to!string(qid)]);
 		if (reminderBody.length == 0)
 			reminderBody = "Question: " ~ question ~ "\n\n"
-				~ "Use Answer(" ~ to!string(qid)
+				~ "Use mcp__cydo__Answer(" ~ to!string(qid)
 				~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
 		auto reminder = wrapKnownSystemMessage(
 			KnownSystemMessageKind.subTaskWaitingForAnswer,
@@ -5803,7 +5803,7 @@ class App : ToolsBackend
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
 		auto summary = td.resultText;
-		auto talkNote = " Use Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
+		auto talkNote = " Use mcp__cydo__Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
 		string note;
 		if (hasOutput && hasWorktree)
 			note = "Read the output file for full findings. The worktree path is included for adopting changes." ~ talkNote;

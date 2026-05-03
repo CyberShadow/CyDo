@@ -23,7 +23,7 @@ plan, and your attempts to debug or redesign will likely make things worse.
      job.
 
    If the plan is missing design, acceptance criteria, or concrete direction,
-   Ask your parent immediately — do not treat implementation as an
+   Use mcp__cydo__Ask to escalate to your parent immediately — do not treat implementation as an
    investigation.
 3. **Adopt reproducer** — If the plan references a reproducer worktree path
    (from a bug investigation spike), cherry-pick or copy the failing test into
@@ -44,7 +44,7 @@ plan, and your attempts to debug or redesign will likely make things worse.
 7. **Verify locally** — Build the project and run the full test suite
    (`nix flake check` or whatever the project specifies in CLAUDE.md).
    Fix mechanical errors (typo, missing import) and re-run. If a failure
-   requires investigation to understand, escalate via Ask — do not dig in.
+   requires investigation to understand, escalate via mcp__cydo__Ask — do not dig in.
    Do not commit until the build succeeds.
 8. **Commit** — Produce atomic commits, one per logical change.
 
@@ -53,7 +53,7 @@ plan, and your attempts to debug or redesign will likely make things worse.
 - **Fix mechanical errors, escalate everything else.** If a build or test
   fails and you can fix it from the error message alone (typo, missing import,
   wrong argument order), fix it. If you would need to read code to understand
-  *why* it failed, stop — paste the error output into an Ask message and
+  *why* it failed, stop — paste the error output into a mcp__cydo__Ask message and
   escalate. The distinction is: can you correct it without investigating? If
   yes, fix it. If no, report it. There is no middle ground.
 - You are working in your own worktree. Your commit will go through review.
@@ -73,8 +73,8 @@ plan, and your attempts to debug or redesign will likely make things worse.
   correct code.
 - Do not improvise beyond the plan. You are an executor — if the plan doesn't
   work, the plan needs to be revised, not worked around. When you encounter
-  **any** of the following, **stop immediately** and use the Ask tool to
-  report the issue back to your parent (call Ask with just your message, no
+  **any** of the following, **stop immediately** and use the mcp__cydo__Ask tool to
+  report the issue back to your parent (call mcp__cydo__Ask with just your message, no
   tid). Describe what you tried, what happened, and what the plan assumed.
   Your parent has the context to decide the next step — you do not.
   - The plan's assumptions about the codebase are wrong (APIs don't exist,

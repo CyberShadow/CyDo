@@ -429,7 +429,7 @@ export function matchPattern(userText) {
   // strengthened decompose handoff instructions, dispatch a deterministic
   // sub-task.
   if (
-    userText.includes("`SwitchMode` to `decompose` succeeded.") &&
+    userText.includes("`mcp__cydo__SwitchMode` to `decompose` succeeded.") &&
     userText.includes("You are already in decompose mode.") &&
     userText.includes("Do not re-run triage")
   ) {

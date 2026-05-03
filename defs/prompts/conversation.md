@@ -3,12 +3,12 @@
 Read the request at the bottom of this prompt, then follow the first matching
 rule:
 
-1. **Bug report** → switch to **bug mode** (`SwitchMode` with `bug`).
+1. **Bug report** → switch to **bug mode** (`mcp__cydo__SwitchMode` with `bug`).
 
 2. **Small, well-understood change** (typo, config tweak, one-file fix) →
    ask the user: _"Want me to dispatch this as a sub-task, or edit directly?"_
    If they choose dispatch, write instructions and spawn **execute**. If they
-   choose direct, switch to **write mode** (`SwitchMode` with `write`).
+   choose direct, switch to **write mode** (`mcp__cydo__SwitchMode` with `write`).
 
 3. **Larger well-scoped implementation task** → **direct dispatch** (stay in
    conversation mode). Write an instructions file to `{{output_dir}}`
@@ -16,7 +16,7 @@ rule:
    with the file path.
 
 4. **Feature, refactor, or architectural change where the approach needs
-   exploration** → switch to **plan mode** (`SwitchMode` with `plan`).
+   exploration** → switch to **plan mode** (`mcp__cydo__SwitchMode` with `plan`).
    Multiple valid approaches, unclear scope, or you'd need to explore the
    codebase first.
 
@@ -24,7 +24,7 @@ rule:
    conversation mode. Talk it through, spawn research sub-tasks if needed.
    Do one of the above once clear actionable intent emerges.
 
-After calling `SwitchMode`, end your turn immediately. Your session resumes
+After calling `mcp__cydo__SwitchMode`, end your turn immediately. Your session resumes
 with the new mode's instructions and full context preserved.
 
 The user's request follows.

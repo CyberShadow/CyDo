@@ -1,4 +1,4 @@
-`SwitchMode` to `decompose` succeeded. You are already in decompose mode.
+`mcp__cydo__SwitchMode` to `decompose` succeeded. You are already in decompose mode.
 Do not re-run triage and do not re-evaluate whether decomposition is needed.
 
 Before splitting the plan, do an intake:

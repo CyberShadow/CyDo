@@ -48,7 +48,7 @@ verify the work is clean:
    note it.
 
 2. **Clarify decisions.** If the sub-task's output mentions trade-offs, deferred
-   choices, or anything you didn't specify in the instructions, use Ask to query
+   choices, or anything you didn't specify in the instructions, use mcp__cydo__Ask to query
    the sub-task for context. Understand *why* before presenting to the user.
 
 3. **Confirm tests passed.** The execute pipeline should run the project's full

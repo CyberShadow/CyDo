@@ -387,32 +387,32 @@ unittest
 
     auto cases = [
         SyntheticCase(
-            "{{message}}\n\nAnswer with Answer({{qid}}, \"your response\").",
+            "{{message}}\n\nAnswer with mcp__cydo__Answer({{qid}}, \"your response\").",
             ["message": "What is X?", "qid": "42"],
             "message"
         ),
         SyntheticCase(
-            "{{message}}\n\nAnswer with Answer({{qid}}, \"your response\").",
+            "{{message}}\n\nAnswer with mcp__cydo__Answer({{qid}}, \"your response\").",
             ["message": "Multi\nline\nquestion", "qid": "7"],
             "message"
         ),
         SyntheticCase(
-            "{{message}}\n\nAnswer with Answer({{qid}}, \"your response\").",
+            "{{message}}\n\nAnswer with mcp__cydo__Answer({{qid}}, \"your response\").",
             ["message": "Short?", "qid": "1"],
             "message"
         ),
         SyntheticCase(
-            "Question: {{question}}\n\nUse Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
+            "Question: {{question}}\n\nUse mcp__cydo__Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
             ["question": "What is the answer?", "qid": "10"],
             "question"
         ),
         SyntheticCase(
-            "Question: {{question}}\n\nUse Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
+            "Question: {{question}}\n\nUse mcp__cydo__Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
             ["question": "Multi\nline?", "qid": "99"],
             "question"
         ),
         SyntheticCase(
-            "Question: {{question}}\n\nUse Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
+            "Question: {{question}}\n\nUse mcp__cydo__Answer({{qid}}, \"your answer\") to respond. You must answer before you can complete your turn.",
             ["question": "Brief.", "qid": "3"],
             "question"
         ),

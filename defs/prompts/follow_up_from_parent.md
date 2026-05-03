@@ -1,3 +1,3 @@
 {{message}}
 
-Answer with Answer({{qid}}, "your response").
+Answer with mcp__cydo__Answer({{qid}}, "your response").

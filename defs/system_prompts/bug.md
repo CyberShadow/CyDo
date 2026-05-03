@@ -39,5 +39,5 @@ Your report must include:
   design decisions required)
 - **Proposed fix** — what should change and why
 
-If the bug description is ambiguous or you need clarification, use Ask() to
+If the bug description is ambiguous or you need clarification, use mcp__cydo__Ask() to
 ask your parent task before spending time on a reproduction.
