@@ -706,6 +706,7 @@ export function useTaskManager(
             const realTask: TaskState = {
               ...t,
               historyLoaded: true,
+              everLoaded: true,
               renderKey,
             };
             liveStates.set(tid, realTask);
@@ -985,6 +986,7 @@ export function useTaskManager(
               t.status,
             ),
             resumable: t.resumable,
+            everLoaded: t.everLoaded,
             preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
             undoResult: t.undoResult,
           };
@@ -1048,6 +1050,7 @@ export function useTaskManager(
           t = {
             ...t,
             historyLoaded: true,
+            everLoaded: true,
             historyTotal: undefined,
             historyReceived: undefined,
             preReloadDrafts: undefined,

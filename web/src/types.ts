@@ -201,6 +201,10 @@ export interface TaskState {
   title?: string;
   /** Whether the task's JSONL history has been loaded from the backend. */
   historyLoaded: boolean;
+  /** Latched true once history has loaded at least once; never resets.
+   *  Used to keep tasks the user has visited rendered in the DOM across
+   *  task_reload cycles, so InputBox doesn't unmount mid-interaction. */
+  everLoaded: boolean;
   /** Total number of history events expected (from task_history_start). */
   historyTotal?: number;
   /** Number of history events received so far during loading. */
@@ -308,6 +312,7 @@ export function makeTaskState(
     projectPath,
     parentTid,
     relationType,
+    everLoaded: historyLoaded,
     forkableUuids: new Set(),
     taskType,
     entryPoint,

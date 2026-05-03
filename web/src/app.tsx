@@ -413,8 +413,12 @@ function AppContent() {
                   t.renderKey === draftRenderKey
                 );
               }
-              // Also keep real draft tasks visible while user is still at project root
+              // Also keep real draft tasks visible while user is still at project root.
+              // everLoaded keeps tasks rendered across task_reload cycles (which
+              // briefly flip historyLoaded back to false) so that InputBox doesn't
+              // unmount mid-interaction.
               return (
+                t.everLoaded ||
                 t.historyLoaded ||
                 String(t.tid) === activeTaskId ||
                 String(t.tid) === activeTaskIdRef.current ||

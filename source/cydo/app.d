@@ -2171,7 +2171,11 @@ class App : ToolsBackend
 			askTd.notificationBody = "";
 			persistence.setStatus(askTid, "active");
 			broadcastTaskUpdate(askTid);
-			broadcastFocusHint(callerTidInt, askTid);
+			// Note: do NOT focus_hint the user from caller (parent) to askTid
+			// (child). The user is driving the parent context; auto-jumping them
+			// to the child after they answer is disruptive and races with the
+			// child's task_reload + exit cycle, which can unmount the InputBox
+			// the user is interacting with.
 
 			// Re-enter the batch wait loop — blocks until next event
 			return awaitBatchLoop(callerTidInt, expectedBatchId);

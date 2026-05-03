@@ -550,16 +550,34 @@ function SessionViewInner({
             Import Session
           </button>
         </div>
-      ) : task.resumable ? (
+      ) : task.error && !task.alive && !task.resumable ? (
+        <div class="resume-bar">
+          <span class="session-failed-label">Session failed: {task.error}</span>
+        </div>
+      ) : task.pendingPermission ? (
+        <PermissionPromptForm
+          toolName={task.pendingPermission.toolName}
+          input={task.pendingPermission.input}
+          onAllow={handlePermissionAllow}
+          onDeny={handlePermissionDeny}
+        />
+      ) : task.pendingAskUser ? (
+        <AskUserForm
+          questions={task.pendingAskUser.questions}
+          onSubmit={handleAskUserSubmit}
+          onAbort={handleAskUserAbort}
+        />
+      ) : (isDraft && entryPoints) || exportMode ? null : (
         <>
-          {task.error && (
-            <div class="resume-bar">
+          {task.resumable && task.error && (
+            <div key="resumable-error" class="resume-bar">
               <span class="session-failed-label">
                 Session failed: {task.error}
               </span>
             </div>
           )}
           <InputBox
+            key="input-box"
             onSend={handleSend}
             onInterrupt={onInterrupt}
             isProcessing={task.isProcessing}
@@ -578,42 +596,6 @@ function SessionViewInner({
             suggestions={task.suggestions}
           />
         </>
-      ) : task.error && !task.alive ? (
-        <div class="resume-bar">
-          <span class="session-failed-label">Session failed: {task.error}</span>
-        </div>
-      ) : task.pendingPermission ? (
-        <PermissionPromptForm
-          toolName={task.pendingPermission.toolName}
-          input={task.pendingPermission.input}
-          onAllow={handlePermissionAllow}
-          onDeny={handlePermissionDeny}
-        />
-      ) : task.pendingAskUser ? (
-        <AskUserForm
-          questions={task.pendingAskUser.questions}
-          onSubmit={handleAskUserSubmit}
-          onAbort={handleAskUserAbort}
-        />
-      ) : isDraft && entryPoints ? null : exportMode ? null : (
-        <InputBox
-          onSend={handleSend}
-          onInterrupt={onInterrupt}
-          isProcessing={task.isProcessing}
-          stdinClosed={task.stdinClosed}
-          disabled={!connected}
-          sessionId={task.tid}
-          inputDraft={task.inputDraft}
-          onInputDraftConsumed={handleInputDraftConsumed}
-          serverDraft={task.serverDraft}
-          onSaveDraft={
-            task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
-          }
-          inputRef={inputRef}
-          insertTextRef={insertTextRef}
-          pasteTextRef={pasteTextRef}
-          suggestions={task.suggestions}
-        />
       )}
     </>
   );
