@@ -1017,6 +1017,26 @@ body,
   color: inherit;
 }
 
+.thinking-dots::after {
+  content: ".";
+  animation: thinking-dots 1.5s steps(1, end) infinite;
+}
+
+@keyframes thinking-dots {
+  0%,
+  33.32% {
+    content: ".";
+  }
+  33.33%,
+  66.65% {
+    content: "..";
+  }
+  66.66%,
+  100% {
+    content: "...";
+  }
+}
+
 /* Tool calls */
 .tool-call {
   margin: 8px 0;

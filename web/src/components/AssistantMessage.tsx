@@ -206,7 +206,15 @@ export const AssistantMessage = memo(
           if (block.type === "thinking") {
             return (
               <Fragment key={itemId}>
-                <Markdown text={block.text} class="thinking-text" />
+                {block.text.trim() === "" ? (
+                  <div
+                    class="thinking-text thinking-dots"
+                    aria-label="thinking"
+                    data-testid="thinking-dots"
+                  />
+                ) : (
+                  <Markdown text={block.text} class="thinking-text" />
+                )}
                 {blockExtraEl}
               </Fragment>
             );

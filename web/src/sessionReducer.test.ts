@@ -186,3 +186,50 @@ describe("tracked file edits", () => {
     });
   });
 });
+
+describe("thinking block rendering state", () => {
+  // These tests verify that an item/started event with item_type:"thinking"
+  // and no text produces a block with text:"". The component renders
+  // .thinking-dots (not an empty Markdown box) when block.text.trim() === "".
+
+  it("item/started with thinking type and no text creates block with empty text", () => {
+    const s = makeState();
+    const afterStarted = reduceMessage(
+      s,
+      asEvent({
+        type: "item/started",
+        item_id: "think-1",
+        item_type: "thinking",
+      }),
+    );
+
+    const blockKey = afterStarted.itemIdMap.get("think-1");
+    expect(blockKey).toBeTruthy();
+    const block = afterStarted.blocks.get(blockKey!);
+    expect(block).toBeTruthy();
+    expect(block?.type).toBe("thinking");
+    expect(block?.text).toBe("");
+    expect(block?.completed).toBe(false);
+  });
+
+  it("turn/stop marks empty thinking block as completed with text still empty", () => {
+    const s = makeState();
+    const afterStarted = reduceMessage(
+      s,
+      asEvent({
+        type: "item/started",
+        item_id: "think-1",
+        item_type: "thinking",
+      }),
+    );
+    const afterStop = reduceMessage(
+      afterStarted,
+      asEvent({ type: "turn/stop" }),
+    );
+
+    const blockKey = afterStop.itemIdMap.get("think-1");
+    const block = afterStop.blocks.get(blockKey!);
+    expect(block?.completed).toBe(true);
+    expect(block?.text).toBe("");
+  });
+});
