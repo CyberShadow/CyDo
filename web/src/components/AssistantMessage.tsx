@@ -208,7 +208,7 @@ export const AssistantMessage = memo(
               <Fragment key={itemId}>
                 {block.text.trim() === "" ? (
                   <div
-                    class="thinking-text thinking-dots"
+                    class={`thinking-text thinking-dots${block.completed ? "" : " thinking-dots-active"}`}
                     aria-label="thinking"
                     data-testid="thinking-dots"
                   />

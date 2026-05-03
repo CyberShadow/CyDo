@@ -1018,7 +1018,10 @@ body,
 }
 
 .thinking-dots::after {
-  content: ".";
+  content: "...";
+}
+
+.thinking-dots-active::after {
   animation: thinking-dots 1.5s steps(1, end) infinite;
 }
 
