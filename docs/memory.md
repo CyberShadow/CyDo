@@ -46,6 +46,15 @@ Projects can override the preamble by placing a file at
 picked up by the same search-path overlay that applies to all other CyDo prompt
 templates.
 
+## Per-task-type injection control
+
+Memory injection is gated by the `memory: bool` field on each task type
+(default `true`). A type with `memory: false` does not receive the memory
+preamble; the `.cydo/memory/` directory remains sandbox-writable regardless.
+When injection is enabled and `MEMORY.md` is absent, CyDo creates it as an
+empty file on the first task that runs. An empty or whitespace-only file
+renders the placeholder `(Memory is currently empty.)` instead of a blank block.
+
 ## Tracking under git
 
 Projects choose whether to commit `.cydo/memory/` or to `.gitignore` it. CyDo

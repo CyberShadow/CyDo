@@ -82,7 +82,7 @@ test("project memory marker appears in user message text (not only system prompt
   }
 });
 
-test("no memory block injected when MEMORY.md absent", async ({
+test("MEMORY.md absent: framing injected with placeholder body", async ({
   page,
   agentType,
 }) => {
@@ -90,13 +90,46 @@ test("no memory block injected when MEMORY.md absent", async ({
 
   await enterSession(page);
 
+  // With MEMORY.md absent, CyDo creates the file and injects the framing with
+  // the placeholder body "(Memory is currently empty.)".
   const framingMarker = Buffer.from("[CYDO PROJECT MEMORY]").toString("base64");
   await sendMessage(
     page,
     `call task test_memory_check check context contains ${framingMarker}`,
   );
+  await expectSubtaskResult(page, "context-check-passed", responseTimeout(agentType));
 
-  await expectSubtaskResult(page, "context-check-failed", responseTimeout(agentType));
+  const placeholderMarker = Buffer.from("(Memory is currently empty.)").toString("base64");
+  await sendMessage(
+    page,
+    `call task test_memory_check check context contains ${placeholderMarker}`,
+  );
+  await expect(
+    page
+      .locator(".tool-result-container .text-content:visible", { hasText: "context-check-passed" })
+      .nth(1),
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
+});
+
+test("task type with memory: false does not receive memory block", async ({
+  page,
+  agentType,
+}) => {
+  setupMemory("- [Test entry](test.md) — MEMORY_OFF_SHOULD_NOT_APPEAR\n");
+
+  try {
+    await enterSession(page);
+
+    const framingMarker = Buffer.from("[CYDO PROJECT MEMORY]").toString("base64");
+    await sendMessage(
+      page,
+      `call task test_memory_off check context contains ${framingMarker}`,
+    );
+
+    await expectSubtaskResult(page, "context-check-failed", responseTimeout(agentType));
+  } finally {
+    cleanupMemory();
+  }
 });
 
 test("read-only task can write to memory carve-out", async ({

@@ -33,6 +33,9 @@ max_turns: int?                       # resource limit
 # Visibility
 user_visible: bool                    # can users create this type directly
 
+# Memory
+memory: bool                          # inject project memory preamble (default true)
+
 # Steward
 steward: bool                         # registers as an approver
 steward_domain: string                # what this steward cares about
@@ -71,18 +74,22 @@ isolated worktree).
 
 ## Project Memory
 
-Every task in a project has access to a project-scoped memory store at
-`<repoPath>/.cydo/memory/`. The contents of `MEMORY.md` (if present) are
-prepended to the first user message of every task, wrapped by the
-preamble at `defs/system_prompts/memory_preamble.md`. Memory is read
-once at task start; a mid-session write is visible to future tasks, not
-to the writer's own current session.
+Every task type with `memory: true` (the default) has the contents of
+`MEMORY.md` prepended to its first user message, wrapped by the preamble
+at `defs/system_prompts/memory_preamble.md`. Memory is read once at task
+start; a mid-session write is visible to future tasks, not to the
+writer's own current session. Set `memory: false` on a task type to
+suppress injection for that type.
 
-The directory is sandbox-writable for all task types, including
-read-only ones, via an `always_rw` carve-out. Worktree-bound tasks
-reach the canonical store via the absolute path that the preamble
-exposes as `{{memory_dir}}`. When `MEMORY.md` does not exist, no memory
-block is injected.
+When injection is enabled and `MEMORY.md` does not yet exist, CyDo
+creates it as an empty file on demand. An empty or whitespace-only
+`MEMORY.md` renders as the placeholder `(Memory is currently empty.)`
+rather than an empty block.
+
+The directory `<repoPath>/.cydo/memory/` is sandbox-writable for all
+task types — including those with `memory: false` and read-only ones —
+via an `always_rw` carve-out. Worktree-bound tasks reach the canonical
+store via the absolute path that the preamble exposes as `{{memory_dir}}`.
 
 See `docs/memory.md` for content conventions.
 

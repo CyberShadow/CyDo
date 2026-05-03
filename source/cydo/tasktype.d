@@ -98,6 +98,9 @@ struct TaskTypeDef
 	@Optional bool serial;
 	@Optional uint max_turns;
 
+	// Memory
+	@Optional bool memory = true;
+
 	// Steward
 	@Optional bool steward;
 	@Optional string steward_domain;
@@ -1162,23 +1165,32 @@ string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	return vars.length > 0 ? substituteVars(text, vars) : text;
 }
 
-/// Read the project's MEMORY.md (if present) and wrap it in a preamble block.
-/// Returns null when projectPath is empty or MEMORY.md does not exist.
+/// Read the project's MEMORY.md and wrap it in a preamble block.
+/// Returns null when def is null, def.memory is false, or projectPath is empty.
+/// Creates MEMORY.md on demand if missing. An empty or whitespace-only file
+/// renders as the placeholder "(Memory is currently empty.)".
 /// Re-reads from disk on every call — supports mid-session memory updates.
-string loadProjectMemory(string projectPath, string[] typesDirs)
+string loadProjectMemory(TaskTypeDef* def, string projectPath, string[] typesDirs)
 {
-	import std.file : exists, readText;
+	import std.file : exists, mkdirRecurse, readText;
+	import std.file : write;
 	import std.path : buildPath;
 
+	if (def is null || !def.memory)
+		return null;
 	if (projectPath.length == 0)
 		return null;
 
 	auto memoryDir = buildPath(projectPath, ".cydo", "memory");
 	auto memoryFile = buildPath(memoryDir, "MEMORY.md");
+	mkdirRecurse(memoryDir);
 	if (!exists(memoryFile))
-		return null;
+		write(memoryFile, "");
 
-	auto contents = readText(memoryFile);
+	auto raw = readText(memoryFile);
+	auto contents = raw.strip.length == 0
+		? "(Memory is currently empty.)"
+		: raw;
 
 	// Walk typesDirs for preamble template
 	string preamblePath;
@@ -1210,18 +1222,41 @@ unittest
 	scope (exit) { if (exists(tmp)) rmdirRecurse(tmp); }
 	mkdirRecurse(tmp);
 
+	TaskTypeDef defOn;
+	defOn.memory = true;
+	TaskTypeDef defOff;
+	defOff.memory = false;
+
+	// null def → null
+	assert(loadProjectMemory(null, tmp, []) is null);
+	// def.memory false → null
+	assert(loadProjectMemory(&defOff, tmp, []) is null);
 	// projectPath empty → null
-	assert(loadProjectMemory("", []) is null);
-	// no MEMORY.md → null
-	assert(loadProjectMemory(tmp, []) is null);
+	assert(loadProjectMemory(&defOn, "", []) is null);
 
-	// create MEMORY.md
+	// MEMORY.md absent → created on demand, placeholder injected
 	auto memDir = buildPath(tmp, ".cydo", "memory");
-	mkdirRecurse(memDir);
-	write(buildPath(memDir, "MEMORY.md"), "- entry one\n");
+	auto memFile = buildPath(memDir, "MEMORY.md");
+	assert(!exists(memFile));
+	auto absent = loadProjectMemory(&defOn, tmp, []);
+	assert(absent !is null);
+	assert(exists(memFile)); // file was created
+	assert(absent.canFind("[CYDO PROJECT MEMORY]"), absent);
+	assert(absent.canFind("(Memory is currently empty.)"), absent);
 
-	// no preamble template → fallback framing
-	auto result = loadProjectMemory(tmp, []);
+	// MEMORY.md empty → placeholder
+	write(memFile, "");
+	auto empty = loadProjectMemory(&defOn, tmp, []);
+	assert(empty.canFind("(Memory is currently empty.)"), empty);
+
+	// MEMORY.md whitespace-only → placeholder
+	write(memFile, "   \n  ");
+	auto ws = loadProjectMemory(&defOn, tmp, []);
+	assert(ws.canFind("(Memory is currently empty.)"), ws);
+
+	// MEMORY.md non-empty → verbatim contents
+	write(memFile, "- entry one\n");
+	auto result = loadProjectMemory(&defOn, tmp, []);
 	assert(result !is null);
 	assert(result.canFind("[CYDO PROJECT MEMORY]"), result);
 	assert(result.canFind("entry one"), result);
@@ -1232,7 +1267,7 @@ unittest
 	mkdirRecurse(buildPath(defsDir, "system_prompts"));
 	write(buildPath(defsDir, "system_prompts", "memory_preamble.md"),
 		"{{memory_dir}}\n---\n{{memory_contents}}");
-	auto withPreamble = loadProjectMemory(tmp, [defsDir]);
+	auto withPreamble = loadProjectMemory(&defOn, tmp, [defsDir]);
 	assert(withPreamble.canFind(memDir), withPreamble);
 	assert(withPreamble.canFind("entry one"), withPreamble);
 }

@@ -1448,7 +1448,7 @@ class App : ToolsBackend
 			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
 			renderedPrompt = prependTaskFraming(renderedPrompt,
 				taskSystemPromptForMessage(childTid, ctd),
-				loadProjectMemory(childTd.repoPath, promptSearchPath(childTd.projectPath)));
+				loadProjectMemory(ctd, childTd.repoPath, promptSearchPath(childTd.projectPath)));
 			// Encode edge identity in subject: "<parentType> -> <edgeName>".
 			// When ptd has no creatable_tasks (degenerate), fall back to no-arrow form.
 			auto parentTypeForSubject = (ptd !is null && ptd.creatable_tasks.length > 0) ? pd.taskType : "";
@@ -2610,7 +2610,7 @@ class App : ToolsBackend
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
-					loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
+					loadProjectMemory(typeDef, td.repoPath, promptSearchPath(td.projectPath)));
 				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
 				sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
@@ -2967,7 +2967,7 @@ class App : ToolsBackend
 					td.outputPath, entryPointTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
-					loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
+					loadProjectMemory(typeDef, td.repoPath, promptSearchPath(td.projectPath)));
 				auto sessionStartMsgName = td.entryPoint.length > 0 ? td.entryPoint : td.taskType;
 				auto sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
@@ -5467,7 +5467,7 @@ class App : ToolsBackend
 				~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			renderedContinuationPrompt = prependTaskFraming(
 				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef),
-				loadProjectMemory(td.repoPath, promptSearchPath(td.projectPath)));
+				loadProjectMemory(newTypeDef, td.repoPath, promptSearchPath(td.projectPath)));
 			auto modeSwitchMsgSubject = modeSwitchSubject(sourceTaskType, edgeName);
 			auto contMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.modeSwitch,
 				modeSwitchMsgSubject);
@@ -5535,7 +5535,7 @@ class App : ToolsBackend
 				["result_text": resultText]);
 			renderedSuccessorPrompt = prependTaskFraming(renderedSuccessorPrompt,
 				taskSystemPromptForMessage(childTid, newTypeDef),
-				loadProjectMemory(childTd.repoPath, promptSearchPath(childTd.projectPath)));
+				loadProjectMemory(newTypeDef, childTd.repoPath, promptSearchPath(childTd.projectPath)));
 			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
 			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
 				handoffMsgSubject, ["task_description": successorPrompt], "task_description", false);

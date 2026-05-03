@@ -72,6 +72,8 @@ task_types:
       test_memory_write_wt:
         worktree: fork
         prompt_template: prompts/blank.md
+      test_memory_off:
+        prompt_template: prompts/blank.md
       triage:
         prompt_template: prompts/blank.md
       test_handoff_with_children:
@@ -192,6 +194,11 @@ task_types:
   test_memory_write_wt:
     model_class: small
     output_type: []
+
+  test_memory_off:
+    model_class: small
+    output_type: []
+    memory: false
 
   test_wt_child:
     model_class: small
