@@ -18,7 +18,7 @@ Write your report to `{{output_file}}`. The file content is returned to the
 parent task as the result.
 
 Your final message should be a meta-commentary on the experiment — what
-approaches you tried, what worked and didn't, what you didn't have time to
+approaches you tried, what worked and didn't, what you chose not to
 explore. Do not repeat or summarize the report content.
 
 Your report must include:
