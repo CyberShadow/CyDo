@@ -155,6 +155,15 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
+  // L137's Task call drifts focus to the child. Wait for the corrective
+  // focus_hint(child → parent) to land (child completes its turn and
+  // exits) before sending the follow-up Ask, otherwise its sendMessage
+  // may click the child's textarea, which gets hidden mid-action when
+  // focus returns to parent.
+  await expect(
+    page.locator('.sidebar-item[data-tid="1"].active'),
+  ).toBeVisible({ timeout: 90_000 });
+
   // Parent calls Ask on the completed child (tid=2) with a follow-up question.
   await sendMessage(page, "call ask 2 any follow-up?");
 
@@ -512,6 +521,18 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // Answer the first child using the observed qid.
   await sendMessage(page, `call answer ${firstQid} answer one`);
 
+  // L513's Answer call drifts focus to the answered child (intended UX —
+  // the user follows the answered child's continued work). When the
+  // child's turn completes and its agent process exits, the backend
+  // emits a corrective focus_hint(child → parent) (source/cydo/app.d:5372).
+  // Wait for that hint to land before asserting on parent's view and
+  // before the next sendMessage, otherwise selectors may match the
+  // child's view and the next sendMessage's click may resolve to a
+  // child textarea that gets hidden mid-action by the wrapper flip.
+  await expect(
+    page.locator('.sidebar-item[data-tid="1"].active'),
+  ).toBeVisible({ timeout: 90_000 });
+
   // The second question (from the other child) should now be delivered as the Answer result.
   await expect(
     page
@@ -534,6 +555,15 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     (item) => item["status"] === "question",
   )!;
   const secondQid = secondQuestion["qid"] as number;
+
+  // The inciting focus_hint(parent → firstChild) from the first answer may not
+  // have arrived yet when the pre-step-3 wait fired. By the time we reach here,
+  // the autonomous round-trip (inciting hint → child works → corrective hint →
+  // parent active) must have completed. Wait explicitly so sendMessage resolves
+  // :visible.first() against parent's textarea.
+  await expect(
+    page.locator('.sidebar-item[data-tid="1"].active'),
+  ).toBeVisible({ timeout: 90_000 });
 
   // Answer the second child using the observed qid.
   await sendMessage(page, `call answer ${secondQid} answer two`);
@@ -723,6 +753,15 @@ test("Ask/Answer: answer delivery is deferred until child becomes idle", async (
       .getByText("Done.", { exact: true })
       .last(),
   ).toBeVisible({ timeout: 30_000 });
+
+  // L713's Task call drifts focus to the child. Wait for the corrective
+  // focus_hint(child → parent) to land (child completes its turn and
+  // exits) before sending the follow-up Ask, otherwise its sendMessage
+  // may click the child's textarea, which gets hidden mid-action when
+  // focus returns to parent.
+  await expect(
+    page.locator('.sidebar-item[data-tid="1"].active'),
+  ).toBeVisible({ timeout: 90_000 });
 
   // Ask follow-up with "deferred-test" trigger — child will Answer + do extra Bash work.
   await sendMessage(page, "call ask 2 deferred-test");
