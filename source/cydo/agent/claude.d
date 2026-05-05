@@ -1085,6 +1085,8 @@ class ClaudeCodeSession : AgentSession
 			@JSONOptional string timestamp;
 			@JSONOptional string slug;
 			@JSONOptional string permissionMode;
+			@JSONOptional string entrypoint;
+			@JSONOptional JSONFragment diagnostics;
 			JSONExtras _extras;
 		}
 
@@ -1555,6 +1557,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 		@JSONOptional JSONFragment usage;
 		@JSONOptional string stop_reason;
 		@JSONOptional string stop_sequence;
+		@JSONOptional JSONFragment stop_details;
 		@JSONOptional string type;   // always "message", not forwarded
 		@JSONOptional string role;   // always "assistant", not forwarded
 		@JSONOptional JSONFragment context_management;
@@ -1580,6 +1583,8 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 		@JSONOptional string timestamp;
 		@JSONOptional string slug;
 		@JSONOptional string permissionMode;
+		@JSONOptional string entrypoint;
+		@JSONOptional JSONFragment diagnostics;
 		JSONExtras _extras;
 	}
 
@@ -1913,6 +1918,8 @@ private string translateSessionInit(string rawLine)
 		@JSONOptional string userType;
 		@JSONOptional string timestamp;
 		@JSONOptional string slug;
+		@JSONOptional string entrypoint;
+		@JSONOptional JSONFragment diagnostics;
 		JSONExtras _extras;
 	}
 
@@ -1992,6 +1999,8 @@ private string normalizeTurnResult(string rawLine)
 		@JSONOptional string timestamp;
 		@JSONOptional string slug;
 		@JSONOptional string permissionMode;
+		@JSONOptional string entrypoint;
+		@JSONOptional JSONFragment diagnostics;
 		JSONExtras _extras;
 	}
 
@@ -2227,6 +2236,8 @@ private string normalizeTaskStarted(string rawLine)
 		@JSONOptional string timestamp;
 		@JSONOptional string slug;
 		@JSONOptional string permissionMode;
+		@JSONOptional string entrypoint;
+		@JSONOptional JSONFragment diagnostics;
 		JSONExtras _extras;
 	}
 
@@ -2271,6 +2282,8 @@ private string normalizeTaskNotification(string rawLine)
 		@JSONOptional string timestamp;
 		@JSONOptional string slug;
 		@JSONOptional string permissionMode;
+		@JSONOptional string entrypoint;
+		@JSONOptional JSONFragment diagnostics;
 		JSONExtras _extras;
 	}
 
