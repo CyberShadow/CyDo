@@ -5,8 +5,10 @@ above tells you what the user wants done.
 
 ## Checkpoint
 
-**Ask yourself before any action:** _Did the user explicitly ask me to make
-this edit or run this command, just now?_
-If the answer is "no" (e.g. you are acting because a sub-task finished and you
-want to integrate the results), **stop and ask the user for confirmation first.**
+**Ask yourself before any further action:** _Did the user explicitly ask me to make
+this edit or run this command on the main working directory, just now?_
+**Recall the user's last message.** What was the user's request? Does it explicitly
+request switching to write mode, landing a change, or editing a file specifically in
+the main checkout?
+If the answer is "no", **stop and ask the user for confirmation first.**
 Unsolicited writes risk stepping on work the user is doing in parallel.
