@@ -7,6 +7,14 @@ import {
   assistantText,
 } from "./fixtures";
 
+const isCompactingStatusFrame = (msg: any): boolean =>
+  msg?.event?.type === "session/status" &&
+  typeof msg?.event?.status === "string" &&
+  /compact/i.test(msg.event.status);
+
+const findTaskHistoryEndIndex = (frames: any[]): number =>
+  frames.findIndex((msg) => msg?.type === "task_history_end");
+
 test("codex context compaction shows compacting status", async ({
   page,
   agentType,
@@ -73,13 +81,7 @@ test("codex reconnect during active turn does not replay stale compacting status
   // Wait until the live stream reports compacting before reloading.
   await expect
     .poll(
-      () =>
-        frames.some(
-          (msg) =>
-            msg?.event?.type === "session/status" &&
-            typeof msg?.event?.status === "string" &&
-            /compact/i.test(msg.event.status),
-        ),
+      () => frames.some((msg) => isCompactingStatusFrame(msg)),
       { timeout },
     )
     .toBe(true);
@@ -92,33 +94,46 @@ test("codex reconnect during active turn does not replay stale compacting status
 
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
-  const replayFrames = frames.slice(beforeReloadIdx);
-  const historyEndIdx = replayFrames.findIndex(
-    (msg) => msg?.type === "task_history_end",
-  );
+  const activeReplayFrames = frames.slice(beforeReloadIdx);
+  const historyEndIdx = findTaskHistoryEndIndex(activeReplayFrames);
   expect(historyEndIdx).toBeGreaterThanOrEqual(0);
 
-  const resultIdx = replayFrames.findIndex(
+  const resultIdx = activeReplayFrames.findIndex(
     (msg, idx) => idx > historyEndIdx && msg?.event?.type === "turn/result",
   );
   expect(resultIdx).toBeGreaterThan(historyEndIdx);
 
-  // During active replay, stale compacting status from prior history must not
-  // reappear after task_history_end.
-  const compactingAfterHistory = replayFrames
-    .slice(historyEndIdx + 1, resultIdx)
-    .some(
-      (msg) =>
-        msg?.event?.type === "session/status" &&
-        typeof msg?.event?.status === "string" &&
-        /compact/i.test(msg.event.status),
-    );
-  expect(compactingAfterHistory).toBe(false);
+  // session/status is transient and must not appear in durable history.
+  const compactingInHistory = activeReplayFrames
+    .slice(0, historyEndIdx)
+    .some((msg) => isCompactingStatusFrame(msg));
+  expect(compactingInHistory).toBe(false);
+
+  // During active replay, live compacting status may appear after
+  // task_history_end while the turn is still in progress.
 
   await expect(page.locator(".system-status-message")).toHaveCount(0);
   await expect(page.locator(".compact-boundary-message")).toBeVisible({
     timeout,
   });
+
+  const beforeCompletedReloadIdx = frames.length;
+  await page.reload();
+  await page
+    .locator('.sidebar-item[data-tid="1"]')
+    .click({ timeout: 15_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
+
+  const completedReplayFrames = frames.slice(beforeCompletedReloadIdx);
+  const completedHistoryEndIdx = findTaskHistoryEndIndex(completedReplayFrames);
+  expect(completedHistoryEndIdx).toBeGreaterThanOrEqual(0);
+
+  // After compaction is complete and status is cleared, reconnect/history must
+  // not replay stale compacting status after task_history_end.
+  const compactingAfterCompletedHistory = completedReplayFrames
+    .slice(completedHistoryEndIdx + 1)
+    .some((msg) => isCompactingStatusFrame(msg));
+  expect(compactingAfterCompletedHistory).toBe(false);
 });
 
 test("codex compaction reminder steers active turn before keep_context continuation", async ({
