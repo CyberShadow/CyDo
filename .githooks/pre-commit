@@ -47,11 +47,14 @@ DRY_OUTPUT=$(nix-store --realise --dry-run "${DRV_PATHS[@]}" 2>&1)
 
 # .drv paths in the output indicate derivations that need building
 NEEDS_BUILD=$(echo "$DRY_OUTPUT" | grep '\.drv$' || true)
+# shellcheck disable=SC2016
 if [[ -n "$NEEDS_BUILD" ]]; then
   echo "nix flake check has not passed for this tree."
+  echo 'You must run `nix flake check` before committing and address failures.'
   echo ""
-  echo "Run:"
-  echo "  nix flake check"
+  echo "Run this now:"
+  echo "  nix --option keep-going true flake check"
+  echo "and retry the commit once it succeeds."
   echo ""
   echo "DO NOT USE --no-verify TO BYPASS THIS CHECK."
   echo "DO NOT USE git commit-tree TO BYPASS THIS CHECK."
