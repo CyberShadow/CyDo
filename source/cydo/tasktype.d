@@ -99,7 +99,7 @@ struct TaskTypeDef
 	@Optional uint max_turns;
 
 	// Memory
-	@Optional bool memory = true;
+	@Optional bool memory;
 
 	// Steward
 	@Optional bool steward;

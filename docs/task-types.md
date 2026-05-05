@@ -34,7 +34,7 @@ max_turns: int?                       # resource limit
 user_visible: bool                    # can users create this type directly
 
 # Memory
-memory: bool                          # inject project memory preamble (default true)
+memory: bool                          # inject project memory preamble (default false)
 
 # Steward
 steward: bool                         # registers as an approver
@@ -74,12 +74,14 @@ isolated worktree).
 
 ## Project Memory
 
-Every task type with `memory: true` (the default) has the contents of
-`MEMORY.md` prepended to its first user message, wrapped by the preamble
-at `defs/system_prompts/memory_preamble.md`. Memory is read once at task
-start; a mid-session write is visible to future tasks, not to the
-writer's own current session. Set `memory: false` on a task type to
-suppress injection for that type.
+Every task type with `memory: true` has the contents of `MEMORY.md`
+prepended to its first user message, wrapped by the preamble at
+`defs/system_prompts/memory_preamble.md`. The default is `false` — a
+task type must explicitly opt in. Memory is read once at task start; a
+mid-session write is visible to future tasks, not to the writer's own
+current session.
+
+In the production config, only `verify` opts into memory injection.
 
 When injection is enabled and `MEMORY.md` does not yet exist, CyDo
 creates it as an empty file on demand. An empty or whitespace-only

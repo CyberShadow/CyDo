@@ -184,6 +184,7 @@ task_types:
 
   test_memory_check:
     model_class: small
+    memory: true
     output_type: []
 
   test_memory_check_ro:

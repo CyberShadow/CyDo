@@ -595,6 +595,7 @@ task_types:
       etc.). Runs in its own worktree and can write adversarial tests using
       the project's test framework.
     model_class: medium
+    memory: true
     output_type: [report]
 
   review:

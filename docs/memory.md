@@ -49,11 +49,17 @@ templates.
 ## Per-task-type injection control
 
 Memory injection is gated by the `memory: bool` field on each task type
-(default `true`). A type with `memory: false` does not receive the memory
-preamble; the `.cydo/memory/` directory remains sandbox-writable regardless.
-When injection is enabled and `MEMORY.md` is absent, CyDo creates it as an
-empty file on the first task that runs. An empty or whitespace-only file
-renders the placeholder `(Memory is currently empty.)` instead of a blank block.
+(default `false`). Set `memory: true` on a task type to receive the memory
+preamble in its first user message. The `.cydo/memory/` directory remains
+sandbox-writable for all task types regardless of this flag, via the
+`always_rw` carve-out. When injection is enabled and `MEMORY.md` is absent,
+CyDo creates it as an empty file on the first task that runs. An empty or
+whitespace-only file renders the placeholder `(Memory is currently empty.)`
+instead of a blank block.
+
+In the production config, only the `verify` task type opts into memory
+injection. Other types are kept lean by default; add `memory: true` to a
+type's definition if it benefits from project context.
 
 ## Tracking under git
 
