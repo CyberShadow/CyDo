@@ -18,7 +18,6 @@ import type {
   CydoMeta,
 } from "./types";
 import { toolIs } from "./toolIdentity";
-import { canonicalUserTextFromContentAndMeta } from "./userText";
 import type {
   AgnosticEvent,
   AssistantContentBlock,
@@ -814,10 +813,6 @@ function reduceItemStartedUserMessage(
   // removes it from the message list.
   const pendingMsg = s.messages.find((m) => m.pending && m.type === "user");
   const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
-  const replayText = canonicalUserTextFromContentAndMeta(
-    content,
-    pendingMsg?.cydoMeta ?? eventCydoMeta,
-  );
 
   let state = s;
 
@@ -885,19 +880,6 @@ function reduceItemStartedUserMessage(
       ? [...filtered, echoMsg]
       : insertBeforeStreaming(filtered, echoMsg);
     state = { ...state, messages };
-  }
-
-  // Draft recovery
-  if (state.preReloadDrafts && state.preReloadDrafts.length > 0 && replayText) {
-    if (state.preReloadDrafts.includes(replayText)) {
-      state = {
-        ...state,
-        confirmedDuringReplay: [
-          ...(state.confirmedDuringReplay ?? []),
-          replayText,
-        ],
-      };
-    }
   }
 
   return state;

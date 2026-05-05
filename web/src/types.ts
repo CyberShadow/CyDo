@@ -210,10 +210,14 @@ export interface TaskState {
   historyTotal?: number;
   /** Number of history events received so far during loading. */
   historyReceived?: number;
-  /** User message texts from before a reload, not yet matched by file replay. */
+  /** User message texts captured at the start of an in-flight reconciliation
+   *  cycle. Set on the first task_reload that opens a cycle; cleared at the
+   *  closing task_history_end. Untouched by intermediate reloads. */
   preReloadDrafts?: string[];
-  /** Confirmed user texts accumulated during history replay (cleared at history_end). */
-  confirmedDuringReplay?: string[];
+  /** Number of outstanding task_history_end replies expected for this task.
+   *  Incremented on every requestHistory send, decremented on every
+   *  task_history_end receive. Reconciliation runs when this transitions 1→0. */
+  pendingHistoryReplies: number;
   /** Recovered draft text to inject into the input box once after a reload. */
   inputDraft?: string;
   workspace?: string;
@@ -314,6 +318,7 @@ export function makeTaskState(
     alive,
     resumable,
     msgIdCounter: 0,
+    pendingHistoryReplies: 0,
     title,
     historyLoaded,
     workspace,

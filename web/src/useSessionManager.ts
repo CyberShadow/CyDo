@@ -1006,16 +1006,28 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           requestedHistoryRef.current.delete(t.uuid);
-          // Collect user message texts to detect unsaved prompts after replay.
-          // Skip for edit-triggered reloads: the message was intentionally
-          // replaced, not removed, so old text should not become inputDraft.
+
           const isEdit = msg.reason === "edit";
-          const userTexts = isEdit
-            ? []
-            : t.messages
+          // opensCycle: first reload of a new reconciliation cycle
+          const opensCycle = t.pendingHistoryReplies === 0;
+
+          let nextDrafts: string[] | undefined;
+          if (opensCycle) {
+            if (isEdit) {
+              nextDrafts = undefined;
+            } else {
+              const snap = t.messages
                 .filter((m) => m.type === "user")
                 .map((m) => canonicalUserTextFromDisplayMessage(m))
-                .filter((t) => t.length > 0);
+                .filter((s) => s.length > 0);
+              nextDrafts = snap.length > 0 ? snap : undefined;
+            }
+          } else {
+            // Intermediate reload within an open cycle — preserve the snapshot
+            // captured at cycle start so the final diff still has it.
+            nextDrafts = t.preReloadDrafts;
+          }
+
           const reset: TaskState = {
             ...makeTaskState(
               tid,
@@ -1032,23 +1044,31 @@ export function useTaskManager(
             uuid: t.uuid,
             resumable: t.resumable,
             everLoaded: t.everLoaded,
-            preReloadDrafts: userTexts.length > 0 ? userTexts : undefined,
+            preReloadDrafts: nextDrafts,
+            pendingHistoryReplies: t.pendingHistoryReplies,
             undoResult: t.undoResult,
           };
-          liveStates.set(t.uuid, reset);
-          setTasks((prev) => {
-            if (!prev.has(t.uuid)) return prev;
-            const next = new Map(prev);
-            next.set(t.uuid, reset);
-            return next;
-          });
+
           // Re-request history if this is the active task — the useEffect
           // won't re-fire because activeTaskId hasn't changed.
+          let final = reset;
           if (String(tid) === activeTaskIdRef.current) {
             if (connRef.current?.requestHistory(tid)) {
               requestedHistoryRef.current.add(t.uuid);
+              final = {
+                ...reset,
+                pendingHistoryReplies: reset.pendingHistoryReplies + 1,
+              };
             }
           }
+
+          liveStates.set(t.uuid, final);
+          setTasks((prev) => {
+            if (!prev.has(t.uuid)) return prev;
+            const next = new Map(prev);
+            next.set(t.uuid, final);
+            return next;
+          });
           break;
         }
         case "task_history_start": {
@@ -1069,40 +1089,59 @@ export function useTaskManager(
           const { tid } = msg;
           const t0 = findByTid(tid);
           if (!t0) break;
-          let t = t0;
 
-          // Compute inputDraft from confirmed drafts
+          const nextPending = Math.max(0, t0.pendingHistoryReplies - 1);
+
+          if (nextPending > 0) {
+            // Not yet the final reply of this cycle — just decrement and wait.
+            const t = {
+              ...t0,
+              historyTotal: undefined,
+              historyReceived: undefined,
+              pendingHistoryReplies: nextPending,
+            };
+            liveStates.set(t0.uuid, t);
+            setTasks((prev) => {
+              if (!prev.has(t0.uuid)) return prev;
+              const next = new Map(prev);
+              next.set(t0.uuid, t);
+              return next;
+            });
+            break;
+          }
+
+          // Cycle is closing — compute inputDraft by multiset-subtracting the
+          // pre-reload snapshot against the canonical user texts in the final
+          // replayed messages (both sides use canonicalUserTextFromDisplayMessage).
           let inputDraft: string | undefined;
-          if (t.preReloadDrafts && t.preReloadDrafts.length > 0) {
-            // Multiset subtraction: remove one confirmed occurrence per match
-            const confirmedCounts = new Map<string, number>();
-            for (const text of t.confirmedDuringReplay ?? []) {
-              confirmedCounts.set(text, (confirmedCounts.get(text) ?? 0) + 1);
+          if (t0.preReloadDrafts && t0.preReloadDrafts.length > 0) {
+            const finalCounts = new Map<string, number>();
+            for (const m of t0.messages) {
+              if (m.type !== "user") continue;
+              const s = canonicalUserTextFromDisplayMessage(m);
+              if (s.length === 0) continue;
+              finalCounts.set(s, (finalCounts.get(s) ?? 0) + 1);
             }
             const remaining: string[] = [];
-            for (const text of t.preReloadDrafts) {
-              const count = confirmedCounts.get(text) ?? 0;
-              if (count > 0) {
-                confirmedCounts.set(text, count - 1);
-              } else {
-                remaining.push(text);
-              }
+            for (const text of t0.preReloadDrafts) {
+              const c = finalCounts.get(text) ?? 0;
+              if (c > 0) finalCounts.set(text, c - 1);
+              else remaining.push(text);
             }
             inputDraft =
               remaining.length > 0 ? remaining.join("\n\n") : undefined;
           }
 
-          // Finalize: mark loaded, clear transient state
-          t = {
-            ...t,
+          const t = {
+            ...t0,
             historyLoaded: true,
             everLoaded: true,
             historyTotal: undefined,
             historyReceived: undefined,
             preReloadDrafts: undefined,
-            confirmedDuringReplay: undefined,
+            pendingHistoryReplies: 0,
             inputDraft,
-            sessionStatus: t.isProcessing ? t.sessionStatus : null,
+            sessionStatus: t0.isProcessing ? t0.sessionStatus : null,
           };
           liveStates.set(t0.uuid, t);
 
