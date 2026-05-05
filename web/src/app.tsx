@@ -257,7 +257,7 @@ function AppContent() {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "E") {
         e.preventDefault();
         if (active?.alive) {
-          closeStdin();
+          closeStdin(active.uuid);
         }
       }
     };

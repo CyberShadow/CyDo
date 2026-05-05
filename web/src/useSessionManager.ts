@@ -114,15 +114,16 @@ export interface TaskManager {
   setActiveTaskId: (id: string) => void;
   connected: boolean;
   send: (
+    uuid: string,
     text: string,
     images?: ImageAttachment[],
     entryPointName?: string,
     agentType?: string,
   ) => void;
-  interrupt: () => void;
-  stop: () => void;
-  closeStdin: () => void;
-  resume: () => void;
+  interrupt: (uuid: string) => void;
+  stop: (uuid: string) => void;
+  closeStdin: (uuid: string) => void;
+  resume: (uuid: string) => void;
   promote: (tid: number) => void;
   fork: (tid: number, afterUuid: string) => void;
   undoPreview: (tid: number, afterUuid: string) => void;
@@ -1597,146 +1598,106 @@ export function useTaskManager(
 
   const send = useCallback(
     (
+      uuid: string,
       text: string,
       images?: ImageAttachment[],
       entryPointName?: string,
       agentType?: string,
     ) => {
       const content = buildContentBlocks(text, images);
+      const taskState = liveStates.get(uuid);
       const draft = draftRef.current;
+      const draftTid = taskState?.tid ?? null;
 
-      // Path (a): promoted draft — send to real tid
-      if (draft.phase === "promoted") {
-        const { uuid } = draft;
-        const draftState = liveStates.get(uuid);
-        const draftTid = draftState?.tid ?? null;
-        if (draftTid === null) return;
-        if (entryPointName) {
-          connRef.current?.setEntryPoint(draftTid, entryPointName);
-        }
-        if (agentType) {
-          connRef.current?.setAgentType(draftTid, agentType);
+      // Real backend task: covers regular send and the promoted-draft case.
+      if (draftTid !== null) {
+        const isPromotedDraft =
+          draft.phase === "promoted" && draft.uuid === uuid;
+        if (isPromotedDraft) {
+          if (entryPointName)
+            connRef.current?.setEntryPoint(draftTid, entryPointName);
+          if (agentType) connRef.current?.setAgentType(draftTid, agentType);
         }
         connRef.current?.sendMessage(draftTid, content);
-        // Navigate URL to the real task
-        if (draftState && draftState.workspace && draftState.projectPath) {
+
+        if (
+          isPromotedDraft &&
+          taskState &&
+          taskState.workspace &&
+          taskState.projectPath
+        ) {
           const projName = findProjectName(
             workspacesRef.current,
-            draftState.workspace,
-            draftState.projectPath,
+            taskState.workspace,
+            taskState.projectPath,
           );
           if (projName) {
             const encodedProject = projName.replace(/\//g, ":");
             routeRef.current(
-              `/${draftState.workspace}/${encodedProject}/task/${draftTid}`,
+              `/${taskState.workspace}/${encodedProject}/task/${draftTid}`,
               false,
             );
           }
+          setDraft({ phase: "none" });
         }
-        // Clear draft state (task transitions from draft to active)
-        setDraft({ phase: "none" });
-        // Optimistically mark as processing
+
         setTasks((prev) => {
           const t = prev.get(uuid);
           if (!t) return prev;
           const next = new Map(prev);
-          next.set(uuid, {
-            ...t,
-            isProcessing: true,
-            suggestions: undefined,
-          });
+          next.set(uuid, { ...t, isProcessing: true, suggestions: undefined });
           return next;
         });
         return;
       }
 
-      if (activeTaskId === null) {
-        // Path (c): timer already fired (create_task in flight) but task_created
-        // hasn't arrived yet. Store the message for task_created to deliver —
-        // no zombie task is created.
-        if (draft.phase === "create_pending") {
-          setDraft({
-            phase: "send_pending",
-            uuid: draft.uuid,
-            firstMessage: { text, entryPointName, images },
-          });
-          return;
-        }
-
-        // Path (b): timer hasn't fired yet — cancel it and use atomic create+send.
-        if (draft.phase === "timer_pending") {
-          clearTimeout(draft.timerId);
-        }
-        // Remove virtual draft.
-        teardownVirtualDraft();
-        setDraft({ phase: "none" });
-
-        // Atomic create+send — generates a fresh correlation_id (not the draft uuid,
-        // since the draft was torn down).
-        const correlationId = crypto.randomUUID();
-        const ws = activeWorkspaceRef.current;
-        const proj = activeProjectRef.current;
-        if (ws && proj) {
-          const projPath = findProjectPath(workspacesRef.current, ws, proj);
-          connRef.current?.createTask(
-            ws,
-            projPath || "",
-            entryPointName,
-            content,
-            agentType,
-            correlationId,
-          );
-        } else {
-          connRef.current?.createTask(
-            undefined,
-            undefined,
-            entryPointName,
-            content,
-            agentType,
-            correlationId,
-          );
-        }
+      // No real tid: virtual draft. Route through the create_task handshake.
+      if (draft.phase === "create_pending") {
+        // Timer fired but task_created hasn't arrived; stash the message.
+        setDraft({
+          phase: "send_pending",
+          uuid: draft.uuid,
+          firstMessage: { text, entryPointName, images },
+        });
         return;
       }
-      const tid = parseTaskId(activeTaskId);
-      if (tid === null) return;
-      connRef.current?.sendMessage(tid, content);
-      // Optimistically mark as processing so suggestions disappear immediately.
-      const t = findByTid(tid);
-      if (t) {
-        const updated = { ...t, isProcessing: true, suggestions: undefined };
-        liveStates.set(t.uuid, updated);
-        setTasks((prev) => {
-          if (!prev.has(t.uuid)) return prev;
-          const next = new Map(prev);
-          next.set(t.uuid, updated);
-          return next;
-        });
+      if (draft.phase === "timer_pending") {
+        clearTimeout(draft.timerId);
       }
+      teardownVirtualDraft();
+      setDraft({ phase: "none" });
+
+      const correlationId = crypto.randomUUID();
+      const ws = activeWorkspaceRef.current;
+      const proj = activeProjectRef.current;
+      const projPath =
+        ws && proj ? findProjectPath(workspacesRef.current, ws, proj) : null;
+      connRef.current?.createTask(
+        ws ?? undefined,
+        projPath ?? (ws ? "" : undefined),
+        entryPointName,
+        content,
+        agentType,
+        correlationId,
+      );
     },
-    [activeTaskId, setTasks, entryPoints, teardownVirtualDraft],
+    [setTasks, teardownVirtualDraft, setDraft],
   );
 
-  const interrupt = useCallback(() => {
-    if (activeTaskId !== null) {
-      const tid = parseTaskId(activeTaskId);
-      if (tid !== null) connRef.current?.sendInterrupt(tid);
-    }
-  }, [activeTaskId]);
+  const interrupt = useCallback((uuid: string) => {
+    const tid = liveStates.get(uuid)?.tid ?? null;
+    if (tid !== null) connRef.current?.sendInterrupt(tid);
+  }, []);
 
-  const stop = useCallback(() => {
-    if (activeTaskId !== null) {
-      const tid = parseTaskId(activeTaskId);
-      if (tid !== null) connRef.current?.sendStop(tid);
-    }
-  }, [activeTaskId]);
+  const stop = useCallback((uuid: string) => {
+    const tid = liveStates.get(uuid)?.tid ?? null;
+    if (tid !== null) connRef.current?.sendStop(tid);
+  }, []);
 
-  const closeStdin = useCallback(() => {
-    if (activeTaskId !== null) {
-      const tid = parseTaskId(activeTaskId);
-      if (tid !== null) connRef.current?.sendCloseStdin(tid);
-    }
-  }, [activeTaskId]);
+  const closeStdin = useCallback((uuid: string) => {
+    const tid = liveStates.get(uuid)?.tid ?? null;
+    if (tid !== null) connRef.current?.sendCloseStdin(tid);
+  }, []);
 
   const fork = useCallback((tid: number, afterUuid: string) => {
     connRef.current?.forkTask(tid, afterUuid);
@@ -1812,29 +1773,18 @@ export function useTaskManager(
     });
   }, []);
 
-  const resume = useCallback(() => {
-    if (activeTaskId !== null) {
-      const tid = parseTaskId(activeTaskId);
-      if (tid === null) return;
-      const t = findByTid(tid);
-      if (t?.archived) return;
-      connRef.current?.resumeTask(tid);
-      if (t) {
-        const updated = {
-          ...t,
-          alive: true,
-          resumable: false,
-          status: "active",
-        };
-        liveStates.set(t.uuid, updated);
-        setTasks((prev) => {
-          const next = new Map(prev);
-          next.set(t.uuid, updated);
-          return next;
-        });
-      }
-    }
-  }, [activeTaskId]);
+  const resume = useCallback((uuid: string) => {
+    const t = liveStates.get(uuid);
+    if (!t || t.tid === null || t.archived) return;
+    connRef.current?.resumeTask(t.tid);
+    const updated = { ...t, alive: true, resumable: false, status: "active" };
+    liveStates.set(uuid, updated);
+    setTasks((prev) => {
+      const next = new Map(prev);
+      next.set(uuid, updated);
+      return next;
+    });
+  }, []);
 
   const promote = useCallback((tid: number) => {
     const t = findByTid(tid);

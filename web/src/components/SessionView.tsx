@@ -32,15 +32,16 @@ interface Props {
   connected: boolean;
   isActive: boolean;
   onSend: (
+    uuid: string,
     text: string,
     images?: ImageAttachment[],
     entryPointName?: string,
     agentType?: string,
   ) => void;
-  onInterrupt: () => void;
-  onStop: () => void;
-  onCloseStdin: () => void;
-  onResume: () => void;
+  onInterrupt: (uuid: string) => void;
+  onStop: (uuid: string) => void;
+  onCloseStdin: (uuid: string) => void;
+  onResume: (uuid: string) => void;
   onPromote?: (tid: number) => void;
   onFork: (tid: number, afterUuid: string) => void;
   onUndo: (tid: number, afterUuid: string) => void;
@@ -163,16 +164,24 @@ function SessionViewInner({
       requestNotificationPermissionFromGesture();
       if (isDraft) {
         onSend(
+          task.uuid,
           text,
           images,
           selectedEntryPoint,
           selectedAgent || defaultAgentType || "claude",
         );
       } else {
-        onSend(text, images);
+        onSend(task.uuid, text, images);
       }
     },
-    [onSend, isDraft, selectedEntryPoint, selectedAgent, defaultAgentType],
+    [
+      onSend,
+      task.uuid,
+      isDraft,
+      selectedEntryPoint,
+      selectedAgent,
+      defaultAgentType,
+    ],
   );
 
   const handlePromote = useCallback(() => {
@@ -417,8 +426,12 @@ function SessionViewInner({
         alive={task.alive}
         theme={theme}
         onToggleTheme={onToggleTheme}
-        onStop={onStop}
-        onCloseStdin={onCloseStdin}
+        onStop={() => {
+          onStop(task.uuid);
+        }}
+        onCloseStdin={() => {
+          onCloseStdin(task.uuid);
+        }}
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
         hasGlobalAttention={hasGlobalAttention}
@@ -426,7 +439,9 @@ function SessionViewInner({
         archiving={task.archiving}
         onSetArchived={onSetArchived ? handleSetArchived : undefined}
         resumable={task.resumable}
-        onResume={onResume}
+        onResume={() => {
+          onResume(task.uuid);
+        }}
         exportMode={exportMode}
       />
       {fileViewerState && (
@@ -482,7 +497,9 @@ function SessionViewInner({
               />
               <InputBox
                 onSend={handleSend}
-                onInterrupt={onInterrupt}
+                onInterrupt={() => {
+                  onInterrupt(task.uuid);
+                }}
                 isProcessing={task.isProcessing}
                 stdinClosed={task.stdinClosed}
                 disabled={false}
@@ -584,7 +601,9 @@ function SessionViewInner({
           <InputBox
             key="input-box"
             onSend={handleSend}
-            onInterrupt={onInterrupt}
+            onInterrupt={() => {
+              onInterrupt(task.uuid);
+            }}
             isProcessing={task.isProcessing}
             stdinClosed={task.stdinClosed}
             disabled={!connected}
