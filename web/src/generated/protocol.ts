@@ -211,3 +211,9 @@ export interface AgentUnrecognizedEvent {
   reason: string;
 }
 
+export interface CydoTaskSpawnedEvent {
+  type: "cydo/task_spawned";
+  child_tid: number;
+  spec_index: number;
+}
+

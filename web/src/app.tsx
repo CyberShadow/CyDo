@@ -499,6 +499,7 @@ function AppContent() {
                     onContentEnd={
                       task.uuid === draftRenderKey ? deleteDraftTask : undefined
                     }
+                    getTaskHref={getTaskHref}
                   />
                 </div>
               );

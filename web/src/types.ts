@@ -266,6 +266,14 @@ export interface TaskState {
   blocks: Map<string, Block>;
   /** Maps raw event item_id → block key (item IDs are only unique within a turn). */
   itemIdMap: Map<string, string>;
+  /** FIFO of itemIds for in-flight cydo:Task tool_use blocks.
+   *  Used to attribute in-stream cydo/task_spawned events to the right block
+   *  (front-of-FIFO) since the event itself does not carry the parent tool_use_id. */
+  pendingCydoTaskItemIds: string[];
+  /** Maps a cydo:Task tool_use block's itemId to its per-spec child tids.
+   *  Populated by reduceCydoTaskSpawned; consumed by ToolCall rendering to show
+   *  the "Open task →" link. */
+  spawnedTidsByItemId: Map<string, Map<number, number>>;
 }
 
 export function makeTaskState(
@@ -324,5 +332,7 @@ export function makeTaskState(
     trackedFiles: new Map(),
     blocks: new Map(),
     itemIdMap: new Map(),
+    pendingCydoTaskItemIds: [],
+    spawnedTidsByItemId: new Map(),
   };
 }

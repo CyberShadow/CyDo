@@ -35,6 +35,8 @@ interface Props {
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   forkableUuids?: Set<string>;
   onViewFile?: (filePath: string) => void;
+  spawnedTidsByItemId?: Map<string, Map<number, number>>;
+  getTaskHref?: (id: string) => string;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -480,6 +482,8 @@ const MessageView = memo(
     onEdit,
     onEditRaw,
     forkable,
+    spawnedTidsByItemId,
+    getTaskHref,
   }: {
     msg: DisplayMessage;
     tid: number;
@@ -492,6 +496,8 @@ const MessageView = memo(
     onEdit?: (uuid: string, content: string) => void;
     onEditRaw?: (seq: number, content: string) => void;
     forkable?: boolean;
+    spawnedTidsByItemId?: Map<string, Map<number, number>>;
+    getTaskHref?: (id: string) => string;
   }) {
     const devMode = useDevMode();
     const [showSource, setShowSource] = useState(false);
@@ -539,6 +545,8 @@ const MessageView = memo(
             childrenByParent={childrenByParent}
             onViewFile={onViewFile}
             sessionId={tid}
+            spawnedTidsByItemId={spawnedTidsByItemId}
+            getTaskHref={getTaskHref}
           />
         );
         break;
@@ -718,7 +726,9 @@ const MessageView = memo(
     prev.onFork === next.onFork &&
     prev.onUndo === next.onUndo &&
     prev.onEdit === next.onEdit &&
-    prev.forkable === next.forkable,
+    prev.forkable === next.forkable &&
+    prev.spawnedTidsByItemId === next.spawnedTidsByItemId &&
+    prev.getTaskHref === next.getTaskHref,
 );
 
 export function MessageList({
@@ -732,6 +742,8 @@ export function MessageList({
   onEditRawEvent,
   forkableUuids,
   onViewFile,
+  spawnedTidsByItemId,
+  getTaskHref,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleFork = useMemo(
@@ -914,6 +926,8 @@ export function MessageList({
               onEdit={msg.type === "user" ? handleEditMessage : undefined}
               onEditRaw={handleEditRawEvent}
               forkable={isForkable}
+              spawnedTidsByItemId={spawnedTidsByItemId}
+              getTaskHref={getTaskHref}
             />
           );
         })}

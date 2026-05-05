@@ -70,6 +70,7 @@ interface Props {
   onContentStart?: (entryPointName: string, agentType: string) => void;
   onContentEnd?: () => void;
   exportMode?: boolean;
+  getTaskHref?: (id: string) => string;
 }
 
 function SessionViewInner({
@@ -106,6 +107,7 @@ function SessionViewInner({
   onContentStart,
   onContentEnd,
   exportMode,
+  getTaskHref,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -527,6 +529,8 @@ function SessionViewInner({
           onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
           forkableUuids={task.forkableUuids}
           onViewFile={openFileViewer}
+          spawnedTidsByItemId={task.spawnedTidsByItemId}
+          getTaskHref={getTaskHref}
         />
       )}
       {task.undoPending && task.undoPending.messagesRemoved >= 0 && (

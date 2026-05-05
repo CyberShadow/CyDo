@@ -77,6 +77,7 @@ export function ExportApp() {
             onToggleTheme={toggleTheme}
             onToggleSidebar={handleToggleSidebar}
             exportMode={true}
+            getTaskHref={getTaskHref}
           />
         ) : (
           <div class="session-empty">

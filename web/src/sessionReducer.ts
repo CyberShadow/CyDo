@@ -37,6 +37,7 @@ import type {
   TurnStopEvent,
   TurnDeltaEvent,
   StderrMessage,
+  CydoTaskSpawnedEvent,
 } from "./protocol";
 import {
   fileEditPayloadFromNormalizedChange,
@@ -912,6 +913,15 @@ export function reduceItemStarted(
     return reduceItemStartedUserMessage(s, event, seq, ts);
   }
 
+  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
+  if (
+    event.item_type === "tool_use" &&
+    event.tool_server === "cydo" &&
+    event.name === "Task"
+  ) {
+    pendingCydoTaskItemIds = [...s.pendingCydoTaskItemIds, event.item_id];
+  }
+
   const { messages, msgIdx } = getOrCreateStreamingMessage(
     s,
     event.parent_tool_use_id,
@@ -951,7 +961,7 @@ export function reduceItemStarted(
   const itemIdMap = new Map(s.itemIdMap);
   itemIdMap.set(event.item_id, blockKey);
 
-  let state = { ...s, messages, blocks, itemIdMap };
+  let state = { ...s, messages, blocks, itemIdMap, pendingCydoTaskItemIds };
 
   if (event.item_type === "tool_use") {
     if (
@@ -1103,7 +1113,18 @@ export function reduceItemResult(
     }
   }
 
-  let state = { ...s, blocks, messages };
+  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
+  if (block.toolServer === "cydo" && block.name === "Task") {
+    const idx = pendingCydoTaskItemIds.indexOf(event.item_id);
+    if (idx >= 0) {
+      pendingCydoTaskItemIds = [
+        ...pendingCydoTaskItemIds.slice(0, idx),
+        ...pendingCydoTaskItemIds.slice(idx + 1),
+      ];
+    }
+  }
+
+  let state = { ...s, blocks, messages, pendingCydoTaskItemIds };
   state = trackResultFileEdits(state, [
     {
       tool_use_id: event.item_id,
@@ -1453,6 +1474,9 @@ export function reduceMessage(
       );
     }
 
+    case "cydo/task_spawned":
+      return reduceCydoTaskSpawned(s, msg);
+
     default:
       return reduceParseError(
         s,
@@ -1463,4 +1487,19 @@ export function reduceMessage(
         seq,
       );
   }
+}
+
+export function reduceCydoTaskSpawned(
+  s: SessionState,
+  event: CydoTaskSpawnedEvent,
+): SessionState {
+  const frontItemId = s.pendingCydoTaskItemIds[0];
+  if (!frontItemId) return s;
+  const existing =
+    s.spawnedTidsByItemId.get(frontItemId) ?? new Map<number, number>();
+  const updated = new Map(existing);
+  updated.set(event.spec_index, event.child_tid);
+  const spawnedTidsByItemId = new Map(s.spawnedTidsByItemId);
+  spawnedTidsByItemId.set(frontItemId, updated);
+  return { ...s, spawnedTidsByItemId };
 }

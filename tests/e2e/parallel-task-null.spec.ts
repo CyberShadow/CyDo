@@ -45,8 +45,12 @@ test("parallel Task results keep request order and never render null", async ({
 
   // The UI should preserve request order (tid 2, then tid 3) and each item
   // should contain the child output instead of fallback null text.
-  await expect(resultSpecs.nth(0)).toContainText("tid: 2");
-  await expect(resultSpecs.nth(1)).toContainText("tid: 3");
+  await expect(
+    resultSpecs.nth(0).locator('[data-testid="cydo-task-spec-open"]'),
+  ).toHaveAttribute("href", /\/task\/2$/);
+  await expect(
+    resultSpecs.nth(1).locator('[data-testid="cydo-task-spec-open"]'),
+  ).toHaveAttribute("href", /\/task\/3$/);
   for (let i = 0; i < 2; i++) {
     const spec = resultSpecs.nth(i);
     await expect(spec.getByText("parallel-ok")).toBeVisible({

@@ -319,6 +319,127 @@ function renderShellInput(command: string): string {
   );
 }
 
+function renderCydoTaskInput(
+  tasks: Array<Record<string, unknown>>,
+  spawnedTids?: Map<number, number>,
+  getTaskHref?: (id: string) => string,
+): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "Task",
+      toolServer: "cydo",
+      agentType: "claude",
+      toolUseId: "tool-t1",
+      input: { tasks },
+      result: undefined,
+      spawnedTids,
+      getTaskHref,
+    }),
+  );
+}
+
+function renderCydoTaskResult(
+  taskItems: Array<Record<string, unknown>>,
+  getTaskHref?: (id: string) => string,
+): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "Task",
+      toolServer: "cydo",
+      agentType: "claude",
+      toolUseId: "tool-t1",
+      input: { tasks: taskItems },
+      result: {
+        toolUseId: "tool-t1",
+        content: [],
+        isError: false,
+        // parseCydoTaskResultPayload recognises {tasks:[...]} in toolResult
+        toolResult: { tasks: taskItems },
+      },
+      getTaskHref,
+    }),
+  );
+}
+
+describe("cydo:Task ToolCall Open task link", () => {
+  const getHref = (id: string) => `/task/${id}`;
+
+  it("renders Open task link when spawnedTids has entry for spec", () => {
+    const html = renderCydoTaskInput(
+      [{ task_type: "research", description: "ping", prompt: "ping" }],
+      new Map([[0, 42]]),
+      getHref,
+    );
+    expect(html).toContain('data-testid="cydo-task-spec-open"');
+    expect(html).toContain('href="/task/42"');
+    expect(html).toContain("Open task");
+  });
+
+  it("does not render link when spawnedTids is empty", () => {
+    const html = renderCydoTaskInput(
+      [{ task_type: "research", description: "ping", prompt: "ping" }],
+      new Map(),
+      getHref,
+    );
+    expect(html).not.toContain('data-testid="cydo-task-spec-open"');
+  });
+
+  it("does not render link when getTaskHref is absent", () => {
+    const html = renderCydoTaskInput(
+      [{ task_type: "research", description: "ping", prompt: "ping" }],
+      new Map([[0, 42]]),
+      undefined,
+    );
+    expect(html).not.toContain('data-testid="cydo-task-spec-open"');
+  });
+
+  it("only renders link for spec with matching childTid (multi-spec)", () => {
+    const html = renderCydoTaskInput(
+      [
+        { task_type: "research", description: "ping0", prompt: "p0" },
+        { task_type: "implement", description: "ping1", prompt: "p1" },
+      ],
+      new Map([[1, 99]]),
+      getHref,
+    );
+    // Only spec index 1 has a link — href for task 99 appears once
+    expect(html).toContain('href="/task/99"');
+    const hrefCount = (html.match(/href="\/task\//g) ?? []).length;
+    expect(hrefCount).toBe(1);
+  });
+
+  it("result-side renders Open task link from tid in result payload", () => {
+    const html = renderCydoTaskResult(
+      [
+        {
+          task_type: "research",
+          description: "ping",
+          tid: 99,
+          status: "complete",
+        },
+      ],
+      getHref,
+    );
+    expect(html).toContain('data-testid="cydo-task-spec-open"');
+    expect(html).toContain('href="/task/99"');
+  });
+
+  it("result-side does not render link when getTaskHref is absent", () => {
+    const html = renderCydoTaskResult(
+      [
+        {
+          task_type: "research",
+          description: "ping",
+          tid: 99,
+          status: "complete",
+        },
+      ],
+      undefined,
+    );
+    expect(html).not.toContain('data-testid="cydo-task-spec-open"');
+  });
+});
+
 describe("ToolCall shell source tree rendering", () => {
   it("keeps semantic-shell-write selector while rendering heredoc write via source tree view", () => {
     const html = renderShellInput("cat > README.md <<EOF\n# Title\nEOF");

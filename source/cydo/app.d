@@ -1339,7 +1339,7 @@ class App : ToolsBackend
 	/// Handle Task — validates the spec and returns a delegate that, when called,
 	/// creates the child task and returns `{childTid, promise}`.
 	/// On validation failure, returns a ValidatedTask with a null launch delegate.
-	ValidatedTask handleCreateTask(string callerTid,
+	ValidatedTask handleCreateTask(string callerTid, int specIndex,
 		string description, string taskType, string prompt)
 	{
 		import ae.utils.json : toJson;
@@ -1430,6 +1430,19 @@ class App : ToolsBackend
 				pd.workspace, pd.projectPath, parentTid, "subtask")));
 			broadcastTaskUpdate(childTid);
 			broadcastFocusHint(parentTid, childTid);
+
+			// Inject cydo/task_spawned into parent's event stream so the frontend
+			// can show an "Open task →" link without any side-channel state.
+			{
+				import cydo.agent.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
+				import ae.utils.time.types : AbsTime;
+				import std.datetime : Clock;
+				CydoTaskSpawnedEvent spawnEv;
+				spawnEv.child_tid  = childTid;
+				spawnEv.spec_index = specIndex;
+				appendAndBroadcastTaskEvent(parentTid,
+					TranslatedEvent(toJson(spawnEv), null, AbsTime(Clock.currStdTime)));
+			}
 
 			// Set up worktree from edge config: create new or inherit from parent
 			string edgeTemplate;

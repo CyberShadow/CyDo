@@ -424,7 +424,7 @@ test("codex history replay renders live task output from organic rollout", async
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(taskTool).toContainText("tid:", { timeout: 90_000 });
+  await expect(taskTool).toContainText("Open task", { timeout: 90_000 });
   await expect(taskTool).toContainText(markdownItem, { timeout: 90_000 });
   await expect(
     taskTool.locator(".text-content ol li", {
@@ -450,7 +450,7 @@ test("codex history replay renders live task output from organic rollout", async
   const replayedTaskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(replayedTaskTool).toContainText("tid:", { timeout: 15_000 });
+  await expect(replayedTaskTool).toContainText("Open task", { timeout: 15_000 });
   await expect(replayedTaskTool).toContainText(markdownItem, {
     timeout: 15_000,
   });

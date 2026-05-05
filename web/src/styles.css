@@ -3737,6 +3737,30 @@ pre.extra-field-value {
   border-top: none;
 }
 
+.cydo-task-spec-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75em;
+}
+
+.cydo-task-spec-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cydo-task-spec-open {
+  flex: 0 0 auto;
+  font-size: 0.9em;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cydo-task-spec-open:hover {
+  text-decoration: underline;
+}
+
 /* Error boundary */
 .error-boundary {
   padding: 32px;

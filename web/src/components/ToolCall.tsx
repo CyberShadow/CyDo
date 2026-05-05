@@ -194,6 +194,8 @@ interface Props {
   streaming?: boolean;
   children?: ComponentChildren;
   onViewFile?: (filePath: string) => void;
+  spawnedTids?: Map<number, number>;
+  getTaskHref?: (id: string) => string;
 }
 
 /** Render an array of token lines (no trailing newline). */
@@ -979,6 +981,8 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
 
 function formatTaskSpecsInput(
   tasks: Array<Record<string, unknown>>,
+  spawnedTids?: Map<number, number>,
+  getTaskHref?: (id: string) => string,
 ): h.JSX.Element {
   return (
     <div class="tool-input-formatted">
@@ -988,11 +992,26 @@ function formatTaskSpecsInput(
         const description =
           typeof task.description === "string" ? task.description : null;
         const prompt = typeof task.prompt === "string" ? task.prompt : null;
+        const childTid = spawnedTids?.get(i);
         return (
           <div key={i} class="cydo-task-spec">
-            <div class="tool-input-field">
-              {taskType && <span class="tool-subtitle-tag">{taskType}</span>}
-              {description && <span class="field-value"> {description}</span>}
+            <div class="cydo-task-spec-header">
+              <div class="cydo-task-spec-title">
+                {taskType && <span class="tool-subtitle-tag">{taskType}</span>}
+                {description && <span class="field-value"> {description}</span>}
+              </div>
+              {childTid != null && getTaskHref && (
+                <a
+                  class="cydo-task-spec-open"
+                  data-testid="cydo-task-spec-open"
+                  href={getTaskHref(String(childTid))}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
+                  Open task →
+                </a>
+              )}
             </div>
             {prompt && <Markdown text={prompt} />}
           </div>
@@ -1960,6 +1979,8 @@ function formatInput(
   agentType: string | undefined,
   input: Record<string, unknown>,
   result?: ToolResult,
+  spawnedTids?: Map<number, number>,
+  getTaskHref?: (id: string) => string,
 ): h.JSX.Element {
   if (
     toolIs(name, agentType, toolServer, "codex/fileChange") &&
@@ -2087,7 +2108,11 @@ function formatInput(
     toolIs(name, agentType, toolServer, "cydo:Task") &&
     Array.isArray(input.tasks)
   ) {
-    return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
+    return formatTaskSpecsInput(
+      input.tasks as Array<Record<string, unknown>>,
+      spawnedTids,
+      getTaskHref,
+    );
   }
   if (toolIs(name, agentType, toolServer, "cydo:Handoff")) {
     const { continuation, prompt: handoffPrompt, ...remaining } = input;
@@ -2534,6 +2559,8 @@ export const ToolCall = memo(
     streaming,
     children,
     onViewFile,
+    spawnedTids,
+    getTaskHref,
   }: Props) {
     // Collapse pending AskUserQuestion input — the interactive form shows the same content
     const qKey = qualifiedToolKey(name, toolServer, agentType);
@@ -2863,7 +2890,16 @@ export const ToolCall = memo(
               ))}
             </div>
           )}
-        {inputOpen && formatInput(name, toolServer, agentType, input, result)}
+        {inputOpen &&
+          formatInput(
+            name,
+            toolServer,
+            agentType,
+            input,
+            result,
+            spawnedTids,
+            getTaskHref,
+          )}
         {children}
         {result && hasResultContent && (
           <div class="tool-result-section">
@@ -2924,16 +2960,45 @@ export const ToolCall = memo(
                           typeof fields.description === "string"
                             ? fields.description
                             : null;
-                        const { task_type, description, ...rest } = fields;
+                        const tidVal =
+                          typeof fields.tid === "number"
+                            ? fields.tid
+                            : typeof fields.tid === "string"
+                              ? Number(fields.tid)
+                              : null;
+                        const {
+                          task_type,
+                          description,
+                          tid: _tid,
+                          ...rest
+                        } = fields;
                         return (
                           <div key={i} class="cydo-task-spec">
-                            <div class="tool-input-field">
-                              {taskType && (
-                                <span class="tool-subtitle-tag">
-                                  {taskType}
-                                </span>
-                              )}
-                              {desc && <span class="field-value"> {desc}</span>}
+                            <div class="cydo-task-spec-header">
+                              <div class="cydo-task-spec-title">
+                                {taskType && (
+                                  <span class="tool-subtitle-tag">
+                                    {taskType}
+                                  </span>
+                                )}
+                                {desc && (
+                                  <span class="field-value"> {desc}</span>
+                                )}
+                              </div>
+                              {tidVal != null &&
+                                Number.isFinite(tidVal) &&
+                                getTaskHref && (
+                                  <a
+                                    class="cydo-task-spec-open"
+                                    data-testid="cydo-task-spec-open"
+                                    href={getTaskHref(String(tidVal))}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                    }}
+                                  >
+                                    Open task →
+                                  </a>
+                                )}
                             </div>
                             {Object.keys(rest).length > 0 &&
                               Object.entries(rest).map(([k, v]) => (

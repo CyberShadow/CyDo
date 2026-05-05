@@ -416,9 +416,13 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
     .last()
     .locator(".cydo-task-spec");
   await expect(finalSpecs).toHaveCount(2, { timeout: 90_000 });
-  await expect(finalSpecs.nth(0)).toContainText("tid: 2");
+  await expect(
+    finalSpecs.nth(0).locator('[data-testid="cydo-task-spec-open"]'),
+  ).toHaveAttribute("href", /\/task\/2$/);
   await expect(finalSpecs.nth(0)).toContainText("normal-child-done");
-  await expect(finalSpecs.nth(1)).toContainText("tid: 3");
+  await expect(
+    finalSpecs.nth(1).locator('[data-testid="cydo-task-spec-open"]'),
+  ).toHaveAttribute("href", /\/task\/3$/);
 });
 
 test("Ask/Answer: invalid Ask target returns error", async ({

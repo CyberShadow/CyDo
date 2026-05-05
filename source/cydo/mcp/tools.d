@@ -229,7 +229,7 @@ struct ValidatedTask
 /// App implements this; the indirection breaks the compile-time dependency on cydo.app.
 interface ToolsBackend
 {
-	ValidatedTask handleCreateTask(string callerTid,
+	ValidatedTask handleCreateTask(string callerTid, int specIndex,
 		string description, string taskType, string prompt);
 	bool wouldBeWriter(string callerTid, string taskType);
 	McpResult handleSwitchMode(string callerTid, string continuation);
@@ -306,7 +306,7 @@ class CydoToolsImpl : CydoTools
 		// Phase 1: validate all specs without executing any.
 		auto validated = new ValidatedTask[tasks.length];
 		foreach (i, ref spec; tasks)
-			validated[i] = app.handleCreateTask(callerTid, spec.description, spec.task_type, spec.prompt);
+			validated[i] = app.handleCreateTask(callerTid, cast(int)i, spec.description, spec.task_type, spec.prompt);
 
 		// If any spec failed validation, report all errors and abort.
 		string[] errors;

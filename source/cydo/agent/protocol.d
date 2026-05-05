@@ -311,6 +311,16 @@ string makeUnrecognizedEvent(string reason)
 	return toJson(ev);
 }
 
+/// cydo/task_spawned — emitted when CyDo spawns a child task in response
+/// to a parent's mcp__cydo__Task tool call. Lands in the parent's task
+/// event stream; replays on F5 in the same position.
+struct CydoTaskSpawnedEvent
+{
+	string type = "cydo/task_spawned";
+	int child_tid;   // tid of the newly created child task
+	int spec_index;  // 0-based index within the parent call's tasks[] array
+}
+
 /// Parse an ISO 8601 timestamp string (e.g. "2026-03-30T14:29:14.993Z") into AbsTime.
 /// Returns AbsTime.init (stdTime == 0) on failure or empty input.
 AbsTime parseIso8601Timestamp(string s) nothrow

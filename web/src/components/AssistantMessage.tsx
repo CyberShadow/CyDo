@@ -137,6 +137,8 @@ interface Props {
   onViewFile?: (filePath: string) => void;
   sessionId?: number | null;
   semanticSelectors?: boolean;
+  spawnedTidsByItemId?: Map<string, Map<number, number>>;
+  getTaskHref?: (id: string) => string;
 }
 
 export const AssistantMessage = memo(
@@ -148,6 +150,8 @@ export const AssistantMessage = memo(
     onViewFile,
     sessionId,
     semanticSelectors = true,
+    spawnedTidsByItemId,
+    getTaskHref,
   }: Props) {
     const devMode = useDevMode();
     const isStreaming = message.streaming === true;
@@ -278,6 +282,8 @@ export const AssistantMessage = memo(
                     }
                     result={block.completed ? block.result : undefined}
                     onViewFile={onViewFile}
+                    spawnedTids={spawnedTidsByItemId?.get(block.itemId)}
+                    getTaskHref={getTaskHref}
                   >
                     {block.stdin && (
                       <StickyScrollPre class="tool-result streaming-stdin">
@@ -313,6 +319,8 @@ export const AssistantMessage = memo(
                                   onViewFile={onViewFile}
                                   sessionId={sessionId}
                                   semanticSelectors={false}
+                                  spawnedTidsByItemId={spawnedTidsByItemId}
+                                  getTaskHref={getTaskHref}
                                 />
                               </NestedMessageWrapper>
                             );
