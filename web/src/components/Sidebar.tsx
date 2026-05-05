@@ -275,6 +275,8 @@ function hasDescendant(node: TreeNode, id: string): boolean {
   return false;
 }
 
+type EdgeGlow = "none" | "attention" | "asking";
+
 // --- Flattened data item for memoized rendering ---
 
 interface FlatItem {
@@ -598,12 +600,8 @@ export const Sidebar = memo(function Sidebar({
   }, [visible, activeTaskId]);
 
   // Track off-screen attention/asking items for edge glow indicators.
-  const [glowState, setGlowState] = useState({
-    attentionAbove: false,
-    attentionBelow: false,
-    askingAbove: false,
-    askingBelow: false,
-  });
+  const [glowAbove, setGlowAbove] = useState<EdgeGlow>("none");
+  const [glowBelow, setGlowBelow] = useState<EdgeGlow>("none");
 
   useEffect(() => {
     const container = listRef.current;
@@ -614,12 +612,8 @@ export const Sidebar = memo(function Sidebar({
     );
 
     if (attentionEls.length === 0) {
-      setGlowState({
-        attentionAbove: false,
-        attentionBelow: false,
-        askingAbove: false,
-        askingBelow: false,
-      });
+      setGlowAbove("none");
+      setGlowBelow("none");
       return;
     }
 
@@ -631,26 +625,20 @@ export const Sidebar = memo(function Sidebar({
     const stateMap = new Map<Element, EntryState>();
 
     const updateGlow = () => {
-      let attentionAbove = false,
-        attentionBelow = false,
-        askingAbove = false,
-        askingBelow = false;
+      let above: EdgeGlow = "none";
+      let below: EdgeGlow = "none";
       for (const [, s] of stateMap) {
         if (s.isIntersecting) continue;
         if (s.above) {
-          attentionAbove = true;
-          if (s.isAsking) askingAbove = true;
+          if (s.isAsking) above = "asking";
+          else if (above === "none") above = "attention";
         } else {
-          attentionBelow = true;
-          if (s.isAsking) askingBelow = true;
+          if (s.isAsking) below = "asking";
+          else if (below === "none") below = "attention";
         }
       }
-      setGlowState({
-        attentionAbove,
-        attentionBelow,
-        askingAbove,
-        askingBelow,
-      });
+      setGlowAbove(above);
+      setGlowBelow(below);
     };
 
     const observer = new IntersectionObserver(
@@ -784,10 +772,8 @@ export const Sidebar = memo(function Sidebar({
       </div>
       <div
         class="sidebar-list-wrapper"
-        data-attention-above={glowState.attentionAbove ? "" : undefined}
-        data-attention-below={glowState.attentionBelow ? "" : undefined}
-        data-asking-above={glowState.askingAbove ? "" : undefined}
-        data-asking-below={glowState.askingBelow ? "" : undefined}
+        data-glow-above={glowAbove === "none" ? undefined : glowAbove}
+        data-glow-below={glowBelow === "none" ? undefined : glowBelow}
       >
         <div class="sidebar-list" ref={listRef}>
           {onNewTask && (
