@@ -2,7 +2,7 @@
 // Components show raw text until the CDN delivers, then re-render
 // with syntax highlighting. If offline, raw text stays permanently.
 
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export type ThemedToken = { content: string; color?: string };
 export type BundledLanguage = string;

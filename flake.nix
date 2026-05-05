@@ -799,7 +799,7 @@ EOF
 
             buildPhase = ''
               runHook preBuild
-              npx eslint src/
+              npx eslint --max-warnings=0 src/
               runHook postBuild
             '';
 
