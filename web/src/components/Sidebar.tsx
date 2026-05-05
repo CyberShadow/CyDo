@@ -130,7 +130,6 @@ export interface SidebarTask {
   tid: number;
   alive: boolean;
   resumable: boolean;
-  lastActive?: number;
   isProcessing: boolean;
   stdinClosed?: boolean;
   title?: string;
@@ -241,10 +240,6 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
     const groupNodes = tree.filter((n) => n.task.isArchiveNode);
     const regularNonImportable = tree.filter(
       (n) => !n.task.isArchiveNode && n.task.status !== "importable",
-    );
-    // Sort importable by lastActive descending (newest first)
-    importableRoots.sort(
-      (a, b) => (b.task.lastActive ?? 0) - (a.task.lastActive ?? 0),
     );
     const importRoot: TreeNode = {
       id: "import",

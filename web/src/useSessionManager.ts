@@ -158,7 +158,6 @@ export interface TaskManager {
     status?: string;
     archived?: boolean;
     hasPendingQuestion?: boolean;
-    lastActive?: number;
     hasMessages?: boolean;
   }>;
   workspaces: WorkspaceInfo[];
@@ -2006,7 +2005,6 @@ export function useTaskManager(
         archiving: t.archiving,
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
-        lastActive: t.lastActive,
         hasMessages: t.messages.length > 0,
       }));
 
@@ -2029,7 +2027,6 @@ export function useTaskManager(
           t.archiving === p.archiving &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
-          t.lastActive === p.lastActive &&
           t.hasMessages === p.hasMessages
         );
       })

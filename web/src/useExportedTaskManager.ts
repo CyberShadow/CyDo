@@ -171,7 +171,6 @@ export function useExportedTaskManager(): TaskManager {
           archiving: t.archiving,
           taskType: t.taskType,
           hasPendingQuestion: t.hasPendingQuestion,
-          lastActive: t.lastActive,
           hasMessages: t.messages.length > 0,
         })),
     [tasks],
