@@ -15,6 +15,7 @@ export interface CydoMeta {
   vars?: Record<string, string>;
   bodyVar?: string;
   bodyMarkdown?: boolean;
+  severity?: "info" | "error";
 }
 
 export interface DisplayMessage {

@@ -4157,6 +4157,14 @@ pre.extra-field-value {
   top: -1px;
 }
 
+.system-user-message.severity-error {
+  border-left: 3px solid var(--error);
+  padding-left: 10px;
+}
+.system-user-message.severity-error .system-user-header {
+  color: var(--error);
+}
+
 .system-user-body {
   margin-bottom: 8px;
 }

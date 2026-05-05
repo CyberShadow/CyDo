@@ -221,7 +221,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
     if (!showFull) {
       return (
         <div
-          class={`result-divider system-user-message${message.pending ? " pending" : ""}`}
+          class={`result-divider system-user-message${meta.severity === "error" ? " severity-error" : ""}${message.pending ? " pending" : ""}`}
           onClick={() => {
             setShowFull(true);
           }}
@@ -273,7 +273,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
 
   return (
     <div
-      class={`message user-message system-user-message${message.pending ? " pending" : ""}`}
+      class={`message user-message system-user-message${meta.severity === "error" ? " severity-error" : ""}${message.pending ? " pending" : ""}`}
     >
       <div class="system-user-header">
         <svg

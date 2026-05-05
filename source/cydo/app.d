@@ -6631,7 +6631,7 @@ class App : ToolsBackend
 	/// The result is a JSON string (or null) to be injected as "meta" in the
 	/// unconfirmed-user-event envelope. NOT sent to the agent.
 	private string buildCydoMeta(string label, string[string] vars = null,
-		string bodyVar = null, bool bodyMarkdown = false)
+		string bodyVar = null, bool bodyMarkdown = false, string severity = null)
 	{
 		import ae.utils.json : JSONOptional, toJson;
 		struct CydoMeta {
@@ -6639,12 +6639,14 @@ class App : ToolsBackend
 			@JSONOptional string[string] vars;
 			@JSONOptional string bodyVar;
 			@JSONOptional bool bodyMarkdown;
+			@JSONOptional string severity;
 		}
 		CydoMeta m;
 		m.label = label;
 		m.vars = vars;
 		m.bodyVar = bodyVar;
 		m.bodyMarkdown = bodyMarkdown;
+		m.severity = severity;
 		return toJson(m);
 	}
 
