@@ -4,7 +4,7 @@ import type { TypeInfo } from "../useSessionManager";
 import { TaskTypeIcon, hasTaskTypeIcon } from "./TaskTypeIcon";
 
 interface Props {
-  tasks: Map<number, TaskState>;
+  tasks: Map<string, TaskState>;
   onSelect: (tid: number) => void;
   onClose: () => void;
   taskTypes: TypeInfo[];
@@ -34,12 +34,14 @@ export function SearchPopup({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // All tasks sorted by lastActive descending (most recent first)
+  // All tasks sorted by lastActive descending (most recent first); exclude virtual drafts
   const allTasks = useMemo(
     () =>
-      Array.from(tasks.values()).sort(
-        (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
-      ),
+      Array.from(tasks.values())
+        .filter((t): t is TaskState & { tid: number } => t.tid !== null)
+        .sort(
+          (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
+        ),
     [tasks],
   );
 
@@ -118,7 +120,7 @@ export function SearchPopup({
             const hasIcon = hasTaskTypeIcon(t.taskType, taskTypes);
             return (
               <a
-                key={t.tid}
+                key={t.uuid}
                 href={getTaskHref(t.tid)}
                 class={`search-result-item${
                   i === selectedIdx ? " selected" : ""

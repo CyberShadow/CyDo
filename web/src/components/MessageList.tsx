@@ -24,7 +24,7 @@ import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
 
 interface Props {
-  sessionId: number;
+  taskTid: number;
   messages: DisplayMessage[];
   blocks: Map<string, Block>;
   isProcessing: boolean;
@@ -722,7 +722,7 @@ const MessageView = memo(
 );
 
 export function MessageList({
-  sessionId,
+  taskTid,
   messages,
   blocks,
   bandStatus,
@@ -738,46 +738,46 @@ export function MessageList({
     () =>
       onFork
         ? (afterUuid: string) => {
-            onFork(sessionId, afterUuid);
+            onFork(taskTid, afterUuid);
           }
         : undefined,
-    [onFork, sessionId],
+    [onFork, taskTid],
   );
   const handleUndo = useMemo(
     () =>
       onUndo
         ? (afterUuid: string) => {
-            onUndo(sessionId, afterUuid);
+            onUndo(taskTid, afterUuid);
           }
         : undefined,
-    [onUndo, sessionId],
+    [onUndo, taskTid],
   );
   const handleEditMessage = useMemo(
     () =>
       onEditMessage
         ? (uuid: string, content: string) => {
-            onEditMessage(sessionId, uuid, content);
+            onEditMessage(taskTid, uuid, content);
           }
         : undefined,
-    [onEditMessage, sessionId],
+    [onEditMessage, taskTid],
   );
   const handleEditRawEvent = useMemo(
     () =>
       onEditRawEvent
         ? (seq: number, content: string) => {
-            onEditRawEvent(sessionId, seq, content);
+            onEditRawEvent(taskTid, seq, content);
           }
         : undefined,
-    [onEditRawEvent, sessionId],
+    [onEditRawEvent, taskTid],
   );
 
   // On session switch, scroll to bottom (scrollTop 0 = bottom in column-reverse).
-  const prevSessionId = useRef(sessionId);
+  const prevTaskTid = useRef(taskTid);
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    if (prevSessionId.current !== sessionId) {
-      prevSessionId.current = sessionId;
+    if (prevTaskTid.current !== taskTid) {
+      prevTaskTid.current = taskTid;
       el.scrollTop = 0;
     }
     // Toggle overflow-anchor based on scroll position:
@@ -904,7 +904,7 @@ export function MessageList({
             <MessageView
               key={msg.id}
               msg={msg}
-              tid={sessionId}
+              tid={taskTid}
               resolvedBlocks={resolvedBlocks}
               childrenByParent={childrenByParent}
               resolvedBlocksByMsg={resolvedBlocksByMsg}

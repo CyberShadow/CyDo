@@ -116,6 +116,7 @@ function SessionViewInner({
     task.status === "pending" &&
     task.messages.length === 0 &&
     !task.isProcessing;
+  const tid = task.tid as number;
 
   // Entry point picker state (only used in draft mode)
   const initialEntryPoint =
@@ -142,7 +143,7 @@ function SessionViewInner({
   const handleTaskTypeChange = useCallback(
     (entryPoint: string) => {
       setSelectedEntryPoint(entryPoint);
-      if (isDraft && task.tid > 0) onSetEntryPoint?.(task.tid, entryPoint);
+      if (isDraft && task.tid !== null) onSetEntryPoint?.(task.tid, entryPoint);
     },
     [isDraft, task.tid, onSetEntryPoint],
   );
@@ -150,7 +151,7 @@ function SessionViewInner({
   const handleAgentChange = useCallback(
     (agentType: string) => {
       setSelectedAgent(agentType);
-      if (isDraft && task.tid > 0) onSetAgentType?.(task.tid, agentType);
+      if (isDraft && task.tid !== null) onSetAgentType?.(task.tid, agentType);
     },
     [isDraft, task.tid, onSetAgentType],
   );
@@ -173,8 +174,8 @@ function SessionViewInner({
   );
 
   const handlePromote = useCallback(() => {
-    onPromote?.(task.tid);
-  }, [onPromote, task.tid]);
+    onPromote?.(tid);
+  }, [onPromote, tid]);
 
   const handleContentStart = useCallback(() => {
     onContentStart?.(
@@ -257,13 +258,13 @@ function SessionViewInner({
   }, [isActive, task.status, isDraft]);
 
   const handleSaveDraft = useCallback(
-    (draft: string) => onSaveDraft?.(task.tid, draft),
-    [onSaveDraft, task.tid],
+    (draft: string) => onSaveDraft?.(tid, draft),
+    [onSaveDraft, tid],
   );
 
   const handleSetArchived = useCallback(() => {
-    onSetArchived?.(task.tid, !task.archived);
-  }, [onSetArchived, task.tid, task.archived]);
+    onSetArchived?.(tid, !task.archived);
+  }, [onSetArchived, tid, task.archived]);
 
   const handleSelectFile = useCallback((path: string) => {
     setFileViewerState((s) =>
@@ -291,49 +292,49 @@ function SessionViewInner({
   }, []);
 
   const handleInputDraftConsumed = useCallback(() => {
-    onClearInputDraft(task.tid);
-  }, [onClearInputDraft, task.tid]);
+    onClearInputDraft(tid);
+  }, [onClearInputDraft, tid]);
 
   const handleUndoConfirm = useCallback(
     (rc: boolean, rf: boolean) => {
-      onUndoConfirm(task.tid, rc, rf);
+      onUndoConfirm(tid, rc, rf);
     },
-    [onUndoConfirm, task.tid],
+    [onUndoConfirm, tid],
   );
 
   const handleUndoDismiss = useCallback(() => {
-    onUndoDismiss(task.tid);
-  }, [onUndoDismiss, task.tid]);
+    onUndoDismiss(tid);
+  }, [onUndoDismiss, tid]);
 
   const handleAskUserSubmit = useCallback(
     (answers: Record<string, string>) => {
-      onAskUserResponse(task.tid, JSON.stringify({ answers }));
+      onAskUserResponse(tid, JSON.stringify({ answers }));
     },
-    [onAskUserResponse, task.tid],
+    [onAskUserResponse, tid],
   );
 
   const handleAskUserAbort = useCallback(() => {
     onAskUserResponse(
-      task.tid,
+      tid,
       JSON.stringify({ error: "User refused to answer questions" }),
     );
-  }, [onAskUserResponse, task.tid]);
+  }, [onAskUserResponse, tid]);
 
   const handlePermissionAllow = useCallback(() => {
-    onPermissionPromptResponse(task.tid, JSON.stringify({ behavior: "allow" }));
-  }, [onPermissionPromptResponse, task.tid]);
+    onPermissionPromptResponse(tid, JSON.stringify({ behavior: "allow" }));
+  }, [onPermissionPromptResponse, tid]);
 
   const handlePermissionDeny = useCallback(
     (message?: string) => {
       onPermissionPromptResponse(
-        task.tid,
+        tid,
         JSON.stringify({
           behavior: "deny",
           ...(message ? { message } : {}),
         }),
       );
     },
-    [onPermissionPromptResponse, task.tid],
+    [onPermissionPromptResponse, tid],
   );
 
   const quoteSelection = useCallback(() => {
@@ -483,12 +484,12 @@ function SessionViewInner({
                 isProcessing={task.isProcessing}
                 stdinClosed={task.stdinClosed}
                 disabled={false}
-                sessionId={task.tid}
+                sessionId={task.uuid}
                 inputDraft={task.inputDraft}
                 onInputDraftConsumed={handleInputDraftConsumed}
                 serverDraft={task.serverDraft}
                 onSaveDraft={
-                  task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
+                  task.tid !== null && onSaveDraft ? handleSaveDraft : undefined
                 }
                 inputRef={inputRef}
                 insertTextRef={insertTextRef}
@@ -510,7 +511,7 @@ function SessionViewInner({
         )
       ) : (
         <MessageList
-          sessionId={task.tid}
+          taskTid={tid}
           messages={task.messages}
           blocks={task.blocks}
           isProcessing={task.isProcessing}
@@ -583,12 +584,12 @@ function SessionViewInner({
             isProcessing={task.isProcessing}
             stdinClosed={task.stdinClosed}
             disabled={!connected}
-            sessionId={task.tid}
+            sessionId={task.uuid}
             inputDraft={task.inputDraft}
             onInputDraftConsumed={handleInputDraftConsumed}
             serverDraft={task.serverDraft}
             onSaveDraft={
-              task.tid > 0 && onSaveDraft ? handleSaveDraft : undefined
+              task.tid !== null && onSaveDraft ? handleSaveDraft : undefined
             }
             inputRef={inputRef}
             insertTextRef={insertTextRef}

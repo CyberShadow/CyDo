@@ -10,19 +10,19 @@ const noop = () => {
 
 export function ExportApp() {
   const {
-    tasks,
     activeTaskId,
     setActiveTaskId,
     sidebarTasks,
     typeInfo,
     getTaskHref,
+    getByTid,
   } = useExportedTaskManager();
 
   const { theme, toggleTheme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const activeTid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
-  const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
+  const active = !isNaN(activeTid) ? (getByTid(activeTid) ?? null) : null;
 
   const handleSidebarSelect = useCallback(
     (id: string) => {

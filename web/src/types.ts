@@ -185,7 +185,8 @@ export interface SessionInfo {
 }
 
 export interface TaskState {
-  tid: number;
+  uuid: string;
+  tid: number | null;
   status: string; // pending, active, completed, failed
   messages: DisplayMessage[];
   sessionInfo: SessionInfo | null;
@@ -231,8 +232,6 @@ export interface TaskState {
   agentType?: string;
   archived?: boolean;
   archiving?: boolean;
-  /** Stable Preact key for draft tasks (UUID). */
-  renderKey?: string;
   /** Last stderr text from non-zero exit; cleared on restart. */
   error?: string;
   /** Task creation timestamp (unix millis), undefined if not set. */
@@ -270,7 +269,7 @@ export interface TaskState {
 }
 
 export function makeTaskState(
-  tid: number,
+  tid: number | null = null,
   alive: boolean = false,
   resumable: boolean = false,
   title?: string,
@@ -293,6 +292,7 @@ export function makeTaskState(
   archiving: boolean = false,
 ): TaskState {
   return {
+    uuid: crypto.randomUUID(),
     tid,
     status,
     messages: [],

@@ -293,7 +293,14 @@ interface FlatItem {
   archiving: boolean;
 }
 
-export function computeStatusClass(t: SidebarTask): string {
+export function computeStatusClass(t: {
+  isProcessing: boolean;
+  alive: boolean;
+  stdinClosed?: boolean;
+  resumable: boolean;
+  status?: string;
+  hasMessages?: boolean;
+}): string {
   if (t.isProcessing) return t.status === "waiting" ? "waiting" : "processing";
   if (t.alive && t.stdinClosed) return "ending";
   if (t.alive) return "alive";

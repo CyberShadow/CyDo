@@ -8,7 +8,7 @@ import {
 } from "preact/hooks";
 import type { ImageAttachment } from "../useSessionManager";
 
-export const drafts = new Map<number, string>();
+export const drafts = new Map<string, string>();
 
 const supportsFieldSizing = CSS.supports("field-sizing", "content");
 
@@ -18,7 +18,7 @@ interface Props {
   isProcessing: boolean;
   stdinClosed?: boolean;
   disabled: boolean;
-  sessionId: number;
+  sessionId: string;
   inputDraft?: string;
   onInputDraftConsumed?: () => void;
   serverDraft?: string;
@@ -89,6 +89,18 @@ export function InputBox({
     () => debounce((t: string) => onSaveDraft?.(t), 500),
     [onSaveDraft],
   );
+
+  // When onSaveDraft becomes available (draft task promoted to real task),
+  // immediately flush current text to backend. The sessionId no longer changes
+  // on promotion (it's a stable uuid), so the sessionId effect won't fire.
+  const prevOnSaveDraftRef = useRef(onSaveDraft);
+  useEffect(() => {
+    const prev = prevOnSaveDraftRef.current;
+    prevOnSaveDraftRef.current = onSaveDraft;
+    if (!prev && onSaveDraft && textRef.current) {
+      onSaveDraft(textRef.current);
+    }
+  }, [onSaveDraft]);
 
   useEffect(() => {
     // On sessionId change: use in-memory draft if available, else server draft

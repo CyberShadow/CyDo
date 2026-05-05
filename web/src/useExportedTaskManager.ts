@@ -46,8 +46,8 @@ interface ExportData {
   typeInfo?: TypeInfo[];
 }
 
-function buildTasksFromExportData(data: ExportData): Map<number, TaskState> {
-  const taskMap = new Map<number, TaskState>();
+function buildTasksFromExportData(data: ExportData): Map<string, TaskState> {
+  const taskMap = new Map<string, TaskState>();
   for (const entry of data.tasks) {
     let state = makeTaskState(
       entry.tid,
@@ -75,7 +75,7 @@ function buildTasksFromExportData(data: ExportData): Map<number, TaskState> {
     for (let i = 0; i < events.length; i++) {
       state = reduceMessage(state, events[i]!.event, i, undefined);
     }
-    taskMap.set(entry.tid, state);
+    taskMap.set(state.uuid, state);
   }
   return taskMap;
 }
@@ -85,7 +85,7 @@ const noop = () => {
 };
 
 export function useExportedTaskManager(): TaskManager {
-  const [tasks, setTasks] = useState<Map<number, TaskState>>(new Map());
+  const [tasks, setTasks] = useState<Map<string, TaskState>>(new Map());
   const [activeTaskId, setActiveTaskIdState] = useState<string | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
@@ -109,9 +109,14 @@ export function useExportedTaskManager(): TaskManager {
       activeTaskIdRef.current = match[1]!;
       setActiveTaskIdState(match[1]!);
     } else if (taskMap.size > 0) {
-      const firstTid = String([...taskMap.keys()].sort((a, b) => a - b)[0]);
-      activeTaskIdRef.current = firstTid;
-      setActiveTaskIdState(firstTid);
+      const firstState = Array.from(taskMap.values()).sort(
+        (a, b) => (a.tid ?? 0) - (b.tid ?? 0),
+      )[0];
+      const firstTid = firstState?.tid != null ? String(firstState.tid) : null;
+      if (firstTid) {
+        activeTaskIdRef.current = firstTid;
+        setActiveTaskIdState(firstTid);
+      }
     }
   }, []);
 
@@ -137,9 +142,20 @@ export function useExportedTaskManager(): TaskManager {
 
   const getTaskHref = useCallback((id: string) => `#task/${id}`, []);
 
+  const getByTid = useCallback(
+    (tid: number) => {
+      for (const t of tasks.values()) {
+        if (t.tid === tid) return t;
+      }
+      return undefined;
+    },
+    [tasks],
+  );
+
   const sidebarTasks = useMemo(
     () =>
       Array.from(tasks.values())
+        .filter((t): t is TaskState & { tid: number } => t.tid !== null)
         .sort((a, b) => a.tid - b.tid)
         .map((t) => ({
           tid: t.tid,
@@ -206,6 +222,7 @@ export function useExportedTaskManager(): TaskManager {
     navigateToProject: noop,
     getProjectHref: () => "#",
     getTaskHref,
+    getByTid,
     refreshWorkspaces: noop,
     refreshingWorkspaces: false,
   };

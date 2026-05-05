@@ -66,6 +66,7 @@ function AppContent() {
     navigateToProject,
     getProjectHref,
     getTaskHref,
+    getByTid,
     refreshWorkspaces,
     refreshingWorkspaces,
   } = useTaskManager(addToast);
@@ -75,7 +76,12 @@ function AppContent() {
   );
 
   const { theme, toggleTheme } = useTheme();
-  const attention = useNotifications(activeTaskId, tasks, dismissAttention);
+  const attention = useNotifications(
+    activeTaskId,
+    tasks,
+    dismissAttention,
+    getByTid,
+  );
   useErrorCapture(addToast);
 
   const effectiveDefaultAgent = useMemo(() => {
@@ -94,7 +100,7 @@ function AppContent() {
   }, []);
 
   const activeTid = activeTaskId !== null ? parseInt(activeTaskId, 10) : NaN;
-  const active = !isNaN(activeTid) ? (tasks.get(activeTid) ?? null) : null;
+  const active = !isNaN(activeTid) ? (getByTid(activeTid) ?? null) : null;
 
   // Resolve active project path for attention scoping
   const activeProjectPath = useMemo(() => {
@@ -234,7 +240,7 @@ function AppContent() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "A") {
         e.preventDefault();
-        if (active) {
+        if (active && active.tid !== null) {
           setArchived(active.tid, !active.archived);
         }
       }
@@ -343,12 +349,10 @@ function AppContent() {
 
   const handleSidebarArchive = useCallback(
     (tid: number) => {
-      const task = tasks.get(tid);
-      if (task) {
-        setArchived(tid, !task.archived);
-      }
+      const task = getByTid(tid);
+      if (task) setArchived(tid, !task.archived);
     },
-    [tasks, setArchived],
+    [getByTid, setArchived],
   );
 
   const handleDraftContentStart = useCallback(
@@ -410,12 +414,12 @@ function AppContent() {
           <NoticeBar notices={mergedNotices} />
           {Array.from(tasks.values())
             .filter((t) => {
-              // Virtual drafts (tid=0) should only render in draft mode
-              if (t.tid === 0) {
+              // Virtual drafts (tid=null) should only render in draft mode
+              if (t.tid === null) {
                 return (
                   activeTaskId === null &&
                   draftRenderKey !== null &&
-                  t.renderKey === draftRenderKey
+                  t.uuid === draftRenderKey
                 );
               }
               // Also keep real draft tasks visible while user is still at project root.
@@ -429,7 +433,7 @@ function AppContent() {
                 String(t.tid) === activeTaskIdRef.current ||
                 (activeTaskId === null &&
                   draftRenderKey !== null &&
-                  t.renderKey === draftRenderKey)
+                  t.uuid === draftRenderKey)
               );
             })
             .map((task) => {
@@ -438,10 +442,10 @@ function AppContent() {
                 String(task.tid) === activeTaskIdRef.current ||
                 (activeTaskId === null &&
                   draftRenderKey !== null &&
-                  task.renderKey === draftRenderKey);
+                  task.uuid === draftRenderKey);
               return (
                 <div
-                  key={task.renderKey ?? String(task.tid)}
+                  key={task.uuid}
                   style={{ display: isActive ? "contents" : "none" }}
                 >
                   <SessionView
@@ -472,32 +476,28 @@ function AppContent() {
                     onEditMessage={editMessage}
                     onEditRawEvent={editRawEvent}
                     entryPoints={
-                      task.renderKey === draftRenderKey
-                        ? entryPoints
-                        : undefined
+                      task.uuid === draftRenderKey ? entryPoints : undefined
                     }
                     agentTypes={
-                      task.renderKey === draftRenderKey ? agentTypes : undefined
+                      task.uuid === draftRenderKey ? agentTypes : undefined
                     }
                     defaultAgentType={
-                      task.renderKey === draftRenderKey
+                      task.uuid === draftRenderKey
                         ? effectiveDefaultAgent
                         : undefined
                     }
                     defaultTaskType={
-                      task.renderKey === draftRenderKey
+                      task.uuid === draftRenderKey
                         ? effectiveDefaultTaskType
                         : undefined
                     }
                     onContentStart={
-                      task.renderKey === draftRenderKey
+                      task.uuid === draftRenderKey
                         ? handleDraftContentStart
                         : undefined
                     }
                     onContentEnd={
-                      task.renderKey === draftRenderKey
-                        ? deleteDraftTask
-                        : undefined
+                      task.uuid === draftRenderKey ? deleteDraftTask : undefined
                     }
                   />
                 </div>

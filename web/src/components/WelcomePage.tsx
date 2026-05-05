@@ -10,7 +10,7 @@ import { LogoBanner } from "./LogoBanner";
 
 interface Props {
   workspaces: WorkspaceInfo[];
-  tasks: Map<number, TaskState>;
+  tasks: Map<string, TaskState>;
   attention: Set<number>;
   onSelectTask: (tid: number) => void;
   onNavigateToProject: (workspace: string, projectName: string) => void;
@@ -54,7 +54,7 @@ function ActiveSessions({
   collapsed,
   onToggleCollapsed,
 }: {
-  tasks: Map<number, TaskState>;
+  tasks: Map<string, TaskState>;
   filter: string;
   attention: Set<number>;
   taskTypes: TypeInfo[];
@@ -89,8 +89,8 @@ function ActiveSessions({
       result.push(t);
     }
     result.sort((a, b) => {
-      const aAtt = attention.has(a.tid) ? 1 : 0;
-      const bAtt = attention.has(b.tid) ? 1 : 0;
+      const aAtt = a.tid !== null && attention.has(a.tid) ? 1 : 0;
+      const bAtt = b.tid !== null && attention.has(b.tid) ? 1 : 0;
       if (bAtt !== aAtt) return bAtt - aAtt;
       return (b.lastActive ?? 0) - (a.lastActive ?? 0);
     });
@@ -118,14 +118,14 @@ function ActiveSessions({
               "";
             return (
               <div
-                key={t.tid}
+                key={t.uuid}
                 class={`active-sessions-row${
-                  attention.has(t.tid) ? " attention" : ""
+                  t.tid !== null && attention.has(t.tid) ? " attention" : ""
                 }`}
                 onClick={(e: MouseEvent) => {
                   if (!isPlainLeftClick(e)) return;
                   e.preventDefault();
-                  onSelectTask(t.tid);
+                  if (t.tid !== null) onSelectTask(t.tid);
                 }}
                 onAuxClick={(e: MouseEvent) => {
                   if (e.button !== 1) return;
@@ -134,7 +134,7 @@ function ActiveSessions({
                 }}
               >
                 <span class="active-sessions-icon">
-                  {attention.has(t.tid) ? (
+                  {t.tid !== null && attention.has(t.tid) ? (
                     <span class="task-type-icon task-type-icon-check alive" />
                   ) : hasTaskTypeIcon(t.taskType, taskTypes) ? (
                     <TaskTypeIcon
@@ -279,7 +279,9 @@ export function WelcomePage({
     >();
     for (const [key, projectTasks] of tasksByProject) {
       projectTasks.sort(
-        (a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || b.tid - a.tid,
+        (a, b) =>
+          (b.lastActive ?? 0) - (a.lastActive ?? 0) ||
+          (b.tid ?? 0) - (a.tid ?? 0),
       );
       let active = false;
       let maxLastActive = 0;
@@ -501,13 +503,15 @@ export function WelcomePage({
                         ) : (
                           projTasks.map((t) => (
                             <a
-                              key={t.tid}
+                              key={t.uuid}
                               href={getTaskHref(String(t.tid))}
                               class={`sidebar-item${
-                                attention.has(t.tid) ? " attention" : ""
+                                t.tid !== null && attention.has(t.tid)
+                                  ? " attention"
+                                  : ""
                               }`}
                             >
-                              {attention.has(t.tid) ? (
+                              {t.tid !== null && attention.has(t.tid) ? (
                                 <span class="task-type-icon task-type-icon-check alive" />
                               ) : (
                                 renderTaskDot(t)
@@ -550,13 +554,15 @@ export function WelcomePage({
                 <div class="project-card-sessions">
                   {filteredUngrouped.map((t) => (
                     <a
-                      key={t.tid}
+                      key={t.uuid}
                       href={getTaskHref(String(t.tid))}
                       class={`sidebar-item${
-                        attention.has(t.tid) ? " attention" : ""
+                        t.tid !== null && attention.has(t.tid)
+                          ? " attention"
+                          : ""
                       }`}
                     >
-                      {attention.has(t.tid) ? (
+                      {t.tid !== null && attention.has(t.tid) ? (
                         <span class="task-type-icon task-type-icon-check alive" />
                       ) : (
                         renderTaskDot(t)

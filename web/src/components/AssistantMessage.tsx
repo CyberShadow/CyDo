@@ -135,7 +135,7 @@ interface Props {
   resolvedBlocksByMsg?: Map<string, Block[]>;
   childrenByParent?: Map<string, DisplayMessage[]>;
   onViewFile?: (filePath: string) => void;
-  sessionId?: number;
+  sessionId?: number | null;
   semanticSelectors?: boolean;
 }
 

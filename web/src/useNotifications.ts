@@ -123,15 +123,16 @@ function startWorker() {
 
 export function useNotifications(
   activeTaskId: string | null,
-  tasks: Map<number, TaskState>,
+  tasks: Map<string, TaskState>,
   onDismiss?: (tid: number) => void,
+  getByTid?: (tid: number) => TaskState | undefined,
 ): Set<number> {
   // Derive attention set from tasks map
   const prevAttentionRef = useRef<Set<number>>(new Set());
   const attention = useMemo(() => {
     const set = new Set<number>();
-    for (const [tid, t] of tasks) {
-      if (t.needsAttention) set.add(tid);
+    for (const t of tasks.values()) {
+      if (t.needsAttention && t.tid !== null) set.add(t.tid);
     }
     const prev = prevAttentionRef.current;
     if (set.size === prev.size && [...set].every((tid) => prev.has(tid))) {
@@ -148,7 +149,8 @@ export function useNotifications(
   useEffect(() => {
     if (activeTaskId === null) return;
     const tid = parseInt(activeTaskId, 10);
-    const t = !isNaN(tid) ? tasks.get(tid) : undefined;
+    if (isNaN(tid)) return;
+    const t = getByTid ? getByTid(tid) : undefined;
     if (!t?.needsAttention) return;
 
     const dismiss = () => {
