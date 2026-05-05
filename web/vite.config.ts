@@ -58,6 +58,9 @@ export default defineConfig({
       minify: false,
     },
   },
+  esbuild: {
+    keepNames: true,
+  },
   build: {
     outDir: "dist",
     sourcemap: true,

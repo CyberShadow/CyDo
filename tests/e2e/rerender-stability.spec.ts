@@ -25,35 +25,41 @@ test("completed messages are not recreated when new messages arrive", async ({
     };
     (window as any).__renderTracker = tracker;
 
-    (window as any).__PREACT_DEVTOOLS__ = {
-      attachPreact(_version: string, options: any, _exports: any) {
-        const prev = options.__r;
-        options.__r = (vnode: any) => {
-          tracker.totalCalls++;
-          if (tracker.active && tracker.preExistingIds) {
-            // Identify MessageView renders by unique prop signature.
-            // Filter out the Memoed wrapper (type._forwarded) to avoid
-            // double-counting — both wrapper and inner fn get the same props.
-            const props = vnode?.props;
-            const type = vnode?.type;
-            if (
-              props &&
-              "msg" in props &&
-              "tid" in props &&
-              "resolvedBlocks" in props &&
-              !type?._forwarded
-            ) {
-              // Only count re-renders of pre-existing (completed) messages.
-              const msgId = props.msg?.id;
-              if (msgId && tracker.preExistingIds.has(String(msgId))) {
-                tracker.preExistingRenders++;
-              }
+    // main.tsx assigns __preactOptions during module init, after this script
+    // runs, so we poll with rAF until it's available.
+    const install = () => {
+      const opts = (window as any).__preactOptions;
+      if (!opts) {
+        requestAnimationFrame(install);
+        return;
+      }
+      const prev = opts.__r;
+      opts.__r = (vnode: any) => {
+        tracker.totalCalls++;
+        if (tracker.active && tracker.preExistingIds) {
+          // Identify MessageView renders by unique prop signature.
+          // Filter out the Memoed wrapper (type._forwarded) to avoid
+          // double-counting — both wrapper and inner fn get the same props.
+          const props = vnode?.props;
+          const type = vnode?.type;
+          if (
+            props &&
+            "msg" in props &&
+            "tid" in props &&
+            "resolvedBlocks" in props &&
+            !type?._forwarded
+          ) {
+            // Only count re-renders of pre-existing (completed) messages.
+            const msgId = props.msg?.id;
+            if (msgId && tracker.preExistingIds.has(String(msgId))) {
+              tracker.preExistingRenders++;
             }
           }
-          if (prev) prev(vnode);
-        };
-      },
+        }
+        if (prev) prev(vnode);
+      };
     };
+    install();
   });
 
   await enterSession(page);
