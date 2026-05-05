@@ -7682,9 +7682,11 @@ class App : ToolsBackend
 	private TaskListEntry buildTaskEntry(ref TaskData td)
 	{
 		import cydo.task : stdTimeToUnixMillis;
+		const supportsEndingStop = td.session !is null && td.session.canStopAfterCloseStdin;
+		const canStop = td.alive && (!td.stdinClosed || supportsEndingStop);
 		return TaskListEntry(td.tid, td.alive,
 			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
-			td.isProcessing, td.stdinClosed, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
+			td.isProcessing, td.stdinClosed, canStop, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 			td.taskType, td.entryPoint, td.agentType, td.archived, td.archiving, td.draft, td.error,
 			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));

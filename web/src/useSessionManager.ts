@@ -149,6 +149,7 @@ export interface TaskManager {
   sidebarTasks: Array<{
     tid: number;
     alive: boolean;
+    canStop: boolean;
     resumable: boolean;
     isProcessing: boolean;
     stdinClosed?: boolean;
@@ -842,6 +843,7 @@ export function useTaskManager(
                 entry.agent_type || undefined,
                 entry.entry_point || undefined,
                 entry.archiving || false,
+                entry.canStop ?? entry.alive,
               );
               const t: TaskState = {
                 ...base,
@@ -866,6 +868,7 @@ export function useTaskManager(
                 resumable: entry.resumable,
                 isProcessing: entry.isProcessing || false,
                 stdinClosed: entry.stdinClosed || false,
+                canStop: entry.canStop ?? entry.alive,
                 needsAttention: entry.needsAttention || false,
                 hasPendingQuestion: entry.hasPendingQuestion || false,
                 historyLoaded: needsHistory ? false : existing.historyLoaded,
@@ -935,6 +938,7 @@ export function useTaskManager(
               entry.agent_type || undefined,
               entry.entry_point || undefined,
               entry.archiving || false,
+              entry.canStop ?? entry.alive,
             );
             taskUpdated = {
               ...base,
@@ -955,6 +959,7 @@ export function useTaskManager(
               resumable: entry.resumable,
               isProcessing: entry.isProcessing || false,
               stdinClosed: entry.stdinClosed || false,
+              canStop: entry.canStop ?? entry.alive,
               needsAttention: entry.needsAttention || false,
               hasPendingQuestion: entry.hasPendingQuestion || false,
               historyLoaded: needsHistory ? false : existing.historyLoaded,
@@ -1990,6 +1995,7 @@ export function useTaskManager(
       .map((t) => ({
         tid: t.tid,
         alive: t.alive,
+        canStop: t.canStop,
         resumable: t.resumable,
         isProcessing: t.isProcessing,
         stdinClosed: t.stdinClosed,
@@ -2016,6 +2022,7 @@ export function useTaskManager(
         return (
           t.tid === p.tid &&
           t.alive === p.alive &&
+          t.canStop === p.canStop &&
           t.resumable === p.resumable &&
           t.isProcessing === p.isProcessing &&
           t.stdinClosed === p.stdinClosed &&

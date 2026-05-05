@@ -13,6 +13,7 @@ interface Props {
   isProcessing: boolean;
   stdinClosed: boolean;
   alive: boolean;
+  canStop: boolean;
   theme: Theme;
   onToggleTheme: () => void;
   onStop: () => void;
@@ -47,6 +48,7 @@ export function SystemBanner({
   isProcessing,
   stdinClosed,
   alive,
+  canStop,
   theme,
   onToggleTheme,
   onStop,
@@ -136,13 +138,15 @@ export function SystemBanner({
                 End
               </button>
             )}
-            <button
-              class="btn-banner-stop"
-              onClick={onStop}
-              title="Force-stop task execution"
-            >
-              Kill
-            </button>
+            {canStop && (
+              <button
+                class="btn-banner-stop"
+                onClick={onStop}
+                title="Force-stop task execution"
+              >
+                Kill
+              </button>
+            )}
           </>
         )}
         {!alive && resumable && onResume && (

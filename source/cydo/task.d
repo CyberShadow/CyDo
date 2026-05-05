@@ -553,6 +553,7 @@ struct TaskListEntry
 	bool resumable;
 	bool isProcessing;
 	bool stdinClosed;
+	bool canStop;
 	bool needsAttention;
 	bool hasPendingQuestion;
 	string notificationBody;

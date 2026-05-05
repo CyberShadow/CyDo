@@ -982,6 +982,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	void killAfterTimeout(Duration timeout) {} // no-op: server.shutdown handles graceful exit
 
+	@property bool canStopAfterCloseStdin() const
+	{
+		return false;
+	}
+
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }

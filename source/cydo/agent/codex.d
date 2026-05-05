@@ -1842,6 +1842,11 @@ class CodexSession : AgentSession
 
 	void killAfterTimeout(Duration timeout) {} // no-op: closeStdin fires exit immediately
 
+	@property bool canStopAfterCloseStdin() const
+	{
+		return true;
+	}
+
 	@property void onOutput(void delegate(TranslatedEvent) dg) { outputHandler_ = dg; }
 	@property void onStderr(void delegate(string line) dg) { stderrHandler_ = dg; }
 	@property void onExit(void delegate(int status) dg) { exitHandler_ = dg; }

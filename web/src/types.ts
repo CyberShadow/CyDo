@@ -193,6 +193,7 @@ export interface TaskState {
   sessionStatus?: string | null;
   isProcessing: boolean;
   stdinClosed: boolean;
+  canStop: boolean;
   needsAttention: boolean;
   hasPendingQuestion: boolean;
   totalCost: number;
@@ -302,6 +303,7 @@ export function makeTaskState(
   agentType?: string,
   entryPoint?: string,
   archiving: boolean = false,
+  canStop: boolean = alive,
 ): TaskState {
   return {
     uuid: crypto.randomUUID(),
@@ -312,6 +314,7 @@ export function makeTaskState(
     sessionStatus: null,
     isProcessing,
     stdinClosed,
+    canStop,
     needsAttention,
     hasPendingQuestion,
     totalCost: 0,

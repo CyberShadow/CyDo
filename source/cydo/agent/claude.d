@@ -808,6 +808,11 @@ class ClaudeCodeSession : AgentSession
 		process.killAfterTimeout(timeout);
 	}
 
+	@property bool canStopAfterCloseStdin() const
+	{
+		return true;
+	}
+
 	@property void onOutput(void delegate(TranslatedEvent) dg)
 	{
 		outputHandler = dg;

@@ -424,6 +424,7 @@ function SessionViewInner({
         isProcessing={task.isProcessing}
         stdinClosed={task.stdinClosed}
         alive={task.alive}
+        canStop={task.canStop}
         theme={theme}
         onToggleTheme={onToggleTheme}
         onStop={() => {

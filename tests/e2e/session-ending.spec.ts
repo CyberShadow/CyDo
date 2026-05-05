@@ -7,6 +7,33 @@ import {
   assistantText,
 } from "./fixtures";
 
+function captureEndingCanStop(page: {
+  on: (
+    event: "websocket",
+    listener: (ws: {
+      on: (
+        event: "framereceived",
+        listener: (frame: { payload: { toString: () => string } }) => void,
+      ) => void;
+    }) => void,
+  ) => void;
+}): () => boolean | null {
+  let endingCanStop: boolean | null = null;
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type !== "task_updated" || !data.task) return;
+        if (data.task.stdinClosed !== true) return;
+        endingCanStop = data.task.canStop === true;
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
+  return () => endingCanStop;
+}
+
 test("End button shows ending state then session exits", async ({
   page,
   agentType,
@@ -40,13 +67,28 @@ test("End button shows ending state then session exits", async ({
     timeout: 5_000,
   });
 
-  // "Ending..." should appear in the banner
-  await expect(
-    page.locator(".banner-processing", { hasText: "Ending..." }),
-  ).toBeVisible({ timeout: 5_000 });
+  const ending = page.locator(".banner-processing", { hasText: "Ending..." });
+  const stop = page.locator(".btn-banner-stop");
+  const archive = page.locator(".btn-banner-archive");
 
-  // Kill button should still be visible (as a fallback)
-  await expect(page.locator(".btn-banner-stop")).toBeVisible();
+  // End transitions to either ending state or direct completion.
+  const deadline = Date.now() + 5_000;
+  let sawEnding = false;
+  let sawArchive = false;
+  while (Date.now() < deadline) {
+    sawEnding ||= await ending.isVisible();
+    sawArchive ||= await archive.isVisible();
+    if (sawEnding || sawArchive) break;
+    await page.waitForTimeout(25);
+  }
+  expect(sawEnding || sawArchive).toBe(true);
+
+  if (sawEnding && agentType === "claude") {
+    await expect(async () => {
+      expect(await ending.isVisible()).toBe(true);
+      expect(await stop.isVisible()).toBe(true);
+    }).toPass({ timeout: 5_000 });
+  }
 
   // The textarea should still be enabled (user can keep typing drafts)
   const textarea = page.locator(".input-textarea").first();
@@ -118,4 +160,48 @@ test("background command output re-enters processing state", async ({
     const reentry = processingTransitions.slice(falseIdx + 1).includes(true);
     expect(reentry).toBe(true); // re-entered processing
   }).toPass({ timeout: 10_000 });
+});
+
+test("repro: ending capability matches Stop visibility", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(agentType !== "copilot", "reproducer targets Copilot only");
+
+  const readEndingCanStop = captureEndingCanStop(page);
+  await enterSession(page);
+  await sendMessage(page, "run command sleep 5");
+
+  await expect(page.locator(".tool-call")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  await page.locator(".btn-banner-end").click();
+  await expect(page.locator(".btn-banner-end")).not.toBeVisible({
+    timeout: 5_000,
+  });
+
+  const ending = page.locator(".banner-processing", { hasText: "Ending..." });
+  const stop = page.locator(".btn-banner-stop");
+  const archive = page.locator(".btn-banner-archive");
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const endingVisible = await ending.isVisible();
+    if (!endingVisible) {
+      if (await archive.isVisible()) return;
+      await page.waitForTimeout(25);
+      continue;
+    }
+
+    const canStop = readEndingCanStop();
+    if (canStop === null) {
+      await page.waitForTimeout(25);
+      continue;
+    }
+    expect(await stop.isVisible()).toBe(canStop);
+    return;
+  }
+
+  await expect(archive).toBeVisible({ timeout: 30_000 });
 });

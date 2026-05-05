@@ -26,6 +26,10 @@ interface AgentSession
 	/// Close stdin to signal EOF — agent exits gracefully.
 	void closeStdin();
 
+	/// Whether force-stop remains actionable after closeStdin() has been requested.
+	/// Used by UI capability rendering during "Ending..." state.
+	@property bool canStopAfterCloseStdin() const;
+
 	/// Force-kill the agent if it has not exited within `timeout` (SIGTERM, then SIGKILL after 2s).
 	void killAfterTimeout(Duration timeout);
 

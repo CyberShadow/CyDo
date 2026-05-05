@@ -24,8 +24,10 @@ interface ExportTaskEntry {
   relation_type?: string;
   status?: string;
   stdinClosed?: boolean;
+  canStop?: boolean;
   task_type?: string;
   archived?: boolean;
+  archiving?: boolean;
   created_at?: number;
   last_active?: number;
   agent_type?: string;
@@ -70,6 +72,8 @@ function buildTasksFromExportData(data: ExportData): Map<string, TaskState> {
       entry.last_active,
       entry.agent_type,
       entry.entry_point,
+      entry.archiving ?? false,
+      entry.canStop ?? entry.alive ?? false,
     );
     const events = data.events?.[String(entry.tid)] ?? [];
     for (let i = 0; i < events.length; i++) {
@@ -160,6 +164,7 @@ export function useExportedTaskManager(): TaskManager {
         .map((t) => ({
           tid: t.tid,
           alive: t.alive,
+          canStop: t.canStop,
           resumable: t.resumable,
           isProcessing: t.isProcessing,
           stdinClosed: t.stdinClosed,

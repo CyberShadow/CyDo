@@ -129,6 +129,7 @@ function TreeJunction({
 export interface SidebarTask {
   tid: number;
   alive: boolean;
+  canStop: boolean;
   resumable: boolean;
   isProcessing: boolean;
   stdinClosed?: boolean;
@@ -175,6 +176,7 @@ function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
       task: {
         tid: 0,
         alive: false,
+        canStop: false,
         resumable: false,
         isProcessing: false,
         title: "Archive",
@@ -222,6 +224,7 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
       task: {
         tid: 0,
         alive: false,
+        canStop: false,
         resumable: false,
         isProcessing: false,
         title: "Archive",
@@ -246,6 +249,7 @@ function buildTree(tasks: SidebarTask[]): TreeNode[] {
       task: {
         tid: 0,
         alive: false,
+        canStop: false,
         resumable: false,
         isProcessing: false,
         title: "Import",
