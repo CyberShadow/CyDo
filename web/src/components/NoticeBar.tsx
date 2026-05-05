@@ -13,7 +13,20 @@ export function NoticeBar({ notices }: Props) {
         <div key={id} class={`notice-item notice-${n.level}`}>
           <strong>{n.description}</strong>
           {n.impact && <span class="notice-impact"> {n.impact}</span>}
-          {n.action && <span class="notice-action"> {n.action}</span>}
+          {n.action &&
+            (n.action_kind === "reload" ? (
+              <button
+                class="notice-action notice-action-button"
+                onClick={() => {
+                  location.reload();
+                }}
+              >
+                {" "}
+                {n.action}
+              </button>
+            ) : (
+              <span class="notice-action"> {n.action}</span>
+            ))}
         </div>
       ))}
     </div>

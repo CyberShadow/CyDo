@@ -7611,6 +7611,23 @@ class App : ToolsBackend
 		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
 	}
 
+	private string readBuildId()
+	{
+		import std.file : exists, readText;
+		import std.regex : matchFirst, regex;
+		auto indexHtml = webDistDir ~ "index.html";
+		if (!exists(indexHtml))
+			return "";
+		auto content = readText(indexHtml);
+		auto m = matchFirst(content, regex(`/assets/index-([A-Za-z0-9_-]+)\.js`));
+		if (m.empty)
+		{
+			warningf("Could not extract build id from %s", indexHtml);
+			return "";
+		}
+		return m[1].idup;
+	}
+
 	private string buildServerStatus()
 	{
 		import ae.utils.json : toJson;
@@ -7618,6 +7635,7 @@ class App : ToolsBackend
 			"server_status",
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
+			readBuildId(),
 		));
 	}
 

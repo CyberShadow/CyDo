@@ -200,6 +200,7 @@ export function useExportedTaskManager(): TaskManager {
     activeWorkspace: null,
     activeProject: null,
     notices: {},
+    localNotices: {},
     devMode: false,
     navigateHome: noop,
     navigateToProject: noop,

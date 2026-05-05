@@ -60,6 +60,7 @@ function AppContent() {
     activeWorkspace,
     activeProject,
     notices,
+    localNotices,
     devMode,
     navigateHome,
     navigateToProject,
@@ -68,6 +69,10 @@ function AppContent() {
     refreshWorkspaces,
     refreshingWorkspaces,
   } = useTaskManager(addToast);
+  const mergedNotices = useMemo(
+    () => ({ ...notices, ...localNotices }),
+    [notices, localNotices],
+  );
 
   const { theme, toggleTheme } = useTheme();
   const attention = useNotifications(activeTaskId, tasks, dismissAttention);
@@ -189,7 +194,7 @@ function AppContent() {
                 tasks={tasks}
                 attention={attention}
                 taskTypes={typeInfo}
-                notices={notices}
+                notices={mergedNotices}
                 onSelectTask={handleSearchSelect}
                 onNavigateToProject={navigateToProject}
                 getProjectHref={getProjectHref}
@@ -402,7 +407,7 @@ function AppContent() {
             onArchive={handleSidebarArchive}
             hasGlobalAttention={hasOtherProjectAttention}
           />
-          <NoticeBar notices={notices} />
+          <NoticeBar notices={mergedNotices} />
           {Array.from(tasks.values())
             .filter((t) => {
               // Virtual drafts (tid=0) should only render in draft mode

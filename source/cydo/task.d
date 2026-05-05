@@ -646,6 +646,7 @@ struct ServerStatusMessage
 	string type = "server_status";
 	bool auth_enabled;
 	bool dev_mode;
+	string build_id;
 }
 
 enum NoticeLevel { info, warning, alert }
@@ -656,6 +657,7 @@ struct Notice
 	string description;
 	string impact;
 	string action;
+	string action_kind;
 }
 
 struct NoticesListMessage

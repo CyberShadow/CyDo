@@ -170,6 +170,7 @@ export interface TaskManager {
   activeWorkspace: string | null;
   activeProject: string | null;
   notices: Record<string, Notice>;
+  localNotices: Record<string, Notice>;
   devMode: boolean;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -218,6 +219,16 @@ function buildScopedHref(
   return suffix;
 }
 
+function readLocalBuildId(): string {
+  const script = document.querySelector<HTMLScriptElement>(
+    'script[type="module"][src*="/assets/index-"]',
+  );
+  const match = script?.src.match(/\/assets\/index-([^.]+)\.js/);
+  return match?.[1] ?? "";
+}
+
+const localBuildId = readLocalBuildId();
+
 export function useTaskManager(
   addToast: (
     level: "info" | "warning" | "error" | "alert",
@@ -240,6 +251,7 @@ export function useTaskManager(
   const [defaultAgentType, setDefaultAgentType] = useState("claude");
   const [defaultTaskType, setDefaultTaskType] = useState("");
   const [notices, setNotices] = useState<Record<string, Notice>>({});
+  const [localNotices, setLocalNotices] = useState<Record<string, Notice>>({});
   const [devMode, setDevMode] = useState(false);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
@@ -1268,6 +1280,29 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          const serverBuildId = msg.build_id ?? "";
+          if (
+            serverBuildId.length > 0 &&
+            localBuildId.length > 0 &&
+            serverBuildId !== localBuildId
+          ) {
+            setLocalNotices((prev) => ({
+              ...prev,
+              frontend_update: {
+                level: "info",
+                description: "A new version of CyDo is available.",
+                impact: "",
+                action: "Reload",
+                action_kind: "reload",
+              },
+            }));
+          } else {
+            setLocalNotices((prev) => {
+              if (!("frontend_update" in prev)) return prev;
+              const { frontend_update: _, ...rest } = prev;
+              return rest;
+            });
+          }
           break;
         }
         case "notices_list": {
@@ -2032,6 +2067,7 @@ export function useTaskManager(
     activeWorkspace,
     activeProject,
     notices,
+    localNotices,
     devMode,
     navigateHome,
     navigateToProject,

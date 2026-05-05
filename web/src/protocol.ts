@@ -374,6 +374,7 @@ export interface ServerStatusMessage {
   type: "server_status";
   auth_enabled: boolean;
   dev_mode?: boolean;
+  build_id?: string;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";
@@ -384,6 +385,7 @@ export interface Notice {
   description: string;
   impact: string;
   action: string;
+  action_kind?: string;
 }
 export interface NoticesListMessage {
   type: "notices_list";
