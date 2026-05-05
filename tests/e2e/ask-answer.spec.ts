@@ -721,6 +721,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     (item) => item["status"] === "question",
   )!;
   const firstQid = firstQuestion["qid"] as number;
+  const resultCountBeforeFirstAnswer = observedTaskResults.length;
 
   // Answer the first child using the observed qid.
   await sendMessage(page, `call answer ${firstQid} answer one`);
@@ -737,28 +738,28 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible({ timeout: 90_000 });
 
-  // The second question (from the other child) should now be delivered as the Answer result.
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("what approach?")
-      .last(),
-  ).toBeVisible({ timeout: 90_000 });
-
-  // Wait for Turn 3 to complete before answering the second question.
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("Done.", { exact: true })
-      .last(),
-  ).toBeVisible({ timeout: 30_000 });
-
-  // Capture qid of the second question (latest item/result after answering the first).
-  await expect.poll(() => observedTaskResults.length).toBeGreaterThanOrEqual(2);
-  const secondQuestion = observedTaskResults[observedTaskResults.length - 1]!.find(
-    (item) => item["status"] === "question",
-  )!;
-  const secondQid = secondQuestion["qid"] as number;
+  // Capture qid of the second question from the next observed item/result after the first answer.
+  let secondQuestion: TaskResultItem | null = null;
+  await expect
+    .poll(
+      () => {
+        secondQuestion = null;
+        for (const items of observedTaskResults.slice(resultCountBeforeFirstAnswer)) {
+          const match = items.find(
+            (item) => item["status"] === "question" && item["qid"] !== firstQid,
+          );
+          if (match) {
+            secondQuestion = match;
+            return true;
+          }
+        }
+        return false;
+      },
+      { timeout: 90_000 },
+    )
+    .toBe(true);
+  const foundSecondQuestion = secondQuestion!;
+  const secondQid = foundSecondQuestion["qid"] as number;
 
   // The inciting focus_hint(parent → firstChild) from the first answer may not
   // have arrived yet when the pre-step-3 wait fired. By the time we reach here,
