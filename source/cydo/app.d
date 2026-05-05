@@ -2886,6 +2886,9 @@ class App : ToolsBackend
 		if (td.historyLoaded || td.agentSessionId.length == 0)
 			return;
 
+		try
+		{
+
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 
@@ -3072,6 +3075,29 @@ class App : ToolsBackend
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
 		}
 		rebuildVisibleTurnAnchors(tid);
+
+		} // end try
+		catch (Exception e)
+		{
+			import std.algorithm : startsWith, map;
+			import std.array : join;
+			string body;
+			if (e.msg.startsWith("Unknown agent type:"))
+			{
+				import cydo.agent.registry : agentRegistry;
+				auto agentName = e.msg["Unknown agent type: ".length .. $];
+				auto knownNames = agentRegistry[].map!(r => "`" ~ r.name ~ "`").join(", ");
+				body = "This task uses agent `" ~ agentName ~ "`, which is not configured.\n\n"
+					~ "The currently available agents are: " ~ knownNames ~ ".";
+			}
+			else
+			{
+				body = "Failed to load session history.\n\n```\n"
+					~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
+			}
+			appendSynthesizedHistoryError(tid, "Failed to load session history", body);
+			td.historyLoaded = true;
+		}
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
@@ -3112,9 +3138,13 @@ class App : ToolsBackend
 		}
 
 		// Send forkable UUIDs extracted from JSONL
+		// Guarded: agentForTask may throw for orphan agent types, in which case
+		// forkable UUIDs are unavailable but the rest of the history reply is fine.
 		if (td.agentSessionId.length > 0)
-			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
-				td.effectiveCwd);
+			try
+				jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
+					td.effectiveCwd);
+			catch (Exception) {}
 
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
@@ -5652,6 +5682,35 @@ class App : ToolsBackend
 				td.status = "failed";
 				td.error = e.msg;
 				persistence.setStatus(tid, "failed");
+				{
+					import std.algorithm : canFind;
+					string body;
+					if (e.msg.canFind("No such file") || e.msg.canFind("not found"))
+					{
+						import std.string : toUpper;
+						auto binEnvVar = "CYDO_" ~ td.agentType.toUpper ~ "_BIN";
+						string installHint;
+						if (td.agentType == "claude")
+							installHint = "`npm install -g @anthropic-ai/claude-code`";
+						else if (td.agentType == "codex")
+							installHint = "`npm install -g @openai/codex`";
+						else
+							installHint = "the appropriate package for your agent";
+						body = "The **`" ~ td.agentType ~ "`** CLI was not found on `PATH`.\n\n"
+							~ "Install it (e.g. via " ~ installHint ~ ") or set the `"
+							~ binEnvVar ~ "` environment variable to its absolute path, "
+							~ "then click **Resume** again.";
+					}
+					else
+					{
+						body = "Failed to resume session.\n\n```\n"
+							~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
+					}
+					auto translated = appendSynthesizedHistoryError(
+						tid, "Failed to resume session", body);
+					sendToSubscribed(tid, Data(
+						toJson(TaskEventEnvelope(tid, 0, JSONFragment(translated))).representation));
+				}
 				broadcastTaskUpdate(tid);
 				return reject!ProcessState(e);
 			}
@@ -6648,6 +6707,35 @@ class App : ToolsBackend
 		m.bodyMarkdown = bodyMarkdown;
 		m.severity = severity;
 		return toJson(m);
+	}
+
+	/// Build an `item/started` envelope JSON for a synthesized error system-message.
+	private string synthesizeHistoryErrorEventJson(string subject, string body)
+	{
+		auto wrappedText = wrapSystemMessage(subject, body);
+		ItemStartedEvent ev;
+		ev.item_id   = "cydo-history-error";
+		ev.item_type = "user_message";
+		ev.text      = wrappedText;
+		ev.content   = [ContentBlock("text", wrappedText)];
+		ev.is_meta   = true;
+		auto json = toJson(ev);
+		auto meta = buildCydoMeta(subject, ["details": body], "details",
+			true /*bodyMarkdown*/, "error" /*severity*/);
+		return json[0 .. $ - 1] ~ `,"meta":` ~ meta ~ `}`;
+	}
+
+	/// Append a synthesized error event to td.history. Returns the translated JSON
+	/// for live-broadcast reuse.
+	private string appendSynthesizedHistoryError(int tid, string subject, string body)
+	{
+		import std.datetime : Clock;
+
+		auto translated = synthesizeHistoryErrorEventJson(subject, body);
+		auto envelope = toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+			JSONFragment(translated)));
+		tasks[tid].appendHistory(Data(envelope.representation), translated);
+		return translated;
 	}
 
 	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, string translated, string rawLine = null)
