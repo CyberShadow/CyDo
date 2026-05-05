@@ -11,6 +11,7 @@
 module cydo.inotify;
 
 import ae.sys.inotify : INotify, iNotify;
+import std.logger : errorf;
 
 struct RefCountedINotify
 {
@@ -110,11 +111,50 @@ private:
 		foreach (i; 0 .. g.entries.length)
 		{
 			if (g.entries[i].handler !is null)
-				g.entries[i].handler(name, mask, cookie);
+			{
+				try
+					g.entries[i].handler(name, mask, cookie);
+				catch (Throwable e)
+					errorf("inotify callback failed for path '%s': %s", path, e.msg);
+			}
 			// Handler may have called remove(); re-check group
 			g = path in groups;
 			if (g is null)
 				return;
 		}
 	}
+}
+
+@system unittest
+{
+	RefCountedINotify watches;
+	bool secondCalled;
+	Exception seen;
+
+	INotify.INotifyHandler first = (in char[] name, INotify.Mask mask, uint cookie)
+	{
+		throw new Exception("boom");
+	};
+	INotify.INotifyHandler second = (in char[] name, INotify.Mask mask, uint cookie)
+	{
+		secondCalled = true;
+	};
+
+	watches.groups["/tmp/path"] = RefCountedINotify.Group(
+		INotify.WatchDescriptor.init,
+		INotify.Mask.modify,
+		[
+			RefCountedINotify.Entry(1, first),
+			RefCountedINotify.Entry(2, second),
+		],
+		2,
+	);
+
+	try
+		watches.dispatchEvent("/tmp/path", "", INotify.Mask.modify, 0);
+	catch (Exception e)
+		seen = e;
+
+	assert(seen is null);
+	assert(secondCalled);
 }

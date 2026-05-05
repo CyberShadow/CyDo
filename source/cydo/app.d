@@ -53,6 +53,7 @@ import cydo.task : BatchSignal;
 import cydo.batchrouter : BatchConsumeKind, BatchState, buildBatchState,
 	consumeBatchSignal, validateBatchCompletion;
 import cydo.inotify : RefCountedINotify;
+import cydo.logging : installRobustLogger;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
@@ -8344,6 +8345,7 @@ private void initLogLevel()
 {
 	import std.logger : sharedLog, LogLevel;
 	import std.process : environment;
+	installRobustLogger();
 
 	auto level = environment.get("CYDO_LOG_LEVEL", "info");
 	switch (level)
