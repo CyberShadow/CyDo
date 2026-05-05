@@ -138,6 +138,44 @@ test("claude live idle undo latest turn avoids UUID truncation alert", async ({
   expect(
     dialogs.filter((message) => message.includes("UUID not found for truncation")),
   ).toEqual([]);
+
+  await expect(input).toHaveValue('Please reply with "alert-two"', {
+    timeout: 15_000,
+  });
+});
+
+test("claude live idle undo restores user message text into the textarea", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "Claude-only regression for live idle undo draft recovery",
+  );
+
+  const prompt = 'please reply with reply-one';
+  const timeout = responseTimeout(agentType);
+
+  await enterSession(page);
+  await sendMessage(page, prompt);
+  await expect(assistantText(page, "reply-one")).toBeVisible({ timeout });
+
+  const input = page.locator(".input-textarea:visible").first();
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+
+  page.on("dialog", (d) => {
+    d.dismiss().catch(() => {});
+  });
+
+  await openUndoDialogForTurn(page, "reply-one");
+  await page.locator(".btn-undo").click();
+
+  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(async () => {
+    await assertTurnPresence(page, ["reply-one"], false);
+  }).toPass({ timeout: 15_000 });
+
+  await expect(input).toHaveValue(prompt, { timeout: 15_000 });
 });
 
 test("claude live idle undo on turn three removes only turns three through five", async ({
@@ -189,6 +227,11 @@ test("claude live idle undo on turn three removes only turns three through five"
       false,
     );
   }).toPass({ timeout: 15_000 });
+
+  await expect(input).toHaveValue(
+    'Please reply with "live-three"\n\nPlease reply with "live-four"\n\nPlease reply with "live-five"',
+    { timeout: 15_000 },
+  );
 
   await sendMessage(page, 'Please reply with "live-six"');
   await expect(assistantText(page, "live-six")).toBeVisible({ timeout });

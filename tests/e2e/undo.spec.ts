@@ -97,9 +97,10 @@ test("undo moves user message text to input box", async ({
   // Input box contains the undone message text
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeVisible({ timeout: 15_000 });
-  await expect(input).toHaveValue(/reply with "reply-three"/, {
-    timeout: 15_000,
-  });
+  await expect(input).toHaveValue(
+    'Please reply with "reply-three"\n\nPlease reply with "reply-four"\n\nPlease reply with "reply-five"',
+    { timeout: 15_000 },
+  );
 });
 
 test("undo on first Claude message restores draft input", async ({
