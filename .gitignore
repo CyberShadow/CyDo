@@ -7,3 +7,6 @@
 # Nix build result symlinks
 result
 result-*
+
+# Playwright test artifacts
+tests/test-results/
