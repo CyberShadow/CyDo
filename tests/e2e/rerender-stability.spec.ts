@@ -20,6 +20,11 @@ test("completed messages are not recreated when new messages arrive", async ({
     const tracker = {
       active: false,
       preExistingRenders: 0,
+      // Count of MessageView renders observed while active, regardless of
+      // pre-existing status. Acts as a positive control: if the prop-signature
+      // filter or memo-wrapper detection drifts, this stays 0 and the test
+      // fails loudly instead of green-passing on preExistingRenders === 0.
+      messageViewRenders: 0,
       totalCalls: 0,
       preExistingIds: null as Set<string> | null,
     };
@@ -49,6 +54,7 @@ test("completed messages are not recreated when new messages arrive", async ({
             "resolvedBlocks" in props &&
             !type?._forwarded
           ) {
+            tracker.messageViewRenders++;
             // Only count re-renders of pre-existing (completed) messages.
             const msgId = props.msg?.id;
             if (msgId && tracker.preExistingIds.has(String(msgId))) {
@@ -102,6 +108,7 @@ test("completed messages are not recreated when new messages arrive", async ({
     const t = (window as any).__renderTracker;
     t.preExistingIds = new Set(ids);
     t.preExistingRenders = 0;
+    t.messageViewRenders = 0;
     t.active = true;
   }, preExistingIds);
 
@@ -117,8 +124,20 @@ test("completed messages are not recreated when new messages arrive", async ({
     return {
       preExistingRenders: t.preExistingRenders,
       preExistingCount: t.preExistingIds?.size ?? 0,
+      messageViewRenders: t.messageViewRenders,
     };
   });
+
+  // Positive control: the second message must have triggered at least one
+  // MessageView render that the filter recognised. If this is 0, the
+  // prop-signature filter (msg/tid/resolvedBlocks) or the memo-wrapper
+  // sentinel (type._forwarded) has drifted from the real component, and
+  // the preExistingRenders === 0 assertion below is meaningless.
+  expect(
+    result.messageViewRenders,
+    "Filter matched no MessageView renders while active — the test's prop " +
+      "signature or memo-wrapper detection is stale and must be updated.",
+  ).toBeGreaterThan(0);
 
   // When memo works correctly, pre-existing completed MessageView instances
   // must not re-render at all when new messages arrive.
