@@ -18,9 +18,12 @@ import ae.net.jsonrpc.stdio : stdioLDJsonRpcConnection;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
 import ae.utils.array : asBytes;
-import ae.utils.json : JSONFragment, toJson, JSONPartial;
+import ae.utils.json : JSONFragment, toJson, jsonParse, JSONPartial;
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
 import ae.utils.promise : Promise, resolve;
+import ae.utils.serialization.store : SerializedObject;
+
+private alias SO = SerializedObject!(immutable char);
 
 import cydo.mcp.tools : CydoTools;
 
@@ -83,19 +86,19 @@ interface McpProtocol
 	Promise!void notificationsInitialized();
 
 	@RPCName("tools/list")
-	Promise!JSONFragment toolsList();
+	Promise!SO toolsList();
 
 	@RPCName("tools/call")
-	Promise!JSONFragment toolsCall(ToolsCallParams params);
+	Promise!SO toolsCall(ToolsCallParams params);
 
 	@RPCName("resources/list")
-	Promise!JSONFragment resourcesList();
+	Promise!SO resourcesList();
 
 	@RPCName("resources/templates/list")
-	Promise!JSONFragment resourcesTemplatesList();
+	Promise!SO resourcesTemplatesList();
 
 	@RPCName("prompts/list")
-	Promise!JSONFragment promptsList();
+	Promise!SO promptsList();
 }
 
 class McpServerImpl : McpProtocol
@@ -119,16 +122,16 @@ class McpServerImpl : McpProtocol
 		return resolve();
 	}
 
-	Promise!JSONFragment toolsList()
+	Promise!SO toolsList()
 	{
-		return resolve(JSONFragment(buildToolsListJson()));
+		return resolve(buildToolsListJson().jsonParse!SO);
 	}
 
-	Promise!JSONFragment toolsCall(ToolsCallParams params)
+	Promise!SO toolsCall(ToolsCallParams params)
 	{
-		auto promise = new Promise!JSONFragment;
+		auto promise = new Promise!SO;
 
-		auto backendRequest = BackendToolCall(tid, params.name, params.arguments);
+		auto backendRequest = BackendToolCall(tid, params.name, JSONFragment(params.arguments.toJson()));
 		auto bodyJson = toJson(backendRequest);
 
 		tracef("MCP proxy: tools/call %s → backend", params.name);
@@ -161,7 +164,7 @@ class McpServerImpl : McpProtocol
 					promise.reject(new Exception("Backend returned HTTP " ~ to!string(response.status)));
 					return;
 				}
-				promise.fulfill(JSONFragment(responseText));
+				promise.fulfill(responseText.jsonParse!SO);
 			}
 			catch (Exception e)
 				promise.reject(new Exception("Failed to parse backend response: " ~ e.msg));
@@ -171,19 +174,19 @@ class McpServerImpl : McpProtocol
 		return promise;
 	}
 
-	Promise!JSONFragment resourcesList()
+	Promise!SO resourcesList()
 	{
-		return resolve(JSONFragment(`{"resources":[]}`));
+		return resolve(`{"resources":[]}`.jsonParse!SO);
 	}
 
-	Promise!JSONFragment resourcesTemplatesList()
+	Promise!SO resourcesTemplatesList()
 	{
-		return resolve(JSONFragment(`{"resourceTemplates":[]}`));
+		return resolve(`{"resourceTemplates":[]}`.jsonParse!SO);
 	}
 
-	Promise!JSONFragment promptsList()
+	Promise!SO promptsList()
 	{
-		return resolve(JSONFragment(`{"prompts":[]}`));
+		return resolve(`{"prompts":[]}`.jsonParse!SO);
 	}
 }
 
@@ -193,7 +196,7 @@ class McpServerImpl : McpProtocol
 struct ToolsCallParams
 {
 	string name;
-	JSONFragment arguments;
+	SO arguments;
 }
 
 struct BackendToolCall
@@ -205,7 +208,7 @@ struct BackendToolCall
 
 struct ServerInfo
 {
-	import ae.utils.json : JSONName;
+	import ae.utils.serialization.json : JSONName;
 	string name;
 	@JSONName("version") string version_;
 }

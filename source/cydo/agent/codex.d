@@ -13,9 +13,13 @@ import ae.net.jsonrpc.binding : JsonRpcDispatcher,
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.sys.data : Data;
 import ae.utils.time.types : AbsTime;
-import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial,
+import ae.utils.json : JSONExtras, JSONFragment, JSONOptional, JSONPartial,
 	jsonParse, toJson;
+import ae.utils.serialization.json : JSONName;
 import ae.utils.jsonrpc : JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse;
+import ae.utils.serialization.store : SerializedObject;
+
+private alias SO = SerializedObject!(immutable char);
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
@@ -160,8 +164,8 @@ struct ItemStartedParams
 		@JSONOptional string name;
 		@JSONOptional string text;
 		@JSONOptional string command;
-		@JSONOptional JSONFragment action;
-		@JSONOptional JSONFragment content; // userMessage items: Array<UserInput>
+		@JSONOptional SO action;
+		@JSONOptional SO content; // userMessage items: Array<UserInput>
 		@JSONOptional string tool;          // mcpToolCall: tool name (e.g. "AskUserQuestion")
 		@JSONOptional string server;        // mcpToolCall: server name (e.g. "cydo")
 		// commandExecution fields (explicit to prevent appearance in _extras):
@@ -170,21 +174,21 @@ struct ItemStartedParams
 		@JSONOptional string processId;
 		@JSONOptional Nullable!int exitCode;  // null while command is running
 		@JSONOptional Nullable!int durationMs; // null while command is running
-		@JSONOptional JSONFragment commandActions;
+		@JSONOptional SO commandActions;
 		@JSONOptional string aggregatedOutput; // commandExecution: stdout+stderr (null while running)
 		// fileChange fields:
-		@JSONOptional JSONFragment changes;
+		@JSONOptional SO changes;
 		// mcpToolCall fields:
-		@JSONName("arguments") @JSONOptional JSONFragment arguments_;
+		@JSONName("arguments") @JSONOptional SO arguments_;
 		// webSearch fields:
-		@JSONOptional JSONFragment query;
+		@JSONOptional SO query;
 		// agentMessage fields:
 		@JSONOptional string phase;
 		// mcpToolCall pending-result fields (null until item/completed):
-		@JSONOptional JSONFragment result;
-		@JSONOptional JSONFragment error;
+		@JSONOptional SO result;
+		@JSONOptional SO error;
 		// reasoning fields (declared to prevent leaking into _extras):
-		@JSONOptional JSONFragment summary;
+		@JSONOptional SO summary;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
 		// internal Codex metadata:
@@ -237,7 +241,7 @@ struct TurnDiffUpdatedParams
 {
 	string threadId;
 	string turnId;
-	JSONFragment diff;
+	SO diff;
 }
 
 /// Catch-all params struct for no-op handlers that receive notifications
@@ -254,7 +258,7 @@ struct ErrorParams
 	@JSONOptional string threadId;
 	@JSONOptional string turnId;
 	@JSONOptional bool willRetry;
-	@JSONOptional JSONFragment error;
+	@JSONOptional SO error;
 }
 
 @RPCFlatten @JSONPartial
@@ -293,23 +297,23 @@ struct ItemCompletedParams
 		@JSONOptional string command;          // original command string
 		@JSONOptional string cwd;              // working directory
 		@JSONOptional string type;             // item type (e.g. "commandExecution")
-		@JSONOptional JSONFragment query;      // webSearch: search query
-		@JSONOptional JSONFragment action;     // webSearch: {type, query, queries}
+		@JSONOptional SO query;            // webSearch: search query
+		@JSONOptional SO action;           // webSearch: {type, query, queries}
 		@JSONOptional string processId;        // process ID for commandExecution
-		@JSONOptional JSONFragment commandActions; // commandExecution actions log
-		@JSONOptional JSONFragment result;     // mcpToolCall/webSearch result payload
-		@JSONOptional JSONFragment changes;    // fileChange: array of file changes
+		@JSONOptional SO commandActions;   // commandExecution actions log
+		@JSONOptional SO result;           // mcpToolCall/webSearch result payload
+		@JSONOptional SO changes;          // fileChange: array of file changes
 		// agentMessage fields:
 		@JSONOptional string text;
 		@JSONOptional string phase;
 		// mcpToolCall fields (repeated from item/started for completed items):
 		@JSONOptional string server;
 		@JSONOptional string tool;
-		@JSONName("arguments") @JSONOptional JSONFragment arguments_;
-		@JSONOptional JSONFragment error;
+		@JSONName("arguments") @JSONOptional SO arguments_;
+		@JSONOptional SO error;
 		// reasoning fields (declared to prevent leaking into _extras):
-		@JSONOptional JSONFragment summary;
-		@JSONOptional JSONFragment content;
+		@JSONOptional SO summary;
+		@JSONOptional SO content;
 		// agentMessage fields:
 		@JSONOptional typeof(null) memoryCitation;
 		// internal Codex metadata:
@@ -548,7 +552,7 @@ private class CodexServerRouter : ICodexServer
 		if (params.error)
 		{
 			@JSONPartial static struct ErrorInfo { @JSONOptional string message; }
-			try { message = jsonParse!ErrorInfo(params.error.json).message; }
+			try { message = jsonParse!ErrorInfo(toJson(params.error)).message; }
 			catch (Exception) {}
 		}
 		AgentErrorEvent ev;
@@ -654,25 +658,26 @@ class AppServerProcess
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
 				{
 					import cydo.agent.protocol : makeUnrecognizedEvent;
+					auto paramsJson = request.params ? request.params.toJson() : "null";
 					auto rawJsonRpc = `{"jsonrpc":"2.0","method":"` ~ request.method ~ `","params":`
-						~ (request.params.json !is null ? request.params.json : "null") ~ `}`;
+						~ paramsJson ~ `}`;
 					auto tev = TranslatedEvent(makeUnrecognizedEvent("unknown method: " ~ request.method), rawJsonRpc);
 					// Try to route to a specific session by threadId/conversationId.
 					string routedId;
-					if (request.params.json !is null)
+					if (request.params)
 					{
 						import std.string : indexOf;
 						foreach (key; ["threadId", "conversationId"])
 						{
 							auto needle = `"` ~ key ~ `":"`;
-							auto idx = request.params.json.indexOf(needle);
+							auto idx = paramsJson.indexOf(needle);
 							if (idx >= 0)
 							{
 								idx += needle.length;
-								auto end = request.params.json.indexOf(`"`, idx);
+								auto end = paramsJson.indexOf(`"`, idx);
 								if (end > idx)
 								{
-									routedId = request.params.json[idx .. end];
+									routedId = paramsJson[idx .. end];
 									break;
 								}
 							}
@@ -788,11 +793,11 @@ class AppServerProcess
 
 	/// Send a JSON-RPC request to the Codex server.
 	/// Returns a promise for the response. For fire-and-forget, ignore the promise.
-	package Promise!JsonRpcResponse sendRequest(string method, JSONFragment params)
+	package Promise!JsonRpcResponse sendRequest(string method, string params)
 	{
 		JsonRpcRequest req;
 		req.method = method;
-		req.params = params;
+		req.params = params.jsonParse!SO;
 		return codec.sendRequest(req);
 	}
 
@@ -801,10 +806,10 @@ class AppServerProcess
 	private void sendInitialize()
 	{
 		state_ = State.initializing;
-		sendRequest("initialize", JSONFragment(toJson(InitializeParams(
+		sendRequest("initialize", toJson(InitializeParams(
 			InitializeParams.ClientInfo("cydo", "0.1.0"),
 			JSONFragment(`{"experimentalApi":true}`)
-		)))).then((JsonRpcResponse result) {
+		))).then((JsonRpcResponse result) {
 			sendLogin();
 		});
 	}
@@ -822,11 +827,12 @@ class AppServerProcess
 
 		state_ = State.authenticating;
 		sendRequest("account/login/start",
-			JSONFragment(toJson(LoginStartParams("apiKey", apiKey)))
+			toJson(LoginStartParams("apiKey", apiKey))
 		).then((JsonRpcResponse result) {
 			import std.algorithm : canFind;
 			// API-key auth may complete synchronously.
-			if (result.result.json.canFind(`"success"`) || result.result.json.canFind(`"loggedIn"`))
+			auto resultJson = result.result.toJson();
+			if (resultJson.canFind(`"success"`) || resultJson.canFind(`"loggedIn"`))
 				onLoginCompleted();
 		});
 	}
@@ -971,7 +977,7 @@ class CodexAgent : Agent
 				tsp.config = JSONFragment(configOverride);
 
 				server.sendRequest("thread/start",
-					JSONFragment(toJson(tsp))
+					toJson(tsp)
 				).then((JsonRpcResponse resp) {
 					ThreadStartResult result;
 					try
@@ -979,7 +985,7 @@ class CodexAgent : Agent
 					catch (Exception e)
 						warningf("thread/start error: %s", e.msg);
 					session.onThreadStarted(result, null, model, workDir,
-						resp.result.json);
+						resp.result.toJson());
 				});
 			}
 
@@ -996,7 +1002,7 @@ class CodexAgent : Agent
 				trp.config = JSONFragment(configOverride);
 
 				server.sendRequest("thread/resume",
-					JSONFragment(toJson(trp))
+					toJson(trp)
 				).then((JsonRpcResponse resp) {
 					ThreadStartResult result;
 					try
@@ -1026,7 +1032,7 @@ class CodexAgent : Agent
 						return;
 					}
 					session.onThreadStarted(result, resumeSessionId, model, workDir,
-						resp.result.json);
+						resp.result.toJson());
 				});
 			}
 			else
@@ -1065,7 +1071,7 @@ class CodexAgent : Agent
 				tfp.developerInstructions = devInstructions;
 			tfp.config = JSONFragment(configOverride);
 
-			server.sendRequest("thread/fork", JSONFragment(toJson(tfp)))
+			server.sendRequest("thread/fork", toJson(tfp))
 				.then((JsonRpcResponse resp) {
 					ThreadStartResult result;
 					try
@@ -1077,12 +1083,12 @@ class CodexAgent : Agent
 					}
 					if (result.thread.id.length == 0)
 					{
-						outcome.fulfill(ThreadForkOutcome(false, "", resp.result.json,
+						outcome.fulfill(ThreadForkOutcome(false, "", resp.result.toJson(),
 							"thread/fork returned empty thread id"));
 						return;
 					}
 					outcome.fulfill(ThreadForkOutcome(true, result.thread.id,
-						resp.result.json, ""));
+						resp.result.toJson(), ""));
 				});
 		});
 
@@ -1103,10 +1109,10 @@ class CodexAgent : Agent
 			params.threadId = threadId;
 			params.numTurns = numTurns;
 
-			server.sendRequest("thread/rollback", JSONFragment(toJson(params)))
+			server.sendRequest("thread/rollback", toJson(params))
 				.then((JsonRpcResponse resp) {
 					try
-						resp.getResult!JSONFragment(); // throws on RPC error
+						resp.getResult!SO(); // throws on RPC error
 					catch (Exception e)
 					{
 						outcome.fulfill(ThreadRollbackOutcome(false, e.msg));
@@ -1762,10 +1768,10 @@ class CodexSession : AgentSession
 				return;
 			}
 			server.sendRequest("turn/steer",
-				JSONFragment(toJson(TurnSteerParams(
+				toJson(TurnSteerParams(
 					threadId,
 					[TurnStartInput("text", text)],
-					activeTurnId_)))).ignoreResult();
+					activeTurnId_))).ignoreResult();
 		}
 		else
 		{
@@ -1776,10 +1782,10 @@ class CodexSession : AgentSession
 			hadItemsSinceLastStop_ = false;
 
 			server.sendRequest("turn/start",
-				JSONFragment(toJson(TurnStartParams(
+				toJson(TurnStartParams(
 					threadId,
 					[TurnStartInput("text", text)],
-					SandboxPolicy("externalSandbox", "enabled")))))
+					SandboxPolicy("externalSandbox", "enabled"))))
 				.then((JsonRpcResponse resp) {
 				try
 				{
@@ -1801,7 +1807,7 @@ class CodexSession : AgentSession
 		if (!alive_ || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
 			return;
 		server.sendRequest("turn/interrupt",
-			JSONFragment(toJson(TurnInterruptParams(threadId, activeTurnId_)))).ignoreResult();
+			toJson(TurnInterruptParams(threadId, activeTurnId_))).ignoreResult();
 	}
 
 	void sigint()
@@ -1856,7 +1862,7 @@ class CodexSession : AgentSession
 		if (item.type == "userMessage")
 		{
 			// Echo user message as item/started type=user_message.
-			if (item.content.json !is null && outputHandler_)
+			if (item.content && outputHandler_)
 			{
 				ev.item_type = "user_message";
 				// Extract text from content array: [{type:"input_text",text:"..."}]
@@ -1865,7 +1871,7 @@ class CodexSession : AgentSession
 				string userText;
 				try
 				{
-					auto items = jsonParse!(InputTextItem[])(item.content.json);
+					auto items = jsonParse!(InputTextItem[])(toJson(item.content));
 					foreach (ref i; items)
 						userText ~= i.text;
 				}
@@ -1913,7 +1919,7 @@ class CodexSession : AgentSession
 					cmdInput = toJson(CommandInput(item.command, ""));
 				}
 				else
-					cmdInput = extractCommandInput(item.action);
+					cmdInput = extractCommandInput(item.action ? JSONFragment(toJson(item.action)) : JSONFragment.init);
 				if (cmdInput.length > 0 && cmdInput != `{}`)
 					ev.input = JSONFragment(cmdInput);
 				break;
@@ -1923,8 +1929,8 @@ class CodexSession : AgentSession
 				ev.name = "fileChange";
 				// Include changes directly so the frontend can show the File Viewer button
 				// without relying on _raw (which is stripped before broadcast).
-				if (item.changes.json !is null)
-					ev.input = JSONFragment(`{"changes":` ~ item.changes.json ~ `}`);
+				if (item.changes)
+					ev.input = JSONFragment(`{"changes":` ~ toJson(item.changes) ~ `}`);
 				break;
 			case "mcpToolCall":
 				activeItemTypes_[itemId] = "tool_use";
@@ -1940,15 +1946,15 @@ class CodexSession : AgentSession
 				}
 				else
 					ev.name = item.name.length > 0 ? item.name : "unknown";
-				if (item.arguments_.json !is null)
-					ev.input = item.arguments_;
+				if (item.arguments_)
+					ev.input = JSONFragment(toJson(item.arguments_));
 				break;
 			case "webSearch":
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "webSearch";
-				if (item.query.json !is null)
-					ev.input = JSONFragment(`{"query":` ~ item.query.json ~ `}`);
+				if (item.query)
+					ev.input = JSONFragment(`{"query":` ~ toJson(item.query) ~ `}`);
 				break;
 			case "contextCompaction":
 				activeItemTypes_[itemId] = "contextCompaction";
@@ -2059,8 +2065,8 @@ class CodexSession : AgentSession
 
 		// For webSearch items, propagate the completed query into the input field
 		// so the frontend subtitle updates from the empty started-query to the real query.
-		if (params.item.type == "webSearch" && params.item.query.json !is null)
-			ev.input = JSONFragment(`{"query":` ~ params.item.query.json ~ `}`);
+		if (params.item.type == "webSearch" && params.item.query)
+			ev.input = JSONFragment(`{"query":` ~ toJson(params.item.query) ~ `}`);
 
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
@@ -2074,7 +2080,7 @@ class CodexSession : AgentSession
 			resEv.item_id = itemId;
 			resEv.is_error = ev.is_error;
 			string toolErrorMessage;
-			if (resEv.is_error && params.item.error.json !is null)
+			if (resEv.is_error && params.item.error)
 			{
 				@JSONPartial
 				static struct ItemErrorPayload
@@ -2084,7 +2090,7 @@ class CodexSession : AgentSession
 
 				try
 				{
-					toolErrorMessage = jsonParse!ItemErrorPayload(params.item.error.json).message;
+					toolErrorMessage = jsonParse!ItemErrorPayload(toJson(params.item.error)).message;
 				}
 				catch (Exception) {}
 
@@ -2092,7 +2098,7 @@ class CodexSession : AgentSession
 				{
 					try
 					{
-						toolErrorMessage = jsonParse!string(params.item.error.json);
+						toolErrorMessage = jsonParse!string(toJson(params.item.error));
 					}
 					catch (Exception) {}
 				}
@@ -2113,11 +2119,11 @@ class CodexSession : AgentSession
 				}
 
 				bool hasResultContent = false;
-				if (params.item.result.json !is null)
+				if (params.item.result)
 				{
 					try
 					{
-						auto payload = jsonParse!ResultPayload(params.item.result.json);
+						auto payload = jsonParse!ResultPayload(toJson(params.item.result));
 						if (payload.content.json !is null)
 						{
 							resEv.content = payload.content;
@@ -2145,11 +2151,11 @@ class CodexSession : AgentSession
 						tr ~= `{`;
 
 						// Include the main query
-						if (params.item.query.json !is null)
-							tr ~= `"query":` ~ params.item.query.json;
+						if (params.item.query)
+							tr ~= `"query":` ~ toJson(params.item.query);
 
 						// Include the queries array from action
-						if (params.item.action.json !is null)
+						if (params.item.action)
 						{
 							@JSONPartial
 							static struct WebSearchAction
@@ -2158,10 +2164,10 @@ class CodexSession : AgentSession
 							}
 							try
 							{
-								auto act = jsonParse!WebSearchAction(params.item.action.json);
+								auto act = jsonParse!WebSearchAction(toJson(params.item.action));
 								if (act.queries.json !is null)
 								{
-									if (params.item.query.json !is null)
+									if (params.item.query)
 										tr ~= `,`;
 									tr ~= `"queries":` ~ act.queries.json;
 								}
@@ -2222,11 +2228,10 @@ class CodexSession : AgentSession
 					tr ~= `"processId":` ~ toJson(params.item.processId);
 					trFirst = false;
 				}
-				if (params.item.commandActions.json !is null &&
-					params.item.commandActions.json.length > 0)
+				if (params.item.commandActions)
 				{
 					if (!trFirst) tr ~= `,`;
-					tr ~= `"commandActions":` ~ params.item.commandActions.json;
+					tr ~= `"commandActions":` ~ toJson(params.item.commandActions);
 					trFirst = false;
 				}
 				tr ~= `}`;

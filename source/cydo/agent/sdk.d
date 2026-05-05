@@ -6,6 +6,9 @@ import ae.net.jsonrpc.binding : JsonRpcDispatcher, jsonRpcDispatcher,
 import ae.net.jsonrpc.codec : JsonRpcCodec;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse;
 import ae.utils.jsonrpc : JsonRpcRequest, JsonRpcResponse;
+import ae.utils.serialization.store : SerializedObject;
+
+private alias SO = SerializedObject!(immutable char);
 import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.process : AgentProcess, FramingMode;
@@ -39,7 +42,7 @@ struct SdkToolCallRequest
 	string sessionId;
 	string toolCallId;
 	string toolName;
-	JSONFragment arguments;
+	SO arguments;
 	@JSONOptional string traceparent;
 }
 
@@ -64,7 +67,7 @@ struct SdkEvent
 	string timestamp;
 	@JSONOptional string parentId;
 	string type;
-	JSONFragment data;
+	SO data;
 }
 
 @RPCFlatten @JSONPartial
@@ -295,7 +298,7 @@ class SdkProcess
 	{
 		JsonRpcRequest req;
 		req.method = method;
-		req.params = JSONFragment(params);
+		req.params = jsonParse!SO(params);
 		return codec.sendRequest(req);
 	}
 
@@ -304,7 +307,7 @@ class SdkProcess
 	{
 		JsonRpcRequest req;
 		req.method = method;
-		req.params = JSONFragment(params);
+		req.params = jsonParse!SO(params);
 		codec.sendNotification(req);
 	}
 
@@ -323,7 +326,7 @@ class SdkProcess
 			int protocolVersion = 0;
 			try
 			{
-				auto pr = jsonParse!PingResult(resp.result.json);
+				auto pr = resp.result.deserializeTo!PingResult();
 				protocolVersion = pr.protocolVersion;
 			}
 			catch (Exception) {}

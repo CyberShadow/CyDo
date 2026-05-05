@@ -998,50 +998,51 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 		import cydo.agent.protocol : parseIso8601Timestamp;
 		currentEventTs_ = parseIso8601Timestamp(event.timestamp);
-		currentRawJson_ = event.data.json;
+		auto data = JSONFragment(event.data.toJson());
+		currentRawJson_ = data.json;
 		switch (event.type)
 		{
 			case "assistant.turn_start":
-				handleTurnStart(event.data);
+				handleTurnStart(data);
 				break;
 			case "assistant.message_delta":
-				handleMessageDelta(event.data);
+				handleMessageDelta(data);
 				break;
 			case "assistant.message":
-				handleAssistantMessage(event.data);
+				handleAssistantMessage(data);
 				break;
 			case "assistant.reasoning_delta":
-				handleReasoningDelta(event.data);
+				handleReasoningDelta(data);
 				break;
 			case "tool.execution_start":
-				handleToolExecutionStart(event.data);
+				handleToolExecutionStart(data);
 				break;
 			case "tool.execution_complete":
-				handleToolExecutionComplete(event.data);
+				handleToolExecutionComplete(data);
 				break;
 			case "user.message":
-				handleUserMessage(event.data);
+				handleUserMessage(data);
 				break;
 			case "session.idle":
 				handleTurnCompleted("end_turn");
 				break;
 			case "session.start":
-				handleSessionStart(event.data);
+				handleSessionStart(data);
 				break;
 			case "session.resume":
-				handleSessionResume(event.data);
+				handleSessionResume(data);
 				break;
 			case "session.error":
-				handleSessionError(event.data);
+				handleSessionError(data);
 				break;
 			case "external_tool.requested":
-				handleExternalToolRequested(event.data);
+				handleExternalToolRequested(data);
 				break;
 			case "permission.requested":
-				handlePermissionRequested(event.data);
+				handlePermissionRequested(data);
 				break;
 			case "subagent.started":
-				handleSubagentStarted(event.data);
+				handleSubagentStarted(data);
 				break;
 			case "plan":
 			case "available_commands_update":
@@ -1087,7 +1088,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			toolName = toolName[5 .. $];
 
 		auto result = new Promise!SdkToolCallResult;
-		toolDispatch_(toolName, to!string(tid), params.arguments)
+		toolDispatch_(toolName, to!string(tid), JSONFragment(params.arguments.toJson()))
 		.then((McpResult mcpResult) {
 			result.fulfill(SdkToolCallResult(SdkToolResult(
 				mcpResult.text,
@@ -1589,7 +1590,7 @@ private final class OneShotCopilotSession : SdkSessionHandler
 			{
 				@JSONPartial static struct OneShotDelta { string deltaContent; }
 				OneShotDelta d;
-				try d = jsonParse!OneShotDelta(event.data.json);
+				try d = jsonParse!OneShotDelta(event.data.toJson());
 				catch (Exception) return;
 				text_ ~= d.deltaContent;
 				break;
