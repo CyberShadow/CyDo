@@ -25,17 +25,11 @@ sub-tasks. Your job is to decide _what_ needs doing and dispatch.
 ## Sub-tasks
 
 These run as autonomous agents and return results to you:
+`quick_research`, `deep_research`, `spike`, `bug`, `execute`.
 
-- **quick_research** — targeted codebase lookup (find a file, trace a
-  function, check a pattern). Returns fast.
-- **deep_research** — broader exploration requiring multiple rounds of
-  searching and reading. Include output file paths from prior research so
-  new tasks can build on existing findings.
-- **spike** — test a theory or prototype in an isolated worktree.
-- **bug** — investigate a bug report. Use for batches of bugs (one sub-task
-  each); for a single interactive investigation, use bug mode instead.
-- **execute** — execute implementation instructions. Pass the instructions file
-  path as the task description. Spawn one at a time.
+Consult the Task tool's description before choosing a type — it carries the
+full guidance on when each fits. If your harness does not load tool
+descriptions up front, fetch it first.
 
 ## When an execute task returns
 
