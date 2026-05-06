@@ -26,6 +26,7 @@ function AppContent() {
     activeTaskId,
     activeTaskIdRef,
     setActiveTaskId,
+    markTaskSelectionManual,
     connected,
     send,
     interrupt,
@@ -163,9 +164,10 @@ function AppContent() {
 
   const handleSearchSelect = useCallback(
     (tid: number) => {
+      markTaskSelectionManual(String(tid));
       setActiveTaskId(String(tid));
     },
-    [setActiveTaskId],
+    [markTaskSelectionManual, setActiveTaskId],
   );
 
   const handleSearchClose = useCallback(() => {
@@ -301,6 +303,7 @@ function AppContent() {
           }
         }
         if (next === undefined) return;
+        markTaskSelectionManual(next);
         setActiveTaskId(next);
         document
           .querySelector(`.sidebar-item[data-tid="${next}"]`)
@@ -313,6 +316,7 @@ function AppContent() {
         const nextIdx = (idx + dir + visual.length) % visual.length;
         const next = visual[nextIdx] ?? null;
         if (next !== null) {
+          markTaskSelectionManual(next);
           setActiveTaskId(next);
           document
             .querySelector(`.sidebar-item[data-tid="${next}"]`)
@@ -333,6 +337,7 @@ function AppContent() {
   }, [
     sidebarTasks,
     activeTaskId,
+    markTaskSelectionManual,
     setActiveTaskId,
     attention,
     handleNewTask,
@@ -362,9 +367,13 @@ function AppContent() {
     [createDraftTask],
   );
 
-  const handleSidebarSelect = useCallback(() => {
-    setSidebarOpen(false);
-  }, []);
+  const handleSidebarSelect = useCallback(
+    (id: string) => {
+      markTaskSelectionManual(id);
+      setSidebarOpen(false);
+    },
+    [markTaskSelectionManual],
+  );
 
   const handleSidebarNewTask = useCallback(() => {
     setSidebarOpen(false);

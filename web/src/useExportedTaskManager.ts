@@ -186,6 +186,7 @@ export function useExportedTaskManager(): TaskManager {
     activeTaskId,
     activeTaskIdRef,
     setActiveTaskId,
+    markTaskSelectionManual: noop,
     connected: false,
     send: noop,
     interrupt: noop,

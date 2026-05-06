@@ -112,6 +112,7 @@ export interface TaskManager {
   activeTaskId: string | null;
   activeTaskIdRef: { current: string | null };
   setActiveTaskId: (id: string) => void;
+  markTaskSelectionManual: (id: string) => void;
   connected: boolean;
   send: (
     uuid: string,
@@ -201,6 +202,21 @@ const tidToUuid = new Map<number, string>();
 function findByTid(tid: number): TaskState | undefined {
   const uuid = tidToUuid.get(tid);
   return uuid ? liveStates.get(uuid) : undefined;
+}
+
+function isAncestorTid(ancestorTid: number, descendantTid: number): boolean {
+  if (ancestorTid === descendantTid) return false;
+  const seen = new Set<number>();
+  let cursorTid = descendantTid;
+  while (!seen.has(cursorTid)) {
+    seen.add(cursorTid);
+    const task = findByTid(cursorTid);
+    const parentTid = task?.parentTid;
+    if (parentTid == null) return false;
+    if (parentTid === ancestorTid) return true;
+    cursorTid = parentTid;
+  }
+  return false;
 }
 
 /** Convert a string task id to a numeric tid; returns null for non-numeric strings. */
@@ -300,6 +316,7 @@ export function useTaskManager(
   ]);
   const activeTaskIdRef = useRef<string | null>(parsed.tid);
   activeTaskIdRef.current = parsed.tid;
+  const manualTaskSelectionRef = useRef<{ id: string } | null>(null);
   const activeTaskId = parsed.tid;
   const activeWorkspace = parsed.workspace;
   const activeProject = parsed.project;
@@ -376,6 +393,10 @@ export function useTaskManager(
     },
     [getTaskHref],
   );
+
+  const markTaskSelectionManual = useCallback((id: string) => {
+    manualTaskSelectionRef.current = { id };
+  }, []);
 
   const navigateHome = useCallback(() => {
     routeRef.current("/");
@@ -1001,6 +1022,11 @@ export function useTaskManager(
               ? currentId === null || isNaN(currentTid)
               : currentId === String(fromTid);
           if (matches && tidToUuid.has(toTid)) {
+            const currentWasManual =
+              currentId !== null &&
+              manualTaskSelectionRef.current?.id === currentId;
+            if (currentWasManual && isAncestorTid(toTid, fromTid)) break;
+            manualTaskSelectionRef.current = null;
             setActiveTaskId(String(toTid));
           }
           break;
@@ -2049,6 +2075,7 @@ export function useTaskManager(
     activeTaskId,
     activeTaskIdRef,
     setActiveTaskId,
+    markTaskSelectionManual,
     connected,
     send,
     interrupt,
