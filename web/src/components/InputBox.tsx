@@ -167,12 +167,17 @@ export function InputBox({
     };
   }, [pasteTextRef]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (supportsFieldSizing) return;
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = "0";
-    ta.style.height = `${ta.scrollHeight}px`;
+    const handle = requestAnimationFrame(() => {
+      ta.style.height = "0";
+      ta.style.height = `${ta.scrollHeight}px`;
+    });
+    return () => {
+      cancelAnimationFrame(handle);
+    };
   }, [text]);
 
   // Pre-fill with unsaved user messages recovered after session reload
