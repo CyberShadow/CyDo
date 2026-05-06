@@ -164,8 +164,7 @@ interface CydoTools
 	    ~ "pauses until the parent answers with mcp__cydo__Answer(qid, response).\n\n"
 	    ~ "## Ask a completed sub-task (follow-up)\n"
 	    ~ "After a mcp__cydo__Task call completes, use mcp__cydo__Ask(message, tid) to ask a follow-up "
-	    ~ "question. The sub-task is resumed with your question and must answer "
-	    ~ "with mcp__cydo__Answer(qid, response).\n\n"
+	    ~ "question. Pass tid when asking a specific task by ID.\n\n"
 	    ~ "The result includes a `qid` (question ID) that the answerer uses.\n"
 	    ~ "If a sub-task has a pending question, use mcp__cydo__Answer instead of mcp__cydo__Ask."
 	)
@@ -174,17 +173,15 @@ interface CydoTools
 	    @Description("The question to ask")
 	    string message,
 	    @Description("Target task ID. Omit to ask your parent task. "
-	        ~ "Required when asking a sub-task (tid from Task/Ask results).")
+	        ~ "Pass tid when asking a specific task by ID.")
 	    int tid = -1
 	);
 
 	@Description(
 	    "Answer a question from a related task.\n\n"
-	    ~ "When a sub-task asks you a question (returned from mcp__cydo__Task or mcp__cydo__Ask with "
+	    ~ "When another task asks you a question (returned from mcp__cydo__Task or mcp__cydo__Ask with "
 	    ~ "a qid), use mcp__cydo__Answer(qid, message) to respond.\n\n"
-	    ~ "When your parent asks you a follow-up question (delivered with a qid), "
-	    ~ "use mcp__cydo__Answer(qid, message) to respond.\n\n"
-	    ~ "After answering a sub-task's question, this call blocks until the "
+	    ~ "After answering a question, this call may block until the "
 	    ~ "batch completes or another question arrives."
 	)
 	@McpName("Answer")

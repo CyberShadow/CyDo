@@ -88,6 +88,15 @@ export function matchPattern(userText) {
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "follow-up-answered" },
       };
+    m = userText.match(
+      /\[SYSTEM: Question from task \d+ \(qid=(\d+)\)\][\s\S]*non-direct question/,
+    );
+    if (m)
+      return {
+        type: "tool_call",
+        name: "mcp__cydo__Answer",
+        input: { qid: parseInt(m[1]), message: "non-direct-answer" },
+      };
   }
 
   // [SYSTEM: Task prompt / Session start / Mode switch / Handoff] wraps

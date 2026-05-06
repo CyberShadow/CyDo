@@ -2170,6 +2170,14 @@ class App : ToolsBackend
 				persistence.setStatus(currentRoute.askerTid, "active");
 				broadcastTaskUpdate(currentRoute.askerTid);
 			}
+			if (currentRoute.afterAnswer == QuestionAfterAnswer.leaveAnswererAlive
+				&& currentRoute.answererTid in tasks)
+			{
+				auto answererTd = &tasks[currentRoute.answererTid];
+				answererTd.status = "alive";
+				persistence.setStatus(currentRoute.answererTid, "alive");
+				broadcastTaskUpdate(currentRoute.answererTid);
+			}
 			broadcastFocusHint(currentRoute.answererTid, currentRoute.askerTid);
 			clearQuestionRoute(currentRoute.qid);
 		};
@@ -2373,8 +2381,12 @@ class App : ToolsBackend
 			return startQuestionRoute(route, message);
 		}
 
-		return resolve(McpResult(
-			"Ask target must be parent or direct child task", true));
+		// Generic same-workspace explicit-target route.
+		// Parent/child cases above are preserved as compatibility paths.
+		route.delivery = QuestionDelivery.injectedMessage;
+		route.wait = QuestionWait.directPromise;
+		route.afterAnswer = QuestionAfterAnswer.leaveAnswererAlive;
+		return startQuestionRoute(route, message);
 	}
 
 	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
@@ -5309,21 +5321,21 @@ class App : ToolsBackend
 				{
 					// Drain idle callbacks if any — they take priority over normal completion.
 					if (td.onIdleCallbacks.length > 0)
-					{
-						auto cbs = td.onIdleCallbacks.dup;
-						td.onIdleCallbacks = null;
-						foreach (cb; cbs)
-							cb();
-						// If the callback set the task to "active" (e.g., sent a question),
-						// the task has new work — don't close stdin, don't complete.
-						if (td.status == "active")
 						{
-							broadcastTaskUpdate(tid);
-							return;
+							auto cbs = td.onIdleCallbacks.dup;
+							td.onIdleCallbacks = null;
+							foreach (cb; cbs)
+								cb();
+							// If the callback set the task to "active" (e.g., sent a question),
+							// or restored it to "alive" (deferred delivery path), keep stdin open.
+							if (td.status == "active" || td.status == "alive")
+							{
+								broadcastTaskUpdate(tid);
+								return;
+							}
+							// Otherwise fall through — e.g., deferred answer was delivered,
+							// task is "completed", proceed with normal stdin close.
 						}
-						// Otherwise fall through — e.g., deferred answer was delivered,
-						// task is "completed", proceed with normal stdin close.
-					}
 					else if (tid in pendingSubTasks)
 					{
 						if (td.pendingContinuation is null && !hasOnYield)

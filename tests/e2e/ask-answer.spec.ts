@@ -125,6 +125,21 @@ async function waitForLatestTaskResultEvent(
   return observed[observed.length - 1]!;
 }
 
+async function extractLatestQuestionQid(page: Page): Promise<number> {
+  const questionMessage = page
+    .locator(".system-user-message")
+    .filter({ hasText: /Question from task.*qid=\d+/ })
+    .last();
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const text = await questionMessage.textContent();
+    const qidMatch = text?.match(/qid=(\d+)/);
+    if (qidMatch) return Number.parseInt(qidMatch[1]!, 10);
+    await page.waitForTimeout(200);
+  }
+  throw new Error("Timed out waiting for injected question qid");
+}
+
 async function activeTid(page: Page): Promise<number> {
   await expect(page.locator(".sidebar-item.active").first()).toBeVisible({
     timeout: 30_000,
@@ -485,7 +500,7 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   ).toHaveAttribute("href", /\/task\/3$/);
 });
 
-test("Ask/Answer: same-workspace top-level peer Ask is rejected", async ({
+test("Ask/Answer: same-workspace top-level peer Ask succeeds", async ({
   page,
   agentType,
 }) => {
@@ -503,22 +518,32 @@ test("Ask/Answer: same-workspace top-level peer Ask is rejected", async ({
   // Create another top-level task.
   const targetTid = await createTopLevelTask(page);
 
-  // Ask across top-level peers is not allowed in this phase.
+  // Ask from one top-level peer to another.
   await openTask(page, askerTid);
   await sendMessage(page, `call ask ${targetTid} peer question`);
 
   await expect(
+    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
+  ).toBeVisible({ timeout: 60_000 });
+
+  await openTask(page, targetTid);
+  const qid = await extractLatestQuestionQid(page);
+  await openTask(page, targetTid);
+  await sendMessage(page, `call answer ${qid} peer-answer`);
+
+  await openTask(page, askerTid);
+  await expect(
     page
       .locator('[style*="display: contents"] .message-list')
-      .getByText(/ask target must be parent or direct child task/i)
+      .getByText("peer-answer", { exact: true })
       .last(),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible({ timeout: 90_000 });
   await expect(
     page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
   ).not.toBeVisible();
 });
 
-test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
+test("Ask/Answer: same-workspace non-direct Ask succeeds", async ({
   page,
   agentType,
 }) => {
@@ -532,6 +557,7 @@ test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
       .last(),
   ).toBeVisible({ timeout: 90_000 });
   const rootTid = await activeTid(page);
+  const observedRootTaskResults = observeTaskResultItems(page, rootTid);
 
   // Create a second top-level task and a child under the first one.
   const askerTid = await createTopLevelTask(page);
@@ -543,23 +569,50 @@ test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
       .getByText("non-direct-leaf-ready", { exact: true })
       .last(),
   ).toBeVisible({ timeout: 90_000 });
-  const tids = await sidebarTids(page);
-  const leafTid = tids[tids.length - 1];
+  const rootTaskResultItems = await waitForLatestTaskResultItems(
+    observedRootTaskResults,
+  );
+  const leafTaskResult = rootTaskResultItems.find(
+    (item) => item["status"] === "success" && typeof item["tid"] === "number",
+  );
+  expect(leafTaskResult).toBeDefined();
+  const leafTid = leafTaskResult!["tid"] as number;
   expect(leafTid).toBeGreaterThan(askerTid);
   await page.locator(`.sidebar-item[data-tid="${leafTid}"]`).waitFor({
     state: "visible",
     timeout: 30_000,
   });
 
-  // Ask from top-level peer to leaf (not direct parent/child) is rejected.
+  // Ask from top-level peer to a non-direct task in the same workspace.
   await openTask(page, askerTid);
   await sendMessage(page, `call ask ${leafTid} non-direct question`);
 
+  const askerWaitingIcon = page.locator(
+    `.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`,
+  );
+  const nonDirectAnswer = page
+    .locator('[style*="display: contents"] .message-list')
+    .getByText("non-direct-answer", { exact: true })
+    .last();
+  await expect
+    .poll(
+      async () => {
+        if (await askerWaitingIcon.isVisible()) return "waiting";
+        if (await nonDirectAnswer.isVisible()) return "answered";
+        return "pending";
+      },
+      { timeout: 60_000 },
+    )
+    .not.toBe("pending");
+
+  await openTask(page, leafTid);
   await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText(/ask target must be parent or direct child task/i)
-      .last(),
+    page.locator(".system-user-message").filter({ hasText: /Question from task.*qid=/ }).last(),
+  ).toBeVisible({ timeout: 60_000 });
+
+  await openTask(page, askerTid);
+  await expect(
+    nonDirectAnswer,
   ).toBeVisible({ timeout: 60_000 });
   await expect(
     page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
