@@ -1137,6 +1137,47 @@ describe("batch 1 rg/sed/structured output plans", () => {
     }
   });
 
+  it("grep -n ... /nix/store/... | head keeps search plan and infers D language", async () => {
+    const r = await parseShellSemantic(
+      'grep -n "cbDllUnload\\|ll_removeThread" /nix/store/ab1n7scnjf98w13jwz12r5lm43d30cj9-dmd-2.112.0/include/dmd/core/thread/osthread.d | head -15',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("search");
+    const v = r.value;
+    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
+    const format = v.outputPlan?.blocks[0]?.format;
+    expect(format?.kind).toBe("individual-lines");
+    if (!format || format.kind !== "individual-lines") return;
+    expect(format.format.kind).toBe("line-number-prefixed");
+    if (format.format.kind !== "line-number-prefixed") return;
+    expect(format.format.format).toEqual({ kind: "content", language: "d" });
+  });
+
+  it("rg -n ... app.d | head keeps search plan and infers D language", async () => {
+    const r = await parseShellSemantic(
+      'rg -n "sessionBroadcast" source/cydo/app.d | head -15',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("search");
+    const v = r.value;
+    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
+    const format = v.outputPlan?.blocks[0]?.format;
+    expect(format?.kind).toBe("individual-lines");
+    if (!format || format.kind !== "individual-lines") return;
+    expect(format.format.kind).toBe("line-number-prefixed");
+    if (format.format.kind !== "line-number-prefixed") return;
+    expect(format.format.format).toEqual({ kind: "content", language: "d" });
+  });
+
+  it("unsupported search pipeline stage rejects", async () => {
+    const r = await parseShellSemantic(
+      "grep -n pattern source/cydo/app.d | unsupported",
+    );
+    expect(r.ok).toBe(false);
+  });
+
   it("single sed read includes whole-output plan", async () => {
     const r = await parseShellSemantic("sed -n '1,20p' README.md");
     expect(r.ok).toBe(true);

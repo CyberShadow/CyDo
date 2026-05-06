@@ -992,7 +992,27 @@ function classifyPipeline(
     }
   }
 
-  // If no read primary found, try git/diff primary stage
+  // If no read primary found, try rg/grep search primary stage
+  if (primaryIdx < 0) {
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i]!;
+      if (!stage.name) continue;
+      if (stage.name !== "rg" && stage.name !== "grep") continue;
+
+      const r = classifyRgCommand(stage, originalCommand);
+      if (r.ok && r.value.kind === "search") {
+        if (primaryIdx >= 0)
+          return reject(
+            "unsafe_shell_syntax",
+            "pipeline has multiple search stages",
+          );
+        primaryIdx = i;
+        primaryResult = r;
+      }
+    }
+  }
+
+  // If no read/search primary found, try git/diff primary stage
   if (primaryIdx < 0) {
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i]!;
@@ -1019,7 +1039,7 @@ function classifyPipeline(
   if (primaryIdx < 0 || !primaryResult)
     return reject(
       "unsafe_shell_syntax",
-      "pipeline has no recognized file-reading or diff stage",
+      "pipeline has no recognized file-reading, search, or diff stage",
     );
 
   for (let i = 0; i < stages.length; i++) {
