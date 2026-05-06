@@ -65,6 +65,7 @@ export function responseTimeout(agentType: AgentType): number {
 type TestFixtures = {
   agentType: AgentType;
   backend: { port: number; baseURL: string; pid: number; wsDir: string };
+  backendEnv: Record<string, string>;
 };
 
 /**
@@ -77,7 +78,9 @@ type TestFixtures = {
  * sandbox. No dynamic ports, unique workdirs, or process group draining needed.
  */
 export const test = base.extend<TestFixtures>({
-  backend: async ({}, use, testInfo: TestInfo) => {
+  backendEnv: [{}, { option: true }],
+
+  backend: async ({ backendEnv }, use, testInfo: TestInfo) => {
     const workDir = "/tmp/cydo-backend";
     mkdirSync(`${workDir}/data`, { recursive: true });
     symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
@@ -87,6 +90,7 @@ export const test = base.extend<TestFixtures>({
       cwd: workDir,
       env: {
         ...process.env,
+        ...backendEnv,
         XDG_DATA_HOME: `${workDir}/data`,
       },
       stdio: ["ignore", "inherit", "inherit"],
@@ -156,11 +160,23 @@ export const test = base.extend<TestFixtures>({
   },
 
   page: async ({ page }, use, testInfo: TestInfo) => {
+    const pageErrors: string[] = [];
     page.on("console", (msg) =>
       console.error(`[browser] console.${msg.type()}: ${msg.text()}`),
     );
+    page.on("pageerror", (error) => {
+      const stack = error.stack ? `\n${error.stack}` : "";
+      pageErrors.push(`${error.name}: ${error.message}${stack}`);
+    });
 
     await use(page);
+
+    if (pageErrors.length > 0) {
+      expect(
+        pageErrors,
+        `Uncaught page errors:\n${pageErrors.join("\n---\n")}`,
+      ).toEqual([]);
+    }
 
     // After the test body: assert no unknown message type errors in the DOM.
     const errorMessages = page.locator(".message.system-message pre", {

@@ -2517,7 +2517,12 @@ export async function parseShellSemantic(
   // need — body content is extracted via line splitting from the raw command.
   const tokenizeLine = inner.includes("\n") ? inner.split("\n")[0]! : inner;
 
-  const shikiLines = await tokenizeWithScopes(tokenizeLine, theme);
+  let shikiLines: TokenWithScopes[][] | null;
+  try {
+    shikiLines = await tokenizeWithScopes(tokenizeLine, theme);
+  } catch {
+    return reject("unsafe_shell_syntax", "tokenizer unavailable");
+  }
   if (!shikiLines)
     return reject("unsafe_shell_syntax", "tokenizer unavailable");
 
