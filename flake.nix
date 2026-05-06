@@ -571,7 +571,6 @@ EOF
 
             # Fixed port env vars — fixtures inherit these
             CYDO_LISTEN_PORT = "3940";
-            CYDO_LOG_LEVEL = "trace";
             CYDO_AUTH_USER = "";
             CYDO_AUTH_PASS = "";
 
@@ -636,6 +635,7 @@ EOF
               mkdir -p /tmp/playwright-home/.config/cydo
               cat > /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
               default_agent_type: ${agentType}
+              log_level: trace
               workspaces:
                 local:
                   root: /tmp/cydo-test-workspace

@@ -315,7 +315,9 @@ static:
 		import cydo.agent.registry : agentRegistry;
 		import cydo.tasktype : substituteVars;
 
-		initLogLevel();
+		initLogger();
+		auto config = loadConfig();
+		applyConfiguredLogLevel(config.log_level);
 
 		// Verify required files exist
 		auto metaPath = buildPath(dumpDir, "meta.json");
@@ -736,7 +738,8 @@ class App : ToolsBackend
 
 	void start()
 	{
-		initLogLevel();
+		initLogger();
+		applyConfiguredLogLevel("info");
 		{
 			import std.datetime.systime : Clock;
 			nextQid = cast(int) Clock.currTime.toUnixTime;
@@ -762,6 +765,7 @@ class App : ToolsBackend
 			createPidFile("cydo.pid", runtimeDir());
 		}
 		config = loadConfig();
+		applyConfiguredLogLevel(config.log_level);
 		agent = createAgent(config.default_agent_type);
 		if (auto ac = config.default_agent_type in config.agents)
 			agent.setModelAliases(ac.model_aliases);
@@ -7545,6 +7549,7 @@ class App : ToolsBackend
 			return;
 		}
 		config = result.get();
+		applyConfiguredLogLevel(config.log_level);
 		foreach (agentType, a; agentsByType)
 		{
 			if (auto ac = agentType in config.agents)
@@ -8341,22 +8346,27 @@ private string buildAbbreviatedHistoryFromStrings(string[] envelopes)
 	return header ~ entries.join("\n\n");
 }
 
-/// Set globalLogLevel from CYDO_LOG_LEVEL env var (trace/info/warning/error).
-/// Defaults to info.
-private void initLogLevel()
+/// Install robust logger implementation once.
+private void initLogger()
+{
+	installRobustLogger();
+}
+
+/// Apply configured log level (trace/info/warning/error). Invalid values fall
+/// back to info.
+private void applyConfiguredLogLevel(string level)
 {
 	import std.logger : sharedLog, LogLevel;
-	import std.process : environment;
-	installRobustLogger();
-
-	auto level = environment.get("CYDO_LOG_LEVEL", "info");
 	switch (level)
 	{
 		case "trace":    (cast()sharedLog).logLevel = LogLevel.trace; break;
 		case "info":     (cast()sharedLog).logLevel = LogLevel.info; break;
 		case "warning":  (cast()sharedLog).logLevel = LogLevel.warning; break;
 		case "error":    (cast()sharedLog).logLevel = LogLevel.error; break;
-		default:         (cast()sharedLog).logLevel = LogLevel.info; break;
+		default:
+			warningf("Invalid config log_level '%s', falling back to info", level);
+			(cast()sharedLog).logLevel = LogLevel.info;
+			break;
 	}
 }
 
