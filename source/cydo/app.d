@@ -569,9 +569,14 @@ class App : ToolsBackend
 	private string mcpSocketPath;
 	private WebSocketAdapter[] clients;
 	/// Per-client subscription set: which tasks each client receives live events for.
-	/// INVARIANT: subscription ≡ request_history. A client is subscribed only
-	/// after receiving the full history buffer. Every task_reload is a hard
-	/// boundary: clients are unsubscribed and must re-subscribe via request_history.
+	/// INVARIANT: task history is authoritative; live delivery is only an
+	/// optimization for clients that have caught up. request_history synchronously
+	/// enqueues the replay through task_history_end, then marks the client
+	/// subscribed. Later live sends enqueue behind that replay on the same socket,
+	/// so clients process the task_history_end boundary before later live
+	/// events regardless of link or browser speed. Every task_reload is a hard
+	/// history-lineage boundary: clients are unsubscribed and must re-subscribe via
+	/// request_history.
 	private bool[int][WebSocketAdapter] clientSubscriptions;
 	private TaskData[int] tasks;
 	private Persistence persistence;
@@ -3111,6 +3116,9 @@ class App : ToolsBackend
 
 		ensureHistoryLoaded(tid);
 
+		// History replay is the durable state transfer. This handler enqueues the
+		// full replay through task_history_end before logically subscribing the
+		// client, so later live events enqueue after the replay on this socket.
 		// Send start marker with total count for progress tracking
 		ws.send(Data(toJson(TaskHistoryStartMessage("task_history_start", tid,
 			cast(int) td.history.length)).representation));
@@ -3178,7 +3186,8 @@ class App : ToolsBackend
 				tdperm.pendingPermissionInput)).representation));
 		}
 
-		// Subscribe client to live events for this task
+		// Subscribe client to live events only after replay has been enqueued
+		// through task_history_end.
 		clientSubscriptions.require(ws)[tid] = true;
 
 		// If a turn already completed but suggestions were skipped because no client was
@@ -6659,8 +6668,9 @@ class App : ToolsBackend
 	}
 
 	/// Broadcast a task reload boundary and invalidate in-flight derived work.
-	/// This is a hard barrier: clients are unsubscribed first and must call
-	/// request_history to re-subscribe after replay.
+	/// task_reload is a hard history-lineage boundary on the wire: clients are
+	/// unsubscribed before it is sent, must discard pre-reload live assumptions,
+	/// and must call request_history to subscribe to the new replayed lineage.
 	private void emitTaskReload(int tid, string reason = "")
 	{
 		import ae.utils.json : toJson;
@@ -6964,6 +6974,9 @@ class App : ToolsBackend
 		}
 
 		ensureHistoryLoaded(tid);
+		// Persist before live broadcast. A subscriber can consume the event live;
+		// a non-subscriber or reconnecting client will get the same event from
+		// request_history for the current history lineage.
 		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
 		if (!mergeStreamingDelta(tid, ev.translated, historyData))
 		{

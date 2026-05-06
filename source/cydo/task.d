@@ -223,7 +223,9 @@ struct TaskData
 
 	// -- History parallel-array helpers --
 
-	/// Append an event and its raw source atomically.
+	/// Append an event and its raw source atomically. Task history is the durable
+	/// source replayed by request_history; live broadcasts must not be treated as
+	/// the only delivery path for persisted events.
 	void appendHistory(Data event, string raw)
 	{
 		history ~= event;
