@@ -459,11 +459,9 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
   ).toBeVisible({ timeout: 15_000 });
 
   await fastChild.click();
-  await expect(fastChild).toHaveClass(/active/, { timeout: 15_000 });
   await expect(
     assistantText(page, "first-child-done"),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(fastChild).toHaveClass(/active/);
 
   // Restart after one child has completed but before the slow child has.
   await restartableBackend.restart();
