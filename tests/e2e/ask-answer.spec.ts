@@ -224,6 +224,10 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible({ timeout: 90_000 });
 
+  const doneCountBeforeFollowUpAsk = await currentMessageList(page)
+    .getByText("Done.", { exact: true })
+    .count();
+
   // Parent calls Ask on the completed child (tid=2) with a follow-up question.
   await sendMessage(page, "call ask 2 any follow-up?");
 
@@ -235,6 +239,16 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       .getByText("follow-up-answered", { exact: true })
       .last(),
   ).toBeVisible({ timeout: 90_000 });
+
+  if (agentType === "claude") {
+    await expect
+      .poll(async () => {
+        return currentMessageList(page).getByText("Done.", { exact: true }).count();
+      }, {
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(doneCountBeforeFollowUpAsk);
+  }
 
   await page.locator('.sidebar-item[data-tid="2"]').click();
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
