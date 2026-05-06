@@ -168,14 +168,19 @@ test("codex reload replays apply_patch tool call", async ({
     timeout: responseTimeout(agentType),
   });
 
+  const activeTaskRow = page.locator(".sidebar-item.active").first();
+  await expect(activeTaskRow).toBeVisible({ timeout: 5_000 });
+  const taskTid = await activeTaskRow.getAttribute("data-tid");
+  expect(taskTid).toBeTruthy();
+
   await killSession(page, agentType);
   await page.reload();
-  await page
-    .locator(".sidebar-item .sidebar-label", {
-      hasText: "codex filechange create fixture",
-    })
-    .first()
-    .click({ timeout: 15_000 });
+  const reloadedTaskRow = page
+    .locator(`.sidebar-item[data-tid="${taskTid!}"]`)
+    .first();
+  await expect(reloadedTaskRow).toBeVisible({ timeout: 15_000 });
+  await reloadedTaskRow.click();
+  await expect(reloadedTaskRow).toHaveClass(/active/);
 
   const tool = page
     .locator(".tool-call")
