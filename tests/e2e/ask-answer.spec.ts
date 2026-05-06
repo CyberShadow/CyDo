@@ -15,6 +15,45 @@ function currentMessageList(page: Page): Locator {
   return page.locator('[style*="display: contents"] .message-list');
 }
 
+function observeControlMessageCount(
+  page: Page,
+  type: string,
+  tid: number,
+): () => number {
+  let count = 0;
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      try {
+        const data = JSON.parse(frame.payload.toString()) as {
+          type?: string;
+          tid?: number;
+        };
+        if (data.type === type && data.tid === tid) count += 1;
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return () => count;
+}
+
+async function waitForTaskHistorySettled(
+  page: Page,
+  taskHistoryEndCount: () => number,
+): Promise<void> {
+  const loading = page.locator('[style*="display: contents"] .session-loading');
+  const historyEndsBefore = taskHistoryEndCount();
+  const loadingAppeared = await loading
+    .waitFor({ state: "visible", timeout: 1_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!loadingAppeared) return;
+  await expect
+    .poll(() => taskHistoryEndCount(), { timeout: 30_000 })
+    .toBeGreaterThan(historyEndsBefore);
+  await expect(loading).toHaveCount(0, { timeout: 30_000 });
+}
+
 function lastTaskTool(page: Page): Locator {
   return currentMessageList(page)
     .locator(".message-wrapper")
@@ -26,7 +65,9 @@ function lastTaskTool(page: Page): Locator {
     .last();
 }
 
-function parseTaskResultItemsPayload(payload: unknown): TaskResultItem[] | null {
+function parseTaskResultItemsPayload(
+  payload: unknown,
+): TaskResultItem[] | null {
   if (Array.isArray(payload)) return payload as TaskResultItem[];
   if (payload && typeof payload === "object") {
     const obj = payload as Record<string, unknown>;
@@ -40,7 +81,9 @@ function parseTaskResultItemsPayload(payload: unknown): TaskResultItem[] | null 
   return null;
 }
 
-function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | null {
+function parseTaskResultItems(
+  event: ItemResultEventLike,
+): TaskResultItem[] | null {
   const structured = parseTaskResultItemsPayload(event.tool_result);
   if (structured) return structured;
 
@@ -153,12 +196,15 @@ async function createTopLevelTask(page: Page): Promise<number> {
   ).toBeVisible({ timeout: 90_000 });
 
   await expect
-    .poll(async () => {
-      const tids = await sidebarTids(page);
-      return tids[tids.length - 1] ?? 0;
-    }, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () => {
+        const tids = await sidebarTids(page);
+        return tids[tids.length - 1] ?? 0;
+      },
+      {
+        timeout: 60_000,
+      },
+    )
     .toBeGreaterThan(beforeMaxTid);
 
   return activeTid(page);
@@ -166,7 +212,9 @@ async function createTopLevelTask(page: Page): Promise<number> {
 
 async function openTask(page: Page, tid: number): Promise<void> {
   await page.locator(`.sidebar-item[data-tid="${tid}"]`).click();
-  await expect(page.locator(`.sidebar-item[data-tid="${tid}"].active`)).toBeVisible({
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${tid}"].active`),
+  ).toBeVisible({
     timeout: 10_000,
   });
 }
@@ -179,7 +227,9 @@ async function sidebarTids(page: Page): Promise<number[]> {
     .toBeGreaterThan(0);
   return page.locator(".sidebar-item[data-tid]").evaluateAll((nodes) =>
     nodes
-      .map((node) => Number.parseInt((node as HTMLElement).dataset.tid ?? "", 10))
+      .map((node) =>
+        Number.parseInt((node as HTMLElement).dataset.tid ?? "", 10),
+      )
       .filter((tid) => Number.isInteger(tid))
       .sort((a, b) => a - b),
   );
@@ -190,6 +240,11 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
+  const task2HistoryEndCount = observeControlMessageCount(
+    page,
+    "task_history_end",
+    2,
+  );
 
   await enterSession(page);
 
@@ -220,9 +275,9 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   // exits) before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 90_000,
+  });
 
   const doneCountBeforeFollowUpAsk = await currentMessageList(page)
     .getByText("Done.", { exact: true })
@@ -242,11 +297,16 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
 
   if (agentType === "claude") {
     await expect
-      .poll(async () => {
-        return currentMessageList(page).getByText("Done.", { exact: true }).count();
-      }, {
-        timeout: 30_000,
-      })
+      .poll(
+        async () => {
+          return currentMessageList(page)
+            .getByText("Done.", { exact: true })
+            .count();
+        },
+        {
+          timeout: 30_000,
+        },
+      )
       .toBeGreaterThan(doneCountBeforeFollowUpAsk);
   }
 
@@ -254,22 +314,24 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
+  await waitForTaskHistorySettled(page, task2HistoryEndCount);
   await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
+    currentMessageList(page).locator(".system-user-message", {
       hasText: "Follow-up from parent",
     }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toHaveCount(1, { timeout: 30_000 });
 
   await page.reload();
   await page.locator('.sidebar-item[data-tid="2"]').click();
   await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
     timeout: 10_000,
   });
+  await waitForTaskHistorySettled(page, task2HistoryEndCount);
   await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
+    currentMessageList(page).locator(".system-user-message", {
       hasText: "Follow-up from parent",
     }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toHaveCount(1, { timeout: 30_000 });
 });
 
 test("Ask/Answer: child asks parent, parent answers", async ({
@@ -309,7 +371,9 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 
-  const questionResult = (await waitForLatestTaskResultItems(observedTaskResults))[0]!;
+  const questionResult = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  )[0]!;
   expect(questionResult).toMatchObject({
     status: "question",
     tid: 2,
@@ -357,17 +421,19 @@ test("Ask/Answer: completed task result exposes success status and preserved fie
     timeout: 90_000,
   });
 
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
-    {
-      status: "success",
-      tid: 2,
-      summary: "structured-success",
-      note: "Read the output file for findings.",
-    },
-  );
+  expect(
+    (await waitForLatestTaskResultItems(observedTaskResults))[0],
+  ).toMatchObject({
+    status: "success",
+    tid: 2,
+    summary: "structured-success",
+    note: "Read the output file for findings.",
+  });
   if (agentType === "codex") {
     expect(
-      parseTaskResultItems(await waitForLatestTaskResultEvent(observedTaskEvents)),
+      parseTaskResultItems(
+        await waitForLatestTaskResultEvent(observedTaskEvents),
+      ),
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -395,12 +461,12 @@ test("Ask/Answer: task validation errors expose error status and error field", a
     timeout: 90_000,
   });
 
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
-    {
-      status: "error",
-      error: expect.stringContaining("invalid_type"),
-    },
-  );
+  expect(
+    (await waitForLatestTaskResultItems(observedTaskResults))[0],
+  ).toMatchObject({
+    status: "error",
+    error: expect.stringContaining("invalid_type"),
+  });
 });
 
 test("Ask/Answer: task summaries preserve literal JSON-looking child final text", async ({
@@ -415,13 +481,13 @@ test("Ask/Answer: task summaries preserve literal JSON-looking child final text"
 
   const taskTool = lastTaskTool(page);
   await expect(taskTool).toContainText("qid", { timeout: 90_000 });
-  expect((await waitForLatestTaskResultItems(observedTaskResults))[0]).toMatchObject(
-    {
-      status: "success",
-      tid: 2,
-      summary: '{"qid":3,"message":"**Summary**\\n\\nHello"}',
-    },
-  );
+  expect(
+    (await waitForLatestTaskResultItems(observedTaskResults))[0],
+  ).toMatchObject({
+    status: "success",
+    tid: 2,
+    summary: '{"qid":3,"message":"**Summary**\\n\\nHello"}',
+  });
 });
 
 test("Ask/Answer: batch with one completing child and one asking child", async ({
@@ -459,9 +525,9 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   ).toBeVisible({ timeout: 30_000 });
 
   // Capture the qid from child B's observed question result.
-  const questionResult = (await waitForLatestTaskResultItems(observedTaskResults)).find(
-    (item) => item["status"] === "question",
-  )!;
+  const questionResult = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  ).find((item) => item["status"] === "question")!;
   const capturedQid = questionResult["qid"] as number;
 
   // Parent answers child B using the observed qid.
@@ -514,7 +580,9 @@ test("Ask/Answer: same-workspace top-level peer Ask is rejected", async ({
       .last(),
   ).toBeVisible({ timeout: 60_000 });
   await expect(
-    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
+    page.locator(
+      `.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`,
+    ),
   ).not.toBeVisible();
 });
 
@@ -536,7 +604,10 @@ test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
   // Create a second top-level task and a child under the first one.
   const askerTid = await createTopLevelTask(page);
   await openTask(page, rootTid);
-  await sendMessage(page, 'call task research reply with "non-direct-leaf-ready"');
+  await sendMessage(
+    page,
+    'call task research reply with "non-direct-leaf-ready"',
+  );
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
@@ -562,7 +633,9 @@ test("Ask/Answer: same-workspace non-direct Ask is rejected", async ({
       .last(),
   ).toBeVisible({ timeout: 60_000 });
   await expect(
-    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
+    page.locator(
+      `.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`,
+    ),
   ).not.toBeVisible();
 });
 
@@ -573,7 +646,10 @@ test("Ask/Answer: wrong answerer gets Unknown question ID", async ({
   test.setTimeout(TALK_TIMEOUT);
   await enterSession(page);
 
-  await sendMessage(page, "call task research call ask what approach should I use?");
+  await sendMessage(
+    page,
+    "call task research call ask what approach should I use?",
+  );
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
@@ -611,10 +687,7 @@ test("Ask/Answer: wrong answerer gets Unknown question ID", async ({
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: self Ask is rejected", async ({
-  page,
-  agentType,
-}) => {
+test("Ask/Answer: self Ask is rejected", async ({ page, agentType }) => {
   test.setTimeout(TALK_TIMEOUT);
   await enterSession(page);
   await sendMessage(page, 'reply with "self-ask-root-ready"');
@@ -635,7 +708,9 @@ test("Ask/Answer: self Ask is rejected", async ({
       .last(),
   ).toBeVisible({ timeout: 60_000 });
   await expect(
-    page.locator(`.sidebar-item[data-tid="${selfTid}"] .task-type-icon.waiting`),
+    page.locator(
+      `.sidebar-item[data-tid="${selfTid}"] .task-type-icon.waiting`,
+    ),
   ).not.toBeVisible();
 });
 
@@ -731,9 +806,9 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   ).toBeVisible({ timeout: 30_000 });
 
   // Capture qid of the first question from the observed task result.
-  const firstQuestion = (await waitForLatestTaskResultItems(observedTaskResults)).find(
-    (item) => item["status"] === "question",
-  )!;
+  const firstQuestion = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  ).find((item) => item["status"] === "question")!;
   const firstQid = firstQuestion["qid"] as number;
   const resultCountBeforeFirstAnswer = observedTaskResults.length;
 
@@ -748,9 +823,9 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // before the next sendMessage, otherwise selectors may match the
   // child's view and the next sendMessage's click may resolve to a
   // child textarea that gets hidden mid-action by the wrapper flip.
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 90_000,
+  });
 
   // Capture qid of the second question from the next observed item/result after the first answer.
   let secondQuestion: TaskResultItem | null = null;
@@ -758,7 +833,9 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     .poll(
       () => {
         secondQuestion = null;
-        for (const items of observedTaskResults.slice(resultCountBeforeFirstAnswer)) {
+        for (const items of observedTaskResults.slice(
+          resultCountBeforeFirstAnswer,
+        )) {
           const match = items.find(
             (item) => item["status"] === "question" && item["qid"] !== firstQid,
           );
@@ -780,9 +857,9 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // the autonomous round-trip (inciting hint → child works → corrective hint →
   // parent active) must have completed. Wait explicitly so sendMessage resolves
   // :visible.first() against parent's textarea.
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 90_000,
+  });
 
   // Answer the second child using the observed qid.
   await sendMessage(page, `call answer ${secondQid} answer two`);
@@ -978,9 +1055,9 @@ test("Ask/Answer: answer delivery is deferred until child becomes idle", async (
   // exits) before sending the follow-up Ask, otherwise its sendMessage
   // may click the child's textarea, which gets hidden mid-action when
   // focus returns to parent.
-  await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 90_000,
+  });
 
   // Ask follow-up with "deferred-test" trigger — child will Answer + do extra Bash work.
   await sendMessage(page, "call ask 2 deferred-test");
@@ -1015,7 +1092,10 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
 }) => {
   // Claude-specific: only the Anthropic mock can reliably return SwitchMode
   // after a Task tool result in a deterministic sequence.
-  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
+  test.skip(
+    agentType !== "claude",
+    "Claude-only: Anthropic-specific tool-result sequencing",
+  );
   test.setTimeout(TALK_TIMEOUT * 2);
 
   await enterSession(page);
@@ -1038,9 +1118,12 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
   // Wait for the mode-switch system message divider.
   await expect(
     page
-      .locator('[style*="display: contents"] .message-list .system-user-message', {
-        hasText: /Mode switch: plan/i,
-      })
+      .locator(
+        '[style*="display: contents"] .message-list .system-user-message',
+        {
+          hasText: /Mode switch: plan/i,
+        },
+      )
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
@@ -1065,9 +1148,7 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
   // Wait for the final Task tool result (batch completed) to appear in the parent.
   await expect(
     page
-      .locator(
-        '[style*="display: contents"] .message-list .cydo-task-spec',
-      )
+      .locator('[style*="display: contents"] .message-list .cydo-task-spec')
       .last(),
   ).toBeVisible({ timeout: 90_000 });
 });
@@ -1078,7 +1159,10 @@ test("Ask/Answer: Handoff rejected while child question is pending", async ({
 }) => {
   // Claude-specific: only the Anthropic mock can reliably return Handoff then Answer
   // after a Task tool result in a deterministic multi-step sequence.
-  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
+  test.skip(
+    agentType !== "claude",
+    "Claude-only: Anthropic-specific tool-result sequencing",
+  );
   test.setTimeout(TALK_TIMEOUT * 2);
 
   await enterSession(page);
@@ -1103,9 +1187,7 @@ test("Ask/Answer: Handoff rejected while child question is pending", async ({
   // Check immediately: if the backend incorrectly accepted Handoff, tid=4 would
   // appear quickly. Use not.toBeVisible() with a short timeout so the test
   // doesn't wait 90 seconds for something that should never appear.
-  await expect(
-    page.locator('.sidebar-item[data-tid="4"]'),
-  ).not.toBeVisible();
+  await expect(page.locator('.sidebar-item[data-tid="4"]')).not.toBeVisible();
 
   // After the Handoff rejection, the mock calls Answer which fulfills the
   // grandchild's Ask. Wait for tid=3 to complete: this proves the recovery

@@ -22,7 +22,10 @@ import type {
 import type { CydoMeta, TaskState } from "./types";
 import { makeTaskState } from "./types";
 import { reduceMessage } from "./sessionReducer";
-import { canonicalUserTextFromDisplayMessage } from "./userText";
+import {
+  canonicalUserTextFromContentAndMeta,
+  canonicalUserTextFromDisplayMessage,
+} from "./userText";
 import { drafts as inputDrafts } from "./components/InputBox";
 
 export interface ImageAttachment {
@@ -189,6 +192,19 @@ function extractTextContent(msg: AgnosticEvent): string {
   return msg.text ?? "";
 }
 
+function canonicalUserTextFromEvent(msg: AgnosticEvent): string {
+  if (msg.type !== "item/started" || msg.item_type !== "user_message")
+    return "";
+  const meta = (msg as unknown as Record<string, unknown>).meta as
+    | CydoMeta
+    | undefined;
+  const content =
+    ((msg as unknown as Record<string, unknown>).content as
+      | ContentBlock[]
+      | undefined) ?? [];
+  return canonicalUserTextFromContentAndMeta(content, meta);
+}
+
 // Mutable mirror of task states, keyed by uuid. Updated synchronously outside
 // Preact's render cycle so reducers and notification checks run immediately
 // when WebSocket messages arrive, even when Preact defers state updates in
@@ -198,6 +214,7 @@ const liveStates = new Map<string, TaskState>();
 // Index: backend tid → frontend uuid. Maintained in lockstep with liveStates.
 // Every task with a real tid has an entry here; virtual drafts (tid=null) do not.
 const tidToUuid = new Map<number, string>();
+const appliedTaskSeqs = new Map<string, Map<number, Set<string>>>();
 
 function findByTid(tid: number): TaskState | undefined {
   const uuid = tidToUuid.get(tid);
@@ -431,6 +448,7 @@ export function useTaskManager(
     const draft = draftRef.current;
     const uuid = draft.phase !== "none" ? draft.uuid : null;
     if (!uuid) return;
+    appliedTaskSeqs.delete(uuid);
     liveStates.delete(uuid);
     setTasks((prev) => {
       if (!prev.has(uuid)) return prev;
@@ -535,6 +553,7 @@ export function useTaskManager(
           connRef.current?.deleteTask(tid);
           tidToUuid.delete(tid);
         }
+        appliedTaskSeqs.delete(uuid);
         inputDrafts.delete(uuid);
         liveStates.delete(uuid);
         setTasks((prev) => {
@@ -637,6 +656,48 @@ export function useTaskManager(
       if (deletedDraftTid.current === tid) return;
       const uuid = tidToUuid.get(tid);
       if (!uuid) return;
+      if (typeof seq === "number") {
+        const prev = liveStates.get(uuid);
+        const fingerprint = JSON.stringify(msg);
+        const seqMap =
+          appliedTaskSeqs.get(uuid) ?? new Map<number, Set<string>>();
+        const seenForSeq = seqMap.get(seq);
+        const replayingHistory = prev?.historyTotal !== undefined;
+        if (
+          (replayingHistory && seqMap.has(seq)) ||
+          seenForSeq?.has(fingerprint)
+        ) {
+          if (replayingHistory) {
+            const canonical = canonicalUserTextFromEvent(msg);
+            if (canonical.length > 0) {
+              const messages = prev.messages.filter(
+                (m) =>
+                  !(
+                    m.pending &&
+                    m.type === "user" &&
+                    canonicalUserTextFromDisplayMessage(m) === canonical
+                  ),
+              );
+              if (messages.length !== prev.messages.length) {
+                const updated = { ...prev, messages };
+                liveStates.set(uuid, updated);
+                setTasks((map) => {
+                  const next = new Map(map);
+                  next.set(uuid, updated);
+                  return next;
+                });
+              }
+            }
+          }
+          return;
+        }
+        if (seenForSeq) {
+          seenForSeq.add(fingerprint);
+        } else {
+          seqMap.set(seq, new Set([fingerprint]));
+        }
+        appliedTaskSeqs.set(uuid, seqMap);
+      }
       const prev = liveStates.get(uuid) ?? {
         ...makeTaskState(tid, true),
         uuid,
@@ -1036,6 +1097,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           requestedHistoryRef.current.delete(t.uuid);
+          appliedTaskSeqs.delete(t.uuid);
 
           const isEdit = msg.reason === "edit";
           // opensCycle: first reload of a new reconciliation cycle
@@ -1230,6 +1292,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (deletedDraftTid.current === tid) deletedDraftTid.current = null;
           if (t) {
+            appliedTaskSeqs.delete(t.uuid);
             liveStates.delete(t.uuid);
             tidToUuid.delete(tid);
             requestedHistoryRef.current.delete(t.uuid);
@@ -1542,6 +1605,7 @@ export function useTaskManager(
         setConnected(false);
         liveStates.clear();
         tidToUuid.clear();
+        appliedTaskSeqs.clear();
         requestedHistoryRef.current.clear();
         const cur = draftRef.current;
         if (cur.phase === "timer_pending") clearTimeout(cur.timerId);
