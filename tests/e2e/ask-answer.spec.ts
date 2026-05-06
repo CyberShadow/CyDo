@@ -161,33 +161,6 @@ async function waitForLatestTaskResultItems(
   return observed[observed.length - 1]!;
 }
 
-async function waitForTaskResultItem(
-  observed: TaskResultItem[][],
-  predicate: (item: TaskResultItem) => boolean,
-  options: { sinceIndex?: number; timeout?: number } = {},
-): Promise<TaskResultItem> {
-  const sinceIndex = options.sinceIndex ?? 0;
-  const timeout = options.timeout ?? TALK_TIMEOUT;
-  let matched: TaskResultItem | null = null;
-  await expect
-    .poll(
-      () => {
-        matched = null;
-        for (const items of observed.slice(sinceIndex)) {
-          const candidate = items.find((item) => predicate(item));
-          if (candidate) {
-            matched = candidate;
-            return true;
-          }
-        }
-        return false;
-      },
-      { timeout },
-    )
-    .toBe(true);
-  return matched!;
-}
-
 async function waitForLatestTaskResultEvent(
   observed: ItemResultEventLike[],
 ): Promise<ItemResultEventLike> {
@@ -390,13 +363,17 @@ test("Ask/Answer: child asks parent, parent answers", async ({
     timeout: 10_000,
   });
 
-  const questionResult = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["tid"] === 2 &&
-      item["message"] === "what approach should I use?",
-  );
+  // Wait for question to appear in parent's Task tool result.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("what approach should I use?")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  const questionResult = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  )[0]!;
   expect(questionResult).toMatchObject({
     status: "question",
     tid: 2,
@@ -529,13 +506,13 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   // createTasks returns early with child B's question.
   await sendMessage(page, "call mixed batch research");
 
-  const questionResult = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["tid"] === 3 &&
-      item["message"] === "what approach should I use?",
-  );
+  // Wait for child B's question to appear in parent's result.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("what approach should I use?")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
 
   // Wait for the parent's turn to complete after returning the question.
   // Sending Answer while this turn is still finalizing can race and skip
@@ -547,6 +524,10 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
       .last(),
   ).toBeVisible({ timeout: 30_000 });
 
+  // Capture the qid from child B's observed question result.
+  const questionResult = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  ).find((item) => item["status"] === "question")!;
   const capturedQid = questionResult["qid"] as number;
 
   // Parent answers child B using the observed qid.
@@ -663,32 +644,29 @@ test("Ask/Answer: wrong answerer gets Unknown question ID", async ({
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
-  const observedTaskResults = observeTaskResultItems(page);
   await enterSession(page);
 
   await sendMessage(
     page,
     "call task research call ask what approach should I use?",
   );
-  const questionResult = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["tid"] === 2 &&
-      item["message"] === "what approach should I use?",
-  );
-  const capturedQid = questionResult["qid"] as number;
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("what approach should I use?")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
   const askerTid = await activeTid(page);
 
-  // Create an unrelated top-level task that is not the answerer for capturedQid.
+  // Create an unrelated top-level task that is not the answerer for qid=1.
   const wrongAnswererTid = await createTopLevelTask(page);
 
-  // Parent (tid=1) is the authorized answerer for capturedQid.
+  // Parent (tid=1) is the authorized answerer for qid=1.
   await openTask(page, askerTid);
 
-  // Wrong answerer cannot answer capturedQid.
+  // Wrong answerer cannot answer qid=1.
   await openTask(page, wrongAnswererTid);
-  await sendMessage(page, `call answer ${capturedQid} wrong`);
+  await sendMessage(page, "call answer 1 wrong");
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
@@ -698,7 +676,7 @@ test("Ask/Answer: wrong answerer gets Unknown question ID", async ({
 
   // Authorized answerer responds and unblocks the waiting child.
   await openTask(page, askerTid);
-  await sendMessage(page, `call answer ${capturedQid} recovered-answer`);
+  await sendMessage(page, "call answer 1 recovered-answer");
 
   await openTask(page, askerTid);
   await expect(
@@ -811,14 +789,13 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     timeout: 10_000,
   });
 
-  const firstQuestion = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["message"] === "what approach?",
-  );
-  const firstQid = firstQuestion["qid"] as number;
-  const resultCountBeforeFirstAnswer = observedTaskResults.length;
+  // Wait for the first question to appear in parent's Task tool result.
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("what approach?")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
 
   // Wait for parent's Turn 2 to complete (mock returns "Done." for the Task result).
   await expect(
@@ -827,6 +804,13 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
       .getByText("Done.", { exact: true })
       .last(),
   ).toBeVisible({ timeout: 30_000 });
+
+  // Capture qid of the first question from the observed task result.
+  const firstQuestion = (
+    await waitForLatestTaskResultItems(observedTaskResults)
+  ).find((item) => item["status"] === "question")!;
+  const firstQid = firstQuestion["qid"] as number;
+  const resultCountBeforeFirstAnswer = observedTaskResults.length;
 
   // Answer the first child using the observed qid.
   await sendMessage(page, `call answer ${firstQid} answer one`);
@@ -843,15 +827,30 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     timeout: 90_000,
   });
 
-  const secondQuestion = await waitForTaskResultItem(
-    observedTaskResults,
-    (item) =>
-      item["status"] === "question" &&
-      item["message"] === "what approach?" &&
-      item["qid"] !== firstQid,
-    { sinceIndex: resultCountBeforeFirstAnswer },
-  );
-  const secondQid = secondQuestion["qid"] as number;
+  // Capture qid of the second question from the next observed item/result after the first answer.
+  let secondQuestion: TaskResultItem | null = null;
+  await expect
+    .poll(
+      () => {
+        secondQuestion = null;
+        for (const items of observedTaskResults.slice(
+          resultCountBeforeFirstAnswer,
+        )) {
+          const match = items.find(
+            (item) => item["status"] === "question" && item["qid"] !== firstQid,
+          );
+          if (match) {
+            secondQuestion = match;
+            return true;
+          }
+        }
+        return false;
+      },
+      { timeout: 90_000 },
+    )
+    .toBe(true);
+  const foundSecondQuestion = secondQuestion!;
+  const secondQid = foundSecondQuestion["qid"] as number;
 
   // The inciting focus_hint(parent → firstChild) from the first answer may not
   // have arrived yet when the pre-step-3 wait fired. By the time we reach here,
