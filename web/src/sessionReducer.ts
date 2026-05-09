@@ -878,40 +878,23 @@ function reduceItemStartedUserMessage(
       ts,
     };
 
-    // Match the placeholder by nonce (if event carries one), then by text
-    // content (multi-pending support), then fall back to first pending.
+    // Match the placeholder by nonce. If the event carries a nonce and a
+    // pending message with that nonce exists, replace it. Otherwise append
+    // a fresh ack-1 message without disturbing other pending placeholders.
     const eventNonce = (event as unknown as { correlation_id?: string })
       .correlation_id;
-    const eventText = blocks
-      .filter((b) => b.type === "text")
-      .map((b) => (b as { text?: string }).text ?? "")
-      .join("");
-    const matchIdx = (() => {
-      const msgs = state.messages;
-      if (eventNonce) {
-        const i = msgs.findIndex(
+    const matchIdx = eventNonce
+      ? state.messages.findIndex(
           (m) => isPendingUserMsg(m) && m.nonce === eventNonce,
-        );
-        if (i >= 0) return i;
-      }
-      if (eventText) {
-        const i = msgs.findIndex((m) => {
-          if (!isPendingUserMsg(m)) return false;
-          const mText = m.content
-            .filter((b) => b.type === "text")
-            .map((b) => (b as { text?: string }).text ?? "")
-            .join("");
-          return mText === eventText;
-        });
-        if (i >= 0) return i;
-      }
-      return msgs.findIndex(isPendingUserMsg);
-    })();
+        )
+      : -1;
 
     const filtered =
       matchIdx >= 0
         ? state.messages.filter((_, i) => i !== matchIdx)
-        : state.messages.filter((m) => !isPendingUserMsg(m));
+        : eventNonce
+          ? state.messages
+          : state.messages.filter((m) => !isPendingUserMsg(m));
     const messages = event.is_meta
       ? [...filtered, echoMsg]
       : insertBeforeStreaming(filtered, echoMsg);
