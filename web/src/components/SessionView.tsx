@@ -17,7 +17,7 @@ import type {
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
 import { deriveBandStatus } from "./StatusBand";
 import { MessageList } from "./MessageList";
-import { InputBox } from "./InputBox";
+import { InputBox, drafts as inputDrafts } from "./InputBox";
 import { SessionConfig } from "./SessionConfig";
 import { AgentPicker } from "./AgentPicker";
 import { AskUserForm } from "./AskUserForm";
@@ -254,19 +254,38 @@ function SessionViewInner({
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
-  // Auto-focus input box, resume button, or entry-point picker when session becomes active.
-  // Skip on touch devices to avoid opening the virtual keyboard.
-  useEffect(() => {
-    if (!isActive) return;
-    if (matchMedia("(pointer: coarse)").matches) return;
-    if (isDraft) {
-      entryPointPickerRef.current?.focus();
-    } else if (task.status === "importable") {
-      resumeRef.current?.focus();
-    } else {
-      inputRef.current?.focus();
+  // Auto-focus input box, resume button, or entry-point picker when session
+  // becomes active. Skip on touch devices to avoid opening the virtual keyboard.
+  // Runs after every render while active so we can re-focus when the target
+  // element first mounts (loading screen → ready) or when it gets swapped to a
+  // different DOM node (e.g. default InputBox → welcome InputBox once
+  // entryPoints arrives via the draft re-adoption effect). Tracking the actual
+  // last-focused element (rather than a boolean) means we only refocus when
+  // the target ref points at a *new* node, not on every render.
+  const lastFocusTargetRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!isActive) {
+      lastFocusTargetRef.current = null;
+      return;
     }
-  }, [isActive, task.status, isDraft]);
+    if (matchMedia("(pointer: coarse)").matches) return;
+    const draftHasText =
+      Boolean(task.serverDraft) ||
+      Boolean(task.inputDraft) ||
+      Boolean(inputDrafts.get(task.uuid));
+    let target: HTMLElement | null;
+    if (isDraft && !draftHasText) {
+      target = entryPointPickerRef.current;
+    } else if (task.status === "importable") {
+      target = resumeRef.current;
+    } else {
+      target = inputRef.current;
+    }
+    if (!target) return;
+    if (target === lastFocusTargetRef.current) return;
+    target.focus();
+    lastFocusTargetRef.current = target;
+  });
 
   const handleSaveDraft = useCallback(
     (draft: string) => onSaveDraft?.(tid, draft),
