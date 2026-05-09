@@ -930,9 +930,10 @@ class CopilotSession : AgentSession, SdkSessionHandler
 					userCb.type = "text";
 					userCb.text = sendText;
 					ItemStartedEvent userMsgEv;
-					userMsgEv.item_id   = "cp-user-msg";
-					userMsgEv.item_type = "user_message";
-					userMsgEv.content   = [userCb];
+					userMsgEv.item_id        = "cp-user-msg";
+					userMsgEv.item_type      = "user_message";
+					userMsgEv.content        = [userCb];
+					userMsgEv.correlation_id = sendCid;
 					emitEvent(toJson(userMsgEv));
 				}
 			});

@@ -181,6 +181,9 @@ struct TaskData
 	// Runtime state (not persisted)
 	/// Nonces of messages accepted in this session lifetime; cleared on exit.
 	bool[string] recentNonces;
+	/// Nonce of the last user message sent to the agent; tagged onto the
+	/// agent's user_message echo so the reducer can dedupe by nonce alone.
+	string pendingUserNonce;
 	AgentSession session;
 	ProcessLaunch launch;
 	// --- history + rawSource: parallel arrays, mutate only via helpers below ---

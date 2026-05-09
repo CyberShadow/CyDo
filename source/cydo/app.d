@@ -4183,6 +4183,8 @@ class App : ToolsBackend
 			tasks[tid].appendHistory(data, null);
 		}
 		sendToSubscribed(tid, data);
+		if (nonce.length > 0 && tid in tasks)
+			tasks[tid].pendingUserNonce = nonce;
 
 		// Track every sent user-message text for reload accounting and queue-op synthetics.
 		td.pendingSteeringTexts ~= extractContentText(uiContent);
@@ -7171,6 +7173,39 @@ class App : ToolsBackend
 		}
 		if (tid in tasks && isCompactionReminderSteerFailureEvent(ev.translated))
 			tasks[tid].compactionReminderInFlight = false;
+
+		// Tag the pending nonce onto non-replay user_message events so the
+		// frontend reducer can deduplicate optimistic placeholders by nonce alone.
+		if (tid in tasks && tasks[tid].pendingUserNonce.length > 0)
+		{
+			import std.algorithm : canFind;
+			if (ev.translated.canFind(`"type":"item/started"`)
+				&& ev.translated.canFind(`"item_type":"user_message"`))
+			{
+				@JSONPartial static struct UserMsgTagProbe
+				{
+					string type;
+					string item_type;
+					@JSONOptional bool is_replay;
+					@JSONOptional bool is_meta;
+					@JSONOptional bool pending;
+				}
+				try
+				{
+					auto probe = jsonParse!UserMsgTagProbe(ev.translated);
+					if (probe.type == "item/started"
+						&& probe.item_type == "user_message"
+						&& !probe.is_replay && !probe.is_meta && !probe.pending)
+					{
+						auto taggedNonce = tasks[tid].pendingUserNonce;
+						tasks[tid].pendingUserNonce = null;
+						ev.translated = ev.translated[0 .. $ - 1]
+							~ `,"correlation_id":` ~ toJson(taggedNonce) ~ `}`;
+					}
+				}
+				catch (Exception) {}
+			}
+		}
 
 		appendAndBroadcastTaskEvent(tid, ev);
 	}

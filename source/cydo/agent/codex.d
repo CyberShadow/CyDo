@@ -1653,6 +1653,9 @@ class CodexSession : AgentSession
 	// Queued messages waiting for thread to be ready.
 	private ContentBlock[][] pendingMessages;
 
+	// Nonce of the in-flight user message; tagged onto the user_message echo.
+	private string pendingTurnCorrelationId_;
+
 	// Callbacks
 	package void delegate(TranslatedEvent) outputHandler_;
 	package void delegate(string line) stderrHandler_;
@@ -1768,6 +1771,7 @@ class CodexSession : AgentSession
 				pendingMessages ~= content.dup;
 				return;
 			}
+			pendingTurnCorrelationId_ = correlationId;
 			auto steerCid = correlationId;
 			server.sendRequest("turn/steer",
 				toJson(TurnSteerParams(
@@ -1785,6 +1789,7 @@ class CodexSession : AgentSession
 			activeItemId_ = null;
 			activeItemTypes_ = null;
 			hadItemsSinceLastStop_ = false;
+			pendingTurnCorrelationId_ = correlationId;
 
 			auto startCid = correlationId;
 			server.sendRequest("turn/start",
@@ -1897,6 +1902,8 @@ class CodexSession : AgentSession
 				cb.type = "text";
 				cb.text = userText;
 				ev.content = [cb];
+				ev.correlation_id = pendingTurnCorrelationId_;
+				pendingTurnCorrelationId_ = null;
 				outputHandler_(TranslatedEvent(toJson(ev), rawNotification));
 			}
 			return;

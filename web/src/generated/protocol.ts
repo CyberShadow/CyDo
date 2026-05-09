@@ -151,6 +151,7 @@ export interface ItemStartedEvent {
   isCompactSummary?: boolean;
   parent_tool_use_id?: string;
   is_sidechain?: boolean;
+  correlation_id?: string;
   extras?: Record<string, unknown>;
 }
 

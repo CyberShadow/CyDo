@@ -223,6 +223,7 @@ struct ItemStartedEvent
 	@JSONOptional bool isCompactSummary;
 	@JSONOptional string parent_tool_use_id;
 	@JSONOptional bool is_sidechain;
+	@JSONOptional string correlation_id;
 	@JSONOptional JSONFragment extras;
 }
 
