@@ -2903,10 +2903,15 @@ class App : ToolsBackend
 		if (td.historyLoaded || td.agentSessionId.length == 0)
 			return;
 
-		try
+		auto ta = tryAgentForTask(tid);
+		if (!ta)
 		{
+			appendSynthesizedHistoryError(tid, "Failed to load session history",
+				buildOrphanAgentBody(td.agentType));
+			td.historyLoaded = true;
+			return;
+		}
 
-		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
 
 		// Pre-compute rollback skip lines for Codex agents
@@ -3092,29 +3097,6 @@ class App : ToolsBackend
 			jsonlTracker.broadcastForkableUuidsFromFile(tid);
 		}
 		rebuildVisibleTurnAnchors(tid);
-
-		} // end try
-		catch (Exception e)
-		{
-			import std.algorithm : startsWith, map;
-			import std.array : join;
-			string body;
-			if (e.msg.startsWith("Unknown agent type:"))
-			{
-				import cydo.agent.registry : agentRegistry;
-				auto agentName = e.msg["Unknown agent type: ".length .. $];
-				auto knownNames = agentRegistry[].map!(r => "`" ~ r.name ~ "`").join(", ");
-				body = "This task uses agent `" ~ agentName ~ "`, which is not configured.\n\n"
-					~ "The currently available agents are: " ~ knownNames ~ ".";
-			}
-			else
-			{
-				body = "Failed to load session history.\n\n```\n"
-					~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
-			}
-			appendSynthesizedHistoryError(tid, "Failed to load session history", body);
-			td.historyLoaded = true;
-		}
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
@@ -3157,14 +3139,12 @@ class App : ToolsBackend
 			ws.send(Data(clientEnvelope.representation));
 		}
 
-		// Send forkable UUIDs extracted from JSONL
-		// Guarded: agentForTask may throw for orphan agent types, in which case
-		// forkable UUIDs are unavailable but the rest of the history reply is fine.
-		if (td.agentSessionId.length > 0)
-			try
-				jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
-					td.effectiveCwd);
-			catch (Exception) {}
+		// Send forkable UUIDs extracted from JSONL.
+		// Skipped for orphan agent types — forkable UUIDs are unavailable but the
+		// rest of the history reply is fine.
+		if (td.agentSessionId.length > 0 && tryAgentForTask(tid))
+			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
+				td.effectiveCwd);
 
 		// Send end marker
 		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
@@ -4935,12 +4915,15 @@ class App : ToolsBackend
 	}
 
 	/// Return the Agent instance for a task's agent type, creating it on demand.
-	private Agent agentForTask(int tid)
+	/// Returns null if the agent type isn't registered (orphan task).
+	private Agent tryAgentForTask(int tid)
 	{
 		auto td = &tasks[tid];
 		if (auto p = td.agentType in agentsByType)
 			return *p;
-		auto a = createAgent(td.agentType);
+		auto a = tryCreateAgent(td.agentType);
+		if (!a)
+			return null;
 		if (auto ac = td.agentType in config.agents)
 			a.setModelAliases(ac.model_aliases);
 		{
@@ -4953,14 +4936,36 @@ class App : ToolsBackend
 		return a;
 	}
 
-	/// Create an Agent instance by type name.
-	private static Agent createAgent(string agentType)
+	/// Like tryAgentForTask but throws if the agent type isn't registered.
+	/// Use this in happy-path code that has already established the task's
+	/// agent is configured; orphan-aware code should call tryAgentForTask
+	/// and null-check.
+	private Agent agentForTask(int tid)
+	{
+		auto a = tryAgentForTask(tid);
+		if (!a)
+			throw new Exception("Unknown agent type: " ~ tasks[tid].agentType);
+		return a;
+	}
+
+	/// Create an Agent instance by type name. Returns null if the type isn't
+	/// registered.
+	private static Agent tryCreateAgent(string agentType)
 	{
 		import cydo.agent.registry : agentRegistry;
 		foreach (ref entry; agentRegistry)
 			if (entry.name == agentType)
 				return entry.create();
-		throw new Exception("Unknown agent type: " ~ agentType);
+		return null;
+	}
+
+	/// Like tryCreateAgent but throws if the type isn't registered.
+	private static Agent createAgent(string agentType)
+	{
+		auto a = tryCreateAgent(agentType);
+		if (!a)
+			throw new Exception("Unknown agent type: " ~ agentType);
+		return a;
 	}
 
 	/// Set up a worktree for a task based on the edge's WorktreeMode.
@@ -6758,6 +6763,18 @@ class App : ToolsBackend
 			JSONFragment(translated)));
 		tasks[tid].appendHistory(Data(envelope.representation), translated);
 		return translated;
+	}
+
+	/// Build the Markdown body shown to the user when a task references an
+	/// agent type that isn't registered (orphan).
+	private static string buildOrphanAgentBody(string agentType)
+	{
+		import std.algorithm : map;
+		import std.array : join;
+		import cydo.agent.registry : agentRegistry;
+		auto knownNames = agentRegistry[].map!(r => "`" ~ r.name ~ "`").join(", ");
+		return "This task uses agent `" ~ agentType ~ "`, which is not configured.\n\n"
+			~ "The currently available agents are: " ~ knownNames ~ ".";
 	}
 
 	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, string translated, string rawLine = null)
