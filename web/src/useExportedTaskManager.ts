@@ -48,6 +48,30 @@ interface ExportData {
   typeInfo?: TypeInfo[];
 }
 
+interface ParsedExportData {
+  data: ExportData | null;
+  error: string | null;
+}
+
+export function parseExportDataText(text: string | null): ParsedExportData {
+  if (!text || text.trim().length === 0) {
+    return { data: null, error: "Missing embedded export data." };
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !Array.isArray((parsed as ExportData).tasks)
+    ) {
+      return { data: null, error: "Invalid embedded export data format." };
+    }
+    return { data: parsed as ExportData, error: null };
+  } catch {
+    return { data: null, error: "Failed to parse embedded export data." };
+  }
+}
+
 function buildTasksFromExportData(data: ExportData): Map<string, TaskState> {
   const taskMap = new Map<string, TaskState>();
   for (const entry of data.tasks) {
@@ -93,34 +117,41 @@ export function useExportedTaskManager(): TaskManager {
   const [activeTaskId, setActiveTaskIdState] = useState<string | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
+  const [exportLoadError, setExportLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     const el = document.getElementById("cydo-export-data");
-    if (!el || !el.textContent) return;
-    let data: ExportData;
-    try {
-      data = JSON.parse(el.textContent) as ExportData;
-    } catch {
+    const parsed = parseExportDataText(el?.textContent ?? null);
+    if (!parsed.data) {
+      setExportLoadError(parsed.error);
       return;
     }
-    const taskMap = buildTasksFromExportData(data);
-    setTasks(taskMap);
-    if (data.typeInfo) setTypeInfo(data.typeInfo);
+    const data = parsed.data;
+    try {
+      const taskMap = buildTasksFromExportData(data);
+      setTasks(taskMap);
+      setExportLoadError(null);
+      if (data.typeInfo) setTypeInfo(data.typeInfo);
 
-    const hash = window.location.hash;
-    const match = hash.match(/^#task\/(\d+)$/);
-    if (match) {
-      activeTaskIdRef.current = match[1]!;
-      setActiveTaskIdState(match[1]!);
-    } else if (taskMap.size > 0) {
-      const firstState = Array.from(taskMap.values()).sort(
-        (a, b) => (a.tid ?? 0) - (b.tid ?? 0),
-      )[0];
-      const firstTid = firstState?.tid != null ? String(firstState.tid) : null;
-      if (firstTid) {
-        activeTaskIdRef.current = firstTid;
-        setActiveTaskIdState(firstTid);
+      const hash = window.location.hash;
+      const match = hash.match(/^#task\/(\d+)$/);
+      if (match) {
+        activeTaskIdRef.current = match[1]!;
+        setActiveTaskIdState(match[1]!);
+      } else if (taskMap.size > 0) {
+        const firstState = Array.from(taskMap.values()).sort(
+          (a, b) => (a.tid ?? 0) - (b.tid ?? 0),
+        )[0];
+        const firstTid =
+          firstState?.tid != null ? String(firstState.tid) : null;
+        if (firstTid) {
+          activeTaskIdRef.current = firstTid;
+          setActiveTaskIdState(firstTid);
+        }
       }
+    } catch {
+      setExportLoadError("Failed to load embedded export data.");
+      setTasks(new Map());
     }
   }, []);
 
@@ -222,6 +253,7 @@ export function useExportedTaskManager(): TaskManager {
     notices: {},
     localNotices: {},
     devMode: false,
+    exportLoadError,
     navigateHome: noop,
     navigateToProject: noop,
     getProjectHref: () => "#",

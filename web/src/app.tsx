@@ -136,7 +136,10 @@ function AppContent() {
     document.title = scopedTitle
       ? `${prefix}${scopedTitle} — CyDo`
       : `${prefix}CyDo`;
-    if ("setAppBadge" in navigator) void navigator.setAppBadge(count);
+    if ("setAppBadge" in navigator) {
+      // App badge is optional and may be blocked by browser/OS policy.
+      void navigator.setAppBadge(count).catch(() => {});
+    }
   }, [
     active?.title,
     activeProject,

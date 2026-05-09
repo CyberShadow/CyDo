@@ -161,6 +161,7 @@ function EventItem({
   const [rawData, setRawData] = useState<unknown>(
     rawSource === null ? undefined : rawSource,
   );
+  const [rawError, setRawError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const label = eventLabel(event);
@@ -174,14 +175,20 @@ function EventItem({
   const fetchRaw = useCallback(() => {
     if (rawData !== undefined) return;
     setLoading(true);
+    setRawError(null);
     fetch(`/api/raw-source?tid=${tid}&seq=${seq}`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}`);
+        }
+        return r.json();
+      })
       .then((data) => {
         setRawData(data ?? null);
         setLoading(false);
       })
       .catch(() => {
-        setRawData(null);
+        setRawError("Failed to load raw source");
         setLoading(false);
       });
   }, [tid, seq, rawData]);
@@ -235,7 +242,10 @@ function EventItem({
           {tab === "raw" && loading && (
             <div class="source-loading">Loading...</div>
           )}
-          {tab === "raw" && !loading && !hasRaw && (
+          {tab === "raw" && !loading && rawError && (
+            <div class="source-loading">{rawError}</div>
+          )}
+          {tab === "raw" && !loading && !rawError && !hasRaw && (
             <div class="source-loading">No raw source available</div>
           )}
           {tab === "raw" && rawText && (

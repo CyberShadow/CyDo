@@ -276,24 +276,31 @@ function MermaidBlock({ code }: { code: string }): VNode {
   useEffect(() => {
     if (!containerRef.current || !code.trim()) return;
     cancelledRef.current = false;
+    setError(null);
     const id = `mermaid-${Math.random().toString(36).slice(2, 9)}`;
 
-    void getMermaid(mermaidTheme).then(async (m) => {
-      if (cancelledRef.current) return;
-      try {
-        const { svg } = await m.default.render(id, code);
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
-        if (!cancelledRef.current && containerRef.current) {
-          containerRef.current.innerHTML = svg;
-          setError(null);
+    void getMermaid(mermaidTheme)
+      .then(async (m) => {
+        if (cancelledRef.current) return;
+        try {
+          const { svg } = await m.default.render(id, code);
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
+          if (!cancelledRef.current && containerRef.current) {
+            containerRef.current.innerHTML = svg;
+            setError(null);
+          }
+        } catch (e) {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
+          if (!cancelledRef.current) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
         }
-      } catch (e) {
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- ref mutated by cleanup during await
+      })
+      .catch((e: unknown) => {
         if (!cancelledRef.current) {
           setError(e instanceof Error ? e.message : String(e));
         }
-      }
-    });
+      });
 
     return () => {
       cancelledRef.current = true;

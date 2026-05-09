@@ -18,6 +18,23 @@ export class Connection {
   onAgentAck: ((tid: number, nonce: string) => void) | null = null;
   onControlMessage: ((msg: ControlMessage) => void) | null = null;
   onStatusChange: ((connected: boolean) => void) | null = null;
+  onClientError: ((message: string) => void) | null = null;
+
+  private reportClientError(message: string, detail?: unknown) {
+    this.onClientError?.(message);
+    if (detail !== undefined) {
+      console.warn(message, detail);
+      return;
+    }
+    console.warn(message);
+  }
+
+  private summarizePayload(payload: string): string {
+    const oneLine = payload.replace(/\s+/g, " ").trim();
+    if (!oneLine) return "(empty payload)";
+    if (oneLine.length <= 240) return oneLine;
+    return `${oneLine.slice(0, 240)}...`;
+  }
 
   connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -94,13 +111,26 @@ export class Connection {
               typeof raw.ts === "number" && raw.ts !== 0 ? raw.ts : undefined;
             this.onTaskMessage?.(raw.tid, event, seq, ts);
           } else {
-            console.warn("Unknown task envelope:", raw);
+            this.reportClientError(
+              `Invalid task envelope for task ${raw.tid}: missing event payload`,
+              raw,
+            );
           }
         } else {
-          console.warn("Unknown WebSocket message:", raw);
+          const kind = typeof raw.type === "string" ? raw.type : "unknown";
+          this.reportClientError(
+            `Unknown WebSocket message type: ${kind}`,
+            raw,
+          );
         }
       } catch (e) {
-        console.warn("Failed to parse WebSocket message:", ev.data, e);
+        const data = ev.data as string | ArrayBuffer;
+        const text =
+          typeof data === "string" ? data : new TextDecoder().decode(data);
+        this.reportClientError(
+          `Failed to parse WebSocket message: ${this.summarizePayload(text)}`,
+          e,
+        );
       }
     };
   }

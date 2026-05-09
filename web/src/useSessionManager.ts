@@ -173,6 +173,7 @@ export interface TaskManager {
   notices: Record<string, Notice>;
   localNotices: Record<string, Notice>;
   devMode: boolean;
+  exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
   getProjectHref: (workspace: string, projectName: string) => string;
@@ -1596,6 +1597,9 @@ export function useTaskManager(
       buffer.push({ kind: "control", msg });
       scheduleFlush();
     };
+    conn.onClientError = (message) => {
+      addToastRef.current("error", message);
+    };
     conn.connect();
     return () => {
       cancelPendingFlush();
@@ -2199,6 +2203,7 @@ export function useTaskManager(
     notices,
     localNotices,
     devMode,
+    exportLoadError: null,
     navigateHome,
     navigateToProject,
     getProjectHref,

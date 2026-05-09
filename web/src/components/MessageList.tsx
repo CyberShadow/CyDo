@@ -585,7 +585,30 @@ const MessageView = memo(
               </pre>
             </div>
           );
-        } else if (msg.subtype !== "parse_error" || devMode) {
+        } else if (msg.subtype === "parse_error") {
+          const text = msg.content
+            .filter(
+              (b): b is { type: "text"; text: string } => b.type === "text",
+            )
+            .map((b) => b.text)
+            .join("\n");
+          const [headline = "Protocol parse error", ...rest] = text.split("\n");
+          if (!devMode && headline.startsWith("Unrecognized agent data")) {
+            break;
+          }
+          const details = rest.join("\n").trim();
+          inner = (
+            <div class="message system-message">
+              <pre>{headline}</pre>
+              {details && (
+                <details open={devMode}>
+                  <summary>Details</summary>
+                  <pre>{details}</pre>
+                </details>
+              )}
+            </div>
+          );
+        } else {
           const text = msg.content
             .filter(
               (b): b is { type: "text"; text: string } => b.type === "text",

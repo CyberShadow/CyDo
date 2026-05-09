@@ -16,6 +16,7 @@ export function ExportApp() {
     typeInfo,
     getTaskHref,
     getByTid,
+    exportLoadError,
   } = useExportedTaskManager();
 
   const { theme, toggleTheme } = useTheme();
@@ -82,7 +83,17 @@ export function ExportApp() {
         ) : (
           <div class="session-empty">
             <div class="session-empty-inner">
-              <span>Select a task from the sidebar</span>
+              {exportLoadError ? (
+                <>
+                  <span>Failed to load exported task data</span>
+                  <details>
+                    <summary>Details</summary>
+                    <pre>{exportLoadError}</pre>
+                  </details>
+                </>
+              ) : (
+                <span>Select a task from the sidebar</span>
+              )}
             </div>
           </div>
         )}

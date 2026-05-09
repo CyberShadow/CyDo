@@ -190,5 +190,6 @@ export function requestNotificationPermissionFromGesture() {
   if (typeof window === "undefined") return;
   if (!("Notification" in window)) return;
   if (Notification.permission !== "default") return;
-  void Notification.requestPermission();
+  // Optional capability; browsers may reject permission requests by policy.
+  void Notification.requestPermission().catch(() => {});
 }

@@ -5,11 +5,21 @@ import checkIcon from "../icons/check.svg?raw";
 
 export function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const setCopiedBriefly = useCallback(() => {
+    setCopyFailed(false);
     setCopied(true);
     setTimeout(() => {
       setCopied(false);
+    }, 1500);
+  }, []);
+
+  const setCopyFailedBriefly = useCallback(() => {
+    setCopied(false);
+    setCopyFailed(true);
+    setTimeout(() => {
+      setCopyFailed(false);
     }, 1500);
   }, []);
 
@@ -19,14 +29,19 @@ export function CopyButton({ text }: { text: string }) {
       .then(() => {
         setCopiedBriefly();
       })
-      .catch(() => {});
-  }, [setCopiedBriefly, text]);
+      .catch(() => {
+        // Clipboard access is browser/environment dependent; show local feedback.
+        setCopyFailedBriefly();
+      });
+  }, [setCopiedBriefly, setCopyFailedBriefly, text]);
 
   return (
     <button
-      class={`btn-copy${copied ? " copied" : ""}`}
+      class={`btn-copy${copied ? " copied" : ""}${copyFailed ? " failed" : ""}`}
       onClick={onClick}
-      title={copied ? "Copied!" : "Copy to clipboard"}
+      title={
+        copyFailed ? "Copy failed" : copied ? "Copied!" : "Copy to clipboard"
+      }
     >
       <span
         class="action-icon"
