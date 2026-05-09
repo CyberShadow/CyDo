@@ -376,3 +376,139 @@ test("late-joining tab sees pending bubble from history", async ({
 
   await ctx2.close();
 });
+
+test("outbox ack-4 placeholder visible offline; persists across reload", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
+
+  await enterSession(page);
+
+  // Establish session with one completing exchange so we have a valid tid.
+  await sendMessage(page, 'Please reply with "reload-outbox-established"');
+  await expect(assistantText(page, "reload-outbox-established")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  // Go offline so the next send lands in the outbox only.
+  await page.context().setOffline(true);
+
+  const inputEl = page.locator(".input-textarea:visible").first();
+  await inputEl.click();
+  await inputEl.fill('Please reply with "outbox-reload-pending"');
+  const sendBtn = page.locator(".btn-send:visible").first();
+  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await sendBtn.click();
+
+  // Render-layer outbox composition: ack-4 placeholder is visible immediately
+  // from localStorage — no WS round-trip needed (we're offline).
+  await expect(
+    page.locator(".user-message.ack-4", { hasText: "outbox-reload-pending" }),
+  ).toBeVisible({ timeout: 3_000 });
+  const outboxBefore = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("cydo.outbox.v1") ?? "[]"),
+  );
+  expect(outboxBefore.length).toBeGreaterThan(0);
+
+  // Come back online so page.reload() can reach the backend.
+  // The outbox entry persists in localStorage across the reload.
+  await page.context().setOffline(false);
+  await page.reload();
+
+  // Navigate to the task — the message bubble should be visible (either from
+  // the outbox composition if the reload was fast, or from WS replay).
+  await page
+    .locator(".sidebar-item .sidebar-label", {
+      hasText: "reload-outbox-established",
+    })
+    .click({ timeout: 15_000 });
+
+  // Full delivery: outbox replays the message and the backend replies.
+  await expect(assistantText(page, "outbox-reload-pending")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+});
+
+test("identical-text messages use separate nonces (no placeholder collision)", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "agent-agnostic, runs in claude project only",
+  );
+
+  await enterSession(page);
+
+  // Establish the session with one completing exchange.
+  await sendMessage(page, 'Please reply with "nonce-dedup-established"');
+  await expect(assistantText(page, "nonce-dedup-established")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
+  // Extract the task id from the current URL (e.g. "/…/123" → 123).
+  const url = page.url();
+  const tidMatch = url.match(/\/(\d+)(?:[?#].*)?$/);
+  expect(tidMatch).not.toBeNull();
+  const tid = parseInt(tidMatch![1], 10);
+  expect(tid).toBeGreaterThan(0);
+
+  // Wait for the outbox to be empty (cleared by ack-3 from the last send).
+  await expect
+    .poll(
+      async () => {
+        const raw = await page.evaluate(() =>
+          localStorage.getItem("cydo.outbox.v1"),
+        );
+        return JSON.parse(raw ?? "[]");
+      },
+      { timeout: responseTimeout(agentType) },
+    )
+    .toHaveLength(0);
+
+  // Inject two outbox entries with identical text but different nonces.
+  // Content must be ContentBlock[] so the backend can parse them on replay.
+  const sharedText = "stall session";
+  await page.evaluate(
+    ({ tid, text }: { tid: number; text: string }) => {
+      const content = [{ type: "text", text }];
+      const entries = [
+        {
+          tid,
+          nonce: "nonce-dedup-aaa-111",
+          content,
+          createdAt: Date.now() - 2000,
+        },
+        {
+          tid,
+          nonce: "nonce-dedup-bbb-222",
+          content,
+          createdAt: Date.now() - 1000,
+        },
+      ];
+      localStorage.setItem("cydo.outbox.v1", JSON.stringify(entries));
+    },
+    { tid, text: sharedText },
+  );
+
+  // Reload so the outbox replayer fires on reconnect. Each entry has a unique
+  // nonce so the backend processes both as separate messages.
+  await page.reload();
+  await page
+    .locator(".sidebar-item .sidebar-label", {
+      hasText: "nonce-dedup-established",
+    })
+    .click({ timeout: 15_000 });
+
+  // After both outbox entries are replayed and ack-3 arrives for each, the
+  // reducer places them as two separate user message bubbles (one per nonce).
+  // If text-equality fallback were used, the second entry would overwrite the
+  // first placeholder and only one bubble would appear.
+  await expect(
+    page.locator(".user-message", { hasText: sharedText }),
+  ).toHaveCount(2, { timeout: responseTimeout(agentType) });
+});
