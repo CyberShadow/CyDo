@@ -8,6 +8,7 @@ import {
   useCallback,
 } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
+import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
@@ -731,6 +732,19 @@ const MessageView = memo(
     prev.getTaskHref === next.getTaskHref,
 );
 
+function makeOutboxPlaceholder(entry: OutboxEntry): DisplayMessage {
+  const content = Array.isArray(entry.content)
+    ? (entry.content as DisplayMessage["content"])
+    : [{ type: "text" as const, text: String(entry.content) }];
+  return {
+    id: `outbox-${entry.nonce}`,
+    type: "user" as const,
+    content,
+    ackState: 4 as const,
+    nonce: entry.nonce,
+  };
+}
+
 export function MessageList({
   taskTid,
   messages,
@@ -746,6 +760,28 @@ export function MessageList({
   getTaskHref,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Subscribe to outbox so the component re-renders when entries are added/removed.
+  const [outboxTick, setOutboxTick] = useState(0);
+  useEffect(() => {
+    return outbox.subscribe(() => {
+      setOutboxTick((n) => n + 1);
+    });
+  }, []);
+
+  // Compose outbox entries at render time: show synthetic ack-4 placeholders
+  // for entries not yet reflected in liveStates (no matching nonce in messages).
+  const composedMessages = useMemo(() => {
+    const pending = outbox.byTid(taskTid);
+    if (pending.length === 0) return messages;
+    const existingNonces = new Set(
+      messages.filter((m) => m.nonce).map((m) => m.nonce!),
+    );
+    const extras = pending
+      .filter((e) => !existingNonces.has(e.nonce))
+      .map(makeOutboxPlaceholder);
+    return extras.length === 0 ? messages : [...messages, ...extras];
+  }, [messages, taskTid, outboxTick]);
   const handleFork = useMemo(
     () =>
       onFork
@@ -818,7 +854,7 @@ export function MessageList({
     useMemo(() => {
       const newMap = new Map<string, DisplayMessage[]>();
       const topLevelMessages: DisplayMessage[] = [];
-      for (const msg of messages) {
+      for (const msg of composedMessages) {
         if (msg.parentToolUseId) {
           let list = newMap.get(msg.parentToolUseId);
           if (!list) {
@@ -896,7 +932,7 @@ export function MessageList({
         topLevelMessages,
         resolvedBlocksByMsg: stableResolvedMap,
       };
-    }, [messages, blocks]);
+    }, [composedMessages, blocks]);
 
   return (
     <div class="message-list" ref={containerRef}>
