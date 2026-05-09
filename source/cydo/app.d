@@ -5732,10 +5732,12 @@ class App : ToolsBackend
 						body = "Failed to resume session.\n\n```\n"
 							~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
 					}
+					import std.datetime : Clock;
 					auto translated = appendSynthesizedHistoryError(
 						tid, "Failed to resume session", body);
 					sendToSubscribed(tid, Data(
-						toJson(TaskEventEnvelope(tid, 0, JSONFragment(translated))).representation));
+						toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+							JSONFragment(translated))).representation));
 				}
 				broadcastTaskUpdate(tid);
 				return reject!ProcessState(e);
@@ -6761,7 +6763,9 @@ class App : ToolsBackend
 		auto translated = synthesizeHistoryErrorEventJson(subject, body);
 		auto envelope = toJson(TaskEventEnvelope(tid, Clock.currStdTime,
 			JSONFragment(translated)));
-		tasks[tid].appendHistory(Data(envelope.representation), translated);
+		// rawSource is null: synthesized events have no agent-side JSONL line and
+		// must not be persisted on the next history reload.
+		tasks[tid].appendHistory(Data(envelope.representation), null);
 		return translated;
 	}
 
