@@ -462,9 +462,7 @@ function FileChangeRow({
       {showMeta && (
         <div class="tool-input-field filechange-meta">
           <span class="tool-subtitle-tag">{change.label}</span>
-          <span class="tool-subtitle-path">
-            {change.path ?? "(unknown file)"}
-          </span>
+          <FileChangePathDisplay path={change.path} />
         </div>
       )}
       {canRenderAddedContent &&
@@ -582,6 +580,11 @@ function FileChangeRow({
   );
 }
 
+function FileChangePathDisplay({ path }: { path: string | null | undefined }) {
+  if (!path) return <span class="tool-subtitle-path">(unknown file)</span>;
+  return <PathDisplay path={path} />;
+}
+
 function getSingleFileChangeHeaderSubtitle(
   input: Record<string, unknown>,
 ): h.JSX.Element | null {
@@ -594,7 +597,7 @@ function getSingleFileChangeHeaderSubtitle(
   return (
     <Fragment>
       <span class="tool-subtitle-tag">{change.label}</span>
-      <span class="tool-subtitle-path">{change.path}</span>
+      <FileChangePathDisplay path={change.path} />
     </Fragment>
   );
 }

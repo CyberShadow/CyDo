@@ -1163,7 +1163,9 @@ body,
 }
 
 .tool-path-wrap .btn-copy.copied,
-.tool-header:hover .tool-path-wrap .btn-copy {
+.tool-header:hover .tool-path-wrap .btn-copy,
+.filechange-meta:hover .tool-path-wrap .btn-copy,
+.filechange-meta:focus-within .tool-path-wrap .btn-copy {
   opacity: 1;
 }
 

@@ -248,6 +248,20 @@ function renderBashInput(input: Record<string, unknown>): string {
   );
 }
 
+function renderCodexFileChangeInput(
+  changes: Array<Record<string, unknown>>,
+): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "fileChange",
+      agentType: "codex",
+      toolUseId: "tool-fc1",
+      input: { changes },
+      result: undefined,
+    }),
+  );
+}
+
 describe("claude/Bash subtitle badges", () => {
   it("renders description only — no badge", () => {
     const html = renderBashInput({ command: "ls", description: "list files" });
@@ -305,6 +319,30 @@ describe("claude/Bash subtitle badges", () => {
     });
     expect(html).not.toContain(">run_in_background<");
     expect(html).not.toContain(">timeout<");
+  });
+});
+
+describe("codex/fileChange path copy buttons", () => {
+  it("renders one copy button for single-file path subtitle", () => {
+    const html = renderCodexFileChangeInput([
+      { op: "add", path: "src/main.ts", content: "" },
+    ]);
+
+    const copyButtonCount = (html.match(/class="btn-copy"/g) ?? []).length;
+    expect(copyButtonCount).toBe(1);
+    expect(html).toContain("tool-path-wrap");
+  });
+
+  it("renders one copy button per known path in multi-file rows", () => {
+    const html = renderCodexFileChangeInput([
+      { op: "add", path: "src/a.ts" },
+      { op: "add", path: "src/b.ts" },
+      { op: "delete" },
+    ]);
+
+    const copyButtonCount = (html.match(/class="btn-copy"/g) ?? []).length;
+    expect(copyButtonCount).toBe(2);
+    expect(html).toContain("(unknown file)");
   });
 });
 
