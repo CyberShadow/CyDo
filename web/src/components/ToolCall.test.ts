@@ -240,7 +240,7 @@ function renderBashInput(input: Record<string, unknown>): string {
   return renderToString(
     h(ToolCall, {
       name: "Bash",
-      agentType: "claude",
+      driver: "claude",
       toolUseId: "tool-1",
       input,
       result: undefined,
@@ -350,7 +350,7 @@ function renderShellInput(command: string): string {
   return renderToString(
     h(ToolCall, {
       name: "commandExecution",
-      agentType: "codex",
+      driver: "codex",
       input: { command },
       result: undefined,
     }),
@@ -366,7 +366,7 @@ function renderCydoTaskInput(
     h(ToolCall, {
       name: "Task",
       toolServer: "cydo",
-      agentType: "claude",
+      driver: "claude",
       toolUseId: "tool-t1",
       input: { tasks },
       result: undefined,
@@ -384,7 +384,7 @@ function renderCydoTaskResult(
     h(ToolCall, {
       name: "Task",
       toolServer: "cydo",
-      agentType: "claude",
+      driver: "claude",
       toolUseId: "tool-t1",
       input: { tasks: taskItems },
       result: {

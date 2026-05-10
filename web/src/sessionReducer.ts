@@ -544,19 +544,19 @@ function trackResultFileEdits(
       !toolName ||
       (!toolIs(
         toolName,
-        toolBlock.agentType,
+        toolBlock.driver,
         toolBlock.toolServer,
         "claude/Edit",
       ) &&
         !toolIs(
           toolName,
-          toolBlock.agentType,
+          toolBlock.driver,
           toolBlock.toolServer,
           "claude/Write",
         ) &&
         !toolIs(
           toolName,
-          toolBlock.agentType,
+          toolBlock.driver,
           toolBlock.toolServer,
           "codex/apply_patch",
         ))
@@ -578,7 +578,7 @@ function trackResultFileEdits(
     if (
       toolIs(
         toolName,
-        toolBlock.agentType,
+        toolBlock.driver,
         toolBlock.toolServer,
         "codex/apply_patch",
       )
@@ -606,7 +606,7 @@ function trackResultFileEdits(
         filePath,
         type: toolIs(
           toolName,
-          toolBlock.agentType,
+          toolBlock.driver,
           toolBlock.toolServer,
           "claude/Edit",
         )
@@ -614,7 +614,7 @@ function trackResultFileEdits(
           : "write",
         op: toolIs(
           toolName,
-          toolBlock.agentType,
+          toolBlock.driver,
           toolBlock.toolServer,
           "claude/Edit",
         )
@@ -625,7 +625,7 @@ function trackResultFileEdits(
         payload:
           toolIs(
             toolName,
-            toolBlock.agentType,
+            toolBlock.driver,
             toolBlock.toolServer,
             "claude/Write",
           ) && typeof input.content === "string"
@@ -962,7 +962,7 @@ export function reduceItemStarted(
     name: event.name,
     toolServer: event.tool_server,
     toolSource: event.tool_source,
-    agentType: s.agentType,
+    driver: s.agentType,
     input: event.input,
     completed: false,
     creationOrder,
