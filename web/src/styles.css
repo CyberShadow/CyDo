@@ -1330,7 +1330,7 @@ body,
 
 .web-search-query {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-dim);
   margin-bottom: 4px;
   font-style: italic;
 }
@@ -2261,13 +2261,13 @@ body,
 
 .meta-badge.meta {
   background: rgba(160, 140, 176, 0.12);
-  color: var(--muted);
+  color: var(--text-dim);
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
 
 .meta-badge.synthetic {
   background: rgba(160, 140, 176, 0.12);
-  color: var(--muted);
+  color: var(--text-dim);
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
 
@@ -2280,13 +2280,13 @@ body,
 
 .meta-badge.steering {
   background: rgba(140, 160, 176, 0.12);
-  color: var(--muted);
+  color: var(--text-dim);
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
 .meta-badge.compact-summary {
   background: rgba(140, 160, 176, 0.12);
-  color: var(--muted);
+  color: var(--text-dim);
   border: 1px solid rgba(140, 160, 176, 0.3);
 }
 
@@ -3322,7 +3322,7 @@ pre.extra-field-value {
 }
 
 .active-sessions-row:hover {
-  background: var(--hover);
+  background: var(--bg-secondary);
 }
 
 .active-sessions-row.attention {
@@ -4124,7 +4124,7 @@ pre.extra-field-value {
 .svg-diff-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -4179,7 +4179,7 @@ pre.extra-field-value {
 .system-user-pre {
   margin-top: 4px;
   padding: 8px;
-  background: var(--code-bg);
+  background: var(--tool-bg);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -4235,7 +4235,7 @@ pre.extra-field-value {
 .system-user-full-text pre {
   margin-top: 4px;
   padding: 8px;
-  background: var(--code-bg);
+  background: var(--tool-bg);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;

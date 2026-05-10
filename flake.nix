@@ -67,6 +67,7 @@
           ./web/vitest.config.ts
           ./web/eslint.config.mjs
           ./web/.prettierignore
+          ./web/.stylelintrc.json
         ];
       };
 
@@ -177,7 +178,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
 
             buildPhase = ''
               runHook preBuild
@@ -778,7 +779,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
 
             buildPhase = ''
               runHook preBuild
@@ -795,7 +796,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
 
             buildPhase = ''
               runHook preBuild
@@ -812,11 +813,28 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
 
             buildPhase = ''
               runHook preBuild
               npx prettier --check src/
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
+          lint-css = pkgs.buildNpmPackage {
+            pname = "cydo-lint-css";
+            version = "0.1.0";
+            src = frontendSrc;
+            nodejs = pkgs.nodejs_22;
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+
+            buildPhase = ''
+              runHook preBuild
+              npm run lint:css
               runHook postBuild
             '';
 
@@ -851,7 +869,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-QZaGClia0YVWk5IFBGRcP/qBSgiq01d/a20FkOZnXcA=";
+            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
 
             buildPhase = ''
               runHook preBuild

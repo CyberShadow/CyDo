@@ -9,7 +9,8 @@
     "fmt": "prettier --write src/",
     "fmt:check": "prettier --check src/",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint:css": "stylelint 'src/**/*.css'"
   },
   "dependencies": {
     "@incremark/core": "^0.3.10",
@@ -28,6 +29,9 @@
     "@types/dompurify": "^3.0.5",
     "eslint": "^10.1.0",
     "prettier": "^3.8.1",
+    "stylelint": "^17.11.0",
+    "stylelint-config-standard": "^40.0.0",
+    "stylelint-value-no-unknown-custom-properties": "^6.1.1",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.57.1",
     "vite": "^7.3.1",
