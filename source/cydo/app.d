@@ -8280,21 +8280,54 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : toJson;
 		import cydo.agent.registry : agentRegistry;
+		import std.conv : to;
 		import std.path : expandTilde;
+		import std.process : environment;
+		import std.string : toUpper;
 
 		AgentInfoEntry[] entries;
-		foreach (ref entry; agentRegistry)
+		foreach (name, ref ac; config.agents)
 		{
-			auto agent = entry.create();
+			// Build merged env: global sandbox.env → per-agent sandbox.env
+			// (per-agent layered on top, matching resolveSandbox launch logic).
 			string[string] env;
 			foreach (k, v; config.sandbox.env)
 				env[k] = expandTilde(v);
-			auto agentSandbox = findAgentSandbox(entry.name);
-			foreach (k, v; agentSandbox.env)
+			foreach (k, v; ac.sandbox.env)
 				env[k] = expandTilde(v);
-			auto available = resolveExecutablePath(agent.executableName(env), env).length > 0;
-			entries ~= AgentInfoEntry(entry.name, entry.name, entry.displayName, available);
+
+			auto driver = ac.driver.value;  // SetInfo: post-overlay always set
+			auto a = agentsByName.get(name, null);
+			if (a is null)
+				a = createAgentByDriver(driver);
+
+			auto execPath = resolveExecutablePath(a.executableName(env), env);
+			// Honor CYDO_<DRIVER>_BIN env-var fallback when the resolved path
+			// is empty. Mirrors the launch-time fallback used for testing.
+			if (execPath.length == 0)
+			{
+				auto fallbackVar = "CYDO_" ~ to!string(driver).toUpper ~ "_BIN";
+				execPath = environment.get(fallbackVar, "");
+			}
+
+			// Display name: registry-supplied driver display name (commit 9
+			// will read ac.display_name override here).
+			string displayName = name;
+			foreach (ref reg; agentRegistry)
+				if (to!AgentDriver(reg.name) == driver)
+				{
+					displayName = reg.displayName;
+					break;
+				}
+
+			entries ~= AgentInfoEntry(
+				name,
+				to!string(driver),
+				displayName,
+				execPath.length > 0,
+			);
 		}
+
 		return toJson(AgentsListMessage("agents_list", entries, config.default_agent));
 	}
 
