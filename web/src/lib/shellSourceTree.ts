@@ -11,11 +11,33 @@ import type {
 
 type SourceEmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
 
+interface WrapperInterpreterInfo {
+  flags: ReadonlySet<string>;
+  language: string;
+}
+
+const WRAPPER_INTERPRETERS: Record<string, WrapperInterpreterInfo> = {
+  sh: { flags: new Set(["-c", "-lc", "-cl"]), language: "bash" },
+  bash: { flags: new Set(["-c", "-lc", "-cl"]), language: "bash" },
+  zsh: { flags: new Set(["-c", "-lc", "-cl"]), language: "bash" },
+  python: { flags: new Set(["-c"]), language: "python" },
+  python3: { flags: new Set(["-c"]), language: "python" },
+  node: { flags: new Set(["-e"]), language: "javascript" },
+  nodejs: { flags: new Set(["-e"]), language: "javascript" },
+  ruby: { flags: new Set(["-e"]), language: "ruby" },
+  perl: { flags: new Set(["-e"]), language: "perl" },
+  lua: { flags: new Set(["-e"]), language: "lua" },
+  php: { flags: new Set(["-r"]), language: "php" },
+  Rscript: { flags: new Set(["-e"]), language: "r" },
+  R: { flags: new Set(["-e"]), language: "r" },
+};
+
 interface WrapperParse {
   decodedPayload: string;
   payload: SourceSpan;
   quote: "single" | "double" | "projected";
   projection: SourceProjection;
+  language: string;
 }
 
 type WrapperParseResult =
@@ -317,16 +339,15 @@ function parseShellWrapper(command: string): WrapperParseResult {
   if (firstWs <= 0) return { kind: "none" };
   const shellToken = command.slice(0, firstWs);
   const base = shellBasename(shellToken);
-  if (base !== "sh" && base !== "bash" && base !== "zsh") {
-    return { kind: "none" };
-  }
+  const langInfo = WRAPPER_INTERPRETERS[base];
+  if (!langInfo) return { kind: "none" };
 
   let i = firstWs;
   while (i < command.length && /\s/.test(command[i]!)) i++;
   const flagStart = i;
   while (i < command.length && !/\s/.test(command[i]!)) i++;
   const flag = command.slice(flagStart, i);
-  if (flag !== "-c" && flag !== "-lc" && flag !== "-cl") {
+  if (!langInfo.flags.has(flag)) {
     return { kind: "none" };
   }
 
@@ -355,6 +376,7 @@ function parseShellWrapper(command: string): WrapperParseResult {
       payload: payloadWord.payload,
       quote: payloadWord.quote,
       projection: payloadWord.projection,
+      language: langInfo.language,
     },
   };
 }
@@ -565,15 +587,27 @@ function parseShellNode(text: string): SourceTreeParseResult {
     return reject(wrapper.code, wrapper.reason);
   }
   if (wrapper.kind === "wrapper") {
-    const payloadNode = parseShellNode(wrapper.value.decodedPayload);
-    if (!payloadNode.ok) return payloadNode;
+    const childLanguage = wrapper.value.language;
+    let payloadNode: SourceNode;
+    if (childLanguage === "bash") {
+      const nested = parseShellNode(wrapper.value.decodedPayload);
+      if (!nested.ok) return nested;
+      payloadNode = nested.value;
+    } else {
+      const bodyText = wrapper.value.decodedPayload;
+      payloadNode = {
+        language: childLanguage,
+        text: bodyText,
+        segments: [{ kind: "text", span: span(0, bodyText.length) }],
+      };
+    }
     const segments: SourceSegment[] = [];
     const prefix = textSegment(0, wrapper.value.payload.start);
     if (prefix) segments.push(prefix);
     segments.push({
       kind: "embed",
       span: wrapper.value.payload,
-      content: payloadNode.value,
+      content: payloadNode,
       origin: {
         language: "bash",
         construct: "command-wrapper-payload",

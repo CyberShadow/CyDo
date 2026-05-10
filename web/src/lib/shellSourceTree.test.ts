@@ -342,4 +342,105 @@ describe("sourceTree projection parser", () => {
     expect(mapped.start).toBe(wrapper.span.start);
     expect(mapped.end).toBe(wrapper.span.start);
   });
+
+  it("recognizes python -c double-quoted payload as python embed", () => {
+    const parsed = parseShellCommandSourceTree('python -c "import json"');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("python");
+    expect(embed.content.text).toBe("import json");
+    expect(parsed.value.language).toBe("bash");
+  });
+
+  it("recognizes python -c single-quoted payload as python embed", () => {
+    const parsed = parseShellCommandSourceTree("python -c 'print(1)'");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("python");
+    expect(embed.content.text).toBe("print(1)");
+  });
+
+  it("recognizes node -e double-quoted payload as javascript embed", () => {
+    const parsed = parseShellCommandSourceTree('node -e "console.log(1)"');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("javascript");
+    expect(embed.content.text).toBe("console.log(1)");
+  });
+
+  it("recognizes ruby -e single-quoted payload as ruby embed", () => {
+    const parsed = parseShellCommandSourceTree("ruby -e 'puts 42'");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("ruby");
+    expect(embed.content.text).toBe("puts 42");
+  });
+
+  it("recognizes python3 -c as python embed (basename alias)", () => {
+    const parsed = parseShellCommandSourceTree('python3 -c "import sys"');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("python");
+    expect(embed.content.text).toBe("import sys");
+  });
+
+  it("does not recognize python script.py as a wrapper (no flag)", () => {
+    const parsed = parseShellCommandSourceTree("python script.py");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(findFirstEmbed(parsed.value.segments)).toBeNull();
+    expect(parsed.value.language).toBe("bash");
+  });
+
+  it("does not recognize python -e as a wrapper (wrong flag for python)", () => {
+    const parsed = parseShellCommandSourceTree("python -e 'whatever'");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(findFirstEmbed(parsed.value.segments)).toBeNull();
+  });
+
+  it("does not recognize node -c as a wrapper (wrong flag for node)", () => {
+    const parsed = parseShellCommandSourceTree("node -c something");
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(findFirstEmbed(parsed.value.segments)).toBeNull();
+  });
+
+  it("does not recognize unsupported interpreter as a wrapper", () => {
+    const parsed = parseShellCommandSourceTree('go run -e "..."');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(findFirstEmbed(parsed.value.segments)).toBeNull();
+  });
+
+  it("does not recurse into non-shell interpreter wrapper payloads", () => {
+    // python payload looks like a shell wrapper but must not be recursed into
+    const parsed = parseShellCommandSourceTree(
+      "python -c 'bash -c \"echo hi\"'",
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const embed = findFirstEmbed(parsed.value.segments);
+    expect(embed).not.toBeNull();
+    if (!embed) return;
+    expect(embed.content.language).toBe("python");
+    // The child is a leaf — its segments should be a single text segment, not another embed
+    expect(embed.content.segments).toHaveLength(1);
+    expect(embed.content.segments[0]?.kind).toBe("text");
+  });
 });

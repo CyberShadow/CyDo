@@ -215,6 +215,27 @@ describe("source tree render plan", () => {
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
   });
 
+  it("renders python -c wrapper as projected inline pieces with python language", () => {
+    const command = 'python -c "import json,sys"';
+    const parsed = parseShellCommandSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+
+    const pythonPiece = pieces.find(
+      (p) => p.kind === "inline" && p.language === "python",
+    );
+    expect(pythonPiece).toBeTruthy();
+    if (!pythonPiece || pythonPiece.kind !== "inline") return;
+    expect(pythonPiece.text).toBe("import json,sys");
+    expect(pythonPiece.projectedInline).toBe(true);
+
+    // No rich blocks — inline command, not at line boundary
+    expect(pieces.some((p) => p.kind === "rich")).toBe(false);
+  });
+
   it("treats projected inline embeds generically and preserves parent-owned source text", () => {
     const root: SourceNode = {
       language: "json",
