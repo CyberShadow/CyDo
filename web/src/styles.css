@@ -527,7 +527,7 @@ body,
   mask-image: none;
   -webkit-mask-image: none;
   background: none;
-  border: 2px solid var(--fg-muted);
+  border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
