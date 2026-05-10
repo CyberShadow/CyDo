@@ -114,11 +114,13 @@ ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConf
 	}
 	result.paths = expanded;
 
-	// Expand ~ in env values (replace all occurrences, not just leading ~)
+	// Render Djinja templates in env values, then expand ~.
+	// Order matters: a templated value may itself contain ~/path.
+	auto hostEnv = environment.toAA();
 	auto home = environment.get("HOME", "");
 	string[string] expandedEnv;
 	foreach (k, v; result.env)
-		expandedEnv[k] = expandAllTildes(v, home);
+		expandedEnv[k] = expandAllTildes(renderSandboxEnvValue(v, hostEnv), home);
 	result.env = expandedEnv;
 
 	// Git identity: agent defaults, overridden by global, per-agent, workspace
@@ -257,11 +259,13 @@ ResolvedSandbox resolveSandboxForDiscovery(SandboxConfig global, SandboxConfig w
 	mergeEnv(result.env, global.env);
 	mergeEnv(result.env, workspace.env);
 
-	// Expand ~ in env values
+	// Render Djinja templates in env values, then expand ~.
+	// Order matters: a templated value may itself contain ~/path.
+	auto hostEnv = environment.toAA();
 	auto home = environment.get("HOME", "");
 	string[string] expandedEnv;
 	foreach (k, v; result.env)
-		expandedEnv[k] = expandAllTildes(v, home);
+		expandedEnv[k] = expandAllTildes(renderSandboxEnvValue(v, hostEnv), home);
 	result.env = expandedEnv;
 
 	// Resolve isolation flags (last-writer-wins across layers)
@@ -722,6 +726,35 @@ string expandAllTildes(string value, string home)
 	if (home.length == 0)
 		return value;
 	return value.replace("~/", home ~ "/");
+}
+
+private string renderSandboxEnvValue(string raw, const string[string] hostEnv)
+{
+    import std.algorithm : canFind;
+    if (raw.length == 0 || !raw.canFind("{{"))
+        return raw;
+
+    import djinja.djinja : loadData;
+    import djinja.render : Render;
+    import uninode.node : UniNode;
+
+    UniNode[string] envMap;
+    foreach (k, v; hostEnv)
+        envMap[k] = UniNode(v);
+
+    UniNode[string] data;
+    data["env"] = UniNode(envMap);
+
+    try
+    {
+        auto tmpl = loadData(raw);
+        return (new Render(tmpl)).render(UniNode(data));
+    }
+    catch (Exception e)
+    {
+        warningf("sandbox.env: failed to render template %s: %s", raw, e.msg);
+        return "";
+    }
 }
 
 /// Merge source paths into destination (source wins on conflicts).
