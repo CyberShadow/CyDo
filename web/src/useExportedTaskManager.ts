@@ -252,6 +252,7 @@ export function useExportedTaskManager(): TaskManager {
     activeProject: null,
     notices: {},
     localNotices: {},
+    agentUsage: {},
     devMode: false,
     exportLoadError,
     navigateHome: noop,

@@ -24,6 +24,7 @@ void shutdownSignalHandler(int sig) @system
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
 import std.logger : tracef, infof, warningf, errorf, fatalf;
+import std.math : fabs, isFinite, isNaN;
 import std.stdio : File, stderr;
 import std.string : representation;
 
@@ -57,7 +58,7 @@ import cydo.logging : installRobustLogger;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
-	ItemStartedEvent, QuestionResult, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
+	ItemStartedEvent, QuestionResult, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
@@ -83,6 +84,21 @@ private struct BatchHandle
 {
 	int parentTid;
 	ulong batchId;
+}
+
+private struct AgentUsageLimitWindowMessage
+{
+	@JSONOptional double utilization;
+	@JSONOptional double resetsAt;
+	@JSONOptional string status;
+}
+
+private struct AgentUsageMessage
+{
+	string type = "agent_usage";
+	string agent;
+	long updated_at;
+	AgentUsageLimitWindowMessage[string] limits;
 }
 
 private enum QuestionDelivery { batchQuestion, injectedMessage }
@@ -635,6 +651,23 @@ class App : ToolsBackend
 	private string authPass;
 	// Active notices keyed by notice ID
 	private Notice[string] activeNotices;
+	private struct AgentUsageLimitWindowState
+	{
+		bool hasUtilization;
+		double utilization;
+		bool hasResetsAt;
+		double resetsAt;
+		bool hasStatus;
+		string status;
+	}
+	private struct AgentUsageState
+	{
+		string agent;
+		long updatedAt;
+		AgentUsageLimitWindowState[string] limits;
+	}
+	// Latest account usage keyed by agent type ("claude", etc).
+	private AgentUsageState[string] agentUsageByAgent;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -1234,6 +1267,10 @@ class App : ToolsBackend
 		ws.send(Data(buildTasksList().representation));
 		ws.send(Data(buildServerStatus().representation));
 		ws.send(Data(buildNoticesList().representation));
+		foreach (ref usageState; agentUsageByAgent)
+		{
+			ws.send(Data(toJson(buildAgentUsageMessage(usageState)).representation));
+		}
 
 		ws.handleReadData = (Data data) {
 			auto text = cast(string) data.toGC();
@@ -6962,6 +6999,166 @@ class App : ToolsBackend
 			|| translated.canFind(`"type":"process\/exit"`);
 	}
 
+	private static bool isSessionRateLimitEvent(string translated)
+	{
+		import std.algorithm : canFind;
+		return translated.canFind(`"type":"session/rate_limit"`)
+			|| translated.canFind(`"type":"session\/rate_limit"`);
+	}
+
+	private static double normalizeUtilizationPercent(double raw)
+	{
+		// Pushed rate_limit_event utilization (0-1 or 0-100) is distinct from
+		// status-line used_percentage fields.
+		if (isNaN(raw) || !isFinite(raw))
+			return double.nan;
+		double pct = raw;
+		if (pct >= 0 && pct <= 1)
+			pct *= 100;
+		if (pct < 0) pct = 0;
+		if (pct > 100) pct = 100;
+		return pct;
+	}
+
+	private static AgentUsageMessage buildAgentUsageMessage(
+		ref const AgentUsageState state)
+	{
+		AgentUsageMessage msg;
+		msg.agent = state.agent;
+		msg.updated_at = state.updatedAt;
+		foreach (limitType, ref window; state.limits)
+		{
+			if (!window.hasUtilization && !window.hasResetsAt && !window.hasStatus)
+				continue;
+			AgentUsageLimitWindowMessage outWindow;
+			if (window.hasUtilization)
+				outWindow.utilization = window.utilization;
+			if (window.hasResetsAt)
+				outWindow.resetsAt = window.resetsAt;
+			if (window.hasStatus)
+				outWindow.status = window.status;
+			msg.limits[limitType] = outWindow;
+		}
+		return msg;
+	}
+
+	private bool updateClaudeUsageFromEvent(int tid, string translated)
+	{
+		import std.datetime.systime : Clock;
+
+		if (tid !in tasks || tasks[tid].agentType != "claude"
+			|| !isSessionRateLimitEvent(translated))
+			return false;
+
+		SessionRateLimitEvent rateLimitEvent;
+		try
+			rateLimitEvent = jsonParse!SessionRateLimitEvent(translated);
+		catch (Exception)
+			return false;
+
+		auto limitType = rateLimitEvent.rate_limit_info.rateLimitType;
+		if (limitType.length == 0)
+			return false;
+
+		auto normalizedUtilization = normalizeUtilizationPercent(
+			rateLimitEvent.rate_limit_info.utilization);
+		const hasUtilization = !isNaN(normalizedUtilization);
+		const hasResetsAt = !isNaN(rateLimitEvent.rate_limit_info.resetsAt);
+		const hasStatus = rateLimitEvent.rate_limit_info.status.length > 0;
+		if (!hasUtilization && !hasResetsAt && !hasStatus)
+			return false;
+
+		auto agentType = "claude";
+		auto state = agentType in agentUsageByAgent
+			? agentUsageByAgent[agentType]
+			: AgentUsageState(agentType, 0, null);
+		auto window = limitType in state.limits
+			? state.limits[limitType]
+			: AgentUsageLimitWindowState.init;
+		bool changed = false;
+
+		if (hasUtilization
+			&& (!window.hasUtilization
+				|| fabs(window.utilization - normalizedUtilization) > 0.0001))
+		{
+			window.hasUtilization = true;
+			window.utilization = normalizedUtilization;
+			changed = true;
+		}
+		if (hasResetsAt
+			&& (!window.hasResetsAt
+				|| fabs(window.resetsAt - rateLimitEvent.rate_limit_info.resetsAt) > 0.0001))
+		{
+			window.hasResetsAt = true;
+			window.resetsAt = rateLimitEvent.rate_limit_info.resetsAt;
+			changed = true;
+		}
+		if (hasStatus
+			&& (!window.hasStatus
+				|| window.status != rateLimitEvent.rate_limit_info.status))
+		{
+			window.hasStatus = true;
+			window.status = rateLimitEvent.rate_limit_info.status;
+			changed = true;
+		}
+		if (!changed)
+			return false;
+
+		state.agent = agentType;
+		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
+		state.limits[limitType] = window;
+		agentUsageByAgent[agentType] = state;
+		broadcast(toJson(buildAgentUsageMessage(state)));
+		return true;
+	}
+
+	unittest
+	{
+		auto app = new App();
+		app.tasks[7].agentType = "claude";
+
+		auto changed = app.updateClaudeUsageFromEvent(7,
+			`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"five_hour","utilization":0.42,"resetsAt":1000,"status":"allowed"}}`);
+		assert(changed);
+		assert("claude" in app.agentUsageByAgent);
+		assert("five_hour" in app.agentUsageByAgent["claude"].limits);
+		assert(app.agentUsageByAgent["claude"].limits["five_hour"].hasUtilization);
+		assert(app.agentUsageByAgent["claude"].limits["five_hour"].utilization == 42);
+
+		changed = app.updateClaudeUsageFromEvent(7,
+			`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"seven_day","utilization":71.5}}`);
+		assert(changed);
+		assert("seven_day" in app.agentUsageByAgent["claude"].limits);
+		assert(app.agentUsageByAgent["claude"].limits["five_hour"].utilization == 42);
+		assert(app.agentUsageByAgent["claude"].limits["seven_day"].utilization == 71.5);
+
+		changed = app.updateClaudeUsageFromEvent(7,
+			`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"five_hour","resetsAt":2000,"status":"allowed_warning"}}`);
+		assert(changed);
+		auto msg = buildAgentUsageMessage(app.agentUsageByAgent["claude"]);
+		assert("five_hour" in msg.limits);
+		assert(msg.limits["five_hour"].utilization == 42);
+		assert(msg.limits["five_hour"].resetsAt == 2000);
+		assert(msg.limits["five_hour"].status == "allowed_warning");
+
+		changed = app.updateClaudeUsageFromEvent(7,
+			`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"seven_day","status":"allowed"}}`);
+		assert(changed);
+		msg = buildAgentUsageMessage(app.agentUsageByAgent["claude"]);
+		assert("seven_day" in msg.limits);
+		assert(msg.limits["seven_day"].utilization == 71.5);
+		assert(msg.limits["seven_day"].status == "allowed");
+
+		changed = app.updateClaudeUsageFromEvent(7,
+			`{"type":"session/rate_limit","rate_limit_info":{"rateLimitType":"overage","status":"rejected","resetsAt":3000}}`);
+		assert(changed);
+		msg = buildAgentUsageMessage(app.agentUsageByAgent["claude"]);
+		assert("overage" in msg.limits);
+		assert(msg.limits["overage"].status == "rejected");
+		assert(msg.limits["overage"].resetsAt == 3000);
+		assert(isNaN(msg.limits["overage"].utilization));
+	}
+
 	private void cacheSessionStatusEvent(int tid, string translated, long ts)
 	{
 		if (tid !in tasks)
@@ -7060,6 +7257,7 @@ class App : ToolsBackend
 		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
 			tryExtractAgentSessionId(tid, ev.translated);
 		ev.translated = normalizeKnownSystemMessageMeta(ev.translated, tid);
+		updateClaudeUsageFromEvent(tid, ev.translated);
 		if (tid in tasks && isCompactionReminderEchoEvent(ev.translated))
 			tasks[tid].compactionReminderInFlight = true;
 		auto shouldSendCompactionReminder = tid in tasks

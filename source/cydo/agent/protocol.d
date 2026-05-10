@@ -138,8 +138,12 @@ struct RateLimitInfo
 	@JSONOptional string status;
 	@JSONOptional string rateLimitType;
 	@JSONOptional double resetsAt;
+	@JSONOptional double utilization;
 	@JSONOptional string overageStatus;
+	@JSONOptional double overageResetsAt;
 	@JSONOptional string overageDisabledReason;
+	@JSONOptional bool isUsingOverage;
+	@JSONOptional double surpassedThreshold;
 	JSONExtras extras;
 }
 

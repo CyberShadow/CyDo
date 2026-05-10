@@ -14,6 +14,7 @@ import {
 import { useLocation, useRoute } from "preact-iso";
 import { Connection } from "./connection";
 import type {
+  AgentUsageMessage,
   AgnosticEvent,
   ControlMessage,
   ContentBlock,
@@ -173,6 +174,7 @@ export interface TaskManager {
   activeProject: string | null;
   notices: Record<string, Notice>;
   localNotices: Record<string, Notice>;
+  agentUsage: Record<string, AgentUsageMessage>;
   devMode: boolean;
   exportLoadError?: string | null;
   navigateHome: () => void;
@@ -265,6 +267,9 @@ export function useTaskManager(
   const [defaultTaskType, setDefaultTaskType] = useState("");
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [localNotices, setLocalNotices] = useState<Record<string, Notice>>({});
+  const [agentUsage, setAgentUsage] = useState<
+    Record<string, AgentUsageMessage>
+  >({});
   const [devMode, setDevMode] = useState(false);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
@@ -1432,6 +1437,13 @@ export function useTaskManager(
           initialNoticeLoadRef.current = false;
           break;
         }
+        case "agent_usage": {
+          setAgentUsage((prev) => ({
+            ...prev,
+            [msg.agent]: msg,
+          }));
+          break;
+        }
         case "error": {
           const errMsg = msg.message;
           const errTid = msg.tid;
@@ -1577,6 +1589,7 @@ export function useTaskManager(
         setDraft({ phase: "none" });
         deletedDraftTid.current = null;
         setTasks(new Map());
+        setAgentUsage({});
       } else {
         initialNoticeLoadRef.current = true;
       }
@@ -2203,6 +2216,7 @@ export function useTaskManager(
     activeProject,
     notices,
     localNotices,
+    agentUsage,
     devMode,
     exportLoadError: null,
     navigateHome,

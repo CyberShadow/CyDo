@@ -640,6 +640,48 @@ body,
   margin-left: auto;
 }
 
+.banner-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 150px;
+  flex: 0 0 150px;
+}
+
+.banner-usage-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 30px;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+}
+
+.banner-usage-label {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.banner-usage-bar {
+  height: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  position: relative;
+  overflow: hidden;
+}
+
+.banner-usage-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+}
+
+.banner-usage-value {
+  text-align: right;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .banner-processing {
   color: var(--accent);
   animation: pulse 1.5s infinite;
@@ -3619,6 +3661,11 @@ pre.extra-field-value {
 
 /* Responsive: narrow screens */
 @media (max-width: 768px) {
+  .banner-usage {
+    width: 132px;
+    flex-basis: 132px;
+  }
+
   .hamburger-btn {
     display: flex;
   }

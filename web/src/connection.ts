@@ -84,6 +84,7 @@ export class Connection {
           raw.type === "server_status" ||
           raw.type === "task_deleted" ||
           raw.type === "notices_list" ||
+          raw.type === "agent_usage" ||
           raw.type === "focus_hint"
         ) {
           this.onControlMessage?.(raw as unknown as ControlMessage);

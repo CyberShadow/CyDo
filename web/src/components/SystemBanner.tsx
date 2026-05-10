@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
+import type { AgentUsageLimitWindow, AgentUsageMessage } from "../protocol";
 import type { Theme } from "../useTheme";
 import sunIcon from "../icons/sun.svg?raw";
 import moonIcon from "../icons/moon.svg?raw";
@@ -27,6 +28,7 @@ interface Props {
   resumable?: boolean;
   onResume?: () => void;
   exportMode?: boolean;
+  claudeUsage?: AgentUsageMessage;
 }
 
 export function normalizeSessionStatus(status?: string | null): string | null {
@@ -38,6 +40,71 @@ export function isCompactingStatus(status: string): boolean {
   const lower = status.toLowerCase();
   if (lower === "compacting" || lower.includes("compacting")) return true;
   return lower.includes("compact") && !lower.includes("compacted");
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+export function usagePercent(utilization?: number): number | null {
+  if (!Number.isFinite(utilization)) return null;
+  let pct = utilization as number;
+  if (pct >= 0 && pct <= 1) pct *= 100;
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  return pct;
+}
+
+export function computeUsagePaceRatio(
+  utilizationPercent: number,
+  resetsAtSeconds: number | undefined,
+  windowSeconds: number,
+  nowSeconds: number,
+): number {
+  const usageFraction = clamp01(utilizationPercent / 100);
+  if (!Number.isFinite(resetsAtSeconds) || !windowSeconds) {
+    return usageFraction / 0.05;
+  }
+  const remaining = (resetsAtSeconds as number) - nowSeconds;
+  const timeProgress = clamp01((windowSeconds - remaining) / windowSeconds);
+  return usageFraction / Math.max(timeProgress, 0.05);
+}
+
+export function usageFillColor(
+  utilizationPercent: number,
+  resetsAtSeconds: number | undefined,
+  windowSeconds: number,
+  nowSeconds: number,
+): string {
+  const usageFraction = clamp01(utilizationPercent / 100);
+  if (usageFraction <= 0.01) return "rgb(76, 175, 80)";
+  const ratio = computeUsagePaceRatio(
+    utilizationPercent,
+    resetsAtSeconds,
+    windowSeconds,
+    nowSeconds,
+  );
+  if (ratio >= 1.5) return "rgb(220, 67, 67)";
+  if (ratio >= 1.0) return "rgb(242, 153, 74)";
+  return "rgb(173, 186, 73)";
+}
+
+function usageTitle(
+  label: string,
+  window: AgentUsageLimitWindow | undefined,
+): string {
+  const status = window?.status ? `, status: ${window.status}` : "";
+  const resetTs = window?.resetsAt;
+  const reset =
+    Number.isFinite(resetTs) && resetTs
+      ? `, resets: ${new Date(resetTs * 1000).toLocaleString()}`
+      : "";
+  const pct = usagePercent(window?.utilization);
+  if (pct === null) return `${label}: unknown${status}${reset}`;
+  return `${label}: ${pct.toFixed(1)}%${status}${reset}`;
 }
 
 export function SystemBanner({
@@ -62,6 +129,7 @@ export function SystemBanner({
   resumable,
   onResume,
   exportMode,
+  claudeUsage,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const liveStatus = normalizeSessionStatus(sessionStatus);
@@ -79,6 +147,13 @@ export function SystemBanner({
   } else if (isProcessing && !stdinClosed) {
     processingText = "Processing...";
   }
+  const nowSeconds = Date.now() / 1000;
+  const fiveHour = claudeUsage?.limits.five_hour;
+  const week = claudeUsage?.limits.seven_day;
+  const usageRows = [
+    { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
+    { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
+  ];
 
   return (
     <div class="system-banner">
@@ -124,6 +199,42 @@ export function SystemBanner({
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
+        {claudeUsage && (
+          <div class="banner-usage" title="Claude account usage">
+            {usageRows.map((row) => {
+              const pct = usagePercent(row.window?.utilization);
+              const color =
+                pct === null
+                  ? "var(--border)"
+                  : usageFillColor(
+                      pct,
+                      row.window?.resetsAt,
+                      row.windowSeconds,
+                      nowSeconds,
+                    );
+              const valueText = pct === null ? "--" : `${pct.toFixed(0)}%`;
+              return (
+                <div
+                  key={row.label}
+                  class="banner-usage-row"
+                  title={usageTitle(row.label, row.window)}
+                >
+                  <span class="banner-usage-label">{row.label}</span>
+                  <span class="banner-usage-bar">
+                    <span
+                      class="banner-usage-fill"
+                      style={{
+                        width: pct === null ? "0%" : `${pct}%`,
+                        backgroundColor: color,
+                      }}
+                    />
+                  </span>
+                  <span class="banner-usage-value">{valueText}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {processingText && (
           <span class="banner-processing">{processingText}</span>
         )}

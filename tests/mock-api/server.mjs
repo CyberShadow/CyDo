@@ -869,6 +869,29 @@ function findOriginalUserText(messages) {
   return null;
 }
 
+function usageTestHeadersForText(userText) {
+  if (typeof userText !== "string") return {};
+  if (/usage headers fixture 5h/i.test(userText)) {
+    return {
+      "anthropic-ratelimit-unified-status": "allowed_warning",
+      "anthropic-ratelimit-unified-representative-claim": "five_hour",
+      "anthropic-ratelimit-unified-5h-utilization": "0.42",
+      "anthropic-ratelimit-unified-5h-reset": "2000000000",
+      "anthropic-ratelimit-unified-5h-surpassed-threshold": "0.25",
+    };
+  }
+  if (/usage headers fixture 7d/i.test(userText)) {
+    return {
+      "anthropic-ratelimit-unified-status": "allowed_warning",
+      "anthropic-ratelimit-unified-representative-claim": "seven_day",
+      "anthropic-ratelimit-unified-7d-utilization": "0.71",
+      "anthropic-ratelimit-unified-7d-reset": "2000000000",
+      "anthropic-ratelimit-unified-7d-surpassed-threshold": "0.5",
+    };
+  }
+  return {};
+}
+
 function handleMessages(req, res) {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
@@ -894,10 +917,12 @@ function handleMessages(req, res) {
       `[mock-api] model=${requestedModel} userText=${JSON.stringify(userText)} isToolResult=${isToolResult} msgCount=${messages.length}`,
     );
     const model = requestedModel;
+    const usageTestHeaders = usageTestHeadersForText(userText);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      ...usageTestHeaders,
     });
 
     // If last message contains tool_result, check for multi-step sequences

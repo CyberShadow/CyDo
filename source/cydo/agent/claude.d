@@ -6,6 +6,7 @@ import std.conv : to;
 import std.format : format;
 import std.path : dirName, expandTilde;
 import std.logger : errorf, tracef, warningf;
+import std.math : isNaN;
 
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
@@ -2060,16 +2061,63 @@ private string translateSummary(string rawLine)
 /// Translate "rate_limit_event" event to session/rate_limit.
 private string translateRateLimitEvent(string rawLine)
 {
-	@JSONPartial static struct RawRateLimit { RateLimitInfo rate_limit_info; }
+	static struct ClaudeRawRateLimitInfo
+	{
+		@JSONOptional string status;
+		@JSONOptional string rateLimitType;
+		@JSONOptional double resetsAt;
+		@JSONOptional double utilization;
+		@JSONOptional string overageStatus;
+		@JSONOptional double overageResetsAt;
+		@JSONOptional string overageDisabledReason;
+		@JSONOptional bool isUsingOverage;
+		@JSONOptional double surpassedThreshold;
+		JSONExtras _extras;
+	}
+	@JSONPartial static struct RawRateLimit { ClaudeRawRateLimitInfo rate_limit_info; }
 	try
 	{
 		auto raw = jsonParse!RawRateLimit(rawLine);
+		RateLimitInfo info;
+		info.status = raw.rate_limit_info.status;
+		info.rateLimitType = raw.rate_limit_info.rateLimitType;
+		info.resetsAt = raw.rate_limit_info.resetsAt;
+		info.utilization = raw.rate_limit_info.utilization;
+		info.overageStatus = raw.rate_limit_info.overageStatus;
+		info.overageResetsAt = raw.rate_limit_info.overageResetsAt;
+		info.overageDisabledReason = raw.rate_limit_info.overageDisabledReason;
+		info.isUsingOverage = raw.rate_limit_info.isUsingOverage;
+		info.surpassedThreshold = raw.rate_limit_info.surpassedThreshold;
+		info.extras = raw.rate_limit_info._extras;
 		SessionRateLimitEvent ev;
-		ev.rate_limit_info = raw.rate_limit_info;
+		ev.rate_limit_info = info;
 		return toJson(ev);
 	}
 	catch (Exception e)
 	{ tracef("translateRateLimitEvent: parse error: %s", e.msg); return makeUnrecognizedEvent("rate_limit_event parse error: " ~ e.msg); }
+}
+
+unittest
+{
+	@JSONPartial static struct RateLimitProbe
+	{
+		string type;
+		RateLimitInfo rate_limit_info;
+	}
+
+	auto translated = translateRateLimitEvent(
+		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","resetsAt":1715702400,"utilization":0.42,"overageStatus":"allowed","overageResetsAt":1715800000,"overageDisabledReason":"unknown","isUsingOverage":false,"surpassedThreshold":0.25},"uuid":"123e4567-e89b-42d3-a456-426614174000","session_id":"123e4567-e89b-42d3-a456-426614174001"}`);
+	auto ev = jsonParse!RateLimitProbe(translated);
+	assert(ev.type == "session/rate_limit");
+	assert(ev.rate_limit_info.status == "allowed_warning");
+	assert(ev.rate_limit_info.rateLimitType == "five_hour");
+	assert(ev.rate_limit_info.resetsAt == 1715702400);
+	assert(ev.rate_limit_info.utilization == 0.42);
+	assert(ev.rate_limit_info.overageStatus == "allowed");
+	assert(ev.rate_limit_info.overageResetsAt == 1715800000);
+	assert(ev.rate_limit_info.overageDisabledReason == "unknown");
+	assert(ev.rate_limit_info.isUsingOverage == false);
+	assert(ev.rate_limit_info.surpassedThreshold == 0.25);
 }
 
 /// Translate "control_response" event to control/response.

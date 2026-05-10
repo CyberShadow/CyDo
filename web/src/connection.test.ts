@@ -86,4 +86,27 @@ describe("Connection client error reporting", () => {
 
     expect(errors).toEqual(["Unknown WebSocket message type: future_protocol"]);
   });
+
+  it("routes agent_usage as a control message", () => {
+    const conn = new Connection();
+    const controls: string[] = [];
+    conn.onControlMessage = (msg) => {
+      controls.push(msg.type);
+    };
+
+    conn.connect();
+    const ws = MockWebSocket.instances[0]!;
+    ws.emitMessage(
+      JSON.stringify({
+        type: "agent_usage",
+        agent: "claude",
+        updated_at: 1715702400,
+        limits: {
+          five_hour: { utilization: 42.5, resetsAt: 1715703000 },
+        },
+      }),
+    );
+
+    expect(controls).toEqual(["agent_usage"]);
+  });
 });

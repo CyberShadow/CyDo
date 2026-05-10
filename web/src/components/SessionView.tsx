@@ -14,7 +14,7 @@ import type {
   EntryPointInfo,
   AgentTypeInfo,
 } from "../useSessionManager";
-import type { Notice } from "../protocol";
+import type { AgentUsageMessage, Notice } from "../protocol";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
 import { deriveBandStatus } from "./StatusBand";
@@ -75,6 +75,7 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   notices?: Record<string, Notice>;
+  agentUsage?: Record<string, AgentUsageMessage>;
 }
 
 function SessionViewInner({
@@ -113,6 +114,7 @@ function SessionViewInner({
   exportMode,
   getTaskHref,
   notices,
+  agentUsage,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -437,6 +439,10 @@ function SessionViewInner({
     };
   }, [isActive]);
 
+  const sessionAgent = task.sessionInfo?.agent;
+  const showClaudeUsage = !sessionAgent || sessionAgent === "claude";
+  const claudeUsage = showClaudeUsage ? agentUsage?.claude : undefined;
+
   return (
     <>
       <SystemBanner
@@ -467,6 +473,7 @@ function SessionViewInner({
           onResume(task.uuid);
         }}
         exportMode={exportMode}
+        claudeUsage={claudeUsage}
       />
       {fileViewerState && (
         <FileViewer

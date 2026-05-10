@@ -9,6 +9,14 @@
 //   { type: "tool_call", name: string, input: object }
 //   { type: "stall" }  — keep the LLM connection open indefinitely (for kill tests)
 export function matchPattern(userText) {
+  if (/usage headers fixture 5h/i.test(userText)) {
+    return { type: "text", text: "usage-headers-5h" };
+  }
+
+  if (/usage headers fixture 7d/i.test(userText)) {
+    return { type: "text", text: "usage-headers-7d" };
+  }
+
   // Suggestion generation — must be checked before other patterns
   // because the prompt contains abbreviated history that may match them.
   // Uses includes() because Copilot prepends <current_datetime>...</current_datetime>

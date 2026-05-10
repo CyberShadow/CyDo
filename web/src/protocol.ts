@@ -396,6 +396,17 @@ export interface NoticesListMessage {
   type: "notices_list";
   notices: Record<string, Notice>;
 }
+export interface AgentUsageLimitWindow {
+  utilization?: number;
+  resetsAt?: number;
+  status?: string;
+}
+export interface AgentUsageMessage {
+  type: "agent_usage";
+  agent: string;
+  updated_at: number;
+  limits: Record<string, AgentUsageLimitWindow>;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -420,4 +431,5 @@ export type ControlMessage =
   | DraftUpdatedMessage
   | ServerStatusMessage
   | TaskDeletedMessage
-  | NoticesListMessage;
+  | NoticesListMessage
+  | AgentUsageMessage;

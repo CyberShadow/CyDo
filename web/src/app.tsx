@@ -60,6 +60,7 @@ function AppContent() {
     activeProject,
     notices,
     localNotices,
+    agentUsage,
     devMode,
     navigateHome,
     navigateToProject,
@@ -500,6 +501,7 @@ function AppContent() {
                     notices={
                       task.uuid === draftRenderKey ? mergedNotices : undefined
                     }
+                    agentUsage={agentUsage}
                     onContentEnd={
                       task.uuid === draftRenderKey ? deleteDraftTask : undefined
                     }
