@@ -12,6 +12,7 @@ import { CodePre, CopyButton } from "./CopyButton";
 import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
 import { DiffView, HunkDiffView } from "./diff/DiffView";
+import { DiffWithToggle } from "./diff/DiffWithToggle";
 import {
   FileContentPreview,
   SvgPreview,
@@ -2252,25 +2253,41 @@ function ExecCommandResult({ content }: { content: string }) {
 function DiffResult({ content }: { content: string }) {
   const tokens = useHighlight(content, "diff");
   const sections = parseApplyPatchSections(content);
+
   if (sections.length > 0) {
+    const showMeta = sections.length > 1;
     return (
-      <>
-        {sections.map((section, i) => {
-          const hunks = parsePatchHunksFromText(section.patchText);
-          if (hunks && hunks.length > 0) {
+      <DiffWithToggle rawText={content}>
+        <div class="filechange-list">
+          {sections.map((section, i) => {
+            const hunks = parsePatchHunksFromText(section.patchText);
+            if (!hunks || hunks.length === 0) return null;
             return (
-              <HunkDiffView key={i} hunks={hunks} filePath={section.path} />
+              <div key={i} class="filechange-change">
+                {showMeta && (
+                  <div class="tool-input-field filechange-meta">
+                    <span class="tool-subtitle-tag">{section.op}</span>
+                    <span class="tool-subtitle-path">{section.path}</span>
+                  </div>
+                )}
+                <HunkDiffView hunks={hunks} filePath={section.path} />
+              </div>
             );
-          }
-          return null;
-        })}
-      </>
+          })}
+        </div>
+      </DiffWithToggle>
     );
   }
+
   const hunks = parsePatchHunksFromText(content);
   if (hunks && hunks.length > 0) {
-    return <HunkDiffView hunks={hunks} />;
+    return (
+      <DiffWithToggle rawText={content}>
+        <HunkDiffView hunks={hunks} />
+      </DiffWithToggle>
+    );
   }
+
   return (
     <ResultPre content={content}>
       {tokens ? renderTokenLines(tokens) : content}
