@@ -76,6 +76,34 @@ import {
  *    same observed value can be hidden when they match. Fields that are rarely
  *    useful go in a collapsed section. Routinely informative fields display
  *    prominently.
+ *
+ * Default Visibility Principles
+ *
+ * 1. Reclassification first. Treat the *classified* operation, not the raw
+ *    tool name. Codex commandActions and our shell-semantic parser can
+ *    downgrade a generic shell call into a file read/write/diff; the rules
+ *    below apply to the classified kind.
+ *
+ * 2. Errors are always visible. Any "hide" rule below is conditional on
+ *    success. Failed tool calls (result.isError) show their output regardless
+ *    of category.
+ *
+ * 3. Output visibility on success:
+ *    - Mutations (file edit/write, patch apply, semantic-shell write,
+ *      status-update tools): hidden — output is just a confirmation.
+ *    - Local reads (file reads, listings via Glob/Grep, semantic-shell
+ *      read/diff): hidden — user can re-derive from the local source.
+ *    - Remote/novel content (WebSearch, WebFetch): visible — content can't
+ *      be locally re-derived.
+ *    - Commands (shell stdout/stderr) and sub-agent results: visible.
+ *
+ * 4. Input visibility: visible by default, collapsed when the meaningful
+ *    args are already surfaced in the subtitle/header so re-displaying them
+ *    in the input section would be redundant.
+ *
+ * 5. Folding: when input and output represent two halves of one interaction
+ *    (AskUserQuestion: question in input, answer folded back in), only the
+ *    merged view is shown.
  */
 
 /** Check if tool is a shell command executor across agents. */
@@ -2488,6 +2516,7 @@ const defaultExpandedTools = new Set([
   "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
   "claude/SendMessage",
   "claude/TaskCreate",
+  "claude/NotebookEdit",
   "copilot/bash",
 ]);
 const defaultExpandedResults = new Set([
@@ -2506,7 +2535,9 @@ const defaultExpandedResults = new Set([
   "codex/webSearch",
   "claude/WebFetch",
   "claude/TaskOutput",
-  "claude/TaskStop",
+  "claude/TaskGet",
+  "claude/TaskList",
+  "CronList",
 ]);
 
 function hasReadOnlyCommandActions(result?: ToolResult): boolean {
@@ -2536,6 +2567,7 @@ function defaultResultExpanded(
   agentType: string | undefined,
   result?: ToolResult,
 ): boolean {
+  if (result?.isError) return true;
   if (
     toolIs(name, agentType, toolServer, "codex/commandExecution") &&
     hasReadOnlyCommandActions(result)
@@ -2698,8 +2730,9 @@ export const ToolCall = memo(
     const hasSemanticOutputPlan =
       shellSemantic?.ok === true && shellSemantic.value.outputPlan != null;
     // Semantic shell: adjust input/result expand defaults after classification.
-    // Reads/diffs → collapse input (command is secondary), expand result (file content primary).
-    // Writes → keep input expanded, collapse result (usually empty).
+    // Reads/diffs → keep input expanded (command secondary), collapse result (local source).
+    // Writes → keep input expanded, collapse result (confirmation only).
+    // Errors bypass collapse — always leave result visible.
     useEffect(() => {
       if (semanticKind == null) return;
       if (hasSemanticOutputPlan) {
@@ -2708,19 +2741,24 @@ export const ToolCall = memo(
       }
       const kind = semanticKind;
       if (kind === "read" || kind === "diff") {
-        if (!userToggledInput.current) setInputOpen(false);
-        if (!userToggledResult.current && resultOpenOverride === null)
-          setResultOpenOverride(true);
+        if (
+          !hasSemanticOutputPlan &&
+          !userToggledResult.current &&
+          resultOpenOverride === null &&
+          !result?.isError
+        )
+          setResultOpenOverride(false);
       } else if (kind === "write") {
         if (
           !hasSemanticOutputPlan &&
           !userToggledResult.current &&
-          resultOpenOverride === null
+          resultOpenOverride === null &&
+          !result?.isError
         )
           setResultOpenOverride(false);
       }
       // script-exec: no override, use defaults (both expanded)
-    }, [semanticKind, hasSemanticOutputPlan]);
+    }, [semanticKind, hasSemanticOutputPlan, result?.isError]);
     const taskOutputElement = useTaskOutputResult
       ? formatTaskOutputResult(result.toolResult as Record<string, unknown>)
       : null;

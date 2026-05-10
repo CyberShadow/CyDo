@@ -27,8 +27,8 @@ async function lastShellToolCall(
  *
  * Sends a prompt that triggers `cat README.md`. Asserts that the result renders
  * through the semantic shell read pipeline (data-testid="semantic-shell-read")
- * rather than plain terminal output, and that the result section is expanded
- * by default.
+ * rather than plain terminal output. The result section is collapsed by default
+ * for reads (local, re-derivable); the test expands it before asserting.
  */
 test("semantic shell: cat read renders through file content preview", async ({
   page,
@@ -47,8 +47,16 @@ test("semantic shell: cat read renders through file content preview", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Assert semantic-shell-read container is visible (result is expanded by default,
-  // input is collapsed for reads per Phase 1 auto-expand/collapse)
+  // Result is collapsed by default for reads (local source, re-derivable).
+  // Expand the result section to verify the semantic renderer is present.
+  const resultHeader = toolCall.locator(".tool-result-header");
+  if (await resultHeader.isVisible()) {
+    const resultContainer = toolCall.locator(".tool-result-container");
+    const resultVisible = await resultContainer.isVisible();
+    if (!resultVisible) {
+      await resultHeader.click();
+    }
+  }
   const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
   await expect(semanticRead).toBeVisible({ timeout });
 });
@@ -116,7 +124,15 @@ test("semantic shell: pipe read renders through file content preview", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Assert semantic-shell-read container is visible
+  // Result is collapsed by default for reads. Expand before asserting.
+  const resultHeader2 = toolCall.locator(".tool-result-header");
+  if (await resultHeader2.isVisible()) {
+    const resultContainer2 = toolCall.locator(".tool-result-container");
+    const resultVisible2 = await resultContainer2.isVisible();
+    if (!resultVisible2) {
+      await resultHeader2.click();
+    }
+  }
   const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
   await expect(semanticRead).toBeVisible({ timeout });
 });
@@ -209,8 +225,9 @@ test("semantic shell: heredoc script renders with syntax-highlighted body", asyn
  *
  * Sends a prompt that triggers `git log -p -1 --no-color -- README.md`.
  * Asserts that the result renders through the semantic shell diff pipeline
- * (data-testid="semantic-shell-diff") rather than plain terminal output,
- * and that the result section is expanded by default.
+ * (data-testid="semantic-shell-diff") rather than plain terminal output.
+ * The result section is collapsed by default for diffs (local, re-derivable);
+ * the test expands it before asserting.
  */
 test("semantic shell: git diff renders through patch view", async ({
   page,
@@ -229,8 +246,16 @@ test("semantic shell: git diff renders through patch view", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Assert semantic-shell-diff container is visible (result is expanded by default,
-  // input is collapsed for diffs per auto-expand/collapse)
+  // Result is collapsed by default for diffs (local source, re-derivable).
+  // Expand the result section to verify the semantic renderer is present.
+  const resultHeader = toolCall.locator(".tool-result-header");
+  if (await resultHeader.isVisible()) {
+    const resultContainer = toolCall.locator(".tool-result-container");
+    const resultVisible = await resultContainer.isVisible();
+    if (!resultVisible) {
+      await resultHeader.click();
+    }
+  }
   const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
   await expect(semanticDiff).toBeVisible({ timeout });
 });
