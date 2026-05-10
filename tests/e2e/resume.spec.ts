@@ -7,6 +7,7 @@
 import { test as base, expect } from "@playwright/test";
 import { spawn, execSync } from "child_process";
 import type { ChildProcess } from "child_process";
+import type { Locator, Page } from "@playwright/test";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
 import { assistantText, killBackend } from "./fixtures";
 
@@ -160,13 +161,55 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 // ---------------------------------------------------------------------------
 
 async function waitForSidebarTask(
-  page: any,
+  page: Page,
   labelText: string,
   timeoutMs = 15_000,
 ) {
   await expect(
     page.locator(".sidebar-item .sidebar-label", { hasText: labelText }),
   ).toBeVisible({ timeout: timeoutMs });
+}
+
+function sidebarTaskByLabel(page: Page, labelText: string): Locator {
+  return page.locator(".sidebar-item:not(.sidebar-new-task)", {
+    has: page.locator(".sidebar-label", { hasText: labelText }),
+  });
+}
+
+async function openSidebarTaskByLabel(
+  page: Page,
+  labelText: string,
+  timeoutMs = 15_000,
+): Promise<Locator> {
+  const row = sidebarTaskByLabel(page, labelText);
+  await expect(row).toBeVisible({ timeout: timeoutMs });
+  await row.click();
+  await expect(row).toHaveClass(/active/, { timeout: timeoutMs });
+  return row;
+}
+
+async function expectVisibleToolCall(
+  page: Page,
+  commandText: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  await expect(
+    page.locator(".tool-call:visible", { hasText: commandText }),
+  ).toBeVisible({ timeout: timeoutMs });
+}
+
+async function openRunningChildTask(
+  page: Page,
+  labelText: string,
+  commandText: string,
+  timeoutMs = 30_000,
+): Promise<Locator> {
+  const row = await openSidebarTaskByLabel(page, labelText, timeoutMs);
+  await expect(row.locator(".task-type-icon.processing")).toBeVisible({
+    timeout: timeoutMs,
+  });
+  await expectVisibleToolCall(page, commandText, timeoutMs);
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +429,7 @@ test("waiting parent receives batch results after restart", async ({
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
   await expect(input).toBeEnabled({ timeout: 15_000 });
-  await input.fill("call 2 tasks research run command sleep 10");
+  await input.fill("call 2 tasks research run command sleep 30");
   const sendBtn = page.locator(".btn-send:visible").first();
   await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
   await sendBtn.click();
@@ -395,17 +438,9 @@ test("waiting parent receives batch results after restart", async ({
   const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
   await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
 
-  // Navigate to each child and verify it's in-flight (running sleep 10).
-  // Children have higher tids and appear first (newest-first sort).
-  // Use :visible to avoid strict-mode errors from hidden tool-calls in other tasks.
-  await allTaskItems.nth(0).click();
-  await expect(
-    page.locator(".tool-call:visible", { hasText: "sleep 10" }),
-  ).toBeVisible({ timeout: 15_000 });
-  await allTaskItems.nth(1).click();
-  await expect(
-    page.locator(".tool-call:visible", { hasText: "sleep 10" }),
-  ).toBeVisible({ timeout: 15_000 });
+  // Navigate to each child and verify both are running.
+  await openRunningChildTask(page, "Test task 1", "sleep 30");
+  await openRunningChildTask(page, "Test task 2", "sleep 30");
 
   // Restart while both sub-tasks are still running.
   await restartableBackend.restart();
@@ -446,19 +481,8 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
   const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
   await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
 
-  const fastChild = page.locator(".sidebar-item", {
-    has: page.locator(".sidebar-label", { hasText: "Fast child" }),
-  });
-  const slowChild = page.locator(".sidebar-item", {
-    has: page.locator(".sidebar-label", { hasText: "Slow child" }),
-  });
-
-  await slowChild.click();
-  await expect(
-    page.locator(".tool-call:visible", { hasText: "sleep 20" }),
-  ).toBeVisible({ timeout: 15_000 });
-
-  await fastChild.click();
+  await openRunningChildTask(page, "Slow child", "sleep 20");
+  await openSidebarTaskByLabel(page, "Fast child");
   await expect(
     assistantText(page, "first-child-done"),
   ).toBeVisible({ timeout: 30_000 });
@@ -477,12 +501,9 @@ test("waiting parent retains pre-restart completed child in batch results", asyn
   await expect(batchDivider).toBeVisible({ timeout: 90_000 });
   await batchDivider.click();
 
-  const batchMessage = page.locator(
-    ".message.user-message.system-user-expanded",
-    {
-      hasText: "Sub-task results",
-    },
-  );
+  const batchMessage = page.locator(".message.user-message.system-user-expanded", {
+    hasText: "Sub-task results",
+  });
   await expect(batchMessage.locator(".system-user-pre")).toContainText(
     "first-child-done",
   );
