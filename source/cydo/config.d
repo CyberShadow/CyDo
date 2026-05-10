@@ -32,6 +32,7 @@ struct AgentConfig
 	@Optional SetInfo!AgentDriver driver;
 	@Optional SandboxConfig sandbox;
 	@Optional string[string] model_aliases;
+	@Optional string display_name;
 }
 
 struct WorkspaceConfig

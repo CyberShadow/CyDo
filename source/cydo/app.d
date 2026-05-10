@@ -8338,8 +8338,10 @@ class App : ToolsBackend
 				execPath = environment.get(fallbackVar, "");
 			}
 
-			// Display name: registry-supplied driver display name (commit 9
-			// will read ac.display_name override here).
+			// Display name resolution priority:
+			//   1. ac.display_name (user-configured override)
+			//   2. driver registry's display name (e.g. "Claude Code")
+			//   3. agent name itself (final fallback)
 			string displayName = name;
 			foreach (ref reg; agentRegistry)
 				if (to!AgentDriver(reg.name) == driver)
@@ -8347,6 +8349,8 @@ class App : ToolsBackend
 					displayName = reg.displayName;
 					break;
 				}
+			if (ac.display_name.length > 0)
+				displayName = ac.display_name;
 
 			entries ~= AgentInfoEntry(
 				name,
