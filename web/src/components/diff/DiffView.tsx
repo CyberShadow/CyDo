@@ -116,6 +116,22 @@ function wordDiffSimilarity(wordChanges: Change[]): number {
 
 const WORD_DIFF_THRESHOLD = 0.4;
 
+export function pairRemovedAddedLines(
+  removedLines: string[],
+  addedLines: string[],
+): Array<{ changes: Change[]; similar: boolean }> {
+  const pairCount = Math.min(removedLines.length, addedLines.length);
+  const result: Array<{ changes: Change[]; similar: boolean }> = [];
+  for (let i = 0; i < pairCount; i++) {
+    const words = diffWordsWithSpace(removedLines[i]!, addedLines[i]!);
+    result.push({
+      changes: words,
+      similar: wordDiffSimilarity(words) >= WORD_DIFF_THRESHOLD,
+    });
+  }
+  return result;
+}
+
 export function DiffView({
   oldStr,
   newStr,
@@ -159,14 +175,7 @@ export function DiffView({
         const addedLines = splitChangeLines(next.value);
         const pairCount = Math.min(lines.length, addedLines.length);
 
-        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
-        for (let i = 0; i < pairCount; i++) {
-          const words = diffWordsWithSpace(lines[i]!, addedLines[i]!);
-          wordDiffs.push({
-            changes: words,
-            similar: wordDiffSimilarity(words) >= WORD_DIFF_THRESHOLD,
-          });
-        }
+        const wordDiffs = pairRemovedAddedLines(lines, addedLines);
 
         for (let i = 0; i < lines.length; i++) {
           const lineIndex = oldLineIndex + i;
@@ -366,17 +375,7 @@ export function PatchView({
           removedContents.length,
           addedContents.length,
         );
-        const wordDiffs: { changes: Change[]; similar: boolean }[] = [];
-        for (let i = 0; i < pairCount; i++) {
-          const words = diffWordsWithSpace(
-            removedContents[i]!,
-            addedContents[i]!,
-          );
-          wordDiffs.push({
-            changes: words,
-            similar: wordDiffSimilarity(words) >= WORD_DIFF_THRESHOLD,
-          });
-        }
+        const wordDiffs = pairRemovedAddedLines(removedContents, addedContents);
 
         for (let i = 0; i < removedContents.length; i++) {
           const oldIndex = oldTokenIndex++;
