@@ -932,8 +932,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("script-exec");
     expect(r.value.command).toBe(cmd);
-    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
-    expect(joined).toBe(cmd);
   });
 
   it("wrapped markdown heredoc with trailing ls -l && sed gets output plan", async () => {
@@ -962,16 +960,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
         expect(heredoc.content.language).toBe("markdown");
       }
     }
-    expect((r.value.inputSegments ?? []).map((s) => s.kind)).toEqual([
-      "wrapper-prefix",
-      "command-header",
-      "embedded-content",
-      "heredoc-terminator",
-      "command-trailing",
-      "wrapper-suffix",
-    ]);
-    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
-    expect(joined).toBe(cmd);
   });
 
   it("wrapped markdown heredoc with ls -1 dir has no markdown output plan", async () => {
@@ -982,8 +970,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
     expect(r.value.outputPlan).toBeUndefined();
-    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
-    expect(joined).toBe(cmd);
   });
 
   it("escaped wrapper payload keeps heredoc body projection aligned", async () => {
@@ -993,13 +979,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    const writeBody = (r.value.inputSegments ?? []).find(
-      (s) => s.kind === "embedded-content" && s.role === "write-content",
+    const wrapper = r.value.sourceTree?.segments.find(
+      (s) => s.kind === "embed",
     );
-    expect(writeBody?.text).toBe("# T");
-    expect(r.value.embeddedContent?.[0]?.source.rawText).toBe("# T");
-    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
-    expect(joined).toBe(cmd);
+    const heredoc = wrapper?.content.segments.find((s) => s.kind === "embed");
+    expect(heredoc?.content.text).toBe("# T");
   });
 
   it("mixed-quoted wrapper heredoc emits wrapper segments and clean embedded content", async () => {
@@ -1009,19 +993,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    expect((r.value.inputSegments ?? []).map((s) => s.kind)).toEqual([
-      "wrapper-prefix",
-      "command-header",
-      "embedded-content",
-      "heredoc-terminator",
-      "wrapper-suffix",
-    ]);
-    const body = (r.value.inputSegments ?? []).find(
-      (s) => s.kind === "embedded-content" && s.role === "write-content",
+    const wrapper = r.value.sourceTree?.segments.find(
+      (s) => s.kind === "embed",
     );
-    expect(body?.text).toContain('\\"quotes\\"');
-    expect(body?.text).toContain("\"'" + "$literal");
-    expect(r.value.embeddedContent?.[0]?.decodedText).toBe(
+    const heredoc = wrapper?.content.segments.find((s) => s.kind === "embed");
+    expect(heredoc?.content.text).toBe(
       'heredoc body with "quotes" and $literal',
     );
   });
@@ -1043,8 +1019,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    const joined = (r.value.inputSegments ?? []).map((s) => s.text).join("");
-    expect(joined).toBe(cmd);
   });
 
   it("trailing comment with << after heredoc does not trigger false multi-heredoc rejection", async () => {
@@ -1084,7 +1058,10 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    expect(r.value.embeddedContent?.[0]?.source.rawText).toBe("# Title");
+    const heredoc = r.value.sourceTree?.segments.find(
+      (s) => s.kind === "embed",
+    );
+    expect(heredoc?.content.text).toBe("# Title");
   });
 });
 

@@ -47,7 +47,6 @@ import {
 } from "../lib/patches";
 import {
   useShellSemantic,
-  type ShellInputSegment,
   type ShellHeredocWriteSemantic,
   type ShellScriptExecSemantic,
 } from "../lib/shellSemantic";
@@ -331,21 +330,6 @@ function ChangePatchFallback({ change }: { change: NormalizedFileChange }) {
   return (
     <CodePre class="write-content" copyText={patchText}>
       {tokens ? renderTokenLines(tokens) : patchText}
-    </CodePre>
-  );
-}
-
-function ScriptContentPreview({
-  content,
-  language,
-}: {
-  content: string;
-  language: string;
-}) {
-  const tokens = useHighlight(content, language);
-  return (
-    <CodePre class="write-content" copyText={content}>
-      {tokens ? renderTokenLines(tokens) : content}
     </CodePre>
   );
 }
@@ -705,18 +689,8 @@ function ShellCommandInput({
     semantic?.ok === true && semantic.value.kind === "write";
   const isScriptExec =
     semantic?.ok === true && semantic.value.kind === "script-exec";
-  const headerText = isHeredocWrite
-    ? ((
-        semantic as { ok: true; value: ShellHeredocWriteSemantic }
-      ).value.segments.find((s) => s.kind === "command-header")?.text ?? "")
-    : isScriptExec
-      ? ((
-          semantic as { ok: true; value: ShellScriptExecSemantic }
-        ).value.segments.find((s) => s.kind === "command-header")?.text ?? "")
-      : "";
   // All useHighlight calls must be unconditional (hooks rules).
   const tokens = useHighlight(command ?? "", "bash");
-  const headerTokens = useHighlight(headerText.trimEnd(), "bash");
   const consumedKeys = new Set([
     "command",
     "cmd",
@@ -733,9 +707,7 @@ function ShellCommandInput({
   if (isHeredocWrite) {
     const writeVal = (
       semantic as { ok: true; value: ShellHeredocWriteSemantic }
-    ).value as ShellHeredocWriteSemantic & {
-      inputSegments?: ShellInputSegment[];
-    };
+    ).value;
     if (command && parsedSourceTree?.ok) {
       return formatGenericInput(
         remaining,
@@ -744,54 +716,6 @@ function ShellCommandInput({
         </div>,
       );
     }
-
-    const semanticSegments: ShellInputSegment[] = writeVal.inputSegments ?? [];
-    const embeddedIdx = semanticSegments.findIndex(
-      (s) => s.kind === "embedded-content" && s.role === "write-content",
-    );
-    const preTextFromSegments =
-      embeddedIdx >= 0
-        ? semanticSegments
-            .slice(0, embeddedIdx)
-            .map((s) => s.text)
-            .join("")
-        : null;
-    const postTextFromSegments =
-      embeddedIdx >= 0
-        ? semanticSegments
-            .slice(embeddedIdx + 1)
-            .map((s) => s.text)
-            .join("")
-        : null;
-    const writeSegment = writeVal.segments.find(
-      (s) => s.kind === "write-content",
-    );
-    const footerText =
-      postTextFromSegments ??
-      writeVal.segments.find((s) => s.kind === "command-footer")?.text ??
-      "";
-    return formatGenericInput(
-      remaining,
-      <div class="semantic-shell-command" data-testid="semantic-shell-write">
-        <CodePre class="write-content" copyText={command!}>
-          {preTextFromSegments != null
-            ? preTextFromSegments.replace(/\n$/, "")
-            : headerTokens
-              ? renderTokenLines(headerTokens)
-              : headerText.trimEnd()}
-        </CodePre>
-        {writeSegment && (
-          <FileContentPreview
-            filePath={writeVal.filePath}
-            content={writeSegment.text}
-            defaultSource={false}
-          />
-        )}
-        <CodePre class="write-content semantic-command-footer" copyText="">
-          {footerText.replace(/^\n/, "")}
-        </CodePre>
-      </div>,
-    );
   }
 
   // Heredoc script-exec: render header/script-content/footer
@@ -808,57 +732,6 @@ function ShellCommandInput({
         </div>,
       );
     }
-
-    const scriptVal = (semantic as { ok: true; value: ShellScriptExecSemantic })
-      .value as ShellScriptExecSemantic & {
-      inputSegments?: ShellInputSegment[];
-    };
-    const semanticSegments: ShellInputSegment[] = scriptVal.inputSegments ?? [];
-    const embeddedIdx = semanticSegments.findIndex(
-      (s) => s.kind === "embedded-content" && s.role === "script-content",
-    );
-    const preTextFromSegments =
-      embeddedIdx >= 0
-        ? semanticSegments
-            .slice(0, embeddedIdx)
-            .map((s) => s.text)
-            .join("")
-        : null;
-    const postTextFromSegments =
-      embeddedIdx >= 0
-        ? semanticSegments
-            .slice(embeddedIdx + 1)
-            .map((s) => s.text)
-            .join("")
-        : null;
-    const scriptSegment = scriptVal.segments.find(
-      (s) => s.kind === "script-content",
-    );
-    const footerText =
-      postTextFromSegments ??
-      scriptVal.segments.find((s) => s.kind === "command-footer")?.text ??
-      "";
-    return formatGenericInput(
-      remaining,
-      <div class="semantic-shell-command" data-testid="semantic-shell-script">
-        <CodePre class="write-content" copyText={command!}>
-          {preTextFromSegments != null
-            ? preTextFromSegments.replace(/\n$/, "")
-            : headerTokens
-              ? renderTokenLines(headerTokens)
-              : headerText.trimEnd()}
-        </CodePre>
-        {scriptSegment && (
-          <ScriptContentPreview
-            content={scriptSegment.text}
-            language={scriptVal.language}
-          />
-        )}
-        <CodePre class="write-content semantic-command-footer" copyText="">
-          {footerText.replace(/^\n/, "")}
-        </CodePre>
-      </div>,
-    );
   }
 
   if (command && parsedSourceTree?.ok) {

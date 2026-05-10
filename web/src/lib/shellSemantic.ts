@@ -8,11 +8,7 @@ import type { ShikiTheme } from "../highlight";
 import type { OutputPlan } from "./outputPlan";
 import { derivePlan } from "./commandStep";
 import type { CommandStep, ReadRange } from "./commandStep";
-import {
-  projectEmbedSpan,
-  type SourceNode,
-  type SourceSegment,
-} from "./sourceTree";
+import { type SourceNode, type SourceSegment } from "./sourceTree";
 import {
   parseShellCommandSourceTree,
   isShellCommandWrapperEmbed,
@@ -61,53 +57,10 @@ export type ShellEscapingScheme =
   | { kind: "shell-double-quote"; conservative: true }
   | { kind: "projected" };
 
-export interface ShellEmbeddedContent {
-  id: string;
-  language: string;
-  source: ShellSourceSpan;
-  decodedText?: string;
-  segments: ShellEmbeddedContentSegment[];
-}
-
-export type ShellEmbeddedContentSegment =
-  | { kind: "text"; text: string; source: ShellSourceSpan }
-  | {
-      kind: "embed";
-      role: "shell-wrapper-payload" | "inline-script" | "heredoc-body";
-      escaping: ShellEscapingScheme;
-      content: ShellEmbeddedContent;
-      source: ShellSourceSpan;
-    };
-
-export type ShellInputSegment =
-  | {
-      kind:
-        | "wrapper-prefix"
-        | "command-header"
-        | "heredoc-terminator"
-        | "command-trailing"
-        | "wrapper-suffix"
-        | "shell-text";
-      text: string;
-      source: ShellSourceSpan;
-      language?: "bash" | "shell-output" | "text";
-    }
-  | {
-      kind: "embedded-content";
-      role: "write-content" | "script-content" | "heredoc-body";
-      text: string;
-      source: ShellSourceSpan;
-      language: string;
-      filePath?: string;
-      contentNodeId: string;
-    };
-
 export type ShellSemanticBase = {
   command: string;
   source?: ShellSourceSpan;
   sourceTree?: SourceNode;
-  inputSegments?: ShellInputSegment[];
-  embeddedContent?: ShellEmbeddedContent[];
   steps?: CommandStep[];
   outputPlan?: OutputPlan;
 };
@@ -1568,29 +1521,6 @@ function findFirstHeredocEmbed(
   return null;
 }
 
-function resolveHeredocEmbedForProjection(
-  root: SourceNode,
-): LocatedEmbed | null {
-  const wrapperEmbed = findShellCommandWrapperEmbed(root);
-  if (wrapperEmbed) {
-    const childHeredoc = findFirstHeredocEmbed(wrapperEmbed.segment.content);
-    if (childHeredoc) {
-      const projected = projectEmbedSpan(
-        wrapperEmbed.segment,
-        childHeredoc.segment.span,
-      );
-      if (projected) {
-        return {
-          ...childHeredoc,
-          absoluteStart: projected.start,
-          absoluteEnd: projected.end,
-        };
-      }
-    }
-  }
-  return findFirstHeredocEmbed(root);
-}
-
 function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
   const wrapperEmbed = findShellCommandWrapperEmbed(root);
   if (!wrapperEmbed) return null;
@@ -1611,191 +1541,6 @@ function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
   };
 }
 
-function makeEmbeddedContent(
-  root: SourceNode,
-  embed: LocatedEmbed,
-  id = embed.id,
-): ShellEmbeddedContent {
-  const source = sourceSpan(root.text, embed.absoluteStart, embed.absoluteEnd);
-  return {
-    id,
-    language: embed.segment.content.language,
-    source,
-    decodedText: embed.segment.content.text,
-    segments: [
-      {
-        kind: "text",
-        text: embed.segment.content.text,
-        source,
-      },
-    ],
-  };
-}
-
-function heredocRoleFromSemantic(
-  semantic?: ShellSemantic,
-): "write-content" | "script-content" | "heredoc-body" {
-  if (semantic?.kind === "write") return "write-content";
-  if (
-    semantic?.kind === "script-exec" &&
-    semantic.scriptSource.type === "heredoc"
-  ) {
-    return "script-content";
-  }
-  return "heredoc-body";
-}
-
-function splitTerminatorAndTrailing(shellSuffix: string): {
-  terminator: string;
-  trailing: string;
-} {
-  if (!shellSuffix) return { terminator: "", trailing: "" };
-  if (!shellSuffix.startsWith("\n")) {
-    return { terminator: shellSuffix, trailing: "" };
-  }
-  const secondNewline = shellSuffix.indexOf("\n", 1);
-  if (secondNewline < 0) return { terminator: shellSuffix, trailing: "" };
-  return {
-    terminator: shellSuffix.slice(0, secondNewline),
-    trailing: shellSuffix.slice(secondNewline),
-  };
-}
-
-export function sourceTreeToShellInputSegments(
-  root: SourceNode,
-  semantic?: ShellSemantic,
-): ShellInputSegment[] {
-  const wrapper = wrapperParseFromSourceTree(root);
-  const heredoc = resolveHeredocEmbedForProjection(root);
-  const role = heredocRoleFromSemantic(semantic);
-  const hasSemanticHeredocRole =
-    semantic?.kind === "write" ||
-    (semantic?.kind === "script-exec" &&
-      semantic.scriptSource.type === "heredoc");
-
-  if (heredoc && hasSemanticHeredocRole) {
-    const segments: ShellInputSegment[] = [];
-    const shellStart = wrapper ? wrapper.payload.start : 0;
-    const shellEnd = wrapper ? wrapper.payload.end : root.text.length;
-    if (wrapper) {
-      segments.push({
-        kind: "wrapper-prefix",
-        text: wrapper.prefix.rawText,
-        source: wrapper.prefix,
-        language: "bash",
-      });
-    }
-    if (heredoc.absoluteStart > shellStart) {
-      segments.push({
-        kind: "command-header",
-        text: root.text.slice(shellStart, heredoc.absoluteStart),
-        source: sourceSpan(root.text, shellStart, heredoc.absoluteStart),
-        language: "bash",
-      });
-    }
-    segments.push({
-      kind: "embedded-content",
-      role,
-      text: root.text.slice(heredoc.absoluteStart, heredoc.absoluteEnd),
-      source: sourceSpan(root.text, heredoc.absoluteStart, heredoc.absoluteEnd),
-      language: heredoc.segment.content.language,
-      filePath: semantic.kind === "write" ? semantic.filePath : undefined,
-      contentNodeId: "heredoc-body",
-    });
-    const suffix = root.text.slice(heredoc.absoluteEnd, shellEnd);
-    const { terminator, trailing } = splitTerminatorAndTrailing(suffix);
-    if (terminator.length > 0) {
-      segments.push({
-        kind: "heredoc-terminator",
-        text: terminator,
-        source: sourceSpan(
-          root.text,
-          heredoc.absoluteEnd,
-          heredoc.absoluteEnd + terminator.length,
-        ),
-        language: "bash",
-      });
-    }
-    if (trailing.length > 0) {
-      const trailingStart = heredoc.absoluteEnd + terminator.length;
-      segments.push({
-        kind: "command-trailing",
-        text: trailing,
-        source: sourceSpan(
-          root.text,
-          trailingStart,
-          trailingStart + trailing.length,
-        ),
-        language: "bash",
-      });
-    }
-    if (wrapper) {
-      segments.push({
-        kind: "wrapper-suffix",
-        text: wrapper.suffix.rawText,
-        source: wrapper.suffix,
-        language: "bash",
-      });
-    }
-    return segments;
-  }
-
-  if (wrapper) {
-    return [
-      {
-        kind: "wrapper-prefix",
-        text: wrapper.prefix.rawText,
-        source: wrapper.prefix,
-        language: "bash",
-      },
-      {
-        kind: "shell-text",
-        text: wrapper.payload.rawText,
-        source: wrapper.payload,
-        language: "bash",
-      },
-      {
-        kind: "wrapper-suffix",
-        text: wrapper.suffix.rawText,
-        source: wrapper.suffix,
-        language: "bash",
-      },
-    ];
-  }
-
-  return [
-    {
-      kind: "shell-text",
-      text: root.text,
-      source: sourceSpan(root.text, 0, root.text.length),
-      language: "bash",
-    },
-  ];
-}
-
-export function sourceTreeToShellEmbeddedContent(
-  root: SourceNode,
-  semantic?: ShellSemantic,
-): ShellEmbeddedContent[] {
-  const wrapperEmbed = findShellCommandWrapperEmbed(root);
-  const heredocEmbed = resolveHeredocEmbedForProjection(root);
-  const hasSemanticHeredocRole =
-    semantic?.kind === "write" ||
-    (semantic?.kind === "script-exec" &&
-      semantic.scriptSource.type === "heredoc");
-
-  if (heredocEmbed && hasSemanticHeredocRole) {
-    return [makeEmbeddedContent(root, heredocEmbed, "heredoc-body")];
-  }
-  if (wrapperEmbed) {
-    return [makeEmbeddedContent(root, wrapperEmbed, "wrapper-payload")];
-  }
-  if (heredocEmbed) {
-    return [makeEmbeddedContent(root, heredocEmbed)];
-  }
-  return [];
-}
-
 function withSourceTreeCompatibility(
   value: ShellSemantic,
   command: string,
@@ -1808,11 +1553,6 @@ function withSourceTreeCompatibility(
     ...value,
     source: value.source ?? baseSource,
     sourceTree,
-    inputSegments:
-      value.inputSegments ?? sourceTreeToShellInputSegments(sourceTree, value),
-    embeddedContent:
-      value.embeddedContent ??
-      sourceTreeToShellEmbeddedContent(sourceTree, value),
     outputPlan,
   };
 }
