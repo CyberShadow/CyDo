@@ -5593,7 +5593,10 @@ class App : ToolsBackend
 
 			// Output enforcement: check declared outputs before completing.
 			// Skip when user stopped the task — they may resume or abandon it.
-			if (cleanExit)
+			// Only nudge when a consumer (parent task or pending MCP call) is awaiting
+			// the result; user-managed exits and post-delivery exits should not enforce.
+			bool consumerWaiting = (tid in pendingSubTasks) !is null || (tid in taskDeps) !is null;
+			if (cleanExit && consumerWaiting)
 			{
 				auto missing = checkDeclaredOutputs(tid);
 				if (missing !is null && !tasks[tid].outputEnforcementAttempted)

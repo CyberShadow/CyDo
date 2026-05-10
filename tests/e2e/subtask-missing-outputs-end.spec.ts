@@ -61,3 +61,97 @@ test("subtask auto-ends after satisfying missing-outputs retry", async ({ page, 
   await expect(subtaskItem.locator(".task-type-icon.failed")).not.toBeVisible();
   await expect(page.locator(".btn-banner-stop")).not.toBeVisible();
 });
+
+test("repro: manually ending a resumed completed subtask does not rerun output enforcement", async ({
+  page,
+  agentType,
+}) => {
+  test.skip(
+    agentType !== "claude",
+    "claude-only: uses isolated worktree subtask output enforcement",
+  );
+  test.setTimeout(120_000);
+
+  let childTid: number | null = null;
+
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type === "task_created" && data.relation_type === "subtask") {
+          childTid = data.tid;
+        }
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
+
+  await enterSession(page);
+  await page.locator(".task-type-row", { hasText: "isolated" }).click();
+  await sendMessage(
+    page,
+    "call task test_wt_child run command" +
+      " mkdir -p /tmp/cydo-test-workspace/.cydo/tasks/2 &&" +
+      " printf initial-report > /tmp/cydo-test-workspace/.cydo/tasks/2/output.md",
+  );
+
+  await expect
+    .poll(() => childTid, {
+      message: "expected subtask to be created",
+      timeout: 30_000,
+    })
+    .not.toBeNull();
+
+  const parentItem = page.locator('.sidebar-item[data-tid="1"]');
+  const subtaskItem = page.locator(`.sidebar-item[data-tid="${childTid}"]`);
+  const currentMessages = page.locator(
+    '[style*="display: contents"] .message-list',
+  );
+
+  await parentItem.click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
+  await expect(
+    currentMessages.getByText("Done.", { exact: true }).last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  await subtaskItem.click();
+  await expect(
+    page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
+  ).toBeVisible();
+  await expect(page.locator(".btn-banner-resume:visible").first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(currentMessages.getByText("Missing required outputs")).toHaveCount(
+    0,
+  );
+
+  await page.locator(".btn-banner-resume:visible").first().click();
+  await expect(page.locator(".btn-banner-end:visible").first()).toBeVisible({
+    timeout: 30_000,
+  });
+
+  const doneCountBeforeQuestion = await currentMessages
+    .getByText("Done.", { exact: true })
+    .count();
+  await sendMessage(
+    page,
+    `run command rm -f /tmp/cydo-test-workspace/.cydo/tasks/${childTid}/output.md`,
+  );
+  await expect
+    .poll(
+      async () => currentMessages.getByText("Done.", { exact: true }).count(),
+      { timeout: 60_000 },
+    )
+    .toBeGreaterThan(doneCountBeforeQuestion);
+
+  await page.locator(".btn-banner-end:visible").first().click();
+
+  await expect(
+    subtaskItem.locator(".task-type-icon.completed, .task-type-icon.resumable"),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(subtaskItem.locator(".task-type-icon.processing")).not.toBeVisible();
+  await expect(subtaskItem.locator(".task-type-icon.alive")).not.toBeVisible();
+  await expect(subtaskItem.locator(".task-type-icon.failed")).not.toBeVisible();
+  await expect(currentMessages.getByText("Missing required outputs")).toHaveCount(0);
+});
