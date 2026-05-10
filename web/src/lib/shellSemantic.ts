@@ -975,15 +975,16 @@ function classifyPipeline(
 }
 
 /**
- * Classify an && list for the cd-path-resolution pattern.
- * Only cd + read sequences are accepted.
+ * Classify an AST list (&&/; chains) into a structured-output or read semantic.
+ * Handles cd-prefix path resolution, echo/printf/wc literal anchors, and
+ * read commands (cat/sed/head/tail/nl). Preserves the legacy `kind: "read"`
+ * shape for the pure cd-chain + single-read case.
  */
-function classifyCdList(
+function classifyGenericList(
   ast: ShellAST,
   originalCommand: string,
 ): ShellSemanticResult {
   const commands: SimpleCommand[] = [];
-  const ops: ("&&" | ";")[] = [];
 
   function flatten(node: ShellAST): boolean {
     if (node.type === "simple") {
@@ -991,7 +992,6 @@ function classifyCdList(
       return true;
     }
     if (node.type === "list") {
-      ops.push(node.op);
       return flatten(node.left) && flatten(node.right);
     }
     return false;
@@ -1000,53 +1000,76 @@ function classifyCdList(
   if (!flatten(ast))
     return reject("unsafe_shell_syntax", "unsupported list structure");
 
-  if (ops.some((op) => op !== "&&"))
-    return reject(
-      "unsafe_shell_syntax",
-      "only && chains are supported for cd patterns",
-    );
-
   let cdPath = "";
-  let readIdx = -1;
+  const steps: CommandStep[] = [];
 
-  for (let i = 0; i < commands.length; i++) {
-    const cmd = commands[i]!;
+  for (const cmd of commands) {
     if (cmd.name === "cd") {
       const values = cmd.args.filter((a) => a.kind === "value");
       // Use last value (Codex behaviour: cd dir1 dir2 uses dir2)
       const target = values.at(-1)?.text ?? "";
+      if (!target || isDynamicShellValue(target)) {
+        return reject(
+          "unsafe_shell_syntax",
+          "cd target must be a literal path",
+        );
+      }
       cdPath = cdPath ? cdPath + "/" + target : target;
-    } else if (READ_COMMANDS.has(cmd.name ?? "")) {
-      readIdx = i;
-      break;
-    } else {
+      continue;
+    }
+
+    const result = classifySimpleCommandAsListMember(cmd, originalCommand);
+    if (!result) {
       return reject(
-        "unsafe_shell_syntax",
-        "only cd + read commands are supported in && chains",
+        "unsupported_command",
+        `unsupported command in list: ${cmd.name ?? "(unnamed)"}`,
       );
+    }
+
+    for (const s of result.steps) {
+      const step = { ...s, order: steps.length, blockId: undefined };
+      if (cdPath) {
+        if (step.kind === "read-file") {
+          step.filePath = cdPath + "/" + step.filePath;
+        } else if (
+          step.kind === "plain-output" &&
+          step.filePath !== undefined
+        ) {
+          step.filePath = cdPath + "/" + step.filePath;
+        }
+      }
+      steps.push(step);
     }
   }
 
-  if (readIdx < 0)
-    return reject("unsupported_command", "no read command found after cd");
-
-  if (readIdx !== commands.length - 1)
+  if (!steps.some((s) => s.kind === "read-file")) {
     return reject(
-      "unsafe_shell_syntax",
-      "trailing commands after read are not supported",
+      "unsupported_command",
+      "list must contain at least one read command",
     );
+  }
 
-  const r = classifyReadCommand(commands[readIdx]!, originalCommand);
-  if (!r.ok) return r;
-
-  const readValue = r.value as ShellReadSemantic;
-  const resolved = cdPath
-    ? cdPath + "/" + readValue.filePath
-    : readValue.filePath;
+  // Preserve the legacy `kind: "read"` shape for the pure cd-chain + single-read
+  // case so existing consumers that special-case `read` see the same shape.
+  if (steps.length === 1 && steps[0]!.kind === "read-file") {
+    const readCmd = commands.find((c) => c.name && c.name !== "cd")!;
+    const r = classifyReadCommand(readCmd, originalCommand);
+    if (!r.ok) return r;
+    const readValue = r.value as ShellReadSemantic;
+    return {
+      ok: true,
+      value: { ...readValue, filePath: steps[0]!.filePath },
+    };
+  }
 
   return {
     ok: true,
-    value: { ...readValue, filePath: resolved },
+    value: {
+      kind: "structured-output",
+      commandName: "shell",
+      command: originalCommand,
+      steps,
+    },
   };
 }
 
@@ -1429,7 +1452,7 @@ export function classifyAST(
     return classifyPipeline(ast.stages, originalCommand);
 
   // ast.type === "list"
-  return classifyCdList(ast, originalCommand);
+  return classifyGenericList(ast, originalCommand);
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,33 +2009,51 @@ function classifyWcSummary(
   };
 }
 
-async function classifyListMember(
-  line: string,
-  theme: ShikiTheme,
-): Promise<{ steps: CommandStep[] } | null> {
-  let shikiLines: TokenWithScopes[][] | null;
-  try {
-    shikiLines = await tokenizeWithScopes(line, theme);
-  } catch {
-    return null;
-  }
-  if (!shikiLines) return null;
-  const tokens = mapShikiTokens(shikiLines);
-  const ast = buildAST(tokens, line);
-  if (ast.type !== "simple") return null;
-  switch (ast.command.name) {
+function classifyEchoListMember(
+  cmd: SimpleCommand,
+): { steps: CommandStep[] } | null {
+  // Reject flags: -n (no trailing newline) and -e (interpret escapes) change output.
+  if (cmd.args.some((a) => a.kind === "flag")) return null;
+  if (cmd.redirects.length > 0) return null;
+  const valueArgs = cmd.args.filter((a) => a.kind === "value");
+  if (valueArgs.some((v) => isDynamicShellValue(v.text))) return null;
+  // POSIX: echo joins args with single spaces and appends a newline.
+  const text = valueArgs.map((v) => v.text).join(" ") + "\n";
+  return {
+    steps: [
+      {
+        kind: "plain-output",
+        order: 0,
+        commandName: "echo",
+        outputShape: {
+          kind: "literal",
+          text,
+          format: { kind: "content", language: "shell-output" },
+        },
+      },
+    ],
+  };
+}
+
+function classifySimpleCommandAsListMember(
+  cmd: SimpleCommand,
+  originalCommand: string,
+): { steps: CommandStep[] } | null {
+  switch (cmd.name) {
     case "sed":
     case "cat":
     case "head":
     case "tail":
     case "nl": {
-      const r = classifyReadCommand(ast.command, line);
+      const r = classifyReadCommand(cmd, originalCommand);
       return r.ok ? { steps: r.value.steps ?? [] } : null;
     }
     case "printf":
-      return classifyPrintfListMember(ast.command);
+      return classifyPrintfListMember(cmd);
     case "wc":
-      return classifyWcSummary(ast.command);
+      return classifyWcSummary(cmd);
+    case "echo":
+      return classifyEchoListMember(cmd);
     default:
       return null;
   }
@@ -2047,52 +2088,6 @@ async function classifyMultilineAsList(
   }
 
   return classifyAST(combined, originalCommand);
-}
-
-async function classifyStructuredCommandList(
-  innerCommand: string,
-  originalCommand: string,
-  theme: ShikiTheme,
-): Promise<ShellSemanticResult | null> {
-  const normalized = innerCommand.replace(/\r\n/g, "\n");
-  const readback = parseLsReadbackSpec(normalized);
-  if (readback) {
-    const lsReadbackResult = classifyTrailingStructuredOutput(normalized);
-    if (!lsReadbackResult) return null;
-    return {
-      ok: true,
-      value: {
-        kind: "structured-output",
-        commandName: "ls",
-        command: originalCommand,
-        steps: lsReadbackResult.steps,
-      },
-    };
-  }
-
-  const lines = splitTopLevelCommandList(normalized);
-  if (!lines || lines.length < 2) return null;
-
-  const steps: CommandStep[] = [];
-  for (const line of lines) {
-    const member = await classifyListMember(line, theme);
-    if (!member) return null;
-    for (const s of member.steps) {
-      steps.push({ ...s, order: steps.length, blockId: undefined });
-    }
-  }
-
-  if (!steps.some((s) => s.kind === "read-file")) return null;
-
-  return {
-    ok: true,
-    value: {
-      kind: "structured-output",
-      commandName: "shell",
-      command: originalCommand,
-      steps,
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2131,23 +2126,28 @@ export async function parseShellSemantic(
     }
   }
 
-  const structuredList = await classifyStructuredCommandList(
-    inner,
-    command,
-    theme,
-  );
-  if (structuredList) {
-    return structuredList.ok
-      ? {
-          ok: true,
-          value: withSourceTreeCompatibility(
-            structuredList.value,
+  // ls-readback fast path: ls -l X && sed -n N,Mp X — kept as a regex pre-check
+  // to enforce parseLsReadbackSpec's same-filePath equality constraint.
+  const normalizedInner = inner.replace(/\r\n/g, "\n");
+  if (parseLsReadbackSpec(normalizedInner)) {
+    const lsReadback = classifyTrailingStructuredOutput(normalizedInner);
+    if (lsReadback) {
+      return {
+        ok: true,
+        value: withSourceTreeCompatibility(
+          {
+            kind: "structured-output",
+            commandName: "ls",
             command,
-            sourceTree,
-          ),
-        }
-      : structuredList;
+            steps: lsReadback.steps,
+          },
+          command,
+          sourceTree,
+        ),
+      };
+    }
   }
+
   if (inner.includes("\n")) {
     const listResult = await classifyMultilineAsList(inner, command, theme);
     if (listResult) {

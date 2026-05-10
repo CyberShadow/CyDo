@@ -289,9 +289,11 @@ describe("cd && read (should reject)", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("cd foo && cat file.txt && echo done → reject (trailing command)", async () => {
+  it("cd foo && cat file.txt && echo done → structured-output (echo is recognized)", async () => {
     const r = await parseShellSemantic("cd foo && cat file.txt && echo done");
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
   });
 });
 
@@ -336,6 +338,98 @@ describe("structured-list newline regression", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
+  });
+
+  it("cat a.md && cat b.md → structured-output (multi-read && list)", async () => {
+    const r = await parseShellSemantic("cat a.md && cat b.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.steps).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// echo as a literal anchor in lists (R6)
+// ---------------------------------------------------------------------------
+
+describe("echo in lists (R6: unified classifier)", () => {
+  it("echo x && cat file.md → structured-output with literal + content blocks", async () => {
+    const r = await parseShellSemantic('echo "hello" && cat file.md');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const p = plan(r.value);
+    expect(p?.blocks).toHaveLength(2);
+    expect(p?.blocks[0]?.location.kind).toBe("unique-literal");
+    expect(p?.blocks[1]?.location.kind).toBe("from-cursor");
+  });
+
+  it("echo x\\ncat file.md → structured-output (newline-separated)", async () => {
+    const r = await parseShellSemantic("echo x\ncat file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const p = plan(r.value);
+    expect(p?.blocks).toHaveLength(2);
+    expect(p?.blocks[0]?.location.kind).toBe("unique-literal");
+  });
+
+  it("echo a b c\\ncat file.md → args joined with spaces in literal text", async () => {
+    const r = await parseShellSemantic("echo a b c\ncat file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const echoStep = r.value.steps?.find(
+      (s) => s.kind !== "write-file" && s.commandName === "echo",
+    );
+    expect(
+      echoStep?.outputShape.kind === "literal"
+        ? echoStep.outputShape.text
+        : null,
+    ).toBe("a b c\n");
+  });
+
+  it("echo -n x\\ncat file.md → reject (flag echo)", async () => {
+    const r = await parseShellSemantic("echo -n x\ncat file.md");
+    expect(r.ok).toBe(false);
+  });
+
+  it("echo $VAR\\ncat file.md → reject (dynamic value)", async () => {
+    const r = await parseShellSemantic("echo $VAR\ncat file.md");
+    expect(r.ok).toBe(false);
+  });
+
+  it("cd dir && echo x && cat file.md → cd-resolved structured-output", async () => {
+    const r = await parseShellSemantic("cd dir && echo x && cat file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const catStep = r.value.steps?.find(
+      (s) => s.kind !== "write-file" && s.commandName === "cat",
+    );
+    expect(catStep?.kind === "read-file" ? catStep.filePath : null).toBe(
+      "dir/file.md",
+    );
+    expect(r.value.steps).toHaveLength(2);
+  });
+
+  it("cd dir\\necho x\\ncat file.md → same via newline path", async () => {
+    const r = await parseShellSemantic("cd dir\necho x\ncat file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    const catStep = r.value.steps?.find(
+      (s) => s.kind !== "write-file" && s.commandName === "cat",
+    );
+    expect(catStep?.kind === "read-file" ? catStep.filePath : null).toBe(
+      "dir/file.md",
+    );
+  });
+
+  it("cd dir && echo x → reject (no read-file step)", async () => {
+    const r = await parseShellSemantic("cd dir && echo x");
+    expect(r.ok).toBe(false);
   });
 });
 
