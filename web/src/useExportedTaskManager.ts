@@ -30,7 +30,7 @@ interface ExportTaskEntry {
   archiving?: boolean;
   created_at?: number;
   last_active?: number;
-  agent_type?: string;
+  agent_name?: string;
   entry_point?: string;
 }
 
@@ -94,7 +94,7 @@ function buildTasksFromExportData(data: ExportData): Map<string, TaskState> {
       entry.archived ?? false,
       entry.created_at,
       entry.last_active,
-      entry.agent_type,
+      entry.agent_name,
       entry.entry_point,
       entry.archiving ?? false,
       entry.canStop ?? entry.alive ?? false,
@@ -233,7 +233,7 @@ export function useExportedTaskManager(): TaskManager {
     setArchived: noop,
     saveDraft: noop,
     setEntryPoint: noop,
-    setAgentType: noop,
+    setAgentName: noop,
     sendAskUserResponse: noop,
     sendPermissionPromptResponse: noop,
     editMessage: noop,
@@ -245,8 +245,8 @@ export function useExportedTaskManager(): TaskManager {
     workspaces: [],
     entryPoints: [],
     typeInfo,
-    agentTypes: [],
-    defaultAgentType: "claude",
+    agents: [],
+    defaultAgent: "claude",
     defaultTaskType: "",
     activeWorkspace: null,
     activeProject: null,

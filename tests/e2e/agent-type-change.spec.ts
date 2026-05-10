@@ -42,7 +42,7 @@ test("changing agent type after draft creation updates backend", async ({
   // Capture task_updated broadcasts to verify backend agent type
   const taskUpdatedEvents: Array<{
     tid: number;
-    agent_type: string;
+    agent_name: string;
   }> = [];
   page.on("websocket", (ws) => {
     ws.on("framereceived", (event) => {
@@ -51,7 +51,7 @@ test("changing agent type after draft creation updates backend", async ({
         if (data.type === "task_updated" && data.task) {
           taskUpdatedEvents.push({
             tid: data.task.tid,
-            agent_type: data.task.agent_type,
+            agent_name: data.task.agent_name,
           });
         }
       } catch {}
@@ -90,9 +90,9 @@ test("changing agent type after draft creation updates backend", async ({
     timeout: responseTimeout(agentType),
   });
 
-  // Verify the backend task has the changed agent_type
+  // Verify the backend task has the changed agent_name
   const tid = parseInt(draftTid);
   const finalUpdate = taskUpdatedEvents.filter((e) => e.tid === tid).pop();
   expect(finalUpdate).toBeTruthy();
-  expect(finalUpdate!.agent_type).toBe(targetAgent);
+  expect(finalUpdate!.agent_name).toBe(targetAgent);
 });

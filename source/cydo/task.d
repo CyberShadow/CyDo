@@ -515,7 +515,7 @@ struct WsMessage
 	string after_uuid;
 	string task_type;
 	string entry_point;
-	string agent_type;
+	string agent_name;
 	bool dry_run;
 	bool revert_conversation;
 	bool revert_files;
@@ -572,7 +572,7 @@ struct TaskListEntry
 	string status;
 	string task_type;
 	string entry_point;
-	string agent_type;
+	string agent_name;
 	bool archived;
 	bool archiving;  // true while an archive/unarchive transition is in progress
 	string draft;
@@ -593,7 +593,7 @@ struct WorkspaceInfo
 {
 	string name;
 	ProjectInfo[] projects;
-	string default_agent_type;   // per-workspace override, empty = use global
+	string default_agent;   // per-workspace override, empty = use global
 	string default_task_type;    // per-workspace override, empty = use global
 }
 
@@ -635,18 +635,19 @@ struct ProjectTaskTypesListMessage
 	TypeInfoEntry[] type_info;
 }
 
-struct AgentTypeListEntry
+struct AgentInfoEntry
 {
-	string name;           // "claude", "codex", "copilot"
+	string name;           // user-chosen agent name (or driver name when no agents{} block)
+	string driver;         // "claude" | "codex" | "copilot"
 	string display_name;   // "Claude Code", "Codex", "Copilot"
 	bool is_available;
 }
 
-struct AgentTypesListMessage
+struct AgentsListMessage
 {
-	string type = "agent_types_list";
-	AgentTypeListEntry[] agent_types;
-	string default_agent_type;   // global default from config
+	string type = "agents_list";
+	AgentInfoEntry[] agents;
+	string default_agent;   // global default from config
 }
 
 struct ServerStatusMessage

@@ -198,7 +198,7 @@ export interface TasksListMessage {
     status?: string;
     task_type?: string;
     entry_point?: string;
-    agent_type?: string;
+    agent_name?: string;
     archived?: boolean;
     archiving?: boolean;
     draft?: string;
@@ -227,7 +227,7 @@ export interface TaskUpdatedMessage {
     status?: string;
     task_type?: string;
     entry_point?: string;
-    agent_type?: string;
+    agent_name?: string;
     archived?: boolean;
     archiving?: boolean;
     draft?: string;
@@ -270,7 +270,7 @@ export interface WorkspacesListMessage {
       virtual?: boolean;
       exists?: boolean;
     }[];
-    default_agent_type?: string;
+    default_agent?: string;
     default_task_type?: string;
   }[];
 }
@@ -306,14 +306,15 @@ export interface ProjectTaskTypesListMessage {
     icon?: string;
   }[];
 }
-export interface AgentTypesListMessage {
-  type: "agent_types_list";
-  agent_types: {
+export interface AgentsListMessage {
+  type: "agents_list";
+  agents: {
     name: string;
+    driver: string;
     display_name?: string;
     is_available?: boolean;
   }[];
-  default_agent_type?: string;
+  default_agent?: string;
 }
 export interface ForkableUuidsMessage {
   type: "forkable_uuids";
@@ -419,7 +420,7 @@ export type ControlMessage =
   | WorkspacesListMessage
   | TaskTypesListMessage
   | ProjectTaskTypesListMessage
-  | AgentTypesListMessage
+  | AgentsListMessage
   | ForkableUuidsMessage
   | AssignUuidsMessage
   | ErrorMessage

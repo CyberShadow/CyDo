@@ -1263,7 +1263,7 @@ class App : ToolsBackend
 		// Send workspaces list, task types, tasks list, and server status to new client
 		ws.send(Data(buildWorkspacesList().representation));
 		ws.send(Data(buildTaskTypesList().representation));
-		ws.send(Data(buildAgentTypesList().representation));
+		ws.send(Data(buildAgentsList().representation));
 		ws.send(Data(buildTasksList().representation));
 		ws.send(Data(buildServerStatus().representation));
 		ws.send(Data(buildNoticesList().representation));
@@ -2791,7 +2791,7 @@ class App : ToolsBackend
 			case "promote_task":     handlePromoteTaskMsg(json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
 			case "set_entry_point":  handleSetEntryPointMsg(json); break;
-			case "set_agent_type":   handleSetAgentTypeMsg(json); break;
+			case "set_agent_name":   handleSetAgentNameMsg(json); break;
 			case "request_task_types": handleRequestTaskTypesMsg(ws, json); break;
 			default: break;
 		}
@@ -2827,25 +2827,25 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
-	private void handleSetAgentTypeMsg(WsMessage json)
+	private void handleSetAgentNameMsg(WsMessage json)
 	{
-		import cydo.agent.registry : agentRegistry;
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks) return;
 		if (tasks[tid].alive) return; // can't change type of a running task
-		if (json.agent_type.length == 0) return;
+		if (json.agent_name.length == 0) return;
+		// config.agents always contains at least the three driver names (overlay in commit 1).
 		bool found = false;
-		foreach (ref entry; agentRegistry)
-			if (entry.name == json.agent_type) { found = true; break; }
+		foreach (name; config.agents.byKey)
+			if (name == json.agent_name) { found = true; break; }
 		if (!found) return;
-		tasks[tid].agentType = json.agent_type;
-		persistence.setAgentType(tid, json.agent_type);
+		tasks[tid].agentType = json.agent_name;
+		persistence.setAgentType(tid, json.agent_name);
 		broadcastTaskUpdate(tid);
 	}
 
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		auto at = json.agent_type.length > 0 ? json.agent_type : defaultAgentType(json.workspace);
+		auto at = json.agent_name.length > 0 ? json.agent_name : defaultAgentType(json.workspace);
 		// Top-level user task creation must always come through a concrete entry point.
 		// Internal tasks (subtasks, continuations, imports) are created through other paths.
 		auto entryPoints = getEntryPointsForProject(json.project_path);
@@ -7965,7 +7965,7 @@ class App : ToolsBackend
 				a.setModelAliases(null);
 		}
 		discoverAllWorkspaces();
-		broadcast(buildAgentTypesList());
+		broadcast(buildAgentsList());
 		broadcast(buildWorkspacesList());
 		broadcast(buildServerStatus());
 		infof("Config reloaded successfully");
@@ -8223,13 +8223,13 @@ class App : ToolsBackend
 		}
 	}
 
-	private string buildAgentTypesList()
+	private string buildAgentsList()
 	{
 		import ae.utils.json : toJson;
 		import cydo.agent.registry : agentRegistry;
 		import std.path : expandTilde;
 
-		AgentTypeListEntry[] entries;
+		AgentInfoEntry[] entries;
 		foreach (ref entry; agentRegistry)
 		{
 			auto agent = entry.create();
@@ -8240,9 +8240,9 @@ class App : ToolsBackend
 			foreach (k, v; agentSandbox.env)
 				env[k] = expandTilde(v);
 			auto available = resolveExecutablePath(agent.executableName(env), env).length > 0;
-			entries ~= AgentTypeListEntry(entry.name, entry.displayName, available);
+			entries ~= AgentInfoEntry(entry.name, entry.name, entry.displayName, available);
 		}
-		return toJson(AgentTypesListMessage("agent_types_list", entries, config.default_agent_type));
+		return toJson(AgentsListMessage("agents_list", entries, config.default_agent_type));
 	}
 
 	private string readBuildId()

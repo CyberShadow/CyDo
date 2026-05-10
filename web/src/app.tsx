@@ -41,7 +41,7 @@ function AppContent() {
     setArchived,
     saveDraft,
     setEntryPoint,
-    setAgentType,
+    setAgentName,
     sendAskUserResponse,
     sendPermissionPromptResponse,
     editMessage,
@@ -53,8 +53,8 @@ function AppContent() {
     workspaces,
     entryPoints,
     typeInfo,
-    agentTypes,
-    defaultAgentType,
+    agents,
+    defaultAgent,
     defaultTaskType,
     activeWorkspace,
     activeProject,
@@ -86,8 +86,8 @@ function AppContent() {
 
   const effectiveDefaultAgent = useMemo(() => {
     const ws = workspaces.find((w) => w.name === activeWorkspace);
-    return ws?.default_agent_type || defaultAgentType;
-  }, [workspaces, activeWorkspace, defaultAgentType]);
+    return ws?.default_agent || defaultAgent;
+  }, [workspaces, activeWorkspace, defaultAgent]);
   const effectiveDefaultTaskType = useMemo(() => {
     const ws = workspaces.find((w) => w.name === activeWorkspace);
     return ws?.default_task_type || defaultTaskType;
@@ -467,7 +467,7 @@ function AppContent() {
                     onClearInputDraft={clearInputDraft}
                     onSaveDraft={saveDraft}
                     onSetEntryPoint={setEntryPoint}
-                    onSetAgentType={setAgentType}
+                    onSetAgentName={setAgentName}
                     theme={theme}
                     onToggleTheme={toggleTheme}
                     onToggleSidebar={toggleSidebar}
@@ -480,10 +480,8 @@ function AppContent() {
                     entryPoints={
                       task.uuid === draftRenderKey ? entryPoints : undefined
                     }
-                    agentTypes={
-                      task.uuid === draftRenderKey ? agentTypes : undefined
-                    }
-                    defaultAgentType={
+                    agents={task.uuid === draftRenderKey ? agents : undefined}
+                    defaultAgent={
                       task.uuid === draftRenderKey
                         ? effectiveDefaultAgent
                         : undefined

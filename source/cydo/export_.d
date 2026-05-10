@@ -73,7 +73,7 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 		string workspace;
 		string project_path;
 		string task_type;
-		string agent_type;
+		string agent_name;
 		long created_at;
 		long last_active;
 	}

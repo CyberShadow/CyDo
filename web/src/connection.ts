@@ -71,7 +71,7 @@ export class Connection {
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||
           raw.type === "project_task_types_list" ||
-          raw.type === "agent_types_list" ||
+          raw.type === "agents_list" ||
           raw.type === "forkable_uuids" ||
           raw.type === "assign_uuids" ||
           raw.type === "error" ||
@@ -167,9 +167,9 @@ export class Connection {
     );
   }
 
-  setAgentType(tid: number, agentType: string) {
+  setAgentName(tid: number, agentName: string) {
     this.send(
-      JSON.stringify({ type: "set_agent_type", tid, agent_type: agentType }),
+      JSON.stringify({ type: "set_agent_name", tid, agent_name: agentName }),
     );
   }
 
@@ -198,7 +198,7 @@ export class Connection {
     projectPath?: string,
     entryPoint?: string,
     content?: ContentBlock[],
-    agentType?: string,
+    agentName?: string,
     correlationId?: string,
   ) {
     this.send(
@@ -208,7 +208,7 @@ export class Connection {
         project_path: projectPath ?? "",
         entry_point: entryPoint ?? "",
         content: content ?? [],
-        agent_type: agentType ?? "",
+        agent_name: agentName ?? "",
         correlation_id: correlationId ?? "",
       }),
     );

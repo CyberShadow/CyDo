@@ -12,7 +12,7 @@ import type { Theme } from "../useTheme";
 import type {
   ImageAttachment,
   EntryPointInfo,
-  AgentTypeInfo,
+  AgentInfo,
 } from "../useSessionManager";
 import type { AgentUsageMessage, Notice } from "../protocol";
 import { NoticeBar } from "./NoticeBar";
@@ -56,7 +56,7 @@ interface Props {
   onClearInputDraft: (tid: number) => void;
   onSaveDraft?: (tid: number, draft: string) => void;
   onSetEntryPoint?: (tid: number, entryPoint: string) => void;
-  onSetAgentType?: (tid: number, agentType: string) => void;
+  onSetAgentName?: (tid: number, agentName: string) => void;
   onAskUserResponse: (tid: number, content: string) => void;
   onPermissionPromptResponse: (tid: number, content: string) => void;
   theme: Theme;
@@ -67,8 +67,8 @@ interface Props {
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   entryPoints?: EntryPointInfo[];
-  agentTypes?: AgentTypeInfo[];
-  defaultAgentType?: string;
+  agents?: AgentInfo[];
+  defaultAgent?: string;
   defaultTaskType?: string;
   onContentStart?: (entryPointName: string, agentType: string) => void;
   onContentEnd?: () => void;
@@ -95,7 +95,7 @@ function SessionViewInner({
   onClearInputDraft,
   onSaveDraft,
   onSetEntryPoint,
-  onSetAgentType,
+  onSetAgentName,
   onAskUserResponse,
   onPermissionPromptResponse,
   theme,
@@ -106,8 +106,8 @@ function SessionViewInner({
   onEditMessage,
   onEditRawEvent,
   entryPoints,
-  agentTypes,
-  defaultAgentType,
+  agents,
+  defaultAgent,
   defaultTaskType,
   onContentStart,
   onContentEnd,
@@ -158,11 +158,11 @@ function SessionViewInner({
   );
 
   const handleAgentChange = useCallback(
-    (agentType: string) => {
-      setSelectedAgent(agentType);
-      if (isDraft && task.tid !== null) onSetAgentType?.(task.tid, agentType);
+    (agentName: string) => {
+      setSelectedAgent(agentName);
+      if (isDraft && task.tid !== null) onSetAgentName?.(task.tid, agentName);
     },
-    [isDraft, task.tid, onSetAgentType],
+    [isDraft, task.tid, onSetAgentName],
   );
 
   const handleSend = useCallback(
@@ -174,7 +174,7 @@ function SessionViewInner({
           text,
           images,
           selectedEntryPoint,
-          selectedAgent || defaultAgentType || "claude",
+          selectedAgent || defaultAgent || "claude",
         );
       } else {
         onSend(task.uuid, text, images);
@@ -186,7 +186,7 @@ function SessionViewInner({
       isDraft,
       selectedEntryPoint,
       selectedAgent,
-      defaultAgentType,
+      defaultAgent,
     ],
   );
 
@@ -197,9 +197,9 @@ function SessionViewInner({
   const handleContentStart = useCallback(() => {
     onContentStart?.(
       selectedEntryPoint,
-      selectedAgent || defaultAgentType || "claude",
+      selectedAgent || defaultAgent || "claude",
     );
-  }, [onContentStart, selectedEntryPoint, selectedAgent, defaultAgentType]);
+  }, [onContentStart, selectedEntryPoint, selectedAgent, defaultAgent]);
 
   useEffect(() => {
     if (isDraft) setSelectedEntryPoint(initialEntryPoint);
@@ -523,8 +523,8 @@ function SessionViewInner({
                 onType={handleSessionConfigFocus}
               />
               <AgentPicker
-                agentTypes={agentTypes || []}
-                selected={selectedAgent || defaultAgentType || "claude"}
+                agents={agents || []}
+                selected={selectedAgent || defaultAgent || "claude"}
                 onChange={handleAgentChange}
               />
               <InputBox

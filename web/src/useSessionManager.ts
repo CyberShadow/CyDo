@@ -86,12 +86,13 @@ export interface ProjectInfo {
 export interface WorkspaceInfo {
   name: string;
   projects: ProjectInfo[];
-  default_agent_type?: string;
+  default_agent?: string;
   default_task_type?: string;
 }
 
-export interface AgentTypeInfo {
+export interface AgentInfo {
   name: string;
+  driver: string;
   display_name?: string;
   is_available?: boolean;
 }
@@ -141,7 +142,7 @@ export interface TaskManager {
   setArchived: (tid: number, archived: boolean) => void;
   saveDraft: (tid: number, draft: string) => void;
   setEntryPoint: (tid: number, entryPoint: string) => void;
-  setAgentType: (tid: number, agentType: string) => void;
+  setAgentName: (tid: number, agentName: string) => void;
   sendAskUserResponse: (tid: number, content: string) => void;
   sendPermissionPromptResponse: (tid: number, content: string) => void;
   editMessage: (tid: number, uuid: string, content: string) => void;
@@ -167,8 +168,8 @@ export interface TaskManager {
   workspaces: WorkspaceInfo[];
   entryPoints: EntryPointInfo[];
   typeInfo: TypeInfo[];
-  agentTypes: AgentTypeInfo[];
-  defaultAgentType: string;
+  agents: AgentInfo[];
+  defaultAgent: string;
   defaultTaskType: string;
   activeWorkspace: string | null;
   activeProject: string | null;
@@ -262,8 +263,8 @@ export function useTaskManager(
   const [projectTypeInfo, setProjectTypeInfo] = useState<
     Map<string, TypeInfo[]>
   >(new Map());
-  const [agentTypes, setAgentTypes] = useState<AgentTypeInfo[]>([]);
-  const [defaultAgentType, setDefaultAgentType] = useState("claude");
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [defaultAgent, setDefaultAgent] = useState("claude");
   const [defaultTaskType, setDefaultTaskType] = useState("");
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [localNotices, setLocalNotices] = useState<Record<string, Notice>>({});
@@ -701,10 +702,9 @@ export function useTaskManager(
           });
           break;
         }
-        case "agent_types_list": {
-          setAgentTypes(msg.agent_types);
-          if (msg.default_agent_type)
-            setDefaultAgentType(msg.default_agent_type);
+        case "agents_list": {
+          setAgents(msg.agents);
+          if (msg.default_agent) setDefaultAgent(msg.default_agent);
           break;
         }
         case "task_created": {
@@ -874,7 +874,7 @@ export function useTaskManager(
                 entry.archived || false,
                 entry.created_at || undefined,
                 entry.last_active || undefined,
-                entry.agent_type || undefined,
+                entry.agent_name || undefined,
                 entry.entry_point || undefined,
                 entry.archiving || false,
                 entry.canStop ?? entry.alive,
@@ -914,7 +914,7 @@ export function useTaskManager(
                 status: entry.status || existing.status,
                 taskType: entry.task_type || existing.taskType,
                 entryPoint: entry.entry_point || existing.entryPoint,
-                agentType: entry.agent_type || existing.agentType,
+                agentType: entry.agent_name || existing.agentType,
                 suggestions:
                   entry.isProcessing && !existing.isProcessing
                     ? undefined
@@ -969,7 +969,7 @@ export function useTaskManager(
               entry.archived || false,
               entry.created_at || undefined,
               entry.last_active || undefined,
-              entry.agent_type || undefined,
+              entry.agent_name || undefined,
               entry.entry_point || undefined,
               entry.archiving || false,
               entry.canStop ?? entry.alive,
@@ -1005,7 +1005,7 @@ export function useTaskManager(
               status: entry.status || existing.status,
               taskType: entry.task_type || existing.taskType,
               entryPoint: entry.entry_point || existing.entryPoint,
-              agentType: entry.agent_type || existing.agentType,
+              agentType: entry.agent_name || existing.agentType,
               suggestions:
                 entry.isProcessing && !existing.isProcessing
                   ? undefined
@@ -1763,7 +1763,7 @@ export function useTaskManager(
         if (isPromotedDraft) {
           if (entryPointName)
             connRef.current?.setEntryPoint(draftTid, entryPointName);
-          if (agentType) connRef.current?.setAgentType(draftTid, agentType);
+          if (agentType) connRef.current?.setAgentName(draftTid, agentType);
         }
         const nonce = crypto.randomUUID();
         connRef.current?.sendMessage(draftTid, content, nonce);
@@ -1983,8 +1983,8 @@ export function useTaskManager(
     connRef.current?.setEntryPoint(tid, entryPoint);
   }, []);
 
-  const setAgentType = useCallback((tid: number, agentType: string) => {
-    connRef.current?.setAgentType(tid, agentType);
+  const setAgentName = useCallback((tid: number, agentName: string) => {
+    connRef.current?.setAgentName(tid, agentName);
   }, []);
 
   const saveDraft = useCallback((tid: number, draft: string) => {
@@ -2197,7 +2197,7 @@ export function useTaskManager(
     setArchived,
     saveDraft,
     setEntryPoint,
-    setAgentType,
+    setAgentName,
     sendAskUserResponse,
     sendPermissionPromptResponse,
     editMessage,
@@ -2209,8 +2209,8 @@ export function useTaskManager(
     workspaces,
     entryPoints: resolvedEntryPoints,
     typeInfo: resolvedTypeInfo,
-    agentTypes,
-    defaultAgentType,
+    agents,
+    defaultAgent,
     defaultTaskType,
     activeWorkspace,
     activeProject,
