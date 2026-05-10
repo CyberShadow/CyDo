@@ -7,7 +7,7 @@ import { applyPatch, structuredPatch } from "diff";
 import closeIcon from "../icons/close.svg?raw";
 import type { Block, FileEdit, TrackedFile } from "../types";
 import { useHighlight, langFromPath, renderTokens } from "../highlight";
-import { PatchView } from "./diff/DiffView";
+import { HunkDiffView } from "./diff/DiffView";
 import { composeHunks } from "../lib/composeHunks";
 import type { PatchHunk } from "../lib/patches";
 import { parsePatchHunksFromText, toUnifiedPatch } from "../lib/patches";
@@ -746,7 +746,7 @@ const ContentViewer = memo(function ContentViewer({
           <FragmentSourceView source={displaySource} filePath={filePath} />
         )}
         {viewMode === "diff" && diffHunks && diffHunks.length > 0 && (
-          <PatchView hunks={diffHunks} filePath={filePath} />
+          <HunkDiffView hunks={diffHunks} filePath={filePath} />
         )}
         {viewMode === "diff" && (!diffHunks || diffHunks.length === 0) && (
           <div class="file-viewer-empty">No diff available for this edit.</div>
@@ -754,7 +754,7 @@ const ContentViewer = memo(function ContentViewer({
         {viewMode === "cumulative" &&
           cumulativeHunks &&
           cumulativeHunks.length > 0 && (
-            <PatchView hunks={cumulativeHunks} filePath={filePath} />
+            <HunkDiffView hunks={cumulativeHunks} filePath={filePath} />
           )}
         {viewMode === "cumulative" &&
           (!cumulativeHunks || cumulativeHunks.length === 0) && (

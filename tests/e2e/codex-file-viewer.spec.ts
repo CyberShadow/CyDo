@@ -11,7 +11,7 @@ import {
  * Test the partial-data path: an "update" apply_patch with only a unified diff
  * and no prior create (so no originalFile / currentContent is available).
  * Before the fix, this showed an empty file viewer. After the fix, it shows
- * the diff hunks via PatchView.
+ * the diff hunks via HunkDiffView.
  *
  * The mock LLM returns an apply_patch custom tool call. The Codex CLI processes
  * it internally; after the session is killed and history reloads from JSONL,
@@ -65,7 +65,7 @@ test("file viewer shows diff content for codex update without prior create", asy
   // Source view: PartialSourceView should show new-side lines from the hunk.
   await expect(contentViewer).not.toContainText("Select a file to view");
 
-  // Switch to diff view: PatchView renders the hunks with +/- lines.
+  // Switch to diff view: HunkDiffView renders the hunks with +/- lines.
   await contentViewer.getByRole("button", { name: "Diff" }).click();
   await expect(contentViewer.locator(".diff-view")).toContainText(
     "hello from update fixture",

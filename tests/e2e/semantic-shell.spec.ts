@@ -87,7 +87,9 @@ test("semantic shell: heredoc write renders header/body/footer", async ({
   await expect(toolCall).toBeVisible({ timeout });
 
   // Assert the semantic-shell-write container is in the input area
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
 
   // The header line should show the cat command
@@ -182,7 +184,6 @@ test("semantic shell: unrecognized pipe stage falls back to normal rendering", a
   await expect(normalResult).toBeVisible({ timeout });
 });
 
-
 /**
  * Test 5: heredoc script execution
  *
@@ -223,7 +224,7 @@ test("semantic shell: heredoc script renders with syntax-highlighted body", asyn
 });
 
 /**
- * Test N: git diff renders through PatchView (semantic-shell-diff)
+ * Test N: git diff renders through HunkDiffView (semantic-shell-diff)
  *
  * Sends a prompt that triggers `git log -p -1 --no-color -- README.md`.
  * Asserts that the result renders through the semantic shell diff pipeline
@@ -304,12 +305,12 @@ test("semantic shell: quoted wrapper payload renders source tree wrapper input",
     'program --some-flag -y "hello world"',
   );
   await expect(wrapperInput).toContainText(
-    '\'program --some-flag -y "hello world"\'',
+    "'program --some-flag -y \"hello world\"'",
   );
 
-  const wrapperPayload = toolCall.locator(
-    '[data-testid="source-projected-inline"]',
-  ).first();
+  const wrapperPayload = toolCall
+    .locator('[data-testid="source-projected-inline"]')
+    .first();
   await expect(wrapperPayload).toBeVisible({ timeout });
   await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
 
@@ -354,9 +355,9 @@ test("semantic shell: mixed-quoted wrapper heredoc stays shell-highlighted", asy
   await expect(wrapperInput).toContainText("$literal");
   await expect(wrapperInput).toContainText("EOF");
 
-  const wrapperPayload = toolCall.locator(
-    '[data-testid="source-projected-inline"]',
-  ).first();
+  const wrapperPayload = toolCall
+    .locator('[data-testid="source-projected-inline"]')
+    .first();
   await expect(wrapperPayload).toBeVisible({ timeout });
   await expect(wrapperPayload).toHaveAttribute("data-language", "bash");
 });
@@ -371,7 +372,9 @@ test("semantic shell: direct svg heredoc write offers rendered image preview", a
   await sendMessage(page, "semantic shell reproduce svg heredoc payload");
   const toolCall = await lastShellToolCall(page, agentType, timeout);
 
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
   await expect(semanticWrite.locator('img[alt="SVG preview"]')).toBeVisible({
     timeout,
@@ -388,7 +391,9 @@ test("semantic shell: mixed-quoted markdown heredoc renders markdown body", asyn
   await sendMessage(page, "semantic shell mixed quoted markdown heredoc");
   const toolCall = await lastShellToolCall(page, agentType, timeout);
 
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
   await expect(semanticWrite.locator(".markdown h1")).toContainText(
     "Heredoc Markdown Fixture",
@@ -411,7 +416,9 @@ test("semantic shell: mixed-quoted svg heredoc write offers rendered image previ
   await sendMessage(page, "semantic shell mixed quoted svg heredoc");
   const toolCall = await lastShellToolCall(page, agentType, timeout);
 
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
   await expect(semanticWrite.locator('img[alt="SVG preview"]')).toBeVisible({
     timeout,
@@ -428,7 +435,9 @@ test("semantic shell: wrapped markdown heredoc renders semantic output with prov
   await sendMessage(page, "semantic shell wrapped markdown heredoc");
   const toolCall = await lastShellToolCall(page, agentType, timeout);
 
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
   await expect(semanticWrite).toContainText("bash");
   await expect(semanticWrite).toContainText("-lc");
@@ -440,7 +449,9 @@ test("semantic shell: wrapped markdown heredoc renders semantic output with prov
 
   const semanticOut = toolCall.locator('[data-testid="semantic-shell-output"]');
   await expect(semanticOut).toBeVisible({ timeout });
-  await expect(semanticOut.locator(".markdown")).toContainText("Wrapped Markdown");
+  await expect(semanticOut.locator(".markdown")).toContainText(
+    "Wrapped Markdown",
+  );
   await expect(semanticOut.locator(".markdown")).toHaveCount(1);
   await expect(semanticOut).toContainText("-rw");
 });
@@ -452,10 +463,15 @@ test("semantic shell: wrapped markdown heredoc with directory listing keeps stdo
   await enterSession(page);
   const timeout = responseTimeout(agentType);
 
-  await sendMessage(page, "semantic shell wrapped markdown heredoc directory listing");
+  await sendMessage(
+    page,
+    "semantic shell wrapped markdown heredoc directory listing",
+  );
   const toolCall = await lastShellToolCall(page, agentType, timeout);
 
-  const semanticWrite = toolCall.locator('[data-testid="semantic-shell-write"]');
+  const semanticWrite = toolCall.locator(
+    '[data-testid="semantic-shell-write"]',
+  );
   await expect(semanticWrite).toBeVisible({ timeout });
   await expect(semanticWrite).toContainText("bash");
   await expect(semanticWrite).toContainText("-lc");
@@ -566,13 +582,16 @@ test("semantic shell: sed/printf sections keep delimiter anchors", async ({
   await expect(root).toBeVisible({ timeout });
 
   await expect(root.getByText("--- section ---")).toHaveCount(1);
-  const pieceCount = await root.locator(".semantic-shell-structured-piece").count();
+  const pieceCount = await root
+    .locator(".semantic-shell-structured-piece")
+    .count();
   expect(pieceCount).toBeGreaterThanOrEqual(2);
 
-  await page.context().grantPermissions(
-    ["clipboard-read", "clipboard-write"],
-    { origin: "http://localhost:3940" },
-  );
+  await page
+    .context()
+    .grantPermissions(["clipboard-read", "clipboard-write"], {
+      origin: "http://localhost:3940",
+    });
   await page.bringToFront();
   const copyButton = root.locator(".semantic-shell-output-toolbar .btn-copy");
   await expect(copyButton).toBeVisible({ timeout });

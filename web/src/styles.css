@@ -2685,7 +2685,7 @@ body,
 
 .diff-gutter {
   display: inline-block;
-  min-width: 3ch; /* overridden inline by PatchView when line numbers are wider */
+  min-width: 3ch; /* overridden inline by HunkDiffView when line numbers are wider */
   text-align: right;
   color: var(--text-dim);
   user-select: none;

@@ -273,7 +273,7 @@ export function DiffView({
   );
 }
 
-export function PatchView({
+export function HunkDiffView({
   hunks,
   filePath,
 }: {

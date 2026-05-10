@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown";
 import { CodePre, CopyButton } from "./CopyButton";
 import checkIcon from "../icons/check.svg?raw";
 import errorIcon from "../icons/error.svg?raw";
-import { DiffView, PatchView } from "./diff/DiffView";
+import { DiffView, HunkDiffView } from "./diff/DiffView";
 import {
   FileContentPreview,
   SvgPreview,
@@ -404,7 +404,7 @@ function EditInput({
           originalFile={originalFile}
         />
       ) : Array.isArray(patchHunks) && patchHunks.length > 0 ? (
-        <PatchView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
+        <HunkDiffView hunks={patchHunks as PatchHunk[]} filePath={filePath} />
       ) : (
         <DiffView oldStr={oldString} newStr={newString} filePath={filePath} />
       )}
@@ -565,7 +565,7 @@ function FileChangeRow({
         !preservePatchSource &&
         change.patchHunks &&
         change.patchHunks.length > 0 && (
-          <PatchView hunks={change.patchHunks} filePath={path} />
+          <HunkDiffView hunks={change.patchHunks} filePath={path} />
         )}
       {!canRenderAddedContent &&
         !canRenderPatchMarkdown &&
@@ -2258,7 +2258,9 @@ function DiffResult({ content }: { content: string }) {
         {sections.map((section, i) => {
           const hunks = parsePatchHunksFromText(section.patchText);
           if (hunks && hunks.length > 0) {
-            return <PatchView key={i} hunks={hunks} filePath={section.path} />;
+            return (
+              <HunkDiffView key={i} hunks={hunks} filePath={section.path} />
+            );
           }
           return null;
         })}
@@ -2267,7 +2269,7 @@ function DiffResult({ content }: { content: string }) {
   }
   const hunks = parsePatchHunksFromText(content);
   if (hunks && hunks.length > 0) {
-    return <PatchView hunks={hunks} />;
+    return <HunkDiffView hunks={hunks} />;
   }
   return (
     <ResultPre content={content}>

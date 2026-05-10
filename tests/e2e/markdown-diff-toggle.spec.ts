@@ -28,7 +28,7 @@ test("markdown diff toggle button visible for .md file edit with structuredPatch
 
   // Now edit the file — Claude has the file cached so the Edit succeeds and
   // returns structuredPatch in the tool result. With the old ternary order,
-  // patchHunks was checked first, routing to PatchView instead of MarkdownDiffView.
+  // patchHunks was checked first, routing to HunkDiffView instead of MarkdownDiffView.
   await sendMessage(page, "edit file README.md replace test with updated");
 
   // Wait for the Edit tool call to appear and complete
