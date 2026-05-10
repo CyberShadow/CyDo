@@ -203,5 +203,33 @@ test("two agents sharing a driver get separate sandbox envs", async ({
 
   await titleWork;
   await titlePersonal;
+
+  // Verify the session/init events carry the correct agent_name.
+  // Both tasks share driver "claude" but have distinct user-chosen names.
+  const initWork = waitForMessage(
+    ws,
+    (d) =>
+      typeof d.tid === "number" &&
+      d.tid === tidWork &&
+      d.event?.type === "session/init" &&
+      d.event?.agent_name === "work-claude",
+    30_000,
+  );
+  const initPersonal = waitForMessage(
+    ws,
+    (d) =>
+      typeof d.tid === "number" &&
+      d.tid === tidPersonal &&
+      d.event?.type === "session/init" &&
+      d.event?.agent_name === "personal-claude",
+    30_000,
+  );
+
+  ws.send(JSON.stringify({ type: "request_history", tid: tidWork }));
+  ws.send(JSON.stringify({ type: "request_history", tid: tidPersonal }));
+
+  await initWork;
+  await initPersonal;
+
   ws.close();
 });

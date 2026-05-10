@@ -80,6 +80,7 @@ struct SessionInitEvent
 	string agent_version;                  // was claude_code_version
 	string permission_mode;                // was permissionMode
 	@JSONOptional string agent;
+	@JSONOptional string agent_name;       // user-chosen agent name (config key)
 	@JSONOptional string api_key_source;   // was apiKeySource
 	@JSONOptional string fast_mode_state;
 	@JSONOptional string[] skills;

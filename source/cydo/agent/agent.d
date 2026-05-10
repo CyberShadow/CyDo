@@ -19,6 +19,7 @@ struct SessionConfig
 	bool allowNativeSubagents; /// When true, don't disable Claude's built-in Task tool
 	string workspace;          /// Workspace name (Codex uses this as AppServerProcess pool key)
 	string workDir;            /// Working directory for the session
+	string agentName;          /// User-chosen agent name (config key) — populates SessionInitEvent.agent_name
 	string mcpSocketPath;      /// Absolute path to the backend's UNIX socket for MCP proxy
 	string permissionPolicy;   /// Permission policy from workspace config (empty = not configured)
 }

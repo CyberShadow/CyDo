@@ -1,3 +1,4 @@
+import { writeFileSync } from "fs";
 import {
   test,
   expect,
@@ -74,7 +75,23 @@ test("codex tool call renders output content", { tag: "@codex-only" }, async ({ 
 });
 
 test("codex agent type indicator", { tag: "@codex-only" }, async ({ page, agentType }) => {
+  // Configure default_agent: claude so codex is a non-default agent.
+  // The banner indicator shows only when agent_name differs from the default.
+  writeFileSync(
+    "/tmp/playwright-home/.config/cydo/config.yaml",
+    `default_agent: claude
+log_level: trace
+workspaces:
+  local:
+    root: /tmp/cydo-test-workspace
+`,
+  );
+  // Give the backend's inotify watcher time to reload the config.
+  await page.waitForTimeout(500);
+
   await enterSession(page);
+  // Select codex from the agent picker (the default is now claude).
+  await page.selectOption(".agent-picker", "codex");
 
   const input = page.locator(".input-textarea");
   await expect(input).toBeEnabled({ timeout: 15_000 });
@@ -84,6 +101,7 @@ test("codex agent type indicator", { tag: "@codex-only" }, async ({ page, agentT
   await expect(page.locator(".message.assistant-message")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
+  // codex is not the default agent (claude is), so the banner should show "codex".
   await expect(page.locator(".banner-agent")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".banner-agent")).toContainText("codex", {
     ignoreCase: true,

@@ -53,6 +53,7 @@ export interface SessionInitEvent {
   agent_version: string;
   permission_mode: string;
   agent?: string;
+  agent_name?: string;
   api_key_source?: string;
   fast_mode_state?: string;
   skills?: string[];

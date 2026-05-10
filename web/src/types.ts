@@ -186,6 +186,7 @@ export interface SessionInfo {
   plugins?: unknown[];
   fast_mode_state?: string;
   agent?: string; // "claude" | "codex" | undefined
+  agent_name?: string;
   supports_file_revert?: boolean;
 }
 

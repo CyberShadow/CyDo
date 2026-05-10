@@ -2980,6 +2980,8 @@ class App : ToolsBackend
 		int lastDequeuedEnqueueLineNum;
 		string lastDequeuedRawLine;
 		auto stripTransientStatus = (TranslatedEvent[] events) {
+			foreach (ref e; events)
+				e.translated = injectAgentNameIntoSessionInit(e.translated, td.agentType);
 			return filterTransientSessionStatusEvents(events);
 		};
 		ta.resetHistoryReplay();
@@ -4784,6 +4786,31 @@ class App : ToolsBackend
 			bodyMarkdownForKind(match.kind));
 	}
 
+	/// Inject agent_name into session/init events whose translation pipeline
+	/// didn't have per-task agent name (history replay paths).
+	private string injectAgentNameIntoSessionInit(string translated, string agentName)
+	{
+		import std.algorithm : canFind;
+		import cydo.agent.protocol : SessionInitEvent;
+
+		if (translated.length == 0
+			|| agentName.length == 0
+			|| !translated.canFind(`"type":"session/init"`))
+			return translated;
+
+		SessionInitEvent ev;
+		try
+			ev = jsonParse!SessionInitEvent(translated);
+		catch (Exception)
+			return translated;
+
+		if (ev.agent_name.length > 0)
+			return translated;
+
+		ev.agent_name = agentName;
+		return toJson(ev);
+	}
+
 	private string normalizeKnownSystemMessageMeta(string translated, int tid = -1)
 	{
 		import std.algorithm : canFind;
@@ -4950,7 +4977,7 @@ class App : ToolsBackend
 		auto td = TaskData(tid);
 		td.workspace = workspace;
 		td.projectPath = projectPath;
-		td.agentType = agentName;  // TaskData.agentType renamed in commit 7
+		td.agentType = agentName;
 		td.entryPoint = entryPoint;
 		td.historyLoaded = true; // New tasks have no JSONL to load
 		import std.datetime : Clock;
@@ -5306,6 +5333,7 @@ class App : ToolsBackend
 			sessionConfig.allowNativeSubagents = true;
 
 		sessionConfig.permissionPolicy = findWorkspacePermissionPolicy(td.workspace);
+		sessionConfig.agentName = td.agentType;
 
 		return TaskSessionLaunch(td.launch, sessionConfig);
 	}

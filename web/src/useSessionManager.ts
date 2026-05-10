@@ -264,7 +264,7 @@ export function useTaskManager(
     Map<string, TypeInfo[]>
   >(new Map());
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [defaultAgent, setDefaultAgent] = useState("claude");
+  const [defaultAgent, setDefaultAgent] = useState("");
   const [defaultTaskType, setDefaultTaskType] = useState("");
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [localNotices, setLocalNotices] = useState<Record<string, Notice>>({});

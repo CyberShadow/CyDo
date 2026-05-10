@@ -690,11 +690,13 @@ class ClaudeCodeSession : AgentSession
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	private string executablePath_;
+	private string agentName_;
 
 	this(string executablePath, string resumeSessionId = null, string[] cmdPrefix = null,
 		string mcpConfigPath = null, SessionConfig config = SessionConfig.init)
 	{
 		executablePath_ = executablePath;
+		agentName_ = config.agentName;
 		string[] claudeArgs = [
 			executablePath_.length > 0 ? executablePath_ : "claude",
 			"-p",
@@ -890,7 +892,7 @@ class ClaudeCodeSession : AgentSession
 				return;
 			default:
 				// Stateless translation for system, result, summary, control, etc.
-				auto t = translateClaudeEvent(rawLine);
+				auto t = translateClaudeEvent(rawLine, agentName_);
 				if (t.translated !is null)
 					emitEvent(t);
 				return;
@@ -1536,7 +1538,7 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 		case "stream_event":
 			return []; // not stored in JSONL history
 		default:
-			auto t = translateClaudeEvent(rawLine);
+			auto t = translateClaudeEvent(rawLine, "");
 			result = t.translated !is null ? [t] : [];
 			break;
 	}
@@ -1826,15 +1828,15 @@ private TranslatedEvent[] normalizeUserHistory(string rawLine)
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.
 /// Returns TranslatedEvent.init for events that should be consumed (not forwarded).
-private TranslatedEvent translateClaudeEvent(string rawLine)
+private TranslatedEvent translateClaudeEvent(string rawLine, string agentName)
 {
-	auto translated = translateClaudeEventInner(rawLine);
+	auto translated = translateClaudeEventInner(rawLine, agentName);
 	if (translated is null)
 		return TranslatedEvent.init;
 	return TranslatedEvent(translated, rawLine);
 }
 
-private string translateClaudeEventInner(string rawLine)
+private string translateClaudeEventInner(string rawLine, string agentName)
 {
 	@JSONPartial
 	static struct TypeProbe
@@ -1856,7 +1858,7 @@ private string translateClaudeEventInner(string rawLine)
 	switch (probe.type)
 	{
 		case "system":
-			return translateSystemEvent(rawLine, probe.subtype);
+			return translateSystemEvent(rawLine, probe.subtype, agentName);
 		case "result":
 			return normalizeTurnResult(rawLine);
 		case "summary":
@@ -1881,12 +1883,12 @@ private string translateClaudeEventInner(string rawLine)
 }
 
 /// Translate system events by mapping subtype to the agnostic type string.
-private string translateSystemEvent(string rawLine, string subtype)
+private string translateSystemEvent(string rawLine, string subtype, string agentName)
 {
 	switch (subtype)
 	{
 		case "init":
-			return translateSessionInit(rawLine);
+			return translateSessionInit(rawLine, agentName);
 		case "status":
 			return translateSystemStatus(rawLine);
 		case "compact_boundary":
@@ -1902,7 +1904,7 @@ private string translateSystemEvent(string rawLine, string subtype)
 
 /// Normalize a Claude session/init event to the agnostic SessionInitEvent format.
 /// Renames fields and drops Claude-specific fields.
-private string translateSessionInit(string rawLine)
+private string translateSessionInit(string rawLine, string agentName)
 {
 	static struct ClaudeInit
 	{
@@ -1951,6 +1953,7 @@ private string translateSessionInit(string rawLine)
 	ev.agent_version = raw.claude_code_version;
 	ev.permission_mode = raw.permissionMode;
 	ev.agent         = raw.agent;
+	ev.agent_name    = agentName;
 	ev.api_key_source  = raw.apiKeySource;
 	ev.fast_mode_state = raw.fast_mode_state;
 	ev.skills        = raw.skills;

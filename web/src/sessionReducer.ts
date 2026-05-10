@@ -279,6 +279,7 @@ export function reduceSystemInit(
       plugins: msg.plugins,
       fast_mode_state: msg.fast_mode_state,
       agent: msg.agent,
+      agent_name: msg.agent_name,
       supports_file_revert: msg.supports_file_revert,
     },
     sessionStatus: null,

@@ -481,11 +481,7 @@ function AppContent() {
                       task.uuid === draftRenderKey ? entryPoints : undefined
                     }
                     agents={task.uuid === draftRenderKey ? agents : undefined}
-                    defaultAgent={
-                      task.uuid === draftRenderKey
-                        ? effectiveDefaultAgent
-                        : undefined
-                    }
+                    defaultAgent={effectiveDefaultAgent}
                     defaultTaskType={
                       task.uuid === draftRenderKey
                         ? effectiveDefaultTaskType

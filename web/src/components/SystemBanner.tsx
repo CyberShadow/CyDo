@@ -8,6 +8,7 @@ import hamburgerIcon from "../icons/hamburger.svg?raw";
 
 interface Props {
   sessionInfo: SessionInfo | null;
+  defaultAgent?: string;
   sessionStatus?: string | null;
   connected: boolean;
   totalCost: number;
@@ -109,6 +110,7 @@ function usageTitle(
 
 export function SystemBanner({
   sessionInfo,
+  defaultAgent,
   sessionStatus,
   connected,
   totalCost,
@@ -187,9 +189,10 @@ export function SystemBanner({
             }}
             title="Click for session details"
           >
-            {sessionInfo.agent && sessionInfo.agent !== "claude" && (
-              <span class="banner-agent">{sessionInfo.agent}</span>
-            )}
+            {sessionInfo.agent_name &&
+              sessionInfo.agent_name !== defaultAgent && (
+                <span class="banner-agent">{sessionInfo.agent_name}</span>
+              )}
             {sessionInfo.model}
           </span>
         )}

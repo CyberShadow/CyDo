@@ -174,7 +174,7 @@ function SessionViewInner({
           text,
           images,
           selectedEntryPoint,
-          selectedAgent || defaultAgent || "claude",
+          selectedAgent || defaultAgent || "",
         );
       } else {
         onSend(task.uuid, text, images);
@@ -195,10 +195,7 @@ function SessionViewInner({
   }, [onPromote, tid]);
 
   const handleContentStart = useCallback(() => {
-    onContentStart?.(
-      selectedEntryPoint,
-      selectedAgent || defaultAgent || "claude",
-    );
+    onContentStart?.(selectedEntryPoint, selectedAgent || defaultAgent || "");
   }, [onContentStart, selectedEntryPoint, selectedAgent, defaultAgent]);
 
   useEffect(() => {
@@ -447,6 +444,7 @@ function SessionViewInner({
     <>
       <SystemBanner
         sessionInfo={task.sessionInfo}
+        defaultAgent={defaultAgent}
         sessionStatus={task.sessionStatus}
         connected={connected}
         totalCost={task.totalCost}
@@ -524,7 +522,7 @@ function SessionViewInner({
               />
               <AgentPicker
                 agents={agents || []}
-                selected={selectedAgent || defaultAgent || "claude"}
+                selected={selectedAgent || defaultAgent || ""}
                 onChange={handleAgentChange}
               />
               <InputBox

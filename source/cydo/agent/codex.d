@@ -1650,6 +1650,7 @@ class CodexSession : AgentSession
 	private string lastResultText_;             // last completed text content, for turn/result
 
 	private string sessionId;
+	private string agentName_;
 
 	// Queued messages waiting for thread to be ready.
 	private ContentBlock[][] pendingMessages;
@@ -1668,6 +1669,7 @@ class CodexSession : AgentSession
 		this.server = server;
 		this.tid = tid;
 		this.alive_ = true;
+		this.agentName_ = config.agentName;
 	}
 
 	/// Called when thread/start or thread/resume response arrives.
@@ -1707,6 +1709,7 @@ class CodexSession : AgentSession
 		initEv.agent_version   = "";
 		initEv.permission_mode = "dangerously-skip-permissions";
 		initEv.agent           = "codex";
+		initEv.agent_name      = agentName_;
 
 		if (outputHandler_)
 			outputHandler_(TranslatedEvent(toJson(initEv), rawResultJson.length > 0 ? rawResultJson : null));

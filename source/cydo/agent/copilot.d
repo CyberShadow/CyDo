@@ -141,7 +141,7 @@ class CopilotAgent : Agent
 		auto server = new SdkProcess(args, null, null, "copilot");
 		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
-		auto session = new CopilotSession(server, tid, sessionId, model, workDir, launch.cmdPrefix, toolDispatch_);
+		auto session = new CopilotSession(server, tid, sessionId, model, workDir, launch.cmdPrefix, toolDispatch_, config.agentName);
 
 		// Register before sending create/resume so events can be routed immediately.
 		server.registerSession(sessionId, session);
@@ -815,6 +815,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private string currentSubagentParent_;  // toolCallId of current sub-agent parent (task tool)
 
 	private bool sessionReady_; // true after session.create/resume response
+	private string agentName_;
 
 	// Queued messages waiting for the current turn to finish.
 	private ContentBlock[][] pendingMessages;
@@ -826,7 +827,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private void delegate(string nonce) agentAckHandler_;
 
 	this(SdkProcess server, int tid, string sessionId, string model, string workDir,
-		string[] cmdPrefix = null, ToolDispatchFn toolDispatch = null)
+		string[] cmdPrefix = null, ToolDispatchFn toolDispatch = null, string agentName = null)
 	{
 		this.server = server;
 		this.tid = tid;
@@ -836,6 +837,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		this.cmdPrefix_ = cmdPrefix;
 		this.toolDispatch_ = toolDispatch;
 		this.alive_ = true;
+		this.agentName_ = agentName;
 	}
 
 	/// Called to suppress events during session.resume history replay.
@@ -862,6 +864,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		initEv.agent_version   = "";
 		initEv.permission_mode = "dangerously-skip-permissions";
 		initEv.agent           = "copilot";
+		initEv.agent_name      = agentName_;
 
 		emitEvent(toJson(initEv));
 
