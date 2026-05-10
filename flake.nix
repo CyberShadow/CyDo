@@ -178,7 +178,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
@@ -779,7 +779,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
@@ -796,7 +796,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
@@ -813,7 +813,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
@@ -830,7 +830,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
@@ -869,7 +869,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-UY0Q0+c+d1ZH6M2Bmwe5EsG1WUygPwAzomAcbqsktJg=";
+            npmDepsHash = "sha256-XQKWhFud7cnzSvFDMG8eAOnl8l0Ft08DGqjougFF1ZY=";
 
             buildPhase = ''
               runHook preBuild
