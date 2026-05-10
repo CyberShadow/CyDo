@@ -25,8 +25,11 @@ struct SandboxConfig
 	@Optional GitIdentityConfig git;
 }
 
+enum AgentDriver { claude, codex, copilot }
+
 struct AgentConfig
 {
+	@Optional SetInfo!AgentDriver driver;
 	@Optional SandboxConfig sandbox;
 	@Optional string[string] model_aliases;
 }
@@ -75,11 +78,56 @@ CydoConfig loadConfig()
 		];
 	}
 
+	applyAgentDriverOverlay(config);
 	return config;
 }
 
 /// Re-parse config file. Returns null on parse error (caller keeps old config).
 Nullable!CydoConfig reloadConfig()
 {
-	return parseConfigFileSimple!CydoConfig(configPath);
+	auto result = parseConfigFileSimple!CydoConfig(configPath);
+	if (!result.isNull())
+	{
+		auto inner = result.get();
+		applyAgentDriverOverlay(inner);
+		result = Nullable!CydoConfig(inner);
+	}
+	return result;
+}
+
+private void applyAgentDriverOverlay(ref CydoConfig config)
+{
+	import std.conv : to;
+	import cydo.agent.registry : agentRegistry;
+
+	// Pass 1: infer driver from the AA key when it matches a known driver name
+	foreach (name, ref ac; config.agents)
+	{
+		if (!ac.driver.set)
+		{
+			try
+				ac.driver = SetInfo!AgentDriver(to!AgentDriver(name), true);
+			catch (Exception e)
+				throw new Exception(
+					"agents['" ~ name ~ "']: driver field is required (not a known driver name)");
+		}
+	}
+
+	// Pass 2: synthesize default entries for any driver not yet covered
+	foreach (reg; agentRegistry)
+	{
+		auto driverEnum = to!AgentDriver(reg.name);
+		bool covered = false;
+		foreach (name, ref ac; config.agents)
+		{
+			if (name == reg.name) { covered = true; break; }
+			if (ac.driver.set && ac.driver.value == driverEnum) { covered = true; break; }
+		}
+		if (!covered)
+		{
+			AgentConfig synthesized;
+			synthesized.driver = SetInfo!AgentDriver(driverEnum, true);
+			config.agents[reg.name] = synthesized;
+		}
+	}
 }
