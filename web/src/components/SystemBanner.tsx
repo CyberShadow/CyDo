@@ -59,6 +59,14 @@ export function usagePercent(utilization?: number): number | null {
   return pct;
 }
 
+function hasClaudeUsageInfo(
+  claudeUsage: AgentUsageMessage | undefined,
+): boolean {
+  return ["five_hour", "seven_day"].some((key) =>
+    Number.isFinite(claudeUsage?.limits[key]?.utilization),
+  );
+}
+
 export function computeUsagePaceRatio(
   utilizationPercent: number,
   resetsAtSeconds: number | undefined,
@@ -156,6 +164,7 @@ export function SystemBanner({
     { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
     { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
   ];
+  const showClaudeUsage = hasClaudeUsageInfo(claudeUsage);
 
   return (
     <div class="system-banner">
@@ -202,7 +211,7 @@ export function SystemBanner({
         {taskType && <span class="banner-task-type">{taskType}</span>}
       </div>
       <div class="banner-right">
-        {claudeUsage && (
+        {showClaudeUsage && (
           <div class="banner-usage" title="Claude account usage">
             {usageRows.map((row) => {
               const pct = usagePercent(row.window?.utilization);
