@@ -26,9 +26,9 @@ async function lastShellToolCall(
  * Test 1: cat file read
  *
  * Sends a prompt that triggers `cat README.md`. Asserts that the result renders
- * through the semantic shell read pipeline (data-testid="semantic-shell-read")
- * rather than plain terminal output. The result section is collapsed by default
- * for reads (local, re-derivable); the test expands it before asserting.
+ * through SemanticShellOutput (data-testid="semantic-shell-output") now that
+ * cat produces an outputPlan. The result section is collapsed by default for
+ * reads (local, re-derivable); the test expands it before asserting.
  */
 test("semantic shell: cat read renders through file content preview", async ({
   page,
@@ -57,8 +57,9 @@ test("semantic shell: cat read renders through file content preview", async ({
       await resultHeader.click();
     }
   }
-  const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
-  await expect(semanticRead).toBeVisible({ timeout });
+  // cat now has an outputPlan and renders via SemanticShellOutput.
+  const semanticOutput = toolCall.locator('[data-testid="semantic-shell-output"]');
+  await expect(semanticOutput).toBeVisible({ timeout });
 });
 
 /**
@@ -105,8 +106,8 @@ test("semantic shell: heredoc write renders header/body/footer", async ({
  * Test 3: pipe-read (accepted)
  *
  * Sends a prompt that triggers `cat README.md | head -5`. With the v2 parser,
- * this pipeline is classified as a Read and renders through the semantic
- * shell read pipeline (data-testid="semantic-shell-read").
+ * this pipeline is classified as a Read and renders through SemanticShellOutput
+ * (data-testid="semantic-shell-output") now that cat/head produce an outputPlan.
  */
 test("semantic shell: pipe read renders through file content preview", async ({
   page,
@@ -133,8 +134,9 @@ test("semantic shell: pipe read renders through file content preview", async ({
       await resultHeader2.click();
     }
   }
-  const semanticRead = toolCall.locator('[data-testid="semantic-shell-read"]');
-  await expect(semanticRead).toBeVisible({ timeout });
+  // cat/head now have an outputPlan and render via SemanticShellOutput.
+  const semanticOutput = toolCall.locator('[data-testid="semantic-shell-output"]');
+  await expect(semanticOutput).toBeVisible({ timeout });
 });
 
 /**

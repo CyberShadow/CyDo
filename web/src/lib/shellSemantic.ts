@@ -5,11 +5,9 @@ import {
   langFromPath,
 } from "../highlight";
 import type { ShikiTheme } from "../highlight";
-import type {
-  OutputPlan,
-  OutputBlockPlan,
-  SpanValidatorId,
-} from "./outputPlan";
+import type { OutputPlan } from "./outputPlan";
+import { derivePlan } from "./commandStep";
+import type { CommandStep, ReadRange } from "./commandStep";
 import {
   projectEmbedSpan,
   type SourceNode,
@@ -46,12 +44,7 @@ export interface ShellReadSemantic {
   commandName: ReadCommandName;
   command: string;
   filePath: string;
-  range:
-    | { type: "all" }
-    | { type: "lines"; start: number; end: number }
-    | { type: "head"; count: number }
-    | { type: "tail"; startLine: number }
-    | { type: "tail-count"; count: number };
+  range: ReadRange;
   presentation: {
     lineNumbers: false | { style: "nl"; width?: number; separator?: string };
   };
@@ -109,43 +102,13 @@ export type ShellInputSegment =
       contentNodeId: string;
     };
 
-export type ShellSemanticEffect =
-  | {
-      kind: "write-file";
-      order: number;
-      targetPath: string;
-      contentNodeId: string;
-    }
-  | {
-      kind: "execute-script";
-      order: number;
-      commandName: string;
-      language: string;
-      contentNodeId: string;
-    }
-  | {
-      kind: "search";
-      order: number;
-      commandName: "rg";
-      pattern: string;
-      filePath: string;
-    }
-  | {
-      kind: "read-file";
-      order: number;
-      commandName: "sed" | "cat" | "head" | "tail";
-      filePath: string;
-      range?: ShellReadSemantic["range"];
-    }
-  | { kind: "plain-output"; order: number; commandName: string };
-
 export type ShellSemanticBase = {
   command: string;
   source?: ShellSourceSpan;
   sourceTree?: SourceNode;
   inputSegments?: ShellInputSegment[];
   embeddedContent?: ShellEmbeddedContent[];
-  effects?: ShellSemanticEffect[];
+  steps?: CommandStep[];
   outputPlan?: OutputPlan;
 };
 
@@ -929,26 +892,23 @@ function classifyReadCommand(
 
   void doubleDash;
 
-  const effects: ShellSemanticEffect[] = [];
-  if (name === "sed" || name === "cat" || name === "head" || name === "tail") {
-    effects.push({
+  const language = langFromPath(filePath) || "text";
+  const readName = name as "sed" | "cat" | "head" | "tail" | "nl";
+  const steps: CommandStep[] = [
+    {
       kind: "read-file",
       order: 0,
-      commandName: name,
+      commandName: readName,
       filePath,
-      range: name === "sed" ? range : undefined,
-    });
-  }
-  const language = langFromPath(filePath) || "text";
-  const outputPlan =
-    name === "sed"
-      ? buildWholeOutputContentPlan(
-          "sed-output",
-          language,
-          { stepIndex: 0, producerName: "sed", filePath },
-          "non-empty",
-        )
-      : undefined;
+      range,
+      outputShape: {
+        kind: "content",
+        format: { kind: "content", language },
+        validator: "non-empty",
+      },
+      blockId: name === "sed" ? "sed-output" : undefined,
+    },
+  ];
 
   return {
     ok: true,
@@ -959,8 +919,7 @@ function classifyReadCommand(
       filePath,
       range,
       presentation,
-      effects: effects.length > 0 ? effects : undefined,
-      outputPlan,
+      steps,
     },
   };
 }
@@ -1391,25 +1350,6 @@ function isDynamicShellValue(value: string): boolean {
   );
 }
 
-function buildWholeOutputContentPlan(
-  blockId: string,
-  language: string,
-  source?: OutputBlockPlan["source"],
-  validator?: SpanValidatorId,
-): OutputPlan {
-  return {
-    version: 1,
-    blocks: [
-      {
-        id: blockId,
-        source,
-        format: { kind: "content", language },
-        location: { kind: "whole-output", validator },
-      },
-    ],
-  };
-}
-
 function classifyRgCommand(
   cmd: SimpleCommand,
   originalCommand: string,
@@ -1462,6 +1402,27 @@ function classifyRgCommand(
     );
   }
   const language = langFromPath(filePath) || "text";
+  const steps: CommandStep[] = [
+    {
+      kind: "search",
+      order: 0,
+      commandName: "rg",
+      pattern,
+      filePath,
+      outputShape: {
+        kind: "whole-output",
+        format: {
+          kind: "individual-lines",
+          format: {
+            kind: "line-number-prefixed",
+            format: { kind: "content", language },
+          },
+        },
+        validator: "colon-line-number-prefixed",
+      },
+      blockId: "rg-results",
+    },
+  ];
   return {
     ok: true,
     value: {
@@ -1470,35 +1431,7 @@ function classifyRgCommand(
       command: originalCommand,
       pattern,
       filePath,
-      effects: [
-        {
-          kind: "search",
-          order: 0,
-          commandName: "rg",
-          pattern,
-          filePath,
-        },
-      ],
-      outputPlan: {
-        version: 1,
-        blocks: [
-          {
-            id: "rg-results",
-            source: { stepIndex: 0, producerName: "rg", filePath },
-            format: {
-              kind: "individual-lines",
-              format: {
-                kind: "line-number-prefixed",
-                format: { kind: "content", language },
-              },
-            },
-            location: {
-              kind: "whole-output",
-              validator: "colon-line-number-prefixed",
-            },
-          },
-        ],
-      },
+      steps,
     },
   };
 }
@@ -1858,6 +1791,8 @@ function withSourceTreeCompatibility(
   sourceTree: SourceNode,
 ): ShellSemantic {
   const baseSource = sourceSpan(command, 0, command.length);
+  const outputPlan =
+    value.outputPlan ?? (value.steps ? derivePlan(value.steps) : undefined);
   return {
     ...value,
     source: value.source ?? baseSource,
@@ -1867,47 +1802,8 @@ function withSourceTreeCompatibility(
     embeddedContent:
       value.embeddedContent ??
       sourceTreeToShellEmbeddedContent(sourceTree, value),
+    outputPlan,
   };
-}
-
-function parseSedReadSpec(
-  command: string,
-): { start: number; end: number; filePath: string } | null {
-  const m = command.match(
-    /^\s*sed\s+-n\s+'([1-9]\d*),([1-9]\d*)p'\s+(\S+)\s*$/,
-  );
-  if (!m) return null;
-  const start = Number(m[1]);
-  const end = Number(m[2]);
-  const filePath = m[3]!;
-  if (end < start || isDynamicShellValue(filePath)) return null;
-  return { start, end, filePath };
-}
-
-function parsePrintfLiteralSpec(
-  command: string,
-): { raw: string; decoded: string } | null {
-  const m = command.match(/^\s*printf\s+'([^']*)'\s*$/);
-  if (!m) return null;
-  const raw = m[1]!;
-  if (raw.includes("%")) return null;
-  let decoded = "";
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (ch !== "\\") {
-      decoded += ch;
-      continue;
-    }
-    const next = raw[i + 1];
-    if (!next) return null;
-    if (next === "n") decoded += "\n";
-    else if (next === "t") decoded += "\t";
-    else if (next === "r") decoded += "\r";
-    else if (next === "\\") decoded += "\\";
-    else return null;
-    i++;
-  }
-  return { raw, decoded };
 }
 
 function splitTopLevelCommandList(command: string): string[] | null {
@@ -1989,13 +1885,25 @@ function parseLsDirectoryListing(command: string): { dirPath: string } | null {
 
 function classifyTrailingStructuredOutput(
   trailing: string,
-): { effects?: ShellSemanticEffect[]; outputPlan?: OutputPlan } | null {
+): { steps: CommandStep[] } | null {
   const readback = parseLsReadbackSpec(trailing);
   if (readback) {
     const language = langFromPath(readback.filePath) || "text";
     return {
-      effects: [
-        { kind: "plain-output", order: 0, commandName: "ls" },
+      steps: [
+        {
+          kind: "plain-output",
+          order: 0,
+          commandName: "ls",
+          filePath: readback.filePath,
+          outputShape: {
+            kind: "fixed-lines",
+            count: 1,
+            format: { kind: "content", language: "shell-output" },
+            validator: "non-empty",
+          },
+          blockId: "listing",
+        },
         {
           kind: "read-file",
           order: 1,
@@ -2006,48 +1914,28 @@ function classifyTrailingStructuredOutput(
             start: readback.sedStart,
             end: readback.sedEnd,
           },
+          outputShape: {
+            kind: "content",
+            format: { kind: "content", language },
+            validator: "non-empty",
+          },
+          blockId: "sed-output",
         },
       ],
-      outputPlan: {
-        version: 1,
-        blocks: [
-          {
-            id: "listing",
-            source: {
-              stepIndex: 0,
-              producerName: "ls",
-              filePath: readback.filePath,
-            },
-            format: { kind: "content", language: "shell-output" },
-            location: {
-              kind: "from-cursor",
-              end: { kind: "line-count", count: 1 },
-              validator: "non-empty",
-            },
-          },
-          {
-            id: "sed-output",
-            source: {
-              stepIndex: 1,
-              producerName: "sed",
-              filePath: readback.filePath,
-            },
-            format: { kind: "content", language },
-            location: {
-              kind: "from-cursor",
-              end: { kind: "end-of-output", requiresComplete: true },
-              validator: "non-empty",
-            },
-          },
-        ],
-      },
     };
   }
 
   const lsDir = parseLsDirectoryListing(trailing);
   if (lsDir) {
     return {
-      effects: [{ kind: "plain-output", order: 0, commandName: "ls" }],
+      steps: [
+        {
+          kind: "plain-output",
+          order: 0,
+          commandName: "ls",
+          outputShape: { kind: "unknown" },
+        },
+      ],
     };
   }
   return null;
@@ -2211,33 +2099,32 @@ function classifyHeredocDocument(
         { kind: "write-content", text: body, filePath },
         { kind: "command-footer", text: `\n${delimiter}` },
       ],
-      effects: [
+      steps: [
         {
-          kind: "write-file",
+          kind: "write-file" as const,
           order: 0,
           targetPath: filePath,
           contentNodeId: "heredoc-body",
+          outputShape: { kind: "none" as const },
         },
       ],
     };
-    const trailingStructured = trailing
+    const trailingResult = trailing
       ? classifyTrailingStructuredOutput(trailing)
       : null;
-    if (trailing && !trailingStructured) {
+    if (trailing && !trailingResult) {
       return { ok: true, value: writeValue };
     }
+    const trailingSteps = trailingResult?.steps ?? [];
+    const allSteps: CommandStep[] = [
+      ...(writeValue.steps ?? []),
+      ...trailingSteps.map((s, idx) => ({ ...s, order: idx + 1 })),
+    ];
     return {
       ok: true,
       value: {
         ...writeValue,
-        effects: [
-          ...(writeValue.effects ?? []),
-          ...(trailingStructured?.effects ?? []).map((e, idx) => ({
-            ...e,
-            order: idx + 1,
-          })),
-        ],
-        outputPlan: trailingStructured?.outputPlan,
+        steps: allSteps,
       },
     };
   }
@@ -2264,13 +2151,14 @@ function classifyHeredocDocument(
       { kind: "script-content", text: body, language },
       { kind: "command-footer", text: `\n${delimiter}` },
     ],
-    effects: [
+    steps: [
       {
-        kind: "execute-script",
+        kind: "execute-script" as const,
         order: 0,
         commandName,
         language,
         contentNodeId: "heredoc-body",
+        outputShape: { kind: "unknown" as const },
       },
     ],
   };
@@ -2280,198 +2168,123 @@ function classifyHeredocDocument(
   };
 }
 
-function classifyStructuredCommandList(
+function decodePrintfEscapes(raw: string): string | null {
+  if (raw.includes("%")) return null;
+  let decoded = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch !== "\\") {
+      decoded += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (!next) return null;
+    if (next === "n") decoded += "\n";
+    else if (next === "t") decoded += "\t";
+    else if (next === "r") decoded += "\r";
+    else if (next === "\\") decoded += "\\";
+    else return null;
+    i++;
+  }
+  return decoded;
+}
+
+function classifyPrintfListMember(
+  cmd: SimpleCommand,
+): { steps: CommandStep[] } | null {
+  const valueArgs = cmd.args.filter((a) => a.kind === "value");
+  if (valueArgs.length !== 1) return null;
+  const raw = valueArgs[0]!.text;
+  const decoded = decodePrintfEscapes(raw);
+  if (decoded === null) return null;
+  return {
+    steps: [
+      {
+        kind: "plain-output",
+        order: 0,
+        commandName: "printf",
+        outputShape: {
+          kind: "literal",
+          text: decoded,
+          format: { kind: "content", language: "shell-output" },
+        },
+      },
+    ],
+  };
+}
+
+async function classifyListMember(
+  line: string,
+  theme: ShikiTheme,
+): Promise<{ steps: CommandStep[] } | null> {
+  let shikiLines: TokenWithScopes[][] | null;
+  try {
+    shikiLines = await tokenizeWithScopes(line, theme);
+  } catch {
+    return null;
+  }
+  if (!shikiLines) return null;
+  const tokens = mapShikiTokens(shikiLines);
+  const ast = buildAST(tokens, line);
+  if (ast.type !== "simple") return null;
+  switch (ast.command.name) {
+    case "sed":
+    case "cat":
+    case "head":
+    case "tail":
+    case "nl": {
+      const r = classifyReadCommand(ast.command, line);
+      return r.ok ? { steps: r.value.steps ?? [] } : null;
+    }
+    case "printf":
+      return classifyPrintfListMember(ast.command);
+    default:
+      return null;
+  }
+}
+
+async function classifyStructuredCommandList(
   innerCommand: string,
   originalCommand: string,
-): ShellSemanticResult | null {
+  theme: ShikiTheme,
+): Promise<ShellSemanticResult | null> {
   const normalized = innerCommand.replace(/\r\n/g, "\n");
   const readback = parseLsReadbackSpec(normalized);
   if (readback) {
-    const language = langFromPath(readback.filePath) || "text";
+    const lsReadbackResult = classifyTrailingStructuredOutput(normalized);
+    if (!lsReadbackResult) return null;
     return {
       ok: true,
       value: {
         kind: "structured-output",
         commandName: "ls",
         command: originalCommand,
-        effects: [
-          { kind: "plain-output", order: 0, commandName: "ls" },
-          {
-            kind: "read-file",
-            order: 1,
-            commandName: "sed",
-            filePath: readback.filePath,
-            range: {
-              type: "lines",
-              start: readback.sedStart,
-              end: readback.sedEnd,
-            },
-          },
-        ],
-        outputPlan: {
-          version: 1,
-          blocks: [
-            {
-              id: "listing",
-              source: {
-                stepIndex: 0,
-                producerName: "ls",
-                filePath: readback.filePath,
-              },
-              format: { kind: "content", language: "shell-output" },
-              location: {
-                kind: "from-cursor",
-                end: { kind: "line-count", count: 1 },
-                validator: "non-empty",
-              },
-            },
-            {
-              id: "sed-output",
-              source: {
-                stepIndex: 1,
-                producerName: "sed",
-                filePath: readback.filePath,
-              },
-              format: { kind: "content", language },
-              location: {
-                kind: "from-cursor",
-                end: { kind: "end-of-output", requiresComplete: true },
-                validator: "non-empty",
-              },
-            },
-          ],
-        },
+        steps: lsReadbackResult.steps,
       },
     };
   }
 
   const lines = splitTopLevelCommandList(normalized);
-  if (!lines) return null;
-  if (lines.length < 2) return null;
+  if (!lines || lines.length < 2) return null;
 
-  const blocks: OutputBlockPlan[] = [];
-  const effects: ShellSemanticEffect[] = [];
-  const separatorTexts: string[] = [];
-  let hasUnsupported = false;
-  let hasSed = false;
-  const sedFileSet = new Set<string>();
-  let hasAdjacentSedWithoutSeparator = false;
-  const entries: Array<
-    | {
-        kind: "sed";
-        lineIndex: number;
-        blockId: string;
-        filePath: string;
-        language: string;
-      }
-    | {
-        kind: "printf";
-        lineIndex: number;
-        blockId: string;
-        decoded: string;
-      }
-  > = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const sed = parseSedReadSpec(line);
-    if (sed) {
-      hasSed = true;
-      sedFileSet.add(sed.filePath);
-      effects.push({
-        kind: "read-file",
-        order: effects.length,
-        commandName: "sed",
-        filePath: sed.filePath,
-        range: { type: "lines", start: sed.start, end: sed.end },
-      });
-      if (entries[entries.length - 1]?.kind === "sed") {
-        hasAdjacentSedWithoutSeparator = true;
-      }
-      entries.push({
-        lineIndex: i,
-        kind: "sed",
-        blockId: `sed-${i}`,
-        filePath: sed.filePath,
-        language: langFromPath(sed.filePath) || "text",
-      });
-      continue;
-    }
-    const printf = parsePrintfLiteralSpec(line);
-    if (printf) {
-      effects.push({
-        kind: "plain-output",
-        order: effects.length,
-        commandName: "printf",
-      });
-      separatorTexts.push(printf.decoded);
-      entries.push({
-        lineIndex: i,
-        kind: "printf",
-        blockId: `printf-${i}`,
-        decoded: printf.decoded,
-      });
-      continue;
-    }
-    hasUnsupported = true;
-    break;
-  }
-  if (hasUnsupported || !hasSed) return null;
-
-  const duplicateSeparator =
-    new Set(separatorTexts).size !== separatorTexts.length;
-  const allowPlan =
-    !duplicateSeparator &&
-    !hasAdjacentSedWithoutSeparator &&
-    (sedFileSet.size <= 1 || separatorTexts.length > 0);
-  if (allowPlan) {
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i]!;
-      if (entry.kind === "printf") {
-        blocks.push({
-          id: entry.blockId,
-          source: { stepIndex: entry.lineIndex, producerName: "printf" },
-          format: { kind: "content", language: "shell-output" },
-          location: {
-            kind: "unique-literal",
-            text: entry.decoded,
-            include: "self",
-          },
-        });
-        continue;
-      }
-      const nextPrintf = entries
-        .slice(i + 1)
-        .find((item) => item.kind === "printf");
-      blocks.push({
-        id: entry.blockId,
-        source: {
-          stepIndex: entry.lineIndex,
-          producerName: "sed",
-          filePath: entry.filePath,
-        },
-        format: { kind: "content", language: entry.language },
-        location: nextPrintf
-          ? {
-              kind: "from-cursor",
-              end: { kind: "before-block", blockId: nextPrintf.blockId },
-              validator: "non-empty",
-            }
-          : {
-              kind: "from-cursor",
-              end: { kind: "end-of-output", requiresComplete: true },
-              validator: "non-empty",
-            },
-      });
+  const steps: CommandStep[] = [];
+  for (const line of lines) {
+    const member = await classifyListMember(line, theme);
+    if (!member) return null;
+    for (const s of member.steps) {
+      steps.push({ ...s, order: steps.length, blockId: undefined });
     }
   }
+
+  if (!steps.some((s) => s.kind === "read-file")) return null;
+
   return {
     ok: true,
     value: {
       kind: "structured-output",
       commandName: "shell",
       command: originalCommand,
-      effects,
-      outputPlan: allowPlan ? { version: 1, blocks } : undefined,
+      steps,
     },
   };
 }
@@ -2512,7 +2325,11 @@ export async function parseShellSemantic(
     }
   }
 
-  const structuredList = classifyStructuredCommandList(inner, command);
+  const structuredList = await classifyStructuredCommandList(
+    inner,
+    command,
+    theme,
+  );
   if (structuredList) {
     return structuredList.ok
       ? {
