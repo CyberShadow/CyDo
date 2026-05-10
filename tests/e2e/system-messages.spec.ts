@@ -11,10 +11,6 @@ test("first message renders as collapsed system-user-message with entry point la
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -54,10 +50,6 @@ test("system-user-message persists after agent confirms the message", { tag: "@n
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -88,10 +80,6 @@ test("session-start system message stays collapsed after reload", { tag: "@no-co
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
   const messageText = 'Please reply with "session-start-replay"';
@@ -110,10 +98,6 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
   await sendMessage(page, 'call task research reply with "task-prompt-replay"');

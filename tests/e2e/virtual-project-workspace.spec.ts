@@ -194,10 +194,6 @@ test(
   "tasks with workspace are pinned; importable tasks appear in all matching workspaces",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("pin");
 

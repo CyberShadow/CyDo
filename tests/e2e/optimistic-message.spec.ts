@@ -12,10 +12,6 @@ test("user bubble appears immediately after Send (ack-4 optimistic render)", { t
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -40,10 +36,6 @@ test("outbox replays unsent message after offline reload", { tag: "@claude-only"
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -97,10 +89,6 @@ test("backend deduplicates message sent twice with same nonce", { tag: "@claude-
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -168,10 +156,6 @@ test("backend deduplicates message sent twice with same nonce", { tag: "@claude-
 });
 
 test("outbox entry evicted after backend ack", { tag: "@claude-only" }, async ({ page, agentType }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -194,10 +178,6 @@ test("codex emits agentAck on turn/start response (ack-2 signal)", { tag: "@code
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-specific: tests turn/start agent-ack",
-  );
 
   // Capture agentAck frames before page.goto so the WebSocket listener is in
   // place when the connection is established.
@@ -247,10 +227,6 @@ test("copilot emits agentAck on session.send (ack-2 signal)", { tag: "@copilot-o
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "copilot",
-    "copilot-specific: tests session.send agent-ack and synthetic echo ordering",
-  );
 
   // Capture agentAck frames before page.goto so the WebSocket listener is in
   // place when the connection is established.
@@ -307,10 +283,6 @@ test("claude skips ack-2 (no agent-ack signal)", { tag: "@claude-only" }, async 
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "claude-specific: guards against accidental ack-2 emission",
-  );
 
   await enterSession(page);
 
@@ -342,10 +314,6 @@ test("late-joining tab sees pending bubble from history", { tag: "@claude-only" 
   browser,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -381,10 +349,6 @@ test("outbox ack-4 placeholder visible offline; persists across reload", { tag: 
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 
@@ -437,10 +401,6 @@ test("identical-text messages use separate nonces (no placeholder collision)", {
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await enterSession(page);
 

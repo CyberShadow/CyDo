@@ -107,10 +107,6 @@ function initGitRepo(dir: string): void {
 // ---------------------------------------------------------------------------
 
 test("cydo discover subcommand works standalone", { tag: "@claude-only" }, ({}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   const result = spawnSync(
     process.env.CYDO_BIN!,
@@ -142,10 +138,6 @@ test(
   "sandboxed discovery with empty_dir masking excludes masked project",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     // This test requires real bwrap.  In the Nix test environment the
     // fake-bwrap wrapper strips all bind-mount flags, so empty_dir overlays
@@ -209,10 +201,6 @@ test(
   "config reload triggers re-discovery with new workspace",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("reload");
 
@@ -283,10 +271,6 @@ test(
   "discovery failure for non-existent workspace root is handled gracefully",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("fail");
 
@@ -340,10 +324,6 @@ test(
   "custom is_project expression discovers directories matching either criterion",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("expr");
     const wsRoot = "/tmp/cydo-discover-expr";
@@ -407,10 +387,6 @@ test(
   "recurse_when: true discovers nested git repos inside a project",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("nested");
     const wsRoot = "/tmp/cydo-discover-nested";
@@ -460,10 +436,6 @@ test(
   "hard-coded project list with equals discovers only named directories",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("list");
     const wsRoot = "/tmp/cydo-discover-list";
@@ -515,10 +487,6 @@ test(
   "depth-limited recurse_when stops recursion at the configured depth",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const { workDir, workerHome } = createWorkDir("depth");
     const wsRoot = "/tmp/cydo-discover-depth";

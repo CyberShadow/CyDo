@@ -41,10 +41,6 @@ test("End button shows ending state then session exits", { tag: "@no-codex" }, a
   // Codex's closeStdin() fires the exit callback synchronously, so the "Ending..."
   // state is only visible for < 1 ms — too brief for Playwright's polling to detect.
   // The codex synchronous-exit behaviour is a separate issue; skip here.
-  test.skip(
-    agentType === "codex",
-    "codex closeStdin exits synchronously; Ending... state is undetectable",
-  );
 
   await enterSession(page);
 
@@ -110,10 +106,6 @@ test("background command output re-enters processing state", { tag: "@no-copilot
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "copilot",
-    "copilot does not support background commands",
-  );
 
   // Track task_updated isProcessing transitions via WebSocket frames.
   // The re-entry window may be brief (< 200ms for Claude) so we can't rely on
@@ -166,7 +158,6 @@ test("repro: ending capability matches Stop visibility", { tag: "@copilot-only" 
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "copilot", "reproducer targets Copilot only");
 
   const readEndingCanStop = captureEndingCanStop(page);
   await enterSession(page);

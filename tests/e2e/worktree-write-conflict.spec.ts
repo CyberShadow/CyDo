@@ -8,9 +8,7 @@ import {
 
 test("Task tool rejects batch with multiple non-read-only siblings on shared worktree", { tag: "@no-codex" }, async ({
   page,
-  agentType,
 }) => {
-  test.skip(agentType === "codex", "codex does not use git worktrees");
 
   const taskCreatedEvents: Array<{
     tid: number;

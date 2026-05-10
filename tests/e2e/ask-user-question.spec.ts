@@ -14,7 +14,6 @@ test("AskUserQuestion works from plan_mode after keep_context mode switch", { ta
   // The codex mock's hasToolOutput() scans the entire input history for any
   // prior function_call_output and returns "Done." — after SwitchMode, it finds
   // that output and cannot distinguish the subsequent AskUserQuestion call.
-  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion after a keep_context mode switch");
 
   await enterSession(page); // creates a conversation task (user_visible: true)
 
@@ -127,7 +126,6 @@ test("codex AskUserQuestion with delimiter text shows selected answer", { tag: "
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only regression for normalized array result content");
 
   await enterSession(page);
   await sendMessage(page, 'call askuserquestion What does "=" mean?');

@@ -12,7 +12,6 @@ test("copilot built-in tool with permission auto-approval", { tag: "@copilot-onl
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "copilot", "copilot-only test");
 
   // Create a file for the view tool to read.
   writeFileSync(

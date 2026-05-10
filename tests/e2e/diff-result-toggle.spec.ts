@@ -10,10 +10,6 @@ test("diff result: toggle reveals raw git log output and headers", { tag: "@no-c
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "copilot",
-    "copilot cydo-Bash output doesn't produce parseable hunks in this fixture",
-  );
   await enterSession(page);
   const timeout = responseTimeout(agentType);
   await sendMessage(page, "semantic shell diff");

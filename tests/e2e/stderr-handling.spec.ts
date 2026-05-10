@@ -12,7 +12,6 @@ test("codex stderr view source keeps tabs and shows abstract stderr payload", { 
   agentType,
   backend,
 }) => {
-  test.skip(agentType !== "codex", "codex-only stderr regression");
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");

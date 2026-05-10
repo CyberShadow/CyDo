@@ -702,7 +702,7 @@ EOF
 
           manifest = builtins.fromJSON (builtins.readFile testManifest);
 
-          # Flatten suites → list of { file, line, title, projectName }
+          # Flatten suites → list of { file, line, title, projectName, tags }
           allTests = lib.concatMap (suite:
             lib.concatMap (spec:
               map (t: {
@@ -710,6 +710,7 @@ EOF
                 line = spec.line;
                 title = spec.title;
                 projectName = t.projectName;
+                tags = spec.tags;
               }) spec.tests
             ) suite.specs
           ) manifest.suites;
@@ -726,6 +727,40 @@ EOF
           testAttrName = t:
             "e2e-${t.projectName}-${specStem t.file}-L${toString t.line}";
 
+          # Map each project to the agent it exercises.
+          projectAgent = projectName: projectConfig.${projectName}.agentType;
+
+          # A cell is kept iff its project's agent satisfies the spec's tags.
+          # Tag forms recognized (@ prefix already stripped in JSON):
+          #   "<agent>-only"  → cell kept only if projectAgent == <agent>
+          #   "no-<agent>"    → cell pruned if projectAgent == <agent>
+          # Other tags are ignored.
+          matchesProject = t:
+            let
+              onlyAgents = map (lib.removeSuffix "-only")
+                (builtins.filter (s: lib.hasSuffix "-only" s) t.tags);
+              forbidAgents = map (lib.removePrefix "no-")
+                (builtins.filter (s: lib.hasPrefix "no-" s) t.tags);
+              agent = projectAgent t.projectName;
+            in
+              (onlyAgents == [] || builtins.elem agent onlyAgents)
+              && !(builtins.elem agent forbidAgents);
+
+          # Drift guard: fail at eval time if any tag names an unknown agent.
+          knownAgents = [ "claude" "codex" "copilot" ];
+          allTagAgents = lib.unique (lib.concatMap (t:
+            (map (lib.removeSuffix "-only")
+                 (builtins.filter (s: lib.hasSuffix "-only" s) t.tags))
+            ++ (map (lib.removePrefix "no-")
+                 (builtins.filter (s: lib.hasPrefix "no-" s) t.tags))
+          ) allTests);
+          unknownTagAgents = lib.subtractLists knownAgents allTagAgents;
+          assertNoUnknownAgents = lib.assertMsg (unknownTagAgents == [])
+            "Unknown agent(s) in test tags: ${lib.concatStringsSep ", " unknownTagAgents}";
+
+          prunedTests = assert assertNoUnknownAgents;
+            builtins.filter matchesProject allTests;
+
           testChecks = lib.listToAttrs (map (t:
             let
               cfg = projectConfig.${t.projectName};
@@ -739,7 +774,7 @@ EOF
                 in "${normalized} --project=${t.projectName}";
               inherit (cfg) agentType claudeBin extraNativeBuildInputs;
             })
-          ) allTests);
+          ) prunedTests);
         in
         pkgs.lib.optionalAttrs pkgs.stdenv.isLinux ({
           unittests = pkgs.buildDubPackage {

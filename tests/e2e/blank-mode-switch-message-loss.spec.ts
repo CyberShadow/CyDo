@@ -1,7 +1,6 @@
 import { test, expect, enterSession, sendMessage, assistantText } from "./fixtures";
 
 test("blank-mode entry point preserves first user message after SwitchMode", { tag: "@codex-only" }, async ({ page, agentType }) => {
-  test.skip(agentType !== "codex", "reproducer is codex-specific — codex JSONL stores wrapped prompt text");
 
   await enterSession(page);
 

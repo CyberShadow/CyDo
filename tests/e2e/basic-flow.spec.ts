@@ -9,10 +9,6 @@ import {
 } from "./fixtures";
 
 test("page loads and shows CyDo branding", { tag: "@no-codex" }, async ({ page, agentType }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
   await page.goto("/");
   await expect(page.locator(".welcome-page-header .logo-banner")).toBeVisible({
     timeout: 10_000,
@@ -68,7 +64,6 @@ test("tool call flow", async ({ page, agentType }) => {
 });
 
 test("codex tool call renders output content", { tag: "@codex-only" }, async ({ page, agentType }) => {
-  test.skip(agentType !== "codex", "codex-only test");
   // This test verifies that Codex tool results include structured content
   // that the frontend can render (not just the tool name).
   await enterSession(page);
@@ -79,7 +74,6 @@ test("codex tool call renders output content", { tag: "@codex-only" }, async ({ 
 });
 
 test("codex agent type indicator", { tag: "@codex-only" }, async ({ page, agentType }) => {
-  test.skip(agentType !== "codex", "codex-only test");
   await enterSession(page);
 
   const input = page.locator(".input-textarea");
@@ -100,7 +94,6 @@ test("codex file fixture shows view-file action", { tag: "@codex-only" }, async 
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only test");
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");
@@ -144,7 +137,6 @@ test("codex update fixture shows patch preview", { tag: "@codex-only" }, async (
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only test");
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");
@@ -213,7 +205,6 @@ test("codex delete fixture shows deleted state", { tag: "@codex-only" }, async (
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only test");
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");

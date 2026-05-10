@@ -11,7 +11,6 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only: tests Preact memo stability");
 
   // Hook into Preact's render pipeline via window.__preactOptions to count
   // MessageView renders. MessageView is memo-wrapped; when memo works, only

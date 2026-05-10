@@ -98,10 +98,6 @@ test("claude live idle undo latest turn avoids UUID truncation alert", { tag: "@
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Claude-only regression for live latest-turn undo alert",
-  );
 
   const timeout = responseTimeout(agentType);
   await enterSession(page);
@@ -148,10 +144,6 @@ test("claude live idle undo restores user message text into the textarea", { tag
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Claude-only regression for live idle undo draft recovery",
-  );
 
   const prompt = 'please reply with reply-one';
   const timeout = responseTimeout(agentType);
@@ -182,10 +174,6 @@ test("claude live idle undo on turn three removes only turns three through five"
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Claude-only regression for live undo UUID anchoring",
-  );
 
   const turns = [
     "live-one",
@@ -241,10 +229,6 @@ test("claude undo preview targets the same turn before and after reload", { tag:
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Claude-only regression for live/replay undo target invariant",
-  );
 
   const turns = [
     "reload-one",
@@ -312,7 +296,6 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", { t
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "Claude-only undo protocol regression");
 
   const frames: any[] = [];
   page.on("websocket", (ws) => {

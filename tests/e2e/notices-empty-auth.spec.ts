@@ -15,10 +15,6 @@ test("auth-enabled startup handles empty notices list", { tag: "@claude-only" },
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await page.goto("/");
   await expect(page.locator('button[title="New task"]').first()).toBeVisible({

@@ -57,10 +57,6 @@ test("project memory marker appears in user message text (not only system prompt
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "copilot",
-    "copilot-proxy does not implement check_user_text; check context contains covers this",
-  );
 
   const marker = "CYDO_TEST_PROJECT_MEMORY_IN_USER_TEXT";
   setupMemory(`- [User text test](user_text.md) — ${marker}\n`);

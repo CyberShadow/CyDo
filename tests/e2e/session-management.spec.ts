@@ -51,10 +51,6 @@ test("build artifact sanity: hashed asset references", { tag: "@no-codex" }, asy
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "agent-agnostic, runs in claude project only",
-  );
   const response = await page.goto("/");
   const html = await response!.text();
 

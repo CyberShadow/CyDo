@@ -24,7 +24,6 @@ test("tab title shows attention count scoped to current project", { tag: "@no-co
   agentType,
 }) => {
   // codex mock cannot reliably handle AskUserQuestion
-  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion");
 
   // Enter session 1. Override hasFocus to prevent auto-dismiss from racing
   // with navigation (auto-dismiss gates on document.hasFocus()).
@@ -46,7 +45,6 @@ test("home button does not show attention for same-project sessions", { tag: "@n
   agentType,
 }) => {
   // codex mock cannot reliably handle AskUserQuestion
-  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion");
 
   // Enter session and trigger attention. Override hasFocus to prevent the
   // auto-dismiss race with navigation.
@@ -71,7 +69,6 @@ test("hamburger button shows attention for any session on mobile", { tag: "@no-c
   agentType,
 }) => {
   // codex mock cannot reliably handle AskUserQuestion
-  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion");
 
   // Create session 1 and trigger attention. Override hasFocus to prevent the
   // auto-dismiss race with navigation.
@@ -109,7 +106,6 @@ test("active sessions sort attention-needing tasks first with attention styling"
   agentType,
 }) => {
   // codex mock cannot reliably handle AskUserQuestion
-  test.skip(agentType === "codex", "codex mock cannot handle AskUserQuestion");
 
   // Create first session - let it complete so it stays in active sessions without attention
   await enterSession(page);

@@ -17,9 +17,7 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("codex sub-task result should not be delivered twice", { tag: "@codex-only" }, async ({
   page,
-  agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: closeStdin fires exitHandler synchronously");
   test.setTimeout(120_000);
 
   await enterSession(page);

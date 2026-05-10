@@ -44,7 +44,6 @@ test("multi-client navigation isolation", { tag: "@no-codex" }, async ({
   agentType,
   context,
 }) => {
-  test.skip(agentType === "codex", "claude-only test");
   const pageA = page;
   const pageB = await context.newPage();
 

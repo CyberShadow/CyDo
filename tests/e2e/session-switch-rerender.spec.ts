@@ -11,7 +11,6 @@ test("switching sessions does not re-render every mounted SessionView", { tag: "
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only: tests Preact memo stability");
 
   // Hook into Preact's render pipeline. We count SessionViewInner renders by
   // matching the function name (preserved by keepNames:true in vite.config.ts).

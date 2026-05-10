@@ -21,7 +21,6 @@ test("file viewer shows diff content for codex update without prior create", { t
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: partial diff rendering");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -81,7 +80,6 @@ test("cumulative diff shows net change after codex create and update", { tag: "@
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: cumulative file viewer");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -128,7 +126,6 @@ test("rendered markdown view includes all collected partial hunks", { tag: "@cod
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: partial markdown rendering");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -175,7 +172,6 @@ test("live codex fileChange markdown add renders inline preview and rendered vie
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: markdown inline parity");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -210,7 +206,6 @@ test("replayed apply_patch markdown sections render per-file previews and fallba
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: apply_patch markdown parity");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -266,7 +261,6 @@ test("replayed multi-file apply_patch keeps markdown preview scoped to markdown 
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: multi-file sectioned previews");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);

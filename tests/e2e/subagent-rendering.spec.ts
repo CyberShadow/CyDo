@@ -20,7 +20,6 @@ test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only — uses Claude's built-in Task tool");
   test.setTimeout(120_000);
 
   await enterSession(page);

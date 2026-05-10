@@ -12,10 +12,6 @@ test("markdown diff toggle button visible for .md file edit with structuredPatch
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "Claude-only: Edit tool with structuredPatch",
-  );
 
   await enterSession(page);
 

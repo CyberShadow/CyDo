@@ -138,10 +138,6 @@ test(
   "orphan agent type renders error message in task stream",
   { tag: "@claude-only" },
   async ({ page, restartableBackend }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     // Stop the backend so we can safely modify the database.
     await restartableBackend.stop();

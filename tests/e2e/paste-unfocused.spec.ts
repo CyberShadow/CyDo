@@ -42,7 +42,6 @@ test("paste when input is unfocused on new-task page populates input", { tag: "@
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "agent-agnostic, runs once");
   await enterSession(page);
 
   // Blur whichever element currently has focus

@@ -9,10 +9,6 @@ test("frontend update notice appears on build hash mismatch", { tag: "@claude-on
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   const fakeHash = "faketestbuildhash";
   let realHash: string | null = null;

@@ -31,10 +31,6 @@ test("should show connection overlay on welcome page while connecting", { tag: "
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   // Stub WebSocket so the app stays in "connecting" state indefinitely.
   // The real WS connects to localhost in milliseconds, which is too fast
@@ -55,10 +51,6 @@ test("should use the selected light theme while connecting", { tag: "@claude-onl
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   await stubConnectingWebSocket(page, "light");
   await page.goto("/");

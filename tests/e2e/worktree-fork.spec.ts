@@ -2,9 +2,7 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, async ({
   page,
-  agentType,
 }) => {
-  test.skip(agentType === "codex", "codex does not use git worktrees");
 
   // Track WebSocket events to reliably detect task creation/completion.
   const taskCreatedEvents: Array<{

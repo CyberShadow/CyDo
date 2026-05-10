@@ -220,7 +220,6 @@ test("idle task is not nudged after resume + restart", { tag: "@no-codex" }, asy
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "codex", "claude-only test");
   // Create a task and let it become idle (alive)
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
@@ -344,7 +343,6 @@ test("active task receives nudge and continues after restart", { tag: "@claude-o
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "claude", "claude-only test");
   // Create a task and start a long-running command (will be mid-turn when we kill)
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
@@ -383,7 +381,6 @@ test("sub-task result delivered to parent after backend restart", { tag: "@claud
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "claude", "claude-only test");
   // Create a parent task that spawns a sub-task running a slow command,
   // so the sub-task is guaranteed to be in-flight when we kill the backend.
   await page.goto("/");
@@ -422,7 +419,6 @@ test("waiting parent receives batch results after restart", { tag: "@claude-only
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "claude", "claude-only test");
 
   // Create a parent that spawns 2 sub-tasks, both running slow commands.
   await page.goto("/");
@@ -466,7 +462,6 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   page,
   restartableBackend,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "claude", "claude-only test");
   test.setTimeout(150_000);
 
   await page.goto("/");

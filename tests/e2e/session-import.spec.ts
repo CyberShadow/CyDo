@@ -104,10 +104,6 @@ function createWorkDir(suffix: string): { workDir: string; workerHome: string } 
 test("Import group node in sidebar expands on click and navigates correctly", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   const { workDir, workerHome } = createWorkDir("sidebar");
 
@@ -202,10 +198,6 @@ test("Import group node in sidebar expands on click and navigates correctly", { 
 test("importable session appears on startup, history loads, Import Session promotes it", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   const { workDir, workerHome } = createWorkDir("import");
 
@@ -323,10 +315,6 @@ test("importable session appears on startup, history loads, Import Session promo
 test("import replay drops durable session/status rows but keeps compact boundary", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "claude",
-    "agent-agnostic, runs in claude project only",
-  );
 
   const { workDir, workerHome } = createWorkDir("status-replay");
   const projectPath = "/tmp/cydo-test-workspace";

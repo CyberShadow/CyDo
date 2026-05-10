@@ -21,7 +21,6 @@ test("codex tool turn produces separate assistant messages for tool call and res
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: tool turn delimiting");
 
   await enterSession(page);
 

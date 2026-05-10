@@ -11,10 +11,6 @@ test("View Source shows item-level events in collapsible list", { tag: "@claude-
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "item/started and item/completed are claude-only events",
-  );
 
   await enterSession(page);
   await sendMessage(page, "run command echo view-source-events-test");

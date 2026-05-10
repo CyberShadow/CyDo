@@ -4,10 +4,6 @@ test("commit output enforcement fires when subtask exits without committing", { 
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "claude-only: uses isolated worktree subtask output enforcement",
-  );
   test.setTimeout(120_000);
 
   let childTid: number | null = null;
@@ -77,10 +73,6 @@ test("commit output happy path: subtask commits and parent receives commits in r
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "claude-only: uses isolated worktree subtask with git commit",
-  );
   test.setTimeout(120_000);
 
   let childTid: number | null = null;
@@ -138,10 +130,6 @@ test("commit output enforcement walks past shared-worktree ancestors", { tag: "@
   // worktree (or the project path) and compare against that. This test
   // commits in the shared worktree and asserts the missing-outputs prompt
   // does not fire.
-  test.skip(
-    agentType !== "claude",
-    "claude-only: uses isolated shared-worktree subtask with git commit",
-  );
   test.setTimeout(120_000);
 
   let childTid: number | null = null;

@@ -60,7 +60,6 @@ test("codex fork from older turn truncates later history and isolates branches",
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only regression");
 
   const taskCreatedEvents: Array<{
     tid: number;

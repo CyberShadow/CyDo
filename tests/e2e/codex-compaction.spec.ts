@@ -19,7 +19,6 @@ test("codex context compaction shows compacting status", { tag: "@codex-only" },
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: context compaction");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -52,7 +51,6 @@ test("codex reconnect during active turn does not replay stale compacting status
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: active reconnect replay");
 
   const frames: any[] = [];
   page.on("websocket", (ws) => {
@@ -140,7 +138,6 @@ test("codex compaction reminder steers active turn before keep_context continuat
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: post-compaction continuation");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);
@@ -194,7 +191,6 @@ test("codex compaction reminder steers autonomous continuation without extra use
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only: autonomous compaction continuation");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);

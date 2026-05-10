@@ -35,10 +35,6 @@ test("old system prompt is absent after keep_context mode switch", { tag: "@no-c
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType === "codex",
-    "Codex injects task system prompts through user input fallback instead of developer prompt channel",
-  );
 
   await enterSession(page);
 

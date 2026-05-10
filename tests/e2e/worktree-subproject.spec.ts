@@ -130,10 +130,6 @@ test(
   "worktree task starts in the selected subproject inside a monorepo",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "worktree regression is backend-level; run once in claude project",
-    );
 
     const { workDir, workerHome } = createWorkDir("worktree-subproject");
     const wsRoot = "/tmp/cydo-worktree-subproject";
@@ -224,10 +220,6 @@ test(
   "blank task sandbox allows writes at the monorepo root",
   { tag: "@claude-only" },
   async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "sandbox regression is backend-level; run once in claude project",
-    );
 
     const { workDir, workerHome } = createWorkDir("sandbox-subproject");
     const wsRoot = "/tmp/cydo-sandbox-subproject";

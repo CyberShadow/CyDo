@@ -12,7 +12,6 @@ test("permission_policy allow auto-approves tool calls via PermissionPrompt", { 
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   // Configure the workspace with permission_policy: allow so the backend passes
   // --permission-prompt-tool to Claude and our PermissionPrompt MCP tool handles it.

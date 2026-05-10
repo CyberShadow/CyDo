@@ -1102,7 +1102,6 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", { tag: "@clau
 }) => {
   // Claude-specific: only the Anthropic mock can reliably return SwitchMode
   // after a Task tool result in a deterministic sequence.
-  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
   test.setTimeout(TALK_TIMEOUT * 2);
 
   await enterSession(page);
@@ -1165,7 +1164,6 @@ test("Ask/Answer: Handoff rejected while child question is pending", { tag: "@cl
 }) => {
   // Claude-specific: only the Anthropic mock can reliably return Handoff then Answer
   // after a Task tool result in a deterministic multi-step sequence.
-  test.skip(agentType !== "claude", "Claude-only: Anthropic-specific tool-result sequencing");
   test.setTimeout(TALK_TIMEOUT * 2);
 
   await enterSession(page);

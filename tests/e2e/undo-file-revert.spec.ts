@@ -13,10 +13,6 @@ test("undo with file revert removes file created by agent", { tag: "@claude-only
   backend,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "file revert only supported for Claude Code",
-  );
 
   const testFile = `${backend.wsDir}/undo-revert-test.txt`;
   const testContent = "hello from undo-revert test";

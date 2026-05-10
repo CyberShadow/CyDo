@@ -21,7 +21,6 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "stream events are Claude-protocol only");
 
   await enterSession(page);
   const timeout = responseTimeout(agentType);

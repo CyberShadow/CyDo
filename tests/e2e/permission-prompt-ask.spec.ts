@@ -12,7 +12,6 @@ test("permission_policy ask: Allow button approves the tool call", { tag: "@clau
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
@@ -52,7 +51,6 @@ test("permission_policy ask: Deny button blocks the tool call", { tag: "@claude-
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",

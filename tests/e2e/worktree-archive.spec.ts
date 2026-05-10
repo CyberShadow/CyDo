@@ -15,7 +15,6 @@ test("archive and unarchive a spike task's worktree", { tag: "@no-codex" }, asyn
   agentType,
   backend,
 }) => {
-  test.skip(agentType === "codex", "codex does not use git worktrees");
 
   const taskCreatedEvents: Array<{ tid: number; relation_type: string }> = [];
   const taskUpdatedEvents: Array<{ tid: number; alive: boolean }> = [];
@@ -126,7 +125,6 @@ test("cannot archive parent with alive descendant", { tag: "@no-codex" }, async 
   page,
   agentType,
 }) => {
-  test.skip(agentType === "codex", "codex does not use git worktrees");
 
   const taskCreatedEvents: Array<{ tid: number; relation_type: string }> = [];
   const taskUpdatedEvents: Array<{
@@ -215,7 +213,6 @@ test("archiving parent task archives spike's worktree", { tag: "@no-codex" }, as
   agentType,
   backend,
 }) => {
-  test.skip(agentType === "codex", "codex does not use git worktrees");
 
   const taskCreatedEvents: Array<{ tid: number; relation_type: string }> = [];
   const taskUpdatedEvents: Array<{ tid: number; alive: boolean }> = [];

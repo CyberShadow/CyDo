@@ -160,7 +160,6 @@ test("codex reload replays apply_patch tool call", { tag: "@codex-only" }, async
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "codex-only test");
 
   await enterSession(page);
   await sendMessage(page, "codex filechange create fixture");

@@ -107,10 +107,6 @@ test("undo on first Claude message restores draft input", { tag: "@claude-only" 
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "claude",
-    "claude-only: first message is replayed as template text",
-  );
 
   await enterSession(page);
 

@@ -38,10 +38,6 @@ test("codex alive-path undo: session stays alive after undo", { tag: "@codex-onl
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "Codex-only: tests thread/rollback undo path",
-  );
 
   await enterSession(page);
 
@@ -130,10 +126,6 @@ test("codex alive-path undo counts only active turns after prior rollback", { ta
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "Codex-only regression for repeated live rollback counting",
-  );
 
   await enterSession(page);
 

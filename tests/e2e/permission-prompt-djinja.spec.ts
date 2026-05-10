@@ -12,7 +12,6 @@ test("permission_policy djinja expression: allow branch auto-approves matching t
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   // Djinja expression: allow Bash, deny everything else.
   writeFileSync(
@@ -47,7 +46,6 @@ test("permission_policy djinja expression: deny branch blocks non-matching tools
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   // Djinja expression: deny Bash, allow everything else.
   writeFileSync(
@@ -84,7 +82,6 @@ test("permission_policy deny literal: all tool calls are blocked", { tag: "@clau
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only test");
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",

@@ -44,10 +44,6 @@ test("codex sends task system prompt through user input text", { tag: "@codex-on
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "Codex-specific regression for developer prompt fallback",
-  );
 
   await enterSession(page);
 

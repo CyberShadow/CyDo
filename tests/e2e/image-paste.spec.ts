@@ -33,7 +33,6 @@ test.describe("image paste", () => {
     page,
     agentType,
   }) => {
-    test.skip(agentType !== "claude", "Image support is Claude-only");
 
     await enterSession(page);
 
@@ -76,7 +75,6 @@ test.describe("image paste", () => {
     page,
     agentType,
   }) => {
-    test.skip(agentType !== "claude", "Image support is Claude-only");
 
     await enterSession(page);
 

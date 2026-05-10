@@ -251,10 +251,6 @@ test(
   "config reload removing overlapping workspace does not crash project watch registration",
   { tag: "@claude-only" },
   async ({}, testInfo) => {
-    test.skip(
-      testInfo.project.name !== "claude",
-      "agent-agnostic, runs in claude project only",
-    );
 
     const suffix = `overlap-watch-${testInfo.workerIndex}`;
     const { workDir, workerHome } = createWorkDir(suffix);

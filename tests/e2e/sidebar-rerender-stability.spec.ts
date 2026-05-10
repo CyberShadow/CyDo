@@ -11,7 +11,6 @@ test("sidebar re-renders are bounded during agent streaming", { tag: "@claude-on
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "claude", "claude-only: tests Preact memo stability");
 
   // Hook into Preact's render pipeline via __preactOptions to count Sidebar
   // renders. Sidebar is memo-wrapped; when memo works, it only re-renders when

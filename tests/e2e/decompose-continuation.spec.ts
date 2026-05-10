@@ -4,7 +4,6 @@ test("triage -> decompose keep_context uses strengthened resumed handoff", { tag
   page,
   agentType,
 }) => {
-  test.skip(agentType !== "codex", "Codex-focused regression for decompose continuation anchoring");
 
   const taskCreatedEvents: Array<{ tid: number; parent_tid: number; relation_type?: string }> = [];
   const taskReloadEvents: Array<{ tid: number; reason?: string }> = [];

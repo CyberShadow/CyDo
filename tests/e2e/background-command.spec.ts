@@ -23,10 +23,6 @@ test("background command spinner disappears after command completes", { tag: "@c
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-only: exec_command with yield_time_ms",
-  );
 
   await enterSession(page);
 
@@ -77,10 +73,6 @@ test("multiple background command spinners all disappear after completion", { ta
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-only: exec_command with yield_time_ms",
-  );
 
   await enterSession(page);
 
@@ -118,10 +110,6 @@ test("late command output appears after turn completes", { tag: "@codex-only" },
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-only: exec_command with yield_time_ms",
-  );
 
   await enterSession(page);
 
@@ -151,10 +139,6 @@ test("kill stops codex background command before delayed side effect", { tag: "@
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-only: pooled app-server kill behavior",
-  );
 
   await enterSession(page);
 
@@ -180,10 +164,6 @@ test("killing one codex task also interrupts sibling session on pooled server", 
   page,
   agentType,
 }) => {
-  test.skip(
-    agentType !== "codex",
-    "codex-only: pooled app-server sibling interruption",
-  );
 
   const markerA = `/tmp/cydo-codex-kill-sibling-a-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
   const markerB = `/tmp/cydo-codex-kill-sibling-b-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
