@@ -3,6 +3,7 @@ module cydo.export_;
 import ae.utils.json : JSONFragment, toJson;
 
 import cydo.agent.agent : Agent;
+import cydo.config : AgentDriver;
 import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.persist : Persistence, loadTaskHistory;
 import cydo.task : TypeInfoEntry;
@@ -116,7 +117,7 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 
 		// Pre-compute rollback skip lines for Codex
 		bool[int] rollbackSkipLines;
-		if (t.agentType == "codex")
+		if (agent !is null && agent.driver == AgentDriver.codex)
 		{
 			import std.file : exists, readText;
 			if (exists(jsonlPath))

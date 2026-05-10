@@ -27,7 +27,7 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
 	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
-import cydo.config : PathMode;
+import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 
@@ -921,6 +921,7 @@ class CodexAgent : Agent
 
 	@property string gitName() { return "Codex CLI"; }
 	@property string gitEmail() { return "noreply@openai.com"; }
+	override @property AgentDriver driver() { return AgentDriver.codex; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 	string executableName(string[string] env)
 	{

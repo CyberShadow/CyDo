@@ -20,7 +20,7 @@ import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
 import cydo.agent.session : AgentSession;
-import cydo.config : PathMode;
+import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
@@ -96,6 +96,7 @@ class CopilotAgent : Agent
 
 	@property string gitName() { return "GitHub Copilot"; }
 	@property string gitEmail() { return "noreply@github.com"; }
+	override @property AgentDriver driver() { return AgentDriver.copilot; }
 	@property string lastMcpConfigPath() { return lastMcpConfigPath_; }
 	string executableName(string[string] env)
 	{

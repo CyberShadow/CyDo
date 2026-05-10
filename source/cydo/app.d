@@ -62,7 +62,7 @@ import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.config : AgentConfig, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
+import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
@@ -2953,7 +2953,7 @@ class App : ToolsBackend
 
 		// Pre-compute rollback skip lines for Codex agents
 		bool[int] rollbackSkipLines;
-		if (td.agentType == "codex" && jsonlPath.length > 0)
+		if (ta !is null && ta.driver == AgentDriver.codex && jsonlPath.length > 0)
 		{
 			import std.file : exists, readText;
 			if (exists(jsonlPath))
@@ -5577,8 +5577,9 @@ class App : ToolsBackend
 			unsubscribeAll(tid);
 
 			// --- StateQueue notification ---
+			auto ta = tryAgentForTask(tid);
 			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive
-				|| (tasks[tid].agentType == "codex" && exitCode == 143);
+				|| (ta !is null && ta.driver == AgentDriver.codex && exitCode == 143);
 
 			if (tasks[tid].killPromise !is null)
 			{
@@ -5772,15 +5773,32 @@ class App : ToolsBackend
 					string body;
 					if (e.msg.canFind("No such file") || e.msg.canFind("not found"))
 					{
+						import std.conv : to;
 						import std.string : toUpper;
-						auto binEnvVar = "CYDO_" ~ td.agentType.toUpper ~ "_BIN";
+						auto ta = tryAgentForTask(tid);
+						string binEnvVar;
 						string installHint;
-						if (td.agentType == "claude")
-							installHint = "`npm install -g @anthropic-ai/claude-code`";
-						else if (td.agentType == "codex")
-							installHint = "`npm install -g @openai/codex`";
-						else
+						if (ta is null)
+						{
+							binEnvVar = "CYDO_" ~ td.agentType.toUpper ~ "_BIN";
 							installHint = "the appropriate package for your agent";
+						}
+						else
+						{
+							binEnvVar = "CYDO_" ~ to!string(ta.driver).toUpper ~ "_BIN";
+							final switch (ta.driver)
+							{
+								case AgentDriver.claude:
+									installHint = "`npm install -g @anthropic-ai/claude-code`";
+									break;
+								case AgentDriver.codex:
+									installHint = "`npm install -g @openai/codex`";
+									break;
+								case AgentDriver.copilot:
+									installHint = "the appropriate package for your agent";
+									break;
+							}
+						}
 						body = "The **`" ~ td.agentType ~ "`** CLI was not found on `PATH`.\n\n"
 							~ "Install it (e.g. via " ~ installHint ~ ") or set the `"
 							~ binEnvVar ~ "` environment variable to its absolute path, "

@@ -9,6 +9,7 @@ import ae.sys.inotify : INotify;
 import ae.sys.timing : setTimeout, TimerTask;
 
 import cydo.agent.agent : Agent, ForkableIdInfo;
+import cydo.config : AgentDriver;
 import cydo.inotify : RefCountedINotify;
 import cydo.task : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, extractEventFromEnvelope;
 
@@ -231,7 +232,8 @@ struct JsonlTracker
 		auto content = readText(jsonlPath);
 		auto forkIds = getAgent(tid).extractForkableIdsWithInfo(content);
 		auto td = getTask(tid);
-		auto isClaude = td !is null && td.agentType == "claude";
+		auto agent = td !is null ? getAgent(tid) : null;
+		auto isClaude = agent !is null && agent.driver == AgentDriver.claude;
 		UuidAssignment[] assignments;
 		string[] uuids;
 		if (isClaude)
@@ -296,7 +298,8 @@ struct JsonlTracker
 		import ae.utils.json : toJson;
 
 		auto td = getTask(tid);
-		auto isClaude = td !is null && td.agentType == "claude";
+		auto agent = td !is null ? getAgent(tid) : null;
+		auto isClaude = agent !is null && agent.driver == AgentDriver.claude;
 		UuidAssignment[] assignments;
 		string[] uuids;
 		if (isClaude)

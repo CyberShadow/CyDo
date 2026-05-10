@@ -4,7 +4,7 @@ import ae.utils.promise : Promise;
 
 import cydo.agent.protocol : TranslatedEvent;
 import cydo.agent.session : AgentSession;
-import cydo.config : PathMode;
+import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch;
 
 /// Per-session configuration passed to createSession.
@@ -67,6 +67,11 @@ interface Agent
 
 	/// ditto
 	@property string gitEmail();
+
+	/// The registered driver this Agent implements (claude/codex/copilot).
+	/// Used for code paths that switch on driver-specific behavior
+	/// (history rollback, codex SIGTERM, claude-anchor logic).
+	@property AgentDriver driver();
 
 	/// Resolve the executable name/path to launch for this agent using the
 	/// effective sandbox environment (including config-provided overrides).

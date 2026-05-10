@@ -16,7 +16,7 @@ import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandl
 import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
-import cydo.config : PathMode;
+import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, ResolvedSandbox, buildCommandPrefix, cleanup,
 	cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
@@ -68,6 +68,7 @@ class ClaudeCodeAgent : Agent
 	}
 	@property string gitName() { return "Claude Code"; }
 	@property string gitEmail() { return "noreply@anthropic.com"; }
+	override @property AgentDriver driver() { return AgentDriver.claude; }
 	string executableName(string[string] env)
 	{
 		return effectiveEnvValue(env, "CYDO_CLAUDE_BIN", "claude");
