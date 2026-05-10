@@ -25,6 +25,7 @@ import { reduceMessage } from "./sessionReducer";
 import { canonicalUserTextFromDisplayMessage } from "./userText";
 import { drafts as inputDrafts } from "./components/InputBox";
 import { outbox } from "./outbox";
+import { resetTaskForHistoryReplay } from "./historyReplayReset";
 
 export interface ImageAttachment {
   id: string;
@@ -1107,7 +1108,7 @@ export function useTaskManager(
           const { tid, total } = msg;
           const t0 = findByTid(tid);
           if (!t0) break;
-          const t = { ...t0, historyTotal: total, historyReceived: 0 };
+          const t = resetTaskForHistoryReplay(t0, total);
           liveStates.set(t0.uuid, t);
           setTasks((prev) => {
             if (!prev.has(t0.uuid)) return prev;

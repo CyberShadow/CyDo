@@ -44,6 +44,10 @@ import {
   parseCodexFileChanges,
   toFileEditOperation,
 } from "./lib/fileChanges";
+import {
+  canonicalUserTextFromContentAndMeta,
+  canonicalUserTextFromDisplayMessage,
+} from "./userText";
 
 function getExtras(msg: {
   extras?: Record<string, unknown>;
@@ -811,18 +815,35 @@ function reduceItemStartedUserMessage(
 
   const isPendingUserMsg = (m: DisplayMessage) =>
     m.type === "user" && m.ackState !== undefined && m.ackState > 1;
+  const eventNonce = (event as unknown as { correlation_id?: string })
+    .correlation_id;
+  const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
+  const eventUserText = canonicalUserTextFromContentAndMeta(
+    blocks,
+    eventCydoMeta,
+  );
+  const hasSameContent = (m: DisplayMessage) =>
+    canonicalUserTextFromDisplayMessage(m) === eventUserText;
+  const isReplayDisposablePendingUserMsg = (m: DisplayMessage) =>
+    isPendingUserMsg(m) &&
+    (eventNonce ? m.nonce === eventNonce : !m.nonce || hasSameContent(m));
 
   // Extract cydoMeta from the pending placeholder BEFORE the is_replay filter
   // removes it from the message list.
-  const pendingMsg = s.messages.find(isPendingUserMsg);
-  const eventCydoMeta = (event as unknown as { meta?: CydoMeta }).meta;
+  const pendingMsg = eventNonce
+    ? s.messages.find((m) => isPendingUserMsg(m) && m.nonce === eventNonce)
+    : s.messages.find(
+        (m) => isPendingUserMsg(m) && (!m.nonce || hasSameContent(m)),
+      );
 
   let state = s;
 
   if (event.is_replay) {
     state = {
       ...state,
-      messages: state.messages.filter((m) => !isPendingUserMsg(m)),
+      messages: state.messages.filter(
+        (m) => !isReplayDisposablePendingUserMsg(m),
+      ),
     };
   }
 
@@ -881,8 +902,6 @@ function reduceItemStartedUserMessage(
     // Match the placeholder by nonce. If the event carries a nonce and a
     // pending message with that nonce exists, replace it. Otherwise append
     // a fresh ack-1 message without disturbing other pending placeholders.
-    const eventNonce = (event as unknown as { correlation_id?: string })
-      .correlation_id;
     const matchIdx = eventNonce
       ? state.messages.findIndex(
           (m) => isPendingUserMsg(m) && m.nonce === eventNonce,
@@ -894,7 +913,7 @@ function reduceItemStartedUserMessage(
         ? state.messages.filter((_, i) => i !== matchIdx)
         : eventNonce
           ? state.messages
-          : state.messages.filter((m) => !isPendingUserMsg(m));
+          : state.messages.filter((m) => !isReplayDisposablePendingUserMsg(m));
     const messages = event.is_meta
       ? [...filtered, echoMsg]
       : insertBeforeStreaming(filtered, echoMsg);
