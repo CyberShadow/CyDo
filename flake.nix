@@ -396,7 +396,7 @@ EOF
               # ── CyDo workspace config ─────────────────────────────────
               mkdir -p /tmp/playwright-home/.config/cydo
               cat > /tmp/playwright-home/.config/cydo/config.yaml <<'CYDO_CFG'
-              default_agent_type: claude
+              default_agent: claude
               workspaces:
                 personal:
                   root: /tmp/ws/personal
@@ -635,7 +635,7 @@ EOF
 
               mkdir -p /tmp/playwright-home/.config/cydo
               cat > /tmp/playwright-home/.config/cydo/config.yaml <<CYDO_CFG
-              default_agent_type: ${agentType}
+              default_agent: ${agentType}
               log_level: trace
               workspaces:
                 local:

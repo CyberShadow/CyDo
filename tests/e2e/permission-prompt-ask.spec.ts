@@ -15,7 +15,7 @@ test("permission_policy ask: Allow button approves the tool call", { tag: "@clau
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
@@ -54,7 +54,7 @@ test("permission_policy ask: Deny button blocks the tool call", { tag: "@claude-
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace

@@ -599,7 +599,7 @@ class App : ToolsBackend
 	private CydoConfig config;
 	private WorkspaceInfo[] workspacesInfo;
 	private Agent agent; // default agent
-	private Agent[string] agentsByType;
+	private Agent[string] agentsByName;
 	// Task type definitions loaded from YAML, cached per project path ("" = global)
 	private struct ProjectTypeCache
 	{
@@ -683,7 +683,8 @@ class App : ToolsBackend
 	/// Result from background discovery thread for a single session.
 	private struct DiscoveryResult
 	{
-		string agentType;
+		string agentType;      // driver name — used as cache key (e.g. "claude")
+		string importAgentName; // agent name to attribute new importable tasks to
 		string sessionId;
 		long mtime;
 		string enumProjectPath; // from enumerateAllSessions (best-effort, may be empty)
@@ -804,16 +805,21 @@ class App : ToolsBackend
 		}
 		config = loadConfig();
 		applyConfiguredLogLevel(config.log_level);
-		agent = createAgent(config.default_agent_type);
-		if (auto ac = config.default_agent_type in config.agents)
-			agent.setModelAliases(ac.model_aliases);
+		foreach (name, ref ac; config.agents)
 		{
-			import cydo.agent.copilot : CopilotAgent;
-			if (auto ca = cast(CopilotAgent) agent)
-				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
-					dispatchTool(tool, callerTid, args);
+			auto driver = ac.driver.value;
+			auto a = createAgentByDriver(driver);
+			a.setModelAliases(ac.model_aliases);
+			{
+				import cydo.agent.copilot : CopilotAgent;
+				if (auto ca = cast(CopilotAgent) a)
+					ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
+						dispatchTool(tool, callerTid, args);
+			}
+			agentsByName[name] = a;
 		}
-		agentsByType[config.default_agent_type] = agent;
+		auto defaultName = defaultAgentName("");
+		agent = agentsByName[defaultName];
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
@@ -1047,7 +1053,7 @@ class App : ToolsBackend
 		jsonlTracker.stopAllWatches();
 		{
 			import cydo.agent.codex : CodexAgent;
-			foreach (a; agentsByType)
+			foreach (a; agentsByName)
 				if (auto ca = cast(CodexAgent) a)
 					ca.shutdownAllServers();
 		}
@@ -2845,7 +2851,7 @@ class App : ToolsBackend
 
 	private void handleCreateTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		auto at = json.agent_name.length > 0 ? json.agent_name : defaultAgentType(json.workspace);
+		auto at = json.agent_name.length > 0 ? json.agent_name : defaultAgentName(json.workspace);
 		// Top-level user task creation must always come through a concrete entry point.
 		// Internal tasks (subtasks, continuations, imports) are created through other paths.
 		auto entryPoints = getEntryPointsForProject(json.project_path);
@@ -4937,14 +4943,14 @@ class App : ToolsBackend
 		return true;
 	}
 
-	private int createTask(string workspace = "", string projectPath = "", string agentType = "claude",
+	private int createTask(string workspace = "", string projectPath = "", string agentName = "",
 		string entryPoint = "")
 	{
-		auto tid = persistence.createTask(workspace, projectPath, agentType, entryPoint);
+		auto tid = persistence.createTask(workspace, projectPath, agentName, entryPoint);
 		auto td = TaskData(tid);
 		td.workspace = workspace;
 		td.projectPath = projectPath;
-		td.agentType = agentType;
+		td.agentType = agentName;  // TaskData.agentType renamed in commit 7
 		td.entryPoint = entryPoint;
 		td.historyLoaded = true; // New tasks have no JSONL to load
 		import std.datetime : Clock;
@@ -4962,14 +4968,14 @@ class App : ToolsBackend
 		return tid;
 	}
 
-	/// Return the Agent instance for a task's agent type, creating it on demand.
-	/// Returns null if the agent type isn't registered (orphan task).
+	/// Return the Agent instance for a task's agent name, creating it on demand.
+	/// Returns null if the agent name isn't in config (orphan task).
 	private Agent tryAgentForTask(int tid)
 	{
 		auto td = &tasks[tid];
-		if (auto p = td.agentType in agentsByType)
+		if (auto p = td.agentType in agentsByName)
 			return *p;
-		auto a = tryCreateAgent(td.agentType);
+		auto a = tryCreateAgentByName(td.agentType);
 		if (!a)
 			return null;
 		if (auto ac = td.agentType in config.agents)
@@ -4980,7 +4986,7 @@ class App : ToolsBackend
 				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 					dispatchTool(tool, callerTid, args);
 		}
-		agentsByType[td.agentType] = a;
+		agentsByName[td.agentType] = a;
 		return a;
 	}
 
@@ -4996,24 +5002,26 @@ class App : ToolsBackend
 		return a;
 	}
 
-	/// Create an Agent instance by type name. Returns null if the type isn't
-	/// registered.
-	private static Agent tryCreateAgent(string agentType)
+	/// Create an Agent by registered driver enum. Throws if registry doesn't know the driver.
+	private static Agent createAgentByDriver(AgentDriver driver)
 	{
 		import cydo.agent.registry : agentRegistry;
+		import std.conv : to;
+		auto driverName = to!string(driver);
 		foreach (ref entry; agentRegistry)
-			if (entry.name == agentType)
+			if (entry.name == driverName)
 				return entry.create();
-		return null;
+		throw new Exception("Unknown driver: " ~ driverName);
 	}
 
-	/// Like tryCreateAgent but throws if the type isn't registered.
-	private static Agent createAgent(string agentType)
+	/// Create an Agent by user-chosen agent name (config.agents key).
+	/// Returns null if the name isn't in config.agents.
+	private Agent tryCreateAgentByName(string agentName)
 	{
-		auto a = tryCreateAgent(agentType);
-		if (!a)
-			throw new Exception("Unknown agent type: " ~ agentType);
-		return a;
+		auto ac = agentName in config.agents;
+		if (!ac)
+			return null;
+		return createAgentByDriver(ac.driver.value);
 	}
 
 	/// Set up a worktree for a task based on the edge's WorktreeMode.
@@ -5189,7 +5197,7 @@ class App : ToolsBackend
 		// Resolve sandbox config: agent defaults + global + per-agent + per-workspace
 		auto wsSandbox = findWorkspaceSandbox(td.workspace);
 		auto wsRoot = findWorkspaceRoot(td.workspace);
-		auto agentTypeSandbox = findAgentTypeSandbox(td.agentType);
+		auto agentTypeSandbox = findAgentSandbox(td.agentType);
 		bool readOnly = typeDef !is null && typeDef.read_only;
 		auto sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox,
 			taskAgent, workDir, wsRoot, readOnly);
@@ -5996,12 +6004,17 @@ class App : ToolsBackend
 		executeContinuation(tid, *contDefP, hPrompt, contKey);
 	}
 
-	private string defaultAgentType(string workspaceName)
+	private string defaultAgentName(string workspaceName)
 	{
 		foreach (ref ws; config.workspaces)
-			if (ws.name == workspaceName && ws.default_agent_type.length > 0)
-				return ws.default_agent_type;
-		return config.default_agent_type;
+			if (ws.name == workspaceName && ws.default_agent.length > 0)
+				return ws.default_agent;
+		if (config.default_agent.length > 0)
+			return config.default_agent;
+		// Post-overlay agentsByName is non-empty; fall through to first key.
+		foreach (name, _; agentsByName)
+			return name;
+		throw new Exception("no agents configured");
 	}
 
 	private string defaultTaskType(string workspaceName)
@@ -6119,10 +6132,10 @@ class App : ToolsBackend
 		}
 	}
 
-	private SandboxConfig findAgentTypeSandbox(string agentType)
+	private SandboxConfig findAgentSandbox(string agentName)
 	{
 		if (config.agents !is null)
-			if (auto ac = agentType in config.agents)
+			if (auto ac = agentName in config.agents)
 				return ac.sandbox;
 		return SandboxConfig.init;
 	}
@@ -7570,13 +7583,23 @@ class App : ToolsBackend
 		foreach (row; persistence.loadSessionMetaCache())
 			cacheMap[row.agentType ~ "\0" ~ row.sessionId] = row;
 
-		// Snapshot agent references for background thread
+		// Snapshot one Agent per unique driver to avoid double-discovering sessions
+		// when multiple agentsByName entries share the same driver.
 		Agent[] agentList;
-		string[] agentTypeNames;
-		foreach (name, a; agentsByType)
+		string[] driverNames;       // driver name (e.g. "claude") per entry — used as cache key
+		string[] importAgentNames;  // agent name to attribute discovered sessions to
 		{
-			agentList ~= a;
-			agentTypeNames ~= name;
+			bool[string] seenDriver;
+			foreach (name, a; agentsByName)
+			{
+				import std.conv : to;
+				auto driverStr = to!string(a.driver);
+				if (driverStr in seenDriver) continue;
+				seenDriver[driverStr] = true;
+				agentList ~= a;
+				driverNames ~= driverStr;
+				importAgentNames ~= name;
+			}
 		}
 
 		// Orphan cleanup: remove importable tasks whose files no longer exist
@@ -7614,33 +7637,34 @@ class App : ToolsBackend
 			foreach (ref pi; wi.projects)
 				knownProjectPaths ~= pi.path;
 
-		// Launch background discovery scan (captures agentList, agentTypeNames,
+		// Launch background discovery scan (captures agentList, driverNames, importAgentNames,
 		// knownSessionIds, cacheMap, knownProjectPaths by value — safe for background thread)
 		threadAsync({
 			DiscoveryResult[] results;
 			foreach (idx, agent; agentList)
 			{
-				auto agentType = agentTypeNames[idx];
+				auto driverName = driverNames[idx];
 				DiscoveredSession[] discovered;
 				try
 					discovered = agent.enumerateAllSessions();
 				catch (Exception e)
 				{
 					warningf("enumerateSessions: error enumerating %s sessions: %s",
-						agentType, e.msg);
+						driverName, e.msg);
 					continue;
 				}
 
 				foreach (ref ds; discovered)
 				{
-					auto compositeKey = agentType ~ "\0" ~ ds.sessionId;
+					auto compositeKey = driverName ~ "\0" ~ ds.sessionId;
 					if (compositeKey in knownSessionIds)
 						continue;
 
 					auto cachedp = compositeKey in cacheMap;
 
 					DiscoveryResult dr;
-					dr.agentType = agentType;
+					dr.agentType = driverName;
+					dr.importAgentName = importAgentNames[idx];
 					dr.sessionId = ds.sessionId;
 					dr.mtime = ds.mtime;
 					dr.enumProjectPath = ds.projectPath.length > 0
@@ -7665,7 +7689,7 @@ class App : ToolsBackend
 						}
 						catch (Exception e)
 							warningf("enumerateSessions: error reading meta for %s/%s: %s",
-								agentType, ds.sessionId, e.msg);
+								driverName, ds.sessionId, e.msg);
 						dr.fromCache = false;
 					}
 					results ~= dr;
@@ -7724,7 +7748,7 @@ class App : ToolsBackend
 						finalProjectPath, finalTitle, true);
 
 				// Create importable task row — workspace resolved at display time
-				auto tid = createTask("", finalProjectPath, r.agentType);
+				auto tid = createTask("", finalProjectPath, r.importAgentName);
 				auto td = &tasks[tid];
 				td.status = "importable";
 				td.agentSessionId = r.sessionId;
@@ -7778,7 +7802,7 @@ class App : ToolsBackend
 			{
 				sandbox.cleanup();
 				warningf("Discovery subprocess failed for workspace '%s': %s", ws.name, e.msg);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type, ws.default_task_type);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
 				continue;
 			}
 			sandbox.cleanup();
@@ -7786,7 +7810,7 @@ class App : ToolsBackend
 			if (result.status != 0)
 			{
 				warningf("Discovery failed for workspace '%s': exit %d", ws.name, result.status);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent_type, ws.default_task_type);
+				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
 				continue;
 			}
 
@@ -7800,7 +7824,7 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
 
-			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent_type, ws.default_task_type);
+			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent, ws.default_task_type);
 
 			tracef("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
 			foreach (ref p; projInfos)
@@ -7859,7 +7883,7 @@ class App : ToolsBackend
 							break;
 						}
 					if (!found)
-						workspacesInfo ~= WorkspaceInfo(ws.name, [vp], ws.default_agent_type, ws.default_task_type);
+						workspacesInfo ~= WorkspaceInfo(ws.name, [vp], ws.default_agent, ws.default_task_type);
 				}
 			}
 			if (!matched)
@@ -7955,15 +7979,44 @@ class App : ToolsBackend
 			warningf("Config reload failed (parse error), keeping current config");
 			return;
 		}
+		auto oldAgents = config.agents;
 		config = result.get();
 		applyConfiguredLogLevel(config.log_level);
-		foreach (agentType, a; agentsByType)
+
+		// Diff old vs new: keep entries whose driver and sandbox.env match; recreate otherwise.
+		Agent[string] rebuilt;
+		foreach (name, ref ac; config.agents)
 		{
-			if (auto ac = agentType in config.agents)
+			bool reuseExisting = false;
+			if (auto existing = name in agentsByName)
+			{
+				auto oldAcP = name in oldAgents;
+				if (oldAcP && oldAcP.driver.value == ac.driver.value
+					&& oldAcP.sandbox.env == ac.sandbox.env)
+					reuseExisting = true;
+				if (reuseExisting)
+				{
+					(*existing).setModelAliases(ac.model_aliases);
+					rebuilt[name] = *existing;
+				}
+			}
+			if (!reuseExisting)
+			{
+				auto a = createAgentByDriver(ac.driver.value);
 				a.setModelAliases(ac.model_aliases);
-			else
-				a.setModelAliases(null);
+				{
+					import cydo.agent.copilot : CopilotAgent;
+					if (auto ca = cast(CopilotAgent) a)
+						ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
+							dispatchTool(tool, callerTid, args);
+				}
+				rebuilt[name] = a;
+			}
 		}
+		agentsByName = rebuilt;
+		auto defaultName = defaultAgentName("");
+		agent = agentsByName[defaultName];
+
 		discoverAllWorkspaces();
 		broadcast(buildAgentsList());
 		broadcast(buildWorkspacesList());
@@ -8236,13 +8289,13 @@ class App : ToolsBackend
 			string[string] env;
 			foreach (k, v; config.sandbox.env)
 				env[k] = expandTilde(v);
-			auto agentSandbox = findAgentTypeSandbox(entry.name);
+			auto agentSandbox = findAgentSandbox(entry.name);
 			foreach (k, v; agentSandbox.env)
 				env[k] = expandTilde(v);
 			auto available = resolveExecutablePath(agent.executableName(env), env).length > 0;
 			entries ~= AgentInfoEntry(entry.name, entry.name, entry.displayName, available);
 		}
-		return toJson(AgentsListMessage("agents_list", entries, config.default_agent_type));
+		return toJson(AgentsListMessage("agents_list", entries, config.default_agent));
 	}
 
 	private string readBuildId()

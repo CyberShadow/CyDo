@@ -1,6 +1,6 @@
 import { test as base } from "@playwright/test";
 import { execFileSync, spawn } from "child_process";
-import { mkdirSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 type WorkerFixtures = {
@@ -67,19 +67,28 @@ const test = base.extend<WorkerFixtures>({
       {},
       use: (value: WorkerFixtures["backend"]) => Promise<void>,
     ) => {
-      const workDir = "/tmp/cydo-oneshot-sandbox-env";
+      const workDir = "/tmp/cydo-two-agents-one-driver";
       const workerHome = `${workDir}/home`;
 
+      rmSync(workDir, { recursive: true, force: true });
       mkdirSync(`${workDir}/data`, { recursive: true });
       symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
       mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
       writeFileSync(
         `${workerHome}/.config/cydo/config.yaml`,
         [
-          "default_agent: claude",
-          "sandbox:",
-          "  env:",
-          '    CYDO_TEST_TITLE: "Sandbox Env Title"',
+          "default_agent: work-claude",
+          "agents:",
+          "  work-claude:",
+          "    driver: claude",
+          "    sandbox:",
+          "      env:",
+          '        CYDO_TEST_TITLE: "Work Title"',
+          "  personal-claude:",
+          "    driver: claude",
+          "    sandbox:",
+          "      env:",
+          '        CYDO_TEST_TITLE: "Personal Title"',
           "workspaces:",
           "  local:",
           "    root: /tmp/cydo-test-workspace",
@@ -127,66 +136,72 @@ const test = base.extend<WorkerFixtures>({
     },
     { scope: "worker" },
   ],
-
-  baseURL: async ({ backend }, use) => {
-    await use(backend.baseURL);
-  },
 });
 
-test("title generation one-shot receives sandbox env", async ({ backend }) => {
+test("two agents sharing a driver get separate sandbox envs", async ({
+  backend,
+}) => {
   const ws = new WebSocket(`${backend.baseURL.replace("http", "ws")}/ws`);
   await waitForOpen(ws);
 
-  const createdPromise = waitForMessage(
-    ws,
-    (data) => data.type === "task_created" && typeof data.tid === "number",
-    10_000,
-  );
-  ws.send(
-    JSON.stringify({
-      type: "create_task",
-      workspace: "local",
-      project_path: "/tmp/cydo-test-workspace",
-      entry_point: "agentic",
-      correlation_id: "oneshot-sandbox-env",
-    }),
-  );
+  async function createTask(agentName: string): Promise<number> {
+    const created = waitForMessage(
+      ws,
+      (d) => d.type === "task_created" && typeof d.tid === "number",
+      10_000,
+    );
+    ws.send(
+      JSON.stringify({
+        type: "create_task",
+        workspace: "local",
+        project_path: "/tmp/cydo-test-workspace",
+        entry_point: "agentic",
+        agent_name: agentName,
+        correlation_id: `two-agents-${agentName}`,
+      }),
+    );
+    return (await created).tid;
+  }
 
-  const created = await createdPromise;
-  const tid = created.tid as number;
+  const tidWork = await createTask("work-claude");
+  const tidPersonal = await createTask("personal-claude");
 
-  const historyEndPromise = waitForMessage(
-    ws,
-    (data) => data.type === "task_history_end" && data.tid === tid,
-    10_000,
-  );
-  ws.send(JSON.stringify({ type: "request_history", tid }));
-  await historyEndPromise;
+  for (const tid of [tidWork, tidPersonal]) {
+    const end = waitForMessage(
+      ws,
+      (d) => d.type === "task_history_end" && d.tid === tid,
+      10_000,
+    );
+    ws.send(JSON.stringify({ type: "request_history", tid }));
+    await end;
+  }
 
-  const titlePromise = waitForMessage(
+  const titleWork = waitForMessage(
     ws,
-    (data) =>
-      data.type === "title_update" &&
-      data.tid === tid &&
-      data.title === "Sandbox Env Title",
+    (d) =>
+      d.type === "title_update" && d.tid === tidWork && d.title === "Work Title",
     30_000,
   );
-  const resultPromise = waitForMessage(
+  const titlePersonal = waitForMessage(
     ws,
-    (data) =>
-      data.event?.type === "turn/result" && data.event?.subtype === "success",
+    (d) =>
+      d.type === "title_update" &&
+      d.tid === tidPersonal &&
+      d.title === "Personal Title",
     30_000,
   );
 
-  ws.send(
-    JSON.stringify({
-      type: "message",
-      tid,
-      content: [{ type: "text", text: 'Please reply with "done"' }],
-    }),
-  );
+  for (const tid of [tidWork, tidPersonal]) {
+    ws.send(
+      JSON.stringify({
+        type: "message",
+        tid,
+        content: [{ type: "text", text: 'Please reply with "done"' }],
+      }),
+    );
+  }
 
-  await titlePromise;
-  await resultPromise;
+  await titleWork;
+  await titlePersonal;
   ws.close();
 });

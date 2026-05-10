@@ -40,7 +40,7 @@ struct WorkspaceConfig
 	string root;
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
-	@Optional string default_agent_type;
+	@Optional string default_agent;
 	@Optional string default_task_type;
 	@Optional string permission_policy; /// Permission policy: "allow", "deny", "ask", or Djinja expression
 	@Optional ProjectDiscoveryConfig project_discovery;
@@ -50,7 +50,7 @@ struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
-	@Optional string default_agent_type = "claude";
+	@Optional string default_agent = "claude";
 	@Optional string default_task_type;
 	@Optional AgentConfig[string] agents;
 	@Optional bool dev_mode;

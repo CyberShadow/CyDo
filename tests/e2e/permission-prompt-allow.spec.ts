@@ -17,7 +17,7 @@ test("permission_policy allow auto-approves tool calls via PermissionPrompt", { 
   // --permission-prompt-tool to Claude and our PermissionPrompt MCP tool handles it.
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace

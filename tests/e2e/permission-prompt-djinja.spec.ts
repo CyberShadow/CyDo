@@ -16,7 +16,7 @@ test("permission_policy djinja expression: allow branch auto-approves matching t
   // Djinja expression: allow Bash, deny everything else.
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
@@ -50,7 +50,7 @@ test("permission_policy djinja expression: deny branch blocks non-matching tools
   // Djinja expression: deny Bash, allow everything else.
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
@@ -85,7 +85,7 @@ test("permission_policy deny literal: all tool calls are blocked", { tag: "@clau
 
   writeFileSync(
     "/tmp/playwright-home/.config/cydo/config.yaml",
-    `default_agent_type: claude
+    `default_agent: claude
 workspaces:
   local:
     root: /tmp/cydo-test-workspace
