@@ -18,10 +18,6 @@ function canRenderStructuredFilePreview(
   if (!piece.source?.filePath) return false;
   if (!block) return false;
 
-  if (block.location.kind === "whole-output") {
-    return piece.start === 0 && piece.end === stdoutLength;
-  }
-
   if (
     piece.source.producerName !== undefined &&
     FILE_PREVIEW_PRODUCERS.has(piece.source.producerName) &&

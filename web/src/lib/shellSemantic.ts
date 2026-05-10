@@ -1371,7 +1371,7 @@ function classifyRgCommand(
       pattern,
       filePath,
       outputShape: {
-        kind: "whole-output",
+        kind: "content",
         format: {
           kind: "individual-lines",
           format: {

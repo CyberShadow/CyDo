@@ -1081,7 +1081,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const v = r.value;
     expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
     expect(plan(v)?.blocks[0]?.location).toEqual({
-      kind: "whole-output",
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
       validator: "colon-line-number-prefixed",
     });
   });
@@ -1096,7 +1097,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const v = r.value;
     expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
     expect(plan(v)?.blocks[0]?.location).toEqual({
-      kind: "whole-output",
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
       validator: "colon-line-number-prefixed",
     });
   });

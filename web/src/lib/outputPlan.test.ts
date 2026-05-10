@@ -65,7 +65,7 @@ describe("outputPlan", () => {
     assertCoverage(stdout, segmented.pieces);
   });
 
-  it("supports whole-output spans and validator success", () => {
+  it("supports from-cursor + end-of-output spans and validator success", () => {
     const stdout = "alpha\nbeta\n";
     const plan: OutputPlan = {
       version: 1,
@@ -73,7 +73,11 @@ describe("outputPlan", () => {
         {
           id: "all",
           format: { kind: "content", language: "text" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
@@ -103,7 +107,11 @@ describe("outputPlan", () => {
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
@@ -125,7 +133,7 @@ describe("outputPlan", () => {
     ]);
   });
 
-  it("falls back locally when whole-output validator fails", () => {
+  it("falls back locally when end-of-output validator fails", () => {
     const stdout = "   \n\t";
     const plan: OutputPlan = {
       version: 1,
@@ -133,7 +141,11 @@ describe("outputPlan", () => {
         {
           id: "all",
           format: { kind: "content", language: "text" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
@@ -143,7 +155,7 @@ describe("outputPlan", () => {
         kind: "raw",
         start: 0,
         end: stdout.length,
-        reason: "fallback:anchor",
+        reason: "fallback:from-cursor",
       },
     ]);
     assertCoverage(stdout, segmented.pieces);
@@ -320,7 +332,10 @@ describe("outputPlan", () => {
         {
           id: "all",
           format: { kind: "content", language: "text" },
-          location: { kind: "whole-output" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+          },
         },
       ],
     };

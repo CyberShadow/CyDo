@@ -24,8 +24,6 @@ export type OutputShape =
     }
   // Literal text (printf '...'), used as a unique anchor.
   | { kind: "literal"; text: string; format: OutputFormat }
-  // Whole stdout is the block. Reserved for cases where tests pin kind:"whole-output" (rg/grep).
-  | { kind: "whole-output"; format: OutputFormat; validator?: SpanValidatorId }
   // Step produces no stdout (write-file). Skipped by derivePlan.
   | { kind: "none" }
   // Unstructured stdout we cannot anchor. derivePlan returns undefined when present.
@@ -102,15 +100,7 @@ export function derivePlan(steps: CommandStep[]): OutputPlan | undefined {
   }
   if (new Set(literalTexts).size !== literalTexts.length) return undefined;
 
-  // Rule 3: validate whole-output solitude
-  const nonNoneSteps = steps.filter((s) => s.outputShape.kind !== "none");
-  if (
-    nonNoneSteps.some((s) => s.outputShape.kind === "whole-output") &&
-    nonNoneSteps.length > 1
-  )
-    return undefined;
-
-  // Rule 4: walk steps and emit blocks
+  // Rule 3: walk steps and emit blocks
   const blocks: OutputBlockPlan[] = [];
 
   for (let i = 0; i < steps.length; i++) {
@@ -148,14 +138,6 @@ export function derivePlan(steps: CommandStep[]): OutputPlan | undefined {
             kind: "from-cursor",
             end: { kind: "line-count", count: shape.count },
           };
-      blocks.push({ id: blockId, source, format: shape.format, location });
-      continue;
-    }
-
-    if (shape.kind === "whole-output") {
-      const location: OutputBlockPlan["location"] = shape.validator
-        ? { kind: "whole-output", validator: shape.validator }
-        : { kind: "whole-output" };
       blocks.push({ id: blockId, source, format: shape.format, location });
       continue;
     }

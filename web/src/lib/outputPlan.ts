@@ -20,7 +20,6 @@ export type OutputBlockPlan = {
 };
 
 export type BlockLocationSpec =
-  | { kind: "whole-output"; validator?: SpanValidatorId }
   | { kind: "from-cursor"; end: BlockEndSpec; validator?: SpanValidatorId }
   | { kind: "unique-literal"; text: string; include: "self" };
 
@@ -133,9 +132,6 @@ function resolveStaticSpan(
   stdout: string,
   block: OutputBlockPlan,
 ): Span | null {
-  if (block.location.kind === "whole-output") {
-    return { start: 0, end: stdout.length };
-  }
   if (block.location.kind === "unique-literal") {
     return resolveUniqueLiteral(stdout, block.location.text);
   }
@@ -194,10 +190,7 @@ export function segmentOutput(
     let validator: SpanValidatorId | undefined;
     const staticSpan = staticSpans[i] ?? null;
 
-    if (block.location.kind === "whole-output") {
-      resolved = staticSpan;
-      validator = block.location.validator;
-    } else if (block.location.kind === "unique-literal") {
+    if (block.location.kind === "unique-literal") {
       resolved = staticSpan;
     } else {
       const endSpec = block.location.end;
@@ -226,7 +219,7 @@ export function segmentOutput(
 
     if (
       resolved &&
-      block.location.kind !== "from-cursor" &&
+      block.location.kind === "unique-literal" &&
       resolved.start > cursor
     ) {
       pushRaw(cursor, resolved.start, "gap-before-structured");

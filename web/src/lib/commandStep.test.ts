@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { derivePlan } from "./commandStep";
 import type { CommandStep } from "./commandStep";
 
-const FMT_TEXT = { kind: "content" as const, language: "text" };
 const FMT_MD = { kind: "content" as const, language: "markdown" };
 const FMT_SHELL = { kind: "content" as const, language: "shell-output" };
 
@@ -45,22 +44,6 @@ function fixedLinesStep(order: number, count: number): CommandStep {
   };
 }
 
-function wholeOutputStep(order: number): CommandStep {
-  return {
-    kind: "search",
-    order,
-    commandName: "rg",
-    pattern: "foo",
-    filePath: "/tmp/file.md",
-    outputShape: {
-      kind: "whole-output",
-      format: FMT_TEXT,
-      validator: "colon-line-number-prefixed",
-    },
-    blockId: "rg-results",
-  };
-}
-
 function noneStep(order: number): CommandStep {
   return {
     kind: "write-file",
@@ -95,16 +78,6 @@ describe("derivePlan", () => {
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
-    });
-  });
-
-  it("single whole-output step produces 1 block with whole-output location", () => {
-    const plan = derivePlan([wholeOutputStep(0)]);
-    expect(plan).toBeDefined();
-    expect(plan!.blocks).toHaveLength(1);
-    expect(plan!.blocks[0]!.location).toEqual({
-      kind: "whole-output",
-      validator: "colon-line-number-prefixed",
     });
   });
 

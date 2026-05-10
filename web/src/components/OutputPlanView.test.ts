@@ -33,7 +33,11 @@ describe("OutputPlanView", () => {
         {
           id: "md",
           format: { kind: "content", language: "markdown" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
@@ -60,7 +64,8 @@ describe("OutputPlanView", () => {
             },
           },
           location: {
-            kind: "whole-output",
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
             validator: "colon-line-number-prefixed",
           },
         },
@@ -86,7 +91,11 @@ describe("OutputPlanView", () => {
             filePath: "/tmp/cydo-render.svg",
           },
           format: { kind: "content", language: "xml" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };

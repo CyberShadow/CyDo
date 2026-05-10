@@ -14,7 +14,7 @@ function renderSemantic(stdout: string, outputPlan: OutputPlan): string {
 }
 
 describe("SemanticShellOutput renderable readback rendering", () => {
-  it("renders complete whole-output svg readback as preview with source toggle", () => {
+  it("renders complete from-cursor+end-of-output svg readback as preview with source toggle", () => {
     const stdout = '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n';
     const outputPlan: OutputPlan = {
       version: 1,
@@ -27,7 +27,11 @@ describe("SemanticShellOutput renderable readback rendering", () => {
             filePath: "/tmp/cydo-heredoc-render.svg",
           },
           format: { kind: "content", language: "xml" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
@@ -157,7 +161,11 @@ describe("SemanticShellOutput renderable readback rendering", () => {
             filePath: "/tmp/cydo-heredoc-render.md",
           },
           format: { kind: "content", language: "markdown" },
-          location: { kind: "whole-output", validator: "non-empty" },
+          location: {
+            kind: "from-cursor",
+            end: { kind: "end-of-output", requiresComplete: true },
+            validator: "non-empty",
+          },
         },
       ],
     };
