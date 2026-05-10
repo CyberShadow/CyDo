@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage, assistantText } from "./fixtures";
 
-test("blank-mode entry point preserves first user message after SwitchMode", { tag: "@codex-only" }, async ({ page, agentType }) => {
+test("blank-mode entry point preserves first user message after SwitchMode", { tag: "@codex-only" }, async ({ page }) => {
 
   await enterSession(page);
 

@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("subtask with orphaned background command exits cleanly", { tag: "@claude-only" }, async ({ page, agentType }) => {
+test("subtask with orphaned background command exits cleanly", { tag: "@claude-only" }, async ({ page }) => {
   test.setTimeout(90_000);
 
   await enterSession(page);
@@ -23,7 +23,6 @@ test("subtask with orphaned background command exits cleanly", { tag: "@claude-o
 
 test("subtask result is completed (not failed) when process is killed after result event", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
   test.setTimeout(90_000);
 

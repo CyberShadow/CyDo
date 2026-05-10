@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("subtask auto-ends after satisfying missing-outputs retry", { tag: "@claude-only" }, async ({ page, agentType }) => {
+test("subtask auto-ends after satisfying missing-outputs retry", { tag: "@claude-only" }, async ({ page }) => {
   test.setTimeout(120_000);
 
   let childTid: number | null = null;
@@ -60,7 +60,6 @@ test("subtask auto-ends after satisfying missing-outputs retry", { tag: "@claude
 
 test("repro: manually ending a resumed completed subtask does not rerun output enforcement", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
   test.setTimeout(120_000);
 

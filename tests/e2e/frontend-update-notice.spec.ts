@@ -7,7 +7,6 @@ import { test, expect } from "./fixtures";
 // fake JS URL is then routed to the real one so the app actually runs.
 test("frontend update notice appears on build hash mismatch", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
 
   const fakeHash = "faketestbuildhash";

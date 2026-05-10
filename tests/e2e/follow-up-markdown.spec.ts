@@ -9,7 +9,6 @@ const TALK_TIMEOUT = 120_000;
 
 test("Follow-up from parent renders body as Markdown (live and after reload)", async ({
   page,
-  agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
 

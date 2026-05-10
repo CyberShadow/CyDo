@@ -2,7 +2,6 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("commit output enforcement fires when subtask exits without committing", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
   test.setTimeout(120_000);
 
@@ -71,7 +70,6 @@ test("commit output enforcement fires when subtask exits without committing", { 
 
 test("commit output happy path: subtask commits and parent receives commits in result", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
   test.setTimeout(120_000);
 
@@ -122,7 +120,6 @@ test("commit output happy path: subtask commits and parent receives commits in r
 
 test("commit output enforcement walks past shared-worktree ancestors", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
   // When a sub-task inherits its parent's worktree, the parent's HEAD is the
   // sub-task's HEAD — comparing against it would always look empty. The

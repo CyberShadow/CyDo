@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("SwitchMode with orphaned process completes continuation", { tag: "@claude-only" }, async ({ page, agentType }) => {
+test("SwitchMode with orphaned process completes continuation", { tag: "@claude-only" }, async ({ page }) => {
   test.setTimeout(30_000);
 
   // Listen for task_reload broadcast frames to detect continuation completion.

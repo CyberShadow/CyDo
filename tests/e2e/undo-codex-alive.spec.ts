@@ -36,7 +36,6 @@ async function undoUserMessage(
 
 test("codex alive-path undo: session stays alive after undo", { tag: "@codex-only" }, async ({
   page,
-  agentType,
 }) => {
 
   await enterSession(page);
@@ -124,7 +123,6 @@ test("codex alive-path undo: session stays alive after undo", { tag: "@codex-onl
 
 test("codex alive-path undo counts only active turns after prior rollback", { tag: "@codex-only" }, async ({
   page,
-  agentType,
 }) => {
 
   await enterSession(page);

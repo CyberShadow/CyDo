@@ -29,7 +29,6 @@ async function stubConnectingWebSocket(
 
 test("should show connection overlay on welcome page while connecting", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
 
   // Stub WebSocket so the app stays in "connecting" state indefinitely.
@@ -49,7 +48,6 @@ test("should show connection overlay on welcome page while connecting", { tag: "
 
 test("should use the selected light theme while connecting", { tag: "@claude-only" }, async ({
   page,
-  agentType,
 }) => {
 
   await stubConnectingWebSocket(page, "light");
