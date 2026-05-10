@@ -45,6 +45,7 @@ import {
   parseApplyPatchSections,
   type PatchHunk,
 } from "../lib/patches";
+import { derivePlan } from "../lib/commandStep";
 import {
   useShellSemantic,
   type ShellHeredocWriteSemantic,
@@ -2602,7 +2603,9 @@ export const ToolCall = memo(
       ? extractShellStdout(name, toolServer, agentType, result)
       : null;
     const semanticOutputPlan =
-      shellSemantic?.ok === true ? shellSemantic.value.outputPlan : undefined;
+      shellSemantic?.ok === true && shellSemantic.value.steps
+        ? derivePlan(shellSemantic.value.steps)
+        : undefined;
     const semanticOutputStdout =
       semanticOutputPlan && result != null && !result.isError
         ? extractShellStdout(name, toolServer, agentType, result)
@@ -2620,7 +2623,7 @@ export const ToolCall = memo(
     const semanticKind =
       shellSemantic?.ok === true ? shellSemantic.value.kind : null;
     const hasSemanticOutputPlan =
-      shellSemantic?.ok === true && shellSemantic.value.outputPlan != null;
+      shellSemantic?.ok === true && semanticOutputPlan != null;
     // Semantic shell: adjust input/result expand defaults after classification.
     // Reads/diffs → keep input expanded (command secondary), collapse result (local source).
     // Writes → keep input expanded, collapse result (confirmation only).

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { parseShellSemantic, mapShikiTokens } from "./shellSemantic";
+import { derivePlan } from "./commandStep";
 import { parseShellCommandSourceTree } from "./shellSourceTree";
 import { tokenizeWithScopes } from "../highlight";
 import type {
@@ -8,6 +9,9 @@ import type {
   ShellDiffSemantic,
   ShellScriptExecSemantic,
 } from "./shellSemantic";
+
+const plan = (v: { steps?: Parameters<typeof derivePlan>[0] }) =>
+  v.steps ? derivePlan(v.steps) : undefined;
 
 // ---------------------------------------------------------------------------
 // Scope-pinning tests (verify tokenizer layer produces correct roles)
@@ -941,10 +945,11 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
-      ["listing", "sed-output"],
-    );
-    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+    expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
+      "listing",
+      "sed-output",
+    ]);
+    expect(plan(r.value)?.blocks[1]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
@@ -969,7 +974,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    expect(r.value.outputPlan).toBeUndefined();
+    expect(plan(r.value)).toBeUndefined();
   });
 
   it("escaped wrapper payload keeps heredoc body projection aligned", async () => {
@@ -1074,8 +1079,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
-    expect(v.outputPlan?.blocks[0]?.location).toEqual({
+    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    expect(plan(v)?.blocks[0]?.location).toEqual({
       kind: "whole-output",
       validator: "colon-line-number-prefixed",
     });
@@ -1089,8 +1094,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
-    expect(v.outputPlan?.blocks[0]?.location).toEqual({
+    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    expect(plan(v)?.blocks[0]?.location).toEqual({
       kind: "whole-output",
       validator: "colon-line-number-prefixed",
     });
@@ -1122,8 +1127,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
-    const format = v.outputPlan?.blocks[0]?.format;
+    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    const format = plan(v)?.blocks[0]?.format;
     expect(format?.kind).toBe("individual-lines");
     if (!format || format.kind !== "individual-lines") return;
     expect(format.format.kind).toBe("line-number-prefixed");
@@ -1139,8 +1144,8 @@ describe("batch 1 rg/sed/structured output plans", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("search");
     const v = r.value;
-    expect(v.outputPlan?.blocks[0]?.id).toBe("rg-results");
-    const format = v.outputPlan?.blocks[0]?.format;
+    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
+    const format = plan(v)?.blocks[0]?.format;
     expect(format?.kind).toBe("individual-lines");
     if (!format || format.kind !== "individual-lines") return;
     expect(format.format.kind).toBe("line-number-prefixed");
@@ -1160,7 +1165,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("read");
-    expect(r.value.outputPlan?.blocks[0]?.id).toBe("sed-output");
+    expect(plan(r.value)?.blocks[0]?.id).toBe("sed-output");
   });
 
   it("single sed svg read carries source file identity in output plan", async () => {
@@ -1170,7 +1175,7 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("read");
-    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe(
+    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe(
       "/tmp/cydo-heredoc-render.svg",
     );
   });
@@ -1183,16 +1188,16 @@ describe("batch 1 rg/sed/structured output plans", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
     const v = r.value;
-    expect(v.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual([
+    expect(plan(v)?.blocks.map((b: { id: string }) => b.id)).toEqual([
       "listing",
       "sed-output",
     ]);
-    expect(v.outputPlan?.blocks[1]?.location).toEqual({
+    expect(plan(v)?.blocks[1]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
-    expect(v.outputPlan?.blocks[1]?.source?.filePath).toBe("README.md");
+    expect(plan(v)?.blocks[1]?.source?.filePath).toBe("README.md");
   });
 
   it("sed/printf multiline list emits unique-literal separator anchors", async () => {
@@ -1205,14 +1210,14 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
-    const sedBlock = r.value.outputPlan?.blocks.find((b) => b.id === "sed-0");
+    const sedBlock = plan(r.value)?.blocks.find((b) => b.id === "sed-0");
     expect(sedBlock?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "before-block", blockId: "printf-1" },
       validator: "non-empty",
     });
     expect(
-      r.value.outputPlan?.blocks.some(
+      plan(r.value)?.blocks.some(
         (b: { location: { kind: string } }) =>
           b.location.kind === "unique-literal",
       ),
@@ -1226,29 +1231,31 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
-    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
-      ["sed-0", "printf-1", "sed-2"],
-    );
-    expect(r.value.outputPlan?.blocks[0]?.format).toEqual({
+    expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
+      "sed-0",
+      "printf-1",
+      "sed-2",
+    ]);
+    expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "content",
       language: "markdown",
     });
-    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe(
+    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe(
       "/tmp/cydo-heredoc-render.md",
     );
-    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+    expect(plan(r.value)?.blocks[1]?.location).toEqual({
       kind: "unique-literal",
       text: "\n--- svg ---\n",
       include: "self",
     });
-    expect(r.value.outputPlan?.blocks[2]?.format).toEqual({
+    expect(plan(r.value)?.blocks[2]?.format).toEqual({
       kind: "content",
       language: "xml",
     });
-    expect(r.value.outputPlan?.blocks[2]?.source?.filePath).toBe(
+    expect(plan(r.value)?.blocks[2]?.source?.filePath).toBe(
       "/tmp/cydo-heredoc-render.svg",
     );
-    expect(r.value.outputPlan?.blocks[2]?.location).toEqual({
+    expect(plan(r.value)?.blocks[2]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
@@ -1270,29 +1277,30 @@ describe("batch 1 rg/sed/structured output plans", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("structured-output");
-    expect(r.value.outputPlan?.blocks).toHaveLength(2);
-    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
-      ["wc-0", "head-1"],
-    );
-    expect(r.value.outputPlan?.blocks[0]?.format).toEqual({
+    expect(plan(r.value)?.blocks).toHaveLength(2);
+    expect(plan(r.value)?.blocks.map((b: { id: string }) => b.id)).toEqual([
+      "wc-0",
+      "head-1",
+    ]);
+    expect(plan(r.value)?.blocks[0]?.format).toEqual({
       kind: "content",
       language: "shell-output",
     });
-    expect(r.value.outputPlan?.blocks[0]?.location).toEqual({
+    expect(plan(r.value)?.blocks[0]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "line-count", count: 1 },
       validator: "non-empty",
     });
-    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe("file.md");
-    expect(r.value.outputPlan?.blocks[1]?.format).toEqual({
+    expect(plan(r.value)?.blocks[0]?.source?.filePath).toBe("file.md");
+    expect(plan(r.value)?.blocks[1]?.format).toEqual({
       kind: "content",
       language: "markdown",
     });
-    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+    expect(plan(r.value)?.blocks[1]?.location).toEqual({
       kind: "from-cursor",
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
-    expect(r.value.outputPlan?.blocks[1]?.source?.filePath).toBe("file.md");
+    expect(plan(r.value)?.blocks[1]?.source?.filePath).toBe("file.md");
   });
 });

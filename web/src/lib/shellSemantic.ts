@@ -5,8 +5,6 @@ import {
   langFromPath,
 } from "../highlight";
 import type { ShikiTheme } from "../highlight";
-import type { OutputPlan } from "./outputPlan";
-import { derivePlan } from "./commandStep";
 import type { CommandStep, ReadRange } from "./commandStep";
 import { type SourceNode, type SourceSegment } from "./sourceTree";
 import {
@@ -62,7 +60,6 @@ export type ShellSemanticBase = {
   source?: ShellSourceSpan;
   sourceTree?: SourceNode;
   steps?: CommandStep[];
-  outputPlan?: OutputPlan;
 };
 
 export interface ShellHeredocWriteSemantic {
@@ -1547,13 +1544,10 @@ function withSourceTreeCompatibility(
   sourceTree: SourceNode,
 ): ShellSemantic {
   const baseSource = sourceSpan(command, 0, command.length);
-  const outputPlan =
-    value.outputPlan ?? (value.steps ? derivePlan(value.steps) : undefined);
   return {
     ...value,
     source: value.source ?? baseSource,
     sourceTree,
-    outputPlan,
   };
 }
 
