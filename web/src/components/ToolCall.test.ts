@@ -254,7 +254,7 @@ function renderCodexFileChangeInput(
   return renderToString(
     h(ToolCall, {
       name: "fileChange",
-      agentType: "codex",
+      driver: "codex",
       toolUseId: "tool-fc1",
       input: { changes },
       result: undefined,
