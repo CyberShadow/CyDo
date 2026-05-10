@@ -4030,7 +4030,6 @@ pre.extra-field-value {
 .user-image {
   max-width: 100%;
   max-height: 400px;
-  border-radius: 4px;
   display: block;
   margin-bottom: 4px;
 }
