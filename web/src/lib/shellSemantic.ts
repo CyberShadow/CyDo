@@ -2018,6 +2018,37 @@ async function classifyListMember(
   }
 }
 
+async function classifyMultilineAsList(
+  inner: string,
+  originalCommand: string,
+  theme: ShikiTheme,
+): Promise<ShellSemanticResult | null> {
+  const lines = splitTopLevelCommandList(inner);
+  if (!lines || lines.length < 2) return null;
+
+  const asts: ShellAST[] = [];
+  for (const line of lines) {
+    let shikiLines: TokenWithScopes[][] | null;
+    try {
+      shikiLines = await tokenizeWithScopes(line, theme);
+    } catch {
+      return null;
+    }
+    if (!shikiLines) return null;
+    const tokens = mapShikiTokens(shikiLines);
+    const ast = buildAST(tokens, line);
+    if (ast.type === "unsupported") return null;
+    asts.push(ast);
+  }
+
+  let combined: ShellAST = asts[0]!;
+  for (let i = 1; i < asts.length; i++) {
+    combined = { type: "list", op: "&&", left: combined, right: asts[i]! };
+  }
+
+  return classifyAST(combined, originalCommand);
+}
+
 async function classifyStructuredCommandList(
   innerCommand: string,
   originalCommand: string,
@@ -2118,6 +2149,19 @@ export async function parseShellSemantic(
       : structuredList;
   }
   if (inner.includes("\n")) {
+    const listResult = await classifyMultilineAsList(inner, command, theme);
+    if (listResult) {
+      return listResult.ok
+        ? {
+            ok: true,
+            value: withSourceTreeCompatibility(
+              listResult.value,
+              command,
+              sourceTree,
+            ),
+          }
+        : listResult;
+    }
     return reject(
       "unsupported_command",
       "unsupported multiline shell command list",

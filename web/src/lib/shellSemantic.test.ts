@@ -296,6 +296,50 @@ describe("cd && read (should reject)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// cd newline-separated (bare \n treated same as &&)
+// ---------------------------------------------------------------------------
+
+describe("cd newline-separated read (should succeed)", () => {
+  it("cd dir\\ncat file.md → same as cd dir && cat file.md", async () => {
+    const r = await parseShellSemantic("cd dir\ncat file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as ShellReadSemantic;
+    expect(v.kind).toBe("read");
+    expect(v.filePath).toBe("dir/file.md");
+  });
+
+  it("cd a\\ncd b\\ncat x.md → resolves to a/b/x.md", async () => {
+    const r = await parseShellSemantic("cd a\ncd b\ncat x.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("a/b/x.md");
+  });
+});
+
+describe("cd newline-separated read (should reject)", () => {
+  it("cd dir\\necho x → reject (echo not a read command)", async () => {
+    const r = await parseShellSemantic("cd dir\necho x");
+    expect(r.ok).toBe(false);
+  });
+
+  it("unknown_cmd arg\\nunknown2 arg → reject (unsupported multiline)", async () => {
+    const r = await parseShellSemantic("unknown_cmd arg\nunknown2 arg");
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("structured-list newline regression", () => {
+  it("cat a.md\\ncat b.md → still classified as structured-output", async () => {
+    const r = await parseShellSemantic("cat a.md\ncat b.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Accepted heredoc write forms
 // ---------------------------------------------------------------------------
 
