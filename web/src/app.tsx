@@ -9,7 +9,6 @@ import { DevModeContext } from "./devMode";
 import { Sidebar, flatTaskOrder } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { WelcomePage } from "./components/WelcomePage";
-import { NoticeBar } from "./components/NoticeBar";
 import { SearchPopup } from "./components/SearchPopup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Toast } from "./components/Toast";
@@ -411,7 +410,6 @@ function AppContent() {
             onArchive={handleSidebarArchive}
             hasGlobalAttention={hasOtherProjectAttention}
           />
-          <NoticeBar notices={mergedNotices} />
           {Array.from(tasks.values())
             .filter((t) => {
               // Virtual drafts (tid=null) should only render in draft mode
@@ -495,6 +493,9 @@ function AppContent() {
                       task.uuid === draftRenderKey
                         ? handleDraftContentStart
                         : undefined
+                    }
+                    notices={
+                      task.uuid === draftRenderKey ? mergedNotices : undefined
                     }
                     onContentEnd={
                       task.uuid === draftRenderKey ? deleteDraftTask : undefined

@@ -14,6 +14,8 @@ import type {
   EntryPointInfo,
   AgentTypeInfo,
 } from "../useSessionManager";
+import type { Notice } from "../protocol";
+import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
 import { deriveBandStatus } from "./StatusBand";
 import { MessageList } from "./MessageList";
@@ -72,6 +74,7 @@ interface Props {
   onContentEnd?: () => void;
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
+  notices?: Record<string, Notice>;
 }
 
 function SessionViewInner({
@@ -109,6 +112,7 @@ function SessionViewInner({
   onContentEnd,
   exportMode,
   getTaskHref,
+  notices,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -502,6 +506,7 @@ function SessionViewInner({
               <div class="welcome-page-header">
                 <LogoBanner />
               </div>
+              {notices && <NoticeBar notices={notices} />}
               <SessionConfig
                 entryPoints={entryPoints}
                 selected={selectedEntryPoint}

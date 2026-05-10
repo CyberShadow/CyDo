@@ -53,7 +53,7 @@ test("frontend update notice appears on build hash mismatch", async ({
   await page.goto("/");
 
   const notice = page.locator(".notice-item", {
-    hasText: /new version of CyDo is available/i,
+    hasText: /outdated CyDo UI/i,
   });
   await expect(notice).toBeVisible({ timeout: 15_000 });
 

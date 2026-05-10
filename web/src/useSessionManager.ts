@@ -1397,8 +1397,8 @@ export function useTaskManager(
               ...prev,
               frontend_update: {
                 level: "info",
-                description: "A new version of CyDo is available.",
-                impact: "",
+                description: "This page is running an outdated CyDo UI.",
+                impact: "Reload to load the current frontend.",
                 action: "Reload",
                 action_kind: "reload",
               },

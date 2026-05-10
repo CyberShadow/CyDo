@@ -561,9 +561,13 @@ body,
   padding: 8px 16px;
 }
 
+.welcome-page > .notice-bar {
+  padding: 0;
+  margin-bottom: 24px;
+}
+
 .notice-item {
   padding: 10px 14px;
-  border-radius: 6px;
   font-size: 0.9em;
   line-height: 1.5;
   border-left: 4px solid;
@@ -3452,6 +3456,12 @@ pre.extra-field-value {
   border-top: none;
   background: none;
   padding: 16px 0 0;
+}
+
+.session-empty-inner > .notice-bar {
+  padding: 0;
+  margin-bottom: 16px;
+  text-align: left;
 }
 
 /* Scrollbar */
