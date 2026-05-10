@@ -249,17 +249,17 @@ test("semantic shell: git diff renders through patch view", async ({
   await expect(toolCall).toBeVisible({ timeout });
 
   // Result is collapsed by default for diffs (local source, re-derivable).
-  // Expand the result section to verify the semantic renderer is present.
+  // Use toPass so that if semantic parsing completes and collapses the result
+  // after our initial visibility check, we click again and retry.
   const resultHeader = toolCall.locator(".tool-result-header");
-  if (await resultHeader.isVisible()) {
-    const resultContainer = toolCall.locator(".tool-result-container");
-    const resultVisible = await resultContainer.isVisible();
-    if (!resultVisible) {
+  const resultContainer = toolCall.locator(".tool-result-container");
+  const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
+  await expect(async () => {
+    if (await resultHeader.isVisible() && !await resultContainer.isVisible()) {
       await resultHeader.click();
     }
-  }
-  const semanticDiff = toolCall.locator('[data-testid="semantic-shell-diff"]');
-  await expect(semanticDiff).toBeVisible({ timeout });
+    await expect(semanticDiff).toBeVisible();
+  }).toPass({ timeout });
 });
 
 test("semantic shell: wrapped python heredoc preserves wrapper syntax and content", async ({
