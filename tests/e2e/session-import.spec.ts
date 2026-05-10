@@ -101,7 +101,7 @@ function createWorkDir(suffix: string): { workDir: string; workerHome: string } 
 // Test: full import flow
 // ---------------------------------------------------------------------------
 
-test("Import group node in sidebar expands on click and navigates correctly", async ({
+test("Import group node in sidebar expands on click and navigates correctly", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
   test.skip(
@@ -199,7 +199,7 @@ test("Import group node in sidebar expands on click and navigates correctly", as
   }
 });
 
-test("importable session appears on startup, history loads, Import Session promotes it", async ({
+test("importable session appears on startup, history loads, Import Session promotes it", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
   test.skip(
@@ -320,7 +320,7 @@ test("importable session appears on startup, history loads, Import Session promo
   }
 });
 
-test("import replay drops durable session/status rows but keeps compact boundary", async ({
+test("import replay drops durable session/status rows but keeps compact boundary", { tag: "@claude-only" }, async ({
   page,
 }, testInfo) => {
   test.skip(

@@ -29,7 +29,7 @@ async function pasteImage(
 }
 
 test.describe("image paste", () => {
-  test("paste image into input, send, and verify round-trip", async ({
+  test("paste image into input, send, and verify round-trip", { tag: "@claude-only" }, async ({
     page,
     agentType,
   }) => {
@@ -72,7 +72,7 @@ test.describe("image paste", () => {
     await expect(page.locator(".image-preview img")).not.toBeVisible();
   });
 
-  test("remove image from preview before sending", async ({
+  test("remove image from preview before sending", { tag: "@claude-only" }, async ({
     page,
     agentType,
   }) => {

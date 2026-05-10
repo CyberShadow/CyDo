@@ -8,7 +8,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("permission_policy ask: Allow button approves the tool call", async ({
+test("permission_policy ask: Allow button approves the tool call", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -48,7 +48,7 @@ workspaces:
   });
 });
 
-test("permission_policy ask: Deny button blocks the tool call", async ({
+test("permission_policy ask: Deny button blocks the tool call", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

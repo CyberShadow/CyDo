@@ -7,7 +7,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("completed messages are not recreated when new messages arrive", async ({
+test("completed messages are not recreated when new messages arrive", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

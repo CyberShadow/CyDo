@@ -17,7 +17,7 @@ import {
 // Without this, all content from the turn appears in a single assistant message
 // and the tool call and final text response are not visually separated.
 
-test("codex tool turn produces separate assistant messages for tool call and response", async ({
+test("codex tool turn produces separate assistant messages for tool call and response", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

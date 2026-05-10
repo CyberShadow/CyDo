@@ -8,7 +8,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("permission_policy djinja expression: allow branch auto-approves matching tools", async ({
+test("permission_policy djinja expression: allow branch auto-approves matching tools", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -43,7 +43,7 @@ workspaces:
   });
 });
 
-test("permission_policy djinja expression: deny branch blocks non-matching tools", async ({
+test("permission_policy djinja expression: deny branch blocks non-matching tools", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -80,7 +80,7 @@ workspaces:
   });
 });
 
-test("permission_policy deny literal: all tool calls are blocked", async ({
+test("permission_policy deny literal: all tool calls are blocked", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

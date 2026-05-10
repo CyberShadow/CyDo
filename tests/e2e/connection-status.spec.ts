@@ -27,7 +27,7 @@ async function stubConnectingWebSocket(
   }, theme);
 }
 
-test("should show connection overlay on welcome page while connecting", async ({
+test("should show connection overlay on welcome page while connecting", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -51,7 +51,7 @@ test("should show connection overlay on welcome page while connecting", async ({
   });
 });
 
-test("should use the selected light theme while connecting", async ({
+test("should use the selected light theme while connecting", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

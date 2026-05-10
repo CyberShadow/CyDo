@@ -94,7 +94,7 @@ async function assertTurnPresence(
   }
 }
 
-test("claude live idle undo latest turn avoids UUID truncation alert", async ({
+test("claude live idle undo latest turn avoids UUID truncation alert", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -144,7 +144,7 @@ test("claude live idle undo latest turn avoids UUID truncation alert", async ({
   });
 });
 
-test("claude live idle undo restores user message text into the textarea", async ({
+test("claude live idle undo restores user message text into the textarea", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -178,7 +178,7 @@ test("claude live idle undo restores user message text into the textarea", async
   await expect(input).toHaveValue(prompt, { timeout: 15_000 });
 });
 
-test("claude live idle undo on turn three removes only turns three through five", async ({
+test("claude live idle undo on turn three removes only turns three through five", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -237,7 +237,7 @@ test("claude live idle undo on turn three removes only turns three through five"
   await expect(assistantText(page, "live-six")).toBeVisible({ timeout });
 });
 
-test("claude undo preview targets the same turn before and after reload", async ({
+test("claude undo preview targets the same turn before and after reload", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -308,7 +308,7 @@ test("claude undo preview targets the same turn before and after reload", async 
   }).toPass({ timeout: 15_000 });
 });
 
-test("claude undo protocol keeps reload barrier and stable seq assignments", async ({
+test("claude undo protocol keeps reload barrier and stable seq assignments", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

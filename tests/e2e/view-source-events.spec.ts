@@ -7,7 +7,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("View Source shows item-level events in collapsible list", async ({
+test("View Source shows item-level events in collapsible list", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

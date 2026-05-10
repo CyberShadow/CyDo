@@ -19,7 +19,7 @@ import {
 //
 // Result: the tool call spinner persists forever even though the command finished.
 
-test("background command spinner disappears after command completes", async ({
+test("background command spinner disappears after command completes", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -73,7 +73,7 @@ test("background command spinner disappears after command completes", async ({
 // The proper fix should use params.item.id from item/completed instead of
 // relying on the single activeItemId_ field.
 
-test("multiple background command spinners all disappear after completion", async ({
+test("multiple background command spinners all disappear after completion", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -114,7 +114,7 @@ test("multiple background command spinners all disappear after completion", asyn
 // (turn/stop seals the message), the output_delta events must be applied
 // to the sealed content block and rendered in the UI.
 
-test("late command output appears after turn completes", async ({
+test("late command output appears after turn completes", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -147,7 +147,7 @@ test("late command output appears after turn completes", async ({
   ).toBeVisible({ timeout: 10_000 });
 });
 
-test("kill stops codex background command before delayed side effect", async ({
+test("kill stops codex background command before delayed side effect", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -176,7 +176,7 @@ test("kill stops codex background command before delayed side effect", async ({
   rmSync(marker, { force: true });
 });
 
-test("killing one codex task also interrupts sibling session on pooled server", async ({
+test("killing one codex task also interrupts sibling session on pooled server", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

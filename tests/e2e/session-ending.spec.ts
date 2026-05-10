@@ -34,7 +34,7 @@ function captureEndingCanStop(page: {
   return () => endingCanStop;
 }
 
-test("End button shows ending state then session exits", async ({
+test("End button shows ending state then session exits", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -106,7 +106,7 @@ test("End button shows ending state then session exits", async ({
   await expect(page.locator(".banner-processing")).not.toBeVisible();
 });
 
-test("background command output re-enters processing state", async ({
+test("background command output re-enters processing state", { tag: "@no-copilot" }, async ({
   page,
   agentType,
 }) => {
@@ -162,7 +162,7 @@ test("background command output re-enters processing state", async ({
   }).toPass({ timeout: 10_000 });
 });
 
-test("repro: ending capability matches Stop visibility", async ({
+test("repro: ending capability matches Stop visibility", { tag: "@copilot-only" }, async ({
   page,
   agentType,
 }) => {

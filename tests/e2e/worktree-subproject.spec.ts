@@ -128,6 +128,7 @@ function mangleClaudePath(path: string): string {
 
 test(
   "worktree task starts in the selected subproject inside a monorepo",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -221,6 +222,7 @@ test(
 
 test(
   "blank task sandbox allows writes at the monorepo root",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",

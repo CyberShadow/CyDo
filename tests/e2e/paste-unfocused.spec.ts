@@ -38,7 +38,7 @@ test("paste when input is unfocused populates session input", async ({
   );
 });
 
-test("paste when input is unfocused on new-task page populates input", async ({
+test("paste when input is unfocused on new-task page populates input", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

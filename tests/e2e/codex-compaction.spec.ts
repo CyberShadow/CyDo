@@ -15,7 +15,7 @@ const isCompactingStatusFrame = (msg: any): boolean =>
 const findTaskHistoryEndIndex = (frames: any[]): number =>
   frames.findIndex((msg) => msg?.type === "task_history_end");
 
-test("codex context compaction shows compacting status", async ({
+test("codex context compaction shows compacting status", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -48,7 +48,7 @@ test("codex context compaction shows compacting status", async ({
   });
 });
 
-test("codex reconnect during active turn does not replay stale compacting status", async ({
+test("codex reconnect during active turn does not replay stale compacting status", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -136,7 +136,7 @@ test("codex reconnect during active turn does not replay stale compacting status
   expect(compactingAfterCompletedHistory).toBe(false);
 });
 
-test("codex compaction reminder steers active turn before keep_context continuation", async ({
+test("codex compaction reminder steers active turn before keep_context continuation", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -190,7 +190,7 @@ test("codex compaction reminder steers active turn before keep_context continuat
   expect(order.reminderIdx).toBeLessThan(order.resultIdx);
 });
 
-test("codex compaction reminder steers autonomous continuation without extra user message", async ({
+test("codex compaction reminder steers autonomous continuation without extra user message", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

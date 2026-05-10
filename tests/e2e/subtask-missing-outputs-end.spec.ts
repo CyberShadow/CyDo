@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("subtask auto-ends after satisfying missing-outputs retry", async ({ page, agentType }) => {
+test("subtask auto-ends after satisfying missing-outputs retry", { tag: "@claude-only" }, async ({ page, agentType }) => {
   test.skip(
     agentType !== "claude",
     "claude-only: reproduction uses isolated worktree subtask output enforcement",
@@ -62,7 +62,7 @@ test("subtask auto-ends after satisfying missing-outputs retry", async ({ page, 
   await expect(page.locator(".btn-banner-stop")).not.toBeVisible();
 });
 
-test("repro: manually ending a resumed completed subtask does not rerun output enforcement", async ({
+test("repro: manually ending a resumed completed subtask does not rerun output enforcement", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

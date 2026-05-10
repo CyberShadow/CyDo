@@ -8,7 +8,7 @@ import {
   lastAssistantText,
 } from "./fixtures";
 
-test("user bubble appears immediately after Send (ack-4 optimistic render)", async ({
+test("user bubble appears immediately after Send (ack-4 optimistic render)", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -36,7 +36,7 @@ test("user bubble appears immediately after Send (ack-4 optimistic render)", asy
   ).toBeVisible({ timeout: 3_000 });
 });
 
-test("outbox replays unsent message after offline reload", async ({
+test("outbox replays unsent message after offline reload", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -93,7 +93,7 @@ test("outbox replays unsent message after offline reload", async ({
   });
 });
 
-test("backend deduplicates message sent twice with same nonce", async ({
+test("backend deduplicates message sent twice with same nonce", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -167,7 +167,7 @@ test("backend deduplicates message sent twice with same nonce", async ({
   await expect(assistantText(page, "dedupe-test")).toHaveCount(1);
 });
 
-test("outbox entry evicted after backend ack", async ({ page, agentType }) => {
+test("outbox entry evicted after backend ack", { tag: "@claude-only" }, async ({ page, agentType }) => {
   test.skip(
     agentType !== "claude",
     "agent-agnostic, runs in claude project only",
@@ -190,7 +190,7 @@ test("outbox entry evicted after backend ack", async ({ page, agentType }) => {
 
 // ──── ack-2 state-transition specs ────────────────────────────────────────
 
-test("codex emits agentAck on turn/start response (ack-2 signal)", async ({
+test("codex emits agentAck on turn/start response (ack-2 signal)", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -243,7 +243,7 @@ test("codex emits agentAck on turn/start response (ack-2 signal)", async ({
     .toBeGreaterThan(acksBeforeStall);
 });
 
-test("copilot emits agentAck on session.send (ack-2 signal)", async ({
+test("copilot emits agentAck on session.send (ack-2 signal)", { tag: "@copilot-only" }, async ({
   page,
   agentType,
 }) => {
@@ -303,7 +303,7 @@ test("copilot emits agentAck on session.send (ack-2 signal)", async ({
   });
 });
 
-test("claude skips ack-2 (no agent-ack signal)", async ({
+test("claude skips ack-2 (no agent-ack signal)", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -337,7 +337,7 @@ test("claude skips ack-2 (no agent-ack signal)", async ({
   await expect(bubble).not.toHaveClass(/ack-2/);
 });
 
-test("late-joining tab sees pending bubble from history", async ({
+test("late-joining tab sees pending bubble from history", { tag: "@claude-only" }, async ({
   page,
   browser,
   agentType,
@@ -377,7 +377,7 @@ test("late-joining tab sees pending bubble from history", async ({
   await ctx2.close();
 });
 
-test("outbox ack-4 placeholder visible offline; persists across reload", async ({
+test("outbox ack-4 placeholder visible offline; persists across reload", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -433,7 +433,7 @@ test("outbox ack-4 placeholder visible offline; persists across reload", async (
   });
 });
 
-test("identical-text messages use separate nonces (no placeholder collision)", async ({
+test("identical-text messages use separate nonces (no placeholder collision)", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

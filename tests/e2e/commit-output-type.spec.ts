@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("commit output enforcement fires when subtask exits without committing", async ({
+test("commit output enforcement fires when subtask exits without committing", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -73,7 +73,7 @@ test("commit output enforcement fires when subtask exits without committing", as
   await expect(subtaskItem.locator(".task-type-icon.alive")).not.toBeVisible();
 });
 
-test("commit output happy path: subtask commits and parent receives commits in result", async ({
+test("commit output happy path: subtask commits and parent receives commits in result", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -128,7 +128,7 @@ test("commit output happy path: subtask commits and parent receives commits in r
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("commit output enforcement walks past shared-worktree ancestors", async ({
+test("commit output enforcement walks past shared-worktree ancestors", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

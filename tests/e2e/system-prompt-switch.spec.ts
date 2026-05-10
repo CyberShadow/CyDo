@@ -31,7 +31,7 @@ test("new system prompt is present after keep_context mode switch", async ({
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("old system prompt is absent after keep_context mode switch", async ({
+test("old system prompt is absent after keep_context mode switch", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

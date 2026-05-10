@@ -156,7 +156,7 @@ test("sending message to stopped session auto-resumes it", async ({
   });
 });
 
-test("codex reload replays apply_patch tool call", async ({
+test("codex reload replays apply_patch tool call", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("forked worktree spike task appears in sidebar", async ({
+test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

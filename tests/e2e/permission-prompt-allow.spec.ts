@@ -8,7 +8,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("permission_policy allow auto-approves tool calls via PermissionPrompt", async ({
+test("permission_policy allow auto-approves tool calls via PermissionPrompt", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

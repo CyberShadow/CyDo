@@ -7,7 +7,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("switching sessions does not re-render every mounted SessionView", async ({
+test("switching sessions does not re-render every mounted SessionView", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

@@ -103,7 +103,7 @@ test("undo moves user message text to input box", async ({
   );
 });
 
-test("undo on first Claude message restores draft input", async ({
+test("undo on first Claude message restores draft input", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

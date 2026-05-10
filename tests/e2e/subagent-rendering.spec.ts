@@ -16,7 +16,7 @@
  */
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
-test("sub-agent messages with parent_tool_use_id render nested", async ({
+test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

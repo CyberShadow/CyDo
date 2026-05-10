@@ -8,7 +8,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("copilot built-in tool with permission auto-approval", async ({
+test("copilot built-in tool with permission auto-approval", { tag: "@copilot-only" }, async ({
   page,
   agentType,
 }) => {

@@ -15,7 +15,7 @@
  */
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("codex sub-task result should not be delivered twice", async ({
+test("codex sub-task result should not be delivered twice", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

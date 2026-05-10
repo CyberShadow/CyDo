@@ -56,7 +56,7 @@ function activeAssistantText(
     .last();
 }
 
-test("codex fork from older turn truncates later history and isolates branches", async ({
+test("codex fork from older turn truncates later history and isolates branches", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

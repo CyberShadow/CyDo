@@ -39,7 +39,7 @@ test("sidebar status dot reflects session state", async ({
   });
 });
 
-test("multi-client navigation isolation", async ({
+test("multi-client navigation isolation", { tag: "@no-codex" }, async ({
   page,
   agentType,
   context,

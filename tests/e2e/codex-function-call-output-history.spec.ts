@@ -213,7 +213,7 @@ async function replayAndFindTaskTool(
   return taskTool;
 }
 
-test("live invalid child task_type returns structured task error payload", async ({
+test("live invalid child task_type returns structured task error payload", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {
@@ -247,7 +247,7 @@ test("live invalid child task_type returns structured task error payload", async
   expect(invalidTaskOutput!).toContain('"error"');
 });
 
-test("codex history replay renders primitive task error as one message", async ({
+test("codex history replay renders primitive task error as one message", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {
@@ -297,7 +297,7 @@ test("codex history replay renders primitive task error as one message", async (
   expect(taskText).not.toContain("0: T");
 });
 
-test("codex history replay renders structured task error object cleanly", async ({
+test("codex history replay renders structured task error object cleanly", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {
@@ -349,7 +349,7 @@ test("codex history replay renders structured task error object cleanly", async 
   expect(taskText).not.toContain("0: T");
 });
 
-test("codex history replay keeps successful structured task rendering", async ({
+test("codex history replay keeps successful structured task rendering", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {
@@ -405,7 +405,7 @@ test("codex history replay keeps successful structured task rendering", async ({
   await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
   await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
 });
-test("codex history replay renders live task output from organic rollout", async ({
+test("codex history replay renders live task output from organic rollout", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {

@@ -34,7 +34,7 @@ async function undoUserMessage(
   await page.locator(".btn-undo:visible").click();
 }
 
-test("codex alive-path undo: session stays alive after undo", async ({
+test("codex alive-path undo: session stays alive after undo", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -126,7 +126,7 @@ test("codex alive-path undo: session stays alive after undo", async ({
   });
 });
 
-test("codex alive-path undo counts only active turns after prior rollback", async ({
+test("codex alive-path undo counts only active turns after prior rollback", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage, killSession } from "./fixtures";
 
-test("undo removes preceding queue-operation lines from steering message", async ({ page, agentType }) => {
+test("undo removes preceding queue-operation lines from steering message", { tag: "@no-codex" }, async ({ page, agentType }) => {
   test.skip(agentType === "codex", "codex writes steers to JSONL eagerly; preReloadDrafts mechanism cannot distinguish unprocessed steers");
 
   await enterSession(page);

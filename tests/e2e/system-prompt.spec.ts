@@ -40,7 +40,7 @@ test("system_prompt_template is sent to the LLM API", async ({
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("codex sends task system prompt through user input text", async ({
+test("codex sends task system prompt through user input text", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

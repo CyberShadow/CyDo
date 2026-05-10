@@ -7,7 +7,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("sidebar re-renders are bounded during agent streaming", async ({
+test("sidebar re-renders are bounded during agent streaming", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

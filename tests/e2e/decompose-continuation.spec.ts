@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
-test("triage -> decompose keep_context uses strengthened resumed handoff", async ({
+test("triage -> decompose keep_context uses strengthened resumed handoff", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

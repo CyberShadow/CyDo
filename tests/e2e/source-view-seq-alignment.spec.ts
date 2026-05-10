@@ -17,7 +17,7 @@ import {
  * assistant message, and checks that every event's Abstract type is consistent
  * with its Raw data.
  */
-test("source view abstract/raw events stay aligned across multi-turn streaming", async ({
+test("source view abstract/raw events stay aligned across multi-turn streaming", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

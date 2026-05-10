@@ -5,7 +5,7 @@ import { test, expect } from "./fixtures";
 // from web/dist/index.html when building server_status, by intercepting the
 // SPA root request and rewriting the script src to a known fake hash. The
 // fake JS URL is then routed to the real one so the app actually runs.
-test("frontend update notice appears on build hash mismatch", async ({
+test("frontend update notice appears on build hash mismatch", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

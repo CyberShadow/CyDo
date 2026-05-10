@@ -8,7 +8,7 @@ import {
 } from "./fixtures";
 import { existsSync } from "fs";
 
-test("undo with file revert removes file created by agent", async ({
+test("undo with file revert removes file created by agent", { tag: "@claude-only" }, async ({
   page,
   backend,
   agentType,

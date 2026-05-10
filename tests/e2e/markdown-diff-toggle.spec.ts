@@ -8,7 +8,7 @@ import {
   lastAssistantText,
 } from "./fixtures";
 
-test("markdown diff toggle button visible for .md file edit with structuredPatch", async ({
+test("markdown diff toggle button visible for .md file edit with structuredPatch", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

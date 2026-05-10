@@ -53,7 +53,7 @@ test("project memory is injected into first user message", async ({
   }
 });
 
-test("project memory marker appears in user message text (not only system prompt)", async ({
+test("project memory marker appears in user message text (not only system prompt)", { tag: "@no-copilot" }, async ({
   page,
   agentType,
 }) => {

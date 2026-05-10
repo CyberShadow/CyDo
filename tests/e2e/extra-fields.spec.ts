@@ -84,7 +84,7 @@ const test = base.extend<{ agentType: string }, WorkerFixtures>({
   },
 });
 
-test("extra fields in tool_result are surfaced", async ({
+test("extra fields in tool_result are surfaced", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -101,7 +101,7 @@ test("extra fields in tool_result are surfaced", async ({
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("extra fields on assistant message are surfaced", async ({
+test("extra fields on assistant message are surfaced", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -121,7 +121,7 @@ test("extra fields on assistant message are surfaced", async ({
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("extra fields on content blocks are surfaced", async ({
+test("extra fields on content blocks are surfaced", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -140,7 +140,7 @@ test("extra fields on content blocks are surfaced", async ({
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("extra fields on result event are surfaced", async ({
+test("extra fields on result event are surfaced", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

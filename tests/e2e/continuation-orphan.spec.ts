@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
-test("SwitchMode with orphaned process completes continuation", async ({ page, agentType }) => {
+test("SwitchMode with orphaned process completes continuation", { tag: "@claude-only" }, async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "claude-only: Bash tool backgrounding behavior");
   test.setTimeout(30_000);
 

@@ -1096,7 +1096,7 @@ test("Ask/Answer: Answer with invalid qid returns error", async ({
   ).toBeVisible({ timeout: 60_000 });
 });
 
-test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
+test("Ask/Answer: SwitchMode preserves unanswered child question", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {
@@ -1159,7 +1159,7 @@ test("Ask/Answer: SwitchMode preserves unanswered child question", async ({
   ).toBeVisible({ timeout: 90_000 });
 });
 
-test("Ask/Answer: Handoff rejected while child question is pending", async ({
+test("Ask/Answer: Handoff rejected while child question is pending", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

@@ -19,7 +19,7 @@ async function disableFocusForAttentionChecks(page: Page) {
   });
 }
 
-test("tab title shows attention count scoped to current project", async ({
+test("tab title shows attention count scoped to current project", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -41,7 +41,7 @@ test("tab title shows attention count scoped to current project", async ({
   });
 });
 
-test("home button does not show attention for same-project sessions", async ({
+test("home button does not show attention for same-project sessions", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -66,7 +66,7 @@ test("home button does not show attention for same-project sessions", async ({
   await expect(homeBtn).not.toHaveClass(/has-attention/);
 });
 
-test("hamburger button shows attention for any session on mobile", async ({
+test("hamburger button shows attention for any session on mobile", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -104,7 +104,7 @@ test("hamburger button shows attention for any session on mobile", async ({
   await expect(hamburger.locator(".task-type-icon-check")).toBeVisible();
 });
 
-test("active sessions sort attention-needing tasks first with attention styling", async ({
+test("active sessions sort attention-needing tasks first with attention styling", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

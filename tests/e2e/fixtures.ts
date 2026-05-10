@@ -237,6 +237,31 @@ export const test = base.extend<TestFixtures>({
   },
 });
 
+test.beforeEach(async ({}, testInfo) => {
+  // Tag-based agent gating. testInfo.tags preserves the leading "@" at runtime
+  // (it is stripped only in `playwright --list --reporter=json` output).
+  const agentType = testInfo.project.name;
+  const tags = testInfo.tags;
+
+  const onlyAgents = tags
+    .filter((t) => t.startsWith("@") && t.endsWith("-only"))
+    .map((t) => t.slice(1, -"-only".length));
+
+  if (onlyAgents.length > 0) {
+    test.skip(
+      !onlyAgents.includes(agentType),
+      `requires one of: ${onlyAgents.join(", ")}`,
+    );
+  }
+
+  for (const t of tags) {
+    if (t.startsWith("@no-")) {
+      const forbid = t.slice("@no-".length);
+      test.skip(agentType === forbid, `not on ${forbid}`);
+    }
+  }
+});
+
 /** Send SIGTERM to a backend process group and wait for it to exit. */
 export async function killBackend(proc: ChildProcess): Promise<void> {
   const exitPromise = new Promise<void>((r) => proc.on("exit", () => r()));

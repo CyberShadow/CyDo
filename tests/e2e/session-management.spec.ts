@@ -47,7 +47,7 @@ test("session switching preserves messages", async ({ page, agentType }) => {
   await expect(assistantText(page, "second")).not.toBeVisible();
 });
 
-test("build artifact sanity: hashed asset references", async ({
+test("build artifact sanity: hashed asset references", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

@@ -179,7 +179,7 @@ async function seedTaskAndLocateRollout(
   return { taskUrl, rolloutPath: rolloutPath! };
 }
 
-test("codex web search renders query subtitle and formatted results", async ({
+test("codex web search renders query subtitle and formatted results", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {
@@ -223,7 +223,7 @@ test("codex web search renders query subtitle and formatted results", async ({
   await expect(replayedToolCall.locator(".web-search-query")).toBeVisible();
 });
 
-test("codex history replay renders web_search_call from rollout JSONL", async ({
+test("codex history replay renders web_search_call from rollout JSONL", { tag: "@codex-only" }, async ({
   page,
   restartableBackend,
 }) => {

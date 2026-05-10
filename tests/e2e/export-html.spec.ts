@@ -11,7 +11,7 @@ import {
   lastAssistantText,
 } from "./fixtures";
 
-test("export-html creates viewable HTML file", async ({ page, backend, agentType }, testInfo) => {
+test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({ page, backend, agentType }, testInfo) => {
   test.skip(testInfo.project.name !== "claude", "agent-agnostic, runs in claude project only");
 
   const outputPath = "/tmp/cydo-export-test.html";

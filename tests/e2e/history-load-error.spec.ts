@@ -136,6 +136,7 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
 test(
   "orphan agent type renders error message in task stream",
+  { tag: "@claude-only" },
   async ({ page, restartableBackend }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",

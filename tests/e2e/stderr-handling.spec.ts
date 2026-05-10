@@ -7,7 +7,7 @@ import {
   responseTimeout,
 } from "./fixtures";
 
-test("codex stderr view source keeps tabs and shows abstract stderr payload", async ({
+test("codex stderr view source keeps tabs and shows abstract stderr payload", { tag: "@codex-only" }, async ({
   page,
   agentType,
   backend,

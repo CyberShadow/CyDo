@@ -11,7 +11,7 @@ test.use({
   },
 });
 
-test("auth-enabled startup handles empty notices list", async ({
+test("auth-enabled startup handles empty notices list", { tag: "@claude-only" }, async ({
   page,
   agentType,
 }) => {

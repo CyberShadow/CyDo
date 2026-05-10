@@ -17,7 +17,7 @@ import {
  * it internally; after the session is killed and history reloads from JSONL,
  * the apply_patch item appears in the frontend as a tool call block.
  */
-test("file viewer shows diff content for codex update without prior create", async ({
+test("file viewer shows diff content for codex update without prior create", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -77,7 +77,7 @@ test("file viewer shows diff content for codex update without prior create", asy
  * produces a resolved edit chain. The cumulative view should show the net
  * change from the original empty file to the final content.
  */
-test("cumulative diff shows net change after codex create and update", async ({
+test("cumulative diff shows net change after codex create and update", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -124,7 +124,7 @@ test("cumulative diff shows net change after codex create and update", async ({
   );
 });
 
-test("rendered markdown view includes all collected partial hunks", async ({
+test("rendered markdown view includes all collected partial hunks", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -171,7 +171,7 @@ test("rendered markdown view includes all collected partial hunks", async ({
   await expect(renderedBody).not.toContainText("second collected fragment");
 });
 
-test("live codex fileChange markdown add renders inline preview and rendered viewer tab", async ({
+test("live codex fileChange markdown add renders inline preview and rendered viewer tab", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -206,7 +206,7 @@ test("live codex fileChange markdown add renders inline preview and rendered vie
   );
 });
 
-test("replayed apply_patch markdown sections render per-file previews and fallbacks", async ({
+test("replayed apply_patch markdown sections render per-file previews and fallbacks", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -262,7 +262,7 @@ test("replayed apply_patch markdown sections render per-file previews and fallba
   await expect(ambiguousTool).toContainText("*broken-line");
 });
 
-test("replayed multi-file apply_patch keeps markdown preview scoped to markdown sections", async ({
+test("replayed multi-file apply_patch keeps markdown preview scoped to markdown sections", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

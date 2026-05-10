@@ -8,7 +8,7 @@ import {
   lastAssistantText,
 } from "./fixtures";
 
-test("page loads and shows CyDo branding", async ({ page, agentType }) => {
+test("page loads and shows CyDo branding", { tag: "@no-codex" }, async ({ page, agentType }) => {
   test.skip(
     agentType === "codex",
     "agent-agnostic, runs in claude project only",
@@ -67,7 +67,7 @@ test("tool call flow", async ({ page, agentType }) => {
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 });
 
-test("codex tool call renders output content", async ({ page, agentType }) => {
+test("codex tool call renders output content", { tag: "@codex-only" }, async ({ page, agentType }) => {
   test.skip(agentType !== "codex", "codex-only test");
   // This test verifies that Codex tool results include structured content
   // that the frontend can render (not just the tool name).
@@ -78,7 +78,7 @@ test("codex tool call renders output content", async ({ page, agentType }) => {
   ).toBeVisible({ timeout: responseTimeout(agentType) });
 });
 
-test("codex agent type indicator", async ({ page, agentType }) => {
+test("codex agent type indicator", { tag: "@codex-only" }, async ({ page, agentType }) => {
   test.skip(agentType !== "codex", "codex-only test");
   await enterSession(page);
 
@@ -96,7 +96,7 @@ test("codex agent type indicator", async ({ page, agentType }) => {
   });
 });
 
-test("codex file fixture shows view-file action", async ({
+test("codex file fixture shows view-file action", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -140,7 +140,7 @@ test("codex file fixture shows view-file action", async ({
   );
 });
 
-test("codex update fixture shows patch preview", async ({
+test("codex update fixture shows patch preview", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {
@@ -209,7 +209,7 @@ test("codex update fixture shows patch preview", async ({
   );
 });
 
-test("codex delete fixture shows deleted state", async ({
+test("codex delete fixture shows deleted state", { tag: "@codex-only" }, async ({
   page,
   agentType,
 }) => {

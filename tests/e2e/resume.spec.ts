@@ -216,7 +216,7 @@ async function openRunningChildTask(
 // Tests
 // ---------------------------------------------------------------------------
 
-test("idle task is not nudged after resume + restart", async ({
+test("idle task is not nudged after resume + restart", { tag: "@no-codex" }, async ({
   page,
   restartableBackend,
 }, testInfo) => {
@@ -340,7 +340,7 @@ test("MCP tools work after backend restart", async ({
   ).toBeVisible({ timeout: 60_000 });
 });
 
-test("active task receives nudge and continues after restart", async ({
+test("active task receives nudge and continues after restart", { tag: "@claude-only" }, async ({
   page,
   restartableBackend,
 }, testInfo) => {
@@ -379,7 +379,7 @@ test("active task receives nudge and continues after restart", async ({
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 120_000 });
 });
 
-test("sub-task result delivered to parent after backend restart", async ({
+test("sub-task result delivered to parent after backend restart", { tag: "@claude-only" }, async ({
   page,
   restartableBackend,
 }, testInfo) => {
@@ -418,7 +418,7 @@ test("sub-task result delivered to parent after backend restart", async ({
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
 });
 
-test("waiting parent receives batch results after restart", async ({
+test("waiting parent receives batch results after restart", { tag: "@claude-only" }, async ({
   page,
   restartableBackend,
 }, testInfo) => {
@@ -462,7 +462,7 @@ test("waiting parent receives batch results after restart", async ({
   await expect(page.locator(".message.assistant-message")).toHaveCount(2);
 });
 
-test("waiting parent retains pre-restart completed child in batch results", async ({
+test("waiting parent retains pre-restart completed child in batch results", { tag: "@claude-only" }, async ({
   page,
   restartableBackend,
 }, testInfo) => {

@@ -249,6 +249,7 @@ async function expectBackendAlive(proc: ChildProcess): Promise<void> {
 
 test(
   "config reload removing overlapping workspace does not crash project watch registration",
+  { tag: "@claude-only" },
   async ({}, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",

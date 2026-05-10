@@ -6,7 +6,7 @@ import {
   responseTimeout,
 } from "./fixtures";
 
-test("diff result: toggle reveals raw git log output and headers", async ({
+test("diff result: toggle reveals raw git log output and headers", { tag: "@no-copilot" }, async ({
   page,
   agentType,
 }) => {

@@ -106,7 +106,7 @@ function initGitRepo(dir: string): void {
 // Test 1: cydo discover works as a standalone subcommand
 // ---------------------------------------------------------------------------
 
-test("cydo discover subcommand works standalone", ({}, testInfo) => {
+test("cydo discover subcommand works standalone", { tag: "@claude-only" }, ({}, testInfo) => {
   test.skip(
     testInfo.project.name !== "claude",
     "agent-agnostic, runs in claude project only",
@@ -140,6 +140,7 @@ test("cydo discover subcommand works standalone", ({}, testInfo) => {
 
 test(
   "sandboxed discovery with empty_dir masking excludes masked project",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -206,6 +207,7 @@ test(
 
 test(
   "config reload triggers re-discovery with new workspace",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -279,6 +281,7 @@ test(
 
 test(
   "discovery failure for non-existent workspace root is handled gracefully",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -335,6 +338,7 @@ test(
 
 test(
   "custom is_project expression discovers directories matching either criterion",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -401,6 +405,7 @@ test(
 
 test(
   "recurse_when: true discovers nested git repos inside a project",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -453,6 +458,7 @@ test(
 
 test(
   "hard-coded project list with equals discovers only named directories",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",
@@ -507,6 +513,7 @@ test(
 
 test(
   "depth-limited recurse_when stops recursion at the configured depth",
+  { tag: "@claude-only" },
   async ({ page }, testInfo) => {
     test.skip(
       testInfo.project.name !== "claude",

@@ -7,7 +7,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("first message renders as collapsed system-user-message with entry point label", async ({
+test("first message renders as collapsed system-user-message with entry point label", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -50,7 +50,7 @@ test("first message renders as collapsed system-user-message with entry point la
   await expect(pre).toContainText(messageText);
 });
 
-test("system-user-message persists after agent confirms the message", async ({
+test("system-user-message persists after agent confirms the message", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -84,7 +84,7 @@ test("system-user-message persists after agent confirms the message", async ({
   await expect(body.first()).toContainText(messageText);
 });
 
-test("session-start system message stays collapsed after reload", async ({
+test("session-start system message stays collapsed after reload", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
@@ -106,7 +106,7 @@ test("session-start system message stays collapsed after reload", async ({
   ).toBeVisible({ timeout: 30_000 });
 });
 
-test("task prompt system message keeps task type label after reload", async ({
+test("task prompt system message keeps task type label after reload", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

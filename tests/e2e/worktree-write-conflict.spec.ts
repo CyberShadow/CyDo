@@ -6,7 +6,7 @@ import {
   assistantText,
 } from "./fixtures";
 
-test("Task tool rejects batch with multiple non-read-only siblings on shared worktree", async ({
+test("Task tool rejects batch with multiple non-read-only siblings on shared worktree", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {

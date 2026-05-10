@@ -1,6 +1,6 @@
 import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
 
-test("parallel tool calls render in a single assistant message", async ({ page, agentType }) => {
+test("parallel tool calls render in a single assistant message", { tag: "@claude-only" }, async ({ page, agentType }) => {
   test.skip(agentType !== "claude", "parallel tool_use blocks are claude-only");
 
   await enterSession(page);
