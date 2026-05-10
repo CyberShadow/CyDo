@@ -853,6 +853,17 @@ function classifyReadCommand(
           range = { type: "head", count };
           continue;
         }
+        const headLegacy = flag.match(/^-(\d+)$/);
+        if (headLegacy) {
+          const count = Number(headLegacy[1]);
+          if (!Number.isInteger(count) || count < 1)
+            return reject(
+              "unsupported_option",
+              "head -N requires a positive integer",
+            );
+          range = { type: "head", count };
+          continue;
+        }
         return reject("unsupported_option", `unsupported head option ${flag}`);
       }
 
@@ -2213,6 +2224,34 @@ function classifyPrintfListMember(
   };
 }
 
+function classifyWcSummary(
+  cmd: SimpleCommand,
+): { steps: CommandStep[] } | null {
+  const flags = cmd.args.filter((a) => a.kind === "flag");
+  const values = cmd.args.filter((a) => a.kind === "value");
+  if (flags.length !== 1 || flags[0]!.text !== "-l") return null;
+  if (values.length !== 1) return null;
+  if (cmd.redirects.length > 0) return null;
+  const filePath = values[0]!.text;
+  if (isDynamicShellValue(filePath)) return null;
+  return {
+    steps: [
+      {
+        kind: "plain-output",
+        order: 0,
+        commandName: "wc",
+        filePath,
+        outputShape: {
+          kind: "fixed-lines",
+          count: 1,
+          format: { kind: "content", language: "shell-output" },
+          validator: "non-empty",
+        },
+      },
+    ],
+  };
+}
+
 async function classifyListMember(
   line: string,
   theme: ShikiTheme,
@@ -2238,6 +2277,8 @@ async function classifyListMember(
     }
     case "printf":
       return classifyPrintfListMember(ast.command);
+    case "wc":
+      return classifyWcSummary(ast.command);
     default:
       return null;
   }

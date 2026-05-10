@@ -1287,4 +1287,35 @@ describe("batch 1 rg/sed/structured output plans", () => {
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(false);
   });
+
+  it("wc -l && head -100 of same file emits 2-block plan", async () => {
+    const r = await parseShellSemantic("wc -l file.md && head -100 file.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("structured-output");
+    expect(r.value.outputPlan?.blocks).toHaveLength(2);
+    expect(r.value.outputPlan?.blocks.map((b: { id: string }) => b.id)).toEqual(
+      ["wc-0", "head-1"],
+    );
+    expect(r.value.outputPlan?.blocks[0]?.format).toEqual({
+      kind: "content",
+      language: "shell-output",
+    });
+    expect(r.value.outputPlan?.blocks[0]?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "line-count", count: 1 },
+      validator: "non-empty",
+    });
+    expect(r.value.outputPlan?.blocks[0]?.source?.filePath).toBe("file.md");
+    expect(r.value.outputPlan?.blocks[1]?.format).toEqual({
+      kind: "content",
+      language: "markdown",
+    });
+    expect(r.value.outputPlan?.blocks[1]?.location).toEqual({
+      kind: "from-cursor",
+      end: { kind: "end-of-output", requiresComplete: true },
+      validator: "non-empty",
+    });
+    expect(r.value.outputPlan?.blocks[1]?.source?.filePath).toBe("file.md");
+  });
 });
