@@ -261,9 +261,9 @@ EOF
               runHook preInstall
               mkdir -p $out/bin $out/share/cydo/web
               install -Dm755 ${backendPkg}/bin/cydo $out/share/cydo/
-              cp -r ${frontend}/dist/. $out/share/cydo/web/dist/
-              cp -r ${frontend}/dist-export/. $out/share/cydo/web/dist-export/
-              cp -r ${defs}/. $out/share/cydo/defs/
+              ln -s ${frontend}/dist $out/share/cydo/web/dist
+              ln -s ${frontend}/dist-export $out/share/cydo/web/dist-export
+              ln -s ${defs} $out/share/cydo/defs
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo
               runHook postInstall
