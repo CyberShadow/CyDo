@@ -5324,11 +5324,8 @@ class App : ToolsBackend
 			sessionConfig.includeTools ~= "Handoff";
 		if (taskTypes.isInteractive(getEntryPointsForProject(td.projectPath), td.taskType))
 			sessionConfig.includeTools ~= "AskUserQuestion";
-		if (sessionConfig.creatableTaskTypes.length > 0 || td.parentTid > 0 || tid in activeBatches)
-		{
-			sessionConfig.includeTools ~= "Ask";
-			sessionConfig.includeTools ~= "Answer";
-		}
+		sessionConfig.includeTools ~= "Ask";
+		sessionConfig.includeTools ~= "Answer";
 		if (typeDef !is null && typeDef.allow_native_subagents)
 			sessionConfig.allowNativeSubagents = true;
 
