@@ -8616,6 +8616,7 @@ class App : ToolsBackend
 	{
 		if (tid !in tasks)
 			return "";
+		ensureHistoryLoaded(tid);
 		foreach_reverse (ref d; tasks[tid].history)
 		{
 			auto envelope = cast(string) d.toGC();
