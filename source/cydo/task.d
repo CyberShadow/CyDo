@@ -17,6 +17,58 @@ import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
 import cydo.sandbox : ProcessLaunch;
 
+/// Snapshot of the on-disk JSONL state at HistoryStore.reset() time.
+///
+/// Pass to reset() one of:
+///   - Watermark.none() — there is no on-disk JSONL to load. The store goes
+///     straight to loaded state and accepts live events immediately. Use for
+///     brand-new tasks (createTask), tasks without an agent session, and
+///     post-truncation paths whose JSONL no longer exists.
+///   - Watermark.atBytes(N) — the JSONL holds N bytes at snapshot time. The
+///     store enters deferred state; live events are buffered in pendingEvents_
+///     and the load() delegate receives N as its maxBytes parameter.
+///   - Watermark.unreadable() — the JSONL is expected but cannot be read
+///     (orphan agent, missing path). The store enters deferred state so the
+///     load() codepath still runs (e.g. to synthesize error events), but the
+///     load delegate is invoked with maxBytes==0 and must return
+///     LoadedHistory.init.
+struct Watermark
+{
+private:
+    ulong bytes_;
+    bool deferred_;
+
+    this(ulong bytes, bool deferred) pure nothrow @safe @nogc
+    {
+        bytes_ = bytes;
+        deferred_ = deferred;
+    }
+
+public:
+    static Watermark none() pure nothrow @safe @nogc { return Watermark(0, false); }
+    static Watermark atBytes(ulong bytes) pure nothrow @safe @nogc { return Watermark(bytes, true); }
+    static Watermark unreadable() pure nothrow @safe @nogc { return Watermark(0, true); }
+
+    /// Bytes the load() delegate is allowed to read. 0 for none() and unreadable().
+    @property ulong maxBytes() const pure nothrow @safe @nogc { return bytes_; }
+    /// True when reset() will transition into the deferred state.
+    @property bool isDeferred() const pure nothrow @safe @nogc { return deferred_; }
+}
+
+/// Convenience: snapshot an optional on-disk JSONL into a Watermark.
+/// Returns atBytes(getSize(path)) when path is present, none() otherwise.
+/// Use in truncation/rollback paths where a missing file means "nothing to
+/// load" (loaded state). Orphan handling should call Watermark.unreadable()
+/// directly instead — the semantic there is "force deferred even though
+/// nothing is readable".
+Watermark watermarkFromPath(string path)
+{
+    import std.file : exists, getSize;
+    return (path.length > 0 && exists(path))
+        ? Watermark.atBytes(getSize(path))
+        : Watermark.none();
+}
+
 /// Encapsulates per-task history with a watermark/buffer state machine.
 ///
 /// The three states:
@@ -24,19 +76,17 @@ import cydo.sandbox : ProcessLaunch;
 ///     asserts. Callers must call reset() before any other operation.
 ///   - loaded: history_ holds the canonical event sequence; pendingEvents_ is empty.
 ///     All query and mutation operations are available.
-///   - deferred: the on-disk JSONL has not been read yet. live events are buffered
+///   - deferred: the on-disk JSONL has not been read yet. Live events are buffered
 ///     in pendingEvents_ until load() is called. Read operations (length, opIndex,
 ///     opApply, ...) assert isLoaded — callers must call ensureHistoryLoaded first.
 ///
 /// Design rationale:
-///   - I3 "must call ensureHistoryLoaded before appending to td.history" is now
-///     structurally enforced: appendLive routes between history_ and pendingEvents_
-///     based on state, and the asserts prevent read access while deferred.
-///   - I4 "historyLoaded==false ⇒ history empty" is replaced by the deferred/loaded
-///     distinction: deferred state has history_ empty, pending may hold live events.
-///   - The watermark makes the durable-vs-live boundary unambiguous: no event is
-///     ever discarded; no content-aware dedup is needed; the two streams meet at
-///     a known byte offset.
+///   - appendLive routes new events between history_ (loaded) and pendingEvents_
+///     (deferred) based on state, so callers cannot append to history without
+///     having first loaded it. Read accessors assert loaded state.
+///   - The watermark makes the durable-vs-live boundary unambiguous: no event
+///     is ever discarded; no content-aware dedup is needed; the two streams meet
+///     at a known byte offset.
 struct HistoryStore
 {
 private:
@@ -45,8 +95,8 @@ private:
     DataVec  pendingEvents_;
     string[] pendingRaw_;
     enum State : ubyte { uninitialized, loaded, deferred }
-    State    state_ = State.uninitialized;
-    ulong    watermark_;
+    State     state_ = State.uninitialized;
+    Watermark watermark_;
 
     void assertInitialized() const
     {
@@ -182,24 +232,19 @@ public:
     /// Initialize or re-initialize the store from an on-disk JSONL state. Clears
     /// all content and pending events.
     ///
-    /// - reset(0) → loaded+empty. The caller declares "no on-disk state to load";
-    ///   appendLive works immediately. Use for brand-new tasks (createTask) and
-    ///   orphaned-agent tasks.
-    /// - reset(N>0) → deferred+watermark N. Live events are buffered in pendingEvents_
-    ///   until load() is called. Use when the JSONL has N bytes already on disk.
+    /// See Watermark for the three reset shapes (none/atBytes/unreadable).
     ///
     /// Re-resetting an already-initialized store is legal and used by truncation
     /// paths (performUndoExecution, handleEditMessage, thread/rollback, etc.) to
     /// discard in-memory state and re-snapshot the post-truncation JSONL size.
-    void reset(ulong newWatermark)
+    void reset(Watermark wm)
     {
-        import core.lifetime : move;
         history_ = DataVec();
         rawSource_ = null;
         pendingEvents_ = DataVec();
         pendingRaw_ = null;
-        watermark_ = newWatermark;
-        state_ = newWatermark == 0 ? State.loaded : State.deferred;
+        watermark_ = wm;
+        state_ = wm.isDeferred ? State.deferred : State.loaded;
     }
 
     /// The only exit from deferred state. The delegate receives the watermark
@@ -209,7 +254,7 @@ public:
     void load(scope LoadedHistory delegate(ulong maxBytes) loader)
     {
         assert(state_ == State.deferred, "HistoryStore.load requires deferred state");
-        auto loaded = loader(watermark_);
+        auto loaded = loader(watermark_.maxBytes);
         foreach (i, ref ev; loaded.history)
         {
             history_ ~= ev;
@@ -237,7 +282,7 @@ public:
         {
             case State.uninitialized:
                 assert(history_.length == 0 && pendingEvents_.length == 0
-                       && watermark_ == 0,
+                       && !watermark_.isDeferred && watermark_.maxBytes == 0,
                        "uninitialized state must be fully empty");
                 break;
             case State.loaded:
@@ -1096,10 +1141,10 @@ unittest
         assertThrown!AssertError(hs.load((_) => LoadedHistory.init));
     }
 
-    // 2. reset(0) → loaded+empty; appendLive returns sequential seqs.
+    // 2. Watermark.none() → loaded+empty; appendLive returns sequential seqs.
     {
         HistoryStore hs;
-        hs.reset(0);
+        hs.reset(Watermark.none());
         assert(hs.isLoaded);
         assert(hs.length == 0);
         assert(hs.lastEventContents().length == 0);
@@ -1112,10 +1157,10 @@ unittest
         assert(hs.rawAt(1) == "raw1");
     }
 
-    // 3. reset(N>0) → deferred; length asserts; appendLive returns cast(size_t)-1.
+    // 3. Watermark.atBytes(N) → deferred; length asserts; appendLive returns cast(size_t)-1.
     {
         HistoryStore hs;
-        hs.reset(42);
+        hs.reset(Watermark.atBytes(42));
         assert(!hs.isLoaded);
         assertThrown!AssertError(hs.length);
         assertThrown!AssertError(hs.rawAt(0));
@@ -1128,7 +1173,7 @@ unittest
     // 4. load() delegates with correct maxBytes and splices in order.
     {
         HistoryStore hs;
-        hs.reset(42);
+        hs.reset(Watermark.atBytes(42));
         hs.appendLive(makeData("pending0"), "praw0");
         hs.appendLive(makeData("pending1"), "praw1");
 
@@ -1162,7 +1207,7 @@ unittest
     // 5. load() with empty result: pending event at seq 0.
     {
         HistoryStore hs;
-        hs.reset(42);
+        hs.reset(Watermark.atBytes(42));
         hs.appendLive(makeData("ev"), "r");
         hs.load((_) => LoadedHistory.init);
         assert(hs.isLoaded);
@@ -1175,7 +1220,7 @@ unittest
     {
         // Deferred: replaceLastEvent mutates pending tail.
         HistoryStore hs;
-        hs.reset(10);
+        hs.reset(Watermark.atBytes(10));
         hs.appendLive(makeData("orig"), "r");
         hs.replaceLastEvent(makeData("replaced"));
         hs.load((_) => LoadedHistory.init);
@@ -1192,7 +1237,7 @@ unittest
     // 7. replaceAt asserts for non-loaded state (deferred).
     {
         HistoryStore hs;
-        hs.reset(5);
+        hs.reset(Watermark.atBytes(5));
         hs.appendLive(makeData("x"), null);
         assertThrown!AssertError(hs.replaceAt(0, makeData("y")));
     }
@@ -1202,7 +1247,7 @@ unittest
     {
         // Violate loaded-implies-empty-pending by directly setting pendingEvents_.
         HistoryStore hs;
-        hs.reset(0);
+        hs.reset(Watermark.none());
         assert(hs.isLoaded);
         // Sneak a pending event in while bypassing the API — only possible from
         // within this module (private field access).
@@ -1218,7 +1263,7 @@ unittest
     {
         // Violate parallel-array invariant: history length != rawSource length.
         HistoryStore hs2;
-        hs2.reset(0);
+        hs2.reset(Watermark.none());
         hs2.history_ ~= makeData("ev");
         // rawSource_ intentionally left empty → length mismatch
         assertThrown!AssertError(hs2.isLoaded);
@@ -1229,13 +1274,29 @@ unittest
     // 9. reset() re-snapshots the watermark; next load receives new maxBytes.
     {
         HistoryStore hs;
-        hs.reset(10);
+        hs.reset(Watermark.atBytes(10));
         hs.appendLive(makeData("pending"), null);
-        hs.reset(99);  // re-reset clears pending and updates watermark
+        hs.reset(Watermark.atBytes(99));  // re-reset clears pending and updates watermark
         hs.load((ulong maxBytes) {
             assert(maxBytes == 99);
             return LoadedHistory.init;
         });
+        assert(hs.isLoaded);
+        assert(hs.length == 0);
+    }
+
+    // 10. Watermark.unreadable() → deferred with maxBytes==0.
+    {
+        HistoryStore hs;
+        hs.reset(Watermark.unreadable());
+        assert(!hs.isLoaded);
+        bool loaderCalled = false;
+        hs.load((ulong maxBytes) {
+            assert(maxBytes == 0);
+            loaderCalled = true;
+            return LoadedHistory.init;
+        });
+        assert(loaderCalled);
         assert(hs.isLoaded);
         assert(hs.length == 0);
     }

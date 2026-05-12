@@ -877,27 +877,26 @@ class App : ToolsBackend
 
 			// Snapshot the JSONL byte size as the deferred-load watermark so that
 			// live events arriving during resume are buffered rather than blocked
-			// on a synchronous JSONL parse. reset(0) only for tasks with no agent
-			// session at all; tasks with an agentSessionId stay deferred so that
-			// ensureHistoryLoaded can run the full load path (including orphan error
-			// synthesis for unconfigured agent types).
+			// on a synchronous JSONL parse. Watermark.none() only for tasks with
+			// no agent session at all; tasks with an agentSessionId stay deferred
+			// so that ensureHistoryLoaded can run the full load path (including
+			// orphan error synthesis for unconfigured agent types).
 			{
-				import std.file : exists, getSize;
 				auto td2 = &tasks[rowTid];
-				ulong wm = 0;
+				Watermark wm;
 				if (td2.agentSessionId.length > 0)
 				{
 					auto startTa = tryAgentForTask(rowTid);
 					if (startTa)
 					{
 						auto jp = startTa.historyPath(td2.agentSessionId, td2.effectiveCwd);
-						if (jp.length > 0 && exists(jp))
-							wm = getSize(jp);
-						else
-							wm = ulong.max; // JSONL absent; load delegate returns empty
+						auto fromPath = watermarkFromPath(jp);
+						wm = fromPath.isDeferred
+							? fromPath
+							: Watermark.unreadable(); // JSONL absent; load delegate returns empty
 					}
 					else
-						wm = ulong.max; // Orphan agent: keep deferred so ensureHistoryLoaded synthesizes error
+						wm = Watermark.unreadable(); // Orphan agent: keep deferred so ensureHistoryLoaded synthesizes error
 				}
 				td2.history.reset(wm);
 			}
@@ -3665,7 +3664,7 @@ class App : ToolsBackend
 			newTd.createdAt = Clock.currStdTime;
 			newTd.lastActive = newTd.createdAt;
 			tasks[childTid] = move(newTd);
-			tasks[childTid].history.reset(0); // No JSONL yet; updated in .then() after fork
+			tasks[childTid].history.reset(Watermark.none()); // No JSONL yet; updated in .then() after fork
 
 			auto childAgent = agentForTask(childTid);
 			auto childTypeDef = getTaskTypesForProject(tasks[childTid].projectPath).byName(tasks[childTid].taskType);
@@ -3718,11 +3717,9 @@ class App : ToolsBackend
 					// Fork JSONL now exists: update the watermark so ensureHistoryLoaded
 					// reads the correct post-fork byte range.
 					{
-						import std.file : exists, getSize;
 						auto jp = childAgent.historyPath(outcome.threadId,
 							tasks[childTid].effectiveCwd);
-						tasks[childTid].history.reset(
-							(jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+						tasks[childTid].history.reset(watermarkFromPath(jp));
 					}
 
 					broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
@@ -3773,9 +3770,8 @@ class App : ToolsBackend
 			ArchiveState.Unarchived,
 		);
 		{
-			import std.file : exists, getSize;
 			auto jp = ta.historyPath(result.agentSessionId, tasks[result.tid].effectiveCwd);
-			tasks[result.tid].history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+			tasks[result.tid].history.reset(watermarkFromPath(jp));
 		}
 
 		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
@@ -3893,9 +3889,8 @@ class App : ToolsBackend
 							// Reload history (marker-aware reading skips rolled-back turns).
 							auto td2 = &tasks[tid];
 							{
-								import std.file : exists, getSize;
 								auto jp = ta.historyPath(td2.agentSessionId, td2.effectiveCwd);
-								td2.history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+								td2.history.reset(watermarkFromPath(jp));
 							}
 							unsubscribeAll(tid);
 
@@ -4066,9 +4061,8 @@ class App : ToolsBackend
 						ArchiveState.Unarchived,
 					);
 					{
-						import std.file : exists, getSize;
 						auto jp = ta.historyPath(backup.agentSessionId, tasks[backup.tid].effectiveCwd);
-						tasks[backup.tid].history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+						tasks[backup.tid].history.reset(watermarkFromPath(jp));
 					}
 					broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
 					broadcastTaskUpdate(backup.tid);
@@ -4087,7 +4081,7 @@ class App : ToolsBackend
 				ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
 				return;
 			}
-			td.history.reset((histJsonlPath.length > 0 && exists(histJsonlPath)) ? getSize(histJsonlPath) : 0);
+			td.history.reset(watermarkFromPath(histJsonlPath));
 			unsubscribeAll(tid);
 			// Clip pendingSteeringTexts to match remaining user messages in the
 			// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
@@ -4186,10 +4180,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		{
-			import std.file : exists, getSize;
-			td.history.reset((jsonlPath.length > 0 && exists(jsonlPath)) ? getSize(jsonlPath) : 0);
-		}
+		td.history.reset(watermarkFromPath(jsonlPath));
 		unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
@@ -4257,10 +4248,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		{
-			import std.file : exists, getSize;
-			td.history.reset((jsonlPath.length > 0 && exists(jsonlPath)) ? getSize(jsonlPath) : 0);
-		}
+		td.history.reset(watermarkFromPath(jsonlPath));
 		unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
@@ -5073,7 +5061,7 @@ class App : ToolsBackend
 		td.projectPath = projectPath;
 		td.agentType = agentName;
 		td.entryPoint = entryPoint;
-		td.history.reset(0); // New tasks have no JSONL to load
+		td.history.reset(Watermark.none()); // New tasks have no JSONL to load
 		import std.datetime : Clock;
 		td.createdAt = Clock.currStdTime;
 		td.lastActive = td.createdAt;
@@ -5700,13 +5688,11 @@ class App : ToolsBackend
 			// fork IDs from the file replace live-stream UUIDs.
 			auto ta = tryAgentForTask(tid);
 			{
-				import std.file : exists, getSize;
-				ulong wm = 0;
+				Watermark wm;
 				if (ta && tasks[tid].agentSessionId.length > 0)
 				{
 					auto jp = ta.historyPath(tasks[tid].agentSessionId, tasks[tid].effectiveCwd);
-					if (jp.length > 0 && exists(jp))
-						wm = getSize(jp);
+					wm = watermarkFromPath(jp);
 				}
 				tasks[tid].history.reset(wm);
 			}
@@ -7954,14 +7940,12 @@ class App : ToolsBackend
 				td.title = finalTitle;
 				td.lastActive = r.mtime;
 				{
-					import std.file : exists, getSize;
-					ulong wm = 0;
+					Watermark wm;
 					auto importTa = tryAgentForTask(tid);
 					if (importTa)
 					{
 						auto jp = importTa.historyPath(r.sessionId, finalProjectPath);
-						if (jp.length > 0 && exists(jp))
-							wm = getSize(jp);
+						wm = watermarkFromPath(jp);
 					}
 					td.history.reset(wm);
 				}
