@@ -1,19 +1,44 @@
 module cydo.worktree;
 
 import std.algorithm : filter;
-import std.array : array;
+import std.array : array, join;
+import std.file : exists;
 import std.format : format;
 import std.logger : infof, errorf;
 import std.path : buildPath, dirName;
 import std.process : execute, pipeProcess, Redirect, wait;
 import std.string : strip;
 
+private enum ArchiveRefState
+{
+    Missing,
+    Present,
+}
+
+private ArchiveRefState getArchiveRefState(string projectPath, int tid)
+{
+    auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
+    auto cmd = ["git", "-C", projectPath, "rev-parse", "--verify", "--quiet", refName];
+    auto result = execute(cmd);
+    if (result.status == 0)
+        return ArchiveRefState.Present;
+    if (result.status == 1)
+        return ArchiveRefState.Missing;
+    throw new Exception(format!"getArchiveRefState failed for tid=%d: cmd='%s' output='%s'"(
+        tid, cmd.join(" "), result.output.strip()));
+}
+
 /// Returns true if `refs/cydo/worktree-archive/<tid>` exists in the project repo.
 bool hasArchiveRef(string projectPath, int tid)
 {
-    auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
-    auto result = execute(["git", "-C", projectPath, "rev-parse", "--verify", refName]);
-    return result.status == 0;
+    return getArchiveRefState(projectPath, tid) == ArchiveRefState.Present;
+}
+
+private void throwGitFailure(string context, int tid, string[] cmd, string output)
+{
+    auto details = output.strip();
+    throw new Exception(format!"%s failed for tid=%d: cmd='%s' output='%s'"(
+        context, tid, cmd.join(" "), details.length > 0 ? details : "<empty>"));
 }
 
 /// Save dirty worktree state into a custom ref chain and remove the worktree.
@@ -23,108 +48,108 @@ bool hasArchiveRef(string projectPath, int tid)
 /// Only layers with actual changes are created. The final SHA is stored as
 /// refs/cydo/worktree-archive/<tid>, then the worktree directory is removed.
 ///
-/// Returns true on success, false on failure (errors logged via std.logger).
+/// Throws on failure (with command details); logs successes/skips via std.logger.
 /// Idempotent: no-op if the archive ref already exists.
-bool archiveWorktree(string worktreePath, string projectPath, int tid)
+void archiveWorktree(string worktreePath, string projectPath, int tid)
 {
-    if (hasArchiveRef(projectPath, tid))
+    if (getArchiveRefState(projectPath, tid) == ArchiveRefState.Present)
     {
+        if (exists(worktreePath))
+            throw new Exception(format!"archiveWorktree: stale archive ref for tid=%d with live worktree '%s'"(
+                tid, worktreePath));
         infof("archiveWorktree: ref already exists for tid=%d, skipping", tid);
-        return true;
+        return;
     }
 
     // Get current HEAD
-    auto headResult = execute(["git", "-C", worktreePath, "rev-parse", "HEAD"]);
+    auto headCmd = ["git", "-C", worktreePath, "rev-parse", "HEAD"];
+    auto headResult = execute(headCmd);
     if (headResult.status != 0)
-    {
-        errorf("archiveWorktree: rev-parse HEAD failed for tid=%d: %s", tid, headResult.output);
-        return false;
-    }
+        throwGitFailure("archiveWorktree: rev-parse HEAD", tid, headCmd, headResult.output);
     string currentHead = headResult.output.strip();
 
     // Layer 1: staged changes (index differs from HEAD)
     auto stagedDiff = execute(["git", "-C", worktreePath, "diff", "--cached", "--quiet"]);
     if (stagedDiff.status != 0)
     {
-        auto treeResult = execute(["git", "-C", worktreePath, "write-tree"]);
+        auto treeCmd = ["git", "-C", worktreePath, "write-tree"];
+        auto treeResult = execute(treeCmd);
         if (treeResult.status != 0)
-        {
-            errorf("archiveWorktree: write-tree (staged) failed for tid=%d: %s", tid, treeResult.output);
-            return false;
-        }
-        auto commitResult = execute(["git", "-C", worktreePath, "commit-tree",
-            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:staged]"]);
+            throwGitFailure("archiveWorktree: write-tree (staged)", tid, treeCmd, treeResult.output);
+        auto commitCmd = ["git", "-C", worktreePath, "commit-tree",
+            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:staged]"];
+        auto commitResult = execute(commitCmd);
         if (commitResult.status != 0)
-        {
-            errorf("archiveWorktree: commit-tree (staged) failed for tid=%d: %s", tid, commitResult.output);
-            return false;
-        }
+            throwGitFailure("archiveWorktree: commit-tree (staged)", tid, commitCmd, commitResult.output);
         currentHead = commitResult.output.strip();
     }
 
     // Layer 2: unstaged tracked modifications
-    execute(["git", "-C", worktreePath, "add", "-u"]);
+    auto addTrackedCmd = ["git", "-C", worktreePath, "add", "-u"];
+    auto addTrackedResult = execute(addTrackedCmd);
+    if (addTrackedResult.status != 0)
+        throwGitFailure("archiveWorktree: git add -u", tid, addTrackedCmd, addTrackedResult.output);
     auto modifiedDiff = execute(["git", "-C", worktreePath, "diff", "--cached", "--quiet", currentHead]);
     if (modifiedDiff.status != 0)
     {
-        auto treeResult = execute(["git", "-C", worktreePath, "write-tree"]);
+        auto treeCmd = ["git", "-C", worktreePath, "write-tree"];
+        auto treeResult = execute(treeCmd);
         if (treeResult.status != 0)
-        {
-            errorf("archiveWorktree: write-tree (modified) failed for tid=%d: %s", tid, treeResult.output);
-            return false;
-        }
-        auto commitResult = execute(["git", "-C", worktreePath, "commit-tree",
-            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:modified]"]);
+            throwGitFailure("archiveWorktree: write-tree (modified)", tid, treeCmd, treeResult.output);
+        auto commitCmd = ["git", "-C", worktreePath, "commit-tree",
+            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:modified]"];
+        auto commitResult = execute(commitCmd);
         if (commitResult.status != 0)
-        {
-            errorf("archiveWorktree: commit-tree (modified) failed for tid=%d: %s", tid, commitResult.output);
-            return false;
-        }
+            throwGitFailure("archiveWorktree: commit-tree (modified)", tid, commitCmd, commitResult.output);
         currentHead = commitResult.output.strip();
     }
 
     // Layer 3: untracked files
-    execute(["git", "-C", worktreePath, "add", "-A"]);
+    auto addAllCmd = ["git", "-C", worktreePath, "add", "-A"];
+    auto addAllResult = execute(addAllCmd);
+    if (addAllResult.status != 0)
+        throwGitFailure("archiveWorktree: git add -A", tid, addAllCmd, addAllResult.output);
     auto untrackedDiff = execute(["git", "-C", worktreePath, "diff", "--cached", "--quiet", currentHead]);
     if (untrackedDiff.status != 0)
     {
-        auto treeResult = execute(["git", "-C", worktreePath, "write-tree"]);
+        auto treeCmd = ["git", "-C", worktreePath, "write-tree"];
+        auto treeResult = execute(treeCmd);
         if (treeResult.status != 0)
-        {
-            errorf("archiveWorktree: write-tree (untracked) failed for tid=%d: %s", tid, treeResult.output);
-            return false;
-        }
-        auto commitResult = execute(["git", "-C", worktreePath, "commit-tree",
-            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:untracked]"]);
+            throwGitFailure("archiveWorktree: write-tree (untracked)", tid, treeCmd, treeResult.output);
+        auto commitCmd = ["git", "-C", worktreePath, "commit-tree",
+            treeResult.output.strip(), "-p", currentHead, "-m", "[cydo:archive:untracked]"];
+        auto commitResult = execute(commitCmd);
         if (commitResult.status != 0)
-        {
-            errorf("archiveWorktree: commit-tree (untracked) failed for tid=%d: %s", tid, commitResult.output);
-            return false;
-        }
+            throwGitFailure("archiveWorktree: commit-tree (untracked)", tid, commitCmd, commitResult.output);
         currentHead = commitResult.output.strip();
     }
 
     // Store archive ref
     auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
-    auto updateRefResult = execute(["git", "-C", projectPath, "update-ref", refName, currentHead]);
+    auto updateRefCmd = ["git", "-C", projectPath, "update-ref", refName, currentHead];
+    auto updateRefResult = execute(updateRefCmd);
     if (updateRefResult.status != 0)
-    {
-        errorf("archiveWorktree: update-ref failed for tid=%d: %s", tid, updateRefResult.output);
-        return false;
-    }
+        throwGitFailure("archiveWorktree: update-ref", tid, updateRefCmd, updateRefResult.output);
 
     // Remove the worktree
-    auto removeResult = execute(["git", "-C", projectPath, "worktree", "remove", "--force", worktreePath]);
+    auto removeCmd = ["git", "-C", projectPath, "worktree", "remove", "--force", worktreePath];
+    auto removeResult = execute(removeCmd);
     if (removeResult.status != 0)
     {
-        errorf("archiveWorktree: worktree remove failed for tid=%d: %s", tid, removeResult.output);
+        errorf("archiveWorktree: worktree remove failed for tid=%d: cmd='%s' output='%s'",
+            tid, removeCmd.join(" "), removeResult.output.strip());
         // Clean up ref since worktree removal failed
-        execute(["git", "-C", projectPath, "update-ref", "-d", refName]);
-        return false;
+        auto cleanupCmd = ["git", "-C", projectPath, "update-ref", "-d", refName];
+        auto cleanupResult = execute(cleanupCmd);
+        if (cleanupResult.status != 0)
+            throw new Exception(format!"archiveWorktree: worktree remove failed for tid=%d: cmd='%s' output='%s'; cleanup failed: cmd='%s' output='%s'"(
+                tid,
+                removeCmd.join(" "), removeResult.output.strip(),
+                cleanupCmd.join(" "), cleanupResult.output.strip()));
+        throwGitFailure("archiveWorktree: worktree remove", tid, removeCmd, removeResult.output);
     }
 
     infof("archiveWorktree: archived tid=%d at %s", tid, refName);
-    return true;
 }
 
 /// Restore a worktree from the archive ref, recreating all dirty state.
@@ -134,37 +159,34 @@ bool archiveWorktree(string worktreePath, string projectPath, int tid)
 /// index, modified files to the working tree, untracked files to the filesystem.
 /// Deletes the archive ref after successful restoration.
 ///
-/// Returns true on success, false on failure (errors logged via std.logger).
+/// Throws on failure (with command details); logs successes/skips via std.logger.
 /// Idempotent: no-op if the worktree directory already exists.
-bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
+void unarchiveWorktree(string projectPath, int tid, string worktreePath)
 {
-    import std.file : exists;
+    auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
 
     if (exists(worktreePath))
     {
+        if (getArchiveRefState(projectPath, tid) == ArchiveRefState.Present)
+            throw new Exception(format!"unarchiveWorktree: worktree already exists for tid=%d and archive ref still present (%s); refusing to delete ref to avoid losing archived state"(
+                tid, refName));
         infof("unarchiveWorktree: worktree already exists for tid=%d, skipping", tid);
-        return true;
+        return;
     }
-
-    auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
 
     // Get the tip SHA stored in the archive ref
-    auto tipResult = execute(["git", "-C", projectPath, "rev-parse", refName]);
+    auto tipCmd = ["git", "-C", projectPath, "rev-parse", refName];
+    auto tipResult = execute(tipCmd);
     if (tipResult.status != 0)
-    {
-        errorf("unarchiveWorktree: rev-parse ref failed for tid=%d: %s", tid, tipResult.output);
-        return false;
-    }
+        throwGitFailure("unarchiveWorktree: rev-parse ref", tid, tipCmd, tipResult.output);
     string tipSha = tipResult.output.strip();
 
     // Walk at most 4 commits (3 archive layers + base)
-    auto logResult = execute(["git", "-C", projectPath, "log",
-        "--max-count=4", "--format=%H%n%s", tipSha]);
+    auto logCmd = ["git", "-C", projectPath, "log",
+        "--max-count=4", "--format=%H%n%s", tipSha];
+    auto logResult = execute(logCmd);
     if (logResult.status != 0)
-    {
-        errorf("unarchiveWorktree: git log failed for tid=%d: %s", tid, logResult.output);
-        return false;
-    }
+        throwGitFailure("unarchiveWorktree: git log", tid, logCmd, logResult.output);
 
     // Parse alternating sha/subject lines, stop at first non-archive commit
     string stagedSha, modifiedSha, untrackedSha, baseSha;
@@ -190,19 +212,15 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
     }
 
     if (baseSha.length == 0)
-    {
-        errorf("unarchiveWorktree: could not find base commit for tid=%d", tid);
-        return false;
-    }
+        throw new Exception(format!"unarchiveWorktree: could not find base commit for tid=%d ref='%s'"(
+            tid, refName));
 
     // Recreate the worktree at the base commit
-    auto addResult = execute(["git", "-C", projectPath, "worktree", "add",
-        "--detach", worktreePath, baseSha]);
+    auto addCmd = ["git", "-C", projectPath, "worktree", "add",
+        "--detach", worktreePath, baseSha];
+    auto addResult = execute(addCmd);
     if (addResult.status != 0)
-    {
-        errorf("unarchiveWorktree: worktree add failed for tid=%d: %s", tid, addResult.output);
-        return false;
-    }
+        throwGitFailure("unarchiveWorktree: worktree add", tid, addCmd, addResult.output);
 
     // Restore staged layer: set index to staged tree, check out files to working tree
     if (stagedSha.length > 0)
@@ -210,16 +228,12 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
         auto readTreeResult = execute(["git", "-C", worktreePath,
             "read-tree", stagedSha ~ "^{tree}"]);
         if (readTreeResult.status != 0)
-        {
-            errorf("unarchiveWorktree: read-tree staged failed for tid=%d: %s", tid, readTreeResult.output);
-            return false;
-        }
-        auto checkoutResult = execute(["git", "-C", worktreePath, "checkout-index", "-a", "-f"]);
+            throwGitFailure("unarchiveWorktree: read-tree staged", tid,
+                ["git", "-C", worktreePath, "read-tree", stagedSha ~ "^{tree}"], readTreeResult.output);
+        auto checkoutCmd = ["git", "-C", worktreePath, "checkout-index", "-a", "-f"];
+        auto checkoutResult = execute(checkoutCmd);
         if (checkoutResult.status != 0)
-        {
-            errorf("unarchiveWorktree: checkout-index failed for tid=%d: %s", tid, checkoutResult.output);
-            return false;
-        }
+            throwGitFailure("unarchiveWorktree: checkout-index", tid, checkoutCmd, checkoutResult.output);
     }
 
     // Restore modified layer: apply diff to working tree only (leaves index unchanged)
@@ -229,10 +243,8 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
         auto diffResult = execute(["git", "-C", worktreePath, "diff",
             modifiedParent ~ ".." ~ modifiedSha]);
         if (diffResult.status != 0)
-        {
-            errorf("unarchiveWorktree: diff (modified) failed for tid=%d: %s", tid, diffResult.output);
-            return false;
-        }
+            throwGitFailure("unarchiveWorktree: diff (modified)", tid,
+                ["git", "-C", worktreePath, "diff", modifiedParent ~ ".." ~ modifiedSha], diffResult.output);
         if (diffResult.output.length > 0)
         {
             auto applyPipes = pipeProcess(["git", "-C", worktreePath, "apply"], Redirect.stdin);
@@ -240,10 +252,8 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
             applyPipes.stdin.close();
             auto applyStatus = wait(applyPipes.pid);
             if (applyStatus != 0)
-            {
-                errorf("unarchiveWorktree: git apply failed for tid=%d", tid);
-                return false;
-            }
+                throw new Exception(format!"unarchiveWorktree: git apply failed for tid=%d: cmd='git -C %s apply'"(
+                    tid, worktreePath));
         }
     }
 
@@ -255,10 +265,10 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
         auto diffTreeResult = execute(["git", "-C", projectPath, "diff-tree",
             "--diff-filter=A", "--name-only", "-z", "-r", untrackedParent, untrackedSha]);
         if (diffTreeResult.status != 0)
-        {
-            errorf("unarchiveWorktree: diff-tree failed for tid=%d: %s", tid, diffTreeResult.output);
-            return false;
-        }
+            throwGitFailure("unarchiveWorktree: diff-tree", tid,
+                ["git", "-C", projectPath, "diff-tree", "--diff-filter=A", "--name-only",
+                    "-z", "-r", untrackedParent, untrackedSha],
+                diffTreeResult.output);
 
         import std.file : mkdirRecurse, write;
         import std.string : split;
@@ -268,11 +278,8 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
             auto showResult = execute(["git", "-C", projectPath, "show",
                 untrackedSha ~ ":" ~ file]);
             if (showResult.status != 0)
-            {
-                errorf("unarchiveWorktree: git show failed for '%s' in tid=%d: %s",
-                    file, tid, showResult.output);
-                return false;
-            }
+                throwGitFailure("unarchiveWorktree: git show '" ~ file ~ "'", tid,
+                    ["git", "-C", projectPath, "show", untrackedSha ~ ":" ~ file], showResult.output);
             auto filePath = buildPath(worktreePath, file);
             mkdirRecurse(dirName(filePath));
             write(filePath, showResult.output);
@@ -280,10 +287,12 @@ bool unarchiveWorktree(string projectPath, int tid, string worktreePath)
     }
 
     // Delete the archive ref
-    execute(["git", "-C", projectPath, "update-ref", "-d", refName]);
+    auto deleteRefCmd = ["git", "-C", projectPath, "update-ref", "-d", refName];
+    auto deleteRefResult = execute(deleteRefCmd);
+    if (deleteRefResult.status != 0)
+        throwGitFailure("unarchiveWorktree: update-ref -d", tid, deleteRefCmd, deleteRefResult.output);
 
     infof("unarchiveWorktree: restored tid=%d at %s", tid, worktreePath);
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +331,56 @@ version(unittest)
         execute(["git", "-C", repoDir, "commit", "-qm", "init"]);
         return repoDir;
     }
+
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+
+    assertThrown!Exception(archiveWorktree(
+        "/tmp/cydo-archive-missing-worktree",
+        "/tmp/cydo-archive-missing-repo",
+        9001,
+    ));
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+
+    assertThrown!Exception(unarchiveWorktree(
+        "/tmp/cydo-unarchive-missing-repo",
+        9002,
+        "/tmp/cydo-unarchive-missing-worktree",
+    ));
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+
+    auto repoDir = setupTestRepo("cydo-test-worktree-stale-ref-archive");
+    auto wtDir = buildPath(repoDir, "wt");
+    execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
+    auto head = execute(["git", "-C", repoDir, "rev-parse", "HEAD"]).output.strip();
+    execute(["git", "-C", repoDir, "update-ref", "refs/cydo/worktree-archive/777", head]);
+
+    assertThrown!Exception(archiveWorktree(wtDir, repoDir, 777));
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+
+    auto repoDir = setupTestRepo("cydo-test-worktree-stale-ref-unarchive");
+    auto wtDir = buildPath(repoDir, "wt");
+    execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
+    auto head = execute(["git", "-C", repoDir, "rev-parse", "HEAD"]).output.strip();
+    execute(["git", "-C", repoDir, "update-ref", "refs/cydo/worktree-archive/778", head]);
+
+    assertThrown!Exception(unarchiveWorktree(repoDir, 778, wtDir));
+    assert(hasArchiveRef(repoDir, 778), "archive ref should be preserved when worktree already exists");
 }
 
 unittest
@@ -350,8 +409,7 @@ unittest
     write(buildPath(wtDir, "untracked.txt"), "untracked content\n");  // untracked
 
     // Archive the worktree
-    bool ok = archiveWorktree(wtDir, repoDir, 42);
-    assert(ok, "archiveWorktree failed");
+    archiveWorktree(wtDir, repoDir, 42);
 
     // Worktree directory should be gone
     assert(!exists(wtDir), "worktree should be removed after archive");
@@ -361,8 +419,7 @@ unittest
 
     // Unarchive the worktree
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 42, wtDir2);
-    assert(ok2, "unarchiveWorktree failed");
+    unarchiveWorktree(repoDir, 42, wtDir2);
 
     // Worktree should exist
     assert(exists(wtDir2) && isDir(wtDir2), "worktree should be recreated");
@@ -419,15 +476,13 @@ unittest
     execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
 
     // Archive clean worktree
-    bool ok = archiveWorktree(wtDir, repoDir, 99);
-    assert(ok, "archiveWorktree (clean) failed");
+    archiveWorktree(wtDir, repoDir, 99);
     assert(!exists(wtDir));
     assert(hasArchiveRef(repoDir, 99));
 
     // Unarchive
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 99, wtDir2);
-    assert(ok2, "unarchiveWorktree (clean) failed");
+    unarchiveWorktree(repoDir, 99, wtDir2);
     assert(exists(wtDir2) && isDir(wtDir2));
 
     // HEAD should be same as original
@@ -458,13 +513,11 @@ unittest
     write(buildPath(wtDir, "newfile.txt"), "new staged\n");
     execute(["git", "-C", wtDir, "add", "newfile.txt"]);
 
-    bool ok = archiveWorktree(wtDir, repoDir, 11);
-    assert(ok);
+    archiveWorktree(wtDir, repoDir, 11);
     assert(!exists(wtDir));
 
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 11, wtDir2);
-    assert(ok2);
+    unarchiveWorktree(repoDir, 11, wtDir2);
 
     // newfile.txt should be staged
     auto stagedCheck = execute(["git", "-C", wtDir2, "diff", "--cached", "--name-only"]);
@@ -491,13 +544,11 @@ unittest
     // Only modified (no staged, no untracked)
     write(buildPath(wtDir, "README.md"), "modified content\n");
 
-    bool ok = archiveWorktree(wtDir, repoDir, 22);
-    assert(ok);
+    archiveWorktree(wtDir, repoDir, 22);
     assert(!exists(wtDir));
 
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 22, wtDir2);
-    assert(ok2);
+    unarchiveWorktree(repoDir, 22, wtDir2);
 
     // No staged changes
     auto stagedCheck = execute(["git", "-C", wtDir2, "diff", "--cached", "--quiet"]);
@@ -525,13 +576,11 @@ unittest
     // Only untracked
     write(buildPath(wtDir, "new.txt"), "new untracked\n");
 
-    bool ok = archiveWorktree(wtDir, repoDir, 33);
-    assert(ok);
+    archiveWorktree(wtDir, repoDir, 33);
     assert(!exists(wtDir));
 
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 33, wtDir2);
-    assert(ok2);
+    unarchiveWorktree(repoDir, 33, wtDir2);
 
     // No staged or unstaged changes
     auto stagedCheck = execute(["git", "-C", wtDir2, "diff", "--cached", "--quiet"]);
@@ -559,15 +608,13 @@ unittest
     execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
 
     // First archive
-    bool ok = archiveWorktree(wtDir, repoDir, 66);
-    assert(ok, "first archiveWorktree should succeed");
+    archiveWorktree(wtDir, repoDir, 66);
     assert(!exists(wtDir));
     assert(hasArchiveRef(repoDir, 66));
 
     // Second archive: ref already exists → no-op, returns true
     // The worktree is already gone; archiveWorktree checks hasArchiveRef first.
-    bool ok2 = archiveWorktree(wtDir, repoDir, 66);
-    assert(ok2, "second archiveWorktree should be a no-op returning true");
+    archiveWorktree(wtDir, repoDir, 66);
     // Ref should still exist
     assert(hasArchiveRef(repoDir, 66));
 }
@@ -585,17 +632,14 @@ unittest
     auto wtDir = buildPath(repoDir, "wt");
     execute(["git", "-C", repoDir, "worktree", "add", "--detach", wtDir]);
 
-    bool ok = archiveWorktree(wtDir, repoDir, 55);
-    assert(ok);
+    archiveWorktree(wtDir, repoDir, 55);
 
     // First unarchive
     auto wtDir2 = buildPath(repoDir, "wt2");
-    bool ok2 = unarchiveWorktree(repoDir, 55, wtDir2);
-    assert(ok2, "first unarchive should succeed");
+    unarchiveWorktree(repoDir, 55, wtDir2);
 
     // Second unarchive: worktree exists → no-op, returns true
-    bool ok3 = unarchiveWorktree(repoDir, 55, wtDir2);
-    assert(ok3, "second unarchive should be a no-op returning true");
+    unarchiveWorktree(repoDir, 55, wtDir2);
 }
 
 unittest

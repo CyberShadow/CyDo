@@ -871,7 +871,7 @@ class App : ToolsBackend
 				ProcessState.Dead,
 			);
 			tasks[rowTid].archiveQueue = new StateQueue!ArchiveState(
-				(ArchiveState goal) => archiveTransition(rowTid, goal),
+				makeArchiveQueueSF(rowTid),
 				tasks[rowTid].archived ? ArchiveState.Archived : ArchiveState.Unarchived,
 			);
 		}
@@ -3458,6 +3458,17 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 		bool archived = json.content.json == `"true"`;
+
+		infof("archive request: requestedTid=%d goal=%s archived=%s archiving=%s workspace='%s' projectPath='%s' taskDir='%s' agentType='%s' agentSessionId='%s'",
+			tid,
+			archived ? "archived" : "unarchived",
+			td.archived ? "true" : "false",
+			td.archiving ? "true" : "false",
+			td.workspace,
+			td.projectPath,
+			td.taskDir,
+			td.agentType,
+			td.agentSessionId);
 		if (td.archived == archived)
 			return; // no change
 
@@ -3497,6 +3508,10 @@ class App : ToolsBackend
 				if (tdp !is null)
 				{
 					tdp.archiving = false;
+					infof("archive transition completed: requestedTid=%d goal=%s archived=%s archiving=%s",
+						tid, archived ? "archived" : "unarchived",
+						tdp.archived ? "true" : "false",
+						tdp.archiving ? "true" : "false");
 					broadcastTaskUpdate(tid);
 				}
 			})
@@ -3509,6 +3524,8 @@ class App : ToolsBackend
 					tdp.archived = !archived;
 					tdp.archiving = false;
 					persistence.setArchived(tid, !archived);
+					errorf("archive transition rolled back: requestedTid=%d revertedArchived=%s archiving=%s",
+						tid, tdp.archived ? "true" : "false", tdp.archiving ? "true" : "false");
 					broadcastTaskUpdate(tid);
 				}
 				ws.send(Data(toJson(ErrorMessage("error",
@@ -3644,7 +3661,7 @@ class App : ToolsBackend
 						ProcessState.Dead,
 					);
 					tasks[childTid].archiveQueue = new StateQueue!ArchiveState(
-						(ArchiveState goal) => archiveTransition(childTid, goal),
+						makeArchiveQueueSF(childTid),
 						ArchiveState.Unarchived,
 					);
 
@@ -3692,7 +3709,7 @@ class App : ToolsBackend
 			ProcessState.Dead,
 		);
 		tasks[result.tid].archiveQueue = new StateQueue!ArchiveState(
-			(ArchiveState goal) => archiveTransition(result.tid, goal),
+			makeArchiveQueueSF(result.tid),
 			ArchiveState.Unarchived,
 		);
 
@@ -3978,7 +3995,7 @@ class App : ToolsBackend
 						ProcessState.Dead,
 					);
 					tasks[backup.tid].archiveQueue = new StateQueue!ArchiveState(
-						(ArchiveState goal) => archiveTransition(backup.tid, goal),
+						makeArchiveQueueSF(backup.tid),
 						ArchiveState.Unarchived,
 					);
 					broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
@@ -4989,7 +5006,7 @@ class App : ToolsBackend
 			ProcessState.Dead,
 		);
 		tasks[tid].archiveQueue = new StateQueue!ArchiveState(
-			(ArchiveState goal) => archiveTransition(tid, goal),
+			makeArchiveQueueSF(tid),
 			ArchiveState.Unarchived,
 		);
 		return tid;
@@ -5781,6 +5798,14 @@ class App : ToolsBackend
 	private Promise!ProcessState delegate(ProcessState) makeProcessQueueSF(int tid)
 	{
 		return (ProcessState goal) => processTransition(tid, goal);
+	}
+
+	/// Returns an archive transition stateFunc bound to a specific tid.
+	/// Using a helper function (rather than an inline lambda in a foreach) avoids
+	/// the D closure-capture bug where all loop iterations share the same `tid`.
+	private Promise!ArchiveState delegate(ArchiveState) makeArchiveQueueSF(int tid)
+	{
+		return (ArchiveState goal) => archiveTransition(tid, goal);
 	}
 
 	private Promise!ProcessState processTransition(int tid, ProcessState goal)
@@ -6620,6 +6645,8 @@ class App : ToolsBackend
 		int tid;
 		string worktreePath;
 		string projectPath;
+		string workspace;
+		string taskDir;
 	}
 
 	/// Collect archive ops for `tid` and descendants (main thread only).
@@ -6647,12 +6674,19 @@ class App : ToolsBackend
 		{
 			auto wtPath = buildPath(tdp.taskDir, "worktree");
 			if (exists(wtPath) && isDir(wtPath))
-				ops ~= WorktreeOp(tid, wtPath, tdp.projectPath);
+				ops ~= WorktreeOp(tid, wtPath, tdp.projectPath, tdp.workspace, tdp.taskDir);
 		}
 
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
-				collectArchiveOpsDFS(childTid, true, ops);
+			{
+				bool follow = !child.archived;
+				infof("archive transition recurse: op=archive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
+					tid, childTid, follow ? "true" : "false",
+					child.workspace, child.projectPath, child.taskDir);
+				if (follow)
+					collectArchiveOpsDFS(childTid, true, ops);
+			}
 	}
 
 	/// Collect unarchive ops for `tid` and descendants (main thread only).
@@ -6676,11 +6710,19 @@ class App : ToolsBackend
 			return;
 
 		if (tdp.taskDir.length > 0)
-			ops ~= WorktreeOp(tid, buildPath(tdp.taskDir, "worktree"), tdp.projectPath);
+			ops ~= WorktreeOp(tid, buildPath(tdp.taskDir, "worktree"),
+				tdp.projectPath, tdp.workspace, tdp.taskDir);
 
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
-				collectUnarchiveOpsDFS(childTid, true, ops);
+			{
+				bool follow = !child.archived;
+				infof("archive transition recurse: op=unarchive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
+					tid, childTid, follow ? "true" : "false",
+					child.workspace, child.projectPath, child.taskDir);
+				if (follow)
+					collectUnarchiveOpsDFS(childTid, true, ops);
+			}
 	}
 
 	/// Async archive/unarchive transition. Runs git operations in a background thread.
@@ -6688,17 +6730,21 @@ class App : ToolsBackend
 	private Promise!ArchiveState archiveTransition(int tid, ArchiveState goal)
 	{
 		import std.conv : to;
+		import std.format : format;
 		import std.path : buildPath;
 
 		// Pre-collect all data on the main thread (safe: read-only access to tasks).
 		WorktreeOp[] ops = goal == ArchiveState.Archived
 			? collectArchiveOps(tid) : collectUnarchiveOps(tid);
+		auto rootTid = findRootTid(tid);
+		infof("archive transition start: transitionTid=%d rootTid=%d goal=%s operationCount=%d",
+			tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
+			cast(int) ops.length);
 
 		// Pre-compute cleanup path for archive (avoids accessing tasks in background thread).
 		string cleanupTmpPath;
 		if (goal == ArchiveState.Archived)
 		{
-			int rootTid = findRootTid(tid);
 			auto rootTd = rootTid in tasks;
 			if (rootTd !is null && (rootTid == tid || rootTd.archived))
 				cleanupTmpPath = buildPath(runtimeDir(), "tmp-" ~ rootTid.to!string);
@@ -6707,25 +6753,59 @@ class App : ToolsBackend
 		return threadAsync({
 			import std.file : exists, rmdirRecurse;
 
-			if (goal == ArchiveState.Archived)
+			try
 			{
-				foreach (op; ops)
-					archiveWorktree(op.worktreePath, op.projectPath, op.tid);
-				if (cleanupTmpPath.length > 0 && exists(cleanupTmpPath))
+				if (goal == ArchiveState.Archived)
 				{
-					try
-						rmdirRecurse(cleanupTmpPath);
-					catch (Exception e)
-						warningf("archiveTransition: cleanup failed for tid=%d: %s", tid, e.msg);
+					foreach (op; ops)
+					{
+						auto archiveRef = format!"refs/cydo/worktree-archive/%d"(op.tid);
+						infof("archive transition worktree op start: op=archive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
+							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
+						archiveWorktree(op.worktreePath, op.projectPath, op.tid);
+						infof("archive transition worktree op success: op=archive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
+							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
+					}
+					if (cleanupTmpPath.length > 0 && exists(cleanupTmpPath))
+					{
+						try
+							rmdirRecurse(cleanupTmpPath);
+						catch (Exception e)
+							warningf("archiveTransition: cleanup failed for tid=%d rootTid=%d path='%s': %s",
+								tid, rootTid, cleanupTmpPath, e.msg);
+					}
 				}
-			}
-			else
-			{
-				foreach (op; ops)
-					if (hasArchiveRef(op.projectPath, op.tid))
+
+				else
+				{
+					foreach (op; ops)
+					{
+						auto archiveRef = format!"refs/cydo/worktree-archive/%d"(op.tid);
+						if (!hasArchiveRef(op.projectPath, op.tid))
+						{
+							infof("archive transition worktree op skipped: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s' reason='archive ref missing'",
+								op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
+							continue;
+						}
+						infof("archive transition worktree op start: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
+							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
 						unarchiveWorktree(op.projectPath, op.tid, op.worktreePath);
+						infof("archive transition worktree op success: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
+							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
+					}
+				}
+				infof("archive transition finish: transitionTid=%d rootTid=%d goal=%s operationCount=%d",
+					tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
+					cast(int) ops.length);
+				return goal;
 			}
-			return goal;
+			catch (Exception e)
+			{
+				errorf("archive transition error: transitionTid=%d rootTid=%d goal=%s operationCount=%d error=%s",
+					tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
+					cast(int) ops.length, e.msg);
+				throw e;
+			}
 		});
 	}
 

@@ -49,6 +49,14 @@ const COL_WIDTH = 20;
 const LINE_X = 8;
 const JUNCTION_Y = ROW_HEIGHT / 2;
 
+export function shouldHandleSidebarAltArchive(
+  altKey: boolean,
+  hasArchiveHandler: boolean,
+  archiving: boolean,
+): boolean {
+  return altKey && hasArchiveHandler && !archiving;
+}
+
 function TreeGuide({ hasLine }: { hasLine: boolean }) {
   return (
     <svg
@@ -464,9 +472,9 @@ const SidebarItem = memo(function SidebarItem({
       }${depth === 0 ? " top-level" : ""}`}
       data-tid={id}
       onClick={(e: MouseEvent) => {
-        if (e.altKey && onArchive) {
+        if (shouldHandleSidebarAltArchive(e.altKey, !!onArchive, archiving)) {
           e.preventDefault();
-          onArchive(parseInt(id, 10));
+          onArchive?.(parseInt(id, 10));
           return;
         }
         if (!isPlainLeftClick(e)) return;
