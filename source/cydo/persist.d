@@ -369,10 +369,12 @@ struct LoadedHistory
 /// translateLine is called for each line to allow agent-specific translation.
 /// The delegate receives (line, 1-based lineNum) and returns zero or more translated
 /// event pairs (empty array = skip, one element = normal, two = compaction injection).
+/// maxBytes limits how many bytes of the file are read; ulong.max (default) reads all.
 LoadedHistory loadTaskHistory(int tid, string jsonlPath,
-	TranslatedEvent[] delegate(string, int) translateLine = null)
+	TranslatedEvent[] delegate(string, int) translateLine = null,
+	ulong maxBytes = ulong.max)
 {
-	import std.file : exists, readText;
+	import std.file : exists, read;
 	import std.string : lineSplitter;
 
 	if (jsonlPath.length == 0 || !exists(jsonlPath))
@@ -380,7 +382,7 @@ LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 
 	LoadedHistory result;
 	int lineNum = 0;
-	foreach (line; readText(jsonlPath).lineSplitter)
+	foreach (line; (cast(string) read(jsonlPath, cast(size_t) maxBytes)).lineSplitter)
 	{
 		lineNum++;
 		if (line.length == 0)

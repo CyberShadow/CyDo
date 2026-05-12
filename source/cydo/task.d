@@ -11,10 +11,244 @@ import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
+import cydo.persist : LoadedHistory;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
 import cydo.sandbox : ProcessLaunch;
+
+/// Encapsulates per-task history with a watermark/buffer state machine.
+///
+/// The three states:
+///   - uninitialized: initial default; every public op (except reset and isLoaded)
+///     asserts. Callers must call reset() before any other operation.
+///   - loaded: history_ holds the canonical event sequence; pendingEvents_ is empty.
+///     All query and mutation operations are available.
+///   - deferred: the on-disk JSONL has not been read yet. live events are buffered
+///     in pendingEvents_ until load() is called. Read operations (length, opIndex,
+///     opApply, ...) assert isLoaded — callers must call ensureHistoryLoaded first.
+///
+/// Design rationale:
+///   - I3 "must call ensureHistoryLoaded before appending to td.history" is now
+///     structurally enforced: appendLive routes between history_ and pendingEvents_
+///     based on state, and the asserts prevent read access while deferred.
+///   - I4 "historyLoaded==false ⇒ history empty" is replaced by the deferred/loaded
+///     distinction: deferred state has history_ empty, pending may hold live events.
+///   - The watermark makes the durable-vs-live boundary unambiguous: no event is
+///     ever discarded; no content-aware dedup is needed; the two streams meet at
+///     a known byte offset.
+struct HistoryStore
+{
+private:
+    DataVec  history_;
+    string[] rawSource_;
+    DataVec  pendingEvents_;
+    string[] pendingRaw_;
+    enum State : ubyte { uninitialized, loaded, deferred }
+    State    state_ = State.uninitialized;
+    ulong    watermark_;
+
+    void assertInitialized() const
+    {
+        assert(state_ != State.uninitialized,
+            "HistoryStore operation on uninitialized store: call reset() first");
+    }
+
+public:
+    // -------- queries (any initialized state) --------
+
+    @property bool isLoaded() const { return state_ == State.loaded; }
+
+    /// Contents of the most recently appended event (pending if deferred, history
+    /// if loaded). Returns empty slice if nothing has been appended yet.
+    /// Used by mergeStreamingDelta to peek at the last event regardless of state.
+    const(char)[] lastEventContents() const
+    {
+        assertInitialized();
+        if (state_ == State.deferred)
+            return pendingEvents_.length > 0
+                ? cast(const(char)[]) pendingEvents_[$ - 1].unsafeContents
+                : null;
+        return history_.length > 0
+            ? cast(const(char)[]) history_[$ - 1].unsafeContents
+            : null;
+    }
+
+    /// Timestamp parsed from the envelope of the most recent event, or 0.
+    long lastEventTs() const
+    {
+        assertInitialized();
+        import cydo.task : extractTsFromEnvelope;
+        auto contents = lastEventContents();
+        if (contents.length == 0)
+            return 0;
+        return extractTsFromEnvelope(cast(string) contents);
+    }
+
+    // -------- queries (loaded state only — asserted) --------
+
+    @property size_t length() const
+    {
+        assert(state_ == State.loaded, "HistoryStore.length requires loaded state");
+        return history_.length;
+    }
+
+    ref const(Data) opIndex(size_t i) const
+    {
+        assert(state_ == State.loaded, "HistoryStore.opIndex requires loaded state");
+        return history_[i];
+    }
+
+    /// Returns the raw JSONL source line at index i, or null for synthetic events.
+    string rawAt(size_t i) const
+    {
+        assert(state_ == State.loaded, "HistoryStore.rawAt requires loaded state");
+        if (i >= rawSource_.length)
+            return null;
+        return rawSource_[i];
+    }
+
+    int opApply(scope int delegate(size_t, ref Data) dg)
+    {
+        assert(state_ == State.loaded, "HistoryStore.opApply requires loaded state");
+        foreach (i, ref d; history_)
+            if (auto r = dg(i, d)) return r;
+        return 0;
+    }
+
+    int opApply(scope int delegate(ref Data) dg)
+    {
+        assert(state_ == State.loaded, "HistoryStore.opApply requires loaded state");
+        foreach (ref d; history_)
+            if (auto r = dg(d)) return r;
+        return 0;
+    }
+
+    int opApplyReverse(scope int delegate(ref Data) dg)
+    {
+        assert(state_ == State.loaded, "HistoryStore.opApplyReverse requires loaded state");
+        foreach_reverse (ref d; history_)
+            if (auto r = dg(d)) return r;
+        return 0;
+    }
+
+    // -------- mutations --------
+
+    /// Append a live event. Routes to pendingEvents_ if deferred, history_ if loaded.
+    /// Returns the new seq index if loaded; cast(size_t)-1 if deferred (callers
+    /// use this to skip subscriber-side broadcast/anchor work that is meaningless
+    /// in the deferred state).
+    ///
+    /// history is the durable replay source; live broadcasts must not be treated as
+    /// the only delivery path for persisted events.
+    size_t appendLive(Data event, string raw)
+    {
+        assertInitialized();
+        if (state_ == State.deferred)
+        {
+            pendingEvents_ ~= event;
+            pendingRaw_ ~= raw;
+            return cast(size_t) -1;
+        }
+        history_ ~= event;
+        rawSource_ ~= raw;
+        return history_.length - 1;
+    }
+
+    /// Replace the most recently appended event (pending if deferred, history if loaded).
+    /// Used by mergeStreamingDelta to merge streaming item/delta chunks in-place.
+    void replaceLastEvent(Data event)
+    {
+        assertInitialized();
+        if (state_ == State.deferred)
+        {
+            assert(pendingEvents_.length > 0, "replaceLastEvent: no pending events");
+            pendingEvents_[$ - 1] = event;
+            return;
+        }
+        assert(history_.length > 0, "replaceLastEvent: no history events");
+        history_[$ - 1] = event;
+    }
+
+    /// In-place replace inside loaded history (for backfillHistoryAnchor).
+    void replaceAt(size_t i, Data event)
+    {
+        assert(state_ == State.loaded, "HistoryStore.replaceAt requires loaded state");
+        history_[i] = event;
+    }
+
+    // -------- state transitions --------
+
+    /// Initialize or re-initialize the store from an on-disk JSONL state. Clears
+    /// all content and pending events.
+    ///
+    /// - reset(0) → loaded+empty. The caller declares "no on-disk state to load";
+    ///   appendLive works immediately. Use for brand-new tasks (createTask) and
+    ///   orphaned-agent tasks.
+    /// - reset(N>0) → deferred+watermark N. Live events are buffered in pendingEvents_
+    ///   until load() is called. Use when the JSONL has N bytes already on disk.
+    ///
+    /// Re-resetting an already-initialized store is legal and used by truncation
+    /// paths (performUndoExecution, handleEditMessage, thread/rollback, etc.) to
+    /// discard in-memory state and re-snapshot the post-truncation JSONL size.
+    void reset(ulong newWatermark)
+    {
+        import core.lifetime : move;
+        history_ = DataVec();
+        rawSource_ = null;
+        pendingEvents_ = DataVec();
+        pendingRaw_ = null;
+        watermark_ = newWatermark;
+        state_ = newWatermark == 0 ? State.loaded : State.deferred;
+    }
+
+    /// The only exit from deferred state. The delegate receives the watermark
+    /// snapshotted at reset() time and returns the parsed loaded portion.
+    /// HistoryStore splices the loaded portion with the pending buffer atomically
+    /// and flips to loaded state. Asserts state == deferred on entry.
+    void load(scope LoadedHistory delegate(ulong maxBytes) loader)
+    {
+        assert(state_ == State.deferred, "HistoryStore.load requires deferred state");
+        auto loaded = loader(watermark_);
+        foreach (i, ref ev; loaded.history)
+        {
+            history_ ~= ev;
+            rawSource_ ~= (i < loaded.rawSource.length ? loaded.rawSource[i] : null);
+        }
+        foreach (i, ref ev; pendingEvents_)
+        {
+            history_ ~= ev;
+            rawSource_ ~= (i < pendingRaw_.length ? pendingRaw_[i] : null);
+        }
+        pendingEvents_ = DataVec();
+        pendingRaw_ = null;
+        state_ = State.loaded;
+    }
+
+    // -------- invariants --------
+
+    invariant
+    {
+        assert(history_.length == rawSource_.length,
+               "history/rawSource length mismatch");
+        assert(pendingEvents_.length == pendingRaw_.length,
+               "pending events/raw length mismatch");
+        final switch (state_)
+        {
+            case State.uninitialized:
+                assert(history_.length == 0 && pendingEvents_.length == 0
+                       && watermark_ == 0,
+                       "uninitialized state must be fully empty");
+                break;
+            case State.loaded:
+                assert(pendingEvents_.length == 0,
+                       "loaded state must have empty pending buffer");
+                break;
+            case State.deferred:
+                break;
+        }
+    }
+}
 
 /// Signal type for batch event queue: child completion or child question.
 struct BatchSignal
@@ -186,10 +420,7 @@ struct TaskData
 	string pendingUserNonce;
 	AgentSession session;
 	ProcessLaunch launch;
-	// --- history + rawSource: parallel arrays, mutate only via helpers below ---
-	DataVec history;          // unified: JSONL file events + live stdout events
-	string[] rawSource;       // parallel to history: original agent line per event (null for synthetics)
-	bool historyLoaded;       // whether JSONL has been loaded into history
+	HistoryStore history;     // unified: JSONL file events + live stdout events
 	@property bool alive() { return session !is null && session.alive; }
 	StateQueue!ProcessState* processQueue;
 	StateQueue!ArchiveState* archiveQueue;
@@ -223,48 +454,7 @@ struct TaskData
 	string pendingDequeuedSteeringRawLine;
 	bool compactionReminderInFlight;
 
-	invariant (history.length == rawSource.length, "history/rawSource length mismatch");
 	invariant (enqueuedSteeringTexts.length == enqueuedSteeringRawLines.length, "steering texts/rawLines length mismatch");
-
-	// -- History parallel-array helpers --
-
-	/// Append an event and its raw source atomically. Task history is the durable
-	/// source replayed by request_history; live broadcasts must not be treated as
-	/// the only delivery path for persisted events.
-	void appendHistory(Data event, string raw)
-	{
-		history ~= event;
-		rawSource ~= raw;
-		assert(history.length == rawSource.length);
-	}
-
-	/// Replace the last history entry (for merge-streaming-delta).
-	/// rawSource is unchanged since the merged entry keeps the original's raw.
-	void replaceLastHistory(Data event)
-	{
-		assert(history.length > 0);
-		history[$ - 1] = event;
-		assert(history.length == rawSource.length);
-	}
-
-	/// Bulk-assign history and rawSource together (for loading persisted history).
-	void setHistory(ref DataVec newHistory, string[] newRawSource)
-	{
-		import core.lifetime : move;
-		assert(newHistory.length == newRawSource.length);
-		history = move(newHistory);
-		rawSource = newRawSource;
-	}
-
-	/// Reset history and rawSource to empty.
-	void resetHistory()
-	{
-		history = DataVec();
-		rawSource = null;
-		visibleTurnAnchors = null;
-		clearPendingDequeuedSteering();
-		clearLastSessionStatus();
-	}
 
 	void setLastSessionStatus(string translatedStatus, long ts)
 	{
@@ -885,4 +1075,140 @@ string extractEventFromEnvelope(string envelope)
 	if (envelope[$ - 1] == '}')
 		return envelope[start .. $ - 1];
 	return envelope[start .. $];
+}
+
+unittest
+{
+    import core.exception : AssertError;
+    import std.exception : assertThrown;
+
+    // Helper to make a minimal Data from a string
+    auto makeData(string s) { return Data(cast(void[]) s.dup); }
+
+    // 1. Default state is uninitialized — operations assert except isLoaded and reset.
+    {
+        HistoryStore hs;
+        assert(!hs.isLoaded);
+        assertThrown!AssertError(hs.appendLive(makeData("x"), null));
+        assertThrown!AssertError(hs.lastEventContents());
+        assertThrown!AssertError(hs.lastEventTs());
+        assertThrown!AssertError(hs.replaceLastEvent(makeData("x")));
+        assertThrown!AssertError(hs.load((_) => LoadedHistory.init));
+    }
+
+    // 2. reset(0) → loaded+empty; appendLive returns sequential seqs.
+    {
+        HistoryStore hs;
+        hs.reset(0);
+        assert(hs.isLoaded);
+        assert(hs.length == 0);
+        assert(hs.lastEventContents().length == 0);
+        auto seq0 = hs.appendLive(makeData("e0"), "raw0");
+        assert(seq0 == 0);
+        auto seq1 = hs.appendLive(makeData("e1"), "raw1");
+        assert(seq1 == 1);
+        assert(hs.length == 2);
+        assert(hs.rawAt(0) == "raw0");
+        assert(hs.rawAt(1) == "raw1");
+    }
+
+    // 3. reset(N>0) → deferred; length asserts; appendLive returns cast(size_t)-1.
+    {
+        HistoryStore hs;
+        hs.reset(42);
+        assert(!hs.isLoaded);
+        assertThrown!AssertError(hs.length);
+        assertThrown!AssertError(hs.rawAt(0));
+        assertThrown!AssertError({ foreach (i, ref d; hs) {} }());
+        auto deferred = hs.appendLive(makeData("live"), "rawlive");
+        assert(deferred == cast(size_t) -1);
+        assert(hs.lastEventContents() == cast(const(char)[]) "live");
+    }
+
+    // 4. load() delegates with correct maxBytes and splices in order.
+    {
+        HistoryStore hs;
+        hs.reset(42);
+        hs.appendLive(makeData("pending0"), "praw0");
+        hs.appendLive(makeData("pending1"), "praw1");
+
+        bool called = false;
+        hs.load((ulong maxBytes) {
+            assert(maxBytes == 42);
+            assert(!called);
+            called = true;
+            LoadedHistory lh;
+            lh.history ~= makeData("loaded0");
+            lh.rawSource ~= "lraw0";
+            lh.history ~= makeData("loaded1");
+            lh.rawSource ~= "lraw1";
+            lh.history ~= makeData("loaded2");
+            lh.rawSource ~= "lraw2";
+            return lh;
+        });
+        assert(called);
+        assert(hs.isLoaded);
+        assert(hs.length == 5);
+        assert(cast(string) hs[0].unsafeContents == "loaded0");
+        assert(cast(string) hs[1].unsafeContents == "loaded1");
+        assert(cast(string) hs[2].unsafeContents == "loaded2");
+        assert(cast(string) hs[3].unsafeContents == "pending0");
+        assert(cast(string) hs[4].unsafeContents == "pending1");
+        assert(hs.rawAt(0) == "lraw0");
+        assert(hs.rawAt(3) == "praw0");
+        assert(hs.rawAt(4) == "praw1");
+    }
+
+    // 5. load() with empty result: pending event at seq 0.
+    {
+        HistoryStore hs;
+        hs.reset(42);
+        hs.appendLive(makeData("ev"), "r");
+        hs.load((_) => LoadedHistory.init);
+        assert(hs.isLoaded);
+        assert(hs.length == 1);
+        assert(cast(string) hs[0].unsafeContents == "ev");
+        assert(hs.rawAt(0) == "r");
+    }
+
+    // 6. replaceLastEvent in both states.
+    {
+        // Deferred: replaceLastEvent mutates pending tail.
+        HistoryStore hs;
+        hs.reset(10);
+        hs.appendLive(makeData("orig"), "r");
+        hs.replaceLastEvent(makeData("replaced"));
+        hs.load((_) => LoadedHistory.init);
+        assert(hs.length == 1);
+        assert(cast(string) hs[0].unsafeContents == "replaced");
+
+        // Loaded: replaceLastEvent mutates history tail.
+        hs.appendLive(makeData("first"), null);
+        hs.appendLive(makeData("second"), null);
+        hs.replaceLastEvent(makeData("mutated"));
+        assert(cast(string) hs[hs.length - 1].unsafeContents == "mutated");
+    }
+
+    // 7. replaceAt asserts for non-loaded state (deferred).
+    {
+        HistoryStore hs;
+        hs.reset(5);
+        hs.appendLive(makeData("x"), null);
+        assertThrown!AssertError(hs.replaceAt(0, makeData("y")));
+    }
+
+    // 8. reset() re-snapshots the watermark; next load receives new maxBytes.
+    {
+        HistoryStore hs;
+        hs.reset(10);
+        hs.appendLive(makeData("pending"), null);
+        hs.reset(99);  // re-reset clears pending and updates watermark
+        // pending should be gone
+        hs.load((ulong maxBytes) {
+            assert(maxBytes == 99);
+            return LoadedHistory.init;
+        });
+        assert(hs.isLoaded);
+        assert(hs.length == 0);
+    }
 }

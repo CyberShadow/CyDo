@@ -331,6 +331,7 @@ struct JsonlTracker
 
 		auto td = getTask(tid);
 		if (td is null) return null;
+		if (!td.history.isLoaded) return null;
 
 		// Count user and assistant events in history, recording their seqs
 		size_t[] userSeqs, assistantSeqs;
