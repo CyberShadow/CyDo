@@ -3004,6 +3004,9 @@ class App : ToolsBackend
 			return filterTransientSessionStatusEvents(events);
 		};
 
+		import std.datetime.stopwatch : StopWatch;
+		StopWatch sw;
+		sw.start();
 		td.history.load((ulong maxBytes) {
 			import cydo.persist : LoadedHistory;
 			if (orphan || ta is null)
@@ -3147,6 +3150,10 @@ class App : ToolsBackend
 				return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
 			}, maxBytes);
 		});
+		sw.stop();
+		if (td.history.isLoaded)
+			infof("Loaded history for task %d (%d events, %d ms)",
+				tid, td.history.length, sw.peek.total!"msecs");
 
 		if (orphan)
 			appendSynthesizedHistoryError(tid, "Failed to load session history",
@@ -6582,11 +6589,13 @@ class App : ToolsBackend
 		// Resume order doesn't matter: children that already completed have
 		// their results in the DB; children still in-flight will deliver
 		// results via the fallback onExit path when they eventually finish.
-		foreach (tid; toResume)
+		foreach (i, tid; toResume)
 		{
 			if (tid !in tasks)
 				continue;
 			auto status = tasks[tid].status;
+			infof("Resuming session %d/%d (tid=%d, agent=%s, status=%s)",
+				i + 1, toResume.length, tid, tasks[tid].agentType, status);
 
 			if (status == "waiting")
 			{
