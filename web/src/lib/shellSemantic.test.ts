@@ -13,6 +13,16 @@ import type {
 const plan = (v: { steps?: Parameters<typeof derivePlan>[0] }) =>
   v.steps ? derivePlan(v.steps) : undefined;
 
+function normalizeSemanticForComparison(value: unknown): unknown {
+  const normalized: unknown = JSON.parse(JSON.stringify(value));
+  if (normalized && typeof normalized === "object") {
+    delete (normalized as { command?: string }).command;
+    delete (normalized as { source?: unknown }).source;
+    delete (normalized as { sourceTree?: unknown }).sourceTree;
+  }
+  return normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Scope-pinning tests (verify tokenizer layer produces correct roles)
 // ---------------------------------------------------------------------------
@@ -149,6 +159,15 @@ describe("head reads", () => {
     expect(v.filePath).toBe("Cargo.toml");
     expect(v.range).toEqual({ type: "head", count: 50 });
   });
+
+  it("head -20 README.md → read with compact count", async () => {
+    const r = await parseShellSemantic("head -20 README.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("README.md");
+    expect(v.range).toEqual({ type: "head", count: 20 });
+  });
 });
 
 describe("tail reads", () => {
@@ -188,6 +207,15 @@ describe("tail reads", () => {
     expect(v.filePath).toBe("README.md");
     expect(v.range).toEqual({ type: "all" });
   });
+
+  it("tail -20 README.md → read with compact count", async () => {
+    const r = await parseShellSemantic("tail -20 README.md");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as ShellReadSemantic;
+    expect(v.filePath).toBe("README.md");
+    expect(v.range).toEqual({ type: "tail-count", count: 20 });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -212,7 +240,7 @@ describe("pipe reads (should succeed as Read)", () => {
     expect(v.filePath).toBe("tui/Cargo.toml");
   });
 
-  it("nl -ba src/main.rs | sed -n '1200,1720p' → read with filePath src/main.rs", async () => {
+  it("nl -ba src/main.rs | sed -n '1200,1720p' → read with line numbers and selected range", async () => {
     const r = await parseShellSemantic(
       "nl -ba src/main.rs | sed -n '1200,1720p'",
     );
@@ -220,32 +248,25 @@ describe("pipe reads (should succeed as Read)", () => {
     if (!r.ok) return;
     const v = r.value as ShellReadSemantic;
     expect(v.filePath).toBe("src/main.rs");
+    expect(v.range).toEqual({ type: "lines", start: 1200, end: 1720 });
+    expect(v.presentation).toEqual({ lineNumbers: { style: "nl" } });
   });
 
-  it("sed -n '260,640p' src/main.rs | nl -ba → read with filePath src/main.rs", async () => {
+  it("sed -n '260,640p' src/main.rs | nl -ba → reject (numbering after range is ambiguous)", async () => {
     const r = await parseShellSemantic(
       "sed -n '260,640p' src/main.rs | nl -ba",
     );
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("src/main.rs");
+    expect(r.ok).toBe(false);
   });
 
-  it("cat file.txt | wc -l → read (wc is always-formatting)", async () => {
+  it("cat file.txt | wc -l → reject (opaque transform over file-read)", async () => {
     const r = await parseShellSemantic("cat file.txt | wc -l");
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("file.txt");
+    expect(r.ok).toBe(false);
   });
 
-  it("cat file.txt | sort | head -5 → read (sort+head without file are formatting)", async () => {
+  it("cat file.txt | sort | head -5 → reject (composed transforms are not lowered)", async () => {
     const r = await parseShellSemantic("cat file.txt | sort | head -5");
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as ShellReadSemantic;
-    expect(v.filePath).toBe("file.txt");
+    expect(r.ok).toBe(false);
   });
 });
 
@@ -258,6 +279,91 @@ describe("pipe reads (should reject)", () => {
   it("echo hello | cat → reject (no primary file operand)", async () => {
     const r = await parseShellSemantic("echo hello | cat");
     expect(r.ok).toBe(false);
+  });
+
+  it("sed -n '10,20p' file.txt | rg -n needle → reject (stream-relative line numbers)", async () => {
+    const r = await parseShellSemantic(
+      "sed -n '10,20p' file.txt | rg -n needle",
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("cat file.txt | head -5 | tail -2 → reject (nested line-range transforms)", async () => {
+    const r = await parseShellSemantic("cat file.txt | head -5 | tail -2");
+    expect(r.ok).toBe(false);
+  });
+
+  it("cat file.txt | sed -n '1,20p' | head -3 → reject (nested range transforms)", async () => {
+    const r = await parseShellSemantic(
+      "cat file.txt | sed -n '1,20p' | head -3",
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("rg -n needle README.md | head -n 5 → reject (search slicing is stream-relative)", async () => {
+    const r = await parseShellSemantic("rg -n needle README.md | head -n 5");
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("argv vs pipeline equivalence", () => {
+  it("head/read forms normalize to the same semantic", async () => {
+    const direct = await parseShellSemantic("head -n 20 README.md");
+    const viaPipe = await parseShellSemantic("cat README.md | head -n 20");
+    const viaCompact = await parseShellSemantic("cat README.md | head -20");
+    expect(direct.ok).toBe(true);
+    expect(viaPipe.ok).toBe(true);
+    expect(viaCompact.ok).toBe(true);
+    if (!direct.ok || !viaPipe.ok || !viaCompact.ok) return;
+    expect(direct.value.kind).toBe("read");
+    expect(viaPipe.value.kind).toBe("read");
+    expect(viaCompact.value.kind).toBe("read");
+    const d = direct.value as ShellReadSemantic;
+    const p = viaPipe.value as ShellReadSemantic;
+    const c = viaCompact.value as ShellReadSemantic;
+    expect(p.filePath).toBe(d.filePath);
+    expect(c.filePath).toBe(d.filePath);
+    expect(p.range).toEqual(d.range);
+    expect(c.range).toEqual(d.range);
+    expect(p.presentation).toEqual(d.presentation);
+    expect(c.presentation).toEqual(d.presentation);
+  });
+
+  it("sed/read forms normalize to the same semantic", async () => {
+    const direct = await parseShellSemantic("sed -n '1,20p' README.md");
+    const viaPipe = await parseShellSemantic("cat README.md | sed -n '1,20p'");
+    expect(direct.ok).toBe(true);
+    expect(viaPipe.ok).toBe(true);
+    if (!direct.ok || !viaPipe.ok) return;
+    expect(direct.value.kind).toBe("read");
+    expect(viaPipe.value.kind).toBe("read");
+    const d = direct.value as ShellReadSemantic;
+    const p = viaPipe.value as ShellReadSemantic;
+    expect(p.filePath).toBe(d.filePath);
+    expect(p.range).toEqual(d.range);
+    expect(p.presentation).toEqual(d.presentation);
+  });
+
+  it("rg/search forms normalize to the same semantic", async () => {
+    const direct = await parseShellSemantic("rg -n needle README.md");
+    const viaPipe = await parseShellSemantic("cat README.md | rg -n needle");
+    expect(direct.ok).toBe(true);
+    expect(viaPipe.ok).toBe(true);
+    if (!direct.ok || !viaPipe.ok) return;
+    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
+  });
+
+  it("grep/search forms normalize to the same semantic", async () => {
+    const direct = await parseShellSemantic("grep -n needle README.md");
+    const viaPipe = await parseShellSemantic("cat README.md | grep -n needle");
+    expect(direct.ok).toBe(true);
+    expect(viaPipe.ok).toBe(true);
+    if (!direct.ok || !viaPipe.ok) return;
+    expect(normalizeSemanticForComparison(viaPipe.value)).toEqual(
+      normalizeSemanticForComparison(direct.value),
+    );
   });
 });
 
@@ -579,6 +685,16 @@ describe("rejected forms", () => {
     expect(r.ok).toBe(false);
   });
 
+  it('variable: cat "$FILE" → reject', async () => {
+    const r = await parseShellSemantic('cat "$FILE"');
+    expect(r.ok).toBe(false);
+  });
+
+  it('variable: head -n 5 "$FILE" → reject', async () => {
+    const r = await parseShellSemantic('head -n 5 "$FILE"');
+    expect(r.ok).toBe(false);
+  });
+
   it("multiple paths: cat README.md package.json → reject (multiple_paths)", async () => {
     const r = await parseShellSemantic("cat README.md package.json");
     expect(r.ok).toBe(false);
@@ -598,6 +714,31 @@ describe("rejected forms", () => {
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe("invalid_range");
+  });
+
+  it("wc file.txt → reject (no precise read semantic)", async () => {
+    const r = await parseShellSemantic("wc file.txt");
+    expect(r.ok).toBe(false);
+  });
+
+  it("head -0 README.md → reject (zero count is invalid)", async () => {
+    const r = await parseShellSemantic("head -0 README.md");
+    expect(r.ok).toBe(false);
+  });
+
+  it("head -n0 README.md → reject (zero count is invalid)", async () => {
+    const r = await parseShellSemantic("head -n0 README.md");
+    expect(r.ok).toBe(false);
+  });
+
+  it("tail -0 README.md → reject (zero count is invalid)", async () => {
+    const r = await parseShellSemantic("tail -0 README.md");
+    expect(r.ok).toBe(false);
+  });
+
+  it("tail -n0 README.md → reject (zero count is invalid)", async () => {
+    const r = await parseShellSemantic("tail -n0 README.md");
+    expect(r.ok).toBe(false);
   });
 
   it("variable in heredoc: cat <<EOF > $FILE\\nhello\\nEOF → reject", async () => {
@@ -723,6 +864,20 @@ describe("git diff pipelines (should succeed as diff)", () => {
 
   it("git diff | sed -n '1,260p' → diff (pipeline with formatting)", async () => {
     const r = await parseShellSemantic("git diff | sed -n '1,260p'");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff | sort | uniq → diff (opaque transforms over diff at any depth)", async () => {
+    const r = await parseShellSemantic("git diff | sort | uniq");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe("diff");
+  });
+
+  it("git diff | head -n 5 | sort → diff (mixed transforms over diff)", async () => {
+    const r = await parseShellSemantic("git diff | head -n 5 | sort");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("diff");
@@ -1259,38 +1414,18 @@ describe("batch 1 rg/sed/structured output plans", () => {
     }
   });
 
-  it("grep -n ... /nix/store/... | head keeps search plan and infers D language", async () => {
+  it("grep -n ... /nix/store/... | head rejects (search slicing is stream-relative)", async () => {
     const r = await parseShellSemantic(
       'grep -n "cbDllUnload\\|ll_removeThread" /nix/store/ab1n7scnjf98w13jwz12r5lm43d30cj9-dmd-2.112.0/include/dmd/core/thread/osthread.d | head -15',
     );
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("search");
-    const v = r.value;
-    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
-    const format = plan(v)?.blocks[0]?.format;
-    expect(format?.kind).toBe("individual-lines");
-    if (!format || format.kind !== "individual-lines") return;
-    expect(format.format.kind).toBe("line-number-prefixed");
-    if (format.format.kind !== "line-number-prefixed") return;
-    expect(format.format.format).toEqual({ kind: "content", language: "d" });
+    expect(r.ok).toBe(false);
   });
 
-  it("rg -n ... app.d | head keeps search plan and infers D language", async () => {
+  it("rg -n ... app.d | head rejects (search slicing is stream-relative)", async () => {
     const r = await parseShellSemantic(
       'rg -n "sessionBroadcast" source/cydo/app.d | head -15',
     );
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.kind).toBe("search");
-    const v = r.value;
-    expect(plan(v)?.blocks[0]?.id).toBe("rg-results");
-    const format = plan(v)?.blocks[0]?.format;
-    expect(format?.kind).toBe("individual-lines");
-    if (!format || format.kind !== "individual-lines") return;
-    expect(format.format.kind).toBe("line-number-prefixed");
-    if (format.format.kind !== "line-number-prefixed") return;
-    expect(format.format.format).toEqual({ kind: "content", language: "d" });
+    expect(r.ok).toBe(false);
   });
 
   it("unsupported search pipeline stage rejects", async () => {

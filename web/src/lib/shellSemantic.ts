@@ -269,6 +269,17 @@ export function mapShikiTokens(shikiLines: TokenWithScopes[][]): ShellToken[] {
       }
 
       if (
+        all.some(
+          (scope) =>
+            scope.includes("variable.") ||
+            scope.includes("punctuation.definition.variable.shell"),
+        )
+      ) {
+        out.push({ text: raw, raw, role: "unknown" });
+        continue;
+      }
+
+      if (
         all.includes("string.unquoted.argument.shell") ||
         all.includes("constant.numeric.integer.shell")
       ) {
@@ -332,7 +343,14 @@ type ShellAST =
   | { type: "heredoc"; command: SimpleCommand; heredoc: HeredocInfo }
   | { type: "unsupported"; reason: string };
 
-function reject(code: RejectCode, reason: string): ShellSemanticResult {
+function reject(
+  code: RejectCode,
+  reason: string,
+): {
+  ok: false;
+  code: RejectCode;
+  reason: string;
+} {
   return { ok: false, code, reason };
 }
 
@@ -613,8 +631,7 @@ const INTERPRETER_LANG: Record<string, string> = {
   R: "r",
 };
 
-// Commands that are always formatting (never a primary read with file operand)
-const ALWAYS_FORMATTING = new Set<string>([
+const OPAQUE_TRANSFORM_COMMANDS = new Set<string>([
   "wc",
   "tr",
   "cut",
@@ -627,52 +644,356 @@ const ALWAYS_FORMATTING = new Set<string>([
   "xargs",
 ]);
 
-/**
- * Return true if the command can appear as a non-primary pipeline stage.
- */
-function isSmallFormatting(cmd: SimpleCommand): boolean {
-  const name = cmd.name;
-  if (!name) return false;
-  if (ALWAYS_FORMATTING.has(name)) return true;
+type NlOptions = { width?: number; separator?: string };
 
-  const values = cmd.args.filter((a) => a.kind === "value");
+type ShellOutputExpr =
+  | {
+      kind: "file-read";
+      filePath: string;
+      stageIndex: number;
+      commandName: ReadCommandName;
+    }
+  | {
+      kind: "diff-source";
+      subcommand: string | undefined;
+      commandName: "git" | "diff";
+      stageIndex: number;
+    }
+  | {
+      kind: "take-first-lines";
+      count?: number;
+      input: ShellOutputExpr;
+      stageIndex: number;
+    }
+  | {
+      kind: "take-last-lines";
+      count: number;
+      input: ShellOutputExpr;
+      stageIndex: number;
+    }
+  | {
+      kind: "take-lines-from";
+      startLine: number;
+      input: ShellOutputExpr;
+      stageIndex: number;
+    }
+  | {
+      kind: "select-lines";
+      start: number;
+      end: number;
+      input: ShellOutputExpr;
+      stageIndex: number;
+    }
+  | {
+      kind: "line-number-prefix";
+      input: ShellOutputExpr;
+      stageIndex: number;
+      options: NlOptions;
+    }
+  | {
+      kind: "sparse-match-lines";
+      input: ShellOutputExpr;
+      pattern: string;
+      stageIndex: number;
+    }
+  | {
+      kind: "opaque-transform";
+      input: ShellOutputExpr;
+      commandName: string;
+      stageIndex: number;
+    };
 
-  if (name === "head" || name === "tail") {
-    return values.length === 0;
-  }
-  if (name === "sed") {
-    const nFlagIdx = cmd.args.findIndex(
-      (a) => a.kind === "flag" && a.text === "-n",
-    );
-    if (nFlagIdx < 0) return true;
-    const exprArg = cmd.args[nFlagIdx + 1];
-    if (!exprArg || exprArg.kind !== "value") return true;
-    const m = exprArg.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
-    if (!m) return true;
-    const fileArg = cmd.args[nFlagIdx + 2];
-    return !fileArg || fileArg.kind !== "value";
-  }
-  if (name === "nl") {
-    return values.length === 0;
-  }
-  if (name === "awk") {
-    const nonFlagValues = cmd.args.filter(
-      (a) => a.kind === "value" && !a.text.startsWith("{"),
-    );
-    return nonFlagValues.length === 0;
+type ParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; code: RejectCode; reason: string };
+
+function parseHeadArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+): ParseResult<{ count?: number; filePath?: string }> {
+  let count: number | undefined;
+  let filePath: string | undefined;
+
+  for (let i = 0; i < cmd.args.length; i++) {
+    const arg = cmd.args[i]!;
+    const text = arg.text;
+
+    if (text === "--") continue;
+
+    if (text === "-n") {
+      const next = cmd.args[++i];
+      const nextText = next?.kind === "value" ? next.text : "";
+      const parsed = Number(nextText);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        return reject(
+          "unsupported_option",
+          "head -n requires a positive integer",
+        );
+      }
+      count = parsed;
+      continue;
+    }
+
+    const joined = text.match(/^-n([1-9]\d*)$/);
+    if (joined) {
+      count = Number(joined[1]);
+      continue;
+    }
+
+    const legacy = text.match(/^-([1-9]\d*)$/);
+    if (legacy) {
+      count = Number(legacy[1]);
+      continue;
+    }
+
+    if (arg.kind === "flag") {
+      return reject("unsupported_option", `unsupported head option ${text}`);
+    }
+
+    if (filePath !== undefined) {
+      return reject(
+        "multiple_paths",
+        "multiple file operands are not supported",
+      );
+    }
+    filePath = text;
   }
 
-  return false;
+  if (requireFile && filePath === undefined) {
+    return reject("missing_path", "expected one file path");
+  }
+  return { ok: true, value: { count, filePath } };
 }
 
-/**
- * Classify a single read-command SimpleCommand into a ShellReadSemantic.
- */
-function classifyReadCommand(
+function parseTailArgs(
   cmd: SimpleCommand,
-  originalCommand: string,
-): ShellSemanticResult {
-  const name = cmd.name as ReadCommandName;
+  requireFile: boolean,
+): ParseResult<{ range: ReadRange; filePath?: string }> {
+  let range: ReadRange = { type: "all" };
+  let filePath: string | undefined;
+
+  for (let i = 0; i < cmd.args.length; i++) {
+    const arg = cmd.args[i]!;
+    const text = arg.text;
+
+    if (text === "--") continue;
+
+    if (text === "-n") {
+      const next = cmd.args[++i];
+      if (!next || next.kind !== "value") {
+        return reject("unsupported_option", "tail -n requires an argument");
+      }
+      const plusMatch = next.text.match(/^\+([1-9]\d*)$/);
+      if (plusMatch) {
+        range = { type: "tail", startLine: Number(plusMatch[1]) };
+        continue;
+      }
+      const countMatch = next.text.match(/^([1-9]\d*)$/);
+      if (countMatch) {
+        range = { type: "tail-count", count: Number(countMatch[1]) };
+        continue;
+      }
+      return reject("unsupported_option", "tail -n requires +N or N");
+    }
+
+    const plus = text.match(/^-n\+([1-9]\d*)$/);
+    if (plus) {
+      range = { type: "tail", startLine: Number(plus[1]) };
+      continue;
+    }
+
+    const joined = text.match(/^-n([1-9]\d*)$/);
+    if (joined) {
+      range = { type: "tail-count", count: Number(joined[1]) };
+      continue;
+    }
+
+    const legacy = text.match(/^-([1-9]\d*)$/);
+    if (legacy) {
+      range = { type: "tail-count", count: Number(legacy[1]) };
+      continue;
+    }
+
+    if (arg.kind === "flag") {
+      return reject("unsupported_option", `unsupported tail option ${text}`);
+    }
+
+    if (filePath !== undefined) {
+      return reject(
+        "multiple_paths",
+        "multiple file operands are not supported",
+      );
+    }
+    filePath = text;
+  }
+
+  if (requireFile && filePath === undefined) {
+    return reject("missing_path", "expected one file path");
+  }
+  return { ok: true, value: { range, filePath } };
+}
+
+function parseSedArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+): ParseResult<{ start: number; end: number; filePath?: string }> {
+  const nFlagIdx = cmd.args.findIndex(
+    (a) => a.kind === "flag" && a.text === "-n",
+  );
+  if (nFlagIdx < 0) {
+    return reject("unsupported_option", "only sed -n 'N,Mp' path is supported");
+  }
+  const exprArg = cmd.args[nFlagIdx + 1];
+  if (!exprArg || exprArg.kind !== "value") {
+    return reject("missing_path", "sed requires expression and path");
+  }
+  const m = exprArg.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
+  if (!m) return reject("invalid_range", "sed expression must be N,Mp");
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  if (end < start) {
+    return reject("invalid_range", "sed end line must be >= start line");
+  }
+  const pathArg = cmd.args[nFlagIdx + 2];
+  if (requireFile && (!pathArg || pathArg.kind !== "value")) {
+    return reject("missing_path", "sed requires expression and path");
+  }
+  if (
+    cmd.args.length >
+    nFlagIdx + (requireFile ? 3 : pathArg?.kind === "value" ? 3 : 2)
+  ) {
+    return reject("multiple_paths", "sed supports exactly one file operand");
+  }
+  return {
+    ok: true,
+    value: {
+      start,
+      end,
+      filePath: pathArg?.kind === "value" ? pathArg.text : undefined,
+    },
+  };
+}
+
+function parseNlArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+): ParseResult<{ options: NlOptions; filePath?: string }> {
+  let filePath: string | undefined;
+  const options: NlOptions = {};
+
+  for (let i = 0; i < cmd.args.length; i++) {
+    const arg = cmd.args[i]!;
+    if (arg.kind === "value") {
+      if (filePath !== undefined) {
+        return reject(
+          "multiple_paths",
+          "multiple file operands are not supported",
+        );
+      }
+      filePath = arg.text;
+      continue;
+    }
+
+    const flag = arg.text;
+    if (flag === "--" || flag === "-ba") continue;
+    if (flag === "-w") {
+      const next = cmd.args[++i];
+      const width = next && next.kind === "value" ? Number(next.text) : NaN;
+      if (!Number.isInteger(width) || width < 1) {
+        return reject(
+          "unsupported_option",
+          "nl -w requires a positive integer",
+        );
+      }
+      options.width = width;
+      continue;
+    }
+    if (flag === "-s") {
+      const next = cmd.args[++i];
+      if (!next || next.kind !== "value") {
+        return reject("unsupported_option", "nl -s requires a separator");
+      }
+      options.separator = next.text;
+      continue;
+    }
+    return reject("unsupported_option", `unsupported nl option ${flag}`);
+  }
+
+  if (requireFile && filePath === undefined) {
+    return reject("missing_path", "expected one file path");
+  }
+  return { ok: true, value: { options, filePath } };
+}
+
+function parseRgArgs(
+  cmd: SimpleCommand,
+  requireFile: boolean,
+): ParseResult<{ pattern: string; filePath?: string }> {
+  const toolName = cmd.name === "grep" ? "grep" : "rg";
+  if (cmd.redirects.length > 0) {
+    return reject(
+      "unsafe_shell_syntax",
+      `${toolName} redirections are not supported`,
+    );
+  }
+  const hasOtherFlags = cmd.args.some(
+    (a) => a.kind === "flag" && a.text !== "-n" && a.text !== "--line-number",
+  );
+  if (hasOtherFlags) {
+    return reject("unsupported_option", `unsupported ${toolName} option`);
+  }
+  const hasLineNumbers = cmd.args.some(
+    (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
+  );
+  if (!hasLineNumbers) {
+    return reject(
+      "unsupported_option",
+      `${toolName} must include -n/--line-number`,
+    );
+  }
+
+  const values = cmd.args
+    .filter((a): a is { kind: "value"; text: string } => a.kind === "value")
+    .map((a) => a.text);
+  const expectedCount = requireFile ? 2 : 1;
+  if (values.length !== expectedCount) {
+    return reject(
+      values.length < expectedCount ? "missing_path" : "multiple_paths",
+      requireFile
+        ? `${toolName} -n requires exactly one pattern and one file operand`
+        : `${toolName} -n requires exactly one pattern`,
+    );
+  }
+
+  const pattern = values[0]!;
+  const filePath = values[1];
+  if (!pattern || isDynamicShellValue(pattern)) {
+    return reject("variable_path", `${toolName} pattern/path must be literal`);
+  }
+  if (requireFile) {
+    if (!filePath || isDynamicShellValue(filePath)) {
+      return reject(
+        "variable_path",
+        `${toolName} pattern/path must be literal`,
+      );
+    }
+    if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
+      return reject(
+        "unsupported_command",
+        `${toolName} target must be a file path`,
+      );
+    }
+  }
+
+  return { ok: true, value: { pattern, filePath } };
+}
+
+function parseStageAsSource(
+  cmd: SimpleCommand,
+  stageIndex: number,
+): ParseResult<ShellOutputExpr> {
+  const name = cmd.name;
+  if (!name) return reject("empty", "empty command");
 
   if (cmd.redirects.some((r) => r.op !== "<<")) {
     return reject(
@@ -681,203 +1002,415 @@ function classifyReadCommand(
     );
   }
 
-  let range: ShellReadSemantic["range"] = { type: "all" };
-  let presentation: ShellReadSemantic["presentation"] = { lineNumbers: false };
-  let filePath: string | null = null;
-  let doubleDash = false;
-
-  const args = cmd.args;
-
-  if (name === "sed") {
-    const nFlagIdx = args.findIndex(
-      (a) => a.kind === "flag" && a.text === "-n",
-    );
-    if (nFlagIdx < 0)
+  if (name === "cat") {
+    const flags = cmd.args.filter((a) => a.kind === "flag" && a.text !== "--");
+    if (flags.length > 0) {
       return reject(
         "unsupported_option",
-        "only sed -n 'N,Mp' path is supported",
+        `unsupported cat option ${flags[0]!.text}`,
       );
-    const exprArg = args[nFlagIdx + 1];
-    const pathArg = args[nFlagIdx + 2];
-    if (
-      !exprArg ||
-      exprArg.kind !== "value" ||
-      !pathArg ||
-      pathArg.kind !== "value"
-    )
-      return reject("missing_path", "sed requires expression and path");
-    const m = exprArg.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
-    if (!m) return reject("invalid_range", "sed expression must be N,Mp");
-    const start = Number(m[1]);
-    const end = Number(m[2]);
-    if (end < start)
-      return reject("invalid_range", "sed end line must be >= start line");
-    range = { type: "lines", start, end };
-    filePath = pathArg.text;
-    if (args.length > nFlagIdx + 3)
-      return reject("multiple_paths", "sed supports exactly one file operand");
-  } else {
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i]!;
-
-      if (arg.kind === "flag" && arg.text === "--") {
-        doubleDash = true;
-        continue;
-      }
-
-      if (arg.kind === "value") {
-        if (filePath !== null)
-          return reject(
-            "multiple_paths",
-            "multiple file operands are not supported",
-          );
-        filePath = arg.text;
-        continue;
-      }
-
-      // Flag handling by command
-      const flag = arg.text;
-
-      if (name === "cat") {
-        return reject("unsupported_option", `unsupported cat option ${flag}`);
-      }
-
-      if (name === "nl") {
-        if (flag === "-ba") {
-          const prev =
-            presentation.lineNumbers !== false
-              ? presentation.lineNumbers
-              : { style: "nl" as const };
-          presentation = { lineNumbers: { ...prev } };
-          continue;
-        }
-        if (flag === "-w") {
-          const next = args[++i];
-          const width = next && next.kind === "value" ? Number(next.text) : NaN;
-          if (!Number.isInteger(width) || width < 1)
-            return reject(
-              "unsupported_option",
-              "nl -w requires a positive integer",
-            );
-          const prev =
-            presentation.lineNumbers !== false
-              ? presentation.lineNumbers
-              : { style: "nl" as const };
-          presentation = { lineNumbers: { ...prev, width } };
-          continue;
-        }
-        if (flag === "-s") {
-          const next = args[++i];
-          if (!next || next.kind !== "value")
-            return reject("unsupported_option", "nl -s requires a separator");
-          const prev =
-            presentation.lineNumbers !== false
-              ? presentation.lineNumbers
-              : { style: "nl" as const };
-          presentation = { lineNumbers: { ...prev, separator: next.text } };
-          continue;
-        }
-        return reject("unsupported_option", `unsupported nl option ${flag}`);
-      }
-
-      if (name === "head") {
-        if (flag === "-n") {
-          const next = args[++i];
-          const count = next && next.kind === "value" ? Number(next.text) : NaN;
-          if (!Number.isInteger(count) || count < 1)
-            return reject(
-              "unsupported_option",
-              "head -n requires a positive integer",
-            );
-          range = { type: "head", count };
-          continue;
-        }
-        const headN = flag.match(/^-n(\d+)$/);
-        if (headN) {
-          const count = Number(headN[1]);
-          if (!Number.isInteger(count) || count < 1)
-            return reject(
-              "unsupported_option",
-              "head -n requires a positive integer",
-            );
-          range = { type: "head", count };
-          continue;
-        }
-        const headLegacy = flag.match(/^-(\d+)$/);
-        if (headLegacy) {
-          const count = Number(headLegacy[1]);
-          if (!Number.isInteger(count) || count < 1)
-            return reject(
-              "unsupported_option",
-              "head -N requires a positive integer",
-            );
-          range = { type: "head", count };
-          continue;
-        }
-        return reject("unsupported_option", `unsupported head option ${flag}`);
-      }
-
-      // name === "tail" (only remaining case)
-      if (flag === "-n") {
-        const next = args[++i];
-        if (!next || next.kind !== "value")
-          return reject("unsupported_option", "tail -n requires an argument");
-        const plusMatch = next.text.match(/^\+([1-9]\d*)$/);
-        if (plusMatch) {
-          range = { type: "tail", startLine: Number(plusMatch[1]) };
-          continue;
-        }
-        const countMatch = next.text.match(/^([1-9]\d*)$/);
-        if (countMatch) {
-          range = { type: "tail-count", count: Number(countMatch[1]) };
-          continue;
-        }
-        return reject("unsupported_option", "tail -n requires +N or N");
-      }
-      const tailPlusN = flag.match(/^-n\+([1-9]\d*)$/);
-      if (tailPlusN) {
-        range = { type: "tail", startLine: Number(tailPlusN[1]) };
-        continue;
-      }
-      const tailN = flag.match(/^-n(\d+)$/);
-      if (tailN) {
-        range = { type: "tail-count", count: Number(tailN[1]) };
-        continue;
-      }
-      return reject("unsupported_option", `unsupported tail option ${flag}`);
     }
+    const values = cmd.args
+      .filter((a) => a.kind === "value")
+      .map((a) => a.text);
+    if (values.length === 0)
+      return reject("missing_path", "expected one file path");
+    if (values.length > 1)
+      return reject(
+        "multiple_paths",
+        "multiple file operands are not supported",
+      );
+    return {
+      ok: true,
+      value: {
+        kind: "file-read",
+        filePath: values[0]!,
+        stageIndex,
+        commandName: "cat",
+      },
+    };
   }
 
-  if (filePath === null)
-    return reject("missing_path", "expected one file path");
+  if (name === "head") {
+    const parsed = parseHeadArgs(cmd, true);
+    if (!parsed.ok) return parsed;
+    const base: ShellOutputExpr = {
+      kind: "file-read",
+      filePath: parsed.value.filePath!,
+      stageIndex,
+      commandName: "head",
+    };
+    return {
+      ok: true,
+      value: {
+        kind: "take-first-lines",
+        count: parsed.value.count,
+        input: base,
+        stageIndex,
+      },
+    };
+  }
 
-  void doubleDash;
+  if (name === "tail") {
+    const parsed = parseTailArgs(cmd, true);
+    if (!parsed.ok) return parsed;
+    const base: ShellOutputExpr = {
+      kind: "file-read",
+      filePath: parsed.value.filePath!,
+      stageIndex,
+      commandName: "tail",
+    };
+    if (parsed.value.range.type === "tail") {
+      return {
+        ok: true,
+        value: {
+          kind: "take-lines-from",
+          startLine: parsed.value.range.startLine,
+          input: base,
+          stageIndex,
+        },
+      };
+    }
+    if (parsed.value.range.type === "tail-count") {
+      return {
+        ok: true,
+        value: {
+          kind: "take-last-lines",
+          count: parsed.value.range.count,
+          input: base,
+          stageIndex,
+        },
+      };
+    }
+    return { ok: true, value: base };
+  }
 
-  const language = langFromPath(filePath) || "text";
-  const readName = name as "sed" | "cat" | "head" | "tail" | "nl";
+  if (name === "sed") {
+    const parsed = parseSedArgs(cmd, true);
+    if (!parsed.ok) return parsed;
+    const base: ShellOutputExpr = {
+      kind: "file-read",
+      filePath: parsed.value.filePath!,
+      stageIndex,
+      commandName: "sed",
+    };
+    return {
+      ok: true,
+      value: {
+        kind: "select-lines",
+        start: parsed.value.start,
+        end: parsed.value.end,
+        input: base,
+        stageIndex,
+      },
+    };
+  }
+
+  if (name === "nl") {
+    const parsed = parseNlArgs(cmd, true);
+    if (!parsed.ok) return parsed;
+    const base: ShellOutputExpr = {
+      kind: "file-read",
+      filePath: parsed.value.filePath!,
+      stageIndex,
+      commandName: "nl",
+    };
+    return {
+      ok: true,
+      value: {
+        kind: "line-number-prefix",
+        input: base,
+        stageIndex,
+        options: parsed.value.options,
+      },
+    };
+  }
+
+  if (name === "rg" || name === "grep") {
+    const parsed = parseRgArgs(cmd, true);
+    if (!parsed.ok) return parsed;
+    return {
+      ok: true,
+      value: {
+        kind: "sparse-match-lines",
+        input: {
+          kind: "file-read",
+          filePath: parsed.value.filePath!,
+          stageIndex,
+          commandName: "cat",
+        },
+        pattern: parsed.value.pattern,
+        stageIndex,
+      },
+    };
+  }
+
+  if (name === "git") {
+    const git = classifyGitCommand(cmd, "");
+    if (!git.ok) return git;
+    if (git.value.kind === "read") {
+      return {
+        ok: true,
+        value: {
+          kind: "file-read",
+          filePath: git.value.filePath,
+          stageIndex,
+          commandName: "git",
+        },
+      };
+    }
+    if (git.value.kind === "diff") {
+      return {
+        ok: true,
+        value: {
+          kind: "diff-source",
+          subcommand: git.value.subcommand,
+          commandName: "git",
+          stageIndex,
+        },
+      };
+    }
+    return reject("unsupported_command", "unsupported git stage in pipeline");
+  }
+
+  if (name === "diff") {
+    return {
+      ok: true,
+      value: {
+        kind: "diff-source",
+        subcommand: undefined,
+        commandName: "diff",
+        stageIndex,
+      },
+    };
+  }
+
+  if (
+    OPAQUE_TRANSFORM_COMMANDS.has(name) ||
+    (name === "awk" &&
+      cmd.args.every((a) => a.kind === "flag" || a.text.startsWith("{")))
+  ) {
+    return reject(
+      "unsafe_shell_syntax",
+      "pipeline has no recognized file-reading, search, or diff stage",
+    );
+  }
+
+  return reject(
+    "unsupported_command",
+    "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+  );
+}
+
+function parseStageAsTransform(
+  cmd: SimpleCommand,
+  stageIndex: number,
+): ParseResult<(input: ShellOutputExpr) => ShellOutputExpr> {
+  const name = cmd.name;
+  if (!name) return reject("empty", "empty command");
+
+  if (name === "cat") {
+    const flags = cmd.args.filter((a) => a.kind === "flag" && a.text !== "--");
+    if (flags.length > 0) {
+      return reject(
+        "unsupported_option",
+        `unsupported cat option ${flags[0]!.text}`,
+      );
+    }
+    const values = cmd.args.filter((a) => a.kind === "value");
+    if (values.length === 0) return { ok: true, value: (input) => input };
+    return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+  }
+
+  if (name === "head") {
+    const parsed = parseHeadArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    if (parsed.value.filePath) {
+      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+    }
+    if (parsed.value.count === undefined) {
+      return { ok: true, value: (input) => input };
+    }
+    return {
+      ok: true,
+      value: (input) => ({
+        kind: "take-first-lines",
+        count: parsed.value.count,
+        input,
+        stageIndex,
+      }),
+    };
+  }
+
+  if (name === "tail") {
+    const parsed = parseTailArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    if (parsed.value.filePath) {
+      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+    }
+    if (parsed.value.range.type === "all") {
+      return { ok: true, value: (input) => input };
+    }
+    return {
+      ok: true,
+      value: (input) => {
+        if (parsed.value.range.type === "tail") {
+          return {
+            kind: "take-lines-from",
+            startLine: parsed.value.range.startLine,
+            input,
+            stageIndex,
+          };
+        }
+        if (parsed.value.range.type === "tail-count") {
+          return {
+            kind: "take-last-lines",
+            count: parsed.value.range.count,
+            input,
+            stageIndex,
+          };
+        }
+        return input;
+      },
+    };
+  }
+
+  if (name === "sed") {
+    const parsed = parseSedArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    if (parsed.value.filePath) {
+      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+    }
+    return {
+      ok: true,
+      value: (input) => ({
+        kind: "select-lines",
+        start: parsed.value.start,
+        end: parsed.value.end,
+        input,
+        stageIndex,
+      }),
+    };
+  }
+
+  if (name === "nl") {
+    const parsed = parseNlArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    if (parsed.value.filePath) {
+      return reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+    }
+    return {
+      ok: true,
+      value: (input) => ({
+        kind: "line-number-prefix",
+        input,
+        stageIndex,
+        options: parsed.value.options,
+      }),
+    };
+  }
+
+  if (name === "rg" || name === "grep") {
+    const parsed = parseRgArgs(cmd, false);
+    if (!parsed.ok) return parsed;
+    return {
+      ok: true,
+      value: (input) => ({
+        kind: "sparse-match-lines",
+        input,
+        pattern: parsed.value.pattern,
+        stageIndex,
+      }),
+    };
+  }
+
+  if (name === "git" || name === "diff") {
+    return reject("unsafe_shell_syntax", "pipeline has multiple diff stages");
+  }
+
+  if (
+    OPAQUE_TRANSFORM_COMMANDS.has(name) ||
+    (name === "awk" &&
+      cmd.args.every((a) => a.kind === "flag" || a.text.startsWith("{")))
+  ) {
+    return {
+      ok: true,
+      value: (input) => ({
+        kind: "opaque-transform",
+        input,
+        commandName: name,
+        stageIndex,
+      }),
+    };
+  }
+
+  return reject(
+    "unsafe_shell_syntax",
+    `pipeline stage "${name}" is not a recognized formatting command`,
+  );
+}
+
+function buildShellOutputExpr(
+  stages: SimpleCommand[],
+): ParseResult<ShellOutputExpr> {
+  if (stages.length === 0) return reject("empty", "empty pipeline");
+  const first = parseStageAsSource(stages[0]!, 0);
+  if (!first.ok) return first;
+
+  let expr = first.value;
+  for (let i = 1; i < stages.length; i++) {
+    const transform = parseStageAsTransform(stages[i]!, i);
+    if (!transform.ok) return transform;
+    expr = transform.value(expr);
+  }
+  return { ok: true, value: expr };
+}
+
+function lowerReadFromFileExpr(
+  expr: Extract<ShellOutputExpr, { kind: "file-read" }>,
+  originalCommand: string,
+  range: ReadRange,
+  presentation: ShellReadSemantic["presentation"] = { lineNumbers: false },
+  commandNameOverride?: "cat" | "nl" | "sed" | "head" | "tail",
+): ShellSemanticResult {
+  if (expr.commandName === "git") {
+    return {
+      ok: true,
+      value: {
+        kind: "read",
+        command: originalCommand,
+        commandName: "git",
+        filePath: expr.filePath,
+        range,
+        presentation,
+      },
+    };
+  }
+
+  const language = langFromPath(expr.filePath) || "text";
+  const commandName = commandNameOverride ?? expr.commandName;
   const steps: CommandStep[] = [
     {
       kind: "read-file",
       order: 0,
-      commandName: readName,
-      filePath,
+      commandName,
+      filePath: expr.filePath,
       range,
       outputShape: {
         kind: "content",
         format: { kind: "content", language },
         validator: "non-empty",
       },
-      blockId: name === "sed" ? "sed-output" : undefined,
+      blockId: commandName === "sed" ? "sed-output" : undefined,
     },
   ];
-
   return {
     ok: true,
     value: {
       kind: "read",
       command: originalCommand,
-      commandName: name,
-      filePath,
+      commandName,
+      filePath: expr.filePath,
       range,
       presentation,
       steps,
@@ -885,93 +1418,198 @@ function classifyReadCommand(
   };
 }
 
-/**
- * Classify a pipeline as a read or diff, applying the small-formatting-allowlist logic.
- */
+function conservativeLower(
+  expr: ShellOutputExpr,
+  originalCommand: string,
+): ShellSemanticResult {
+  const rejectUnsupportedPipeline = () =>
+    reject("unsafe_shell_syntax", "pipeline has multiple read stages");
+  const lowerAsDiffOnly = (input: ShellOutputExpr): ShellSemanticResult => {
+    const lowered = conservativeLower(input, originalCommand);
+    if (lowered.ok && lowered.value.kind === "diff") return lowered;
+    return rejectUnsupportedPipeline();
+  };
+
+  if (expr.kind === "file-read") {
+    return lowerReadFromFileExpr(expr, originalCommand, { type: "all" });
+  }
+  if (expr.kind === "diff-source") {
+    return {
+      ok: true,
+      value: {
+        kind: "diff",
+        commandName: expr.commandName,
+        command: originalCommand,
+        subcommand: expr.subcommand,
+      },
+    };
+  }
+  if (expr.kind === "take-first-lines") {
+    if (expr.input.kind === "file-read") {
+      const range = expr.count
+        ? ({ type: "head", count: expr.count } as const)
+        : ({ type: "all" } as const);
+      return lowerReadFromFileExpr(
+        expr.input,
+        originalCommand,
+        range,
+        undefined,
+        "head",
+      );
+    }
+    return lowerAsDiffOnly(expr.input);
+  }
+  if (expr.kind === "take-last-lines") {
+    if (expr.input.kind === "file-read") {
+      return lowerReadFromFileExpr(
+        expr.input,
+        originalCommand,
+        {
+          type: "tail-count",
+          count: expr.count,
+        },
+        undefined,
+        "tail",
+      );
+    }
+    return lowerAsDiffOnly(expr.input);
+  }
+  if (expr.kind === "take-lines-from") {
+    if (expr.input.kind === "file-read") {
+      return lowerReadFromFileExpr(
+        expr.input,
+        originalCommand,
+        {
+          type: "tail",
+          startLine: expr.startLine,
+        },
+        undefined,
+        "tail",
+      );
+    }
+    return lowerAsDiffOnly(expr.input);
+  }
+  if (expr.kind === "select-lines") {
+    if (expr.input.kind === "file-read") {
+      return lowerReadFromFileExpr(
+        expr.input,
+        originalCommand,
+        {
+          type: "lines",
+          start: expr.start,
+          end: expr.end,
+        },
+        undefined,
+        "sed",
+      );
+    }
+    if (expr.input.kind === "line-number-prefix") {
+      if (expr.input.input.kind !== "file-read")
+        return rejectUnsupportedPipeline();
+      const lineNumbers = {
+        style: "nl" as const,
+        ...(expr.input.options.width !== undefined
+          ? { width: expr.input.options.width }
+          : {}),
+        ...(expr.input.options.separator !== undefined
+          ? { separator: expr.input.options.separator }
+          : {}),
+      };
+      return lowerReadFromFileExpr(
+        expr.input.input,
+        originalCommand,
+        {
+          type: "lines",
+          start: expr.start,
+          end: expr.end,
+        },
+        { lineNumbers },
+        "sed",
+      );
+    }
+    return lowerAsDiffOnly(expr.input);
+  }
+  if (expr.kind === "line-number-prefix") {
+    if (expr.input.kind === "select-lines") {
+      return rejectUnsupportedPipeline();
+    }
+    if (expr.input.kind === "file-read") {
+      const lineNumbers = {
+        style: "nl" as const,
+        ...(expr.options.width !== undefined
+          ? { width: expr.options.width }
+          : {}),
+        ...(expr.options.separator !== undefined
+          ? { separator: expr.options.separator }
+          : {}),
+      };
+      return lowerReadFromFileExpr(
+        expr.input,
+        originalCommand,
+        { type: "all" },
+        { lineNumbers },
+        "nl",
+      );
+    }
+    return lowerAsDiffOnly(expr.input);
+  }
+  if (expr.kind === "sparse-match-lines") {
+    if (expr.input.kind !== "file-read") {
+      return rejectUnsupportedPipeline();
+    }
+    const language = langFromPath(expr.input.filePath) || "text";
+    const steps: CommandStep[] = [
+      {
+        kind: "search",
+        order: 0,
+        commandName: "rg",
+        pattern: expr.pattern,
+        filePath: expr.input.filePath,
+        outputShape: {
+          kind: "content",
+          format: {
+            kind: "individual-lines",
+            format: {
+              kind: "line-number-prefixed",
+              format: { kind: "content", language },
+            },
+          },
+          validator: "colon-line-number-prefixed",
+        },
+        blockId: "rg-results",
+      },
+    ];
+    return {
+      ok: true,
+      value: {
+        kind: "search",
+        commandName: "rg",
+        command: originalCommand,
+        pattern: expr.pattern,
+        filePath: expr.input.filePath,
+        steps,
+      },
+    };
+  }
+  return lowerAsDiffOnly(expr.input);
+}
+
+function classifyReadCommand(
+  cmd: SimpleCommand,
+  originalCommand: string,
+): ShellSemanticResult {
+  const expr = buildShellOutputExpr([cmd]);
+  if (!expr.ok) return expr;
+  return conservativeLower(expr.value, originalCommand);
+}
+
 function classifyPipeline(
   stages: SimpleCommand[],
   originalCommand: string,
 ): ShellSemanticResult {
-  let primaryIdx = -1;
-  let primaryResult: ShellSemanticResult | null = null;
-
-  // Try read primary stage first
-  for (let i = 0; i < stages.length; i++) {
-    const stage = stages[i]!;
-    if (!stage.name || !READ_COMMANDS.has(stage.name)) continue;
-
-    const r = classifyReadCommand(stage, originalCommand);
-    if (r.ok) {
-      if (primaryIdx >= 0)
-        return reject(
-          "unsafe_shell_syntax",
-          "pipeline has multiple read stages",
-        );
-      primaryIdx = i;
-      primaryResult = r;
-    }
-  }
-
-  // If no read primary found, try rg/grep search primary stage
-  if (primaryIdx < 0) {
-    for (let i = 0; i < stages.length; i++) {
-      const stage = stages[i]!;
-      if (!stage.name) continue;
-      if (stage.name !== "rg" && stage.name !== "grep") continue;
-
-      const r = classifyRgCommand(stage, originalCommand);
-      if (r.ok && r.value.kind === "search") {
-        if (primaryIdx >= 0)
-          return reject(
-            "unsafe_shell_syntax",
-            "pipeline has multiple search stages",
-          );
-        primaryIdx = i;
-        primaryResult = r;
-      }
-    }
-  }
-
-  // If no read/search primary found, try git/diff primary stage
-  if (primaryIdx < 0) {
-    for (let i = 0; i < stages.length; i++) {
-      const stage = stages[i]!;
-      if (!stage.name) continue;
-      if (stage.name !== "git" && stage.name !== "diff") continue;
-
-      const r =
-        stage.name === "git"
-          ? classifyGitCommand(stage, originalCommand)
-          : classifyDiffCommand(stage, originalCommand);
-
-      if (r.ok && r.value.kind === "diff") {
-        if (primaryIdx >= 0)
-          return reject(
-            "unsafe_shell_syntax",
-            "pipeline has multiple diff stages",
-          );
-        primaryIdx = i;
-        primaryResult = r;
-      }
-    }
-  }
-
-  if (primaryIdx < 0 || !primaryResult)
-    return reject(
-      "unsafe_shell_syntax",
-      "pipeline has no recognized file-reading, search, or diff stage",
-    );
-
-  for (let i = 0; i < stages.length; i++) {
-    if (i === primaryIdx) continue;
-    if (!isSmallFormatting(stages[i]!))
-      return reject(
-        "unsafe_shell_syntax",
-        `pipeline stage "${stages[i]!.name}" is not a recognized formatting command`,
-      );
-  }
-
-  return primaryResult;
+  const expr = buildShellOutputExpr(stages);
+  if (!expr.ok) return expr;
+  return conservativeLower(expr.value, originalCommand);
 }
 
 /**
@@ -1312,19 +1950,6 @@ function classifyGitCommand(
   );
 }
 
-/**
- * Classify a `diff` binary invocation (not git diff).
- */
-function classifyDiffCommand(
-  _cmd: SimpleCommand,
-  originalCommand: string,
-): ShellSemanticResult {
-  return {
-    ok: true,
-    value: { kind: "diff", commandName: "diff", command: originalCommand },
-  };
-}
-
 function isDynamicShellValue(value: string): boolean {
   return (
     value.includes("$") ||
@@ -1332,92 +1957,6 @@ function isDynamicShellValue(value: string): boolean {
     value.includes("$(") ||
     value.includes("${")
   );
-}
-
-function classifyRgCommand(
-  cmd: SimpleCommand,
-  originalCommand: string,
-): ShellSemanticResult {
-  const toolName = cmd.name === "grep" ? "grep" : "rg";
-  if (cmd.redirects.length > 0) {
-    return reject(
-      "unsafe_shell_syntax",
-      `${toolName} redirections are not supported`,
-    );
-  }
-  const hasOtherFlags = cmd.args.some(
-    (a) => a.kind === "flag" && a.text !== "-n" && a.text !== "--line-number",
-  );
-  if (hasOtherFlags) {
-    return reject("unsupported_option", `unsupported ${toolName} option`);
-  }
-  const hasLineNumbers = cmd.args.some(
-    (a) => a.kind === "flag" && (a.text === "-n" || a.text === "--line-number"),
-  );
-  if (!hasLineNumbers) {
-    return reject(
-      "unsupported_option",
-      `${toolName} must include -n/--line-number`,
-    );
-  }
-
-  const values = cmd.args
-    .filter((a): a is { kind: "value"; text: string } => a.kind === "value")
-    .map((a) => a.text);
-  if (values.length !== 2) {
-    return reject(
-      values.length < 2 ? "missing_path" : "multiple_paths",
-      `${toolName} -n requires exactly one pattern and one file operand`,
-    );
-  }
-  const [pattern, filePath] = values;
-  if (
-    !pattern ||
-    !filePath ||
-    isDynamicShellValue(pattern) ||
-    isDynamicShellValue(filePath)
-  ) {
-    return reject("variable_path", `${toolName} pattern/path must be literal`);
-  }
-  if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
-    return reject(
-      "unsupported_command",
-      `${toolName} target must be a file path`,
-    );
-  }
-  const language = langFromPath(filePath) || "text";
-  const steps: CommandStep[] = [
-    {
-      kind: "search",
-      order: 0,
-      commandName: "rg",
-      pattern,
-      filePath,
-      outputShape: {
-        kind: "content",
-        format: {
-          kind: "individual-lines",
-          format: {
-            kind: "line-number-prefixed",
-            format: { kind: "content", language },
-          },
-        },
-        validator: "colon-line-number-prefixed",
-      },
-      blockId: "rg-results",
-    },
-  ];
-  return {
-    ok: true,
-    value: {
-      kind: "search",
-      commandName: "rg",
-      command: originalCommand,
-      pattern,
-      filePath,
-      steps,
-    },
-  };
 }
 
 export function classifyAST(
@@ -1433,19 +1972,23 @@ export function classifyAST(
   if (ast.type === "simple") {
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
-    if (name === "rg" || name === "grep")
-      return classifyRgCommand(ast.command, originalCommand);
-    if (name === "git") return classifyGitCommand(ast.command, originalCommand);
-    if (name === "diff")
-      return classifyDiffCommand(ast.command, originalCommand);
     if (INTERPRETER_LANG[name])
       return classifyInterpreterCommand(ast.command, originalCommand);
-    if (!READ_COMMANDS.has(name))
-      return reject(
-        "unsupported_command",
-        "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
-      );
-    return classifyReadCommand(ast.command, originalCommand);
+    if (
+      READ_COMMANDS.has(name) ||
+      name === "rg" ||
+      name === "grep" ||
+      name === "git" ||
+      name === "diff"
+    ) {
+      const expr = buildShellOutputExpr([ast.command]);
+      if (!expr.ok) return expr;
+      return conservativeLower(expr.value, originalCommand);
+    }
+    return reject(
+      "unsupported_command",
+      "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+    );
   }
 
   if (ast.type === "pipeline")
