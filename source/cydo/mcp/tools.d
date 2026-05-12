@@ -181,8 +181,9 @@ interface CydoTools
 	    "Answer a question from a related task.\n\n"
 	    ~ "When another task asks you a question (returned from mcp__cydo__Task or mcp__cydo__Ask with "
 	    ~ "a qid), use mcp__cydo__Answer(qid, message) to respond.\n\n"
-	    ~ "After answering a question, this call may block until the "
-	    ~ "batch completes or another question arrives."
+	    ~ "**Finish the work first, then answer.** If the question requires you to "
+	    ~ "investigate, run commands, or otherwise do work to produce the answer, "
+	    ~ "complete that work *before* calling mcp__cydo__Answer."
 	)
 	@McpName("Answer")
 	McpResult answer(
