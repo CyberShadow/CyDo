@@ -874,6 +874,33 @@ class App : ToolsBackend
 				makeArchiveQueueSF(rowTid),
 				tasks[rowTid].archived ? ArchiveState.Archived : ArchiveState.Unarchived,
 			);
+
+			// Snapshot the JSONL byte size as the deferred-load watermark so that
+			// live events arriving during resume are buffered rather than blocked
+			// on a synchronous JSONL parse. reset(0) only for tasks with no agent
+			// session at all; tasks with an agentSessionId stay deferred so that
+			// ensureHistoryLoaded can run the full load path (including orphan error
+			// synthesis for unconfigured agent types).
+			{
+				import std.file : exists, getSize;
+				auto td2 = &tasks[rowTid];
+				ulong wm = 0;
+				if (td2.agentSessionId.length > 0)
+				{
+					auto startTa = tryAgentForTask(rowTid);
+					if (startTa)
+					{
+						auto jp = startTa.historyPath(td2.agentSessionId, td2.effectiveCwd);
+						if (jp.length > 0 && exists(jp))
+							wm = getSize(jp);
+						else
+							wm = ulong.max; // JSONL absent; load delegate returns empty
+					}
+					else
+						wm = ulong.max; // Orphan agent: keep deferred so ensureHistoryLoaded synthesizes error
+				}
+				td2.history.reset(wm);
+			}
 		}
 
 		// Post-migration cleanup: remove stale worktree symlinks from pre-v2 sessions
@@ -2935,10 +2962,11 @@ class App : ToolsBackend
 	}
 
 	/// Load JSONL history from disk if not already loaded. Transitions the
-	/// HistoryStore from deferred (or uninitialized, for pre-commit-2 startup
-	/// paths) to loaded state. Must be called before accessing td.history.length,
-	/// td.history[seq], or iterating td.history. The HistoryStore state machine
-	/// enforces this structurally: those operations assert isLoaded.
+	/// HistoryStore from deferred state to loaded. Must be called before accessing
+	/// td.history.length, td.history[seq], or iterating td.history. The HistoryStore
+	/// state machine enforces this structurally: those operations assert isLoaded.
+	/// All TaskData entries are initialized via reset() at creation time (App.start()
+	/// for persisted tasks, createTask() for new tasks, explicit reset() elsewhere).
 	private void ensureHistoryLoaded(int tid)
 	{
 		if (tid !in tasks)
@@ -2947,15 +2975,9 @@ class App : ToolsBackend
 		if (td.history.isLoaded)
 			return;
 
-		// Initialize as deferred with unlimited watermark so load() can proceed.
-		// In commit-2 this reset() call moves to App.start() with the actual JSONL
-		// byte size, enabling the startup-latency fix.
-		td.history.reset(ulong.max);
-
 		bool orphan = false;
 		string jsonlPath;
 		Agent ta;
-		bool[int] rollbackSkipLines;
 
 		if (td.agentSessionId.length > 0)
 		{
@@ -2963,20 +2985,7 @@ class App : ToolsBackend
 			if (!ta)
 				orphan = true;
 			else
-			{
 				jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
-
-				// Pre-compute rollback skip lines for Codex agents
-				if (ta.driver == AgentDriver.codex && jsonlPath.length > 0)
-				{
-					import std.file : exists, readText;
-					if (exists(jsonlPath))
-					{
-						import cydo.agent.codex : computeRollbackSkipLines;
-						rollbackSkipLines = computeRollbackSkipLines(readText(jsonlPath));
-					}
-				}
-			}
 		}
 
 		// steeringStash holds (text, enqueueLineNum, rawLine) for queued steering messages.
@@ -2999,6 +3008,20 @@ class App : ToolsBackend
 			import cydo.persist : LoadedHistory;
 			if (orphan || ta is null)
 				return LoadedHistory.init;
+
+			// Compute rollback skip lines from the watermarked byte prefix only,
+			// so that the same byte range is used for both the skip map and the load.
+			bool[int] rollbackSkipLines;
+			if (ta.driver == AgentDriver.codex && jsonlPath.length > 0 && maxBytes > 0)
+			{
+				import std.file : exists, read;
+				if (exists(jsonlPath))
+				{
+					import cydo.agent.codex : computeRollbackSkipLines;
+					rollbackSkipLines = computeRollbackSkipLines(
+						cast(string) read(jsonlPath, cast(size_t) maxBytes));
+				}
+			}
 
 			ta.resetHistoryReplay();
 			return loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
@@ -3635,6 +3658,7 @@ class App : ToolsBackend
 			newTd.createdAt = Clock.currStdTime;
 			newTd.lastActive = newTd.createdAt;
 			tasks[childTid] = move(newTd);
+			tasks[childTid].history.reset(0); // No JSONL yet; updated in .then() after fork
 
 			auto childAgent = agentForTask(childTid);
 			auto childTypeDef = getTaskTypesForProject(tasks[childTid].projectPath).byName(tasks[childTid].taskType);
@@ -3684,6 +3708,15 @@ class App : ToolsBackend
 						makeArchiveQueueSF(childTid),
 						ArchiveState.Unarchived,
 					);
+					// Fork JSONL now exists: update the watermark so ensureHistoryLoaded
+					// reads the correct post-fork byte range.
+					{
+						import std.file : exists, getSize;
+						auto jp = childAgent.historyPath(outcome.threadId,
+							tasks[childTid].effectiveCwd);
+						tasks[childTid].history.reset(
+							(jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+					}
 
 					broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
 						td.projectPath, tid, "fork")));
@@ -3732,6 +3765,11 @@ class App : ToolsBackend
 			makeArchiveQueueSF(result.tid),
 			ArchiveState.Unarchived,
 		);
+		{
+			import std.file : exists, getSize;
+			auto jp = ta.historyPath(result.agentSessionId, tasks[result.tid].effectiveCwd);
+			tasks[result.tid].history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+		}
 
 		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
@@ -3847,7 +3885,11 @@ class App : ToolsBackend
 							jsonlTracker.clearUndoJsonl(tid);
 							// Reload history (marker-aware reading skips rolled-back turns).
 							auto td2 = &tasks[tid];
-							td2.history.reset(ulong.max);
+							{
+								import std.file : exists, getSize;
+								auto jp = ta.historyPath(td2.agentSessionId, td2.effectiveCwd);
+								td2.history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+							}
 							unsubscribeAll(tid);
 
 							// Reset JSONL tracker so it re-reads fork IDs
@@ -4016,6 +4058,11 @@ class App : ToolsBackend
 						makeArchiveQueueSF(backup.tid),
 						ArchiveState.Unarchived,
 					);
+					{
+						import std.file : exists, getSize;
+						auto jp = ta.historyPath(backup.agentSessionId, tasks[backup.tid].effectiveCwd);
+						tasks[backup.tid].history.reset((jp.length > 0 && exists(jp)) ? getSize(jp) : 0);
+					}
 					broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
 					broadcastTaskUpdate(backup.tid);
 				}
@@ -4025,13 +4072,15 @@ class App : ToolsBackend
 		// 3. Truncate conversation history
 		if (json.revert_conversation)
 		{
-			auto removed = truncateJsonl(ta.historyPath(td.agentSessionId, td.effectiveCwd), json.after_uuid, &ta.forkIdMatchesLine, true);
+			import std.file : exists, getSize;
+			auto histJsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+			auto removed = truncateJsonl(histJsonlPath, json.after_uuid, &ta.forkIdMatchesLine, true);
 			if (removed < 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
 				return;
 			}
-			td.history.reset(ulong.max);
+			td.history.reset((histJsonlPath.length > 0 && exists(histJsonlPath)) ? getSize(histJsonlPath) : 0);
 			unsubscribeAll(tid);
 			// Clip pendingSteeringTexts to match remaining user messages in the
 			// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
@@ -4130,7 +4179,10 @@ class App : ToolsBackend
 			return;
 		}
 
-		td.history.reset(ulong.max);
+		{
+			import std.file : exists, getSize;
+			td.history.reset((jsonlPath.length > 0 && exists(jsonlPath)) ? getSize(jsonlPath) : 0);
+		}
 		unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
@@ -4198,7 +4250,10 @@ class App : ToolsBackend
 			return;
 		}
 
-		td.history.reset(ulong.max);
+		{
+			import std.file : exists, getSize;
+			td.history.reset((jsonlPath.length > 0 && exists(jsonlPath)) ? getSize(jsonlPath) : 0);
+		}
 		unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
@@ -5636,12 +5691,22 @@ class App : ToolsBackend
 
 			// Force JSONL reload on next request_history so that
 			// fork IDs from the file replace live-stream UUIDs.
-			tasks[tid].history.reset(ulong.max);
+			auto ta = tryAgentForTask(tid);
+			{
+				import std.file : exists, getSize;
+				ulong wm = 0;
+				if (ta && tasks[tid].agentSessionId.length > 0)
+				{
+					auto jp = ta.historyPath(tasks[tid].agentSessionId, tasks[tid].effectiveCwd);
+					if (jp.length > 0 && exists(jp))
+						wm = getSize(jp);
+				}
+				tasks[tid].history.reset(wm);
+			}
 			tasks[tid].recentNonces = null;
 			unsubscribeAll(tid);
 
 			// --- StateQueue notification ---
-			auto ta = tryAgentForTask(tid);
 			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive
 				|| (ta !is null && ta.driver == AgentDriver.codex && exitCode == 143);
 
@@ -7375,18 +7440,26 @@ class App : ToolsBackend
 			return cast(size_t) -1;
 		}
 
-		ensureHistoryLoaded(tid);
 		// Persist before live broadcast. A subscriber can consume the event live;
 		// a non-subscriber or reconnecting client will get the same event from
 		// request_history for the current history lineage.
+		// appendLive returns cast(size_t)-1 when the store is deferred (startup
+		// resume in progress). In that case no subscribers exist for this tid
+		// and anchors are rebuilt at load time — skip the broadcast/anchor work.
 		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
-		if (!mergeStreamingDelta(tid, ev.translated, historyData))
-		{
-			auto seq = tasks[tid].history.appendLive(historyData, ev.raw);
-			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
-		}
+		bool merged = mergeStreamingDelta(tid, ev.translated, historyData);
+		size_t seq;
+		if (merged)
+			seq = tasks[tid].history.isLoaded
+				? tasks[tid].history.length - 1 : cast(size_t) -1;
+		else
+			seq = tasks[tid].history.appendLive(historyData, ev.raw);
 
-		auto seq = tasks[tid].history.length - 1;
+		if (seq == cast(size_t) -1)
+			return seq;
+
+		if (!merged)
+			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
 		sendToSubscribed(tid, Data(
 			toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
 				JSONFragment(ev.translated))).representation));
@@ -7871,7 +7944,18 @@ class App : ToolsBackend
 				td.agentSessionId = r.sessionId;
 				td.title = finalTitle;
 				td.lastActive = r.mtime;
-				td.history.reset(ulong.max);
+				{
+					import std.file : exists, getSize;
+					ulong wm = 0;
+					auto importTa = tryAgentForTask(tid);
+					if (importTa)
+					{
+						auto jp = importTa.historyPath(r.sessionId, finalProjectPath);
+						if (jp.length > 0 && exists(jp))
+							wm = getSize(jp);
+					}
+					td.history.reset(wm);
+				}
 				persistence.setStatus(tid, "importable");
 				persistence.setAgentSessionId(tid, r.sessionId);
 				persistence.setTitle(tid, finalTitle);

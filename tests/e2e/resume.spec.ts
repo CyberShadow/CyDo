@@ -567,3 +567,88 @@ test("waiting parent with completed children gets results after restart", async 
   // task_results and respond with "Done." (mock API handles [SYSTEM: messages).
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
 });
+
+test(
+  "deferred history: no duplicate session/init on Codex resume after restart",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    // Create a Codex task and get one response so the JSONL has session_meta +
+    // a completed turn.
+    await page.goto("/");
+    await page.locator('button[title="New task"]').first().click();
+    const input = page.locator(".input-textarea:visible").first();
+    await expect(input).toBeEnabled({ timeout: 15_000 });
+    await input.fill('reply with "deferred-history-check"');
+    const sendBtn = page.locator(".btn-send:visible").first();
+    await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+    await sendBtn.click();
+
+    await expect(assistantText(page, "deferred-history-check")).toBeVisible({
+      timeout: 90_000,
+    });
+
+    // Brief pause for JSONL to finish writing before killing.
+    await page.waitForTimeout(2_000);
+
+    await restartableBackend.restart();
+
+    // Track session/init events delivered inside a history replay.
+    // task_history_start resets the counter; only events between
+    // task_history_start and task_history_end are counted.
+    let inReplay = false;
+    let sessionInitInReplay = 0;
+    let replayDone = false;
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", (frame) => {
+        try {
+          const data = JSON.parse(frame.payload.toString()) as Record<
+            string,
+            unknown
+          >;
+          if (data.type === "task_history_start") {
+            inReplay = true;
+            sessionInitInReplay = 0;
+            replayDone = false;
+          } else if (data.type === "task_history_end") {
+            inReplay = false;
+            replayDone = true;
+          } else if (
+            inReplay &&
+            typeof data.tid === "number" &&
+            data.event !== undefined
+          ) {
+            const ev = data.event as Record<string, unknown>;
+            if (ev.type === "session/init") {
+              sessionInitInReplay++;
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      });
+    });
+
+    await page.goto("/");
+    await waitForSidebarTask(page, "deferred-history-check");
+    await page
+      .locator(".sidebar-item .sidebar-label", {
+        hasText: "deferred-history-check",
+      })
+      .click();
+
+    // Wait for history to load (prior turn's assistant response visible).
+    await expect(
+      assistantText(page, "deferred-history-check"),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Wait for the history replay to complete.
+    await expect(async () => {
+      expect(replayDone).toBe(true);
+    }).toPass({ timeout: 10_000 });
+
+    // Exactly one session/init from the JSONL session_meta line.
+    // A second synthetic one would appear if onThreadStarted emitted
+    // a synthetic init on resume (gated by resumeId.length == 0).
+    expect(sessionInitInReplay).toBe(1);
+  },
+);

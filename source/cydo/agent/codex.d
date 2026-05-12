@@ -1711,7 +1711,9 @@ class CodexSession : AgentSession
 		initEv.agent           = "codex";
 		initEv.agent_name      = agentName_;
 
-		if (outputHandler_)
+		// On resume the JSONL-derived session_meta line provides a canonical
+		// session/init; a second synthetic one here would duplicate it.
+		if (outputHandler_ && resumeId.length == 0)
 			outputHandler_(TranslatedEvent(toJson(initEv), rawResultJson.length > 0 ? rawResultJson : null));
 
 		// Drain queued messages now that the thread is ready.
