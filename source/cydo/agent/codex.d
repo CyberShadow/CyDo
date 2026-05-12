@@ -2570,6 +2570,10 @@ bool isRollbackMarker(string line)
 /// the next user response_item).
 bool[int] computeRollbackSkipLines(string content)
 {
+	import std.algorithm : canFind;
+	if (!content.canFind("thread_rolled_back"))
+		return (bool[int]).init;
+
 	import std.string : lineSplitter;
 
 	struct TurnBoundary { int lineNum; }
