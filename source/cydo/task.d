@@ -1197,13 +1197,41 @@ unittest
         assertThrown!AssertError(hs.replaceAt(0, makeData("y")));
     }
 
-    // 8. reset() re-snapshots the watermark; next load receives new maxBytes.
+    // 8. Invariant: loaded state must have empty pending buffer; parallel arrays
+    //    must stay length-matched. D's invariant fires on every public method entry.
+    {
+        // Violate loaded-implies-empty-pending by directly setting pendingEvents_.
+        HistoryStore hs;
+        hs.reset(0);
+        assert(hs.isLoaded);
+        // Sneak a pending event in while bypassing the API — only possible from
+        // within this module (private field access).
+        hs.pendingEvents_ ~= makeData("ghost");
+        hs.pendingRaw_ ~= "ghostraw";
+        assertThrown!AssertError(hs.isLoaded);  // invariant fires on re-entry
+        // Restore valid state before scope exit — the invariant also fires on
+        // the implicit destructor, so leaving the struct in corrupt state would
+        // re-trigger the assertion during cleanup.
+        hs.pendingEvents_ = DataVec();
+        hs.pendingRaw_ = null;
+    }
+    {
+        // Violate parallel-array invariant: history length != rawSource length.
+        HistoryStore hs2;
+        hs2.reset(0);
+        hs2.history_ ~= makeData("ev");
+        // rawSource_ intentionally left empty → length mismatch
+        assertThrown!AssertError(hs2.isLoaded);
+        // Restore before scope exit.
+        hs2.history_ = DataVec();
+    }
+
+    // 9. reset() re-snapshots the watermark; next load receives new maxBytes.
     {
         HistoryStore hs;
         hs.reset(10);
         hs.appendLive(makeData("pending"), null);
         hs.reset(99);  // re-reset clears pending and updates watermark
-        // pending should be gone
         hs.load((ulong maxBytes) {
             assert(maxBytes == 99);
             return LoadedHistory.init;
