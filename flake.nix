@@ -38,7 +38,6 @@
         })];
         config = {
           allowUnfree = true;
-          permittedInsecurePackages = [ "openssl-1.1.1w" ];
         };
       };
 
@@ -204,7 +203,8 @@ EOF
             dubLock = ./dub-lock.json;
             dontStrip = true;
 
-            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.sqlite pkgs.openssl pkgs.zlib ];
 
             installPhase = ''
               runHook preInstall
@@ -225,7 +225,8 @@ EOF
             src = backendSrc;
             dubLock = ./dub-lock.json;
             dontStrip = true;
-            buildInputs = [ pkgs.openssl_1_1 pkgs.zlib ];
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.openssl pkgs.zlib ];
 
             buildPhase = ''
               runHook preBuild
@@ -784,8 +785,8 @@ EOF
 
             dubLock = ./dub-lock.json;
 
-            nativeBuildInputs = [ pkgs.git ];
-            buildInputs = [ pkgs.sqlite pkgs.openssl_1_1 pkgs.zlib ];
+            nativeBuildInputs = [ pkgs.git pkgs.pkg-config ];
+            buildInputs = [ pkgs.sqlite pkgs.openssl pkgs.zlib ];
 
             CI = "1";
 
