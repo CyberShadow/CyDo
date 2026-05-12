@@ -788,6 +788,35 @@ unittest
 	assert(countLinesAfterForkId(jsonlPath, "enqueue-1", matchEnqueue, countForkable) == 2);
 }
 
+unittest
+{
+	import std.array : join;
+	import std.file : mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-load-history-maxbytes");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	// Three lines; first two are exactly N bytes, third is M bytes beyond.
+	auto line1 = `{"type":"user","uuid":"u1","message":{"content":"a"}}`;
+	auto line2 = `{"type":"assistant","uuid":"a1","message":{"content":"b"}}`;
+	auto line3 = `{"type":"user","uuid":"u2","message":{"content":"c"}}`;
+	auto jsonl = line1 ~ "\n" ~ line2 ~ "\n" ~ line3 ~ "\n";
+	write(jsonlPath, jsonl);
+
+	// N bytes: just the first two lines (including both newlines).
+	ulong n = (line1 ~ "\n" ~ line2 ~ "\n").length;
+
+	// Null translateLine: each raw line becomes one event.
+	auto partial = loadTaskHistory(1, jsonlPath, null, n);
+	assert(partial.history.length == 2, "expected 2 events for partial read");
+
+	auto full = loadTaskHistory(1, jsonlPath, null, ulong.max);
+	assert(full.history.length == 3, "expected 3 events for full read");
+}
+
 /// Returns true if this JSONL line is a queue-operation, file-history-snapshot,
 /// or progress event — lines that are "run-up" to a steered user message and
 /// should be stripped together with it on undo.
