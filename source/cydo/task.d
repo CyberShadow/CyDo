@@ -1,7 +1,5 @@
 module cydo.task;
 
-import std.format : format;
-
 private string[string] repoPathCache;
 
 import ae.sys.data : Data;
@@ -16,6 +14,76 @@ import cydo.persist : LoadedHistory;
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
 import cydo.sandbox : ProcessLaunch;
+import cydo.tasktype : substituteVars;
+import std.exception : enforce;
+import std.format : format;
+import std.path : buildPath, expandTilde;
+
+enum defaultTaskDirTemplate = "{{ repo_path }}/.cydo/tasks/{{ tid }}";
+
+/// Git repository root for the selected project.
+/// Falls back to projectPath if git resolution fails.
+string resolveProjectRepoPath(string projectPath)
+{
+	if (projectPath.length == 0)
+		return "";
+	return repoPathCache.require(projectPath, {
+		import std.process : execute;
+		import std.string : strip;
+		auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
+		if (repoResult.status != 0)
+			return projectPath;
+		auto repoRoot = repoResult.output.strip();
+		return repoRoot.length > 0 ? repoRoot : projectPath;
+	}());
+}
+
+string resolveTaskDir(int tid, string workspace, string workspaceRoot, string projectPath,
+	string repoPath, string taskDirTemplate)
+{
+	enforce(tid > 0, "Task id must be positive");
+	enforce(workspaceRoot.length > 0, "workspace_root must not be empty");
+	enforce(taskDirTemplate.length > 0, "task_dir template must not be empty");
+	string[string] vars = [
+		"tid": format!"%d"(tid),
+		"workspace": workspace,
+		"workspace_root": workspaceRoot,
+		"project_path": projectPath,
+		"repo_path": repoPath,
+	];
+
+	return expandTilde(substituteVars(taskDirTemplate, vars));
+}
+
+string outputPathForTaskDir(string taskDir)
+{
+	enforce(taskDir.length > 0, "taskDir must not be empty");
+	return buildPath(taskDir, "output.md");
+}
+
+string worktreePathForTaskDir(string taskDir)
+{
+	enforce(taskDir.length > 0, "taskDir must not be empty");
+	return buildPath(taskDir, "worktree");
+}
+
+string effectiveCwdForTask(string projectPath, string repoPath, string worktreePath,
+	int worktreeTid)
+{
+	if (worktreeTid <= 0)
+		return projectPath;
+	enforce(worktreePath.length > 0, "worktreePath must not be empty for worktree task");
+	if (projectPath.length == 0)
+		return worktreePath;
+	if (repoPath.length == 0 || repoPath == projectPath)
+		return worktreePath;
+
+	import std.path : relativePath;
+	auto relProjectPath = relativePath(projectPath, repoPath);
+	if (relProjectPath.length == 0 || relProjectPath == ".")
+		return worktreePath;
+	return buildPath(worktreePath, relProjectPath);
+}
 
 /// Snapshot of the on-disk JSONL state at HistoryStore.reset() time.
 ///
@@ -357,6 +425,16 @@ struct PendingContinuation
 
 struct TaskData
 {
+	this(int tid, string workspace, string projectPath, string taskDir)
+	{
+		enforce(tid > 0, "Task id must be positive");
+		enforce(taskDir.length > 0, "taskDir must not be empty");
+		this.tid = tid;
+		this.workspace = workspace;
+		this.projectPath = projectPath;
+		this.taskDir = taskDir;
+	}
+
 	int tid;
 	string agentSessionId;
 	string description;
@@ -367,6 +445,7 @@ struct TaskData
 	string relationType;
 	string workspace;
 	string projectPath;
+	string taskDir;
 	int worktreeTid;  // 0 = no worktree; own tid = owns worktree; other tid = shares worktree
 	string title;
 	string status = "pending";  // pending, active, alive, waiting, completed, failed, importable
@@ -378,69 +457,7 @@ struct TaskData
 	/// Falls back to projectPath if git resolution fails.
 	@property string repoPath() const
 	{
-		if (projectPath.length == 0)
-			return "";
-		return repoPathCache.require(projectPath, {
-			import std.process : execute;
-			import std.string : strip;
-			auto repoResult = execute(["git", "-C", projectPath, "rev-parse", "--show-toplevel"]);
-			if (repoResult.status != 0)
-				return projectPath;
-			auto repoRoot = repoResult.output.strip();
-			return repoRoot.length > 0 ? repoRoot : projectPath;
-		}());
-	}
-
-	/// Per-task directory: .cydo/tasks/<tid>/
-	@property string taskDir() const
-	{
-		auto repoRoot = repoPath;
-		if (repoRoot.length == 0)
-			return "";
-		import std.path : buildPath;
-		return buildPath(repoRoot, ".cydo", "tasks", format!"%d"(tid));
-	}
-
-	/// Worktree path: .cydo/tasks/{worktree_tid}/worktree
-	/// Returns "" if no worktree.
-	@property string worktreePath() const
-	{
-		if (worktreeTid <= 0)
-			return "";
-		import std.path : buildPath;
-		return buildPath(repoPath, ".cydo", "tasks", format!"%d"(worktreeTid), "worktree");
-	}
-
-	/// Output file path: .cydo/tasks/<tid>/output.md
-	@property string outputPath() const
-	{
-		if (taskDir.length == 0)
-			return "";
-		import std.path : buildPath;
-		return buildPath(taskDir, "output.md");
-	}
-
-	/// Effective working directory: worktree path if set, otherwise project path.
-	@property string effectiveCwd() const
-	{
-		if (worktreeTid <= 0)
-			return projectPath;
-
-		auto wtPath = worktreePath;
-		if (wtPath.length == 0 || projectPath.length == 0)
-			return wtPath;
-
-		import std.path : buildPath, relativePath;
-
-		auto repoRoot = repoPath;
-		if (repoRoot.length == 0 || repoRoot == projectPath)
-			return wtPath;
-
-		auto relProjectPath = relativePath(projectPath, repoRoot);
-		if (relProjectPath.length == 0 || relProjectPath == ".")
-			return wtPath;
-
-		return buildPath(wtPath, relProjectPath);
+		return resolveProjectRepoPath(projectPath);
 	}
 
 	/// Returns true if this task owns its worktree (worktreeTid == own tid).
@@ -453,6 +470,16 @@ struct TaskData
 	@property bool hasWorktree() const
 	{
 		return worktreeTid > 0;
+	}
+
+	@property string outputPath() const
+	{
+		return outputPathForTaskDir(taskDir);
+	}
+
+	string effectiveCwd(string worktreePath) const
+	{
+		return effectiveCwdForTask(projectPath, repoPath, worktreePath, worktreeTid);
 	}
 
 	string draft;
@@ -1002,6 +1029,46 @@ struct PermissionPromptMessage
 	JSONFragment input;
 }
 
+unittest
+{
+	auto dir = resolveTaskDir(
+		42,
+		"main",
+		"/tmp/ws",
+		"/tmp/ws/project",
+		"/tmp/ws/project",
+		defaultTaskDirTemplate,
+	);
+	assert(dir == buildPath("/tmp/ws/project", ".cydo", "tasks", "42"));
+}
+
+unittest
+{
+	auto dir = resolveTaskDir(
+		7,
+		"main",
+		"/tmp/ws",
+		"/tmp/ws/project",
+		"/tmp/ws/project",
+		"{{ workspace_root }}/runs/{{ tid }}",
+	);
+	assert(dir == buildPath("/tmp/ws", "runs", "7"));
+}
+
+unittest
+{
+	auto taskDir = buildPath("/tmp/ws", ".cydo", "tasks", "42");
+	auto worktreePath = buildPath(taskDir, "worktree");
+	assert(outputPathForTaskDir(taskDir) == buildPath(taskDir, "output.md"));
+	assert(worktreePathForTaskDir(taskDir) == worktreePath);
+	assert(effectiveCwdForTask(
+		buildPath("/tmp/repo", "project"),
+		"/tmp/repo",
+		worktreePath,
+		42,
+	) == buildPath(worktreePath, "project"));
+}
+
 /// Structured result returned to the parent agent as JSON via MCP.
 struct TaskResult
 {
@@ -1031,39 +1098,6 @@ struct McpContentResult
 	McpContentItem[] content;
 	bool isError;
 	@JSONOptional JSONFragment structuredContent;
-}
-
-unittest
-{
-	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
-	import std.path : buildPath;
-	import std.process : execute;
-
-	auto repoDir = buildPath("/tmp", "cydo-taskdata-subproject");
-	if (exists(repoDir))
-		rmdirRecurse(repoDir);
-	scope(exit)
-		if (exists(repoDir))
-			rmdirRecurse(repoDir);
-
-	auto projectDir = buildPath(repoDir, "project");
-	mkdirRecurse(projectDir);
-	execute(["git", "-C", repoDir, "init", "-q"]);
-	execute(["git", "-C", repoDir, "config", "user.email", "test@test"]);
-	execute(["git", "-C", repoDir, "config", "user.name", "Test"]);
-	write(buildPath(projectDir, "README.md"), "project\n");
-	execute(["git", "-C", repoDir, "add", "."]);
-	execute(["git", "-C", repoDir, "commit", "-qm", "init"]);
-
-	auto td = TaskData(42);
-	td.projectPath = projectDir;
-	td.worktreeTid = 42;
-
-	assert(td.repoPath == repoDir);
-	assert(td.taskDir == buildPath(repoDir, ".cydo", "tasks", "42"));
-	assert(td.worktreePath == buildPath(repoDir, ".cydo", "tasks", "42", "worktree"));
-	assert(td.outputPath == buildPath(repoDir, ".cydo", "tasks", "42", "output.md"));
-	assert(td.effectiveCwd == buildPath(repoDir, ".cydo", "tasks", "42", "worktree", "project"));
 }
 
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.

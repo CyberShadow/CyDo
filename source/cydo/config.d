@@ -51,6 +51,7 @@ struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
 	@Optional SandboxConfig sandbox;
+	@Optional string task_dir; /// Global per-task directory template (Djinja)
 	@Optional string default_agent = "claude";
 	@Optional string default_task_type;
 	@Optional AgentConfig[string] agents;

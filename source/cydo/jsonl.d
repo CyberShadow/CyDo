@@ -17,6 +17,7 @@ struct JsonlTracker
 {
 	Agent delegate(int tid) getAgent;
 	TaskData* delegate(int tid) getTask;
+	string delegate(int tid) getEffectiveCwd;
 	void delegate(int tid, string msg) sendToSubscribed;
 	void delegate(int tid, size_t seq, string anchor) onAnchorResolved;
 
@@ -44,7 +45,7 @@ struct JsonlTracker
 		if (td.agentSessionId.length == 0)
 			return;
 
-		auto jsonlPath = getAgent(tid).historyPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlPath = getAgent(tid).historyPath(td.agentSessionId, getEffectiveCwd(tid));
 		tracef("[jsonl] startJsonlWatch tid=%d sessionId=%s jsonlPath=%s exists=%s",
 			tid, td.agentSessionId, jsonlPath, jsonlPath.length > 0 && exists(jsonlPath));
 		if (jsonlPath.length == 0)
@@ -209,7 +210,7 @@ struct JsonlTracker
 		auto td = getTask(tid);
 		if (td is null || td.agentSessionId.length == 0)
 			return;
-		auto jsonlPath = getAgent(tid).historyPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlPath = getAgent(tid).historyPath(td.agentSessionId, getEffectiveCwd(tid));
 		if (jsonlPath.length == 0 || !exists(jsonlPath))
 			return;
 		undoJsonl[tid] = readText(jsonlPath);
@@ -270,7 +271,7 @@ struct JsonlTracker
 			return;
 
 		auto ta = getAgent(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, td.effectiveCwd);
+		auto jsonlPath = ta.historyPath(td.agentSessionId, getEffectiveCwd(tid));
 		if (jsonlPath.length == 0 || !exists(jsonlPath))
 		{
 			tracef("[jsonl] broadcastForkableUuidsFromFile tid=%d: path missing/nonexistent: %s", tid, jsonlPath);
@@ -440,7 +441,7 @@ unittest
 {
 	import std.algorithm : canFind;
 
-	TaskData td = TaskData(1);
+	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
 	td.registerVisibleTurnAnchor(4, true, false, "user-one", "user-one", false);
 	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
 
@@ -463,7 +464,7 @@ unittest
 
 unittest
 {
-	TaskData td = TaskData(1);
+	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
 	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
 
 	JsonlTracker tracker;
@@ -495,7 +496,7 @@ unittest
 {
 	import std.algorithm : sort;
 
-	TaskData td = TaskData(1);
+	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
 	td.registerVisibleTurnAnchor(2, true, false, "user-two", "user-two", false);
 	td.registerVisibleTurnAnchor(10, true, true, "enqueue-3", null, false); // already resolved
 	td.registerVisibleTurnAnchor(20, true, true, null, "raw-tool-only", true);
