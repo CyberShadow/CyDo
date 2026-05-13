@@ -858,8 +858,10 @@ class CodexAgent : Agent
 	private AppServerProcess[string] serverPool; // keyed by workspace+sandbox signature
 	private string[string] modelAliasOverrides;
 	private string lastMcpConfigPath_;
-	// Background thread: sessionId → file path (populated by enumerateAllSessions)
+	// sessionId → rollout JSONL path. Populated lazily by populateSessionIndex
+	// (called from historyPath on first use and from enumerateAllSessions).
 	private string[string] sessionIdToPath_;
+	private bool sessionIndexBuilt_;
 	// History replay state: tracks whether task_started has been seen in the current replay.
 	private bool histSeenTaskStarted_;
 
@@ -1256,26 +1258,65 @@ class CodexAgent : Agent
 
 	string historyPath(string sessionId, string projectPath)
 	{
-		import std.file : dirEntries, SpanMode;
+		if (sessionId.length == 0)
+			return null;
+		// Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-*-<threadId>.jsonl
+		// with an unknown timestamp prefix, so we maintain an in-memory index built
+		// by a single recursive scan rather than scanning per call (O(tasks × N) at
+		// startup otherwise).
+		if (!sessionIndexBuilt_)
+			populateSessionIndex(null);
+		if (auto p = sessionId in sessionIdToPath_)
+			return *p;
+		// Miss after initial build — could be a session created after the scan
+		// (e.g. a fresh fork). Rebuild once and retry. Repeated lookups for the
+		// same missing session will still rescan, but that path is exercised only
+		// by runtime callers, not the M-task startup loop.
+		populateSessionIndex(null);
+		if (auto p = sessionId in sessionIdToPath_)
+			return *p;
+		return null;
+	}
+
+	private void populateSessionIndex(DiscoveredSession[]* outDiscovered)
+	{
+		import std.file : DirEntry, dirEntries, exists, SpanMode;
+		import std.path : baseName, buildPath;
 		import std.process : environment;
+		import std.regex : ctRegex, matchFirst;
 
 		auto home = environment.get("HOME", "/tmp");
 		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
 		auto sessionsDir = buildPath(codexHome, "sessions");
 
-		// Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-*-<threadId>.jsonl
-		// Glob for the file since the timestamp prefix is unknown.
+		sessionIdToPath_ = null;
+		sessionIndexBuilt_ = true;
+		if (!exists(sessionsDir))
+			return;
+
+		// Codex rollout filenames: rollout-<YYYY>-<MM>-<DD>T<HH>-<MM>-<SS>-<UUID>.jsonl
+		// The UUID (8-4-4-4-12 hex) is the session id; it matches parseSessionId.
+		enum uuidRx = ctRegex!`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`;
 		try
 		{
-			foreach (entry; dirEntries(sessionsDir, "*-" ~ sessionId ~ ".jsonl", SpanMode.depth))
-				return entry.name;
-			return null;
+			foreach (DirEntry entry; dirEntries(sessionsDir, "*.jsonl", SpanMode.depth))
+			{
+				auto base = baseName(entry.name, ".jsonl");
+				auto m = base.matchFirst(uuidRx);
+				auto sessionId = m.empty ? base : m.hit;
+				sessionIdToPath_[sessionId] = entry.name;
+				if (outDiscovered !is null)
+				{
+					DiscoveredSession ds;
+					ds.sessionId = sessionId;
+					ds.mtime = entry.timeLastModified.stdTime;
+					ds.projectPath = "";
+					*outDiscovered ~= ds;
+				}
+			}
 		}
 		catch (Exception e)
-		{
-			warningf("Error reading Codex session history: %s", e.msg);
-			return null;
-		}
+		{ tracef("populateSessionIndex(codex): error scanning %s: %s", sessionsDir, e.msg); }
 	}
 
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
@@ -1436,43 +1477,8 @@ class CodexAgent : Agent
 
 	DiscoveredSession[] enumerateAllSessions()
 	{
-		import std.file : DirEntry, dirEntries, exists, SpanMode;
-		import std.path : baseName, buildPath;
-		import std.process : environment;
-		import std.string : lastIndexOf;
-
-		auto home = environment.get("HOME", "/tmp");
-		auto codexHome = environment.get("CODEX_HOME", buildPath(home, ".codex"));
-		auto sessionsDir = buildPath(codexHome, "sessions");
-		if (!exists(sessionsDir))
-			return [];
-
-		sessionIdToPath_ = null;
 		DiscoveredSession[] result;
-		try
-		{
-			foreach (DirEntry entry; dirEntries(sessionsDir, "*.jsonl", SpanMode.depth))
-			{
-				auto base = baseName(entry.name, ".jsonl");
-				// Extract the UUID suffix from the filename.
-				// Codex rollout files are named rollout-<YYYY>-<MM>-<DD>T<HH>-<MM>-<SS>-<UUID>.jsonl
-				// where UUID = 8-4-4-4-12 hex digits. The UUID is the last 36 chars of the basename.
-				// This matches historyPath glob *-<UUID>.jsonl and parseSessionId which returns the
-				// full UUID from session/init.
-				import std.regex : ctRegex, matchFirst;
-				enum uuidRx = ctRegex!`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`;
-				auto m = base.matchFirst(uuidRx);
-				auto sessionId = m.empty ? base : m.hit;
-				sessionIdToPath_[sessionId] = entry.name;
-				DiscoveredSession ds;
-				ds.sessionId = sessionId;
-				ds.mtime = entry.timeLastModified.stdTime;
-				ds.projectPath = ""; // not derivable from directory structure
-				result ~= ds;
-			}
-		}
-		catch (Exception e)
-		{ tracef("enumerateAllSessions(codex): error scanning %s: %s", sessionsDir, e.msg); }
+		populateSessionIndex(&result);
 		return result;
 	}
 
