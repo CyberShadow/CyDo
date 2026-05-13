@@ -69,19 +69,8 @@ string configPath()
 CydoConfig loadConfig()
 {
 	auto result = parseConfigFileSimple!CydoConfig(configPath);
-
 	CydoConfig config = result.isNull() ? CydoConfig.init : result.get();
-
-	if (config.workspaces.length == 0)
-	{
-		import std.path : expandTilde;
-		config.workspaces = [
-			WorkspaceConfig("local", expandTilde("~")),
-		];
-	}
-
-	normalizeWorkspacePaths(config);
-	applyAgentDriverOverlay(config);
+	applyPostLoadFixups(config);
 	return config;
 }
 
@@ -92,11 +81,25 @@ Nullable!CydoConfig reloadConfig()
 	if (!result.isNull())
 	{
 		auto inner = result.get();
-		normalizeWorkspacePaths(inner);
-		applyAgentDriverOverlay(inner);
+		applyPostLoadFixups(inner);
 		result = Nullable!CydoConfig(inner);
 	}
 	return result;
+}
+
+/// Apply all post-parse fixups to a freshly loaded config. Single source of
+/// truth so loadConfig and reloadConfig stay in sync.
+private void applyPostLoadFixups(ref CydoConfig config)
+{
+	ensureDefaultWorkspace(config);
+	normalizeWorkspacePaths(config);
+	applyAgentDriverOverlay(config);
+}
+
+private void ensureDefaultWorkspace(ref CydoConfig config)
+{
+	if (config.workspaces.length == 0)
+		config.workspaces = [WorkspaceConfig("local", "~")];
 }
 
 private void normalizeWorkspacePaths(ref CydoConfig config)
