@@ -1257,7 +1257,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		HandlePermissionRequestParams prp;
 		prp.sessionId = sessionId;
 		prp.requestId = req.requestId;
-		prp.result    = PermissionKind("approved");
+		prp.result    = PermissionDecisionApproveOnce;
 		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp))
 			.ignoreResult();
 	}
@@ -1697,12 +1697,41 @@ private struct HandlePendingToolCallError
 	string error;
 }
 
-private struct PermissionKind { string kind; }
+private struct PermissionDecision { string kind; }
+private enum PermissionDecision PermissionDecisionApproveOnce = PermissionDecision("approve-once");
 private struct HandlePermissionRequestParams
 {
 	string sessionId;
 	string requestId;
-	PermissionKind result;
+	PermissionDecision result;
+}
+
+unittest
+{
+	HandlePermissionRequestParams params;
+	params.sessionId = "session-123";
+	params.requestId = "request-456";
+	params.result    = PermissionDecisionApproveOnce;
+
+	auto json = toJson(params);
+	assert(
+		json == `{"sessionId":"session-123","requestId":"request-456","result":{"kind":"approve-once"}}`,
+		"session.permissions.handlePendingPermissionRequest payload mismatch: " ~ json,
+	);
+
+	@JSONPartial
+	struct SerializedPermissionRequest
+	{
+		string sessionId;
+		string requestId;
+		@JSONPartial struct ResultPayload { string kind; }
+		ResultPayload result;
+	}
+
+	auto payload = jsonParse!SerializedPermissionRequest(json);
+	assert(payload.sessionId == "session-123");
+	assert(payload.requestId == "request-456");
+	assert(payload.result.kind == "approve-once");
 }
 
 // ---- Session create/resume param structs ----
