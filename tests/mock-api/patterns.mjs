@@ -610,6 +610,15 @@ export function matchPattern(userText) {
   match = userText.match(/reply with "([^"]*)"/i);
   if (match) return { type: "text", text: match[1] };
 
+  if (/copilot text before tool/i.test(userText)) {
+    return {
+      type: "text_then_tool",
+      text: "pre-tool-visible-text",
+      name: "mcp__cydo__Bash",
+      input: { command: "printf post-tool-result" },
+    };
+  }
+
   // "stall session" → keep LLM connection open without completing
   if (/stall session/i.test(userText)) return { type: "stall" };
 

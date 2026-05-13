@@ -234,6 +234,49 @@ describe("thinking block rendering state", () => {
   });
 });
 
+describe("item/started idempotency", () => {
+  it("does not duplicate or overwrite an existing block on duplicate item/started", () => {
+    let s: TaskState = makeState();
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "item/started",
+        item_id: "cp-text-0",
+        item_type: "text",
+      }),
+      1,
+    );
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "item/delta",
+        item_id: "cp-text-0",
+        delta_type: "text_delta",
+        content: "pre-tool-visible-text",
+      }),
+    );
+
+    const next = reduceMessage(
+      s,
+      asEvent({
+        type: "item/started",
+        item_id: "cp-text-0",
+        item_type: "text",
+      }),
+      2,
+    );
+
+    const msg = next.messages[0]!;
+    const blockKey = next.itemIdMap.get("cp-text-0");
+
+    expect(blockKey).toBeTruthy();
+    expect(msg.blockIds).toEqual([blockKey]);
+    expect(next.blocks.get(blockKey!)?.text).toBe("pre-tool-visible-text");
+    expect(Array.isArray(msg.rawSource)).toBe(true);
+    expect(msg.rawSource).toHaveLength(2);
+  });
+});
+
 describe("cydo/task_spawned reducer", () => {
   it("pushes to pendingCydoTaskItemIds on cydo:Task item/started", () => {
     const s = makeState();

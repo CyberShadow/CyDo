@@ -180,6 +180,20 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
       "[DONE]",
     ]);
+  } else if (intent.type === "text_then_tool") {
+    let toolName = intent.name;
+    if (toolName.startsWith("mcp__cydo__")) {
+      toolName = "cydo-" + toolName.slice("mcp__cydo__".length);
+    }
+    const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
+    sendSse(socket, [
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: intent.text }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: callId, type: "function", function: { name: toolName, arguments: "" } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(intent.input) } }] }, finish_reason: null }] },
+      { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    ]);
   } else if (intent.type === "stall") {
     // Send an initial SSE header and one empty assistant delta, then stall indefinitely.
     // The connection stays open so the copilot process keeps waiting for more data.

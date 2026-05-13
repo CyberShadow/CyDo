@@ -934,15 +934,6 @@ export function reduceItemStarted(
     return reduceItemStartedUserMessage(s, event, seq, ts);
   }
 
-  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
-  if (
-    event.item_type === "tool_use" &&
-    event.tool_server === "cydo" &&
-    event.name === "Task"
-  ) {
-    pendingCydoTaskItemIds = [...s.pendingCydoTaskItemIds, event.item_id];
-  }
-
   const { messages, msgIdx } = getOrCreateStreamingMessage(
     s,
     event.parent_tool_use_id,
@@ -950,12 +941,36 @@ export function reduceItemStarted(
   );
   const msg = messages[msgIdx]!;
 
-  const creationOrder = msg.nextCreationOrder ?? 0;
-  msg.nextCreationOrder = creationOrder + 1;
-
   // Block keys must be globally unique. Item IDs (e.g. "cc-block-0") are only
   // unique within a turn, so scope them with the message ID.
   const blockKey = `${msg.id}:${event.item_id}`;
+  const isDuplicateBlockKey = msg.blockIds?.includes(blockKey) ?? false;
+
+  let pendingCydoTaskItemIds = s.pendingCydoTaskItemIds;
+  if (
+    !isDuplicateBlockKey &&
+    event.item_type === "tool_use" &&
+    event.tool_server === "cydo" &&
+    event.name === "Task"
+  ) {
+    pendingCydoTaskItemIds = [...s.pendingCydoTaskItemIds, event.item_id];
+  }
+
+  if (event.parent_tool_use_id) {
+    msg.parentToolUseId = event.parent_tool_use_id;
+  }
+
+  appendRawSource(msg, event, seq);
+
+  const blocks = new Map(s.blocks);
+  const itemIdMap = new Map(s.itemIdMap);
+  itemIdMap.set(event.item_id, blockKey);
+  if (isDuplicateBlockKey) {
+    return { ...s, messages, blocks, itemIdMap, pendingCydoTaskItemIds };
+  }
+
+  const creationOrder = msg.nextCreationOrder ?? 0;
+  msg.nextCreationOrder = creationOrder + 1;
   const block: Block = {
     itemId: event.item_id,
     type: event.item_type,
@@ -970,17 +985,7 @@ export function reduceItemStarted(
   };
 
   msg.blockIds = [...(msg.blockIds || []), blockKey];
-
-  if (event.parent_tool_use_id) {
-    msg.parentToolUseId = event.parent_tool_use_id;
-  }
-
-  appendRawSource(msg, event, seq);
-
-  const blocks = new Map(s.blocks);
   blocks.set(blockKey, block);
-  const itemIdMap = new Map(s.itemIdMap);
-  itemIdMap.set(event.item_id, blockKey);
 
   let state = { ...s, messages, blocks, itemIdMap, pendingCydoTaskItemIds };
 

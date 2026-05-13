@@ -810,6 +810,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private ToolItem[string] activeTools; // keyed by toolCallId
 
 	private string lastResultText;  // last completed text content, for turn/result
+	private bool hadItemsSinceLastStop_;
 	private string currentRawJson_; // raw event data.json from handleEvent, for _raw injection
 	private AbsTime currentEventTs_; // timestamp of the current live event
 	private string currentSubagentParent_;  // toolCallId of current sub-agent parent (task tool)
@@ -854,6 +855,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		replayMode = false; // Done with replay (or was never in it)
 		turnInProgress = false;
 		sessionReady_ = true;
+		hadItemsSinceLastStop_ = false;
 
 		// Emit synthetic session/init.
 		SessionInitEvent initEv;
@@ -908,6 +910,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			nextItemIndex = 0;
 			activeTextItem = ActiveTextItem.init;
 			activeTools = null;
+			hadItemsSinceLastStop_ = false;
 
 			// SDK session.send returns immediately with messageId.
 			// Emit the synthetic user-echo and agent-ack only after the server
@@ -1042,8 +1045,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "user.message":
 				handleUserMessage(data);
 				break;
+			case "assistant.turn_end":
+				handleAssistantTurnEnd();
+				break;
 			case "session.idle":
-				handleTurnCompleted("end_turn");
+				handleSessionIdle();
 				break;
 			case "session.start":
 				handleSessionStart(data);
@@ -1073,7 +1079,6 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			case "session.title_changed":
 			case "session.tools_updated":
 			case "session.usage_info":
-			case "assistant.turn_end":
 			case "assistant.streaming_delta":
 			case "assistant.usage":
 			case "external_tool.completed":
@@ -1191,6 +1196,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			if (isCydo) { extStartEv.tool_server = "cydo"; extStartEv.tool_source = "mcp"; }
 			extStartEv.input     = JSONFragment(inputJson);
 			emitEvent(toJson(extStartEv), currentRawJson_);
+			hadItemsSinceLastStop_ = true;
 		}
 		auto rawJson = currentRawJson_; // capture before async dispatch
 
@@ -1304,7 +1310,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		nextItemIndex = 0;
 		activeTextItem = ActiveTextItem.init;
 		activeTools = null;
-		lastResultText = null;
+		hadItemsSinceLastStop_ = false;
 		currentSubagentParent_ = null;
 	}
 
@@ -1328,6 +1334,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			textStartEv.item_type          = "text";
 			textStartEv.parent_tool_use_id = currentSubagentParent_;
 			emitEvent(toJson(textStartEv), currentRawJson_);
+			hadItemsSinceLastStop_ = true;
 		}
 
 		activeTextItem.text ~= text;
@@ -1362,6 +1369,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			thinkStartEv.item_type          = "thinking";
 			thinkStartEv.parent_tool_use_id = currentSubagentParent_;
 			emitEvent(toJson(thinkStartEv), currentRawJson_);
+			hadItemsSinceLastStop_ = true;
 		}
 
 		activeTextItem.text ~= text;
@@ -1427,6 +1435,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		toolStartEv.parent_tool_use_id = ts.parentToolCallId;
 		toolStartEv.input              = JSONFragment(inputJson);
 		emitEvent(toJson(toolStartEv), currentRawJson_);
+		hadItemsSinceLastStop_ = true;
 
 		// Emit the full input as a single input_json_delta so the UI can
 		// display it during streaming.
@@ -1507,7 +1516,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	// ----- Turn completion -----
 
-	private void handleTurnCompleted(string stopReason)
+	private void finalizeTurnItemsAndEmitStop()
 	{
 		// Finalize any still-active text/thinking item.
 		finalizeActiveTextItem();
@@ -1515,24 +1524,28 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		// but cleans up if turn ends before tool.execution_complete arrives).
 		finalizeAllTools();
 
-		turnInProgress = false;
+		if (!hadItemsSinceLastStop_)
+			return;
 
-		// 1. turn/stop
 		TurnStopEvent tsEv;
 		tsEv.model = model;
 		emitEvent(toJson(tsEv), currentRawJson_);
+		hadItemsSinceLastStop_ = false;
+	}
 
-		// 2. turn/result
-		string subtype;
-		switch (stopReason)
-		{
-			case "end_turn":  subtype = "success";  break;
-			case "cancelled": subtype = "cancelled"; break;
-			default:          subtype = "unknown";   break;
-		}
+	private void handleAssistantTurnEnd()
+	{
+		finalizeTurnItemsAndEmitStop();
+	}
+
+	private void handleSessionIdle()
+	{
+		finalizeTurnItemsAndEmitStop();
+		turnInProgress = false;
+
 		// Include the last text item as "result" so extractResultText can retrieve it.
 		TurnResultEvent trEv;
-		trEv.subtype        = subtype;
+		trEv.subtype        = "success";
 		trEv.is_error       = false;
 		trEv.num_turns      = 1;
 		trEv.duration_ms    = 0;
