@@ -894,11 +894,24 @@ class App : ToolsBackend
 					auto startTa = tryAgentForTask(rowTid);
 					if (startTa)
 					{
-						auto jp = startTa.historyPath(td2.agentSessionId, effectiveCwd(td2));
-						auto fromPath = watermarkFromPath(jp);
-						wm = fromPath.isDeferred
-							? fromPath
-							: Watermark.unreadable(); // JSONL absent; load delegate returns empty
+						// effectiveCwd may throw for tasks whose workspace is no
+						// longer configured — treat as JSONL absent, the same as
+						// an orphan agent: keep deferred and synthesize on demand.
+						string cwd;
+						try
+							cwd = effectiveCwd(td2);
+						catch (Exception)
+							cwd = "";
+						if (cwd.length == 0)
+							wm = Watermark.unreadable();
+						else
+						{
+							auto jp = startTa.historyPath(td2.agentSessionId, cwd);
+							auto fromPath = watermarkFromPath(jp);
+							wm = fromPath.isDeferred
+								? fromPath
+								: Watermark.unreadable(); // JSONL absent; load delegate returns empty
+						}
 					}
 					else
 						wm = Watermark.unreadable(); // Orphan agent: keep deferred so ensureHistoryLoaded synthesizes error
