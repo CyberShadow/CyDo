@@ -441,7 +441,7 @@ unittest
 {
 	import std.algorithm : canFind;
 
-	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
+	TaskData td = TaskData(1, "", "");
 	td.registerVisibleTurnAnchor(4, true, false, "user-one", "user-one", false);
 	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
 
@@ -464,7 +464,7 @@ unittest
 
 unittest
 {
-	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
+	TaskData td = TaskData(1, "", "");
 	td.registerVisibleTurnAnchor(13, true, true, null, "raw-steering", true);
 
 	JsonlTracker tracker;
@@ -496,7 +496,7 @@ unittest
 {
 	import std.algorithm : sort;
 
-	TaskData td = TaskData(1, "", "", "/tmp/cydo-task-1");
+	TaskData td = TaskData(1, "", "");
 	td.registerVisibleTurnAnchor(2, true, false, "user-two", "user-two", false);
 	td.registerVisibleTurnAnchor(10, true, true, "enqueue-3", null, false); // already resolved
 	td.registerVisibleTurnAnchor(20, true, true, null, "raw-tool-only", true);

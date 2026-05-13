@@ -425,14 +425,12 @@ struct PendingContinuation
 
 struct TaskData
 {
-	this(int tid, string workspace, string projectPath, string taskDir)
+	this(int tid, string workspace, string projectPath)
 	{
 		enforce(tid > 0, "Task id must be positive");
-		enforce(taskDir.length > 0, "taskDir must not be empty");
 		this.tid = tid;
 		this.workspace = workspace;
 		this.projectPath = projectPath;
-		this.taskDir = taskDir;
 	}
 
 	int tid;
@@ -445,7 +443,6 @@ struct TaskData
 	string relationType;
 	string workspace;
 	string projectPath;
-	string taskDir;
 	int worktreeTid;  // 0 = no worktree; own tid = owns worktree; other tid = shares worktree
 	string title;
 	string status = "pending";  // pending, active, alive, waiting, completed, failed, importable
@@ -470,11 +467,6 @@ struct TaskData
 	@property bool hasWorktree() const
 	{
 		return worktreeTid > 0;
-	}
-
-	@property string outputPath() const
-	{
-		return outputPathForTaskDir(taskDir);
 	}
 
 	string effectiveCwd(string worktreePath) const

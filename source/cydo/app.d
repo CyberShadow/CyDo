@@ -851,8 +851,7 @@ class App : ToolsBackend
 		// Load persisted tasks (metadata only — history loaded on demand)
 		foreach (row; persistence.loadTasks())
 		{
-			auto td = TaskData(row.tid, row.workspace, row.projectPath,
-				resolveTaskDirForTask(row.tid, row.workspace, row.projectPath));
+			auto td = TaskData(row.tid, row.workspace, row.projectPath);
 			td.agentSessionId = row.agentSessionId;
 			td.description = row.description;
 			td.entryPoint = row.entryPoint;
@@ -911,7 +910,10 @@ class App : ToolsBackend
 		foreach (tid, ref td; tasks)
 		{
 			import std.file : isSymlink, remove;
-			auto wtPath = worktreePathForTaskDir(td.taskDir);
+			auto td_dir = tryTaskDir(td);
+			if (td_dir.length == 0)
+				continue;
+			auto wtPath = worktreePathForTaskDir(td_dir);
 			try {
 				if (isSymlink(wtPath))
 				{
@@ -1570,13 +1572,13 @@ class App : ToolsBackend
 				{
 					edgeTemplate = edge.prompt_template;
 					childTd.resultNote = substituteVars(edge.result_note,
-						["output_dir": pd.taskDir]);
+						["output_dir": taskDir(pd)]);
 					setupWorktreeForEdge(childTid, parentTid, edge.worktree);
 				}
 			}
 
 			// Configure and spawn child agent
-			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), childTd.outputPath, edgeTemplate);
+			auto renderedPrompt = renderPrompt(*ctd, prompt, promptSearchPath(childTd.projectPath), outputPath(childTd), edgeTemplate);
 			renderedPrompt = prependTaskFraming(renderedPrompt,
 				taskSystemPromptForMessage(childTid, ctd),
 				loadProjectMemory(ctd, childTd.repoPath, promptSearchPath(childTd.projectPath)));
@@ -2958,7 +2960,7 @@ class App : ToolsBackend
 			{
 				import std.algorithm : filter;
 				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), td.outputPath, epTemplate);
+				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath), outputPath(td), epTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
 					loadProjectMemory(typeDef, td.repoPath, promptSearchPath(td.projectPath)));
@@ -3362,7 +3364,7 @@ class App : ToolsBackend
 						entryPointTemplate = ep.prompt_template;
 				}
 				auto rendered = renderPrompt(*typeDef, textContent, promptSearchPath(td.projectPath),
-					td.outputPath, entryPointTemplate);
+					outputPath(td), entryPointTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
 					loadProjectMemory(typeDef, td.repoPath, promptSearchPath(td.projectPath)));
@@ -3547,7 +3549,7 @@ class App : ToolsBackend
 			td.archiving ? "true" : "false",
 			td.workspace,
 			td.projectPath,
-			td.taskDir,
+			tryTaskDir(*td),
 			td.agentType,
 			td.agentSessionId);
 		if (td.archived == archived)
@@ -3682,8 +3684,7 @@ class App : ToolsBackend
 			auto childTid = createForkTask(persistence, tid, "", td.projectPath, td.workspace,
 				td.title, td.description, td.taskType, td.agentType);
 
-			auto newTd = TaskData(childTid, td.workspace, td.projectPath,
-				resolveTaskDirForTask(childTid, td.workspace, td.projectPath));
+			auto newTd = TaskData(childTid, td.workspace, td.projectPath);
 			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
 			newTd.parentTid = tid;
 			newTd.relationType = "fork";
@@ -3777,8 +3778,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto newTd = TaskData(result.tid, td.workspace, td.projectPath,
-			resolveTaskDirForTask(result.tid, td.workspace, td.projectPath));
+		auto newTd = TaskData(result.tid, td.workspace, td.projectPath);
 		newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
 		newTd.agentSessionId = result.agentSessionId;
 		newTd.parentTid = tid;
@@ -4065,8 +4065,7 @@ class App : ToolsBackend
 					td.description, td.taskType, td.agentType);
 				if (backup.tid >= 0)
 				{
-					auto bTd = TaskData(backup.tid, td.workspace, td.projectPath,
-						resolveTaskDirForTask(backup.tid, td.workspace, td.projectPath));
+					auto bTd = TaskData(backup.tid, td.workspace, td.projectPath);
 					bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
 					bTd.agentSessionId = backup.agentSessionId;
 					bTd.parentTid = tid;
@@ -4375,7 +4374,7 @@ class App : ToolsBackend
 			return null;
 
 		auto td = &tasks[tid];
-		return loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), td.outputPath);
+		return loadSystemPrompt(*typeDef, promptSearchPath(td.projectPath), outputPath(*td));
 	}
 
 	private static string prependTaskFraming(string promptText, string systemPrompt,
@@ -5119,6 +5118,47 @@ class App : ToolsBackend
 		return resolveTaskDir(tid, workspace, wsRoot, projectPath, repoPath, taskDirTemplate);
 	}
 
+	/// Resolve a task's directory on demand. Throws if the task lacks the
+	/// workspace metadata needed to compute the path — operations that need
+	/// taskDir fail fast at the point of use, while tasks that only sit in
+	/// the in-memory map (legacy completed runs, importable rows that haven't
+	/// been activated) can still be loaded.
+	private string taskDir(ref const TaskData td)
+	{
+		return resolveTaskDirForTask(td.tid, td.workspace, td.projectPath);
+	}
+
+	private string taskDir(const TaskData* td)
+	{
+		if (td is null)
+			throw new Exception("TaskData pointer must not be null");
+		return taskDir(*td);
+	}
+
+	/// Resolve a task's output.md path on demand.
+	private string outputPath(ref const TaskData td)
+	{
+		return outputPathForTaskDir(taskDir(td));
+	}
+
+	private string outputPath(const TaskData* td)
+	{
+		if (td is null)
+			throw new Exception("TaskData pointer must not be null");
+		return outputPath(*td);
+	}
+
+	/// Best-effort variant for code that runs over every task and must
+	/// tolerate legacy rows that can't resolve a workspace. Returns "" on
+	/// failure instead of throwing.
+	private string tryTaskDir(ref const TaskData td)
+	{
+		try
+			return taskDir(td);
+		catch (Exception)
+			return "";
+	}
+
 	private string worktreePath(const TaskData* td)
 	{
 		if (td is null)
@@ -5129,7 +5169,7 @@ class App : ToolsBackend
 		auto ownerTd = td.worktreeTid in tasks;
 		if (ownerTd is null)
 			throw new Exception(format!"Task %d references missing worktree owner task %d"(td.tid, td.worktreeTid));
-		return worktreePathForTaskDir(ownerTd.taskDir);
+		return worktreePathForTaskDir(taskDir(ownerTd));
 	}
 
 	private string effectiveCwd(const TaskData* td)
@@ -5152,8 +5192,7 @@ class App : ToolsBackend
 		string entryPoint = "")
 	{
 		auto tid = persistence.createTask(workspace, projectPath, agentName, entryPoint);
-		auto td = TaskData(tid, workspace, projectPath,
-			resolveTaskDirForTask(tid, workspace, projectPath));
+		auto td = TaskData(tid, workspace, projectPath);
 		td.agentType = agentName;
 		td.entryPoint = entryPoint;
 		td.history.reset(Watermark.none()); // New tasks have no JSONL to load
@@ -5301,10 +5340,11 @@ class App : ToolsBackend
 			throw new Exception(format!"Root task %d not found while creating required worktree for task %d"(rootTid, childTid));
 
 		import std.file : exists, mkdirRecurse;
-		auto wtPath = worktreePathForTaskDir(rootTd.taskDir);
+		auto rootTaskDir = taskDir(rootTd);
+		auto wtPath = worktreePathForTaskDir(rootTaskDir);
 		if (!exists(wtPath))
 		{
-			mkdirRecurse(rootTd.taskDir);
+			mkdirRecurse(rootTaskDir);
 			import std.process : execute;
 			auto workDir = rootTd.projectPath.length > 0 ? rootTd.projectPath : null;
 			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
@@ -5329,8 +5369,9 @@ class App : ToolsBackend
 		import std.file : mkdirRecurse;
 		import std.process : execute;
 
-		mkdirRecurse(td.taskDir);
-		auto wtPath = worktreePathForTaskDir(td.taskDir);
+		auto childTaskDir = taskDir(*td);
+		mkdirRecurse(childTaskDir);
+		auto wtPath = worktreePathForTaskDir(childTaskDir);
 
 		// Determine base: parent's worktree if available, else project dir
 		auto parentTd = parentTid in tasks;
@@ -5367,7 +5408,7 @@ class App : ToolsBackend
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
 			if (taskAgent.supportsDeveloperPrompt)
 				sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef,
-					promptSearchPath(td.projectPath), td.outputPath);
+					promptSearchPath(td.projectPath), outputPath(*td));
 		}
 		auto taskTypes = getTaskTypesForProject(td.projectPath);
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
@@ -5380,7 +5421,8 @@ class App : ToolsBackend
 		// Ensure per-task directory exists
 		import std.file : mkdirRecurse;
 		import std.path : buildPath;
-		mkdirRecurse(td.taskDir);
+		auto tdDir = taskDir(*td);
+		mkdirRecurse(tdDir);
 
 		// When a project is a subdirectory inside a git repo, keep that relative
 		// path inside the worktree instead of dropping tasks at the repo root.
@@ -5396,7 +5438,7 @@ class App : ToolsBackend
 			taskAgent, workDir, wsRoot, readOnly);
 
 		// Task directory is always writable (even for read-only tasks)
-		sandbox.paths[td.taskDir] = PathMode.rw;
+		sandbox.paths[tdDir] = PathMode.rw;
 
 		// Worktree sandbox restriction: when a task has a worktree and is not
 		// read-only, downgrade the project directory to ro and add git dirs as rw.
@@ -6086,7 +6128,7 @@ class App : ToolsBackend
 			// Send the continuation's prompt template as first message to successor.
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", promptSearchPath(td.projectPath),
-				["result_text": resultText, "output_dir": td.taskDir]);
+				["result_text": resultText, "output_dir": taskDir(*td)]);
 			renderedContinuationPrompt = "`SwitchMode` to `" ~ edgeName
 				~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			renderedContinuationPrompt = prependTaskFraming(
@@ -6169,7 +6211,7 @@ class App : ToolsBackend
 
 			// Spawn the successor agent
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
-				promptSearchPath(childTd.projectPath), childTd.outputPath, contDef.prompt_template,
+				promptSearchPath(childTd.projectPath), outputPath(*childTd), contDef.prompt_template,
 				["result_text": resultText]);
 			renderedSuccessorPrompt = prependTaskFraming(renderedSuccessorPrompt,
 				taskSystemPromptForMessage(childTid, newTypeDef),
@@ -6415,8 +6457,9 @@ class App : ToolsBackend
 			final switch (ot)
 			{
 			case OutputType.report:
-				if (td.outputPath.length == 0 || !exists(td.outputPath))
-					missing ~= "report (expected at " ~ td.outputPath ~ ")";
+				auto tdOut = outputPath(*td);
+				if (tdOut.length == 0 || !exists(tdOut))
+					missing ~= "report (expected at " ~ tdOut ~ ")";
 				break;
 
 			case OutputType.worktree:
@@ -6493,7 +6536,8 @@ class App : ToolsBackend
 		import std.range : retro;
 		import std.string : splitLines, strip;
 		auto td = &tasks[tid];
-		bool hasOutput = td.outputPath.length > 0 && exists(td.outputPath);
+		auto tdOut = outputPath(*td);
+		bool hasOutput = tdOut.length > 0 && exists(tdOut);
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
 		auto summary = td.resultText;
@@ -6507,7 +6551,7 @@ class App : ToolsBackend
 			note = "The worktree contains the implementation." ~ talkNote;
 		auto result = TaskResult(
 			summary: summary,
-			output_file: hasOutput ? td.outputPath : null,
+			output_file: hasOutput ? tdOut : null,
 			worktree: hasWorktree ? worktreePath(td) : null,
 			note: note.length > 0 ? note : td.resultNote,
 			error: isFailed ? summary : null,
@@ -6836,9 +6880,13 @@ class App : ToolsBackend
 		if (parentEffectivelyArchived && tdp.archived)
 			return;
 
-		auto wtPath = worktreePathForTaskDir(tdp.taskDir);
-		if (exists(wtPath) && isDir(wtPath))
-			ops ~= WorktreeOp(tid, wtPath, tdp.projectPath, tdp.workspace, tdp.taskDir);
+		auto tdpDir = tryTaskDir(*tdp);
+		if (tdpDir.length > 0)
+		{
+			auto wtPath = worktreePathForTaskDir(tdpDir);
+			if (exists(wtPath) && isDir(wtPath))
+				ops ~= WorktreeOp(tid, wtPath, tdp.projectPath, tdp.workspace, tdpDir);
+		}
 
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
@@ -6846,7 +6894,7 @@ class App : ToolsBackend
 				bool follow = !child.archived;
 				infof("archive transition recurse: op=archive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
 					tid, childTid, follow ? "true" : "false",
-					child.workspace, child.projectPath, child.taskDir);
+					child.workspace, child.projectPath, tryTaskDir(child));
 				if (follow)
 					collectArchiveOpsDFS(childTid, true, ops);
 			}
@@ -6870,8 +6918,10 @@ class App : ToolsBackend
 		if (parentEffectivelyArchived && tdp.archived)
 			return;
 
-		ops ~= WorktreeOp(tid, worktreePathForTaskDir(tdp.taskDir),
-			tdp.projectPath, tdp.workspace, tdp.taskDir);
+		auto tdpDir = tryTaskDir(*tdp);
+		if (tdpDir.length > 0)
+			ops ~= WorktreeOp(tid, worktreePathForTaskDir(tdpDir),
+				tdp.projectPath, tdp.workspace, tdpDir);
 
 		foreach (childTid, ref child; tasks)
 			if (child.parentTid == tid)
@@ -6879,7 +6929,7 @@ class App : ToolsBackend
 				bool follow = !child.archived;
 				infof("archive transition recurse: op=unarchive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
 					tid, childTid, follow ? "true" : "false",
-					child.workspace, child.projectPath, child.taskDir);
+					child.workspace, child.projectPath, tryTaskDir(child));
 				if (follow)
 					collectUnarchiveOpsDFS(childTid, true, ops);
 			}
