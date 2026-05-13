@@ -70,7 +70,8 @@ import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir,
 	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
 import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes, validateTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
-	loadSystemPrompt, loadProjectMemory, computeReachesWorktree, computeTreeReadOnly;
+	loadSystemPrompt, loadProjectMemory, computeReachesWorktree, computeTreeReadOnly,
+	resolveAgent, isRegisteredAgent;
 import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage,
 	tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
@@ -1498,6 +1499,13 @@ class App : ToolsBackend
 		if (childTypeDef is null)
 			return ValidatedTask(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
 
+		// Resolve the child's agent (may differ from parent via agent: field)
+		auto childAgent = resolveAgent(childTypeDef.agent, parentTd.agentType);
+		if (childAgent.length == 0 || !isRegisteredAgent(childAgent))
+			return ValidatedTask(structuredTaskError(format(
+				"task type '%s' resolves agent to '%s' (parent='%s') — not a registered agent",
+				resolvedTaskType, childAgent, parentTd.agentType)));
+
 		// All validation passed — return a delegate that performs the actual creation.
 		// Capture only simple values; re-fetch pointers at launch time to avoid
 		// stale AA pointers if sibling delegates caused reallocation.
@@ -1507,7 +1515,7 @@ class App : ToolsBackend
 			auto ctd = getTaskTypesForProject(pd.projectPath).byName(resolvedTaskType);
 
 			// Create child task
-			auto childTid = createTask(pd.workspace, pd.projectPath, pd.agentType);
+			auto childTid = createTask(pd.workspace, pd.projectPath, childAgent);
 			auto childTd = &tasks[childTid];
 			childTd.taskType = resolvedTaskType;
 			childTd.description = prompt;
@@ -6028,6 +6036,20 @@ class App : ToolsBackend
 		}
 		else
 		{
+			// Resolve successor's agent before committing to the transition.
+			auto contAgent = resolveAgent(newTypeDef.agent, td.agentType);
+			if (contAgent.length == 0 || !isRegisteredAgent(contAgent))
+			{
+				td.status = "failed";
+				td.error = format(
+					"Successor type '%s' resolved agent to '%s' (parent='%s') — not a registered agent",
+					contDef.task_type, contAgent, td.agentType);
+				persistence.setStatus(tid, "failed");
+				appendSynthesizedHistoryError(tid, "Continuation failed", td.error);
+				broadcastTaskUpdate(tid);
+				return;
+			}
+
 			// Complete the current task normally (preserving its history),
 			// then create a new child task for the successor.
 			td.status = "completed";
@@ -6038,7 +6060,7 @@ class App : ToolsBackend
 
 			// Create child task for the successor with the handoff prompt
 			auto successorPrompt = handoffPrompt.length > 0 ? handoffPrompt : td.description;
-			auto childTid = createTask(td.workspace, td.projectPath, td.agentType);
+			auto childTid = createTask(td.workspace, td.projectPath, contAgent);
 			auto childTd = &tasks[childTid];
 			childTd.taskType = contDef.task_type;
 			childTd.description = successorPrompt;

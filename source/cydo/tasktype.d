@@ -31,6 +31,9 @@ enum WorktreeMode : string
 	fork = "fork",
 }
 
+/// Default agent expression — pass the parent's agent type through unchanged.
+enum string defaultAgentExpr = "{{ parent_agent_type }}";
+
 struct ContinuationDef
 {
 	string task_type;
@@ -97,6 +100,7 @@ struct TaskTypeDef
 	// Execution
 	@Optional bool serial;
 	@Optional uint max_turns;
+	string agent = defaultAgentExpr; // Jinja expression
 
 	// Memory
 	@Optional bool memory;
@@ -259,6 +263,30 @@ private Node deepMerge(Node base, Node overlay)
 		basePairs ~= oPair;
 	}
 	return Node(basePairs);
+}
+
+// ---------------------------------------------------------------------------
+// Agent resolution
+// ---------------------------------------------------------------------------
+
+/// Render an `agent:` expression against the parent agent type.
+/// Returns empty string when the substitution produces nothing — caller decides
+/// how to surface that.
+string resolveAgent(string expr, string parentAgentType)
+{
+	if (expr.length == 0)
+		expr = defaultAgentExpr;
+	return substituteVars(expr, ["parent_agent_type": parentAgentType]).strip;
+}
+
+/// Returns true iff `name` is a registered agent binary (claude, codex, copilot).
+bool isRegisteredAgent(string name)
+{
+	import cydo.agent.registry : agentRegistry;
+	foreach (ref r; agentRegistry)
+		if (r.name == name)
+			return true;
+	return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +596,102 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 			if (auto cycle = detectCycle(types, def.on_yield.task_type, [def.name]))
 				errors ~= format("%s: on_yield creates cycle: %s", def.name, cycle);
 		}
+	}
+
+	// Agent checks -------------------------------------------------------
+
+	// 1. Literal-agent check: hardcoded values (no '{{') must name a known agent.
+	foreach (ref def; types)
+	{
+		if (!def.agent.canFind("{{") && !isRegisteredAgent(def.agent))
+			errors ~= format("%s: agent '%s' is not a registered agent", def.name, def.agent);
+	}
+
+	// 2. keep_context cluster-agreement check (union-find on undirected edges).
+	//    Hardcoded agent literals within the same cluster must agree.
+	{
+		string[string] ufParent;
+		foreach (ref t; types)
+			ufParent[t.name] = t.name;
+
+		string ufFind(string x)
+		{
+			string root = x;
+			while (ufParent[root] != root)
+				root = ufParent[root];
+			// path compression
+			string cur = x;
+			while (cur != root)
+			{
+				auto next = ufParent[cur];
+				ufParent[cur] = root;
+				cur = next;
+			}
+			return root;
+		}
+
+		void ufUnite(string a, string b)
+		{
+			auto ra = ufFind(a), rb = ufFind(b);
+			if (ra != rb)
+				ufParent[ra] = rb;
+		}
+
+		foreach (ref t; types)
+		{
+			foreach (_, ref cont; t.continuations)
+				if (cont.keep_context && types.byName(cont.task_type) !is null)
+					ufUnite(t.name, cont.task_type);
+			if (t.on_yield.task_type.length > 0 && t.on_yield.keep_context
+				&& types.byName(t.on_yield.task_type) !is null)
+				ufUnite(t.name, t.on_yield.task_type);
+		}
+
+		// Group types by cluster root
+		string[][string] clusterMembers;
+		foreach (ref t; types)
+			clusterMembers[ufFind(t.name)] ~= t.name;
+
+		foreach (root, ref members; clusterMembers)
+		{
+			if (members.length < 2)
+				continue;
+
+			// Collect hardcoded agent values per member
+			string[string] hardcodedAgents;
+			foreach (m; members)
+			{
+				auto dp = types.byName(m);
+				if (dp !is null && !dp.agent.canFind("{{"))
+					hardcodedAgents[m] = dp.agent;
+			}
+
+			// Check for disagreement
+			bool[string] distinctVals;
+			foreach (v; hardcodedAgents.values)
+				distinctVals[v] = true;
+			if (distinctVals.length <= 1)
+				continue;
+
+			sort(members);
+			string[] disagreements;
+			foreach (m; members)
+				if (auto p = m in hardcodedAgents)
+					disagreements ~= m ~ "='" ~ *p ~ "'";
+			errors ~= format("keep_context cluster {%s}: hardcoded agent values disagree (%s)",
+				members.join(", "), disagreements.join(", "));
+		}
+	}
+
+	// 3. Root-bypass warning: entry point targets with non-default agent are ignored.
+	foreach (ref ep; entryPoints)
+	{
+		auto targetDef = types.byName(ep.resolvedType);
+		if (targetDef !is null && targetDef.agent != defaultAgentExpr)
+			errors ~= format("entry_point '%s': target type '%s' has non-default agent '%s'"
+				~ " which is ignored at root creation — set default_agent in config"
+				~ " or move the override to a sub-task type",
+				ep.name, ep.resolvedType, targetDef.agent);
 	}
 
 	return errors;
@@ -1270,6 +1394,180 @@ unittest
 	auto withPreamble = loadProjectMemory(&defOn, tmp, [defsDir]);
 	assert(withPreamble.canFind(memDir), withPreamble);
 	assert(withPreamble.canFind("entry one"), withPreamble);
+}
+
+// ---------------------------------------------------------------------------
+// Agent field unit tests
+// ---------------------------------------------------------------------------
+
+unittest // 1. loadTaskTypes injects defaultAgentExpr when no agent: field is present
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto tmp = "/tmp/cydo-test-agent-default-inject";
+	scope (exit) { if (exists(tmp)) rmdirRecurse(tmp); }
+	mkdirRecurse(tmp);
+
+	auto yamlPath = buildPath(tmp, "task-types.yaml");
+	write(yamlPath, "task_types:\n  foo:\n    model_class: large\n");
+
+	auto config = loadTaskTypes(yamlPath);
+
+	auto foo = config.types.byName("foo");
+	assert(foo !is null);
+	assert(foo.agent == defaultAgentExpr, foo.agent);
+
+	auto blank = config.types.byName("blank");
+	assert(blank !is null);
+	assert(blank.agent == defaultAgentExpr, blank.agent);
+}
+
+unittest // 2. resolveAgent substitutes parent_agent_type correctly
+{
+	assert(resolveAgent(defaultAgentExpr, "claude") == "claude");
+	assert(resolveAgent(defaultAgentExpr, "") == "");
+	assert(resolveAgent("codex", "claude") == "codex");
+}
+
+unittest // 3. Validator emits error for unregistered hardcoded literal
+{
+	TaskTypeDef t;
+	t.name = "foo";
+	t.model_class = "large";
+	t.agent = "codeex"; // typo
+
+	auto errors = validateTaskTypes([t], []);
+	import std.algorithm : any;
+	assert(errors.any!(e => e.canFind("foo") && e.canFind("not a registered agent")), errors.to!string);
+}
+
+unittest // 4. Validator errors on keep_context cluster with disagreeing hardcoded agents (with entry points)
+{
+	TaskTypeDef triage;
+	triage.name = "triage";
+	triage.model_class = "large";
+	triage.agent = "claude";
+	ContinuationDef cont;
+	cont.task_type = "implement";
+	cont.keep_context = true;
+	cont.prompt_template = "switch.md"; // prevent prompt_template error
+	triage.continuations["go"] = cont;
+
+	TaskTypeDef implement;
+	implement.name = "implement";
+	implement.model_class = "large";
+	implement.agent = "codex";
+
+	UserEntryPointDef ep;
+	ep.name = "start";
+	ep.task_type = "triage";
+	ep.description = "Start triage";
+	ep.prompt_template = "start.md";
+
+	auto errors = validateTaskTypes([triage, implement], [ep]);
+	import std.algorithm : any;
+	assert(errors.any!(e => e.canFind("keep_context cluster")
+		&& e.canFind("triage") && e.canFind("implement")), errors.to!string);
+}
+
+unittest // 5. Validator enforces keep_context cluster even without any entry points reaching it
+{
+	TaskTypeDef a;
+	a.name = "atype";
+	a.model_class = "large";
+	a.agent = "claude";
+	ContinuationDef cont;
+	cont.task_type = "btype";
+	cont.keep_context = true;
+	cont.prompt_template = "switch.md";
+	a.continuations["go"] = cont;
+
+	TaskTypeDef b;
+	b.name = "btype";
+	b.model_class = "large";
+	b.agent = "codex";
+
+	// Separate type targeted by entry point — not in the cluster
+	TaskTypeDef root;
+	root.name = "root";
+	root.model_class = "large";
+	root.agent = defaultAgentExpr;
+
+	UserEntryPointDef ep;
+	ep.name = "start";
+	ep.task_type = "root";
+	ep.description = "Start";
+	ep.prompt_template = "start.md";
+
+	auto errors = validateTaskTypes([a, b, root], [ep]);
+	import std.algorithm : any;
+	assert(errors.any!(e => e.canFind("keep_context cluster")
+		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
+}
+
+unittest // 6. Validator allows mixed hardcoded+default cluster (no error)
+{
+	TaskTypeDef triage;
+	triage.name = "triage";
+	triage.model_class = "large";
+	triage.agent = "codex";
+	ContinuationDef cont;
+	cont.task_type = "implement";
+	cont.keep_context = true;
+	cont.prompt_template = "switch.md";
+	triage.continuations["go"] = cont;
+
+	TaskTypeDef implement;
+	implement.name = "implement";
+	implement.model_class = "large";
+	implement.agent = defaultAgentExpr; // dynamic — not hardcoded
+
+	auto errors = validateTaskTypes([triage, implement], []);
+	import std.algorithm : any;
+	assert(!errors.any!(e => e.canFind("keep_context cluster")), errors.to!string);
+}
+
+unittest // 7. Validator errors when on_yield keep_context connects disagreeing hardcoded agents
+{
+	TaskTypeDef a;
+	a.name = "atype";
+	a.model_class = "large";
+	a.agent = "claude";
+	ContinuationDef oyield;
+	oyield.task_type = "btype";
+	oyield.keep_context = true;
+	oyield.prompt_template = "switch.md";
+	a.on_yield = oyield;
+
+	TaskTypeDef b;
+	b.name = "btype";
+	b.model_class = "large";
+	b.agent = "codex";
+
+	auto errors = validateTaskTypes([a, b], []);
+	import std.algorithm : any;
+	assert(errors.any!(e => e.canFind("keep_context cluster")
+		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
+}
+
+unittest // 8. Validator warns when entry point target has non-default agent (root creation ignores it)
+{
+	TaskTypeDef triage;
+	triage.name = "triage";
+	triage.model_class = "large";
+	triage.agent = "codex";
+
+	UserEntryPointDef ep;
+	ep.name = "start";
+	ep.task_type = "triage";
+	ep.description = "Start";
+	ep.prompt_template = "start.md";
+
+	auto errors = validateTaskTypes([triage], [ep]);
+	import std.algorithm : any;
+	assert(errors.any!(e => e.canFind("entry_point") && e.canFind("start")
+		&& e.canFind("triage") && e.canFind("ignored at root creation")), errors.to!string);
 }
 
 /// Render a continuation's prompt template. The continuation must have a
