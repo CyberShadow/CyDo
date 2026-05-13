@@ -241,7 +241,7 @@ static:
 
 		foreach (ref ws; config.workspaces)
 		{
-			auto wsRoot = expandTilde(ws.root);
+			auto wsRoot = ws.root;
 
 			// Check if targetDir is under this workspace root
 			if (!targetDir.startsWith(wsRoot))

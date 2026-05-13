@@ -38,7 +38,7 @@ struct AgentConfig
 struct WorkspaceConfig
 {
 	string name;
-	string root;
+	string root; /// Normalized to an absolute path at config load time.
 	@Optional string[] exclude;
 	@Optional SandboxConfig sandbox;
 	@Optional string default_agent;
@@ -80,6 +80,7 @@ CydoConfig loadConfig()
 		];
 	}
 
+	normalizeWorkspacePaths(config);
 	applyAgentDriverOverlay(config);
 	return config;
 }
@@ -91,10 +92,18 @@ Nullable!CydoConfig reloadConfig()
 	if (!result.isNull())
 	{
 		auto inner = result.get();
+		normalizeWorkspacePaths(inner);
 		applyAgentDriverOverlay(inner);
 		result = Nullable!CydoConfig(inner);
 	}
 	return result;
+}
+
+private void normalizeWorkspacePaths(ref CydoConfig config)
+{
+	import std.path : absolutePath, buildNormalizedPath, expandTilde;
+	foreach (ref ws; config.workspaces)
+		ws.root = buildNormalizedPath(absolutePath(expandTilde(ws.root)));
 }
 
 private void applyAgentDriverOverlay(ref CydoConfig config)
