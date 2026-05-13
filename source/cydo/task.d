@@ -19,7 +19,7 @@ import std.exception : enforce;
 import std.format : format;
 import std.path : buildPath, expandTilde;
 
-enum defaultTaskDirTemplate = "{{ repo_path }}/.cydo/tasks/{{ tid }}";
+enum defaultTaskDirTemplate = "{{ workspace_root }}/.cydo/tasks/{{ tid }}";
 
 /// Git repository root for the selected project.
 /// Falls back to projectPath if git resolution fails.
@@ -1039,7 +1039,7 @@ unittest
 		"/tmp/ws/project",
 		defaultTaskDirTemplate,
 	);
-	assert(dir == buildPath("/tmp/ws/project", ".cydo", "tasks", "42"));
+	assert(dir == buildPath("/tmp/ws", ".cydo", "tasks", "42"));
 }
 
 unittest

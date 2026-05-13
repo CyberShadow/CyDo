@@ -188,15 +188,15 @@ test(
       }).toPass({ timeout: 60_000 });
 
       const spikeTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
-      const taskScopedWorktree = `${projectDir}/.cydo/tasks/${spikeTid}/worktree`;
+      const workspaceScopedWorktree = `${wsRoot}/.cydo/tasks/${spikeTid}/worktree`;
       const repoScopedWorktree = `${repoDir}/.cydo/tasks/${spikeTid}/worktree`;
 
       await expect
-        .poll(() => existsSync(repoScopedWorktree), { timeout: 30_000 })
+        .poll(() => existsSync(workspaceScopedWorktree), { timeout: 30_000 })
         .toBe(true);
-      expect(existsSync(taskScopedWorktree)).toBe(false);
+      expect(existsSync(repoScopedWorktree)).toBe(false);
 
-      const expectedCwd = `${repoScopedWorktree}/project`;
+      const expectedCwd = `${workspaceScopedWorktree}/project`;
 
       const expectedHistoryDir = `${claudeDir}/projects/${mangleClaudePath(expectedCwd)}`;
       await expect
