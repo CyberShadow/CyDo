@@ -31,6 +31,26 @@ test("copilot built-in tool with permission auto-approval", { tag: "@copilot-onl
     timeout: responseTimeout(agentType),
   });
 
+  const viewToolCall = page
+    .locator(".tool-call")
+    .filter({ has: page.locator(".tool-name", { hasText: "view" }) })
+    .last();
+  const viewResultHeader = viewToolCall.locator(".tool-result-header");
+  const viewResultContainer = viewToolCall.locator(".tool-result-container");
+  const viewResult = viewToolCall.locator(".tool-result", {
+    hasText: "permission-test-content",
+  });
+
+  await expect(async () => {
+    if (
+      (await viewResultHeader.isVisible()) &&
+      !(await viewResultContainer.isVisible())
+    ) {
+      await viewResultHeader.click();
+    }
+    await expect(viewResult).toBeVisible();
+  }).toPass({ timeout: responseTimeout(agentType) });
+
   // Verify the session completes (assistant responds after tool result).
   await expect(assistantText(page, "Done.")).toBeVisible({
     timeout: responseTimeout(agentType),

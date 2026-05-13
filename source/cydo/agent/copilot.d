@@ -817,6 +817,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private bool sessionReady_; // true after session.create/resume response
 	private string agentName_;
+	private string copilotVersion_;
 
 	// Queued messages waiting for the current turn to finish.
 	private ContentBlock[][] pendingMessages;
@@ -1016,7 +1017,11 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		if (!alive_)
 			return;
 		if (replayMode)
+		{
+			if (event.type == "session.start")
+				handleSessionStart(JSONFragment(event.data.toJson()));
 			return;
+		}
 
 		import cydo.agent.protocol : parseIso8601Timestamp;
 		currentEventTs_ = parseIso8601Timestamp(event.timestamp);
@@ -1257,7 +1262,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 		HandlePermissionRequestParams prp;
 		prp.sessionId = sessionId;
 		prp.requestId = req.requestId;
-		prp.result    = PermissionDecisionApproveOnce;
+		prp.result    = permissionDecisionForCopilotVersion(copilotVersion_);
 		server.sendRequest("session.permissions.handlePendingPermissionRequest", toJson(prp))
 			.ignoreResult();
 	}
@@ -1494,7 +1499,18 @@ class CopilotSession : AgentSession, SdkSessionHandler
 
 	private void handleSessionStart(JSONFragment data)
 	{
-		// session/init already emitted by onSessionStarted; nothing to do here.
+		@JSONPartial
+		static struct SessionStartData
+		{
+			@JSONOptional string copilotVersion;
+		}
+
+		try
+		{
+			auto start = jsonParse!SessionStartData(data.json);
+			copilotVersion_ = start.copilotVersion;
+		}
+		catch (Exception) {}
 	}
 
 	private void handleSessionResume(JSONFragment data)
@@ -1698,6 +1714,7 @@ private struct HandlePendingToolCallError
 }
 
 private struct PermissionDecision { string kind; }
+private enum PermissionDecision PermissionDecisionApproved = PermissionDecision("approved");
 private enum PermissionDecision PermissionDecisionApproveOnce = PermissionDecision("approve-once");
 private struct HandlePermissionRequestParams
 {
@@ -1706,19 +1723,97 @@ private struct HandlePermissionRequestParams
 	PermissionDecision result;
 }
 
+private struct CopilotCliVersion
+{
+	uint[3] components;
+	bool valid;
+}
+
+private CopilotCliVersion parseCopilotCliVersion(string versionText)
+{
+	CopilotCliVersion parsed;
+	uint componentIndex;
+	bool sawDigit;
+
+	foreach (ch; versionText)
+	{
+		if (ch >= '0' && ch <= '9')
+		{
+			auto digit = cast(uint)(ch - '0');
+			auto current = parsed.components[componentIndex];
+			if (current > (uint.max - digit) / 10)
+				return CopilotCliVersion.init;
+			parsed.components[componentIndex] = current * 10 + digit;
+			sawDigit = true;
+			continue;
+		}
+
+		if (ch == '.')
+		{
+			if (!sawDigit || componentIndex >= parsed.components.length - 1)
+				return CopilotCliVersion.init;
+			componentIndex++;
+			sawDigit = false;
+			continue;
+		}
+
+		return CopilotCliVersion.init;
+	}
+
+	if (!sawDigit || componentIndex != parsed.components.length - 1)
+		return CopilotCliVersion.init;
+
+	parsed.valid = true;
+	return parsed;
+}
+
+private bool copilotVersionUsesApproveOnce(string versionText)
+{
+	auto parsed = parseCopilotCliVersion(versionText);
+	if (!parsed.valid)
+		return false;
+
+	immutable uint[3] threshold = [1u, 0u, 39u];
+	foreach (i; 0 .. parsed.components.length)
+	{
+		if (parsed.components[i] > threshold[i])
+			return true;
+		if (parsed.components[i] < threshold[i])
+			return false;
+	}
+	return true;
+}
+
+private PermissionDecision permissionDecisionForCopilotVersion(string versionText)
+{
+	return copilotVersionUsesApproveOnce(versionText)
+		? PermissionDecisionApproveOnce
+		: PermissionDecisionApproved;
+}
+
 unittest
 {
-	HandlePermissionRequestParams params;
-	params.sessionId = "session-123";
-	params.requestId = "request-456";
-	params.result    = PermissionDecisionApproveOnce;
+	assert(!copilotVersionUsesApproveOnce("1.0.9"));
+	assert(!copilotVersionUsesApproveOnce("1.0.38"));
+	assert(copilotVersionUsesApproveOnce("1.0.39"));
+	assert(copilotVersionUsesApproveOnce("1.0.40"));
+}
 
-	auto json = toJson(params);
-	assert(
-		json == `{"sessionId":"session-123","requestId":"request-456","result":{"kind":"approve-once"}}`,
-		"session.permissions.handlePendingPermissionRequest payload mismatch: " ~ json,
-	);
+unittest
+{
+	auto session = new CopilotSession(null, 1, "session-123", "", ".");
+	session.startReplay();
 
+	SdkEvent event;
+	event.type = "session.start";
+	event.data = jsonParse!(typeof(event.data))(`{"copilotVersion":"1.0.39"}`);
+	session.handleEvent(event);
+
+	assert(session.copilotVersion_ == "1.0.39");
+}
+
+unittest
+{
 	@JSONPartial
 	struct SerializedPermissionRequest
 	{
@@ -1728,10 +1823,38 @@ unittest
 		ResultPayload result;
 	}
 
-	auto payload = jsonParse!SerializedPermissionRequest(json);
-	assert(payload.sessionId == "session-123");
-	assert(payload.requestId == "request-456");
-	assert(payload.result.kind == "approve-once");
+	void assertPayloadKind(string versionText, string expectedKind)
+	{
+		HandlePermissionRequestParams params;
+		params.sessionId = "session-123";
+		params.requestId = "request-456";
+		params.result    = permissionDecisionForCopilotVersion(versionText);
+
+		auto json = toJson(params);
+		auto expected = format(
+			`{"sessionId":"session-123","requestId":"request-456","result":{"kind":"%s"}}`,
+			expectedKind,
+		);
+		assert(
+			json == expected,
+			format(
+				"session.permissions.handlePendingPermissionRequest payload mismatch for version '%s': %s",
+				versionText,
+				json,
+			),
+		);
+
+		auto payload = jsonParse!SerializedPermissionRequest(json);
+		assert(payload.sessionId == "session-123");
+		assert(payload.requestId == "request-456");
+		assert(payload.result.kind == expectedKind);
+	}
+
+	assertPayloadKind("1.0.9", "approved");
+	assertPayloadKind("1.0.39", "approve-once");
+	assertPayloadKind("1.0.40", "approve-once");
+	assertPayloadKind("", "approved");
+	assertPayloadKind("1.0.x", "approved");
 }
 
 // ---- Session create/resume param structs ----
