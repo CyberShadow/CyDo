@@ -3259,25 +3259,33 @@ class App : ToolsBackend
 			cast(int) td.history.length)).representation));
 
 		// Send unified history to requesting client (add _seq)
-		import cydo.task : extractEventFromEnvelope;
+		import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
+		import ae.utils.array : as;
 		foreach (i, ref msg; td.history)
 		{
-			auto envelope = cast(string) msg.unsafeContents;
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0)
-			{
+			Data outgoing;
+			msg.enter((scope ubyte[] bytes) {
+				// `as!(char[])` is a no-copy view of the scope-bound bytes; do not
+				// use `as!string` — that hard-casts mutable bytes to immutable.
+				auto envelope = bytes.as!(char[]);
+				auto event = extractEventFromEnvelope(envelope);
+				if (event.length == 0)
+					return;
+				// idup before handing event/envelope to APIs taking `string`; this is
+				// also what lets the resulting Data escape the enter scope safely.
+				auto normalized = normalizeKnownSystemMessageMeta(event.idup, tid);
+				auto clientEnvelope = toJson(TaskEventSeqEnvelope(
+					tid,
+					cast(int) i,
+					extractTsFromEnvelope(envelope),
+					JSONFragment(normalized)));
+				outgoing = Data(clientEnvelope.representation);
+			});
+			if (outgoing.length > 0)
+				ws.send(outgoing);
+			else
 				// Non-event envelope (unconfirmedUserEvent, etc.) — pass through
 				ws.send(msg);
-				continue;
-			}
-			import cydo.task : extractTsFromEnvelope;
-			event = normalizeKnownSystemMessageMeta(event, tid);
-			auto clientEnvelope = toJson(TaskEventSeqEnvelope(
-				tid,
-				cast(int) i,
-				extractTsFromEnvelope(envelope),
-				JSONFragment(event)));
-			ws.send(Data(clientEnvelope.representation));
 		}
 
 		// Send forkable UUIDs extracted from JSONL.
@@ -7199,7 +7207,12 @@ class App : ToolsBackend
 			~ "The currently available agents are: " ~ knownNames ~ ".";
 	}
 
-	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, string translated, string rawLine = null)
+	// `translated` and `rawLine` may be slices into Data-backed (mmap/malloc)
+	// memory whose lifetime is independent of the GC.  jsonParse's fast path
+	// returns slices into its input for unescaped strings (UUIDs always hit
+	// it), so any UUID we lift out must be `.idup`'d before it's stored in
+	// TaskData — otherwise the slice dangles when the source Data is released.
+	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, const(char)[] translated, const(char)[] rawLine = null)
 	{
 		import std.algorithm : canFind, startsWith;
 
@@ -7259,7 +7272,7 @@ class App : ToolsBackend
 				return;
 
 			td.registerVisibleTurnAnchor(seq, true, probe.is_steering,
-				anchor, checkpointUuid, shouldPend);
+				anchor.idup, checkpointUuid.idup, shouldPend);
 			return;
 		}
 
@@ -7272,7 +7285,10 @@ class App : ToolsBackend
 			catch (Exception)
 				return;
 			if (probe.type == "turn/stop" && probe.uuid.length > 0)
-				td.registerVisibleTurnAnchor(seq, false, false, probe.uuid, probe.uuid, false);
+			{
+				auto uuid = probe.uuid.idup;
+				td.registerVisibleTurnAnchor(seq, false, false, uuid, uuid, false);
+			}
 			return;
 		}
 
@@ -7285,12 +7301,16 @@ class App : ToolsBackend
 			catch (Exception)
 				return;
 			if (probe.type == "turn/delta" && probe.uuid.length > 0)
-				td.registerVisibleTurnAnchor(seq, false, false, probe.uuid, probe.uuid, false);
+			{
+				auto uuid = probe.uuid.idup;
+				td.registerVisibleTurnAnchor(seq, false, false, uuid, uuid, false);
+			}
 		}
 	}
 
 	private void rebuildVisibleTurnAnchors(int tid)
 	{
+		import ae.utils.array : as;
 		import cydo.task : extractEventFromEnvelope;
 
 		if (tid !in tasks)
@@ -7299,16 +7319,21 @@ class App : ToolsBackend
 		td.visibleTurnAnchors = null;
 		foreach (i, ref entry; td.history)
 		{
-			auto event = extractEventFromEnvelope(cast(string) entry.unsafeContents);
-			if (event.length == 0)
-				continue;
-			registerVisibleTurnAnchorFromEvent(tid, i, event, td.history.rawAt(i));
+			entry.enter((scope ubyte[] bytes) {
+				// `as!(char[])` is a no-copy view of the scope-bound bytes; do not
+				// use `as!string` — that hard-casts mutable bytes to immutable.
+				auto event = extractEventFromEnvelope(bytes.as!(char[]));
+				if (event.length == 0)
+					return;
+				registerVisibleTurnAnchorFromEvent(tid, i, event, td.history.rawAt(i));
+			});
 		}
 	}
 
 	private void backfillHistoryAnchor(int tid, size_t seq, string anchor)
 	{
 		import std.algorithm : canFind;
+		import ae.utils.array : as;
 		import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
 		import cydo.agent.protocol : ItemStartedEvent;
 
@@ -7318,23 +7343,37 @@ class App : ToolsBackend
 		if (seq >= td.history.length)
 			return;
 
-		auto envelope = cast(string) td.history[seq].unsafeContents;
-		auto event = extractEventFromEnvelope(envelope);
-		if (event.length == 0
-			|| !event.canFind(`"type":"item/started"`)
-			|| !event.canFind(`"item_type":"user_message"`))
-			return;
+		// Build the replacement envelope inside `enter` so the slices feeding
+		// `toJson` (envelope → event → userEv fields) reference scope-bound
+		// memory whose lifetime outlives the parse → reserialize step.
+		// `as!(char[])` is a no-copy view; `as!string` would hard-cast to immutable.
+		// opIndex returns ref const(Data) so the lambda receives const bytes.
+		Data replacement;
+		td.history[seq].enter((scope const(ubyte)[] bytes) {
+			auto envelope = bytes.as!(char[]);
+			auto event = extractEventFromEnvelope(envelope);
+			if (event.length == 0
+				|| !event.canFind(`"type":"item/started"`)
+				|| !event.canFind(`"item_type":"user_message"`))
+				return;
 
-		ItemStartedEvent userEv;
-		try
-			userEv = jsonParse!ItemStartedEvent(event);
-		catch (Exception)
-			return;
-		if (userEv.uuid == anchor)
-			return;
-		userEv.uuid = anchor;
-		td.history.replaceAt(seq, Data(toJson(TaskEventEnvelope(
-			tid, extractTsFromEnvelope(envelope), JSONFragment(toJson(userEv)))).representation));
+			ItemStartedEvent userEv;
+			try
+				userEv = jsonParse!ItemStartedEvent(event);
+			catch (Exception)
+				return;
+			if (userEv.uuid == anchor)
+				return;
+			userEv.uuid = anchor;
+			// `userEv` carries string slices into `bytes` (scope-bound); the inner
+			// toJson reads them synchronously here, and the resulting Data copy is
+			// what escapes the scope.
+			replacement = Data(toJson(TaskEventEnvelope(tid,
+				extractTsFromEnvelope(envelope),
+				JSONFragment(toJson(userEv)))).representation);
+		});
+		if (replacement.length > 0)
+			td.history.replaceAt(seq, replacement);
 	}
 
 	private static bool isSessionStatusEvent(string translated)

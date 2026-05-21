@@ -138,13 +138,18 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 		string[] evList;
 		foreach (i, ref msg; loaded.history)
 		{
-			auto envelope = cast(string) msg.unsafeContents;
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0)
-				continue;
-			auto ts = extractTsFromEnvelope(envelope);
-			evList ~= toJson(TaskEventSeqEnvelope(t.tid, cast(int) i, ts,
-				JSONFragment(event)));
+			import ae.utils.array : as;
+			msg.enter((scope ubyte[] bytes) {
+				// `as!(char[])` is a no-copy view; `as!string` would hard-cast to immutable.
+				auto envelope = bytes.as!(char[]);
+				auto event = extractEventFromEnvelope(envelope);
+				if (event.length == 0)
+					return;
+				auto ts = extractTsFromEnvelope(envelope);
+				// idup so the JSONFragment slice doesn't reference scope-bound bytes.
+				evList ~= toJson(TaskEventSeqEnvelope(t.tid, cast(int) i, ts,
+					JSONFragment(event.idup)));
+			});
 		}
 		eventsMap[format!"%d"(t.tid)] = evList;
 	}

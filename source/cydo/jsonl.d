@@ -338,18 +338,21 @@ struct JsonlTracker
 		size_t[] userSeqs, assistantSeqs;
 		foreach (i, ref entry; td.history)
 		{
-			auto envelope = cast(string) entry.unsafeContents;
-			// Only look inside regular events (skip unconfirmedUserEvent and other envelopes).
-			auto content = extractEventFromEnvelope(envelope);
-			if (content.length == 0)
-				continue;
-			// User message: item/started with user_message type
-			if (content.canFind(`"item_type":"user_message"`) && content.canFind(`"type":"item/started"`)
-				&& !content.canFind(`"is_meta":true`))
-				userSeqs ~= i;
-			// Assistant turn: turn/stop
-			else if (content.canFind(`"type":"turn/stop"`))
-				assistantSeqs ~= i;
+			import ae.utils.array : as;
+			entry.enter((scope ubyte[] bytes) {
+				// Only look inside regular events (skip unconfirmedUserEvent and other envelopes).
+				// `as!(char[])` is a no-copy view; `as!string` would hard-cast to immutable.
+				auto content = extractEventFromEnvelope(bytes.as!(char[]));
+				if (content.length == 0)
+					return;
+				// User message: item/started with user_message type
+				if (content.canFind(`"item_type":"user_message"`) && content.canFind(`"type":"item/started"`)
+					&& !content.canFind(`"is_meta":true`))
+					userSeqs ~= i;
+				// Assistant turn: turn/stop
+				else if (content.canFind(`"type":"turn/stop"`))
+					assistantSeqs ~= i;
+			});
 		}
 
 		tracef("[jsonl] computeAssignments tid=%d forkIds=%d userSeqs=%s assistantSeqs=%s histLen=%d",

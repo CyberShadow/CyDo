@@ -1116,7 +1116,7 @@ long stdTimeToUnixMillis(long stdTime)
 
 /// Extract the "ts" field from a task envelope JSON string.
 /// Returns 0 if not present (envelope predates timestamp support).
-long extractTsFromEnvelope(string envelope)
+long extractTsFromEnvelope(const(char)[] envelope)
 {
 	import ae.utils.json : JSONOptional, JSONPartial, jsonParse;
 	@JSONPartial static struct TsProbe { @JSONOptional long ts; }
@@ -1126,7 +1126,9 @@ long extractTsFromEnvelope(string envelope)
 
 /// Extract the "event" field from a task envelope JSON string.
 /// Envelopes have the form: {"tid":N,"ts":N,"event":{...}}
-string extractEventFromEnvelope(string envelope)
+/// Constness-polymorphic via `inout` so callers can keep the mutable
+/// view they obtained from `Data.enter` — no immutability hard-cast.
+inout(char)[] extractEventFromEnvelope(inout(char)[] envelope)
 {
 	import std.string : indexOf;
 
@@ -1135,11 +1137,11 @@ string extractEventFromEnvelope(string envelope)
 	auto key = `,"event":`;
 	auto idx = envelope.indexOf(key);
 	if (idx < 0)
-		return "";
+		return envelope[0 .. 0];
 
 	auto start = idx + key.length;
 	if (start >= envelope.length)
-		return "";
+		return envelope[0 .. 0];
 
 	// The event value is a JSON object/string that extends to the second-to-last char
 	// (the envelope's closing }). This works because "event" is the last field.
