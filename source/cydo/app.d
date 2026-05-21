@@ -1980,10 +1980,32 @@ class App : ToolsBackend
 
 	Promise!McpResult handleBash(string callerTid, string command)
 	{
+		import std.conv : to;
+
+		int tid;
+		try
+			tid = to!int(callerTid);
+		catch (Exception)
+			return resolve(McpResult("Invalid calling task ID", true));
+
+		auto td = tid in tasks;
+		if (td is null)
+			return resolve(McpResult("Task not found", true));
+
+		string[] args;
+		if (td.launch.cmdPrefix !is null)
+			args = td.launch.cmdPrefix ~ ["/bin/sh", "-c", command];
+		else
+			args = ["/bin/sh", "-c", command];
+
+		string workDir;
+		if (td.launch.cmdPrefix is null && td.launch.workDir.length > 0)
+			workDir = td.launch.workDir;
+
 		auto terminal = new TerminalProcess(
-			["/bin/sh", "-c", command],
+			args,
 			null,   // inherit env
-			null,   // inherit working directory
+			workDir,
 			1024 * 1024
 		);
 
