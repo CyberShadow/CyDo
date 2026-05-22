@@ -855,6 +855,23 @@ interface TodoItem {
   activeForm?: string;
 }
 
+type TaskStatus = "pending" | "in_progress" | "completed";
+
+const TASK_STATUS_GLYPH: Record<TaskStatus, string> = {
+  completed: "\u2713",
+  in_progress: "\u25B6",
+  pending: "\u25CB",
+};
+
+function renderTaskStatusGlyph(status: string): h.JSX.Element {
+  const known = (
+    status in TASK_STATUS_GLYPH ? status : "pending"
+  ) as TaskStatus;
+  return (
+    <span class={`todo-status todo-${known}`}>{TASK_STATUS_GLYPH[known]}</span>
+  );
+}
+
 function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
   const todos = input.todos as TodoItem[];
   const remaining = Object.entries(input).filter(([k]) => k !== "todos");
@@ -870,17 +887,164 @@ function formatTodoWriteInput(input: Record<string, unknown>): h.JSX.Element {
       <div class="todo-list">
         {todos.map((item, i) => (
           <div key={i} class={`todo-item todo-${item.status}`}>
-            <span class="todo-status">
-              {item.status === "completed"
-                ? "\u2713"
-                : item.status === "in_progress"
-                  ? "\u25B6"
-                  : "\u25CB"}
-            </span>
+            {renderTaskStatusGlyph(item.status)}
             <span class="todo-content">{item.content}</span>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function formatTaskCreateInput(
+  input: Record<string, unknown>,
+  result: ToolResult | undefined,
+): h.JSX.Element {
+  const subject = typeof input.subject === "string" ? input.subject : null;
+  const description =
+    typeof input.description === "string" ? input.description : null;
+  const activeForm =
+    typeof input.activeForm === "string" ? input.activeForm : null;
+  const taskResult =
+    result && !result.isError && result.toolResult != null
+      ? (result.toolResult as Record<string, unknown>)
+      : null;
+  const taskObj =
+    taskResult?.task != null && typeof taskResult.task === "object"
+      ? (taskResult.task as Record<string, unknown>)
+      : null;
+  const taskId =
+    taskObj != null &&
+    (typeof taskObj.id === "string" || typeof taskObj.id === "number")
+      ? String(taskObj.id)
+      : null;
+
+  const { subject: _s, description: _d, activeForm: _a, ...remaining } = input;
+
+  return (
+    <div class="tool-input-formatted">
+      <div class="tool-input-field">
+        {taskId != null && <span class="tool-subtitle-tag">#{taskId}</span>}{" "}
+        {subject && <span class="field-value">{subject}</span>}
+      </div>
+      {activeForm && (
+        <div class="tool-input-field">
+          <span class="field-label">\u2192</span>{" "}
+          <span class="field-value">{activeForm}</span>
+        </div>
+      )}
+      {description && <Markdown text={description} />}
+      {Object.keys(remaining).length > 0 && formatGenericInput(remaining)}
+    </div>
+  );
+}
+
+function formatTaskUpdateInput(input: Record<string, unknown>): h.JSX.Element {
+  const taskId =
+    typeof input.taskId === "string" || typeof input.taskId === "number"
+      ? String(input.taskId)
+      : null;
+  const status = typeof input.status === "string" ? input.status : null;
+  const isDeleted = status === "deleted";
+  const { taskId: _tid, status: _st, ...remaining } = input;
+
+  return (
+    <div class="tool-input-formatted">
+      <div class="tool-input-field">
+        {taskId != null && <span class="tool-subtitle-tag">#{taskId}</span>}{" "}
+        {isDeleted ? (
+          <span class="field-value">(deleted)</span>
+        ) : status != null ? (
+          renderTaskStatusGlyph(status)
+        ) : null}
+      </div>
+      {!isDeleted &&
+        Object.keys(remaining).length > 0 &&
+        formatGenericInput(remaining)}
+    </div>
+  );
+}
+
+function formatTaskListResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
+  const tasks = Array.isArray(toolResult.tasks)
+    ? (toolResult.tasks as Array<Record<string, unknown>>)
+    : null;
+  if (!tasks || tasks.length === 0) return null;
+
+  return (
+    <div class="tool-input-formatted">
+      <div class="todo-list">
+        {tasks.map((task, i) => {
+          const id =
+            typeof task.id === "string" || typeof task.id === "number"
+              ? String(task.id)
+              : null;
+          const subject =
+            typeof task.subject === "string" ? task.subject : null;
+          const status =
+            typeof task.status === "string" ? task.status : "pending";
+          const owner = typeof task.owner === "string" ? task.owner : null;
+          const blockedBy = Array.isArray(task.blockedBy)
+            ? (task.blockedBy as unknown[]).map(String).join(", ")
+            : null;
+          return (
+            <div key={i} class={`todo-item todo-${status}`}>
+              {renderTaskStatusGlyph(status)}
+              <span class="todo-content">
+                {id != null && <span class="tool-subtitle-tag">#{id}</span>}{" "}
+                {subject}
+                {(owner || blockedBy) && (
+                  <span class="field-label">
+                    {owner ? ` @${owner}` : ""}
+                    {blockedBy ? ` blocked:${blockedBy}` : ""}
+                  </span>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatTaskGetResult(
+  toolResult: Record<string, unknown>,
+): h.JSX.Element | null {
+  const task =
+    toolResult.task != null && typeof toolResult.task === "object"
+      ? (toolResult.task as Record<string, unknown>)
+      : null;
+  if (!task) return null;
+
+  const id =
+    typeof task.id === "string" || typeof task.id === "number"
+      ? String(task.id)
+      : null;
+  const subject = typeof task.subject === "string" ? task.subject : null;
+  const description =
+    typeof task.description === "string" ? task.description : null;
+  const status = typeof task.status === "string" ? task.status : "pending";
+  const {
+    id: _id,
+    subject: _s,
+    description: _d,
+    status: _st,
+    ...remaining
+  } = task;
+
+  return (
+    <div class="tool-input-formatted">
+      <div class={`todo-item todo-${status}`}>
+        {renderTaskStatusGlyph(status)}
+        <span class="todo-content">
+          {id != null && <span class="tool-subtitle-tag">#{id}</span>} {subject}
+        </span>
+      </div>
+      {description && <Markdown text={description} />}
+      {Object.keys(remaining).length > 0 && formatGenericInput(remaining)}
     </div>
   );
 }
@@ -1575,6 +1739,7 @@ function getHeaderSubtitle(
   toolServer: string | undefined,
   driver: string | undefined,
   input: Record<string, unknown>,
+  result?: ToolResult,
 ): h.JSX.Element | null {
   const viewPaths = getToolCallFilePaths(name, driver, input);
   const filePath = typeof input.file_path === "string" ? input.file_path : null;
@@ -1796,12 +1961,47 @@ function getHeaderSubtitle(
     }
   }
   if (toolIs(name, driver, toolServer, "claude/TaskCreate")) {
-    const tasks = input.tasks as Array<{ description?: string }> | undefined;
-    if (Array.isArray(tasks)) {
-      if (tasks.length === 1 && tasks[0]!.description) {
-        return <span class="tool-subtitle">{tasks[0]!.description}</span>;
-      }
-      return <span class="tool-subtitle">{tasks.length} tasks</span>;
+    const taskResult =
+      result && !result.isError && result.toolResult != null
+        ? (result.toolResult as Record<string, unknown>)
+        : null;
+    const taskObj =
+      taskResult?.task != null && typeof taskResult.task === "object"
+        ? (taskResult.task as Record<string, unknown>)
+        : null;
+    const taskId =
+      taskObj != null &&
+      (typeof taskObj.id === "string" || typeof taskObj.id === "number")
+        ? String(taskObj.id)
+        : null;
+    const subject = typeof input.subject === "string" ? input.subject : null;
+    if (subject || taskId != null) {
+      return (
+        <Fragment>
+          {taskId != null && <span class="tool-subtitle-tag">#{taskId}</span>}
+          {subject && <span class="tool-subtitle">{subject}</span>}
+        </Fragment>
+      );
+    }
+  }
+  if (toolIs(name, driver, toolServer, "claude/TaskGet")) {
+    const taskId =
+      typeof input.taskId === "string" || typeof input.taskId === "number"
+        ? String(input.taskId)
+        : null;
+    if (taskId != null) {
+      return <span class="tool-subtitle">#{taskId}</span>;
+    }
+  }
+  if (toolIs(name, driver, toolServer, "claude/TaskList")) {
+    const taskResult =
+      result && !result.isError && result.toolResult != null
+        ? (result.toolResult as Record<string, unknown>)
+        : null;
+    const tasks = taskResult?.tasks;
+    const count = Array.isArray(tasks) ? tasks.length : null;
+    if (count != null) {
+      return <span class="tool-subtitle">{count} tasks</span>;
     }
   }
   if (toolIs(name, driver, toolServer, "claude/TaskUpdate")) {
@@ -2039,13 +2239,12 @@ function formatInput(
   }
   if (
     toolIs(name, driver, toolServer, "claude/TaskCreate") &&
-    Array.isArray(input.tasks)
+    typeof input.subject === "string"
   ) {
-    return formatTaskSpecsInput(input.tasks as Array<Record<string, unknown>>);
+    return formatTaskCreateInput(input, result);
   }
   if (toolIs(name, driver, toolServer, "claude/TaskUpdate")) {
-    const { task_id, taskId, status, ...remaining } = input;
-    return formatGenericInput(remaining);
+    return formatTaskUpdateInput(input);
   }
   if (toolIs(name, driver, toolServer, "claude/TaskOutput")) {
     const { task_id, block, timeout, ...remaining } = input;
@@ -2396,6 +2595,7 @@ const defaultExpandedTools = new Set([
   "cydo:Bash", // CyDo MCP Bash tool (used by Copilot/Codex)
   "claude/SendMessage",
   "claude/TaskCreate",
+  "claude/TaskUpdate",
   "claude/NotebookEdit",
   "copilot/bash",
 ]);
@@ -2493,7 +2693,7 @@ export const ToolCall = memo(
     const resultOpen =
       resultOpenOverride ??
       defaultResultExpanded(name, toolServer, driver, result);
-    const subtitle = getHeaderSubtitle(name, toolServer, driver, input);
+    const subtitle = getHeaderSubtitle(name, toolServer, driver, input, result);
     const viewPaths = onViewFile
       ? getToolCallFilePaths(name, driver, input)
       : [];
@@ -2543,6 +2743,18 @@ export const ToolCall = memo(
       typeof result.toolResult === "object";
     const useTaskStopResult =
       toolIs(name, driver, toolServer, "claude/TaskStop") &&
+      result &&
+      !result.isError &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const useTaskListResult =
+      toolIs(name, driver, toolServer, "claude/TaskList") &&
+      result &&
+      !result.isError &&
+      result.toolResult != null &&
+      typeof result.toolResult === "object";
+    const useTaskGetResult =
+      toolIs(name, driver, toolServer, "claude/TaskGet") &&
       result &&
       !result.isError &&
       result.toolResult != null &&
@@ -2639,6 +2851,12 @@ export const ToolCall = memo(
     const taskStopElement = useTaskStopResult
       ? formatTaskStopResult(result.toolResult as Record<string, unknown>)
       : null;
+    const taskListElement = useTaskListResult
+      ? formatTaskListResult(result.toolResult as Record<string, unknown>)
+      : null;
+    const taskGetElement = useTaskGetResult
+      ? formatTaskGetResult(result.toolResult as Record<string, unknown>)
+      : null;
     const commandExecutionElement = useCommandExecutionResult
       ? formatCommandExecutionResult(
           result.toolResult as Record<string, unknown>,
@@ -2672,6 +2890,8 @@ export const ToolCall = memo(
         if (cydoTaskItems) return true;
         if (taskOutputElement) return true;
         if (taskStopElement) return true;
+        if (taskListElement) return true;
+        if (taskGetElement) return true;
         if (commandExecutionElement) return true;
         if (bashElement) return true;
         return false;
@@ -2951,6 +3171,10 @@ export const ToolCall = memo(
                     taskOutputElement
                   ) : taskStopElement ? (
                     taskStopElement
+                  ) : taskListElement ? (
+                    taskListElement
+                  ) : taskGetElement ? (
+                    taskGetElement
                   ) : useBashResult ? (
                     (result.toolResult as Record<string, unknown>).stdout &&
                     !useSemanticShellRead &&

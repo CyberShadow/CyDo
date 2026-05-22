@@ -508,3 +508,132 @@ describe("ToolCall shell source tree rendering", () => {
     expect(html).toContain('alt="SVG preview"');
   });
 });
+
+function renderClaudeToolInput(
+  name: string,
+  input: Record<string, unknown>,
+  result?: ToolResult,
+): string {
+  return renderToString(
+    h(ToolCall, {
+      name,
+      driver: "claude",
+      toolUseId: "tool-1",
+      input,
+      result,
+    }),
+  );
+}
+
+describe("claude/TaskCreate rendering", () => {
+  it("renders subject, description, activeForm, and task id badge", () => {
+    const result: ToolResult = {
+      toolUseId: "tool-1",
+      content: "",
+      isError: false,
+      toolResult: { task: { id: "1", subject: "X" } },
+    };
+    const html = renderClaudeToolInput(
+      "TaskCreate",
+      { subject: "X", description: "Y", activeForm: "Z" },
+      result,
+    );
+    expect(html).toContain("X");
+    expect(html).toContain("Y");
+    expect(html).toContain("Z");
+    expect(html).toContain("#1");
+  });
+});
+
+describe("claude/TaskUpdate rendering", () => {
+  it("renders taskId, in-progress glyph, and todo-in_progress class", () => {
+    const html = renderClaudeToolInput("TaskUpdate", {
+      taskId: "1",
+      status: "in_progress",
+    });
+    expect(html).toContain("#1");
+    expect(html).toContain("▶");
+    expect(html).toContain("todo-in_progress");
+  });
+
+  it("renders (deleted) label and no status glyph for deleted status", () => {
+    const html = renderClaudeToolInput("TaskUpdate", {
+      taskId: "1",
+      status: "deleted",
+    });
+    expect(html).toContain("#1");
+    expect(html).toContain("(deleted)");
+    expect(html).not.toContain("todo-status");
+  });
+
+  it("renders extra fields via generic key/value layout", () => {
+    const html = renderClaudeToolInput("TaskUpdate", {
+      taskId: "1",
+      status: "completed",
+      subject: "new subject",
+      owner: "alice",
+    });
+    expect(html).toContain("#1");
+    expect(html).toContain("new subject");
+    expect(html).toContain("alice");
+  });
+});
+
+describe("claude/TaskList result rendering", () => {
+  it("renders one todo-item per task with correct status classes", () => {
+    const result: ToolResult = {
+      toolUseId: "tool-1",
+      content: "",
+      isError: false,
+      toolResult: {
+        tasks: [
+          { id: "1", subject: "Alpha", status: "pending" },
+          { id: "2", subject: "Beta", status: "in_progress" },
+          { id: "3", subject: "Gamma", status: "completed" },
+        ],
+      },
+    };
+    const html = renderClaudeToolInput("TaskList", {}, result);
+    const todoItemCount = (html.match(/class="todo-item/g) ?? []).length;
+    expect(todoItemCount).toBe(3);
+    expect(html).toContain("todo-pending");
+    expect(html).toContain("todo-in_progress");
+    expect(html).toContain("todo-completed");
+    expect(html).toContain("Alpha");
+    expect(html).toContain("Beta");
+    expect(html).toContain("Gamma");
+  });
+});
+
+describe("claude/TaskGet result rendering", () => {
+  it("renders task as todo-item with description when task is present", () => {
+    const result: ToolResult = {
+      toolUseId: "tool-1",
+      content: "",
+      isError: false,
+      toolResult: {
+        task: {
+          id: "5",
+          subject: "My Task",
+          description: "Do the thing",
+          status: "in_progress",
+        },
+      },
+    };
+    const html = renderClaudeToolInput("TaskGet", { taskId: "5" }, result);
+    expect(html).toContain("todo-item");
+    expect(html).toContain("My Task");
+    expect(html).toContain("Do the thing");
+  });
+
+  it("falls back to generic rendering when task is null", () => {
+    const result: ToolResult = {
+      toolUseId: "tool-1",
+      content: "",
+      isError: false,
+      toolResult: { task: null },
+    };
+    const html = renderClaudeToolInput("TaskGet", { taskId: "5" }, result);
+    expect(html).not.toContain("todo-item");
+  });
+});
