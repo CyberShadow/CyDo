@@ -72,8 +72,7 @@ import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, Continuat
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt, loadProjectMemory, computeReachesWorktree, computeTreeReadOnly,
 	resolveAgent, isRegisteredAgent;
-import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage,
-	tryParseSystemFraming, tryExtractSubject,
+import cydo.system_message : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
 import cydo.task;
@@ -4635,6 +4634,85 @@ class App : ToolsBackend
 		assert(!tryKnownSystemMessageMatch("Question from task 1 (noqid)", bad));
 	}
 
+	unittest
+	{
+		import std.traits : EnumMembers;
+		import std.conv : to;
+		import std.file : exists;
+
+		// For parameterized kinds, generate a sample subject with dummy values
+		static string sampleSubject(KnownSystemMessageKind kind)
+		{
+			final switch (kind)
+			{
+			case KnownSystemMessageKind.taskPrompt:
+				return "Task prompt: parent -> edge";
+			case KnownSystemMessageKind.sessionStart:
+				return "Session start: agentic";
+			case KnownSystemMessageKind.followUpFromParent:
+				return "Follow-up question from parent task (qid=1)";
+			case KnownSystemMessageKind.questionFromTask:
+				return "Question from task 1 (qid=2)";
+			case KnownSystemMessageKind.subTaskWaitingForAnswer:
+				return "Sub-task \"test\" (tid=1) is waiting for your answer (qid=2)";
+			case KnownSystemMessageKind.missingRequiredOutputs:
+			case KnownSystemMessageKind.subTaskResults:
+			case KnownSystemMessageKind.restartNudge:
+			case KnownSystemMessageKind.postCompactionTaskModeReminder:
+				return systemMessageSubject(kind);
+			case KnownSystemMessageKind.handoff:
+				return "Handoff: source -> target";
+			case KnownSystemMessageKind.modeSwitch:
+				return "Mode switch: source -> target";
+			}
+		}
+
+		foreach (kind; EnumMembers!KnownSystemMessageKind)
+		{
+			auto subject = sampleSubject(kind);
+
+			// Every kind must be recognized by tryKnownSystemMessageMatch
+			KnownSystemMessageMatch m;
+			assert(tryKnownSystemMessageMatch(subject, m),
+				"tryKnownSystemMessageMatch failed for kind " ~ to!string(kind)
+				~ " with subject: " ~ subject);
+			assert(m.kind == kind,
+				"kind mismatch: expected " ~ to!string(kind)
+				~ ", got " ~ to!string(m.kind));
+		}
+
+		// For kinds that have a body variable, verify the template file exists
+		foreach (kind; EnumMembers!KnownSystemMessageKind)
+		{
+			auto bodyVar = bodyVarForKind(kind);
+			if (bodyVar is null)
+				continue;
+
+			// resolveEdgePromptTemplate for non-edge kinds returns a fixed path
+			// We only check the fixed-path kinds here (edge kinds need config context)
+			string templatePath;
+			switch (kind)
+			{
+			case KnownSystemMessageKind.followUpFromParent:
+				templatePath = "prompts/follow_up_from_parent.md";
+				break;
+			case KnownSystemMessageKind.questionFromTask:
+				templatePath = "prompts/question_from_task.md";
+				break;
+			case KnownSystemMessageKind.subTaskWaitingForAnswer:
+				templatePath = "prompts/sub_task_waiting_for_answer.md";
+				break;
+			default:
+				continue; // Edge-based kinds need project config — skip
+			}
+
+			// Check relative to CWD (dub test runs from project root)
+			auto fullPath = "defs/" ~ templatePath;
+			assert(exists(fullPath),
+				"template file missing for kind " ~ to!string(kind) ~ ": " ~ fullPath);
+		}
+	}
+
 	private static bool tryParseStrictPositiveInt(string text, out int value)
 	{
 		import std.conv : to;
@@ -7198,6 +7276,7 @@ class App : ToolsBackend
 	/// injected by CyDo, not typed by the user.
 	private string wrapSystemMessage(string subject, string body = null)
 	{
+		import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage;
 		return wrapSystemMessageFn(config.system_keyword, subject, body);
 	}
 
