@@ -2140,12 +2140,16 @@ class App : ToolsBackend
 		return a.projectPath.length > 0 && a.projectPath == b.projectPath;
 	}
 
-	private string makeQuestionMessage(int askerTid, int qid, string message)
+	private string makeQuestionMessage(int askerTid, int qid, string message, string answererProjectPath = null)
 	{
 		import std.conv : to;
-		return wrapSystemMessage(
-			"Question from task " ~ to!string(askerTid) ~ " (qid=" ~ to!string(qid) ~ ")",
-			message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").");
+		auto subject = questionFromTaskSubject(askerTid, qid);
+		auto body = readPromptFile("prompts/question_from_task.md",
+			answererProjectPath,
+			["message": message, "qid": to!string(qid)]);
+		if (body.length == 0)
+			body = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
+		return wrapKnownSystemMessage(KnownSystemMessageKind.questionFromTask, body, subject);
 	}
 
 	private void deliverInjectedQuestion(QuestionRoute route, string message)
@@ -2193,10 +2197,13 @@ class App : ToolsBackend
 			}
 			else
 			{
-				prompt = makeQuestionMessage(currentRoute.askerTid, currentRoute.qid, message);
+				prompt = makeQuestionMessage(currentRoute.askerTid, currentRoute.qid, message,
+					answererTd.projectPath);
+				auto qftSubject = questionFromTaskSubject(currentRoute.askerTid, currentRoute.qid);
 				label = "Question from task";
-				meta = buildCydoMeta(label,
-					["from_tid": to!string(currentRoute.askerTid), "message": message], "message", true);
+				meta = buildKnownSystemMessageMeta(
+					KnownSystemMessageKind.questionFromTask, qftSubject,
+					["message": message], "message");
 			}
 			sendTaskMessage(currentRoute.answererTid, [ContentBlock("text", prompt)], null, meta);
 
@@ -4438,6 +4445,7 @@ class App : ToolsBackend
 		taskPrompt,
 		sessionStart,
 		followUpFromParent,
+		questionFromTask,
 		subTaskWaitingForAnswer,
 		missingRequiredOutputs,
 		handoff,
@@ -4468,6 +4476,8 @@ class App : ToolsBackend
 			return "Session start";
 		case KnownSystemMessageKind.followUpFromParent:
 			return "Follow-up question from parent task";
+		case KnownSystemMessageKind.questionFromTask:
+			return "Question from task";
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 			return "Sub-task waiting for answer";
 		case KnownSystemMessageKind.missingRequiredOutputs:
@@ -4506,6 +4516,12 @@ class App : ToolsBackend
 		import std.conv : to;
 		return systemMessageSubject(KnownSystemMessageKind.followUpFromParent)
 			~ " (qid=" ~ to!string(qid) ~ ")";
+	}
+
+	private static string questionFromTaskSubject(int askerTid, int qid)
+	{
+		import std.conv : to;
+		return "Question from task " ~ to!string(askerTid) ~ " (qid=" ~ to!string(qid) ~ ")";
 	}
 
 	private static string subTaskWaitingForAnswerSubject(string title, int tid, int qid)
@@ -4599,6 +4615,24 @@ class App : ToolsBackend
 			? match.label
 			: resolvedSubject;
 		return buildCydoMeta(label, vars, bodyVar, bodyMarkdownForKind(kind));
+	}
+
+	unittest
+	{
+		// Round-trip: questionFromTaskSubject → tryKnownSystemMessageMatch
+		auto subject = questionFromTaskSubject(42, 999);
+		KnownSystemMessageMatch m;
+		assert(tryKnownSystemMessageMatch(subject, m), subject);
+		assert(m.kind == KnownSystemMessageKind.questionFromTask);
+		assert(m.tid.get == 42);
+		assert(m.qid.get == 999);
+		assert(m.label == "Question from task");
+
+		// Reject malformed subjects
+		KnownSystemMessageMatch bad;
+		assert(!tryKnownSystemMessageMatch("Question from task abc (qid=1)", bad));
+		assert(!tryKnownSystemMessageMatch("Question from task 1 (qid=abc)", bad));
+		assert(!tryKnownSystemMessageMatch("Question from task 1 (noqid)", bad));
 	}
 
 	private static bool tryParseStrictPositiveInt(string text, out int value)
@@ -4702,6 +4736,27 @@ class App : ToolsBackend
 			return true;
 		}
 
+		enum questionFromTaskPrefix = "Question from task ";
+		if (subject.startsWith(questionFromTaskPrefix) && subject.endsWith(")"))
+		{
+			// Format: "Question from task <tid> (qid=<qid>)"
+			auto tail = subject[questionFromTaskPrefix.length .. $];
+			enum qidSep = " (qid=";
+			auto qidSepIdx = tail.indexOf(qidSep);
+			if (qidSepIdx < 0)
+				return false;
+			auto tidText = tail[0 .. cast(size_t) qidSepIdx];
+			auto qidText = tail[cast(size_t) qidSepIdx + qidSep.length .. $ - 1]; // strip trailing ")"
+			int tid, qid;
+			if (!tryParseStrictPositiveInt(tidText, tid) || !tryParseStrictPositiveInt(qidText, qid))
+				return false;
+			match.kind = KnownSystemMessageKind.questionFromTask;
+			match.label = "Question from task";
+			match.tid = Nullable!int(tid);
+			match.qid = Nullable!int(qid);
+			return true;
+		}
+
 		enum waitingPrefix = "Sub-task \"";
 		enum waitingTitleSuffix = "\" (tid=";
 		enum waitingMid = ") is waiting for your answer (qid=";
@@ -4775,6 +4830,7 @@ class App : ToolsBackend
 		case KnownSystemMessageKind.handoff:
 			return "task_description";
 		case KnownSystemMessageKind.followUpFromParent:
+		case KnownSystemMessageKind.questionFromTask:
 			return "message";
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 			return "question";
@@ -4796,6 +4852,7 @@ class App : ToolsBackend
 		{
 		case KnownSystemMessageKind.taskPrompt:
 		case KnownSystemMessageKind.followUpFromParent:
+		case KnownSystemMessageKind.questionFromTask:
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 		case KnownSystemMessageKind.handoff:
 			return true;
@@ -4843,6 +4900,9 @@ class App : ToolsBackend
 
 		case KnownSystemMessageKind.followUpFromParent:
 			return "prompts/follow_up_from_parent.md";
+
+		case KnownSystemMessageKind.questionFromTask:
+			return "prompts/question_from_task.md";
 
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 			return "prompts/sub_task_waiting_for_answer.md";
