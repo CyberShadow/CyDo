@@ -428,6 +428,25 @@ describe("sourceTree projection parser", () => {
     expect(findFirstEmbed(parsed.value.segments)).toBeNull();
   });
 
+  it("accepts trailing I/O redirections after wrapper payload", () => {
+    const cases: [string, string, string][] = [
+      ['python -c "import json" 2>&1', "python", "import json"],
+      ["python3 -c 'print(1)' >/dev/null 2>&1", "python", "print(1)"],
+      ['node -e "console.log(1)" 2>/dev/null', "javascript", "console.log(1)"],
+      ['python -c "\nimport json\n" 2>&1', "python", "\nimport json\n"],
+    ];
+    for (const [command, language, payload] of cases) {
+      const parsed = parseShellCommandSourceTree(command);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) continue;
+      const embed = findFirstEmbed(parsed.value.segments);
+      expect(embed).not.toBeNull();
+      if (!embed) continue;
+      expect(embed.content.language).toBe(language);
+      expect(embed.content.text).toBe(payload);
+    }
+  });
+
   it("does not recurse into non-shell interpreter wrapper payloads", () => {
     // python payload looks like a shell wrapper but must not be recursed into
     const parsed = parseShellCommandSourceTree(

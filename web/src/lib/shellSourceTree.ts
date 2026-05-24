@@ -330,6 +330,48 @@ function parseShellWrapperPayloadWord(
   };
 }
 
+function isRedirectionOnlyTrailer(trailer: string): boolean {
+  let i = 0;
+  while (i < trailer.length) {
+    while (i < trailer.length && /\s/.test(trailer[i]!)) i++;
+    if (i >= trailer.length) break;
+
+    if (trailer[i] === "&") {
+      if (trailer[i + 1] === ">" && trailer[i + 2] === ">") {
+        i += 3;
+      } else if (trailer[i + 1] === ">") {
+        i += 2;
+      } else {
+        return false;
+      }
+    } else {
+      while (i < trailer.length && /[0-9]/.test(trailer[i]!)) i++;
+      if (trailer[i] === ">") {
+        if (trailer[i + 1] === ">") {
+          i += 2;
+        } else if (trailer[i + 1] === "&") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+      } else if (trailer[i] === "<") {
+        if (trailer[i + 1] === "&") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+      } else {
+        return false;
+      }
+    }
+
+    while (i < trailer.length && /\s/.test(trailer[i]!)) i++;
+    if (i >= trailer.length || /\s/.test(trailer[i]!)) return false;
+    while (i < trailer.length && !/\s/.test(trailer[i]!)) i++;
+  }
+  return true;
+}
+
 function parseShellWrapper(command: string): WrapperParseResult {
   const trimmed = command.trim();
   if (!trimmed) return { kind: "none" };
@@ -363,7 +405,7 @@ function parseShellWrapper(command: string): WrapperParseResult {
     return rejectWrapper(payloadWord.code, payloadWord.reject);
   }
   const trailer = command.slice(payloadWord.wordEnd);
-  if (trailer.trim().length > 0) {
+  if (trailer.trim().length > 0 && !isRedirectionOnlyTrailer(trailer)) {
     return rejectWrapper(
       "unsafe_shell_syntax",
       "extra positional args after wrapper payload are not supported",
