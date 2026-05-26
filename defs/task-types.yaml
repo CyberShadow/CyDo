@@ -29,13 +29,16 @@
 #    execution happen in sub-sessions. Iteration and approval happen in
 #    the interactive session.
 #
-# 7. Recursive decomposition.
+# 7. Recursive decomposition with oversight.
 #    Implementation is always gated behind execute. No agent can spawn
 #    implement directly — it must go through execute, which decides whether
-#    to implement directly or decompose into sub-tasks. This applies
-#    recursively: decompose creates plans, plans go through execute, and
-#    execute can decompose again. Without this gate, agents will prefer to
-#    do everything in a single session rather than splitting work up.
+#    to oversee a single implementation or decompose into sub-tasks. The
+#    oversee layer ensures review and verification always happen: it spawns
+#    implement, then review/verify, and feeds objections back until the
+#    work passes. This applies recursively: decompose creates plans, plans
+#    go through execute, and execute can decompose again. Without these
+#    gates, agents will prefer to do everything in a single session rather
+#    than splitting work up, and will skip review/verify steps.
 #
 # 8. Output types follow from the split.
 #    Interactive sessions produce nothing (they are ongoing). Agentic
@@ -517,10 +520,10 @@ task_types:
     output_type: [report]
     continuations:
       implement:
-        task_type: implement
+        task_type: oversee
         requires_approval: true
         keep_context: true
-        prompt_template: prompts/enter_implement.md
+        prompt_template: prompts/enter_oversee.md
       decompose:
         task_type: decompose
         requires_approval: true
@@ -557,6 +560,42 @@ task_types:
         prompt_template: prompts/deep_research.md
         result_note: "Read the output file for full findings."
 
+  oversee:
+    icon: oversee
+    system_prompt_template: system_prompts/oversee.md
+    agent_description: >
+      Overseer for a single implementation unit. Spawns implement, then
+      review and verify sub-tasks, feeding objections back to implement
+      via Ask until the work passes. Also answers high-level questions
+      from implement, spawning plan or research sub-tasks as needed.
+    model_class: large
+    read_only: true
+    output_type: [commit]
+    creatable_tasks:
+      implement:
+        prompt_template: prompts/implement.md
+        result_note: "Read the output file for implementation results."
+      verify:
+        worktree: fork
+        prompt_template: prompts/verify.md
+        result_note: "Read the output file for the full verification report."
+      review:
+        prompt_template: prompts/review.md
+        result_note: "Read the output file for the full review."
+      plan:
+        prompt_template: prompts/plan.md
+        result_note: "Read the output file for the full plan."
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
+        result_note: "Read the output file for full findings."
+      spike:
+        worktree: fork
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+
   implement:
     icon: implement
     system_prompt_template: system_prompts/implement.md
@@ -576,13 +615,6 @@ task_types:
       test:
         prompt_template: prompts/test.md
         result_note: "Read the output file for test results."
-      verify:
-        worktree: fork
-        prompt_template: prompts/verify.md
-        result_note: "Read the output file for the full verification report."
-      review:
-        prompt_template: prompts/review.md
-        result_note: "Read the output file for the full review."
 
   verify:
     icon: verify

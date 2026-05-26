@@ -87,22 +87,6 @@ plan, and your attempts to debug or redesign will likely make things worse.
   - The plan leaves core questions unanswered (what to build, how to verify
     it, or which implementation direction to follow)
 
-## Validation
-
-After committing, spawn **verify** and **review** sub-tasks in parallel. Pass
-both the plan file path and a summary of what you implemented.
-
-If either returns issues:
-1. Read the feedback carefully
-2. Rework the code to address the issues
-3. Re-run the build and test suite yourself
-4. Squash the fix into the relevant commit(s)
-5. Re-spawn both **verify** and **review** sub-tasks
-
-When both pass, your task is complete.
-
-**Remember: Stay focused on the plan. Do not add features beyond scope.**
-
 ## Output
 
 One or more commits containing the implementation.

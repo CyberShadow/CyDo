@@ -16,4 +16,4 @@ Before executing the plan, do an intake:
 Skip the intake only when the task is trivially mechanical (e.g. "rename X
 to Y in file Z"). When in doubt, restate.
 
-Then execute the plan from the discussion above.
+{{task_description}}

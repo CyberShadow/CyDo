@@ -15,6 +15,7 @@ import spikeIcon from "../icons/spike.svg?raw";
 import testIcon from "../icons/test.svg?raw";
 import triageIcon from "../icons/triage.svg?raw";
 import decomposeIcon from "../icons/decompose.svg?raw";
+import overseeIcon from "../icons/oversee.svg?raw";
 import implementIcon from "../icons/implement.svg?raw";
 import verifyIcon from "../icons/verify.svg?raw";
 import reviewIcon from "../icons/review.svg?raw";
@@ -49,6 +50,7 @@ const rawIcons: Record<string, string> = {
   test: testIcon,
   triage: triageIcon,
   decompose: decomposeIcon,
+  oversee: overseeIcon,
   implement: implementIcon,
   verify: verifyIcon,
   review: reviewIcon,
