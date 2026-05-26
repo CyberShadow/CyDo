@@ -8373,7 +8373,7 @@ class App : ToolsBackend
 		bool[string] seen;
 		string[] taskPaths;
 		foreach (ref td; tasks)
-			if (td.projectPath.length > 0 && td.projectPath !in seen)
+			if (td.parentTid == 0 && td.projectPath.length > 0 && td.projectPath !in seen)
 			{
 				seen[td.projectPath] = true;
 				taskPaths ~= td.projectPath;
@@ -8443,6 +8443,39 @@ class App : ToolsBackend
 				if (projectPath !in synthCovered)
 					synthWs.projects ~= ProjectInfo(projectPath, projectPath, true, exists(projectPath));
 		}
+	}
+
+	unittest
+	{
+		import cydo.config : WorkspaceConfig;
+
+		auto app = new App();
+
+		// Set up a workspace with one already-discovered project
+		app.config.workspaces = [WorkspaceConfig("ws", "/tmp/ws")];
+		app.workspacesInfo = [WorkspaceInfo("ws", [ProjectInfo("proj", "/tmp/ws/proj", false, true)], "", "")];
+
+		// Root task (parentTid=0) with a projectPath not yet covered — should produce a virtual project
+		app.tasks[1].parentTid = 0;
+		app.tasks[1].projectPath = "/tmp/other";
+
+		// Subtask (parentTid != 0) whose projectPath is a worktree path — must NOT produce a virtual project
+		app.tasks[2].parentTid = 1;
+		app.tasks[2].projectPath = "/tmp/ws/.cydo/tasks/42/worktree";
+
+		app.injectVirtualProjects();
+
+		// Virtual project for root task's path must appear under "ws" workspace
+		bool foundOther = false;
+		bool foundWorktree = false;
+		foreach (ref wi; app.workspacesInfo)
+			foreach (ref pi; wi.projects)
+			{
+				if (pi.path == "/tmp/other")    foundOther = true;
+				if (pi.path == "/tmp/ws/.cydo/tasks/42/worktree") foundWorktree = true;
+			}
+		assert(foundOther, "virtual project for root task path must exist");
+		assert(!foundWorktree, "virtual project for subtask worktree path must not exist");
 	}
 
 	/// Watch the config file for changes and reload on modification.
