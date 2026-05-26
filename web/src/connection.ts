@@ -85,7 +85,8 @@ export class Connection {
           raw.type === "task_deleted" ||
           raw.type === "notices_list" ||
           raw.type === "agent_usage" ||
-          raw.type === "focus_hint"
+          raw.type === "focus_hint" ||
+          raw.type === "scan_status"
         ) {
           this.onControlMessage?.(raw as unknown as ControlMessage);
         } else if ("tid" in raw && typeof raw.tid === "number") {

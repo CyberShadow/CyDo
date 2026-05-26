@@ -68,7 +68,7 @@ function AppContent() {
     getTaskHref,
     getByTid,
     refreshWorkspaces,
-    refreshingWorkspaces,
+    scanState,
   } = useTaskManager(addToast);
   const mergedNotices = useMemo(
     () => ({ ...notices, ...localNotices }),
@@ -209,7 +209,7 @@ function AppContent() {
                 getProjectHref={getProjectHref}
                 getTaskHref={getTaskHref}
                 onRefreshWorkspaces={refreshWorkspaces}
-                refreshingWorkspaces={refreshingWorkspaces}
+                scanState={scanState}
               />
             ) : (
               <div class="connection-overlay">

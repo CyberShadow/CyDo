@@ -3218,6 +3218,21 @@ pre.extra-field-value {
   animation: spin 0.8s linear infinite;
 }
 
+.refresh-requested {
+  opacity: 0.5;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
 .project-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));

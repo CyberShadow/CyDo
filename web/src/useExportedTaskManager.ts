@@ -261,6 +261,6 @@ export function useExportedTaskManager(): TaskManager {
     getTaskHref,
     getByTid,
     refreshWorkspaces: noop,
-    refreshingWorkspaces: false,
+    scanState: "idle",
   };
 }

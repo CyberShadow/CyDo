@@ -19,7 +19,7 @@ interface Props {
   taskTypes: TypeInfo[];
   notices: Record<string, Notice>;
   onRefreshWorkspaces: () => void;
-  refreshingWorkspaces: boolean;
+  scanState: "idle" | "requested" | "scanning";
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -184,7 +184,7 @@ export function WelcomePage({
   taskTypes,
   notices,
   onRefreshWorkspaces,
-  refreshingWorkspaces,
+  scanState,
 }: Props) {
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -415,9 +415,15 @@ export function WelcomePage({
           class="sidebar-new-btn refresh-workspaces-btn"
           onClick={onRefreshWorkspaces}
           title="Refresh project list"
-          disabled={refreshingWorkspaces}
+          disabled={scanState !== "idle"}
         >
-          {refreshingWorkspaces ? <span class="refresh-spinner" /> : "↻"}
+          {scanState === "scanning" ? (
+            <span class="refresh-spinner" />
+          ) : (
+            <span class={scanState === "requested" ? "refresh-requested" : ""}>
+              ↻
+            </span>
+          )}
         </button>
       </div>
       <ActiveSessions

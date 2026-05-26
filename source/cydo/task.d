@@ -912,6 +912,12 @@ struct ServerStatusMessage
 	string build_id;
 }
 
+struct ScanStatusMessage
+{
+	string type = "scan_status";
+	bool scanning;
+}
+
 enum NoticeLevel { info, warning, alert }
 
 struct Notice

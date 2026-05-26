@@ -672,6 +672,8 @@ class App : ToolsBackend
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
+	// True while enumerateSessions() or onConfigChanged() is scanning for sessions.
+	private bool scanInProgress;
 
 	// Active TerminalProcess instances (Bash MCP tool calls in flight).
 	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
@@ -1316,6 +1318,8 @@ class App : ToolsBackend
 		ws.send(Data(buildTasksList().representation));
 		ws.send(Data(buildServerStatus().representation));
 		ws.send(Data(buildNoticesList().representation));
+		if (scanInProgress)
+			ws.send(Data(toJson(ScanStatusMessage("scan_status", true)).representation));
 		foreach (ref usageState; agentUsageByAgent)
 		{
 			ws.send(Data(toJson(buildAgentUsageMessage(usageState)).representation));
@@ -8084,6 +8088,8 @@ class App : ToolsBackend
 	/// Enumerate external sessions and create importable tasks for new ones.
 	private void enumerateSessions()
 	{
+		scanInProgress = true;
+		broadcast(toJson(ScanStatusMessage("scan_status", true)));
 		// Collect all known agent session IDs (agentType ~ "\0" ~ sessionId for uniqueness)
 		bool[string] knownSessionIds;
 		foreach (ref td; tasks)
@@ -8295,6 +8301,8 @@ class App : ToolsBackend
 			}
 			injectVirtualProjects();
 			broadcast(buildWorkspacesList());
+			scanInProgress = false;
+			broadcast(toJson(ScanStatusMessage("scan_status", false)));
 		}).ignoreResult();
 	}
 
@@ -8543,11 +8551,15 @@ class App : ToolsBackend
 		auto defaultName = defaultAgentName("");
 		agent = agentsByName[defaultName];
 
+		scanInProgress = true;
+		broadcast(toJson(ScanStatusMessage("scan_status", true)));
 		discoverAllWorkspaces();
 		broadcast(buildAgentsList());
 		broadcast(buildWorkspacesList());
 		broadcast(buildServerStatus());
 		infof("Config reloaded successfully");
+		scanInProgress = false;
+		broadcast(toJson(ScanStatusMessage("scan_status", false)));
 	}
 
 	private void ensureProjectWatch(string projectPath)

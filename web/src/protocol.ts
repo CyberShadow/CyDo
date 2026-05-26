@@ -408,6 +408,10 @@ export interface AgentUsageMessage {
   updated_at: number;
   limits: Record<string, AgentUsageLimitWindow>;
 }
+export interface ScanStatusMessage {
+  type: "scan_status";
+  scanning: boolean;
+}
 export type ControlMessage =
   | TaskCreatedMessage
   | TasksListMessage
@@ -433,4 +437,5 @@ export type ControlMessage =
   | ServerStatusMessage
   | TaskDeletedMessage
   | NoticesListMessage
-  | AgentUsageMessage;
+  | AgentUsageMessage
+  | ScanStatusMessage;

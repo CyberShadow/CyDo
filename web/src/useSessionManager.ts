@@ -184,7 +184,7 @@ export interface TaskManager {
   getTaskHref: (id: string) => string;
   getByTid: (tid: number) => TaskState | undefined;
   refreshWorkspaces: () => void;
-  refreshingWorkspaces: boolean;
+  scanState: "idle" | "requested" | "scanning";
 }
 
 /// Extract text content from a user message event (for unconfirmed display).
@@ -254,7 +254,9 @@ export function useTaskManager(
   const [connected, setConnected] = useState(false);
   const [tasks, setTasks] = useState<Map<string, TaskState>>(new Map());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
-  const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false);
+  const [scanState, setScanState] = useState<"idle" | "requested" | "scanning">(
+    "idle",
+  );
   const [entryPoints, setEntryPoints] = useState<EntryPointInfo[]>([]);
   const [typeInfo, setTypeInfo] = useState<TypeInfo[]>([]);
   const [projectEntryPoints, setProjectEntryPoints] = useState<
@@ -678,8 +680,11 @@ export function useTaskManager(
       switch (msg.type) {
         case "workspaces_list": {
           setWorkspaces(msg.workspaces);
-          setRefreshingWorkspaces(false);
           setConnected(true);
+          break;
+        }
+        case "scan_status": {
+          setScanState(msg.scanning ? "scanning" : "idle");
           break;
         }
         case "task_types_list": {
@@ -2225,10 +2230,10 @@ export function useTaskManager(
     getTaskHref,
     getByTid: findByTid,
     refreshWorkspaces: () => {
-      setRefreshingWorkspaces(true);
+      setScanState("requested");
       connRef.current?.refreshWorkspaces();
     },
-    refreshingWorkspaces,
+    scanState,
   };
 }
 
