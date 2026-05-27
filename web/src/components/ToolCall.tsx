@@ -1310,6 +1310,109 @@ function parseWebSearchResult(content: string): WebSearchIteration[] | null {
   return iterations;
 }
 
+function AgentResult({
+  resultText,
+  toolResult,
+}: {
+  resultText: string;
+  toolResult: Record<string, unknown> | null;
+}) {
+  const status = toolResult
+    ? typeof toolResult.status === "string"
+      ? toolResult.status
+      : null
+    : null;
+  const totalDurationMs = toolResult
+    ? typeof toolResult.totalDurationMs === "number"
+      ? toolResult.totalDurationMs
+      : null
+    : null;
+  const totalTokens = toolResult
+    ? typeof toolResult.totalTokens === "number"
+      ? toolResult.totalTokens
+      : null
+    : null;
+  const totalToolUseCount = toolResult
+    ? typeof toolResult.totalToolUseCount === "number"
+      ? toolResult.totalToolUseCount
+      : null
+    : null;
+  const usage = toolResult?.usage;
+  const toolStats = toolResult?.toolStats;
+
+  const hasDetails =
+    totalDurationMs != null ||
+    totalTokens != null ||
+    totalToolUseCount != null ||
+    usage != null ||
+    toolStats != null;
+
+  return (
+    <div class="agent-result">
+      <Markdown text={resultText} class="text-content" />
+      {hasDetails && (
+        <details class="agent-result-details">
+          <summary>
+            {[
+              totalDurationMs != null &&
+                `${(totalDurationMs / 1000).toFixed(1)}s`,
+              totalTokens != null && `${totalTokens.toLocaleString()} tokens`,
+              totalToolUseCount != null && `${totalToolUseCount} tool uses`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </summary>
+          <div class="tool-input-formatted">
+            {status && (
+              <div class="tool-input-field">
+                <span class="field-label">status:</span>
+                <span class="field-value"> {status}</span>
+              </div>
+            )}
+            {totalDurationMs != null && (
+              <div class="tool-input-field">
+                <span class="field-label">duration:</span>
+                <span class="field-value">
+                  {" "}
+                  {(totalDurationMs / 1000).toFixed(1)}s
+                </span>
+              </div>
+            )}
+            {totalTokens != null && (
+              <div class="tool-input-field">
+                <span class="field-label">tokens:</span>
+                <span class="field-value"> {totalTokens.toLocaleString()}</span>
+              </div>
+            )}
+            {totalToolUseCount != null && (
+              <div class="tool-input-field">
+                <span class="field-label">tool uses:</span>
+                <span class="field-value"> {totalToolUseCount}</span>
+              </div>
+            )}
+            {toolStats != null && typeof toolStats === "object" && (
+              <div class="tool-input-field">
+                <span class="field-label">tool stats:</span>
+                <pre class="field-value-block">
+                  {JSON.stringify(toolStats, null, 2)}
+                </pre>
+              </div>
+            )}
+            {usage != null && typeof usage === "object" && (
+              <div class="tool-input-field">
+                <span class="field-label">usage:</span>
+                <pre class="field-value-block">
+                  {JSON.stringify(usage, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function WebSearchResult({
   content,
   toolResult,
@@ -1549,6 +1652,34 @@ const knownResultFields: Record<string, Set<string>> = {
   "claude/AskUserQuestion": new Set(["questions", "answers", "annotations"]),
   "cydo:AskUserQuestion": new Set(["questions", "answers"]),
   "claude/Task": new Set([
+    "status",
+    "prompt",
+    "agentId",
+    "content",
+    "totalDurationMs",
+    "totalTokens",
+    "totalToolUseCount",
+    "usage",
+    "isAsync",
+    "description",
+    "outputFile",
+    "canReadOutputFile",
+    "teammate_id",
+    "agent_id",
+    "agent_type",
+    "agentType",
+    "toolStats",
+    "model",
+    "name",
+    "color",
+    "team_name",
+    "plan_mode_required",
+    "is_splitpane",
+    "tmux_pane_id",
+    "tmux_session_name",
+    "tmux_window_name",
+  ]),
+  "claude/Agent": new Set([
     "status",
     "prompt",
     "agentId",
@@ -1920,6 +2051,27 @@ function getHeaderSubtitle(
       </Fragment>
     );
   }
+  if (
+    toolIs(name, driver, toolServer, "claude/Agent") &&
+    typeof input.prompt === "string"
+  ) {
+    const agentType =
+      typeof input.agent_type === "string"
+        ? input.agent_type
+        : typeof input.agentType === "string"
+          ? input.agentType
+          : null;
+    return (
+      <Fragment>
+        {agentType && <span class="tool-subtitle-tag">{agentType}</span>}
+        <span class="tool-subtitle">
+          {input.prompt.length > 80
+            ? input.prompt.slice(0, 80) + "…"
+            : input.prompt}
+        </span>
+      </Fragment>
+    );
+  }
   // --- CyDo MCP tools ---
   if (
     toolIs(name, driver, toolServer, "cydo:SwitchMode") &&
@@ -2140,6 +2292,21 @@ function formatInput(
       subagent_type,
       agent_type,
       name: taskName,
+      mode,
+      ...remaining
+    } = input;
+    return formatGenericInput(remaining, <Markdown text={prompt} />);
+  }
+  if (
+    toolIs(name, driver, toolServer, "claude/Agent") &&
+    typeof input.prompt === "string"
+  ) {
+    const {
+      prompt,
+      description,
+      agent_type,
+      agentType: _at,
+      name: _name,
       mode,
       ...remaining
     } = input;
@@ -2586,6 +2753,7 @@ const defaultExpandedTools = new Set([
   "claude/AskUserQuestion",
   "claude/WebFetch",
   "claude/Task",
+  "claude/Agent",
   "cydo:Task",
   "copilot/task",
   "cydo:Ask",
@@ -2607,6 +2775,7 @@ const defaultExpandedResults = new Set([
   "codex/local_shell_call",
   "codex/exec_command",
   "claude/Task",
+  "claude/Agent",
   "cydo:Task",
   "copilot/task",
   "cydo:Ask",
@@ -2735,6 +2904,11 @@ export const ToolCall = memo(
       toolIs(name, driver, toolServer, "claude/WebFetch") &&
       resultText != null &&
       !result!.isError;
+    const useAgentResult =
+      toolIs(name, driver, toolServer, "claude/Agent") &&
+      result != null &&
+      !result.isError &&
+      resultText != null;
     const useTaskOutputResult =
       toolIs(name, driver, toolServer, "claude/TaskOutput") &&
       result &&
@@ -3187,6 +3361,16 @@ export const ToolCall = memo(
                         isError={result.isError}
                       />
                     ) : null
+                  ) : useAgentResult ? (
+                    <AgentResult
+                      resultText={resultText}
+                      toolResult={
+                        result.toolResult != null &&
+                        typeof result.toolResult === "object"
+                          ? (result.toolResult as Record<string, unknown>)
+                          : null
+                      }
+                    />
                   ) : resultImagesElement ? null : (
                     renderResultContent(result.content, result.isError)
                   )}

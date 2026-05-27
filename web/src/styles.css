@@ -1326,6 +1326,17 @@ body,
   color: var(--error);
 }
 
+.agent-result-details {
+  margin-top: 0.5em;
+  font-size: 0.85em;
+}
+
+.agent-result-details summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  user-select: none;
+}
+
 .streaming-stdin {
   color: var(--text-dim);
 }
