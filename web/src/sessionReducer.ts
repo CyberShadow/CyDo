@@ -1336,7 +1336,11 @@ export function reduceMessage(
           seq,
         );
       }
-      if (sysMsg.subtype === "api_error" || sysMsg.subtype === "turn_duration")
+      if (
+        sysMsg.subtype === "api_error" ||
+        sysMsg.subtype === "turn_duration" ||
+        sysMsg.subtype === "task_progress"
+      )
         return s;
       return reduceParseError(
         s,
