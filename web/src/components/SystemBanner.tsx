@@ -59,11 +59,13 @@ export function usagePercent(utilization?: number): number | null {
   return pct;
 }
 
-function hasClaudeUsageInfo(
-  claudeUsage: AgentUsageMessage | undefined,
+function isWindowExpired(
+  window: AgentUsageLimitWindow | undefined,
+  nowSeconds: number,
 ): boolean {
-  return ["five_hour", "seven_day"].some((key) =>
-    Number.isFinite(claudeUsage?.limits[key]?.utilization),
+  return (
+    Number.isFinite(window?.resetsAt) &&
+    (window!.resetsAt as number) < nowSeconds
   );
 }
 
@@ -158,13 +160,19 @@ export function SystemBanner({
     processingText = "Processing...";
   }
   const nowSeconds = Date.now() / 1000;
-  const fiveHour = claudeUsage?.limits.five_hour;
-  const week = claudeUsage?.limits.seven_day;
+  const fiveHour = isWindowExpired(claudeUsage?.limits.five_hour, nowSeconds)
+    ? undefined
+    : claudeUsage?.limits.five_hour;
+  const week = isWindowExpired(claudeUsage?.limits.seven_day, nowSeconds)
+    ? undefined
+    : claudeUsage?.limits.seven_day;
   const usageRows = [
     { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
     { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
   ];
-  const showClaudeUsage = hasClaudeUsageInfo(claudeUsage);
+  const showClaudeUsage =
+    Number.isFinite(fiveHour?.utilization) ||
+    Number.isFinite(week?.utilization);
 
   return (
     <div class="system-banner">

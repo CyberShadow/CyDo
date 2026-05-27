@@ -107,14 +107,42 @@ describe("SystemBanner Claude usage", () => {
   });
 
   it("renders usage when a Claude window has finite utilization", () => {
+    const futureTime = Math.floor(Date.now() / 1000) + 10000;
     const html = renderSystemBanner(
       usageMessage({
-        five_hour: { utilization: 0.42, resetsAt: 1_700_018_000 },
+        five_hour: { utilization: 0.42, resetsAt: futureTime },
         seven_day: {},
       }),
     );
 
     expect(html).toContain("banner-usage");
     expect(html).toContain("42%");
+  });
+
+  it("hides usage widget when all windows are expired", () => {
+    const pastTime = Math.floor(Date.now() / 1000) - 100;
+    const html = renderSystemBanner(
+      usageMessage({
+        five_hour: { utilization: 0.5, resetsAt: pastTime },
+        seven_day: { utilization: 0.8, resetsAt: pastTime },
+      }),
+    );
+
+    expect(html).not.toContain("banner-usage");
+  });
+
+  it("shows non-expired window when only one window is expired", () => {
+    const pastTime = Math.floor(Date.now() / 1000) - 100;
+    const futureTime = Math.floor(Date.now() / 1000) + 10000;
+    const html = renderSystemBanner(
+      usageMessage({
+        five_hour: { utilization: 0.3, resetsAt: pastTime },
+        seven_day: { utilization: 0.6, resetsAt: futureTime },
+      }),
+    );
+
+    expect(html).toContain("banner-usage");
+    expect(html).toContain("60%");
+    expect(html).not.toContain("30%");
   });
 });
