@@ -1898,6 +1898,8 @@ private string translateSystemEvent(string rawLine, string subtype, string agent
 			return normalizeTaskStarted(rawLine);
 		case "task_notification":
 			return normalizeTaskNotification(rawLine);
+		case "api_retry":
+			return translateApiRetry(rawLine);
 		default:
 			return rawLine; // unknown subtypes pass through
 	}
@@ -2233,6 +2235,53 @@ unittest
 		assert(ev.type == "session/status");
 		assert(ev.status == "future-status");
 	}
+}
+
+/// Translate "system/api_retry" event to agent/error with willRetry=true.
+private string translateApiRetry(string rawLine)
+{
+	@JSONPartial static struct RawApiRetry
+	{
+		int attempt;
+		int max_retries;
+		int error_status;
+		string error;
+	}
+	try
+	{
+		import cydo.agent.protocol : AgentErrorEvent;
+		auto raw = jsonParse!RawApiRetry(rawLine);
+		AgentErrorEvent ev;
+		ev.message = format("API error: %d %s (attempt %d/%d)",
+			raw.error_status, raw.error, raw.attempt, raw.max_retries);
+		ev.willRetry = true;
+		return toJson(ev);
+	}
+	catch (Exception e)
+	{ tracef("translateApiRetry: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("api_retry parse error: " ~ e.msg); }
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	@JSONPartial static struct ErrorProbe
+	{
+		string type;
+		bool willRetry;
+		string message;
+	}
+
+	auto translated = translateClaudeEventInner(
+		`{"type":"system","subtype":"api_retry","attempt":8,"max_retries":10,"retry_delay_ms":39354.3,"error_status":529,"error":"rate_limit","session_id":"abc","uuid":"def"}`,
+		"claude");
+	auto ev = jsonParse!ErrorProbe(translated);
+	assert(ev.type == "agent/error");
+	assert(ev.willRetry == true);
+	assert(ev.message.canFind("529"));
+	assert(ev.message.canFind("rate_limit"));
+	assert(ev.message.canFind("8"));
+	assert(ev.message.canFind("10"));
 }
 
 /// Translate "system/compact_boundary" event to session/compacted.
