@@ -86,6 +86,24 @@ private struct BatchHandle
 	ulong batchId;
 }
 
+private struct ActiveBatchKey
+{
+	int parentTid;
+	ulong batchId;
+
+	size_t toHash() const nothrow @safe @nogc
+	{
+		size_t h = cast(size_t)parentTid;
+		h ^= cast(size_t)(batchId ^ (batchId >> 32));
+		return h;
+	}
+
+	bool opEquals(scope const ActiveBatchKey other) const nothrow @safe @nogc
+	{
+		return parentTid == other.parentTid && batchId == other.batchId;
+	}
+}
+
 private struct AgentUsageLimitWindowMessage
 {
 	@JSONOptional double utilization;
@@ -626,8 +644,12 @@ class App : ToolsBackend
 	private Promise!(McpResult)[int] pendingPermissionPrompts;
 	// Original input JSON per tid for building Allow response
 	private string[int] pendingPermissionInputs;
-	// Per-parent batch state, keyed by parent tid
-	private BatchState[int] activeBatches;
+	// Live Task batches keyed by (parent tid, batch id).
+	private BatchState[ActiveBatchKey] activeBatches;
+	// Parent task → live batch ids (in creation order).
+	private ulong[][int] batchIdsByParentTid;
+	// Child task → owning live batch.
+	private ActiveBatchKey[int] batchKeyByChildTid;
 	private ulong nextBatchId = 1;
 	// App-global question ID counter and registry. Seeded from Unix time in
 	// start() so qids stay monotonic across backend restarts — prevents a stale
@@ -1661,6 +1683,123 @@ class App : ToolsBackend
 		return McpResult("Internal batch routing error: " ~ message, true);
 	}
 
+	private ActiveBatchKey batchKey(BatchHandle handle)
+	{
+		return ActiveBatchKey(handle.parentTid, handle.batchId);
+	}
+
+	private BatchState* findBatch(BatchHandle handle)
+	{
+		auto key = batchKey(handle);
+		return key in activeBatches;
+	}
+
+	private BatchState* findBatch(int parentTid, ulong batchId)
+	{
+		auto key = ActiveBatchKey(parentTid, batchId);
+		return key in activeBatches;
+	}
+
+	private ActiveBatchKey* findBatchOwningChild(int childTid)
+	{
+		return childTid in batchKeyByChildTid;
+	}
+
+	private bool parentHasLiveBatches(int parentTid)
+	{
+		auto ids = parentTid in batchIdsByParentTid;
+		if (ids is null || ids.length == 0)
+			return false;
+		bool found;
+		foreach (batchId; *ids)
+		{
+			if (findBatch(parentTid, batchId) !is null)
+			{
+				found = true;
+				break;
+			}
+			errorf("batch router invariant violated: parent index points to missing batch parent=%d batch=%s",
+				parentTid, batchId);
+		}
+		return found;
+	}
+
+	private void addActiveBatch(int parentTid, ref BatchState batch)
+	{
+		auto key = ActiveBatchKey(parentTid, batch.batchId);
+		assert((key in activeBatches) is null);
+		activeBatches[key] = batch;
+		batchIdsByParentTid[parentTid] ~= batch.batchId;
+		foreach (childTid; batch.childTids)
+			batchKeyByChildTid[childTid] = key;
+	}
+
+	private string clearChildOwnershipForCompletedSlot(ActiveBatchKey key, size_t slot)
+	{
+		auto batchPtr = key in activeBatches;
+		if (batchPtr is null)
+			return format!"missing batch while clearing child ownership parent=%d batch=%s slot=%s"
+				(key.parentTid, key.batchId, slot);
+		if (slot >= batchPtr.childTids.length)
+			return format!"slot out of range while clearing child ownership parent=%d batch=%s slot=%s child_count=%s"
+				(key.parentTid, key.batchId, slot, batchPtr.childTids.length);
+		if (!batchPtr.done[slot])
+			return format!"attempted to clear unfinished child ownership parent=%d batch=%s slot=%s child=%d"
+				(key.parentTid, key.batchId, slot, batchPtr.childTids[slot]);
+		auto childTid = batchPtr.childTids[slot];
+		auto owner = childTid in batchKeyByChildTid;
+		if (owner is null)
+			return format!"missing child owner index while clearing completed slot parent=%d batch=%s child=%d slot=%s"
+				(key.parentTid, key.batchId, childTid, slot);
+		if (*owner != key)
+			return format!"child owner mismatch while clearing completed slot parent=%d batch=%s child=%d slot=%s owner_parent=%d owner_batch=%s"
+				(key.parentTid, key.batchId, childTid, slot, owner.parentTid, owner.batchId);
+		batchKeyByChildTid.remove(childTid);
+		return "";
+	}
+
+	private void removeActiveBatch(ActiveBatchKey key)
+	{
+		auto batchPtr = key in activeBatches;
+		if (batchPtr is null)
+			return;
+		auto childTids = batchPtr.childTids.dup;
+		auto doneSlots = batchPtr.done.dup;
+		activeBatches.remove(key);
+
+		if (auto idsPtr = key.parentTid in batchIdsByParentTid)
+		{
+			auto ids = *idsPtr;
+			size_t write = 0;
+			foreach (id; ids)
+				if (id != key.batchId)
+					ids[write++] = id;
+			ids.length = write;
+			if (ids.length > 0)
+				batchIdsByParentTid[key.parentTid] = ids;
+			else
+				batchIdsByParentTid.remove(key.parentTid);
+		}
+		else
+			errorf("batch router invariant violated: missing parent index for parent=%d batch=%s",
+				key.parentTid, key.batchId);
+
+		foreach (i, childTid; childTids)
+		{
+			if (auto owner = childTid in batchKeyByChildTid)
+			{
+				if (*owner == key)
+					batchKeyByChildTid.remove(childTid);
+				else if (!doneSlots[i])
+					errorf("batch router invariant violated: unfinished child owner mismatch while removing batch parent=%d batch=%s child=%d owner_parent=%d owner_batch=%s",
+						key.parentTid, key.batchId, childTid, owner.parentTid, owner.batchId);
+			}
+			else if (!doneSlots[i])
+				errorf("batch router invariant violated: missing unfinished child owner index while removing batch parent=%d batch=%s child=%d",
+					key.parentTid, key.batchId, childTid);
+		}
+	}
+
 	private bool createActiveBatch(int parentTid, int[] childTids, out BatchHandle handle, out string error)
 	{
 		auto batch = buildBatchState(nextBatchId++, childTids, error);
@@ -1669,17 +1808,29 @@ class App : ToolsBackend
 			handle = BatchHandle.init;
 			return false;
 		}
-		activeBatches[parentTid] = batch;
+		auto key = ActiveBatchKey(parentTid, batch.batchId);
+		if (key in activeBatches)
+		{
+			error = format!"duplicate active batch registration for parent=%d batch=%s"(parentTid, batch.batchId);
+			handle = BatchHandle.init;
+			return false;
+		}
+		foreach (childTid; childTids)
+			if (auto owner = findBatchOwningChild(childTid))
+			{
+				error = format!"child tid=%d already owned by parent=%d batch=%s"(childTid, owner.parentTid, owner.batchId);
+				handle = BatchHandle.init;
+				return false;
+			}
+		addActiveBatch(parentTid, batch);
 		handle = BatchHandle(parentTid, batch.batchId);
 		return true;
 	}
 
 	private void enqueueChildDoneSignal(BatchHandle handle, size_t slot, int childTid, McpResult result)
 	{
-		auto batch = handle.parentTid in activeBatches;
+		auto batch = findBatch(handle);
 		if (batch is null)
-			return;
-		if (batch.batchId != handle.batchId)
 			return;
 		if (slot >= batch.childTids.length || batch.childTids[slot] != childTid)
 		{
@@ -1692,10 +1843,8 @@ class App : ToolsBackend
 
 	private void enqueueQuestionSignal(BatchHandle handle, size_t slot, int childTid, string questionText, int qid)
 	{
-		auto batch = handle.parentTid in activeBatches;
+		auto batch = findBatch(handle);
 		if (batch is null)
-			return;
-		if (batch.batchId != handle.batchId)
 			return;
 		if (slot >= batch.childTids.length || batch.childTids[slot] != childTid)
 		{
@@ -1749,36 +1898,28 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : JSONFragment, toJson;
 		import ae.utils.promise.await : await;
+		auto key = ActiveBatchKey(parentTid, batchId);
 
-		auto current = parentTid in activeBatches;
+		auto current = key in activeBatches;
 		if (current is null)
 			return resolve(makeInternalBatchError(
-				format!"no active batch for parent tid=%d (expected batch=%s)"(parentTid, batchId)));
-		if (current.batchId != batchId)
-			return resolve(makeInternalBatchError(
-				format!"active batch mismatch for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
+				format!"no active batch for parent tid=%d batch=%s"(parentTid, batchId)));
 
 		while (true)
 		{
-			current = parentTid in activeBatches;
+			current = key in activeBatches;
 			if (current is null)
 				return resolve(makeInternalBatchError(
 					format!"batch disappeared while waiting for parent tid=%d batch=%s"(parentTid, batchId)));
-			if (current.batchId != batchId)
-				return resolve(makeInternalBatchError(
-					format!"batch replaced while waiting for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
 			if (current.completed >= current.totalChildren)
 				break;
 
 			auto sig = current.eventQueue.waitOne().await();
 
-			current = parentTid in activeBatches;
+			current = key in activeBatches;
 			if (current is null)
 				return resolve(makeInternalBatchError(
 					format!"batch disappeared after event for parent tid=%d batch=%s"(parentTid, batchId)));
-			if (current.batchId != batchId)
-				return resolve(makeInternalBatchError(
-					format!"batch replaced after event for parent tid=%d: expected=%s got=%s"(parentTid, batchId, current.batchId)));
 
 			auto consumed = consumeBatchSignal(*current, sig, (int childTid, int qid) {
 				if (childTid !in tasks)
@@ -1790,8 +1931,14 @@ class App : ToolsBackend
 			final switch (consumed.kind)
 			{
 				case BatchConsumeKind.ignored:
-				case BatchConsumeKind.childDone:
 					break;
+				case BatchConsumeKind.childDone:
+				{
+					auto clearError = clearChildOwnershipForCompletedSlot(key, sig.slot);
+					if (clearError.length > 0)
+						return resolve(makeInternalBatchError(clearError));
+					break;
+				}
 				case BatchConsumeKind.question:
 					// Return question to parent agent — parent answers via Answer,
 					// which re-enters this same batch instance.
@@ -1803,22 +1950,22 @@ class App : ToolsBackend
 			}
 		}
 
-		current = parentTid in activeBatches;
-		if (current is null || current.batchId != batchId)
+		current = key in activeBatches;
+		if (current is null)
 			return resolve(makeInternalBatchError(
 				format!"batch missing before finalization for parent tid=%d batch=%s"(parentTid, batchId)));
 
 		auto invariantError = validateBatchCompletion(*current);
 		if (invariantError.length > 0)
 		{
-			activeBatches.remove(parentTid);
+			removeActiveBatch(key);
 			return resolve(makeInternalBatchError(
 				format!"cannot finalize parent tid=%d batch=%s: %s"(parentTid, batchId, invariantError)));
 		}
 
 		// All children done — assemble results and clean up
 		auto results = current.results.dup;
-		activeBatches.remove(parentTid);
+		removeActiveBatch(key);
 
 		bool anyError;
 		JSONFragment[] items;
@@ -1913,23 +2060,16 @@ class App : ToolsBackend
 		// Reject Handoff while the current task owns unanswered child questions.
 		// A handoff successor does not inherit batch ownership or question-answer
 		// authority; the question would be permanently stranded.
-		if (auto batch = tid in activeBatches)
-		{
-			foreach (cTid; batch.childTids)
-			{
-				if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
-				{
-					auto childTd = &tasks[cTid];
-					import std.conv : to;
-					return McpResult(
-						"Handoff cannot continue while sub-task question qid="
-						~ to!string(childTd.pendingAskQid)
-						~ " is waiting for your answer. "
-						~ "Use mcp__cydo__Answer(...) first, or mcp__cydo__SwitchMode if you need a different mode before answering.",
-						true);
-				}
-			}
-		}
+		int pendingChildTid;
+		string pendingQuestion;
+		int pendingQid;
+		if (findPendingChildQuestion(tid, pendingChildTid, pendingQuestion, pendingQid))
+			return McpResult(
+				"Handoff cannot continue while sub-task question qid="
+				~ to!string(pendingQid)
+				~ " is waiting for your answer. "
+				~ "Use mcp__cydo__Answer(...) first, or mcp__cydo__SwitchMode if you need a different mode before answering.",
+				true);
 
 		td.pendingContinuation = new PendingContinuation(PendingContinuation.Kind.handoff, continuation, prompt);
 		infof("Handoff: tid=%d continuation=%s (type %s → %s)",
@@ -2425,25 +2565,32 @@ class App : ToolsBackend
 		// Child asking parent (compatibility path for Ask(message)).
 		if (callerTd.parentTid == targetTid)
 		{
-			auto batch = targetTid in activeBatches;
-			if (batch is null)
+			auto ownerKey = findBatchOwningChild(callerTidInt);
+			if (ownerKey is null)
 			{
 				return resolve(makeInternalBatchError(
-					format!"no active batch for parent tid=%d while child tid=%d asked parent"(targetTid, callerTidInt)));
+					format!"no active batch owning child tid=%d while asking parent tid=%d"(callerTidInt, targetTid)));
 			}
+			if (ownerKey.parentTid != targetTid)
+				return resolve(makeInternalBatchError(
+					format!"child tid=%d routed to parent tid=%d but is owned by parent tid=%d batch=%s"(callerTidInt, targetTid, ownerKey.parentTid, ownerKey.batchId)));
+			auto batch = findBatch(ownerKey.parentTid, ownerKey.batchId);
+			if (batch is null)
+				return resolve(makeInternalBatchError(
+					format!"missing owning batch for child tid=%d parent tid=%d batch=%s"(callerTidInt, ownerKey.parentTid, ownerKey.batchId)));
 
 			size_t slot;
 			if (!batch.trySlotForChild(callerTidInt, slot))
 			{
 				return resolve(makeInternalBatchError(
-					format!"active batch for parent tid=%d does not own child tid=%d"(targetTid, callerTidInt)));
+					format!"owning batch parent tid=%d batch=%s does not own child tid=%d"(ownerKey.parentTid, ownerKey.batchId, callerTidInt)));
 			}
 
 			route.delivery = QuestionDelivery.batchQuestion;
 			route.wait = QuestionWait.directPromise;
 			route.afterAnswer = QuestionAfterAnswer.continueBatch;
 			route.hasBatch = true;
-			route.batchId = batch.batchId;
+			route.batchId = ownerKey.batchId;
 			route.batchSlot = slot;
 			route.batchChildTid = callerTidInt;
 			return startQuestionRoute(route, message);
@@ -2466,38 +2613,69 @@ class App : ToolsBackend
 
 			BatchHandle batchHandle;
 			size_t childSlot;
-			if (targetTd.status == "completed" || targetTd.status == "failed" || targetTd.status == "active")
+			bool reuseExistingBatch;
+			bool resumeChildForFollowUp =
+				targetTd.status == "completed"
+				|| targetTd.status == "failed"
+				|| targetTd.status == "active";
+			auto ownerKey = findBatchOwningChild(targetTid);
+			if (ownerKey !is null)
 			{
+				if (ownerKey.parentTid != callerTidInt)
+				{
+					return resolve(makeInternalBatchError(
+						format!"child tid=%d owned by parent tid=%d batch=%s, cannot reuse for parent tid=%d"(targetTid, ownerKey.parentTid, ownerKey.batchId, callerTidInt)));
+				}
+				auto batch = findBatch(ownerKey.parentTid, ownerKey.batchId);
+				if (batch is null)
+					return resolve(makeInternalBatchError(
+						format!"missing owning batch for child tid=%d parent tid=%d batch=%s"(targetTid, ownerKey.parentTid, ownerKey.batchId)));
+				if (!batch.trySlotForChild(targetTid, childSlot))
+					return resolve(makeInternalBatchError(
+						format!"owning batch parent tid=%d batch=%s does not own child tid=%d"(ownerKey.parentTid, ownerKey.batchId, targetTid)));
+				if (!batch.done[childSlot])
+				{
+					if (targetTd.status == "completed" || targetTd.status == "failed")
+					{}
+					else if (targetTid in pendingSubTasks)
+					{
+						batchHandle = BatchHandle(ownerKey.parentTid, ownerKey.batchId);
+						reuseExistingBatch = true;
+					}
+					else
+					{
+						return resolve(makeInternalBatchError(
+							format!"unfinished batch slot has no pending sub-task promise: parent tid=%d batch=%s child tid=%d slot=%s status=%s"
+							(ownerKey.parentTid, ownerKey.batchId, targetTid, childSlot, targetTd.status)));
+					}
+				}
+			}
+
+			if (!reuseExistingBatch)
+			{
+				if (resumeChildForFollowUp)
+				{
+					if (targetTid in pendingSubTasks)
+					{
+						return resolve(makeInternalBatchError(
+							format!"pending sub-task promise already exists for child tid=%d while creating follow-up batch parent tid=%d"(targetTid, callerTidInt)));
+					}
+				}
+
 				string batchError;
 				if (!createActiveBatch(callerTidInt, [targetTid], batchHandle, batchError))
 					return resolve(makeInternalBatchError(batchError));
-
-				auto subTaskPromise = new Promise!McpResult;
-				pendingSubTasks[targetTid] = subTaskPromise;
-				taskDeps[targetTid] = callerTidInt;
-				persistence.addTaskDep(callerTidInt, targetTid);
-				subTaskPromise.then((McpResult r) {
-					enqueueChildDoneSignal(batchHandle, 0, targetTid, r);
-				});
 				childSlot = 0;
-				}
-			else
-			{
-				if (auto batch = callerTidInt in activeBatches)
+
+				if (resumeChildForFollowUp)
 				{
-					if (!batch.trySlotForChild(targetTid, childSlot))
-					{
-						return resolve(makeInternalBatchError(
-							format!"active batch for parent tid=%d does not own child tid=%d"(callerTidInt, targetTid)));
-					}
-					batchHandle = BatchHandle(callerTidInt, batch.batchId);
-				}
-				else
-				{
-					string batchError;
-					if (!createActiveBatch(callerTidInt, [targetTid], batchHandle, batchError))
-						return resolve(makeInternalBatchError(batchError));
-					childSlot = 0;
+					auto subTaskPromise = new Promise!McpResult;
+					pendingSubTasks[targetTid] = subTaskPromise;
+					taskDeps[targetTid] = callerTidInt;
+					persistence.addTaskDep(callerTidInt, targetTid);
+					subTaskPromise.then((McpResult r) {
+						enqueueChildDoneSignal(batchHandle, 0, targetTid, r);
+					});
 				}
 			}
 
@@ -2537,25 +2715,20 @@ class App : ToolsBackend
 		if (questionPromise is null)
 			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
 
-			final switch (route.afterAnswer)
+		final switch (route.afterAnswer)
+		{
+			case QuestionAfterAnswer.continueBatch:
 			{
-				case QuestionAfterAnswer.continueBatch:
-				{
 				if (!route.hasBatch)
 				{
 					return resolve(makeInternalBatchError(
 						format!"missing originating batch for child question: parent tid=%d qid=%d"(callerTidInt, qid)));
 				}
-				auto batch = callerTidInt in activeBatches;
+				auto batch = findBatch(route.answererTid, route.batchId);
 				if (batch is null)
 				{
 					return resolve(makeInternalBatchError(
 						format!"no active batch while answering child question: parent tid=%d qid=%d"(callerTidInt, qid)));
-				}
-				if (batch.batchId != route.batchId)
-				{
-					return resolve(makeInternalBatchError(
-						format!"batch mismatch while answering child question: parent tid=%d qid=%d expected=%s got=%s"(callerTidInt, qid, route.batchId, batch.batchId)));
 				}
 
 				auto answerJson = toJson(AnswerResult("answered", callerTidInt, 0,
@@ -2572,9 +2745,9 @@ class App : ToolsBackend
 					persistence.setStatus(route.askerTid, "active");
 					broadcastTaskUpdate(route.askerTid);
 				}
-					// Keep the user in the parent context after answering a child question.
-					// Jumping focus to the child can race with task_reload/exit and hide the input.
-					return awaitBatchLoop(route.answererTid, route.batchId);
+				// Keep the user in the parent context after answering a child question.
+				// Jumping focus to the child can race with task_reload/exit and hide the input.
+				return awaitBatchLoop(route.answererTid, route.batchId);
 			}
 			case QuestionAfterAnswer.completeAnswererOnIdle:
 			{
@@ -2683,8 +2856,8 @@ class App : ToolsBackend
 		if (tid !in tasks)
 			return;
 
-		// Don't clean up deps if there's an active batch (Answer will re-enter)
-		if (tid in activeBatches)
+		// Don't clean up deps if there's any live batch (Answer may re-enter one)
+		if (parentHasLiveBatches(tid))
 			return;
 
 		// Clean up deps for completed children (no-op for non-Task tools)
@@ -4538,18 +4711,25 @@ class App : ToolsBackend
 	/// Returns true if found; sets childTid, question, and qid via out params.
 	private bool findPendingChildQuestion(int tid, out int childTid, out string question, out int qid)
 	{
-		auto batch = tid in activeBatches;
-		if (batch is null)
+		auto batchIds = tid in batchIdsByParentTid;
+		if (batchIds is null || batchIds.length == 0)
 			return false;
-		foreach (cTid; batch.childTids)
+		foreach (batchId; *batchIds)
 		{
-			if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+			if (auto batch = findBatch(tid, batchId))
 			{
-				childTid = cTid;
-				question = tasks[cTid].pendingAskQuestion;
-				qid = tasks[cTid].pendingAskQid;
-				return true;
+				foreach (cTid; batch.childTids)
+					if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
+					{
+						childTid = cTid;
+						question = tasks[cTid].pendingAskQuestion;
+						qid = tasks[cTid].pendingAskQid;
+						return true;
+					}
 			}
+			else
+				errorf("batch router invariant violated: parent index points to missing batch parent=%d batch=%s",
+					tid, batchId);
 		}
 		return false;
 	}
@@ -5900,13 +6080,11 @@ class App : ToolsBackend
 			// restarted by yield enforcement and will restart again.
 			if (!ev.is_continuation)
 			{
-				if (auto batch = tid in activeBatches)
-					foreach (cTid; batch.childTids)
-						if (cTid in tasks && tasks[cTid].pendingAskPromise !is null)
-						{
-							ev.is_continuation = true;
-							break;
-						}
+				int pendingChildTid;
+				string pendingQuestion;
+				int pendingQid;
+				if (findPendingChildQuestion(tid, pendingChildTid, pendingQuestion, pendingQid))
+					ev.is_continuation = true;
 			}
 			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			if (tid !in tasks)

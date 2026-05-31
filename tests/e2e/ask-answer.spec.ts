@@ -70,6 +70,28 @@ function parseTaskResultItems(event: ItemResultEventLike): TaskResultItem[] | nu
   return null;
 }
 
+function eventText(event: ItemResultEventLike): string {
+  const parts: string[] = [];
+  for (const value of [event.tool_result, event.content]) {
+    if (typeof value === "string") {
+      parts.push(value);
+    } else if (Array.isArray(value)) {
+      parts.push(
+        value
+          .map((item) =>
+            item && typeof item === "object" && "text" in item
+              ? String((item as { text?: unknown }).text ?? "")
+              : JSON.stringify(item),
+          )
+          .join(""),
+      );
+    } else if (value !== undefined) {
+      parts.push(JSON.stringify(value));
+    }
+  }
+  return parts.join("\n");
+}
+
 function observeTaskResultEvents(page: Page, tid = 1): ItemResultEventLike[] {
   const taskEvents: ItemResultEventLike[] = [];
   page.on("websocket", (ws) => {
@@ -88,6 +110,18 @@ function observeTaskResultEvents(page: Page, tid = 1): ItemResultEventLike[] {
     });
   });
   return taskEvents;
+}
+
+async function waitForTaskResultEventAfter(
+  observed: ItemResultEventLike[],
+  sinceIndex: number,
+  options: { timeout?: number } = {},
+): Promise<ItemResultEventLike> {
+  const { timeout = 90_000 } = options;
+  await expect
+    .poll(() => observed.length, { timeout })
+    .toBeGreaterThan(sinceIndex);
+  return observed[observed.length - 1]!;
 }
 
 function observeTaskResultItems(page: Page, tid = 1): TaskResultItem[][] {
@@ -367,6 +401,81 @@ test("Ask/Answer: child asks parent, parent answers", async ({
       )
       .last(),
   ).toBeVisible({ timeout: 90_000 });
+});
+
+test("Ask/Answer: parent can answer child question after another Task call", async ({
+  page,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+  const observedTaskResults = observeTaskResultItems(page);
+  const observedTaskEvents = observeTaskResultEvents(page);
+
+  await enterSession(page);
+
+  await sendMessage(page, "call task research call ask interleaved question");
+
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("interleaved question")
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+
+  const questionResult = await waitForTaskResultItem(
+    observedTaskResults,
+    (item) =>
+      item["status"] === "question" &&
+      item["tid"] === 2 &&
+      item["message"] === "interleaved question",
+  );
+  const capturedQid = questionResult["qid"] as number;
+
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  const beforeInterveningTaskResultIndex = observedTaskResults.length;
+  await sendMessage(page, 'call task research reply with "interleaving-child-done"');
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("interleaving-child-done", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  await expect(
+    waitForTaskResultItem(
+      observedTaskResults,
+      (item) => item["status"] === "success" && item["tid"] === 3,
+      { sinceIndex: beforeInterveningTaskResultIndex },
+    ),
+  ).resolves.toBeTruthy();
+
+  const beforeAnswerTaskResultIndex = observedTaskResults.length;
+  const beforeAnswerEventCount = observedTaskEvents.length;
+  await sendMessage(page, `call answer ${capturedQid} interleaved-answer`);
+
+  await expect(
+    waitForTaskResultItem(
+      observedTaskResults,
+      (item) => item["status"] === "success" && item["tid"] === 2,
+      { sinceIndex: beforeAnswerTaskResultIndex },
+    ),
+  ).resolves.toBeTruthy();
+
+  const answerResult = await waitForTaskResultEventAfter(
+    observedTaskEvents,
+    beforeAnswerEventCount,
+  );
+  const answerText = eventText(answerResult);
+  expect(answerText).not.toContain(
+    "Internal batch routing error: no active batch while answering child question",
+  );
+  expect(answerText).not.toContain(
+    "Internal batch routing error: batch mismatch while answering child question",
+  );
 });
 
 test("Ask/Answer: completed task result exposes success status and preserved fields", async ({
