@@ -1,5 +1,25 @@
 module cydo.batchregistry;
 
+/**
+ * Live batch registry for CyDo's `Task(...)` tool calls.
+ *
+ * In CyDo terms, a batch is the live backend state for one `Task(...)` call.
+ * It tracks the child tids launched by that call, each child's result slot,
+ * completion flags, result values, and the event queue that wakes the waiting
+ * parent task.
+ *
+ * Batches exist because a single `Task(...)` can launch multiple children and
+ * then wait for a stream of child completion/question events until all slots
+ * are complete. If a child asks the parent a question, the batch is suspended
+ * and must remain live so `Answer(qid)` can resume that exact `Task(...)`.
+ *
+ * A parent can therefore own multiple live batches at once: while one batch is
+ * suspended on a child question, the parent may launch a newer `Task(...)` that
+ * creates another live batch.
+ *
+ * `BatchRegistry` owns live batch identity and indexes. `App` owns task
+ * lifecycle and question-routing policy.
+ */
 import std.format : format;
 import std.conv : to;
 
@@ -12,12 +32,14 @@ import cydo.task : BatchSignal;
 
 package(cydo):
 
+/// Exact identity handle for one live batch owned by one parent task.
 struct BatchHandle
 {
 	int parentTid;
 	ulong batchId;
 }
 
+/// Hash key equivalent of `BatchHandle` used in registry maps.
 struct ActiveBatchKey
 {
 	int parentTid;
@@ -36,6 +58,20 @@ struct ActiveBatchKey
 	}
 }
 
+/**
+ * Registry of live `Task(...)` batches.
+ *
+ * Invariants:
+ * - Live batch identity is `(parentTid, batchId)`.
+ * - A parent may own multiple live batches.
+ * - A child tid is owned by zero or one live batch.
+ * - Child ownership is released when that child slot completes.
+ * - Finalizing/removing a batch affects only that exact batch handle.
+ * - Exact routing uses batch handle, qid route, or child ownership; never
+ *   parent recency.
+ * - Parent-wide scans are only for predicates like "any live batch?" or
+ *   "find any pending child question owned by this parent."
+ */
 struct BatchRegistry
 {
 private:
@@ -95,6 +131,16 @@ private:
 	}
 
 public:
+	/**
+	 * Register a new live batch for one parent and child tid set.
+	 *
+	 * Use when handling a new `Task(...)` launch result, before waiting for any
+	 * child events. This is an exact registration call: ownership is tied to the
+	 * returned `(parentTid, batchId)` handle.
+	 *
+	 * Returns `false` with non-empty `error` when input/state is invalid
+	 * (duplicate batch id, duplicate child ownership, or invalid batch state).
+	 */
 	bool create(int parentTid, int[] childTids, out BatchHandle handle, out string error)
 	{
 		auto batch = buildBatchState(nextBatchId++, childTids, error);
@@ -123,11 +169,19 @@ public:
 		return true;
 	}
 
+	/// Exact lookup: `true` only when that specific `(parentTid, batchId)` is live.
 	bool exists(BatchHandle handle)
 	{
 		return findBatch(handle) !is null;
 	}
 
+	/**
+	 * Parent-wide predicate: does this parent currently own any live batch?
+	 *
+	 * Callers use this for broad routing policy checks, not exact event routing.
+	 * Returns `false` with non-empty `error` only when parent index invariants
+	 * are broken.
+	 */
 	bool parentHasLiveBatches(int parentTid, out bool hasLive, out string error)
 	{
 		auto ids = parentTid in batchIdsByParentTid;
@@ -153,6 +207,16 @@ public:
 		return true;
 	}
 
+	/**
+	 * Exact child-ownership lookup across all live batches.
+	 *
+	 * Use for routing events keyed by child tid. If ownership exists, returns
+	 * `true` and fills the owning handle/slot plus current completion state.
+	 *
+	 * Returns `false` with empty `error` when no live batch owns `childTid`.
+	 * Returns `true` with non-empty `error` when ownership index points to an
+	 * inconsistent/missing batch (invariant failure).
+	 */
 	bool findOwnerOfChild(int childTid,
 		out BatchHandle handle, out size_t slot, out bool done,
 		out string error)
@@ -186,6 +250,17 @@ public:
 		return true;
 	}
 
+	/**
+	 * Parent-wide scan for the first child tid matching `matches`.
+	 *
+	 * Use only for parent-level predicates/questions (for example, find any
+	 * pending child question for a parent). Do not use for exact routing of a
+	 * known batch event.
+	 *
+	 * Returns `true` when a match is found. Returns `false` with empty `error`
+	 * when no matching live child exists. Returns `false` with non-empty `error`
+	 * when parent index invariants are broken.
+	 */
 	bool findFirstLiveChild(int parentTid,
 		scope bool delegate(int childTid) matches,
 		out int childTid, out string error)
@@ -218,6 +293,15 @@ public:
 		return false;
 	}
 
+	/**
+	 * Wait for one queued signal on an exact live batch handle.
+	 *
+	 * Callers should use this only after successful `create`, and only with that
+	 * exact handle. Returns a promise for the next childDone/question event.
+	 *
+	 * Returns `false` with empty `error` when the batch is already complete.
+	 * Returns `false` with non-empty `error` when the batch disappeared.
+	 */
 	bool waitOne(BatchHandle handle,
 		out Promise!BatchSignal event, out string error)
 	{
@@ -240,6 +324,16 @@ public:
 		return true;
 	}
 
+	/**
+	 * Consume one signal for an exact live batch and update batch state.
+	 *
+	 * Use this immediately after `waitOne` resolves. This is exact routing; pass
+	 * the same handle that produced the signal. On `childDone`, ownership for
+	 * the completed slot is released.
+	 *
+	 * `error` is non-empty only for invariant failures (for example missing
+	 * batch after event, ownership/index mismatch while clearing a done slot).
+	 */
 	BatchConsumeResult consume(BatchHandle handle, BatchSignal signal,
 		scope bool delegate(int childTid, int qid) hasPendingQuestion,
 		out string error)
@@ -266,6 +360,16 @@ public:
 		return consumed;
 	}
 
+	/**
+	 * Finalize an exact completed batch and return ordered child results.
+	 *
+	 * Use only after the batch reaches completion. This validates completion
+	 * invariants, copies results, and removes that exact batch from the live
+	 * registry.
+	 *
+	 * Returns `false` with non-empty `error` when the batch is missing or any
+	 * completion/index invariant is broken.
+	 */
 	bool finalize(BatchHandle handle,
 		out McpResult[] results, out string error)
 	{
@@ -307,6 +411,15 @@ public:
 		return true;
 	}
 
+	/**
+	 * Enqueue a `childDone` signal for an exact live batch slot ownership.
+	 *
+	 * Returns `true` with empty `error` when the target batch is already gone;
+	 * this is treated as a stale late signal and safely ignored.
+	 *
+	 * Returns `false` with non-empty `error` when slot/child ownership does not
+	 * match the live batch (invariant/routing bug).
+	 */
 	bool enqueueChildDone(BatchHandle handle, size_t slot, int childTid,
 		McpResult result, out string error)
 	{
@@ -327,6 +440,15 @@ public:
 		return true;
 	}
 
+	/**
+	 * Enqueue a child question signal for an exact live batch slot ownership.
+	 *
+	 * Returns `true` with empty `error` when the target batch is already gone;
+	 * this is treated as a stale late signal and safely ignored.
+	 *
+	 * Returns `false` with non-empty `error` when slot/child ownership does not
+	 * match the live batch (invariant/routing bug).
+	 */
 	bool enqueueQuestion(BatchHandle handle, size_t slot, int childTid,
 		string questionText, int qid, out string error)
 	{
@@ -347,6 +469,14 @@ public:
 		return true;
 	}
 
+	/**
+	 * Remove one exact batch handle from all live indexes.
+	 *
+	 * `remove` is batch-specific and never targets "latest for parent". Returns
+	 * `true` with empty `error` when the batch is already absent (stale late
+	 * cleanup signal). Returns `false` with non-empty `error` on index invariant
+	 * failures encountered while removing ownership/index entries.
+	 */
 	bool remove(BatchHandle handle, out string error)
 	{
 		auto key = batchKey(handle);
