@@ -359,6 +359,17 @@ export const AssistantMessage = memo(
             );
           }
 
+          if (block.type === "warning") {
+            return (
+              <div key={itemId} class={`content-block ${block.type}`}>
+                <div class="warning-block">
+                  <div class="warning-block-label">Agent warning</div>
+                  <pre>{block.text}</pre>
+                </div>
+              </div>
+            );
+          }
+
           if (block.type === "unrecognized") {
             if (!devMode) return null;
             return (

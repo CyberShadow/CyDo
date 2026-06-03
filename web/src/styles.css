@@ -2595,6 +2595,27 @@ body,
   padding: 4px 16px;
 }
 
+/* Agent warning block (transient warnings from agent) */
+.warning-block {
+  margin: 8px 0;
+  padding: 8px;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid var(--warn);
+}
+
+.warning-block-label {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+
+.warning-block pre {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Agent error block (transient errors from agent, e.g. API disconnect) */
 .error-block {
   margin: 8px 0;

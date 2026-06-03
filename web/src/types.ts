@@ -157,7 +157,7 @@ export interface TrackedFile {
  *  Present in TaskState.blocks, keyed by itemId. */
 export interface Block {
   itemId: string;
-  type: string; // "text" | "tool_use" | "thinking" | "unrecognized"
+  type: string; // "text" | "tool_use" | "thinking" | "warning" | "error" | "unrecognized"
   text: string; // accumulated text content
   name?: string; // tool name (tool_use)
   toolServer?: string; // MCP server name (e.g. "cydo"); absent for built-ins

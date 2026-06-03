@@ -31,6 +31,7 @@ export type {
   ItemResultEvent,
   TurnStopEvent,
   TurnDeltaEvent,
+  AgentWarningEvent,
   AgentErrorEvent,
   AgentUnrecognizedEvent,
   CydoTaskSpawnedEvent,
@@ -55,6 +56,7 @@ import type {
   ItemResultEvent,
   TurnStopEvent,
   TurnDeltaEvent,
+  AgentWarningEvent,
   AgentErrorEvent,
   AgentUnrecognizedEvent,
   CydoTaskSpawnedEvent,
@@ -162,6 +164,7 @@ export type AgnosticEvent =
   | ControlResponseEvent
   | ProcessExitEvent
   | ProcessStderrEvent
+  | AgentWarningEvent
   | AgentErrorEvent
   | AgentUnrecognizedEvent
   | CydoTaskSpawnedEvent;

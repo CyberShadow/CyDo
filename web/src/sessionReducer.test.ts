@@ -254,6 +254,74 @@ describe("thinking block rendering state", () => {
   });
 });
 
+describe("agent warning reducer", () => {
+  it("creates a standalone assistant warning block when nothing is streaming", () => {
+    const next = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "agent/warning",
+        message:
+          "Heads up: Long threads and multiple compactions can cause the model to be less accurate.",
+      }),
+    );
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]?.type).toBe("assistant");
+    expect(next.messages[0]?.streaming).toBe(false);
+    expect(next.messages[0]?.blockIds).toEqual(["warning-1"]);
+
+    const block = next.blocks.get("warning-1");
+    expect(block).toMatchObject({
+      itemId: "warning-1",
+      type: "warning",
+      text: "Heads up: Long threads and multiple compactions can cause the model to be less accurate.",
+      completed: true,
+      creationOrder: 0,
+    });
+  });
+
+  it("appends a warning block to the streaming assistant message in temporal order", () => {
+    const streaming = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "text-1",
+        item_type: "text",
+        text: "Working on it",
+      }),
+    );
+
+    const next = reduceMessage(
+      streaming,
+      asEvent({
+        type: "agent/warning",
+        message:
+          "Heads up: Long threads and multiple compactions can cause the model to be less accurate.",
+      }),
+    );
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]?.type).toBe("assistant");
+    expect(next.messages[0]?.streaming).toBe(true);
+    expect(next.messages[0]?.blockIds).toEqual([
+      "streaming-1:text-1",
+      "warning-2",
+    ]);
+
+    const textBlock = next.blocks.get("streaming-1:text-1");
+    expect(textBlock?.type).toBe("text");
+
+    const warningBlock = next.blocks.get("warning-2");
+    expect(warningBlock).toMatchObject({
+      itemId: "warning-2",
+      type: "warning",
+      text: "Heads up: Long threads and multiple compactions can cause the model to be less accurate.",
+      completed: false,
+      creationOrder: 1,
+    });
+  });
+});
+
 describe("item/started idempotency", () => {
   it("does not duplicate or overwrite an existing block on duplicate item/started", () => {
     let s: TaskState = makeState();

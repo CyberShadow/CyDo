@@ -295,6 +295,13 @@ struct CommandInput
 	string description;
 }
 
+/// agent/warning — transient warning from the agent.
+struct AgentWarningEvent
+{
+	string type = "agent/warning";
+	string message;
+}
+
 /// agent/error — transient error from the agent (e.g. API disconnect with retry).
 struct AgentErrorEvent
 {

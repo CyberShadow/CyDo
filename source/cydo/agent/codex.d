@@ -263,6 +263,14 @@ struct ErrorParams
 }
 
 @RPCFlatten @JSONPartial
+struct WarningParams
+{
+	@JSONOptional string threadId;
+	@JSONOptional string turnId;
+	@JSONOptional string message;
+}
+
+@RPCFlatten @JSONPartial
 struct TokenUsageUpdatedParams
 {
 	string threadId;
@@ -432,11 +440,75 @@ private interface ICodexServer
 
 	@RPCName("error")
 	Promise!void error(ErrorParams params);
+
+	@RPCName("warning")
+	Promise!void warning(WarningParams params);
 }
 
 // ---------------------------------------------------------------------------
 // CodexServerRouter — routes incoming Codex notifications to sessions.
 // ---------------------------------------------------------------------------
+
+private string buildRawNotification(string method, string paramsJson)
+{
+	return `{"jsonrpc":"2.0","method":"` ~ method ~ `","params":` ~ paramsJson ~ `}`;
+}
+
+private string extractErrorMessage(ErrorParams params)
+{
+	string message;
+	if (params.error)
+	{
+		@JSONPartial static struct ErrorInfo { @JSONOptional string message; }
+		try { message = jsonParse!ErrorInfo(toJson(params.error)).message; }
+		catch (Exception) {}
+	}
+	return message;
+}
+
+private TranslatedEvent makeAgentErrorTranslatedEvent(ErrorParams params)
+{
+	import cydo.agent.protocol : AgentErrorEvent;
+
+	AgentErrorEvent ev;
+	ev.message = extractErrorMessage(params);
+	ev.willRetry = params.willRetry;
+	return TranslatedEvent(toJson(ev), buildRawNotification("error", toJson(params)));
+}
+
+private TranslatedEvent makeAgentWarningTranslatedEvent(WarningParams params)
+{
+	import cydo.agent.protocol : AgentWarningEvent;
+
+	AgentWarningEvent ev;
+	ev.message = params.message;
+	return TranslatedEvent(toJson(ev), buildRawNotification("warning", toJson(params)));
+}
+
+unittest
+{
+	@JSONPartial
+	struct EmittedWarningEvent
+	{
+		string type;
+		string message;
+	}
+
+	WarningParams params;
+	params.threadId = "thread-warning";
+	params.turnId = "turn-warning";
+	params.message =
+		"Heads up: Long threads and multiple compactions can cause the model to be less accurate.";
+
+	auto translated = makeAgentWarningTranslatedEvent(params);
+	auto ev = jsonParse!EmittedWarningEvent(translated.translated);
+
+	assert(ev.type == "agent/warning");
+	assert(ev.message
+		== "Heads up: Long threads and multiple compactions can cause the model to be less accurate.");
+	assert(translated.raw
+		== `{"jsonrpc":"2.0","method":"warning","params":{"threadId":"thread-warning","turnId":"turn-warning","message":"Heads up: Long threads and multiple compactions can cause the model to be less accurate."}}`);
+}
 
 private class CodexServerRouter : ICodexServer
 {
@@ -451,11 +523,17 @@ private class CodexServerRouter : ICodexServer
 			handler(*session);
 	}
 
-	/// Build a JSON-RPC notification string for use as _raw provenance.
-	/// Reconstructs the notification from the method name and serialized params.
-	private static string buildRawNotification(string method, string paramsJson)
+	private void emitToThreadOrAll(string threadId, TranslatedEvent tev)
 	{
-		return `{"jsonrpc":"2.0","method":"` ~ method ~ `","params":` ~ paramsJson ~ `}`;
+		if (threadId.length > 0)
+			routeToSession(threadId, (s) {
+				if (s.outputHandler_)
+					s.outputHandler_(tev);
+			});
+		else
+			foreach (session; server.sessionsByTid)
+				if (session.outputHandler_)
+					session.outputHandler_(tev);
 	}
 
 	Promise!void itemStarted(ItemStartedParams params)
@@ -551,28 +629,13 @@ private class CodexServerRouter : ICodexServer
 
 	Promise!void error(ErrorParams params)
 	{
-		import cydo.agent.protocol : AgentErrorEvent;
-		auto raw = buildRawNotification("error", toJson(params));
-		string message;
-		if (params.error)
-		{
-			@JSONPartial static struct ErrorInfo { @JSONOptional string message; }
-			try { message = jsonParse!ErrorInfo(toJson(params.error)).message; }
-			catch (Exception) {}
-		}
-		AgentErrorEvent ev;
-		ev.message = message;
-		ev.willRetry = params.willRetry;
-		auto tev = TranslatedEvent(toJson(ev), raw);
-		if (params.threadId.length > 0)
-			routeToSession(params.threadId, (s) {
-				if (s.outputHandler_)
-					s.outputHandler_(tev);
-			});
-		else
-			foreach (session; server.sessionsByTid)
-				if (session.outputHandler_)
-					session.outputHandler_(tev);
+		emitToThreadOrAll(params.threadId, makeAgentErrorTranslatedEvent(params));
+		return resolve();
+	}
+
+	Promise!void warning(WarningParams params)
+	{
+		emitToThreadOrAll(params.threadId, makeAgentWarningTranslatedEvent(params));
 		return resolve();
 	}
 

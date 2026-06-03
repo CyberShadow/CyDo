@@ -206,6 +206,11 @@ export interface TurnDeltaEvent {
   extras?: Record<string, unknown>;
 }
 
+export interface AgentWarningEvent {
+  type: "agent/warning";
+  message: string;
+}
+
 export interface AgentErrorEvent {
   type: "agent/error";
   message: string;
