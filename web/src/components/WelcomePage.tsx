@@ -22,6 +22,47 @@ interface Props {
   scanState: "idle" | "requested" | "scanning";
 }
 
+type ProjectMatch = {
+  project: WorkspaceInfo["projects"][number];
+  tasks: TaskState[];
+  active: boolean;
+  maxLastActive: number;
+};
+
+type FilteredWorkspaceGroup = {
+  workspace: WorkspaceInfo;
+  projects: ProjectMatch[];
+};
+
+function compareProjectMatches(a: ProjectMatch, b: ProjectMatch): number {
+  if (a.active !== b.active) return a.active ? -1 : 1;
+  if (a.maxLastActive !== b.maxLastActive) {
+    return b.maxLastActive - a.maxLastActive;
+  }
+  return a.project.name.localeCompare(b.project.name);
+}
+
+export function sortFilteredWorkspaceGroups(
+  filteredWorkspaces: FilteredWorkspaceGroup[],
+  filterLower: string,
+): FilteredWorkspaceGroup[] {
+  if (!filterLower) return filteredWorkspaces;
+
+  return filteredWorkspaces.sort((a, b) => {
+    const aFirstProject = a.projects[0];
+    const bFirstProject = b.projects[0];
+    if (!aFirstProject || !bFirstProject) {
+      if (aFirstProject && !bFirstProject) return -1;
+      if (!aFirstProject && bFirstProject) return 1;
+      return a.workspace.name.localeCompare(b.workspace.name);
+    }
+
+    const projectOrder = compareProjectMatches(aFirstProject, bFirstProject);
+    if (projectOrder !== 0) return projectOrder;
+    return a.workspace.name.localeCompare(b.workspace.name);
+  });
+}
+
 function Chevron({ open }: { open: boolean }) {
   return (
     <svg
@@ -331,7 +372,7 @@ export function WelcomePage({
       projectStats.set(key, { tasks: projectTasks, active, maxLastActive });
     }
 
-    const filteredWorkspaces = workspaces
+    let filteredWorkspaces = workspaces
       .map((ws) => {
         const matchingProjects = (
           filterLower
@@ -348,17 +389,15 @@ export function WelcomePage({
               maxLastActive: 0,
             }),
           }))
-          .sort((a, b) => {
-            if (a.active !== b.active) return a.active ? -1 : 1;
-            if (a.maxLastActive !== b.maxLastActive) {
-              return b.maxLastActive - a.maxLastActive;
-            }
-            return a.project.name.localeCompare(b.project.name);
-          });
+          .sort(compareProjectMatches);
 
         return { workspace: ws, projects: matchingProjects };
       })
       .filter((ws) => ws.projects.length > 0);
+    filteredWorkspaces = sortFilteredWorkspaceGroups(
+      filteredWorkspaces,
+      filterLower,
+    );
 
     const ungrouped = projectStats.get(":")?.tasks || [];
     const filteredUngrouped = filterLower
