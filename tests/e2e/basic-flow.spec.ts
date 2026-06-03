@@ -16,6 +16,32 @@ test("page loads and shows CyDo branding", { tag: "@no-codex" }, async ({ page, 
   });
 });
 
+test(
+  "welcome filter value survives back navigation after Enter opens a project",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    await page.goto("/");
+
+    const filterInput = page.locator(".welcome-filter-input");
+    await expect(filterInput).toBeVisible({ timeout: 15_000 });
+
+    await filterInput.fill("cydo-test-workspace");
+    await filterInput.press("Enter");
+
+    await expect(page).toHaveURL(/\/local\/cydo-test-workspace$/, {
+      timeout: 15_000,
+    });
+    await expect(
+      page.locator(".sidebar-title", { hasText: "cydo-test-workspace" }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    await page.goBack();
+
+    await expect(filterInput).toBeVisible({ timeout: 15_000 });
+    await expect(filterInput).toHaveValue("cydo-test-workspace");
+  },
+);
+
 test("basic message and response", async ({ page, agentType }) => {
   await enterSession(page);
 

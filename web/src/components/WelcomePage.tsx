@@ -43,6 +43,35 @@ function openInNewTab(href: string): void {
   window.open(href, "_blank", "noopener");
 }
 
+type WelcomeFilterHistoryState = {
+  cydoWelcomeFilter?: unknown;
+} & Record<string, unknown>;
+
+function isWelcomeFilterHistoryState(
+  state: unknown,
+): state is WelcomeFilterHistoryState {
+  return !!state && typeof state === "object" && !Array.isArray(state);
+}
+
+function readWelcomeFilterHistoryValue(state: unknown): string {
+  if (!isWelcomeFilterHistoryState(state)) return "";
+  const value = state.cydoWelcomeFilter;
+  return typeof value === "string" ? value : "";
+}
+
+function writeWelcomeFilterHistoryValue(filter: string): void {
+  const currentState: unknown = window.history.state;
+  const baseState = isWelcomeFilterHistoryState(currentState)
+    ? currentState
+    : {};
+  const { cydoWelcomeFilter: _ignoredFilter, ...restState } = baseState;
+  const nextState = filter
+    ? { ...restState, cydoWelcomeFilter: filter }
+    : restState;
+
+  window.history.replaceState(nextState, "");
+}
+
 function ActiveSessions({
   tasks,
   filter,
@@ -186,10 +215,19 @@ export function WelcomePage({
   onRefreshWorkspaces,
   scanState,
 }: Props) {
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(() =>
+    typeof window === "undefined"
+      ? ""
+      : readWelcomeFilterHistoryValue(window.history.state),
+  );
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const filterRef = useRef<HTMLInputElement>(null);
   const filterLower = filter.toLowerCase();
+
+  function updateFilter(nextFilter: string) {
+    setFilter(nextFilter);
+    writeWelcomeFilterHistoryValue(nextFilter);
+  }
 
   function toggleCollapsed(name: string) {
     setCollapsed((prev) => {
@@ -396,7 +434,7 @@ export function WelcomePage({
             placeholder="Filter projects..."
             value={filter}
             onInput={(e) => {
-              setFilter((e.target as HTMLInputElement).value);
+              updateFilter((e.target as HTMLInputElement).value);
             }}
             onKeyDown={handleFilterKeyDown}
           />
@@ -404,7 +442,7 @@ export function WelcomePage({
             <button
               class="welcome-filter-clear"
               onClick={() => {
-                setFilter("");
+                updateFilter("");
               }}
             >
               ×
