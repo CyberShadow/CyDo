@@ -45,7 +45,9 @@ function ResultMessageView({ message }: { message: DisplayMessage }) {
   const d = message.resultData!;
   const durationSec = d.durationMs ? Math.floor(d.durationMs / 1000) : 0;
   const apiSec = d.durationApiMs ? Math.floor(d.durationApiMs / 1000) : 0;
-  const [expanded, setExpanded] = useState(d.isError);
+  // Errors and otherwise-unseen reply text must be visible without a click;
+  // collapsing them to the divider would hide real content behind a checkmark.
+  const [expanded, setExpanded] = useState(d.isError || !!d.resultUnseen);
 
   if (!expanded) {
     return (
