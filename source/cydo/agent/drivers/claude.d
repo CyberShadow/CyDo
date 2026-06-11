@@ -704,6 +704,7 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
+	private size_t promotedBlockSeq_;  // unique ids for blocks promoted from assistant events
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	private string executablePath_;
 	private string agentName_;
@@ -908,6 +909,16 @@ class ClaudeCodeSession : AgentSession
 				normalizeUserLive(rawLine);
 				return;
 			default:
+				// An api retry means the in-flight attempt died; any blocks it
+				// opened will never complete, and the retried response may arrive
+				// with no stream events at all (the CLI stops emitting partials
+				// for the rest of the run), so reset stream tracking to let the
+				// assistant-event promotion fallback take over.
+				if (probe.type == "system" && probe.subtype == "api_retry")
+				{
+					activeItemIds_ = null;
+					activeItemTypes_ = null;
+				}
 				// Stateless translation for system, result, summary, control, etc.
 				auto t = translateClaudeEvent(rawLine, agentName_);
 				if (t.translated !is null)
@@ -1221,20 +1232,69 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		// Cache per-block extras so content_block_stop can attach them.
-		foreach (idx, ref b; raw.message.content)
+		if (activeItemIds_.length == 0 && raw.message.content.length > 0)
 		{
-			auto frag = extrasToFragment(b._extras);
-			if (frag.json !is null && frag.json.length > 0)
+			// No stream events delivered this message's content (after an api
+			// retry the CLI stops emitting partials for the rest of the run, so
+			// content_block_start never fires). Without a fallback the whole
+			// turn would render as nothing. Promote the blocks directly, like
+			// the sub-agent path above.
+			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent,
+				decomposeToolName;
+
+			foreach (ref b; raw.message.content)
 			{
-				string itemId;
-				if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
-					itemId = activeItemIds_[idx];
-				else if (b.type == "tool_use" && b.id.length > 0)
-					itemId = b.id;
+				// tool_use ids are globally unique already; generated ids use a
+				// session-wide counter because per-block assistant events carry
+				// no stream index ("cc-block-<idx>" would collide across blocks)
+				auto itemId = b.type == "tool_use" && b.id.length > 0
+					? b.id : "cc-promoted-" ~ to!string(promotedBlockSeq_++);
+
+				ItemStartedEvent startEv;
+				startEv.item_id   = itemId;
+				startEv.item_type = b.type;
+				if (b.type == "tool_use")
+				{
+					decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
+					startEv.input = b.input;
+				}
 				else
-					itemId = "cc-block-" ~ to!string(idx);
-				blockExtras_[itemId] = frag;
+				{
+					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+					startEv.text = text;
+				}
+				emitEvent(TranslatedEvent(toJson(startEv), rawLine));
+
+				ItemCompletedEvent compEv;
+				compEv.item_id = itemId;
+				if (b.type == "tool_use")
+					compEv.input = b.input;
+				else
+				{
+					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+					compEv.text = text;
+				}
+				compEv.extras = extrasToFragment(b._extras);
+				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
+			}
+		}
+		else
+		{
+			// Cache per-block extras so content_block_stop can attach them.
+			foreach (idx, ref b; raw.message.content)
+			{
+				auto frag = extrasToFragment(b._extras);
+				if (frag.json !is null && frag.json.length > 0)
+				{
+					string itemId;
+					if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
+						itemId = activeItemIds_[idx];
+					else if (b.type == "tool_use" && b.id.length > 0)
+						itemId = b.id;
+					else
+						itemId = "cc-block-" ~ to!string(idx);
+					blockExtras_[itemId] = frag;
+				}
 			}
 		}
 
