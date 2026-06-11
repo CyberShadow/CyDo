@@ -604,27 +604,22 @@ class ClaudeCodeAgent : Agent
 			"HOME": environment.get("HOME", ""),
 		];
 
-		string[] args;
+		auto model = resolveModelAlias(modelClass);
+		string[] args = [
+			claudeBin,
+			"-p", prompt,
+			"--output-format", "text",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		];
+		// an empty alias means no explicit model; omit the flag so claude
+		// falls back to its own configured default, matching the session
+		// spawn path's `config.model.length > 0` guard
+		if (model.length > 0)
+			args ~= ["--model", model];
 		if (launch.cmdPrefix !is null)
-			args = launch.cmdPrefix ~ [
-				claudeBin,
-				"-p", prompt,
-				"--output-format", "text",
-				"--model", resolveModelAlias(modelClass),
-				"--max-turns", "1",
-				"--tools", "",
-				"--no-session-persistence",
-			];
-		else
-			args = [
-				claudeBin,
-				"-p", prompt,
-				"--output-format", "text",
-				"--model", resolveModelAlias(modelClass),
-				"--max-turns", "1",
-				"--tools", "",
-				"--no-session-persistence",
-			];
+			args = launch.cmdPrefix ~ args;
 
 		auto procEnv = launch.cmdPrefix is null ? env : null;
 
