@@ -72,6 +72,10 @@ export interface DisplayMessage {
     permissionDenials?: unknown[];
     stopReason?: string | null;
     errors?: string[];
+    /** True when the result text never appeared as an assistant message
+     * (e.g. stream events lost after API retries) — the result block is
+     * then the only copy of the reply and must not start collapsed. */
+    resultUnseen?: boolean;
   };
   // Rate limit fields
   rateLimitInfo?: {

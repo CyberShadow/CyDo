@@ -702,11 +702,44 @@ export function reduceResultMessage(
           permissionDenials: msg.permission_denials,
           stopReason: msg.stop_reason,
           errors: msg.errors,
+          resultUnseen: isResultTextUnseen(messages, blocks, msg.result),
         },
       },
     ],
   };
   return msg.is_error ? cancelPendingFileEdits(nextState) : nextState;
+}
+
+/** The result event always carries a copy of the final reply text. Normally
+ * it's redundant with the streamed assistant message, but when the turn's
+ * content never rendered (e.g. stream events lost after API retries) that
+ * copy is the only survivor — detect this so the result block isn't hidden
+ * behind the collapsed divider. */
+function isResultTextUnseen(
+  messages: DisplayMessage[],
+  blocks: Map<string, Block>,
+  resultText: string | undefined,
+): boolean {
+  if (!resultText) return false;
+  const needle = resultText.trim();
+  if (needle.length === 0) return false;
+
+  // The result text is the final main-turn assistant message's text, so only
+  // the most recent non-sub-agent assistant message needs checking.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.type !== "assistant" || m.parentToolUseId) continue;
+    const texts: string[] = [];
+    for (const blockId of m.blockIds ?? []) {
+      const b = blocks.get(blockId);
+      if (b && b.type === "text") texts.push(b.text);
+    }
+    for (const c of m.content) {
+      if (c.type === "text" && c.text !== undefined) texts.push(c.text);
+    }
+    return !texts.join("\n").includes(needle);
+  }
+  return true;
 }
 
 /** Insert a message before any in-progress streaming assistant message.
