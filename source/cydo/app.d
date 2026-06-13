@@ -3332,27 +3332,42 @@ class App : ToolsBackend
 				{
 					if (ta.isUserMessageLine(line))
 					{
-						// Non-compacted: type:"user" echo present — pass through with
-						// the enqueue UUID injected (always override any existing uuid so
-						// that undo truncates at the enqueue line, not the echo line).
-						auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
-						lastDequeuedText = null;
-						lastDequeuedEnqueueLineNum = 0;
 						auto ts = ta.translateHistoryLine(line, lineNum);
-							if (ts.length > 0)
-							{
-								import std.format : format;
-								auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
-								// Inject enqueue UUID into the first event (item/started type=user_message).
-								import cydo.agent.protocol : ItemStartedEvent;
-								auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-								// Only steering echoes should use enqueue-N as the visible anchor.
-								// Regular user turns keep the raw user UUID.
-								if (ev.is_steering)
-									ev.uuid = enqueueUuid;
-								return stripTransientStatus([TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
-							}
-						return [];
+						// a type:"user" JSONL line translates to either an
+						// item/started user_message (the steering echo we're waiting
+						// for) or an item/result (a tool_result that landed while the
+						// turn was mid-tool-use). only the former is the dequeued echo;
+						// parsing an item/result as ItemStartedEvent throws on its
+						// tool_result field, so peek at the type first
+						bool firstIsItemStarted = false;
+						if (ts.length > 0)
+						{
+							@JSONPartial static struct TypeProbe { string type; }
+							firstIsItemStarted =
+								jsonParse!TypeProbe(ts[0].translated).type == "item/started";
+						}
+						if (firstIsItemStarted)
+						{
+							// non-compacted: echo present — pass through with the
+							// enqueue UUID injected (always override any existing uuid
+							// so undo truncates at the enqueue line, not the echo line)
+							auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
+							lastDequeuedText = null;
+							lastDequeuedEnqueueLineNum = 0;
+							import std.format : format;
+							auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
+							// inject enqueue UUID into the first event (item/started type=user_message)
+							import cydo.agent.protocol : ItemStartedEvent;
+							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+							// only steering echoes should use enqueue-N as the visible anchor;
+							// regular user turns keep the raw user UUID
+							if (ev.is_steering)
+								ev.uuid = enqueueUuid;
+							return stripTransientStatus([TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
+						}
+						// not the echo (tool_result, or empty translation): pass
+						// through unchanged and stay deferred for the real echo
+						return stripTransientStatus(ts);
 					}
 					if (ta.isAssistantMessageLine(line))
 					{
