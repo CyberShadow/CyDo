@@ -2477,9 +2477,16 @@ function ExecCommandResult({ content }: { content: string }) {
   return <ResultPre content={output} />;
 }
 
+function extractStructuredDiffText(content: string): string {
+  const gitDiffStart = content.search(/^diff --git /m);
+  if (gitDiffStart >= 0) return content.slice(gitDiffStart);
+  return content;
+}
+
 function DiffResult({ content }: { content: string }) {
   const tokens = useHighlight(content, "diff");
-  const sections = parseApplyPatchSections(content);
+  const structuredContent = extractStructuredDiffText(content);
+  const sections = parseApplyPatchSections(structuredContent);
 
   if (sections.length > 0) {
     const showMeta = sections.length > 1;
@@ -2506,7 +2513,7 @@ function DiffResult({ content }: { content: string }) {
     );
   }
 
-  const hunks = parsePatchHunksFromText(content);
+  const hunks = parsePatchHunksFromText(structuredContent);
   if (hunks && hunks.length > 0) {
     return (
       <DiffWithToggle rawText={content}>

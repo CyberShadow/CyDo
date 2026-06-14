@@ -3864,7 +3864,15 @@ class App : ToolsBackend
 				if (auto ca = cast(CodexAgent) ta)
 				{
 					import std.file : exists, readText;
-					import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
+					import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, CodexSession,
+						countActiveUserTurnsAfterForkId;
+
+					auto codexSession = cast(CodexSession) td.session;
+					if (codexSession is null || !codexSession.canRollbackThread)
+					{
+						fallbackUndoKillAndTruncate(ws, tid, json);
+						return;
+					}
 
 					auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
 					if (jsonlPath.length == 0 || !exists(jsonlPath))
@@ -3986,6 +3994,7 @@ class App : ToolsBackend
 			return false;
 		}
 
+		td.undoStopInProgress = true;
 		td.processQueue.setGoal(ProcessState.Dead).then(() {
 			if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0 &&
 				snapshotContainsUndoAnchor(jsonlSnap, json.after_uuid))
@@ -5952,6 +5961,12 @@ class App : ToolsBackend
 				tasks[tid].processQueue.setCurrentState(ProcessState.Dead);
 				if (!intentionalExit)
 					tasks[tid].processQueue.setGoal(ProcessState.Dead).ignoreResult();
+			}
+
+			if (tasks[tid].undoStopInProgress)
+			{
+				tasks[tid].undoStopInProgress = false;
+				return;
 			}
 
 			if (!intentionalExit)

@@ -114,9 +114,21 @@ const test = base.extend<{ restartableBackend: RestartableBackend }>({
 
     const codexHome = `${workDir}/codex-home`;
     mkdirSync(codexHome, { recursive: true });
+    mkdirSync(`${codexHome}/shell_snapshots`, { recursive: true });
     writeFileSync(
       `${codexHome}/config.toml`,
-      'model = "codex-mini-latest"\napproval_mode = "full-auto"\n',
+      `model = "codex-mini-latest"
+model_provider = "cydo-mock"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.cydo-mock]
+name = "CyDo mock OpenAI"
+base_url = "http://127.0.0.1:9000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+`,
     );
 
     const baseURL = "http://localhost:3940";

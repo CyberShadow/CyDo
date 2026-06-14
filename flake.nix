@@ -103,16 +103,16 @@
           nodejs = pkgs.nodejs_22;
 
           # Codex CLI — pre-built static binary from npm
-          codexVersion = "0.113.0";
+          codexVersion = "0.139.0";
           codexSrc = {
             x86_64-linux = {
               url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-x64.tgz";
-              hash = "sha256-SNe/LMuQDJJONocCnVeOjhG1UnABR9yUQRmc1kZb5SA=";
+              hash = "sha256-+BO39k/esntNvU5EyaEuri8DR831bbUspGE0kmtlfxI=";
               triple = "x86_64-unknown-linux-musl";
             };
             aarch64-linux = {
               url = "https://registry.npmjs.org/@openai/codex/-/codex-${codexVersion}-linux-arm64.tgz";
-              hash = "sha256-wyN9xBKGB6MGfY8YQViq2unvAeAFJiYwmb2SOfoyslc=";
+              hash = "sha256-YZVnfkulHyKpobXw4qAaJVpCpXVbdAEjzmj1MO0t08o=";
               triple = "aarch64-unknown-linux-musl";
             };
           }.${system} or (throw "Codex CLI: unsupported system ${system}");
@@ -128,7 +128,7 @@
             '';
             installPhase = ''
               mkdir -p $out/bin
-              install -m755 package/vendor/${codexSrc.triple}/codex/codex $out/bin/codex
+              install -m755 package/vendor/${codexSrc.triple}/bin/codex $out/bin/codex
             '';
             meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
           };
@@ -569,7 +569,6 @@ EOF
             OPENAI_BASE_URL = "http://127.0.0.1:9000/v1";
             OPENAI_API_KEY = "test-key-mock";
             CODEX_HOME = "/tmp/codex-test-home";
-            CYDO_CODEX_COMPACT_LIMIT = "100";
 
             # Fixed port env vars — fixtures inherit these
             CYDO_LISTEN_PORT = "3940";
@@ -587,8 +586,18 @@ EOF
               mkdir -p $CODEX_HOME
               cat > $CODEX_HOME/config.toml <<'CODEXCFG'
               model = "codex-mini-latest"
-              approval_mode = "full-auto"
+              model_provider = "cydo-mock"
+              approval_policy = "never"
+              sandbox_mode = "danger-full-access"
+
+              [model_providers.cydo-mock]
+              name = "CyDo mock OpenAI"
+              base_url = "http://127.0.0.1:9000/v1"
+              wire_api = "responses"
+              requires_openai_auth = false
+              supports_websockets = false
               CODEXCFG
+              mkdir -p $CODEX_HOME/shell_snapshots
 
               mkdir -p /tmp/cydo-test-workspace
               mkdir -p /tmp/cydo-test-workspace/.claude
@@ -644,6 +653,9 @@ EOF
               CYDO_CFG
 
               export CYDO_BIN="${cydoDebug}/bin/cydo"
+              ${lib.optionalString (agentType == "codex" && lib.hasPrefix "e2e/codex-compaction.spec.ts:" testMatch) ''
+              export CYDO_CODEX_COMPACT_LIMIT=100
+              ''}
 
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests

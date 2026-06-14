@@ -87,6 +87,18 @@ vi.mock("../lib/shellSemantic", async () => {
         };
         return scriptResult;
       }
+      if (command.startsWith("git log -p")) {
+        const diffResult: ShellSemanticResult = {
+          ok: true,
+          value: {
+            kind: "diff",
+            commandName: "git",
+            command,
+            subcommand: "log",
+          },
+        };
+        return diffResult;
+      }
       return null;
     },
   };
@@ -506,6 +518,48 @@ describe("ToolCall shell source tree rendering", () => {
     expect(html).toContain("source-tree-block-end");
     expect(html).toContain('title="Show source"');
     expect(html).toContain('alt="SVG preview"');
+  });
+
+  it("renders git log patch output with commit headers as a structured diff", () => {
+    const output = [
+      "commit abc123",
+      "Author: Test <test@test>",
+      "",
+      "    init",
+      "",
+      "diff --git a/README.md b/README.md",
+      "new file mode 100644",
+      "index 0000000..9daeafb",
+      "--- /dev/null",
+      "+++ b/README.md",
+      "@@ -0,0 +1 @@",
+      "+test",
+      "",
+    ].join("\n");
+    const result = makeResult(
+      {
+        isError: false,
+        toolResult: {
+          status: "completed",
+          exitCode: 0,
+          command: "git log -p -1 --no-color -- README.md",
+        },
+      },
+      [{ type: "text", text: output }],
+    );
+
+    const html = renderToString(
+      h(ToolCall, {
+        name: "commandExecution",
+        driver: "codex",
+        input: { command: "git log -p -1 --no-color -- README.md" },
+        result,
+      }),
+    );
+
+    expect(html).toContain('data-testid="semantic-shell-diff"');
+    expect(html).toContain("diff-view");
+    expect(html).toContain('title="Show source"');
   });
 });
 

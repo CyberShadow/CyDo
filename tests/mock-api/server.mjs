@@ -28,6 +28,16 @@ function nextCallId() {
   return `call_mock_${String(++callCounter).padStart(5, "0")}`;
 }
 
+function splitResponsesFunctionName(name) {
+  if (!name.startsWith("mcp__")) return { name };
+  const delimiter = name.lastIndexOf("__");
+  if (delimiter <= "mcp".length) return { name };
+  return {
+    namespace: name.slice(0, delimiter),
+    name: name.slice(delimiter + 2),
+  };
+}
+
 // SSE helpers
 function sseEvent(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -268,35 +278,7 @@ function oaiStreamLegacyMalformedTextResponse(res, text, totalTokensOverride) {
 }
 
 function oaiStreamShellCallResponse(res, command) {
-  const respId = nextRespId();
-  const callId = nextCallId();
-  oaiSseEvent(res, "response.created", {
-    type: "response.created",
-    response: { id: respId },
-  });
-  oaiSseEvent(res, "response.output_item.done", {
-    type: "response.output_item.done",
-    item: {
-      type: "local_shell_call",
-      call_id: callId,
-      status: "completed",
-      action: { type: "exec", command: ["sh", "-c", command] },
-    },
-  });
-  oaiSseEvent(res, "response.completed", {
-    type: "response.completed",
-    response: {
-      id: respId,
-      usage: {
-        input_tokens: 10,
-        input_tokens_details: null,
-        output_tokens: 20,
-        output_tokens_details: null,
-        total_tokens: 30,
-      },
-    },
-  });
-  res.end();
+  oaiStreamFunctionCallResponse(res, "exec_command", { cmd: command });
 }
 
 function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
@@ -309,10 +291,10 @@ function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
   oaiSseEvent(res, "response.output_item.done", {
     type: "response.output_item.done",
     item: {
-      type: "local_shell_call",
+      type: "function_call",
       call_id: callId,
-      status: "completed",
-      action: { type: "exec", command: ["sh", "-c", command] },
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: command }),
     },
   });
   setTimeout(() => {
@@ -336,6 +318,7 @@ function oaiStreamShellCallResponseDelayed(res, command, delayMs) {
 function oaiStreamFunctionCallResponse(res, name, args, totalTokensOverride) {
   const respId = nextRespId();
   const callId = nextCallId();
+  const fn = splitResponsesFunctionName(name);
   oaiSseEvent(res, "response.created", {
     type: "response.created",
     response: { id: respId },
@@ -345,7 +328,7 @@ function oaiStreamFunctionCallResponse(res, name, args, totalTokensOverride) {
     item: {
       type: "function_call",
       call_id: callId,
-      name,
+      ...fn,
       arguments: JSON.stringify(args),
     },
   });
@@ -373,13 +356,14 @@ function oaiStreamMultiFunctionCallResponse(res, names, argsList) {
   });
   for (let i = 0; i < names.length; i++) {
     const callId = nextCallId();
+    const fn = splitResponsesFunctionName(names[i]);
     oaiSseEvent(res, "response.output_item.done", {
       type: "response.output_item.done",
       output_index: i,
       item: {
         type: "function_call",
         call_id: callId,
-        name: names[i],
+        ...fn,
         arguments: JSON.stringify(argsList[i]),
       },
     });
@@ -549,6 +533,18 @@ function isCydoTaskReminderText(text) {
   );
 }
 
+function isCodexCompactionSummaryText(text) {
+  return (
+    typeof text === "string" &&
+    text.includes("Conversation summary: previous context compacted.") &&
+    text.trimStart().startsWith("Another language model started to solve")
+  );
+}
+
+function isResponsesContextOnlyText(text) {
+  return isCydoTaskReminderText(text) || isCodexCompactionSummaryText(text);
+}
+
 function isModeAReminderText(text) {
   return (
     isCydoTaskReminderText(text) &&
@@ -582,11 +578,11 @@ function extractLastUserTextFromInput(input) {
   return null;
 }
 
-function extractLastNonReminderUserTextFromInput(input) {
+function extractLastIntentUserTextFromInput(input) {
   for (let i = input.length - 1; i >= 0; i--) {
     const text = extractUserTextSpan(input[i]);
     if (text === null) continue;
-    if (!isCydoTaskReminderText(text)) return text;
+    if (!isResponsesContextOnlyText(text)) return text;
   }
   return null;
 }
@@ -599,7 +595,7 @@ function hasToolOutput(input) {
   for (let i = input.length - 1; i >= 0; i--) {
     const text = extractUserTextSpan(input[i]);
     if (text === null) continue;
-    if (isCydoTaskReminderText(text)) continue;
+    if (isResponsesContextOnlyText(text)) continue;
     lastUserIdx = i;
     break;
   }
@@ -639,8 +635,8 @@ function handleResponses(req, res) {
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserTextFromInput(input);
     const intentText =
-      isCydoTaskReminderText(userText)
-        ? (extractLastNonReminderUserTextFromInput(input) ?? userText)
+      isResponsesContextOnlyText(userText)
+        ? (extractLastIntentUserTextFromInput(input) ?? userText)
         : userText;
     const isToolOutput = hasToolOutput(input);
     const intent = intentText === null ? null : matchPattern(intentText);
@@ -673,7 +669,7 @@ function handleResponses(req, res) {
       // Multi-background-command: if original message was "run two background
       // commands" and we've only sent one exec_command so far, send the second.
       const origText =
-        extractLastNonReminderUserTextFromInput(input) ??
+        extractLastIntentUserTextFromInput(input) ??
         extractLastUserTextFromInput(input);
       if (origText && /run two background commands/i.test(origText)) {
         const fcOutputCount = input.filter(

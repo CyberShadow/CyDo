@@ -11,7 +11,8 @@ import ae.sys.timing : setTimeout, TimerTask;
 import cydo.agent.agent : Agent, ForkableIdInfo;
 import cydo.config : AgentDriver;
 import cydo.inotify : RefCountedINotify;
-import cydo.task : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, extractEventFromEnvelope;
+import cydo.task : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, Watermark,
+	extractEventFromEnvelope;
 
 struct JsonlTracker
 {
@@ -359,12 +360,24 @@ struct JsonlTracker
 			tid, forkIds.length, userSeqs, assistantSeqs, td.history.length);
 
 		// Match forkable IDs to history seqs by order
+		size_t userForkIds;
+		foreach (ref fid; forkIds)
+			if (fid.isUser)
+				userForkIds++;
+		auto leadingUserForkIdsToSkip = userForkIds > userSeqs.length
+			? userForkIds - userSeqs.length : 0;
+
 		size_t userIdx, assistantIdx;
 		UuidAssignment[] result;
 		foreach (ref fid; forkIds)
 		{
 			if (fid.isUser)
 			{
+				if (leadingUserForkIdsToSkip > 0)
+				{
+					leadingUserForkIdsToSkip--;
+					continue;
+				}
 				if (userIdx < userSeqs.length)
 					result ~= UuidAssignment(fid.id, userSeqs[userIdx]);
 				userIdx++;
@@ -526,4 +539,32 @@ unittest
 	assignments.sort!((a, b) => a.seq < b.seq);
 	assert(assignments[0].seq == 20 && assignments[0].uuid == "enqueue-8");
 	assert(assignments[1].seq == 30 && assignments[1].uuid == "enqueue-12");
+}
+
+unittest
+{
+	TaskData td = TaskData(1, "", "");
+	td.history.reset(Watermark.none());
+	td.history.appendLive(Data(`{"tid":1,"event":{"type":"item/started","item_type":"user_message"}}`.representation), null);
+	td.history.appendLive(Data(`{"tid":1,"event":{"type":"turn/stop"}}`.representation), null);
+	td.history.appendLive(Data(`{"tid":1,"event":{"type":"item/started","item_type":"user_message"}}`.representation), null);
+	td.history.appendLive(Data(`{"tid":1,"event":{"type":"turn/stop"}}`.representation), null);
+
+	JsonlTracker tracker;
+	tracker.getTask = (int tid) => tid == 1 ? &td : null;
+
+	ForkableIdInfo[] forkIds = [
+		ForkableIdInfo("hidden-context-user", true),
+		ForkableIdInfo("visible-user-one", true),
+		ForkableIdInfo("visible-assistant-one", false),
+		ForkableIdInfo("visible-user-two", true),
+		ForkableIdInfo("visible-assistant-two", false),
+	];
+
+	auto assignments = tracker.computeAssignments(1, forkIds);
+	assert(assignments.length == 4);
+	assert(assignments[0].uuid == "visible-user-one" && assignments[0].seq == 0);
+	assert(assignments[1].uuid == "visible-assistant-one" && assignments[1].seq == 1);
+	assert(assignments[2].uuid == "visible-user-two" && assignments[2].seq == 2);
+	assert(assignments[3].uuid == "visible-assistant-two" && assignments[3].seq == 3);
 }

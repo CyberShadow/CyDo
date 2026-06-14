@@ -493,6 +493,7 @@ struct TaskData
 	bool isProcessing = false;
 	bool hadTurnResult = false;    // true after first turn/result in this session lifetime
 	bool wasKilledByUser = false;  // set when user explicitly kills via stop button
+	bool undoStopInProgress; // true while undo fallback owns post-stop reload/finalization
 	bool stdinClosed = false;      // set after closeStdin, cleared on session restart/exit
 	bool outputEnforcementAttempted; // true after first enforcement retry for missing outputs
 	bool needsAttention = false;

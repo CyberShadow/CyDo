@@ -28,8 +28,9 @@ import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedE
 	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentDriver, PathMode;
-import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
-	executableMountPaths, resolveExecutablePath;
+import cydo.sandbox : ProcessLaunch, cleanup, cydoBinaryDir, cydoBinaryPath,
+	effectiveEnvValue, executableMountPaths, resolveExecutablePath,
+	withProcessLaunchEnv;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC param/result structs for the Codex app-server protocol.
@@ -329,7 +330,11 @@ struct ItemCompletedParams
 struct ThreadStartResult
 {
 	@JSONPartial
-	static struct Thread { string id; }
+	static struct Thread
+	{
+		string id;
+		@JSONOptional string path;
+	}
 	Thread thread;
 }
 
@@ -987,6 +992,7 @@ class CodexAgent : Agent
 						result = resp.getResult!ThreadStartResult();
 					catch (Exception e)
 						warningf("thread/start error: %s", e.msg);
+					registerSessionPath(result.thread.id, result.thread.path);
 					session.onThreadStarted(result, null, model, workDir,
 						resp.result.toJson());
 				});
@@ -1034,6 +1040,7 @@ class CodexAgent : Agent
 						session.closeStdin();
 						return;
 					}
+					registerSessionPath(result.thread.id, result.thread.path);
 					session.onThreadStarted(result, resumeSessionId, model, workDir,
 						resp.result.toJson());
 				});
@@ -1249,9 +1256,9 @@ class CodexAgent : Agent
 			return *p;
 		switch (modelClass)
 		{
-			case "small":  return "gpt-5.4-mini";
-			case "medium": return "gpt-5.3-codex";
-			case "large":  return "gpt-5.4";
+			case "small":  return "gpt-5.3-codex-spark";
+			case "medium": return "gpt-5.4";
+			case "large":  return "gpt-5.5";
 			default:       return "gpt-5.4-mini";
 		}
 	}
@@ -1260,6 +1267,8 @@ class CodexAgent : Agent
 	{
 		if (sessionId.length == 0)
 			return null;
+		if (auto p = sessionId in sessionIdToPath_)
+			return *p;
 		// Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-*-<threadId>.jsonl
 		// with an unknown timestamp prefix, so we maintain an in-memory index built
 		// by a single recursive scan rather than scanning per call (O(tasks × N) at
@@ -1276,6 +1285,13 @@ class CodexAgent : Agent
 		if (auto p = sessionId in sessionIdToPath_)
 			return *p;
 		return null;
+	}
+
+	private void registerSessionPath(string sessionId, string path)
+	{
+		if (sessionId.length == 0 || path.length == 0)
+			return;
+		sessionIdToPath_[sessionId] = path;
 	}
 
 	private void populateSessionIndex(DiscoveredSession[]* outDiscovered)
@@ -1429,6 +1445,8 @@ class CodexAgent : Agent
 			// Skip pre-session role=user lines (system context injected before task_started).
 			if (probe.isUserMessage && !seenTaskStarted)
 				continue;
+			if (probe.isUserMessage && isCodexContextOnlyUserMessageLine(line))
+				continue;
 			ids ~= "line:" ~ to!string(lineNum);
 		}
 		return ids;
@@ -1563,25 +1581,57 @@ class CodexAgent : Agent
 
 	string matchProject(string sessionId, const string[] knownProjectPaths) { return ""; }
 
+	private string codexHomeForLaunch(ProcessLaunch launch)
+	{
+		import std.process : environment;
+
+		auto home = environment.get("HOME", "/tmp");
+		return effectiveEnvValue(launch.sandbox.env, "CODEX_HOME",
+			buildPath(home, ".codex"));
+	}
+
+	private string prepareIsolatedOneShotHome(ProcessLaunch launch)
+	{
+		import std.file : copy, exists, mkdirRecurse;
+		import std.uuid : randomUUID;
+
+		// Codex 0.139 roots its SQLite state runtime at CODEX_HOME.  Keep
+		// short-lived `codex exec` runs off the app-server's state database,
+		// while preserving the configured provider/auth settings.
+		auto codexHome = codexHomeForLaunch(launch);
+		auto oneShotHome = buildPath(codexHome, "oneshot", randomUUID().toString());
+		mkdirRecurse(oneShotHome);
+
+		auto configPath = buildPath(codexHome, "config.toml");
+		if (exists(configPath))
+			copy(configPath, buildPath(oneShotHome, "config.toml"));
+		mkdirRecurse(buildPath(oneShotHome, "shell_snapshots"));
+		return oneShotHome;
+	}
+
 	OneShotHandle completeOneShot(string prompt, string modelClass,
 		ProcessLaunch launch = ProcessLaunch.init)
 	{
+		import std.file : rmdirRecurse;
 		import std.string : strip;
 
 		auto promise = new Promise!string;
+		auto oneShotHome = prepareIsolatedOneShotHome(launch);
+		auto oneShotLaunch = withProcessLaunchEnv(launch, "CODEX_HOME", oneShotHome);
 
-		string[] args = [
-			launch.executablePath.length > 0
-				? launch.executablePath
-				: executableName(launch.sandbox.env),
+		string[] codexArgs = [
+			oneShotLaunch.executablePath.length > 0
+				? oneShotLaunch.executablePath
+				: executableName(oneShotLaunch.sandbox.env),
 			"exec",
 			"--ephemeral",
 			"--skip-git-repo-check",
 			"-m", resolveModelAlias(modelClass),
 			prompt,
 		];
-		if (launch.cmdPrefix !is null)
-			args = launch.cmdPrefix ~ args;
+		auto args = oneShotLaunch.cmdPrefix !is null
+			? oneShotLaunch.cmdPrefix ~ codexArgs
+			: codexArgs;
 
 		AgentProcess proc;
 		try
@@ -1593,6 +1643,11 @@ class CodexAgent : Agent
 				mode: FramingMode.raw, logName: "codex-oneshot");
 		catch (Exception e)
 		{
+			cleanup(oneShotLaunch.sandbox);
+			try rmdirRecurse(oneShotHome);
+			catch (Exception cleanupError)
+				warningf("completeOneShot: failed to remove %s: %s",
+					oneShotHome, cleanupError.msg);
 			errorf("completeOneShot: failed to spawn codex: %s", e.msg);
 			promise.reject(new Exception("failed to spawn codex: " ~ e.msg));
 			return OneShotHandle(promise, null);
@@ -1612,6 +1667,12 @@ class CodexAgent : Agent
 		};
 
 		proc.onExit = (int status) {
+			cleanup(oneShotLaunch.sandbox);
+			try rmdirRecurse(oneShotHome);
+			catch (Exception e)
+				warningf("completeOneShot: failed to remove %s: %s",
+					oneShotHome, e.msg);
+
 			if (status != 0)
 			{
 				auto msg = "codex exited with status " ~ status.to!string;
@@ -1827,6 +1888,11 @@ class CodexSession : AgentSession
 
 	@property bool supportsImages() const { return false; }
 
+	@property bool canRollbackThread() const
+	{
+		return alive_ && threadId.length > 0 && !turnInProgress;
+	}
+
 	void interrupt()
 	{
 		if (!alive_ || threadId.length == 0 || !turnInProgress || activeTurnId_.length == 0)
@@ -1944,15 +2010,10 @@ class CodexSession : AgentSession
 				activeItemTypes_[itemId] = "tool_use";
 				ev.item_type = "tool_use";
 				ev.name = "commandExecution";
-				// Build input JSON from the command string field.
-				string cmdInput;
-				if (item.command.length > 0)
-				{
-					import cydo.agent.protocol : CommandInput;
-					cmdInput = toJson(CommandInput(item.command, ""));
-				}
-				else
-					cmdInput = extractCommandInput(item.action ? JSONFragment(toJson(item.action)) : JSONFragment.init);
+				string cmdInput = extractCommandExecutionInput(
+					item.commandActions ? JSONFragment(toJson(item.commandActions)) : JSONFragment.init,
+					item.action ? JSONFragment(toJson(item.action)) : JSONFragment.init,
+					item.command);
 				if (cmdInput.length > 0 && cmdInput != `{}`)
 					ev.input = JSONFragment(cmdInput);
 				break;
@@ -2071,11 +2132,16 @@ class CodexSession : AgentSession
 
 		if (itemType == "contextCompaction")
 		{
-			// Clear the compacting status indicator and skip item/completed.
+			// Codex 0.139 reports compaction as an item instead of sending the
+			// older thread/compacted notification.  Clear the transient status
+			// and emit CyDo's durable compact-boundary event.
 			import cydo.agent.protocol : SessionStatusEvent;
 			SessionStatusEvent clearEv;
 			if (outputHandler_)
+			{
 				outputHandler_(TranslatedEvent(toJson(clearEv), rawNotification));
+				outputHandler_(TranslatedEvent(toJson(SessionCompactedEvent()), rawNotification));
+			}
 			activeItemTypes_.remove(itemId);
 			if (activeItemId_ == itemId)
 				activeItemId_ = null;
@@ -2500,9 +2566,56 @@ private ForkableIdInfo[] extractForkableIdsWithInfoImpl(string content, int line
 			continue;
 		if (probe.isUserMessage && !seenTaskStarted)
 			continue;
+		if (probe.isUserMessage && isCodexContextOnlyUserMessageLine(line))
+			continue;
 		ids ~= ForkableIdInfo("line:" ~ to!string(lineNum), probe.isUserMessage);
 	}
 	return ids;
+}
+
+private bool isCodexContextOnlyUserText(string text)
+{
+	import std.string : startsWith, stripLeft;
+	auto trimmed = text.stripLeft;
+	return trimmed.startsWith("<permissions instructions>")
+		|| trimmed.startsWith("<environment_context>");
+}
+
+private bool isCodexContextOnlyUserMessageLine(string line)
+{
+	@JSONPartial
+	static struct Probe
+	{
+		@JSONPartial
+		static struct Payload
+		{
+			string type;
+			string role;
+			JSONFragment content;
+		}
+		Payload payload;
+	}
+	@JSONPartial
+	static struct TextBlock
+	{
+		string type;
+		@JSONOptional string text;
+	}
+
+	try
+	{
+		auto probe = jsonParse!Probe(line);
+		if (probe.payload.type != "message" || probe.payload.role != "user"
+			|| probe.payload.content.json is null)
+			return false;
+		string text;
+		foreach (ref block; jsonParse!(TextBlock[])(probe.payload.content.json))
+			if (block.type == "text")
+				text ~= block.text;
+		return isCodexContextOnlyUserText(text);
+	}
+	catch (Exception)
+		return false;
 }
 
 enum CodexActiveUserTurnsAfterStatus
@@ -3144,6 +3257,8 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		ev.content = [cb];
 		if (role != "user" || forceMeta)
 			ev.is_meta = true;
+		else if (isCodexContextOnlyUserText(userText))
+			ev.is_meta = true;
 		if (forkId !is null)
 			ev.uuid = forkId;
 		return [toJson(ev)];
@@ -3358,6 +3473,141 @@ string extractCommandInput(JSONFragment action)
 	}
 	catch (Exception e)
 	{ tracef("extractBashInput: parse error: %s", e.msg); return `{}`; }
+}
+
+/// Extract display-level command input from a live Codex commandExecution item.
+string extractCommandExecutionInput(JSONFragment commandActions, JSONFragment action, string command)
+{
+	import std.algorithm.searching : canFind;
+	import cydo.agent.protocol : CommandInput;
+
+	auto actionCommand = extractCommandActionsCommand(commandActions);
+	if (actionCommand.length > 0)
+	{
+		if (command.length == 0 || !command.canFind('\n') || actionCommand.canFind('\n'))
+			return toJson(CommandInput(actionCommand, ""));
+	}
+
+	auto fromAction = extractCommandInput(action);
+	if (fromAction.length > 0 && fromAction != `{}`)
+		return fromAction;
+
+	if (command.length > 0)
+		return toJson(CommandInput(command, ""));
+
+	return actionCommand.length > 0 ? toJson(CommandInput(actionCommand, "")) : `{}`;
+}
+
+/// Extract a fallback command from Codex commandActions when no executed command
+/// field is available.
+string extractCommandActionsInput(JSONFragment commandActions)
+{
+	auto command = extractCommandActionsCommand(commandActions);
+	if (command.length == 0)
+		return `{}`;
+
+	import cydo.agent.protocol : CommandInput;
+	return toJson(CommandInput(command, ""));
+}
+
+/// Extract a single user-level command from Codex commandActions.
+string extractCommandActionsCommand(JSONFragment commandActions)
+{
+	if (commandActions.json is null || commandActions.json.length == 0)
+		return "";
+
+	@JSONPartial
+	static struct CommandAction
+	{
+		@JSONOptional string command;
+	}
+
+	try
+	{
+		auto actions = jsonParse!(CommandAction[])(commandActions.json);
+		if (actions.length != 1 || actions[0].command.length == 0)
+			return "";
+		return actions[0].command;
+	}
+	catch (Exception e)
+	{ tracef("extractCommandActionsInput: parse error: %s", e.msg); }
+	return "";
+}
+
+unittest
+{
+	@JSONPartial
+	struct StartedNotification
+	{
+		ItemStartedParams params;
+	}
+
+	@JSONPartial
+	struct EmittedStartedEvent
+	{
+		string type;
+		string name;
+		@JSONOptional JSONFragment input;
+	}
+
+	@JSONPartial
+	struct ParsedCommandInput
+	{
+		string command;
+		string description;
+	}
+
+	enum userCommand =
+		`/run/current-system/sw/bin/zsh -lc "python - <<'PY'\nprint(\"wrapped\")\nPY"`;
+	enum wrappedCommand =
+		`/nix/store/v8sa6r6q037ihghxfbwzjj4p59v2x0pv-bash-5.3p9/bin/bash -lc "/run/current-system/sw/bin/zsh -lc \"python - <<'PY'\nprint(\\\"wrapped\\\")\nPY\""`;
+	auto startedPayload =
+		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thread-command","turnId":"turn-command","item":{"id":"call_command","type":"commandExecution","command":`
+		~ toJson(wrappedCommand)
+		~ `,"commandActions":[{"type":"unknown","command":`
+		~ toJson(userCommand)
+		~ `}]}}}`;
+
+	auto session = new CodexSession(cast(AppServerProcess) null, 1, SessionConfig.init);
+	string[] emitted;
+	void sink(TranslatedEvent ev) { emitted ~= ev.translated; }
+	session.onOutput(&sink);
+
+	auto started = jsonParse!StartedNotification(startedPayload);
+	session.handleItemStarted(started.params, startedPayload);
+
+	auto startedEvent = jsonParse!EmittedStartedEvent(emitted[0]);
+	assert(startedEvent.type == "item/started");
+	assert(startedEvent.name == "commandExecution");
+	assert(startedEvent.input.json !is null);
+
+	auto input = jsonParse!ParsedCommandInput(startedEvent.input.json);
+	assert(
+		input.command == userCommand && input.description == "",
+		"expected multiline commandAction to preserve semantic command; actual=" ~ input.command,
+	);
+}
+
+unittest
+{
+	@JSONPartial
+	struct ParsedCommandInput
+	{
+		string command;
+		string description;
+	}
+
+	enum multiActions =
+		`[{"type":"read","command":"sed -n '1,1p' file"},{"type":"read","command":"sed -n '2,2p' file"}]`;
+	enum wrappedCommand =
+		`/nix/store/bash/bin/bash -lc "sed -n '1,1p' file\nprintf '\n--- section ---\n'\nsed -n '2,2p' file"`;
+
+	auto input = jsonParse!ParsedCommandInput(
+		extractCommandExecutionInput(JSONFragment(multiActions), JSONFragment.init, wrappedCommand));
+	assert(
+		input.command == wrappedCommand && input.description == "",
+		"expected multi-action commandExecution input to preserve wrapper; actual=" ~ input.command,
+	);
 }
 
 unittest

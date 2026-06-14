@@ -499,6 +499,19 @@ ProcessLaunch prepareProcessLaunch(ResolvedSandbox sandbox, string workDir,
 	return launch;
 }
 
+/// Return a launch clone with an additional runtime environment variable.
+/// The command prefix is recompiled from the sandbox model rather than patched
+/// after argv generation.  The executable path is intentionally left unchanged;
+/// use this only for env vars that do not affect executable resolution.
+ProcessLaunch withProcessLaunchEnv(ProcessLaunch launch, string key, string value)
+{
+	launch.sandbox.tempFiles = null;
+	launch.sandbox.env = launch.sandbox.env.dup;
+	launch.sandbox.env[key] = value;
+	launch.cmdPrefix = buildCommandPrefix(launch.sandbox, launch.workDir);
+	return launch;
+}
+
 unittest
 {
 	ResolvedSandbox sandbox;
@@ -517,6 +530,29 @@ unittest
 
 	// Preparing a launch should not mutate the caller's sandbox state.
 	assert(sandbox.tempFiles.length == 0);
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	ResolvedSandbox sandbox;
+	sandbox.isolate_filesystem = false;
+	sandbox.isolate_processes = false;
+	sandbox.isolate_environment = false;
+	sandbox.env["A"] = "1";
+
+	auto launch = prepareProcessLaunch(sandbox, "/tmp/cydo-launch");
+	launch.sandbox.tempFiles = ["/tmp/original-temp"];
+
+	auto derived = withProcessLaunchEnv(launch, "B", "2");
+	assert(("B" in launch.sandbox.env) is null);
+	assert(launch.sandbox.tempFiles == ["/tmp/original-temp"]);
+	assert(derived.sandbox.env["B"] == "2");
+	assert(derived.sandbox.tempFiles.length == 0);
+	assert(derived.cmdPrefix[0 .. 3] == ["env", "-C", "/tmp/cydo-launch"]);
+	assert(derived.cmdPrefix.canFind("A=1"));
+	assert(derived.cmdPrefix.canFind("B=2"));
 }
 
 unittest
