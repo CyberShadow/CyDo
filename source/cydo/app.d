@@ -57,9 +57,10 @@ import cydo.inotify : RefCountedINotify;
 import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
+import cydo.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
-import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock, PermissionAllow, PermissionDeny,
+import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, QuestionResult, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
@@ -77,10 +78,13 @@ import cydo.tasktype : TaskTypeDef, UserEntryPointDef, TaskTypeConfig, Continuat
 import cydo.system_message : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
+import cydo.system_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
+	followUpFromParentSubject, handoffSubject, modeSwitchSubject, questionFromTaskSubject,
+	sessionStartSubject, subTaskWaitingForAnswerSubject, systemMessagePrefix,
+	systemMessageSubject, taskPromptSubject, tryKnownSystemMessageMatch,
+	wrapKnownSystemMessage;
 import cydo.task;
 import cydo.worktree;
-
-import uninode.node : UniNode;
 
 private struct AgentUsageLimitWindowMessage
 {
@@ -1602,6 +1606,7 @@ class App : ToolsBackend
 				["task_description": prompt], "task_description");
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
+					config.system_keyword,
 					KnownSystemMessageKind.taskPrompt, renderedPrompt, taskPromptMsgSubject))], null, subtaskMeta);
 			}).ignoreResult();
 
@@ -2073,7 +2078,8 @@ class App : ToolsBackend
 			["message": message, "qid": to!string(qid)]);
 		if (body.length == 0)
 			body = message ~ "\n\nAnswer with Answer(" ~ to!string(qid) ~ ", \"your response\").";
-		return wrapKnownSystemMessage(KnownSystemMessageKind.questionFromTask, body, subject);
+		return wrapKnownSystemMessage(config.system_keyword,
+			KnownSystemMessageKind.questionFromTask, body, subject);
 	}
 
 	private void deliverInjectedQuestion(QuestionRoute route, string message)
@@ -2110,6 +2116,7 @@ class App : ToolsBackend
 					followUpBody = message ~ "\n\nAnswer with mcp__cydo__Answer("
 						~ to!string(currentRoute.qid) ~ ", \"your response\").";
 				prompt = wrapKnownSystemMessage(
+					config.system_keyword,
 					KnownSystemMessageKind.followUpFromParent,
 					followUpBody,
 					followUpMsgSubject);
@@ -2949,6 +2956,7 @@ class App : ToolsBackend
 				sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
+					config.system_keyword,
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 			}
@@ -3361,6 +3369,7 @@ class App : ToolsBackend
 				auto sessionStartMsgSubject = sessionStartSubject(sessionStartMsgName);
 				// Preserve image blocks alongside the rendered text prompt.
 				messageToSend = ContentBlock("text", wrapKnownSystemMessage(
+					config.system_keyword,
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 				// Attach metadata so the frontend can render this as a collapsible system message.
@@ -4410,97 +4419,6 @@ class App : ToolsBackend
 		assert(both.countUntil("mem") < both.countUntil("[TASK DESCRIPTION]"), both);
 	}
 
-	private enum KnownSystemMessageKind
-	{
-		taskPrompt,
-		sessionStart,
-		followUpFromParent,
-		questionFromTask,
-		subTaskWaitingForAnswer,
-		missingRequiredOutputs,
-		handoff,
-		subTaskResults,
-		restartNudge,
-		postCompactionTaskModeReminder,
-		modeSwitch,
-	}
-
-	private struct KnownSystemMessageMatch
-	{
-		KnownSystemMessageKind kind;
-		string label;          // user-friendly collapsed label
-		string sourceType;     // populated when subject has "<source> -> <edge>" tail
-		string edgeName;       // populated for edge-bearing kinds
-		Nullable!int qid;
-		Nullable!int tid;
-		Nullable!string title;
-	}
-
-	private static string systemMessageSubject(KnownSystemMessageKind kind)
-	{
-		final switch (kind)
-		{
-		case KnownSystemMessageKind.taskPrompt:
-			return "Task prompt";
-		case KnownSystemMessageKind.sessionStart:
-			return "Session start";
-		case KnownSystemMessageKind.followUpFromParent:
-			return "Follow-up question from parent task";
-		case KnownSystemMessageKind.questionFromTask:
-			return "Question from task";
-		case KnownSystemMessageKind.subTaskWaitingForAnswer:
-			return "Sub-task waiting for answer";
-		case KnownSystemMessageKind.missingRequiredOutputs:
-			return "Missing required outputs";
-		case KnownSystemMessageKind.handoff:
-			return "Handoff";
-		case KnownSystemMessageKind.subTaskResults:
-			return "Sub-task results";
-		case KnownSystemMessageKind.restartNudge:
-			return "Restart nudge";
-		case KnownSystemMessageKind.postCompactionTaskModeReminder:
-			return "Post-compaction task mode reminder";
-		case KnownSystemMessageKind.modeSwitch:
-			return "Mode switch";
-		}
-	}
-
-	/// Build the task-prompt subject line encoding the edge identity.
-	/// When parentType and edgeName are both non-empty, encodes
-	/// "Task prompt: <parentType> -> <edgeName>". Otherwise degrades to
-	/// "Task prompt: <edgeName>" (degenerate — no edge traversed).
-	private static string taskPromptSubject(string parentType, string edgeName)
-	{
-		if (parentType.length > 0 && edgeName.length > 0)
-			return "Task prompt: " ~ parentType ~ " -> " ~ edgeName;
-		return "Task prompt: " ~ (edgeName.length > 0 ? edgeName : parentType);
-	}
-
-	private static string sessionStartSubject(string entryPointName)
-	{
-		return "Session start: " ~ entryPointName;
-	}
-
-	private static string followUpFromParentSubject(int qid)
-	{
-		import std.conv : to;
-		return systemMessageSubject(KnownSystemMessageKind.followUpFromParent)
-			~ " (qid=" ~ to!string(qid) ~ ")";
-	}
-
-	private static string questionFromTaskSubject(int askerTid, int qid)
-	{
-		import std.conv : to;
-		return "Question from task " ~ to!string(askerTid) ~ " (qid=" ~ to!string(qid) ~ ")";
-	}
-
-	private static string subTaskWaitingForAnswerSubject(string title, int tid, int qid)
-	{
-		import std.conv : to;
-		return "Sub-task \"" ~ title ~ "\" (tid=" ~ to!string(tid)
-			~ ") is waiting for your answer (qid=" ~ to!string(qid) ~ ")";
-	}
-
 	/// Find the first child of tid that has an unanswered Ask question.
 	/// Returns true if found; sets childTid, question, and qid via out params.
 	private bool findPendingChildQuestion(int tid, out int childTid, out string question, out int qid)
@@ -4541,6 +4459,7 @@ class App : ToolsBackend
 				~ "Use mcp__cydo__Answer(" ~ to!string(qid)
 				~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
 		auto reminder = wrapKnownSystemMessage(
+			config.system_keyword,
 			KnownSystemMessageKind.subTaskWaitingForAnswer,
 			reminderBody,
 			reminderSubject);
@@ -4552,28 +4471,6 @@ class App : ToolsBackend
 		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 	}
 
-	private static string modeSwitchSubject(string sourceType, string edgeName)
-	{
-		return "Mode switch: " ~ sourceType ~ " -> " ~ edgeName;
-	}
-
-	private static string handoffSubject(string sourceType, string edgeName)
-	{
-		return "Handoff: " ~ sourceType ~ " -> " ~ edgeName;
-	}
-
-	private string systemMessagePrefix(KnownSystemMessageKind kind)
-	{
-		return "[" ~ config.system_keyword ~ ": " ~ systemMessageSubject(kind) ~ "]";
-	}
-
-	private string wrapKnownSystemMessage(KnownSystemMessageKind kind, string body = null,
-		string subject = null)
-	{
-		auto resolvedSubject = subject.length > 0 ? subject : systemMessageSubject(kind);
-		return wrapSystemMessage(resolvedSubject, body);
-	}
-
 	private string buildKnownSystemMessageMeta(KnownSystemMessageKind kind, string subject = null,
 		string[string] vars = null, string bodyVar = null)
 	{
@@ -4583,282 +4480,6 @@ class App : ToolsBackend
 			? match.label
 			: resolvedSubject;
 		return buildCydoMeta(label, vars, bodyVar, bodyMarkdownForKind(kind));
-	}
-
-	unittest
-	{
-		// Round-trip: questionFromTaskSubject → tryKnownSystemMessageMatch
-		auto subject = questionFromTaskSubject(42, 999);
-		KnownSystemMessageMatch m;
-		assert(tryKnownSystemMessageMatch(subject, m), subject);
-		assert(m.kind == KnownSystemMessageKind.questionFromTask);
-		assert(m.tid.get == 42);
-		assert(m.qid.get == 999);
-		assert(m.label == "Question from task");
-
-		// Reject malformed subjects
-		KnownSystemMessageMatch bad;
-		assert(!tryKnownSystemMessageMatch("Question from task abc (qid=1)", bad));
-		assert(!tryKnownSystemMessageMatch("Question from task 1 (qid=abc)", bad));
-		assert(!tryKnownSystemMessageMatch("Question from task 1 (noqid)", bad));
-	}
-
-	unittest
-	{
-		import std.traits : EnumMembers;
-		import std.conv : to;
-		import std.file : exists;
-
-		// For parameterized kinds, generate a sample subject with dummy values
-		static string sampleSubject(KnownSystemMessageKind kind)
-		{
-			final switch (kind)
-			{
-			case KnownSystemMessageKind.taskPrompt:
-				return "Task prompt: parent -> edge";
-			case KnownSystemMessageKind.sessionStart:
-				return "Session start: agentic";
-			case KnownSystemMessageKind.followUpFromParent:
-				return "Follow-up question from parent task (qid=1)";
-			case KnownSystemMessageKind.questionFromTask:
-				return "Question from task 1 (qid=2)";
-			case KnownSystemMessageKind.subTaskWaitingForAnswer:
-				return "Sub-task \"test\" (tid=1) is waiting for your answer (qid=2)";
-			case KnownSystemMessageKind.missingRequiredOutputs:
-			case KnownSystemMessageKind.subTaskResults:
-			case KnownSystemMessageKind.restartNudge:
-			case KnownSystemMessageKind.postCompactionTaskModeReminder:
-				return systemMessageSubject(kind);
-			case KnownSystemMessageKind.handoff:
-				return "Handoff: source -> target";
-			case KnownSystemMessageKind.modeSwitch:
-				return "Mode switch: source -> target";
-			}
-		}
-
-		foreach (kind; EnumMembers!KnownSystemMessageKind)
-		{
-			auto subject = sampleSubject(kind);
-
-			// Every kind must be recognized by tryKnownSystemMessageMatch
-			KnownSystemMessageMatch m;
-			assert(tryKnownSystemMessageMatch(subject, m),
-				"tryKnownSystemMessageMatch failed for kind " ~ to!string(kind)
-				~ " with subject: " ~ subject);
-			assert(m.kind == kind,
-				"kind mismatch: expected " ~ to!string(kind)
-				~ ", got " ~ to!string(m.kind));
-		}
-
-		// For kinds that have a body variable, verify the template file exists
-		foreach (kind; EnumMembers!KnownSystemMessageKind)
-		{
-			auto bodyVar = bodyVarForKind(kind);
-			if (bodyVar is null)
-				continue;
-
-			// resolveEdgePromptTemplate for non-edge kinds returns a fixed path
-			// We only check the fixed-path kinds here (edge kinds need config context)
-			string templatePath;
-			switch (kind)
-			{
-			case KnownSystemMessageKind.followUpFromParent:
-				templatePath = "prompts/follow_up_from_parent.md";
-				break;
-			case KnownSystemMessageKind.questionFromTask:
-				templatePath = "prompts/question_from_task.md";
-				break;
-			case KnownSystemMessageKind.subTaskWaitingForAnswer:
-				templatePath = "prompts/sub_task_waiting_for_answer.md";
-				break;
-			default:
-				continue; // Edge-based kinds need project config — skip
-			}
-
-			// Check relative to CWD (dub test runs from project root)
-			auto fullPath = "defs/" ~ templatePath;
-			assert(exists(fullPath),
-				"template file missing for kind " ~ to!string(kind) ~ ": " ~ fullPath);
-		}
-	}
-
-	private static bool tryParseStrictPositiveInt(string text, out int value)
-	{
-		import std.conv : to;
-
-		if (text.length == 0)
-			return false;
-		foreach (ch; text)
-			if (ch < '0' || ch > '9')
-				return false;
-		try
-			value = to!int(text);
-		catch (Exception)
-			return false;
-		return true;
-	}
-
-	/// Try to match a system-message subject line to a known kind.
-	///
-	/// For edge-bearing kinds (taskPrompt, handoff, modeSwitch), the subject
-	/// encodes `<source> -> <edge>`. The label exposed to the frontend uses only
-	/// the edge name (e.g. "Mode switch: plan_mode") — the source type is an
-	/// internal routing detail that the user never sees.
-	///
-	/// Legacy subjects without "->" parse with edgeName == "" → label-only meta.
-	private static bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch match)
-	{
-		import std.algorithm : startsWith, endsWith;
-		import std.algorithm.searching : countUntil;
-		import std.string : indexOf;
-
-		match = KnownSystemMessageMatch.init;
-
-		/// Parse the suffix of an edge-bearing subject as either
-		/// "<source> -> <edge>" or "<single>", populating the match fields.
-		static void parseEdgeSuffix(string suffix, ref KnownSystemMessageMatch m, string kindLabel)
-		{
-			enum arrowSep = " -> ";
-			auto arrowIdx = suffix.indexOf(arrowSep);
-			if (arrowIdx >= 0)
-			{
-				m.sourceType = suffix[0 .. cast(size_t) arrowIdx];
-				m.edgeName = suffix[cast(size_t) arrowIdx + arrowSep.length .. $];
-				m.label = kindLabel ~ ": " ~ m.edgeName;
-			}
-			else
-			{
-				// Legacy format or degenerate path — single token, no edge
-				m.edgeName = "";
-				m.sourceType = "";
-				m.label = kindLabel ~ ": " ~ suffix;
-			}
-		}
-
-		enum taskPromptPrefix = "Task prompt: ";
-		if (subject.startsWith(taskPromptPrefix) && subject.length > taskPromptPrefix.length)
-		{
-			match.kind = KnownSystemMessageKind.taskPrompt;
-			parseEdgeSuffix(subject[taskPromptPrefix.length .. $], match, "Task prompt");
-			return true;
-		}
-
-		enum sessionStartPrefix = "Session start: ";
-		if (subject.startsWith(sessionStartPrefix) && subject.length > sessionStartPrefix.length)
-		{
-			match.kind = KnownSystemMessageKind.sessionStart;
-			// Entry points are top-level — no source needed; edgeName is the entry point name
-			match.edgeName = subject[sessionStartPrefix.length .. $];
-			match.label = subject;
-			return true;
-		}
-
-		enum modeSwitchPrefix = "Mode switch: ";
-		if (subject.startsWith(modeSwitchPrefix) && subject.length > modeSwitchPrefix.length)
-		{
-			match.kind = KnownSystemMessageKind.modeSwitch;
-			parseEdgeSuffix(subject[modeSwitchPrefix.length .. $], match, "Mode switch");
-			return true;
-		}
-
-		enum handoffPrefix = "Handoff: ";
-		if (subject.startsWith(handoffPrefix) && subject.length > handoffPrefix.length)
-		{
-			match.kind = KnownSystemMessageKind.handoff;
-			parseEdgeSuffix(subject[handoffPrefix.length .. $], match, "Handoff");
-			return true;
-		}
-
-		enum followUpPrefix = "Follow-up question from parent task (qid=";
-		enum followUpSuffix = ")";
-		if (subject.startsWith(followUpPrefix) && subject.endsWith(followUpSuffix))
-		{
-			auto qidText = subject[followUpPrefix.length .. $ - followUpSuffix.length];
-			int qid;
-			if (!tryParseStrictPositiveInt(qidText, qid))
-				return false;
-			match.kind = KnownSystemMessageKind.followUpFromParent;
-			match.label = "Follow-up from parent";
-			match.qid = Nullable!int(qid);
-			return true;
-		}
-
-		enum questionFromTaskPrefix = "Question from task ";
-		if (subject.startsWith(questionFromTaskPrefix) && subject.endsWith(")"))
-		{
-			// Format: "Question from task <tid> (qid=<qid>)"
-			auto tail = subject[questionFromTaskPrefix.length .. $];
-			enum qidSep = " (qid=";
-			auto qidSepIdx = tail.indexOf(qidSep);
-			if (qidSepIdx < 0)
-				return false;
-			auto tidText = tail[0 .. cast(size_t) qidSepIdx];
-			auto qidText = tail[cast(size_t) qidSepIdx + qidSep.length .. $ - 1]; // strip trailing ")"
-			int tid, qid;
-			if (!tryParseStrictPositiveInt(tidText, tid) || !tryParseStrictPositiveInt(qidText, qid))
-				return false;
-			match.kind = KnownSystemMessageKind.questionFromTask;
-			match.label = "Question from task";
-			match.tid = Nullable!int(tid);
-			match.qid = Nullable!int(qid);
-			return true;
-		}
-
-		enum waitingPrefix = "Sub-task \"";
-		enum waitingTitleSuffix = "\" (tid=";
-		enum waitingMid = ") is waiting for your answer (qid=";
-		enum waitingSuffix = ")";
-		if (subject.startsWith(waitingPrefix) && subject.endsWith(waitingSuffix))
-		{
-			auto tail = subject[waitingPrefix.length .. $];
-			auto titleEnd = tail.countUntil(waitingTitleSuffix);
-			if (titleEnd < 0)
-				return false;
-			auto titleLen = cast(size_t) titleEnd;
-			auto title = tail[0 .. titleLen];
-			auto afterTitle = tail[titleLen + waitingTitleSuffix.length .. $];
-
-			auto midPos = afterTitle.countUntil(waitingMid);
-			if (midPos < 0)
-				return false;
-			auto tidText = afterTitle[0 .. cast(size_t) midPos];
-			auto qidText = afterTitle[cast(size_t) midPos + waitingMid.length .. $ - waitingSuffix.length];
-			int tid, qid;
-			if (!tryParseStrictPositiveInt(tidText, tid) || !tryParseStrictPositiveInt(qidText, qid))
-				return false;
-			match.kind = KnownSystemMessageKind.subTaskWaitingForAnswer;
-			match.label = "Sub-task waiting for answer";
-			match.tid = Nullable!int(tid);
-			match.qid = Nullable!int(qid);
-			match.title = Nullable!string(title);
-			return true;
-		}
-
-		if (subject == systemMessageSubject(KnownSystemMessageKind.missingRequiredOutputs))
-		{
-			match.kind = KnownSystemMessageKind.missingRequiredOutputs;
-			match.label = subject;
-			return true;
-		}
-		if (subject == systemMessageSubject(KnownSystemMessageKind.subTaskResults))
-		{
-			match.kind = KnownSystemMessageKind.subTaskResults;
-			match.label = subject;
-			return true;
-		}
-		if (subject == systemMessageSubject(KnownSystemMessageKind.restartNudge))
-		{
-			match.kind = KnownSystemMessageKind.restartNudge;
-			match.label = subject;
-			return true;
-		}
-		if (subject == systemMessageSubject(KnownSystemMessageKind.postCompactionTaskModeReminder))
-		{
-			match.kind = KnownSystemMessageKind.postCompactionTaskModeReminder;
-			match.label = subject;
-			return true;
-		}
-		return false;
 	}
 
 	private bool tryExtractSystemMessageSubject(string text, out string subject)
@@ -5089,7 +4710,8 @@ class App : ToolsBackend
 			~ "\n\n[TASK DESCRIPTION]\n" ~ systemPrompt
 			~ "\n[END TASK DESCRIPTION]\n\n"
 			~ "Use this as the active CyDo task mode metadata for interpreting what kind of work to do next.\n\n";
-		return wrapKnownSystemMessage(KnownSystemMessageKind.postCompactionTaskModeReminder, body);
+		return wrapKnownSystemMessage(config.system_keyword,
+			KnownSystemMessageKind.postCompactionTaskModeReminder, body);
 	}
 
 	private static bool isCompactionReminderTriggerEvent(string translated)
@@ -5139,7 +4761,8 @@ class App : ToolsBackend
 			|| !translated.canFind(`"item_type":"user_message"`))
 			return false;
 		auto text = extractMessageText(translated);
-		return text.startsWith(systemMessagePrefix(KnownSystemMessageKind.postCompactionTaskModeReminder));
+		return text.startsWith(systemMessagePrefix(config.system_keyword,
+			KnownSystemMessageKind.postCompactionTaskModeReminder));
 	}
 
 	private string toJsonWithSyntheticUserMeta(string text, ItemStartedEvent ev, int tid = -1)
@@ -6018,7 +5641,8 @@ class App : ToolsBackend
 					infof("Output enforcement: tid=%d missing outputs, resuming: %s", tid, missing);
 					auto enfMissing = missing;
 					tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-						auto msg = wrapKnownSystemMessage(KnownSystemMessageKind.missingRequiredOutputs,
+						auto msg = wrapKnownSystemMessage(config.system_keyword,
+							KnownSystemMessageKind.missingRequiredOutputs,
 							"Your task type declares outputs that were not produced:\n"
 								~ enfMissing ~ "\n\n"
 								~ "Please produce the missing output(s) before finishing. "
@@ -6272,6 +5896,7 @@ class App : ToolsBackend
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid,
 					[ContentBlock("text", wrapKnownSystemMessage(
+						config.system_keyword,
 						KnownSystemMessageKind.modeSwitch, renderedContinuationPrompt, modeSwitchMsgSubject))],
 					null, contMeta);
 				// If a child question is still pending (the agent switched modes before
@@ -6353,6 +5978,7 @@ class App : ToolsBackend
 				handoffMsgSubject, ["task_description": successorPrompt], "task_description");
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
+					config.system_keyword,
 					KnownSystemMessageKind.handoff, renderedSuccessorPrompt, handoffMsgSubject))], null, handoffMeta);
 			}).ignoreResult();
 
@@ -6436,89 +6062,6 @@ class App : ToolsBackend
 			if (ws.name == workspaceName && ws.permission_policy.length > 0)
 				return ws.permission_policy;
 		return "";
-	}
-
-	private static string makePermissionAllowJson(string inputJson)
-	{
-		return toJson(PermissionAllow("allow", JSONFragment(inputJson)));
-	}
-
-	private static string makePermissionDenyJson(string message)
-	{
-		return toJson(PermissionDeny("deny", message));
-	}
-
-	/// Convert a JSON string to a UniNode for use as a Djinja template context variable.
-	private static UniNode jsonToUniNode(string json)
-	{
-		import std.json : parseJSON, JSONValue, JSONType;
-
-		UniNode convert(JSONValue v)
-		{
-			final switch (v.type)
-			{
-			case JSONType.null_:   return UniNode(null);
-			case JSONType.string:  return UniNode(v.str);
-			case JSONType.integer: return UniNode(v.integer);
-			case JSONType.uinteger: return UniNode(v.uinteger);
-			case JSONType.float_:  return UniNode(v.floating);
-			case JSONType.true_:   return UniNode(true);
-			case JSONType.false_:  return UniNode(false);
-			case JSONType.array:
-				UniNode[] seq;
-				foreach (ref el; v.array)
-					seq ~= convert(el);
-				return UniNode(seq);
-			case JSONType.object:
-				UniNode[string] map;
-				foreach (key, ref val; v.objectNoRef)
-					map[key] = convert(val);
-				return UniNode(map);
-			}
-		}
-
-		try
-			return convert(parseJSON(json));
-		catch (Exception)
-			return UniNode(null);
-	}
-
-	/// Evaluate a permission policy string. Returns "allow", "deny", or "ask".
-	private static string evaluatePermissionPolicy(string policy, string toolName, string inputJson)
-	{
-		if (policy == "allow" || policy == "deny" || policy == "ask")
-			return policy;
-
-		// Empty policy defaults to allow
-		if (policy.length == 0)
-			return "allow";
-
-		// Evaluate as Djinja template expression
-		try
-		{
-			import djinja.djinja : loadData;
-			import djinja.render : Render;
-			import std.string : strip;
-
-			auto renderer = new Render(loadData(policy));
-
-			UniNode[string] ctx;
-			ctx["tool_name"] = UniNode(toolName);
-			ctx["input"] = jsonToUniNode(inputJson);
-
-			string result = renderer.render(UniNode(ctx)).strip();
-
-			if (result == "allow" || result == "deny" || result == "ask")
-				return result;
-
-			warningf("Permission policy expression returned invalid value %(%s%), defaulting to deny", [result]);
-			return "deny";
-		}
-		catch (Exception e)
-		{
-			warningf("Permission policy expression evaluation failed: %s", e.msg);
-			return "deny";
-		}
 	}
 
 	private SandboxConfig findAgentSandbox(string agentName)
@@ -6796,7 +6339,8 @@ class App : ToolsBackend
 
 		// Deliver single batch message
 		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto msg = wrapKnownSystemMessage(KnownSystemMessageKind.subTaskResults,
+		auto msg = wrapKnownSystemMessage(config.system_keyword,
+			KnownSystemMessageKind.subTaskResults,
 			"The following sub-task(s) completed while your session was interrupted. "
 				~ "Their results are provided below exactly as they would have been "
 				~ "returned by the Task tool.\n\n"
@@ -6925,7 +6469,8 @@ class App : ToolsBackend
 			enum nudgeBody = "Your session was interrupted by a backend restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
 				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.";
-			auto nudgeText = wrapKnownSystemMessage(KnownSystemMessageKind.restartNudge, nudgeBody);
+			auto nudgeText = wrapKnownSystemMessage(config.system_keyword,
+				KnownSystemMessageKind.restartNudge, nudgeBody);
 			auto nudgeMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.restartNudge);
 			sendTaskMessage(tid, [ContentBlock("text", nudgeText)], null, nudgeMeta);
 		});
@@ -7793,6 +7338,7 @@ class App : ToolsBackend
 					if (op.operation == "enqueue")
 					{
 						if (op.content.startsWith(systemMessagePrefix(
+							config.system_keyword,
 							KnownSystemMessageKind.postCompactionTaskModeReminder)))
 							td.compactionReminderInFlight = true;
 						td.enqueueSteering(op.content, ev.translated);
