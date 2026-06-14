@@ -207,7 +207,13 @@ test("request_history replays before later live task updates on the same socket"
   const historyEndIndex = requestFrames.findIndex(
     (msg) => msg?.type === "task_history_end" && msg?.tid === taskId,
   );
+  // Replayed events are exactly those between task_history_start and
+  // task_history_end. Classify by position in the bracket, not by wire shape:
+  // live broadcasts use the same {tid, seq, event} envelope as replayed events,
+  // so a shape-only filter would wrongly count post-end live events as replay.
   const replayEventIndices = requestFrames.flatMap((msg, idx) =>
+    idx > historyStartIndex &&
+    idx < historyEndIndex &&
     msg?.tid === taskId &&
     typeof msg?.seq === "number" &&
     msg?.event !== undefined
@@ -218,10 +224,6 @@ test("request_history replays before later live task updates on the same socket"
   expect(historyStartIndex).toBeGreaterThanOrEqual(0);
   expect(historyEndIndex).toBeGreaterThan(historyStartIndex);
   expect(replayEventIndices.length).toBeGreaterThan(0);
-  for (const idx of replayEventIndices) {
-    expect(idx).toBeGreaterThan(historyStartIndex);
-    expect(idx).toBeLessThan(historyEndIndex);
-  }
 
   await frameDrain;
   const liveUpdateIndex = frames.findIndex(
