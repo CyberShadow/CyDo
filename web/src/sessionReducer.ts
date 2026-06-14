@@ -1339,7 +1339,8 @@ export function reduceMessage(
       if (
         sysMsg.subtype === "api_error" ||
         sysMsg.subtype === "turn_duration" ||
-        sysMsg.subtype === "task_progress"
+        sysMsg.subtype === "task_progress" ||
+        sysMsg.subtype === "thinking_tokens"
       )
         return s;
       return reduceParseError(
