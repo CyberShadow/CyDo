@@ -54,6 +54,7 @@ import cydo.task : BatchSignal;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.inotify : RefCountedINotify;
+import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
@@ -9405,20 +9406,4 @@ private void applyConfiguredLogLevel(string level)
 			(cast()sharedLog).logLevel = LogLevel.info;
 			break;
 	}
-}
-
-/// Replace text content for editable user-facing messages in JSONL.
-/// Supports both type:"user" message lines and queue-operation enqueue lines.
-private string replaceUserMessageContent(string line, string newContent)
-{
-	import std.json : parseJSON, JSONValue;
-
-	auto json = parseJSON(line);
-	if ("message" in json)
-		json["message"]["content"] = JSONValue(newContent);
-	else if ("type" in json && "operation" in json
-		&& json["type"].str == "queue-operation"
-		&& json["operation"].str == "enqueue")
-		json["content"] = JSONValue(newContent);
-	return json.toString();
 }
