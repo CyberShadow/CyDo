@@ -31,10 +31,7 @@ import ae.utils.funopt : funopt, funoptDispatch, funoptDispatchUsage, FunOptConf
 import ae.utils.main : main;
 
 import ae.net.asockets : socketManager, DisconnectType;
-import ae.net.http.common : HttpRequest, HttpStatusCode;
-import ae.net.http.responseex : HttpResponseEx;
-import ae.net.http.server : HttpServer, HttpServerConnection, HttpsServer;
-import ae.net.http.websocket : WebSocketAdapter, accept;
+import ae.net.http.websocket : WebSocketAdapter;
 import ae.net.ssl.openssl;
 import ae.sys.data : Data;
 import ae.sys.dataset : DataVec;
@@ -62,6 +59,8 @@ import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
 import cydo.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.task_type_catalog : TaskTypeCatalog;
+import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
+	TransportAdapter, WebSocketCallbacks;
 import cydo.usage_tracker : AgentUsageTracker;
 
 import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
@@ -569,9 +568,7 @@ class App : ToolsBackend
 	import ae.sys.inotify : INotify, iNotify;
 	import cydo.jsonl : JsonlTracker;
 
-	private HttpServer server;
-	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
-	private string mcpSocketPath;
+	private TransportAdapter transport;
 	private ClientHub clientHub = new ClientHub();
 	private TaskData[int] tasks;
 	private Persistence persistence;
@@ -696,6 +693,21 @@ class App : ToolsBackend
 		}
 		auto defaultName = defaultAgentName("");
 		agent = agentsByName[defaultName];
+		transport = new TransportAdapter(
+			webDistDir,
+			WebSocketCallbacks(
+				onAccepted: &onWebSocketAccepted,
+				onMessage: &handleWsMessage,
+				onDisconnected: &onWebSocketDisconnected,
+			),
+			&lookupRawSource,
+			McpCallbacks(
+				dispatchTool: &dispatchTool,
+				interruptForPendingContinuation: &interruptForPendingContinuation,
+				onDeliveryFailed: &onMcpDeliveryFailed,
+				onDelivered: &onToolCallDelivered,
+			),
+		);
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
@@ -812,7 +824,7 @@ class App : ToolsBackend
 		// Internal UNIX socket for MCP proxy calls (no auth required).
 		// Must run before resumeInFlightTasks so mcpSocketPath is set
 		// when generating MCP configs for auto-resumed sessions.
-		startMcpSocket();
+		transport.startMcpSocket();
 
 		resumeInFlightTasks();
 
@@ -849,16 +861,6 @@ class App : ToolsBackend
 
 		auto sslCert = environment.get("CYDO_TLS_CERT", null);
 		auto sslKey = environment.get("CYDO_TLS_KEY", null);
-		if (sslCert || sslKey)
-		{
-			auto https = new HttpsServer();
-			https.ctx.setCertificate(sslCert);
-			https.ctx.setPrivateKey(sslKey);
-			server = https;
-		}
-		else
-			server = new HttpServer();
-
 		import core.sys.posix.unistd : isatty, STDERR_FILENO;
 
 		auto userEnv = environment.get("CYDO_AUTH_USER", null);
@@ -893,8 +895,9 @@ class App : ToolsBackend
 				"Authentication is disabled.",
 				"Anyone with network access can view and control all sessions.",
 				"Set CYDO_AUTH_PASS to enable authentication.")));
-
-		server.handleRequest = &handleRequest;
+		transport.setAuthCredentials(authUser, authPass);
+		transport.startHttpServer(sslCert, sslKey);
+		auto server = transport.server;
 
 		auto listenSocket = environment.get("CYDO_LISTEN_SOCKET", null);
 		if (listenSocket)
@@ -986,28 +989,33 @@ class App : ToolsBackend
 					ws.disconnect("shutting down");
 			}
 		}
-		server.close();
-		// server.close() only disconnects idle connections; force-close any
-		// remaining active ones (e.g. in-flight HTTP requests) so the event
-		// loop can drain. WebSocket-upgraded connections have conn = null
-		// (set during upgrade in ae's BaseHttpServerConnection), so guard
-		// against that before accessing conn.state.
+		auto server = transport is null ? null : transport.server;
+		if (server)
 		{
-			import std.array : array;
-			import ae.net.asockets : disconnectable;
-			foreach (c; server.connections.iterator.array)
-				if (c.conn !is null && c.conn.state.disconnectable)
-					c.conn.disconnect("shutting down");
+			server.close();
+			// server.close() only disconnects idle connections; force-close any
+			// remaining active ones (e.g. in-flight HTTP requests) so the event
+			// loop can drain. WebSocket-upgraded connections have conn = null
+			// (set during upgrade in ae's BaseHttpServerConnection), so guard
+			// against that before accessing conn.state.
+			{
+				import std.array : array;
+				import ae.net.asockets : disconnectable;
+				foreach (c; server.connections.iterator.array)
+					if (c.conn !is null && c.conn.state.disconnectable)
+						c.conn.disconnect("shutting down");
+			}
+			// WebSocket-upgraded connections have conn=null but retain a non-daemon
+			// idle TimerTask in ae's mainTimer, which prevents the event loop from
+			// exiting. Cancel those timers so the event loop can drain cleanly.
+			{
+				import std.array : array;
+				foreach (c; server.connections.iterator.array)
+					if (c.conn is null && c.timer !is null && !c.timer.when().isNull)
+						c.timer.cancelIdleTimeout();
+			}
 		}
-		// WebSocket-upgraded connections have conn=null but retain a non-daemon
-		// idle TimerTask in ae's mainTimer, which prevents the event loop from
-		// exiting. Cancel those timers so the event loop can drain cleanly.
-		{
-			import std.array : array;
-			foreach (c; server.connections.iterator.array)
-				if (c.conn is null && c.timer !is null && !c.timer.when().isNull)
-					c.timer.cancelIdleTimeout();
-		}
+		auto mcpServer = transport is null ? null : transport.mcpServer;
 		if (mcpServer)
 		{
 			mcpServer.close();
@@ -1042,148 +1050,9 @@ class App : ToolsBackend
 		infof("shutdown() complete");
 	}
 
-	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
+	private void onWebSocketAccepted(WebSocketAdapter ws)
 	{
-		if (authUser.length == 0 && authPass.length == 0)
-			return true;
-		auto response = new HttpResponseEx();
-		if (!response.authorize(request, (reqUser, reqPass) => reqUser == authUser && reqPass == authPass))
-		{
-			conn.sendResponse(response);
-			return false;
-		}
-		return true;
-	}
-
-	private static immutable pwaPublicFiles = [
-		"manifest.json",
-		"icon-192.png",
-		"icon-512.png",
-		"apple-touch-icon.png",
-		"favicon.svg",
-	];
-
-	private void handleRequest(HttpRequest request, HttpServerConnection conn)
-	{
-		// Serve PWA manifest and icons without auth — browsers fetch these
-		// without credentials and need them for Add to Home Screen.
-		auto resource = request.resource.length > 1 ? request.resource[1 .. $] : "";
-		foreach (pub; pwaPublicFiles)
-		{
-			if (resource == pub)
-			{
-				auto response = new HttpResponseEx();
-				response.serveFile(pub, webDistDir);
-				if (pub == "manifest.json")
-					response.headers["Content-Type"] = "application/manifest+json";
-				conn.sendResponse(response);
-				return;
-			}
-		}
-
-		if (!checkAuth(request, conn))
-			return;
-
-		if (request.resource == "/ws")
-		{
-			handleWebSocket(request, conn);
-			return;
-		}
-
-		if (request.path == "/api/raw-source")
-		{
-			handleRawSourceRequest(request, conn);
-			return;
-		}
-
-		// Serve static files from web/dist/, with SPA fallback
-		auto response = new HttpResponseEx();
-		auto path = request.resource[1 .. $]; // strip leading /
-		if (path == "" || !exists(webDistDir ~ path) || !isFile(webDistDir ~ path))
-			path = "index.html";
-		response.serveFile(path, webDistDir);
-		response.headers["Content-Security-Policy"] =
-			"default-src 'self'; " ~
-			"script-src 'self' 'wasm-unsafe-eval'; " ~
-			"style-src 'self' 'unsafe-inline'; " ~
-			"worker-src blob:; " ~
-			"connect-src 'self' ws: wss:; " ~
-			"img-src 'self' data:; " ~
-			"object-src 'none'; " ~
-			"base-uri 'self'; " ~
-			"frame-ancestors 'none'";
-		conn.sendResponse(response);
-	}
-
-	private void handleRawSourceRequest(HttpRequest request, HttpServerConnection conn)
-	{
-		import cydo.task : extractEventFromEnvelope;
-		import std.conv : to, ConvException;
-
-		auto response = new HttpResponseEx();
-		auto params = request.urlParameters;
-		auto tidStr = params.get("tid", "");
-		auto seqStr = params.get("seq", "");
-		if (tidStr.length == 0 || seqStr.length == 0)
-		{
-			response.setStatus(HttpStatusCode.BadRequest);
-			conn.sendResponse(response.serveData("Missing tid or seq"));
-			return;
-		}
-
-		int tid;
-		size_t seq;
-		try
-		{
-			tid = tidStr.to!int;
-			seq = seqStr.to!size_t;
-		}
-		catch (ConvException)
-		{
-			response.setStatus(HttpStatusCode.BadRequest);
-			conn.sendResponse(response.serveData("Invalid tid or seq"));
-			return;
-		}
-
-		if (tid !in tasks)
-		{
-			response.setStatus(HttpStatusCode.NotFound);
-			conn.sendResponse(response.serveData("Task not found"));
-			return;
-		}
-
-		auto td = &tasks[tid];
-		ensureHistoryLoaded(tid);
-		if (seq >= td.history.length)
-		{
-			response.setStatus(HttpStatusCode.NotFound);
-			conn.sendResponse(response.serveData("Seq out of range"));
-			return;
-		}
-
-		auto raw = td.history.rawAt(seq);
-
-		response.headers["Content-Type"] = "application/json";
-		conn.sendResponse(response.serveData(raw !is null ? raw : "null"));
-	}
-
-	private void handleWebSocket(HttpRequest request, HttpServerConnection conn)
-	{
-		WebSocketAdapter ws;
-		try
-			ws = accept(request, conn);
-		catch (Exception e)
-		{
-			auto response = new HttpResponseEx();
-			response.setStatus(HttpStatusCode.BadRequest);
-			conn.sendResponse(response.serveData("Bad WebSocket request: " ~ e.msg));
-			return;
-		}
-
-		ws.sendBinary = true; // binary frames — no UTF-8 encoding requirement
 		clientHub.add(ws);
-
-		// Send workspaces list, task types, tasks list, and server status to new client
 		ws.send(Data(buildWorkspacesList(workspacesInfo).representation));
 		ws.send(Data(buildTaskTypesList(
 			taskTypeCatalog.getTaskTypes(),
@@ -1202,108 +1071,43 @@ class App : ToolsBackend
 			ws.send(Data(toJson(ScanStatusMessage("scan_status", true)).representation));
 		foreach (payload; agentUsageTracker.snapshotMessages())
 			ws.send(Data(payload.representation));
-
-		ws.handleReadData = (Data data) {
-			auto text = cast(string) data.toGC();
-			handleWsMessage(ws, text);
-		};
-
-		ws.handleDisconnect = (string reason, DisconnectType type) {
-			clientHub.remove(ws);
-		};
 	}
 
-	private void startMcpSocket()
+	private void onWebSocketDisconnected(WebSocketAdapter ws, string reason, DisconnectType type)
 	{
-		import std.file : remove;
-		import std.path : buildPath;
-		import std.socket : AddressFamily, AddressInfo, ProtocolType, SocketType, UnixAddress;
-
-		{
-			import cydo.sandbox : runtimeDir;
-			mcpSocketPath = buildPath(runtimeDir(), "mcp.sock");
-		}
-
-		// Remove stale socket file from previous run
-		if (exists(mcpSocketPath))
-			remove(mcpSocketPath);
-
-		mcpServer = new HttpServer();
-		mcpServer.handleRequest = (HttpRequest request, HttpServerConnection conn) {
-			if (request.resource == "/mcp/call" && request.method == "POST")
-				handleMcpCall(request, conn);
-			else
-			{
-				auto response = new HttpResponseEx();
-				response.setStatus(HttpStatusCode.NotFound);
-				conn.sendResponse(response);
-			}
-		};
-		auto addr = new UnixAddress(mcpSocketPath);
-		mcpServer.listen([AddressInfo(AddressFamily.UNIX, SocketType.STREAM, cast(ProtocolType) 0, addr, mcpSocketPath)]);
-		infof("MCP socket listening on %s", mcpSocketPath);
+		clientHub.remove(ws);
 	}
 
-	private void handleMcpCall(HttpRequest request, HttpServerConnection conn)
+	private RawSourceLookupResult lookupRawSource(int tid, size_t seq)
 	{
-		import ae.sys.dataset : joinData;
-		import ae.utils.json : jsonParse, toJson, JSONPartial;
+		if (tid !in tasks)
+			return RawSourceLookupResult(RawSourceLookupStatus.taskNotFound, null);
 
-		auto response = new HttpResponseEx();
-		response.headers["Content-Type"] = "application/json";
+		auto td = &tasks[tid];
+		ensureHistoryLoaded(tid);
+		if (seq >= td.history.length)
+			return RawSourceLookupResult(RawSourceLookupStatus.seqOutOfRange, null);
 
-		@JSONPartial
-		static struct McpCallRequest
-		{
-			string tid;
-			string tool;
-			JSONFragment args;
-		}
+		return RawSourceLookupResult(RawSourceLookupStatus.ok, td.history.rawAt(seq));
+	}
 
-		McpCallRequest call;
+	private bool interruptForPendingContinuation(string tidStr)
+	{
+		import std.conv : to;
+
+		int parsedTid;
 		try
-		{
-			auto bodyText = cast(string) request.data[].joinData().toGC();
-			call = jsonParse!McpCallRequest(bodyText);
-		}
-		catch (Exception e)
-		{
-			conn.sendResponse(response.serveData(
-				`{"content":[{"type":"text","text":"Invalid request"}],"isError":true}`));
-			return;
-		}
+			parsedTid = to!int(tidStr);
+		catch (Exception)
+			return false;
 
-		// Unified async dispatch — all tools return Promise!McpResult
-		dispatchTool(call.tool, call.tid, call.args).then((McpResult result) {
-			import std.conv : to;
-			if (!conn.connected)
-			{
-				// MCP delivery failed — trigger fallback delivery for Task tool calls.
-				onMcpDeliveryFailed(call.tid);
-				return;
-			}
-			// If the tool set a pendingContinuation (SwitchMode/Handoff), interrupt
-			// the agent instead of returning the result — force an immediate stop.
-			auto parsedTid = to!int(call.tid);
-			if (auto tdp = parsedTid in tasks)
-			{
-				if (tdp.pendingContinuation !is null)
-				{
-					tdp.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-					tdp.session.interrupt();
-					return;
-				}
-			}
-			auto resultJson = toJson(McpContentResult(
-				[McpContentItem("text", result.text)],
-				result.isError,
-				result.structuredContent,
-			));
-			conn.sendResponse(response.serveData(resultJson));
-			onToolCallDelivered(call.tid);
-		}).except((Exception e) {
-			warningf("dispatchTool: unhandled error: %s", e.msg);
-		}).ignoreResult();
+		auto tdp = parsedTid in tasks;
+		if (tdp is null || tdp.pendingContinuation is null)
+			return false;
+
+		tdp.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+		tdp.session.interrupt();
+		return true;
 	}
 
 	/// Dispatch an MCP tool call. Returns a promise that resolves when the
@@ -5036,7 +4840,7 @@ class App : ToolsBackend
 		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
 		sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
 		sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
-		sessionConfig.mcpSocketPath = mcpSocketPath;
+		sessionConfig.mcpSocketPath = transport.mcpSocketPath;
 
 		auto workDir = td.repoPath.length > 0 ? td.repoPath : null;
 
@@ -5118,8 +4922,8 @@ class App : ToolsBackend
 		}
 
 		// MCP socket must be accessible inside the sandbox
-		if (mcpSocketPath.length > 0)
-			sandbox.paths[mcpSocketPath] = PathMode.ro;
+		if (transport.mcpSocketPath.length > 0)
+			sandbox.paths[transport.mcpSocketPath] = PathMode.ro;
 
 		// Project memory carve-out — always_rw so it survives the read_only
 		// downgrade and the worktree-bound ro override (longer paths win in
