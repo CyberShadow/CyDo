@@ -53,6 +53,9 @@ import cydo.task : BatchSignal;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
+import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
+	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
+	buildTaskTypesListForProject, buildWorkspacesList;
 import cydo.inotify : RefCountedINotify;
 import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.jsonl_edit : replaceUserMessageContent;
@@ -1181,12 +1184,20 @@ class App : ToolsBackend
 		clientHub.add(ws);
 
 		// Send workspaces list, task types, tasks list, and server status to new client
-		ws.send(Data(buildWorkspacesList().representation));
-		ws.send(Data(buildTaskTypesList().representation));
-		ws.send(Data(buildAgentsList().representation));
-		ws.send(Data(buildTasksList().representation));
-		ws.send(Data(buildServerStatus().representation));
-		ws.send(Data(buildNoticesList().representation));
+		ws.send(Data(buildWorkspacesList(workspacesInfo).representation));
+		ws.send(Data(buildTaskTypesList(
+			taskTypeCatalog.getTaskTypes(),
+			taskTypeCatalog.getEntryPoints(),
+			config.default_task_type,
+		).representation));
+		ws.send(Data(buildAgentsList(snapshotAgentEntries(), config.default_agent).representation));
+		ws.send(Data(buildTasksList(tasks).representation));
+		ws.send(Data(buildServerStatus(
+			authUser.length > 0 || authPass.length > 0,
+			config.dev_mode,
+			webDistDir,
+		).representation));
+		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (scanInProgress)
 			ws.send(Data(toJson(ScanStatusMessage("scan_status", true)).representation));
 		foreach (payload; agentUsageTracker.snapshotMessages())
@@ -7509,7 +7520,7 @@ class App : ToolsBackend
 				workspacesInfo = workspacesInfo.filter!(wi => wi.name != "" || wi.projects.length > 0).array;
 			}
 			injectVirtualProjects();
-			clientHub.broadcast(buildWorkspacesList());
+			clientHub.broadcast(buildWorkspacesList(workspacesInfo));
 			scanInProgress = false;
 			clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
 		}).ignoreResult();
@@ -7797,9 +7808,13 @@ class App : ToolsBackend
 		scanInProgress = true;
 		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", true)));
 		discoverAllWorkspaces();
-		clientHub.broadcast(buildAgentsList());
-		clientHub.broadcast(buildWorkspacesList());
-		clientHub.broadcast(buildServerStatus());
+		clientHub.broadcast(buildAgentsList(snapshotAgentEntries(), config.default_agent));
+		clientHub.broadcast(buildWorkspacesList(workspacesInfo));
+		clientHub.broadcast(buildServerStatus(
+			authUser.length > 0 || authPass.length > 0,
+			config.dev_mode,
+			webDistDir,
+		));
 		infof("Config reloaded successfully");
 		scanInProgress = false;
 		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
@@ -7843,13 +7858,17 @@ class App : ToolsBackend
 	{
 		infof("Project config changed for %s, reloading task types...", projectPath);
 		taskTypeCatalog.invalidateProject(projectPath);
-		clientHub.broadcast(buildTaskTypesListForProject(projectPath));
+		clientHub.broadcast(buildTaskTypesListForProject(
+			projectPath,
+			taskTypeCatalog.getTaskTypesForProject(projectPath),
+			taskTypeCatalog.getEntryPointsForProject(projectPath),
+		));
 	}
 
 	private void handleRefreshWorkspacesMsg()
 	{
 		discoverAllWorkspaces();
-		clientHub.broadcast(buildWorkspacesList());
+		clientHub.broadcast(buildWorkspacesList(workspacesInfo));
 		enumerateSessions();
 	}
 
@@ -7918,29 +7937,6 @@ class App : ToolsBackend
 		tasks[tid].lastActive = Clock.currStdTime;
 	}
 
-	private TaskListEntry buildTaskEntry(ref TaskData td)
-	{
-		import cydo.task : stdTimeToUnixMillis;
-		const supportsEndingStop = td.session !is null && td.session.canStopAfterCloseStdin;
-		const canStop = td.alive && (!td.stdinClosed || supportsEndingStop);
-		return TaskListEntry(td.tid, td.alive,
-			td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
-			td.isProcessing, td.stdinClosed, canStop, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
-			td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
-			td.taskType, td.entryPoint, td.agentType, td.archived, td.archiving, td.draft, td.error,
-			stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
-	}
-
-	private string buildTasksList()
-	{
-		import ae.utils.json : toJson;
-
-		TaskListEntry[] entries;
-		foreach (ref td; tasks)
-			entries ~= buildTaskEntry(td);
-		return toJson(TasksListMessage("tasks_list", entries));
-	}
-
 	private void broadcastTaskUpdate(int tid)
 	{
 		import ae.utils.json : toJson;
@@ -7977,82 +7973,27 @@ class App : ToolsBackend
 		return (targetTid in tasks) ? targetTid : -1;
 	}
 
-	private string buildWorkspacesList()
-	{
-		import ae.utils.json : toJson;
-		return toJson(WorkspacesListMessage("workspaces_list", workspacesInfo));
-	}
-
-	private string buildTaskTypesList()
-	{
-		import ae.utils.json : toJson;
-
-		auto types = taskTypeCatalog.getTaskTypes();
-		auto entryPoints = taskTypeCatalog.getEntryPoints();
-		EntryPointEntry[] eps;
-		foreach (ref ep; entryPoints)
-		{
-			auto typeDef = types.byName(ep.resolvedType);
-			EntryPointEntry entry;
-			entry.name = ep.name;
-			entry.task_type = ep.resolvedType;
-			entry.description = ep.description;
-			if (typeDef !is null)
-			{
-				entry.model_class = typeDef.model_class;
-				entry.read_only = typeDef.read_only;
-				entry.icon = typeDef.icon;
-			}
-			eps ~= entry;
-		}
-		TypeInfoEntry[] typeInfo;
-		foreach (ref def; types)
-			typeInfo ~= TypeInfoEntry(def.name, def.icon);
-		return toJson(TaskTypesListMessage("task_types_list", eps, typeInfo, config.default_task_type));
-	}
-
-	private string buildTaskTypesListForProject(string projectPath)
-	{
-		import ae.utils.json : toJson;
-
-		auto types = taskTypeCatalog.getTaskTypesForProject(projectPath);
-		auto entryPoints = taskTypeCatalog.getEntryPointsForProject(projectPath);
-		EntryPointEntry[] eps;
-		foreach (ref ep; entryPoints)
-		{
-			auto typeDef = types.byName(ep.resolvedType);
-			EntryPointEntry entry;
-			entry.name = ep.name;
-			entry.task_type = ep.resolvedType;
-			entry.description = ep.description;
-			if (typeDef !is null)
-			{
-				entry.model_class = typeDef.model_class;
-				entry.read_only = typeDef.read_only;
-				entry.icon = typeDef.icon;
-			}
-			eps ~= entry;
-		}
-		TypeInfoEntry[] typeInfo;
-		foreach (ref def; types)
-			typeInfo ~= TypeInfoEntry(def.name, def.icon);
-		return toJson(ProjectTaskTypesListMessage("project_task_types_list", projectPath, eps, typeInfo));
-	}
-
 	private void handleRequestTaskTypesMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		if (json.project_path.length == 0)
-			ws.send(Data(buildTaskTypesList().representation));
+			ws.send(Data(buildTaskTypesList(
+				taskTypeCatalog.getTaskTypes(),
+				taskTypeCatalog.getEntryPoints(),
+				config.default_task_type,
+			).representation));
 		else
 		{
 			ensureProjectWatch(json.project_path);
-			ws.send(Data(buildTaskTypesListForProject(json.project_path).representation));
+			ws.send(Data(buildTaskTypesListForProject(
+				json.project_path,
+				taskTypeCatalog.getTaskTypesForProject(json.project_path),
+				taskTypeCatalog.getEntryPointsForProject(json.project_path),
+			).representation));
 		}
 	}
 
-	private string buildAgentsList()
+	private AgentInfoEntry[] snapshotAgentEntries()
 	{
-		import ae.utils.json : toJson;
 		import cydo.agent.registry : agentRegistry;
 		import std.conv : to;
 		import std.path : expandTilde;
@@ -8105,42 +8046,7 @@ class App : ToolsBackend
 				execPath.length > 0,
 			);
 		}
-
-		return toJson(AgentsListMessage("agents_list", entries, config.default_agent));
-	}
-
-	private string readBuildId()
-	{
-		import std.file : exists, readText;
-		import std.regex : matchFirst, regex;
-		auto indexHtml = webDistDir ~ "index.html";
-		if (!exists(indexHtml))
-			return "";
-		auto content = readText(indexHtml);
-		auto m = matchFirst(content, regex(`/assets/index-([A-Za-z0-9_-]+)\.js`));
-		if (m.empty)
-		{
-			warningf("Could not extract build id from %s", indexHtml);
-			return "";
-		}
-		return m[1].idup;
-	}
-
-	private string buildServerStatus()
-	{
-		import ae.utils.json : toJson;
-		return toJson(ServerStatusMessage(
-			"server_status",
-			authUser.length > 0 || authPass.length > 0,
-			config.dev_mode,
-			readBuildId(),
-		));
-	}
-
-	private string buildNoticesList()
-	{
-		import ae.utils.json : toJson;
-		return toJson(NoticesListMessage("notices_list", activeNotices));
+		return entries;
 	}
 
 	private void setNotice(string id, Nullable!Notice n)
@@ -8156,14 +8062,14 @@ class App : ToolsBackend
 				warningf("NOTICE [%s]: %s — %s — %s", id, newNotice.description, newNotice.impact, newNotice.action);
 			else
 				infof("NOTICE [%s]: %s", id, newNotice.description);
-			clientHub.broadcast(buildNoticesList());
+			clientHub.broadcast(buildNoticesList(activeNotices));
 		}
 		else
 		{
 			if (id !in activeNotices)
 				return;
 			activeNotices.remove(id);
-			clientHub.broadcast(buildNoticesList());
+			clientHub.broadcast(buildNoticesList(activeNotices));
 		}
 	}
 
