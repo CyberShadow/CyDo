@@ -53,6 +53,7 @@ import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
+import cydo.client_hub : ClientHub;
 import cydo.inotify : RefCountedINotify;
 import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.jsonl_edit : replaceUserMessageContent;
@@ -583,17 +584,7 @@ class App : ToolsBackend
 	private HttpServer server;
 	private HttpServer mcpServer; // UNIX socket for MCP proxy calls (no auth)
 	private string mcpSocketPath;
-	private WebSocketAdapter[] clients;
-	/// Per-client subscription set: which tasks each client receives live events for.
-	/// INVARIANT: task history is authoritative; live delivery is only an
-	/// optimization for clients that have caught up. request_history synchronously
-	/// enqueues the replay through task_history_end, then marks the client
-	/// subscribed. Later live sends enqueue behind that replay on the same socket,
-	/// so clients process the task_history_end boundary before later live
-	/// events regardless of link or browser speed. Every task_reload is a hard
-	/// history-lineage boundary: clients are unsubscribed and must re-subscribe via
-	/// request_history.
-	private bool[int][WebSocketAdapter] clientSubscriptions;
+	private ClientHub clientHub = new ClientHub();
 	private TaskData[int] tasks;
 	private Persistence persistence;
 	private CydoConfig config;
@@ -741,7 +732,7 @@ class App : ToolsBackend
 			return effectiveCwd(td);
 		};
 		jsonlTracker.sendToSubscribed = (int tid, string msg) =>
-			sendToSubscribed(tid, Data(msg.representation));
+			clientHub.sendToSubscribed(tid, Data(msg.representation));
 		jsonlTracker.onAnchorResolved = (int tid, size_t seq, string anchor) =>
 			backfillHistoryAnchor(tid, seq, anchor);
 
@@ -1013,12 +1004,12 @@ class App : ToolsBackend
 		}
 		{
 			import ae.net.asockets : disconnectable;
-			auto clientsSnapshot = clients;
-			clients = null;
+			auto clientsSnapshot = clientHub.snapshotClients();
 			foreach (ws; clientsSnapshot)
 			{
 				if (ws is null)
 					continue;
+				clientHub.remove(ws);
 				if (ws.state.disconnectable)
 					ws.disconnect("shutting down");
 			}
@@ -1218,7 +1209,7 @@ class App : ToolsBackend
 		}
 
 		ws.sendBinary = true; // binary frames — no UTF-8 encoding requirement
-		clients ~= ws;
+		clientHub.add(ws);
 
 		// Send workspaces list, task types, tasks list, and server status to new client
 		ws.send(Data(buildWorkspacesList().representation));
@@ -1240,7 +1231,7 @@ class App : ToolsBackend
 		};
 
 		ws.handleDisconnect = (string reason, DisconnectType type) {
-			removeClient(ws);
+			clientHub.remove(ws);
 		};
 	}
 
@@ -1471,7 +1462,7 @@ class App : ToolsBackend
 			broadcastTaskUpdate(parentTid);
 
 			// Broadcast to UI
-			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
+			clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 				pd.workspace, pd.projectPath, parentTid, "subtask")));
 			broadcastTaskUpdate(childTid);
 			broadcastFocusHint(parentTid, childTid);
@@ -1820,7 +1811,7 @@ class App : ToolsBackend
 		// Broadcast to subscribed clients
 		auto msg = toJson(AskUserQuestionMessage("ask_user_question", tid,
 			toolUseId, JSONFragment(questionsJson)));
-		sendToSubscribed(tid, Data(msg.representation));
+		clientHub.sendToSubscribed(tid, Data(msg.representation));
 
 		// Update task state for sidebar
 		tdp.needsAttention = true;
@@ -2509,7 +2500,7 @@ class App : ToolsBackend
 		tdp.pendingPermissionInput = input;
 
 		// Broadcast to subscribed clients
-		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
+		clientHub.sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
 			tid, toolUseId, toolName, input)).representation));
 
 		// Update task state for sidebar
@@ -2663,7 +2654,7 @@ class App : ToolsBackend
 
 		// Broadcast clear to all subscribed clients (so other tabs/windows dismiss the form)
 		import ae.utils.json : toJson;
-		sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question",
+		clientHub.sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question",
 			tid, "", JSONFragment("[]"))).representation));
 
 		broadcastTaskUpdate(tid);
@@ -2721,7 +2712,7 @@ class App : ToolsBackend
 		pendingPermissionInputs.remove(tid);
 
 		// Broadcast clear to all subscribed clients (empty tool_use_id signals clear)
-		sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
+		clientHub.sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
 			tid, "", "", JSONFragment("{}"))).representation));
 
 		broadcastTaskUpdate(tid);
@@ -3216,7 +3207,7 @@ class App : ToolsBackend
 
 		// Subscribe client to live events only after replay has been enqueued
 		// through task_history_end.
-		clientSubscriptions.require(ws)[tid] = true;
+		clientHub.subscribe(ws, tid);
 
 		// If a turn already completed but suggestions were skipped because no client was
 		// subscribed at the time (race: turn completed before request_history processed),
@@ -3326,7 +3317,7 @@ class App : ToolsBackend
 			td.draft = "";
 			persistence.setDraft(tid, "");
 			auto draftData = Data(toJson(DraftUpdatedMessage("draft_updated", tid, "")).representation);
-			sendToSubscribed(tid, draftData);
+			clientHub.sendToSubscribed(tid, draftData);
 		}
 	}
 
@@ -3536,11 +3527,7 @@ class App : ToolsBackend
 		persistence.setDraft(tid, draft);
 		// Broadcast to other subscribed clients (not the sender)
 		auto data = Data(toJson(DraftUpdatedMessage("draft_updated", tid, draft)).representation);
-		foreach (ws; clients)
-			if (ws !is senderWs)
-				if (auto subs = ws in clientSubscriptions)
-					if (tid in *subs)
-						ws.send(data);
+		clientHub.sendToSubscribedExcept(tid, senderWs, data);
 	}
 
 	private void handleDeleteTaskMsg(WsMessage json)
@@ -3554,14 +3541,13 @@ class App : ToolsBackend
 		if (td.agentSessionId.length > 0 || td.alive || td.status != "pending")
 			return;
 		// Clean up subscriptions
-		foreach (ref subs; clientSubscriptions)
-			subs.remove(tid);
+		clientHub.unsubscribeAll(tid);
 		// Remove from in-memory state
 		tasks.remove(tid);
 		// Remove from database
 		persistence.deleteTask(tid);
 		// Broadcast deletion to all clients
-		broadcast(toJson(TaskDeletedMessage("task_deleted", tid)));
+		clientHub.broadcast(toJson(TaskDeletedMessage("task_deleted", tid)));
 	}
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
@@ -3663,7 +3649,7 @@ class App : ToolsBackend
 						tasks[childTid].history.reset(watermarkFromPath(jp));
 					}
 
-					broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
+					clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
 						td.projectPath, tid, "fork")));
 					broadcastTaskUpdate(childTid);
 					broadcastFocusHint(tid, childTid);
@@ -3713,7 +3699,7 @@ class App : ToolsBackend
 			tasks[result.tid].history.reset(watermarkFromPath(jp));
 		}
 
-		broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
+		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
 		broadcastTaskUpdate(result.tid);
 		broadcastFocusHint(tid, result.tid);
 	}
@@ -3839,7 +3825,7 @@ class App : ToolsBackend
 								auto jp = ta.historyPath(td2.agentSessionId, effectiveCwd(td2));
 								td2.history.reset(watermarkFromPath(jp));
 							}
-							unsubscribeAll(tid);
+							clientHub.unsubscribeAll(tid);
 
 							// Reset JSONL tracker so it re-reads fork IDs
 							jsonlTracker.stopJsonlWatch(tid);
@@ -4010,7 +3996,7 @@ class App : ToolsBackend
 							auto jp = ta.historyPath(backup.agentSessionId, effectiveCwd(&tasks[backup.tid]));
 							tasks[backup.tid].history.reset(watermarkFromPath(jp));
 						}
-					broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
+					clientHub.broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
 					broadcastTaskUpdate(backup.tid);
 				}
 			}
@@ -4027,7 +4013,7 @@ class App : ToolsBackend
 				return;
 			}
 			td.history.reset(watermarkFromPath(histJsonlPath));
-			unsubscribeAll(tid);
+			clientHub.unsubscribeAll(tid);
 			// Clip pendingSteeringTexts to match remaining user messages in the
 			// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
 			// synthetics for messages that were intentionally undone.
@@ -4126,7 +4112,7 @@ class App : ToolsBackend
 		}
 
 		td.history.reset(watermarkFromPath(jsonlPath));
-		unsubscribeAll(tid);
+		clientHub.unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
 		broadcastTaskUpdate(tid);
@@ -4194,7 +4180,7 @@ class App : ToolsBackend
 		}
 
 		td.history.reset(watermarkFromPath(jsonlPath));
-		unsubscribeAll(tid);
+		clientHub.unsubscribeAll(tid);
 
 		emitTaskReload(tid, "edit");
 		broadcastTaskUpdate(tid);
@@ -4254,7 +4240,7 @@ class App : ToolsBackend
 			ensureHistoryLoaded(tid);
 			tasks[tid].history.appendLive(data, null);
 		}
-		sendToSubscribed(tid, data);
+		clientHub.sendToSubscribed(tid, data);
 		if (nonce.length > 0 && tid in tasks)
 			tasks[tid].pendingUserNonce = nonce;
 
@@ -5351,7 +5337,7 @@ class App : ToolsBackend
 			if (nonce.length == 0)
 				return;
 			auto ackEnv = AgentAckEnvelope(tid, nonce);
-			sendToSubscribed(tid, Data(toJson(ackEnv).representation));
+			clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
 		};
 
 		string lastStderr;
@@ -5474,7 +5460,7 @@ class App : ToolsBackend
 				tasks[tid].history.reset(wm);
 			}
 			tasks[tid].recentNonces = null;
-			unsubscribeAll(tid);
+			clientHub.unsubscribeAll(tid);
 
 			// --- StateQueue notification ---
 			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive
@@ -5726,7 +5712,7 @@ class App : ToolsBackend
 					import std.datetime : Clock;
 					auto translated = appendSynthesizedHistoryError(
 						tid, "Failed to resume session", body);
-					sendToSubscribed(tid, Data(
+					clientHub.sendToSubscribed(tid, Data(
 						toJson(TaskEventEnvelope(tid, Clock.currStdTime,
 							JSONFragment(translated))).representation));
 				}
@@ -5851,7 +5837,7 @@ class App : ToolsBackend
 			persistence.setRelationType(childTid, "continuation");
 			persistence.setTitle(childTid, childTd.title);
 
-			broadcast(toJson(TaskCreatedMessage("task_created", childTid,
+			clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid,
 				td.workspace, td.projectPath, tid, "continuation")));
 			broadcastTaskUpdate(childTid);
 			broadcastFocusHint(tid, childTid);
@@ -6656,25 +6642,6 @@ class App : ToolsBackend
 		}).ignoreResult();
 	}
 
-	/// Send data to all clients subscribed to the given task.
-	private void sendToSubscribed(int tid, Data data)
-	{
-		foreach (ws; clients)
-			if (auto subs = ws in clientSubscriptions)
-				if (tid in *subs)
-					ws.send(data);
-	}
-
-	/// Unsubscribe all clients from a task's live events.
-	/// Used when resetting history — forces clients to re-subscribe
-	/// via request_history.
-	private void unsubscribeAll(int tid)
-	{
-		foreach (ws; clients)
-			if (auto subs = ws in clientSubscriptions)
-				(*subs).remove(tid);
-	}
-
 	/// Broadcast a task reload boundary and invalidate in-flight derived work.
 	/// task_reload is a hard history-lineage boundary on the wire: clients are
 	/// unsubscribed before it is sent, must discard pre-reload live assumptions,
@@ -6685,7 +6652,7 @@ class App : ToolsBackend
 
 		if (tid !in tasks)
 			return;
-		unsubscribeAll(tid);
+		clientHub.unsubscribeAll(tid);
 		auto td = &tasks[tid];
 		// Invalidate cached/in-flight suggestions so pre-reload content cannot replay.
 		td.lastSuggestions = null;
@@ -6694,7 +6661,7 @@ class App : ToolsBackend
 			td.suggestGenKill();
 		td.suggestGenHandle = null;
 		td.suggestGenKill = null;
-		broadcast(toJson(TaskReloadMessage("task_reload", tid, reason)));
+		clientHub.broadcast(toJson(TaskReloadMessage("task_reload", tid, reason)));
 	}
 
 	/// Wrap text in [SYSTEM: ...] tags so the agent knows the message is
@@ -7070,7 +7037,7 @@ class App : ToolsBackend
 		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
 		state.limits[limitType] = window;
 		agentUsageByAgent[agentType] = state;
-		broadcast(toJson(buildAgentUsageMessage(state)));
+		clientHub.broadcast(toJson(buildAgentUsageMessage(state)));
 		return true;
 	}
 
@@ -7181,7 +7148,7 @@ class App : ToolsBackend
 		if (isSessionStatusEvent(ev.translated))
 		{
 			cacheSessionStatusEvent(tid, ev.translated, ev.ts.stdTime);
-			sendToSubscribed(tid, Data(
+			clientHub.sendToSubscribed(tid, Data(
 				toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
 					JSONFragment(ev.translated))).representation));
 			return cast(size_t) -1;
@@ -7207,7 +7174,7 @@ class App : ToolsBackend
 
 		if (!merged)
 			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
-		sendToSubscribed(tid, Data(
+		clientHub.sendToSubscribed(tid, Data(
 			toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
 				JSONFragment(ev.translated))).representation));
 		return seq;
@@ -7484,13 +7451,13 @@ class App : ToolsBackend
 	private void broadcastTitleUpdate(int tid, string title)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
+		clientHub.broadcast(toJson(TitleUpdateMessage("title_update", tid, title)));
 	}
 
 	private void broadcastSuggestionsUpdate(int tid, string[] suggestions)
 	{
 		import ae.utils.json : toJson;
-		sendToSubscribed(tid, Data(toJson(
+		clientHub.sendToSubscribed(tid, Data(toJson(
 			SuggestionsUpdateMessage("suggestions_update", tid, suggestions)).representation));
 	}
 
@@ -7511,7 +7478,7 @@ class App : ToolsBackend
 	private void enumerateSessions()
 	{
 		scanInProgress = true;
-		broadcast(toJson(ScanStatusMessage("scan_status", true)));
+		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", true)));
 		// Collect all known agent session IDs (agentType ~ "\0" ~ sessionId for uniqueness)
 		bool[string] knownSessionIds;
 		foreach (ref td; tasks)
@@ -7564,7 +7531,7 @@ class App : ToolsBackend
 			{
 				tasks.remove(delTid);
 				persistence.deleteTask(delTid);
-				broadcast(toJson(TaskDeletedMessage("task_deleted", delTid)));
+				clientHub.broadcast(toJson(TaskDeletedMessage("task_deleted", delTid)));
 			}
 		}
 
@@ -7709,7 +7676,7 @@ class App : ToolsBackend
 				persistence.setTitle(tid, finalTitle);
 				persistence.setLastActive(tid, r.mtime);
 
-				broadcast(toJson(TaskCreatedMessage("task_created", tid, "", finalProjectPath, 0, "")));
+				clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, "", finalProjectPath, 0, "")));
 				broadcastTaskUpdate(tid);
 			}
 
@@ -7722,9 +7689,9 @@ class App : ToolsBackend
 				workspacesInfo = workspacesInfo.filter!(wi => wi.name != "" || wi.projects.length > 0).array;
 			}
 			injectVirtualProjects();
-			broadcast(buildWorkspacesList());
+			clientHub.broadcast(buildWorkspacesList());
 			scanInProgress = false;
-			broadcast(toJson(ScanStatusMessage("scan_status", false)));
+			clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
 		}).ignoreResult();
 	}
 
@@ -8008,14 +7975,14 @@ class App : ToolsBackend
 
 		taskTypeCatalog.invalidateAll();
 		scanInProgress = true;
-		broadcast(toJson(ScanStatusMessage("scan_status", true)));
+		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", true)));
 		discoverAllWorkspaces();
-		broadcast(buildAgentsList());
-		broadcast(buildWorkspacesList());
-		broadcast(buildServerStatus());
+		clientHub.broadcast(buildAgentsList());
+		clientHub.broadcast(buildWorkspacesList());
+		clientHub.broadcast(buildServerStatus());
 		infof("Config reloaded successfully");
 		scanInProgress = false;
-		broadcast(toJson(ScanStatusMessage("scan_status", false)));
+		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
 	}
 
 	private void ensureProjectWatch(string projectPath)
@@ -8056,13 +8023,13 @@ class App : ToolsBackend
 	{
 		infof("Project config changed for %s, reloading task types...", projectPath);
 		taskTypeCatalog.invalidateProject(projectPath);
-		broadcast(buildTaskTypesListForProject(projectPath));
+		clientHub.broadcast(buildTaskTypesListForProject(projectPath));
 	}
 
 	private void handleRefreshWorkspacesMsg()
 	{
 		discoverAllWorkspaces();
-		broadcast(buildWorkspacesList());
+		clientHub.broadcast(buildWorkspacesList());
 		enumerateSessions();
 	}
 
@@ -8125,13 +8092,6 @@ class App : ToolsBackend
 
 	}
 
-	private void broadcast(string message)
-	{
-		auto data = Data(message.representation);
-		foreach (ws; clients)
-			ws.send(data);
-	}
-
 	private void touchTask(int tid)
 	{
 		import std.datetime : Clock;
@@ -8165,13 +8125,13 @@ class App : ToolsBackend
 	{
 		import ae.utils.json : toJson;
 
-		broadcast(toJson(TaskUpdatedMessage("task_updated", buildTaskEntry(tasks[tid]))));
+		clientHub.broadcast(toJson(TaskUpdatedMessage("task_updated", buildTaskEntry(tasks[tid]))));
 	}
 
 	private void broadcastFocusHint(int fromTid, int toTid)
 	{
 		import ae.utils.json : toJson;
-		broadcast(toJson(FocusHintMessage("focus_hint", fromTid, toTid)));
+		clientHub.broadcast(toJson(FocusHintMessage("focus_hint", fromTid, toTid)));
 	}
 
 	private void unicastFocusHint(WebSocketAdapter ws, int fromTid, int toTid)
@@ -8376,22 +8336,15 @@ class App : ToolsBackend
 				warningf("NOTICE [%s]: %s — %s — %s", id, newNotice.description, newNotice.impact, newNotice.action);
 			else
 				infof("NOTICE [%s]: %s", id, newNotice.description);
-			broadcast(buildNoticesList());
+			clientHub.broadcast(buildNoticesList());
 		}
 		else
 		{
 			if (id !in activeNotices)
 				return;
 			activeNotices.remove(id);
-			broadcast(buildNoticesList());
+			clientHub.broadcast(buildNoticesList());
 		}
-	}
-
-	private void removeClient(WebSocketAdapter ws)
-	{
-		import std.algorithm : remove;
-		clients = clients.remove!(c => c is ws);
-		clientSubscriptions.remove(ws);
 	}
 
 	/// Extract the last assistant text from a task's history, truncated.
@@ -8415,15 +8368,6 @@ class App : ToolsBackend
 		return "";
 	}
 
-	private bool hasSubscribers(int tid)
-	{
-		foreach (ws; clients)
-			if (auto subs = ws in clientSubscriptions)
-				if (tid in *subs)
-					return true;
-		return false;
-	}
-
 	private void generateSuggestions(int tid)
 	{
 		if (tid !in tasks)
@@ -8441,7 +8385,7 @@ class App : ToolsBackend
 			return;
 
 		// Only generate when someone is actually viewing this task
-		if (!hasSubscribers(tid))
+		if (!clientHub.hasSubscribers(tid))
 		{
 			tracef("generateSuggestions[%d]: no subscribers, skipping", tid);
 			return;
