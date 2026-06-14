@@ -47,6 +47,7 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
+import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
@@ -617,6 +618,7 @@ class App : ToolsBackend
 	// Active notices keyed by notice ID
 	private Notice[string] activeNotices;
 	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
+	private ArchiveManager archiveManager;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -708,6 +710,24 @@ class App : ToolsBackend
 				onDelivered: &onToolCallDelivered,
 			),
 		);
+		archiveManager = new ArchiveManager(ArchiveManagerHost(
+			tryGetTask: &tryGetArchiveTask,
+			snapshotTasks: &snapshotArchiveTasks,
+			tryTaskDir: &tryResolveArchiveTaskDir,
+			updateTaskState: &updateArchiveTaskState,
+			persistArchived: (int tid, bool archived) {
+				persistence.setArchived(tid, archived);
+			},
+			broadcastTaskUpdate: &broadcastTaskUpdate,
+			sendError: &sendArchiveError,
+			setArchiveGoal: (int tid, ArchiveState goal) {
+				auto td = tid in tasks;
+				assert(td !is null, format!"Archive queue requested for missing task %d"(tid));
+				assert(td.archiveQueue !is null,
+					format!"Archive queue missing for task %d"(tid));
+				return td.archiveQueue.setGoal(goal);
+			},
+		));
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
@@ -3211,91 +3231,13 @@ class App : ToolsBackend
 
 	private bool isArchiveTransitioning(int tid)
 	{
-		auto tdp = tid in tasks;
-		if (tdp is null) return false;
-		return tdp.archiving;
+		return archiveManager.isTransitioning(tid);
 	}
 
 	private void handleSetArchivedMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
 		bool archived = json.content.json == `"true"`;
-
-		infof("archive request: requestedTid=%d goal=%s archived=%s archiving=%s workspace='%s' projectPath='%s' taskDir='%s' agentType='%s' agentSessionId='%s'",
-			tid,
-			archived ? "archived" : "unarchived",
-			td.archived ? "true" : "false",
-			td.archiving ? "true" : "false",
-			td.workspace,
-			td.projectPath,
-			tryTaskDir(*td),
-			td.agentType,
-			td.agentSessionId);
-		if (td.archived == archived)
-			return; // no change
-
-		// Block if archive transition already in progress
-		if (isArchiveTransitioning(tid))
-		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Archive operation already in progress", tid)).representation));
-			return;
-		}
-
-		// Block archiving if any task in the subtree is alive
-		if (archived)
-		{
-			int aliveTid = findAliveInSubtree(tid);
-			if (aliveTid >= 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					format!"Cannot archive: task %d is still running"(aliveTid), tid)).representation));
-				return;
-			}
-		}
-
-		// Update DB and flags immediately so subsequent operations see the new state.
-		td.archived = archived;
-		td.archiving = true;  // set before broadcast so spinner appears immediately
-		persistence.setArchived(tid, archived);
-
-		// Broadcast with archiving=true so frontend shows spinner.
-		broadcastTaskUpdate(tid);
-
-		// Start async worktree operation.
-		td.archiveQueue.setGoal(archived ? ArchiveState.Archived : ArchiveState.Unarchived)
-			.then(() {
-				// Transition complete — clear flag and broadcast final state.
-				auto tdp = tid in tasks;
-				if (tdp !is null)
-				{
-					tdp.archiving = false;
-					infof("archive transition completed: requestedTid=%d goal=%s archived=%s archiving=%s",
-						tid, archived ? "archived" : "unarchived",
-						tdp.archived ? "true" : "false",
-						tdp.archiving ? "true" : "false");
-					broadcastTaskUpdate(tid);
-				}
-			})
-			.except((Exception e) {
-				errorf("Archive transition failed for tid=%d: %s", tid, e.msg);
-				// Revert the archived flag and clear transitioning state on failure.
-				auto tdp = tid in tasks;
-				if (tdp !is null)
-				{
-					tdp.archived = !archived;
-					tdp.archiving = false;
-					persistence.setArchived(tid, !archived);
-					errorf("archive transition rolled back: requestedTid=%d revertedArchived=%s archiving=%s",
-						tid, tdp.archived ? "true" : "false", tdp.archiving ? "true" : "false");
-					broadcastTaskUpdate(tid);
-				}
-				ws.send(Data(toJson(ErrorMessage("error",
-					format!"Archive operation failed: %s"(e.msg), tid)).representation));
-			});
+		archiveManager.handleSetArchived(ws, json.tid, archived);
 	}
 
 	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)
@@ -4585,6 +4527,48 @@ class App : ToolsBackend
 			return "";
 	}
 
+	private bool tryGetArchiveTask(int tid, out ArchiveTaskSnapshot task)
+	{
+		auto td = tid in tasks;
+		if (td is null)
+			return false;
+		task = ArchiveTaskSnapshot(td.tid, td.parentTid, td.archived, td.archiving,
+			td.alive, td.workspace, td.projectPath);
+		return true;
+	}
+
+	private ArchiveTaskSnapshot[int] snapshotArchiveTasks()
+	{
+		ArchiveTaskSnapshot[int] snapshot;
+		foreach (tid, ref td; tasks)
+			snapshot[tid] = ArchiveTaskSnapshot(td.tid, td.parentTid, td.archived,
+				td.archiving, td.alive, td.workspace, td.projectPath);
+		return snapshot;
+	}
+
+	private string tryResolveArchiveTaskDir(int tid, string workspace, string projectPath)
+	{
+		try
+			return resolveTaskDirForTask(tid, workspace, projectPath);
+		catch (Exception)
+			return "";
+	}
+
+	private bool updateArchiveTaskState(int tid, bool archived, bool archiving)
+	{
+		auto td = tid in tasks;
+		if (td is null)
+			return false;
+		td.archived = archived;
+		td.archiving = archiving;
+		return true;
+	}
+
+	private void sendArchiveError(WebSocketAdapter ws, int tid, string message)
+	{
+		ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
+	}
+
 	private string worktreePath(const TaskData* td)
 	{
 		if (td is null)
@@ -5429,7 +5413,7 @@ class App : ToolsBackend
 	/// the D closure-capture bug where all loop iterations share the same `tid`.
 	private Promise!ArchiveState delegate(ArchiveState) makeArchiveQueueSF(int tid)
 	{
-		return (ArchiveState goal) => archiveTransition(tid, goal);
+		return archiveManager.makeQueueStateFunc(tid);
 	}
 
 	private Promise!ProcessState processTransition(int tid, ProcessState goal)
@@ -6161,229 +6145,9 @@ class App : ToolsBackend
 		return children;
 	}
 
-	/// Returns true if any ancestor of `tid` (via parent_tid chain) is archived.
-	private bool isEffectivelyArchivedByAncestor(int tid)
-	{
-		int current = tid;
-		for (;;)
-		{
-			auto tdp = current in tasks;
-			if (!tdp)
-				return false;
-			int parent = tdp.parentTid;
-			if (parent <= 0 || parent == current)
-				return false;
-			auto parentTdp = parent in tasks;
-			if (!parentTdp)
-				return false;
-			if (parentTdp.archived)
-				return true;
-			current = parent;
-		}
-	}
-
-	/// Returns the tid of the first alive task in the subtree rooted at `tid`,
-	/// or -1 if none are alive.
-	private int findAliveInSubtree(int tid)
-	{
-		auto tdp = tid in tasks;
-		if (tdp is null)
-			return -1;
-		if (tdp.alive)
-			return tid;
-		foreach (childTid, ref child; tasks)
-			if (child.parentTid == tid)
-			{
-				int found = findAliveInSubtree(childTid);
-				if (found >= 0)
-					return found;
-			}
-		return -1;
-	}
-
-	/// Holds the pre-computed data for a single worktree archive/unarchive git operation.
-	/// Collected on the main thread and executed in a background thread.
-	private struct WorktreeOp
-	{
-		int tid;
-		string worktreePath;
-		string projectPath;
-		string workspace;
-		string taskDir;
-	}
-
-	/// Collect archive ops for `tid` and descendants (main thread only).
-	/// Skips tasks already effectively archived by an ancestor.
-	private WorktreeOp[] collectArchiveOps(int tid)
-	{
-		WorktreeOp[] ops;
-		if (!isEffectivelyArchivedByAncestor(tid))
-			collectArchiveOpsDFS(tid, false, ops);
-		return ops;
-	}
-
-	private void collectArchiveOpsDFS(int tid, bool parentEffectivelyArchived, ref WorktreeOp[] ops)
-	{
-		import std.file : exists, isDir;
-
-		auto tdp = tid in tasks;
-		if (tdp is null)
-			return;
-		if (parentEffectivelyArchived && tdp.archived)
-			return;
-
-		auto tdpDir = tryTaskDir(*tdp);
-		if (tdpDir.length > 0)
-		{
-			auto wtPath = worktreePathForTaskDir(tdpDir);
-			if (exists(wtPath) && isDir(wtPath))
-				ops ~= WorktreeOp(tid, wtPath, tdp.projectPath, tdp.workspace, tdpDir);
-		}
-
-		foreach (childTid, ref child; tasks)
-			if (child.parentTid == tid)
-			{
-				bool follow = !child.archived;
-				infof("archive transition recurse: op=archive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
-					tid, childTid, follow ? "true" : "false",
-					child.workspace, child.projectPath, tryTaskDir(child));
-				if (follow)
-					collectArchiveOpsDFS(childTid, true, ops);
-			}
-	}
-
-	/// Collect unarchive ops for `tid` and descendants (main thread only).
-	/// Skips tasks still effectively archived by an ancestor.
-	private WorktreeOp[] collectUnarchiveOps(int tid)
-	{
-		WorktreeOp[] ops;
-		if (!isEffectivelyArchivedByAncestor(tid))
-			collectUnarchiveOpsDFS(tid, false, ops);
-		return ops;
-	}
-
-	private void collectUnarchiveOpsDFS(int tid, bool parentEffectivelyArchived, ref WorktreeOp[] ops)
-	{
-		auto tdp = tid in tasks;
-		if (tdp is null)
-			return;
-		if (parentEffectivelyArchived && tdp.archived)
-			return;
-
-		auto tdpDir = tryTaskDir(*tdp);
-		if (tdpDir.length > 0)
-			ops ~= WorktreeOp(tid, worktreePathForTaskDir(tdpDir),
-				tdp.projectPath, tdp.workspace, tdpDir);
-
-		foreach (childTid, ref child; tasks)
-			if (child.parentTid == tid)
-			{
-				bool follow = !child.archived;
-				infof("archive transition recurse: op=unarchive parentTid=%d childTid=%d followed=%s childWorkspace='%s' childProjectPath='%s' childTaskDir='%s'",
-					tid, childTid, follow ? "true" : "false",
-					child.workspace, child.projectPath, tryTaskDir(child));
-				if (follow)
-					collectUnarchiveOpsDFS(childTid, true, ops);
-			}
-	}
-
-	/// Async archive/unarchive transition. Runs git operations in a background thread.
-	/// `archiveQueue` field name covers both directions (archive and unarchive).
-	private Promise!ArchiveState archiveTransition(int tid, ArchiveState goal)
-	{
-		import std.conv : to;
-		import std.format : format;
-		import std.path : buildPath;
-
-		// Pre-collect all data on the main thread (safe: read-only access to tasks).
-		WorktreeOp[] ops = goal == ArchiveState.Archived
-			? collectArchiveOps(tid) : collectUnarchiveOps(tid);
-		auto rootTid = findRootTid(tid);
-		infof("archive transition start: transitionTid=%d rootTid=%d goal=%s operationCount=%d",
-			tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
-			cast(int) ops.length);
-
-		// Pre-compute cleanup path for archive (avoids accessing tasks in background thread).
-		string cleanupTmpPath;
-		if (goal == ArchiveState.Archived)
-		{
-			auto rootTd = rootTid in tasks;
-			if (rootTd !is null && (rootTid == tid || rootTd.archived))
-				cleanupTmpPath = buildPath(runtimeDir(), "tmp-" ~ rootTid.to!string);
-		}
-
-		return threadAsync({
-			import std.file : exists, rmdirRecurse;
-
-			try
-			{
-				if (goal == ArchiveState.Archived)
-				{
-					foreach (op; ops)
-					{
-						auto archiveRef = format!"refs/cydo/worktree-archive/%d"(op.tid);
-						infof("archive transition worktree op start: op=archive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
-							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
-						archiveWorktree(op.worktreePath, op.projectPath, op.tid);
-						infof("archive transition worktree op success: op=archive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
-							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
-					}
-					if (cleanupTmpPath.length > 0 && exists(cleanupTmpPath))
-					{
-						try
-							rmdirRecurse(cleanupTmpPath);
-						catch (Exception e)
-							warningf("archiveTransition: cleanup failed for tid=%d rootTid=%d path='%s': %s",
-								tid, rootTid, cleanupTmpPath, e.msg);
-					}
-				}
-
-				else
-				{
-					foreach (op; ops)
-					{
-						auto archiveRef = format!"refs/cydo/worktree-archive/%d"(op.tid);
-						if (!hasArchiveRef(op.projectPath, op.tid))
-						{
-							infof("archive transition worktree op skipped: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s' reason='archive ref missing'",
-								op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
-							continue;
-						}
-						infof("archive transition worktree op start: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
-							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
-						unarchiveWorktree(op.projectPath, op.tid, op.worktreePath);
-						infof("archive transition worktree op success: op=unarchive opTid=%d rootTid=%d workspace='%s' projectPath='%s' taskDir='%s' worktreePath='%s' archiveRef='%s'",
-							op.tid, rootTid, op.workspace, op.projectPath, op.taskDir, op.worktreePath, archiveRef);
-					}
-				}
-				infof("archive transition finish: transitionTid=%d rootTid=%d goal=%s operationCount=%d",
-					tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
-					cast(int) ops.length);
-				return goal;
-			}
-			catch (Exception e)
-			{
-				errorf("archive transition error: transitionTid=%d rootTid=%d goal=%s operationCount=%d error=%s",
-					tid, rootTid, goal == ArchiveState.Archived ? "archived" : "unarchived",
-					cast(int) ops.length, e.msg);
-				throw e;
-			}
-		});
-	}
-
-	/// Find the root task ID by walking parentTid to the top of the tree.
 	private int findRootTid(int tid)
 	{
-		int current = tid;
-		for (;;)
-		{
-			auto tdp = current in tasks;
-			if (tdp is null)
-				return current;
-			if (tdp.parentTid <= 0 || tdp.parentTid == current)
-				return current;
-			current = tdp.parentTid;
-		}
+		return archiveManager.findRootTid(tid);
 	}
 
 	/// Resolve the shared /tmp host path for a task.
