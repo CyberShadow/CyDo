@@ -64,11 +64,13 @@ import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
 import cydo.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.task_type_catalog : TaskTypeCatalog;
+import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
+	TaskSessionRunnerHost;
 import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
 import cydo.usage_tracker : AgentUsageTracker;
 
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.agent : Agent;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, QuestionResult, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
@@ -77,11 +79,10 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
-import cydo.sandbox : ProcessLaunch, cleanup, prepareProcessLaunch,
-	resolveExecutablePath, resolveSandbox, runtimeDir;
+import cydo.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
-	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
-	loadSystemPrompt, loadProjectMemory, resolveAgent, isRegisteredAgent;
+	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
+	loadProjectMemory, resolveAgent, isRegisteredAgent;
 import cydo.system_message : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
@@ -614,6 +615,7 @@ class App : ToolsBackend
 	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
 	private ArchiveManager archiveManager;
 	private HistoryEventPipeline historyPipeline;
+	private TaskSessionRunner taskSessionRunner;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -759,6 +761,21 @@ class App : ToolsBackend
 			ensureAgentSessionIdFromEvent: &ensureHistoryAgentSessionIdFromEvent,
 			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
 			planBroadcast: &planHistoryBroadcast,
+		));
+		taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			taskDir: &taskDir,
+			outputPath: &outputPath,
+			effectiveCwd: &effectiveCwd,
+			worktreePath: &worktreePath,
+			globalSandbox: () => config.sandbox,
+			findWorkspaceSandbox: &findWorkspaceSandbox,
+			findWorkspaceRoot: &findWorkspaceRoot,
+			findWorkspacePermissionPolicy: &findWorkspacePermissionPolicy,
+			findAgentSandbox: &findAgentSandbox,
+			resolveSharedTmpPath: &resolveSharedTmpPath,
+			mcpSocketPath: () => transport.mcpSocketPath,
+			taskTypeCatalog: taskTypeCatalog,
 		));
 
 		jsonlTracker.getAgent = &agentForTask;
@@ -4749,152 +4766,10 @@ class App : ToolsBackend
 			errorf("Failed to create fork worktree for task %d: %s", childTid, gitResult.output);
 	}
 
-	private struct TaskSessionLaunch
-	{
-		ProcessLaunch processLaunch;
-		SessionConfig sessionConfig;
-	}
-
 	private TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
 		TaskTypeDef* typeDef)
 	{
-		auto td = &tasks[tid];
-
-		// Derive session config from task type definition
-		SessionConfig sessionConfig;
-		if (typeDef !is null)
-		{
-			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
-			if (taskAgent.supportsDeveloperPrompt)
-				sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef,
-					taskTypeCatalog.promptSearchPath(td.projectPath), outputPath(*td));
-		}
-		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
-		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
-		sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
-		sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
-		sessionConfig.mcpSocketPath = transport.mcpSocketPath;
-
-		auto workDir = td.repoPath.length > 0 ? td.repoPath : null;
-
-		// Ensure per-task directory exists
-		import std.file : mkdirRecurse;
-		import std.path : buildPath;
-		auto tdDir = taskDir(*td);
-		mkdirRecurse(tdDir);
-
-		// When a project is a subdirectory inside a git repo, keep that relative
-		// path inside the worktree instead of dropping tasks at the repo root.
-		auto taskCwd = effectiveCwd(td);
-		auto chdir = taskCwd.length > 0 ? taskCwd : workDir;
-
-		// Resolve sandbox config: agent defaults + global + per-agent + per-workspace
-		auto wsSandbox = findWorkspaceSandbox(td.workspace);
-		auto wsRoot = findWorkspaceRoot(td.workspace);
-		auto agentTypeSandbox = findAgentSandbox(td.agentType);
-		bool readOnly = typeDef !is null && typeDef.read_only;
-		auto sandbox = resolveSandbox(config.sandbox, agentTypeSandbox, wsSandbox,
-			taskAgent, workDir, wsRoot, readOnly);
-
-		// Task directory is always writable (even for read-only tasks)
-		sandbox.paths[tdDir] = PathMode.rw;
-
-		// Worktree sandbox restriction: when a task has a worktree and is not
-		// read-only, downgrade the project directory to ro and add git dirs as rw.
-		if (td.worktreeTid > 0 && !readOnly && workDir.length > 0)
-		{
-			import std.process : execute;
-			import std.string : strip;
-			import std.path : absolutePath;
-
-			// Downgrade project directory to read-only
-			sandbox.paths[workDir] = PathMode.ro;
-
-			// The worktree itself must be writable
-			auto wtPath = worktreePath(td);
-			sandbox.paths[wtPath] = PathMode.rw;
-
-			// Add git dir and git common dir as writable for git operations
-			auto gitDirResult = execute(["git", "-C", wtPath, "rev-parse", "--git-dir"]);
-			if (gitDirResult.status == 0)
-			{
-				auto gitDir = gitDirResult.output.strip.absolutePath(wtPath);
-				sandbox.paths[gitDir] = PathMode.rw;
-			}
-			auto gitCommonResult = execute(["git", "-C", wtPath, "rev-parse", "--git-common-dir"]);
-			if (gitCommonResult.status == 0)
-			{
-				auto gitCommonDir = gitCommonResult.output.strip.absolutePath(wtPath);
-				sandbox.paths[gitCommonDir] = PathMode.rw;
-			}
-		}
-
-		// Git dirs writable for types that can reach a worktree: they may need
-		// to cherry-pick or merge results from child worktrees. Use always_rw
-		// so this survives the read_only downgrade.
-		auto reachesWorktree = taskTypeCatalog.reachesWorktreeFor(td.projectPath);
-		if (workDir.length > 0 && td.taskType in reachesWorktree
-			&& reachesWorktree[td.taskType])
-		{
-			import std.process : execute;
-			import std.string : strip;
-			import std.path : absolutePath;
-
-			auto gitDirResult = execute(["git", "-C", workDir, "rev-parse", "--git-dir"]);
-			if (gitDirResult.status == 0)
-			{
-				auto gitDir = gitDirResult.output.strip.absolutePath(workDir);
-				sandbox.paths[gitDir] = PathMode.always_rw;
-			}
-			auto gitCommonResult = execute(["git", "-C", workDir, "rev-parse", "--git-common-dir"]);
-			if (gitCommonResult.status == 0)
-			{
-				auto gitCommonDir = gitCommonResult.output.strip.absolutePath(workDir);
-				sandbox.paths[gitCommonDir] = PathMode.always_rw;
-			}
-		}
-
-		// MCP socket must be accessible inside the sandbox
-		if (transport.mcpSocketPath.length > 0)
-			sandbox.paths[transport.mcpSocketPath] = PathMode.ro;
-
-		// Project memory carve-out — always_rw so it survives the read_only
-		// downgrade and the worktree-bound ro override (longer paths win in
-		// the sandbox path-sort). mkdirRecurse bootstraps a fresh project.
-		if (workDir.length > 0)
-		{
-			import std.file : mkdirRecurse;
-			auto memoryDir = buildPath(workDir, ".cydo", "memory");
-			mkdirRecurse(memoryDir);
-			sandbox.paths[memoryDir] = PathMode.always_rw;
-		}
-
-		// Set up shared /tmp: all tasks in a tree share the same host-backed directory
-		sandbox.sharedTmpPath = resolveSharedTmpPath(tid);
-		td.launch = prepareProcessLaunch(sandbox, chdir,
-			taskAgent.executableName(sandbox.env));
-
-		sessionConfig.workspace = td.workspace;
-		sessionConfig.workDir = chdir !is null ? chdir : "";
-		if (taskAgent.needsBash())
-			sessionConfig.includeTools ~= "Bash";
-		if (sessionConfig.creatableTaskTypes.length > 0)
-			sessionConfig.includeTools ~= "Task";
-		if (sessionConfig.switchModes.length > 0)
-			sessionConfig.includeTools ~= "SwitchMode";
-		if (sessionConfig.handoffs.length > 0)
-			sessionConfig.includeTools ~= "Handoff";
-		if (taskTypes.isInteractive(taskTypeCatalog.getEntryPointsForProject(td.projectPath), td.taskType))
-			sessionConfig.includeTools ~= "AskUserQuestion";
-		sessionConfig.includeTools ~= "Ask";
-		sessionConfig.includeTools ~= "Answer";
-		if (typeDef !is null && typeDef.allow_native_subagents)
-			sessionConfig.allowNativeSubagents = true;
-
-		sessionConfig.permissionPolicy = findWorkspacePermissionPolicy(td.workspace);
-		sessionConfig.agentName = td.agentType;
-
-		return TaskSessionLaunch(td.launch, sessionConfig);
+		return taskSessionRunner.prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 	}
 
 	private void spawnTaskSession(int tid)
