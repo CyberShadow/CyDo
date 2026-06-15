@@ -57,6 +57,8 @@ import cydo.discovery_service : DiscoveryService, DiscoveryServiceHost,
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
+import cydo.history_pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
+	HistoryEventPipelineHost;
 import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
@@ -611,6 +613,7 @@ class App : ToolsBackend
 	private Notice[string] activeNotices;
 	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
 	private ArchiveManager archiveManager;
+	private HistoryEventPipeline historyPipeline;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -725,6 +728,38 @@ class App : ToolsBackend
 			onConfigChanged: &onConfigChanged,
 			onProjectConfigChanged: &onProjectConfigChanged,
 		));
+		historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			tryAgentForTask: &tryAgentForTask,
+			effectiveCwd: (int tid) {
+				auto td = tid in tasks;
+				return effectiveCwd(td);
+			},
+			injectAgentNameIntoSessionInit: &injectAgentNameIntoSessionInit,
+			normalizeKnownSystemMessageMeta: &normalizeKnownSystemMessageMeta,
+			synthesizeHistoryErrorEventJson: &synthesizeHistoryErrorEventJson,
+			sendToSubscribed: (int tid, Data data) {
+				clientHub.sendToSubscribed(tid, data);
+			},
+			subscribe: (WebSocketAdapter ws, int tid) {
+				clientHub.subscribe(ws, tid);
+			},
+			sendForkableUuids: (WebSocketAdapter ws, int tid) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"Forkable UUID replay requested for missing task %d"(tid));
+				jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
+					effectiveCwd(td));
+			},
+			broadcastForkableUuids: (int tid) {
+				jsonlTracker.broadcastForkableUuidsFromFile(tid);
+			},
+			sendReplaySupplementalState: &sendHistoryReplaySupplementalState,
+			onHistorySubscribed: &onHistorySubscribed,
+			ensureAgentSessionIdFromEvent: &ensureHistoryAgentSessionIdFromEvent,
+			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
+			planBroadcast: &planHistoryBroadcast,
+		));
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
@@ -735,7 +770,7 @@ class App : ToolsBackend
 		jsonlTracker.sendToSubscribed = (int tid, string msg) =>
 			clientHub.sendToSubscribed(tid, Data(msg.representation));
 		jsonlTracker.onAnchorResolved = (int tid, size_t seq, string anchor) =>
-			backfillHistoryAnchor(tid, seq, anchor);
+			historyPipeline.backfillHistoryAnchor(tid, seq, anchor);
 
 		// Load task type definitions
 		auto types = taskTypeCatalog.getTaskTypes();
@@ -1086,7 +1121,7 @@ class App : ToolsBackend
 			return RawSourceLookupResult(RawSourceLookupStatus.taskNotFound, null);
 
 		auto td = &tasks[tid];
-		ensureHistoryLoaded(tid);
+		historyPipeline.ensureHistoryLoaded(tid);
 		if (seq >= td.history.length)
 			return RawSourceLookupResult(RawSourceLookupStatus.seqOutOfRange, null);
 
@@ -1260,7 +1295,7 @@ class App : ToolsBackend
 				CydoTaskSpawnedEvent spawnEv;
 				spawnEv.child_tid  = childTid;
 				spawnEv.spec_index = specIndex;
-				appendAndBroadcastTaskEvent(parentTid,
+				historyPipeline.appendAndBroadcastTaskEvent(parentTid,
 					TranslatedEvent(toJson(spawnEv), null, AbsTime(Clock.currStdTime)));
 			}
 
@@ -2669,333 +2704,47 @@ class App : ToolsBackend
 		}
 	}
 
-	/// Load JSONL history from disk if not already loaded. Transitions the
-	/// HistoryStore from deferred state to loaded. Must be called before accessing
-	/// td.history.length, td.history[seq], or iterating td.history. The HistoryStore
-	/// state machine enforces this structurally: those operations assert isLoaded.
-	/// All TaskData entries are initialized via reset() at creation time (App.start()
-	/// for persisted tasks, createTask() for new tasks, explicit reset() elsewhere).
-	private void ensureHistoryLoaded(int tid)
+	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
 	{
-		if (tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.history.isLoaded)
-			return;
-
-		bool orphan = false;
-		string jsonlPath;
-		Agent ta;
-
-		if (td.agentSessionId.length > 0)
-		{
-			ta = tryAgentForTask(tid);
-			if (!ta)
-				orphan = true;
-			else
-				jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
-		}
-
-		// steeringStash holds (text, enqueueLineNum, rawLine) for queued steering messages.
-		// Using parallel arrays to avoid struct allocation in a delegate closure.
-		bool hasQueueOps = false;     // set when any queue-operation line is seen
-		int userMsgFromJsonl = 0;     // count of user message lines seen in JSONL
-		string[] steeringStash;
-		int[] steeringEnqueueLineNums;
-		string[] steeringEnqueueRawLines;
-		string lastDequeuedText;
-		int lastDequeuedEnqueueLineNum;
-		string lastDequeuedRawLine;
-		auto stripTransientStatus = (TranslatedEvent[] events) {
-			foreach (ref e; events)
-				e.translated = injectAgentNameIntoSessionInit(e.translated, td.agentType);
-			return filterTransientSessionStatusEvents(events);
-		};
-
-		import std.datetime.stopwatch : StopWatch;
-		StopWatch sw;
-		sw.start();
-		td.history.load((ulong maxBytes) {
-			import cydo.persist : LoadedHistory;
-			if (orphan || ta is null)
-				return LoadedHistory.init;
-
-			// Compute rollback skip lines from the watermarked byte prefix only,
-			// so that the same byte range is used for both the skip map and the load.
-			bool[int] rollbackSkipLines;
-			if (ta.driver == AgentDriver.codex && jsonlPath.length > 0 && maxBytes > 0)
-			{
-				import std.file : exists, read;
-				if (exists(jsonlPath))
-				{
-					import cydo.agent.codex : computeRollbackSkipLines;
-					rollbackSkipLines = computeRollbackSkipLines(
-						cast(string) read(jsonlPath, cast(size_t) maxBytes));
-				}
-			}
-
-			ta.resetHistoryReplay();
-			return loadTaskHistory(tid, jsonlPath, delegate TranslatedEvent[](string line, int lineNum) {
-				// Skip lines that are part of rolled-back turns
-				if (lineNum in rollbackSkipLines)
-					return [];
-				if (isQueueOperation(line))
-				{
-					import ae.utils.json : jsonParse;
-					import std.format : format;
-					auto op = jsonParse!QueueOperationProbe(line);
-					if (op.operation == "enqueue")
-					{
-						hasQueueOps = true;
-						string text = op.content;
-						steeringStash ~= text;
-						steeringEnqueueLineNums ~= lineNum;
-						steeringEnqueueRawLines ~= line;
-						return []; // Dequeue+echo/compaction will emit the confirmed version
-					}
-					else if (op.operation == "dequeue" || op.operation == "remove")
-					{
-						TranslatedEvent[] result;
-						// Flush any deferred synthetic from a prior dequeue/remove
-						// (handles compacted back-to-back dequeues)
-						if (lastDequeuedText.length > 0)
-						{
-							auto synEv = buildSyntheticUserEvent(lastDequeuedText);
-							result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid),
-								lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
-							lastDequeuedText = null;
-							lastDequeuedRawLine = null;
-						}
-						if (steeringStash.length > 0)
-						{
-							auto text = steeringStash[0];
-							auto enqLineNum = steeringEnqueueLineNums[0];
-							auto enqRaw = steeringEnqueueRawLines[0];
-							steeringStash = steeringStash[1 .. $];
-							steeringEnqueueLineNums = steeringEnqueueLineNums[1 .. $];
-							steeringEnqueueRawLines = steeringEnqueueRawLines[1 .. $];
-							if (op.operation == "remove")
-							{
-								// "remove" means the message was removed from the queue
-								// without a type:"user" echo following in the JSONL.
-								// Emit the synthetic confirmed event immediately (with
-								// enqueue UUID for undo support), matching live-stream
-								// behaviour where remove → synthetic broadcast.
-								auto enqueueUuid = format!"enqueue-%d"(enqLineNum);
-								auto synEv = buildSyntheticUserEvent(text, true);
-								synEv.uuid = enqueueUuid;
-								result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(text, synEv, tid),
-									enqRaw.length > 0 ? enqRaw : null);
-							}
-							else
-							{
-								// "dequeue" means a type:"user" echo should follow.
-								lastDequeuedText = text;
-								lastDequeuedEnqueueLineNum = enqLineNum;
-								lastDequeuedRawLine = enqRaw;
-								// Defer: wait to see if type:"user" echo follows
-							}
-						}
-						return stripTransientStatus(result);
-					}
-					return []; // unknown queue operation
-				}
-				// Deferred compaction check: if a type:"user" echo follows the
-				// dequeue/remove, pass it through with the enqueue UUID injected so the
-				// undo button appears on the confirmed message after reload.
-				// Other lines (file-history-snapshot, progress, etc.) are translated/dropped
-				// without leaving deferred mode — they can appear between dequeue and
-				// the user echo. Only type:"assistant" confirms compaction and triggers
-				// synthetic emission.
-				if (lastDequeuedText.length > 0)
-				{
-					if (ta.isUserMessageLine(line))
-					{
-						// Non-compacted: type:"user" echo present — pass through with
-						// the enqueue UUID injected (always override any existing uuid so
-						// that undo truncates at the enqueue line, not the echo line).
-						auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
-						lastDequeuedText = null;
-						lastDequeuedEnqueueLineNum = 0;
-						auto ts = ta.translateHistoryLine(line, lineNum);
-							if (ts.length > 0)
-							{
-								import std.format : format;
-								auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
-								// Inject enqueue UUID into the first event (item/started type=user_message).
-								import cydo.agent.protocol : ItemStartedEvent;
-								auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-								// Only steering echoes should use enqueue-N as the visible anchor.
-								// Regular user turns keep the raw user UUID.
-								if (ev.is_steering)
-									ev.uuid = enqueueUuid;
-								return stripTransientStatus([TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
-							}
-						return [];
-					}
-					if (ta.isAssistantMessageLine(line))
-					{
-						// Compacted: assistant response appeared without preceding user echo —
-						// emit synthetic with enqueue UUID before the assistant line.
-						import std.format : format;
-						auto enqueueUuid = format!"enqueue-%d"(lastDequeuedEnqueueLineNum);
-						auto synEv = buildSyntheticUserEvent(lastDequeuedText, true);
-						synEv.uuid = enqueueUuid;
-						auto synthetic = toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid);
-						auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
-						lastDequeuedText = null;
-						lastDequeuedEnqueueLineNum = 0;
-						lastDequeuedRawLine = null;
-						auto ts = ta.translateHistoryLine(line, lineNum);
-						return stripTransientStatus([TranslatedEvent(synthetic, syntheticRaw)] ~ ts);
-					}
-					// Other lines (file-history-snapshot, progress, etc.) are translated/dropped;
-					// stay in deferred mode waiting for type:"user" or type:"assistant".
-					return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
-				}
-				if (ta.isUserMessageLine(line))
-					userMsgFromJsonl++;
-				return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
-			}, maxBytes);
-		});
-		sw.stop();
-		if (td.history.isLoaded)
-			infof("Loaded history for task %d (%d events, %d ms)",
-				tid, td.history.length, sw.peek.total!"msecs");
-
-		if (orphan)
-			appendSynthesizedHistoryError(tid, "Failed to load session history",
-				buildOrphanAgentBody(td.agentType));
-
-		td.clearPendingDequeuedSteering();
-		// For agents without queue-operations (e.g. Copilot), emit synthetics for
-		// user messages that were sent but not yet flushed to JSONL at kill time.
-		if (!hasQueueOps && td.pendingSteeringTexts.length > userMsgFromJsonl)
-		{
-			import std.datetime : Clock;
-			import std.file : append, mkdirRecurse;
-			import std.path : dirName;
-			import ae.utils.json : toJson;
-			import std.uuid : randomUUID;
-			import std.format : format;
-			foreach (text; td.pendingSteeringTexts[cast(size_t)userMsgFromJsonl .. $])
-			{
-				auto uuid = randomUUID().toString();
-				// Append to events.jsonl so undo can truncate at this UUID.
-				if (jsonlPath.length > 0)
-				{
-					mkdirRecurse(dirName(jsonlPath));
-					append(jsonlPath,
-						`{"type":"user.message","id":"` ~ uuid
-						~ `","data":{"content":` ~ toJson(text) ~ `}}` ~ "\n");
-				}
-				// Emit synthetic into history with uuid for undo support.
-				auto synEv = buildSyntheticUserEvent(text);
-				synEv.uuid = uuid;
-				td.history.appendLive(Data(
-					toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-						JSONFragment(toJsonWithSyntheticUserMeta(text, synEv, tid)))).representation), null);
-			}
-			// Broadcast updated forkable UUIDs now that events.jsonl has new entries.
-			jsonlTracker.broadcastForkableUuidsFromFile(tid);
-		}
-		rebuildVisibleTurnAnchors(tid);
+		historyPipeline.handleRequestHistory(ws, json.tid);
 	}
 
-	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
+	private void sendHistoryReplaySupplementalState(WebSocketAdapter ws, int tid)
 	{
 		import ae.utils.json : toJson;
 
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
+		auto td = tid in tasks;
+		assert(td !is null, format!"History replay tail requested for missing task %d"(tid));
 
-		ensureHistoryLoaded(tid);
-
-		// History replay is the durable state transfer. This handler enqueues the
-		// full replay through task_history_end before logically subscribing the
-		// client, so later live events enqueue after the replay on this socket.
-		// Send start marker with total count for progress tracking
-		ws.send(Data(toJson(TaskHistoryStartMessage("task_history_start", tid,
-			cast(int) td.history.length)).representation));
-
-		// Send unified history to requesting client (add _seq)
-		import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
-		import ae.utils.array : as;
-		foreach (i, ref msg; td.history)
-		{
-			Data outgoing;
-			msg.enter((scope ubyte[] bytes) {
-				// `as!(char[])` is a no-copy view of the scope-bound bytes; do not
-				// use `as!string` — that hard-casts mutable bytes to immutable.
-				auto envelope = bytes.as!(char[]);
-				auto event = extractEventFromEnvelope(envelope);
-				if (event.length == 0)
-					return;
-				// idup before handing event/envelope to APIs taking `string`; this is
-				// also what lets the resulting Data escape the enter scope safely.
-				auto normalized = normalizeKnownSystemMessageMeta(event.idup, tid);
-				auto clientEnvelope = toJson(TaskEventSeqEnvelope(
-					tid,
-					cast(int) i,
-					extractTsFromEnvelope(envelope),
-					JSONFragment(normalized)));
-				outgoing = Data(clientEnvelope.representation);
-			});
-			if (outgoing.length > 0)
-				ws.send(outgoing);
-			else
-				// Non-event envelope (unconfirmedUserEvent, etc.) — pass through
-				ws.send(msg);
-		}
-
-		// Send forkable UUIDs extracted from JSONL.
-		// Skipped for orphan agent types — forkable UUIDs are unavailable but the
-		// rest of the history reply is fine.
-		if (td.agentSessionId.length > 0 && tryAgentForTask(tid))
-			jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
-				effectiveCwd(td));
-
-		// Send end marker
-		ws.send(Data(toJson(TaskHistoryEndMessage("task_history_end", tid)).representation));
-
-		// Re-broadcast live session status only for active runs.
 		if (td.isProcessing && td.hasLastSessionStatus)
 		{
 			ws.send(Data(toJson(TaskEventEnvelope(tid, td.lastSessionStatusTs,
 				JSONFragment(td.lastSessionStatus))).representation));
 		}
 
-		// Send cached suggestions if available
 		if (td.lastSuggestions.length > 0)
 			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid,
 				td.lastSuggestions)).representation));
 
-		// Re-broadcast pending AskUserQuestion (client reconnect / tab switch)
-		if (tid in pendingAskUserQuestions && tasks[tid].pendingAskToolUseId.length > 0)
+		if (tid in pendingAskUserQuestions && td.pendingAskToolUseId.length > 0)
 		{
-			auto tdask = &tasks[tid];
 			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid,
-				tdask.pendingAskToolUseId, tdask.pendingAskQuestions)).representation));
+				td.pendingAskToolUseId, td.pendingAskQuestions)).representation));
 		}
 
-		// Re-broadcast pending PermissionPrompt (client reconnect / tab switch)
-		if (tid in pendingPermissionPrompts && tasks[tid].pendingPermissionToolUseId.length > 0)
+		if (tid in pendingPermissionPrompts && td.pendingPermissionToolUseId.length > 0)
 		{
-			auto tdperm = &tasks[tid];
 			ws.send(Data(toJson(PermissionPromptMessage("permission_prompt", tid,
-				tdperm.pendingPermissionToolUseId, tdperm.pendingPermissionToolName,
-				tdperm.pendingPermissionInput)).representation));
+				td.pendingPermissionToolUseId, td.pendingPermissionToolName,
+				td.pendingPermissionInput)).representation));
 		}
+	}
 
-		// Subscribe client to live events only after replay has been enqueued
-		// through task_history_end.
-		clientHub.subscribe(ws, tid);
+	private void onHistorySubscribed(int tid)
+	{
+		auto td = tid in tasks;
+		assert(td !is null, format!"History subscribe callback for missing task %d"(tid));
 
-		// If a turn already completed but suggestions were skipped because no client was
-		// subscribed at the time (race: turn completed before request_history processed),
-		// trigger suggestion generation now that a subscriber is present.
 		if (td.suggestGenHandle is null && td.lastSuggestions.length == 0 && td.status == "alive")
 		{
 			try
@@ -3003,6 +2752,173 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Error generating suggestions on subscribe: %s", e.msg);
 		}
+	}
+
+	private void ensureHistoryAgentSessionIdFromEvent(int tid, string line)
+	{
+		if (line.length == 0 || tid !in tasks || tasks[tid].agentSessionId.length > 0)
+			return;
+		tryExtractAgentSessionId(tid, line);
+	}
+
+	private HistoryBroadcastPlan planHistoryBroadcast(int tid, TranslatedEvent ev)
+	{
+		import std.algorithm : canFind, startsWith;
+
+		HistoryBroadcastPlan plan;
+		plan.currentEvent = ev;
+
+		auto td = tid in tasks;
+		if (td is null)
+			return plan;
+
+		if (isCompactionReminderEchoEvent(plan.currentEvent.translated))
+			td.compactionReminderInFlight = true;
+		auto shouldSendCompactionReminder =
+			isCompactionReminderTriggerRaw(plan.currentEvent.raw)
+			|| isCompactionReminderTriggerEvent(plan.currentEvent.translated);
+		if (shouldSendCompactionReminder)
+			maybeSendCompactionReminderSteering(tid);
+
+		if (isQueueOperation(plan.currentEvent.translated))
+		{
+			auto op = jsonParse!QueueOperationProbe(plan.currentEvent.translated);
+			if (op.operation == "enqueue")
+			{
+				if (op.content.startsWith(systemMessagePrefix(
+					config.system_keyword,
+					KnownSystemMessageKind.postCompactionTaskModeReminder)))
+					td.compactionReminderInFlight = true;
+				td.enqueueSteering(op.content, plan.currentEvent.translated);
+				plan.consumeCurrent = true;
+				return plan;
+			}
+
+			if ((op.operation == "dequeue" || op.operation == "remove")
+				&& td.hasPendingDequeuedSteering())
+			{
+				string pendingText, pendingRaw;
+				if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
+				{
+					auto pendingSteeringEv = buildSyntheticUserEvent(pendingText, true);
+					plan.prependedEvents ~= TranslatedEvent(
+						toJsonWithSyntheticUserMeta(pendingText, pendingSteeringEv, tid),
+						pendingRaw.length > 0 ? pendingRaw : null,
+						plan.currentEvent.ts);
+				}
+			}
+
+			if (op.operation == "dequeue")
+			{
+				string text, enqueueRaw;
+				if (td.popSteering(text, enqueueRaw))
+					td.setPendingDequeuedSteering(text, enqueueRaw);
+				else
+					td.clearPendingDequeuedSteering();
+				plan.consumeCurrent = true;
+				return plan;
+			}
+			else if (op.operation == "remove")
+			{
+				string text, enqueueRaw;
+				if (td.popSteering(text, enqueueRaw))
+				{
+					auto steeringEv = buildSyntheticUserEvent(text, true);
+					plan.prependedEvents ~= TranslatedEvent(
+						toJsonWithSyntheticUserMeta(text, steeringEv, tid),
+						enqueueRaw.length > 0 ? enqueueRaw : null,
+						plan.currentEvent.ts);
+				}
+				plan.consumeCurrent = true;
+				return plan;
+			}
+
+			plan.consumeCurrent = true;
+			return plan;
+		}
+
+		if (td.hasPendingDequeuedSteering())
+		{
+			auto ta = agentForTask(tid);
+			if (plan.currentEvent.raw.length > 0 && ta.isAssistantMessageLine(plan.currentEvent.raw))
+			{
+				string pendingText, pendingRaw;
+				if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
+				{
+					auto steeringEv = buildSyntheticUserEvent(pendingText, true);
+					plan.prependedEvents ~= TranslatedEvent(
+						toJsonWithSyntheticUserMeta(pendingText, steeringEv, tid),
+						pendingRaw.length > 0 ? pendingRaw : null,
+						plan.currentEvent.ts);
+				}
+			}
+			else if (plan.currentEvent.translated.canFind(`"type":"item/started"`)
+				&& plan.currentEvent.translated.canFind(`"item_type":"user_message"`))
+			{
+				@JSONPartial static struct SteeringEchoProbe
+				{
+					string type;
+					string item_type;
+					@JSONOptional bool is_steering;
+					@JSONOptional string uuid;
+				}
+				try
+				{
+					auto probe = jsonParse!SteeringEchoProbe(plan.currentEvent.translated);
+					if (probe.type == "item/started"
+						&& probe.item_type == "user_message"
+						&& probe.is_steering)
+					{
+						if (probe.uuid.length > 0 && !probe.uuid.startsWith("enqueue-"))
+						{
+							import cydo.agent.protocol : ItemStartedEvent;
+							auto userEv = jsonParse!ItemStartedEvent(plan.currentEvent.translated);
+							userEv.uuid = null;
+							plan.currentEvent.translated = toJson(userEv);
+						}
+						td.clearPendingDequeuedSteering();
+					}
+				}
+				catch (Exception)
+				{
+				}
+			}
+		}
+
+		if (isCompactionReminderSteerFailureEvent(plan.currentEvent.translated))
+			td.compactionReminderInFlight = false;
+
+		if (td.pendingUserNonce.length > 0
+			&& plan.currentEvent.translated.canFind(`"type":"item/started"`)
+			&& plan.currentEvent.translated.canFind(`"item_type":"user_message"`))
+		{
+			@JSONPartial static struct UserMsgTagProbe
+			{
+				string type;
+				string item_type;
+				@JSONOptional bool is_replay;
+				@JSONOptional bool is_meta;
+				@JSONOptional bool pending;
+			}
+			try
+			{
+				auto probe = jsonParse!UserMsgTagProbe(plan.currentEvent.translated);
+				if (probe.type == "item/started"
+					&& probe.item_type == "user_message"
+					&& !probe.is_replay && !probe.is_meta && !probe.pending)
+				{
+					auto taggedNonce = td.pendingUserNonce;
+					td.pendingUserNonce = null;
+					plan.currentEvent.translated = plan.currentEvent.translated[0 .. $ - 1]
+						~ `,"correlation_id":` ~ toJson(taggedNonce) ~ `}`;
+				}
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		return plan;
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -3642,7 +3558,7 @@ class App : ToolsBackend
 			string rewindUuid = json.after_uuid;
 			if (rewindUuid.startsWith("enqueue-"))
 			{
-				ensureHistoryLoaded(tid);
+				historyPipeline.ensureHistoryLoaded(tid);
 				rewindUuid = td.checkpointUuidForAnchor(json.after_uuid);
 			}
 
@@ -3792,7 +3708,7 @@ class App : ToolsBackend
 		string fallbackUuid;
 		if (targetUuid.startsWith("enqueue-"))
 		{
-			ensureHistoryLoaded(tid);
+			historyPipeline.ensureHistoryLoaded(tid);
 			fallbackUuid = td.checkpointUuidForAnchor(targetUuid);
 		}
 		if (targetUuid.length == 0)
@@ -3851,7 +3767,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		ensureHistoryLoaded(tid);
+		historyPipeline.ensureHistoryLoaded(tid);
 
 		if (seq >= td.history.length || td.history.rawAt(seq) is null)
 		{
@@ -3923,35 +3839,12 @@ class App : ToolsBackend
 	{
 		import std.algorithm : min, filter;
 		import std.array : array;
-		import cydo.agent.protocol : ItemStartedEvent;
 
 		auto td = &tasks[tid];
 		assert(td.taskType.length > 0, "Task must have a task_type when sending a message");
 
-		// --- broadcast unconfirmed user message to UI ---
-		auto uiContent = broadcastContent !is null ? broadcastContent : content;
-		ItemStartedEvent ev;
-		ev.item_id   = "cc-user-msg";
-		ev.item_type = "user_message";
-		ev.text      = extractContentText(uiContent);
-		ev.content   = uiContent.dup;
-		ev.pending   = true;
-		auto userEvent = toJson(ev);
-		if (cydoMeta.length > 0)
-			userEvent = userEvent[0 .. $ - 1] ~ `,"meta":` ~ cydoMeta ~ `}`;
-		auto envelope = UnconfirmedUserEventEnvelope(tid, JSONFragment(userEvent), nonce);
-		auto data = Data(toJson(envelope).representation);
-		if (tid in tasks)
-		{
-			ensureHistoryLoaded(tid);
-			tasks[tid].history.appendLive(data, null);
-		}
-		clientHub.sendToSubscribed(tid, data);
-		if (nonce.length > 0 && tid in tasks)
-			tasks[tid].pendingUserNonce = nonce;
-
-		// Track every sent user-message text for reload accounting and queue-op synthetics.
-		td.pendingSteeringTexts ~= extractContentText(uiContent);
+		historyPipeline.appendUnconfirmedUserMessage(tid, content, broadcastContent,
+			cydoMeta, nonce);
 
 		// --- send to agent ---
 		// Snapshot the JSONL before the agent processes the new message.
@@ -5034,7 +4927,7 @@ class App : ToolsBackend
 			jsonlTracker.startJsonlWatch(tid);
 
 		td.session.onOutput = (TranslatedEvent ev) {
-			broadcastTask(tid, ev);
+			historyPipeline.broadcastTask(tid, ev);
 
 			if (!td.isProcessing && td.hadTurnResult)
 			{
@@ -5169,7 +5062,7 @@ class App : ToolsBackend
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = line;
-			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
+			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			lastStderr = line;
 		};
 
@@ -5209,7 +5102,7 @@ class App : ToolsBackend
 				if (findPendingChildQuestion(tid, pendingChildTid, pendingQuestion, pendingQid))
 					ev.is_continuation = true;
 			}
-			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
+			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			if (tid !in tasks)
 				return;
 			tasks[tid].isProcessing = false;
@@ -5532,7 +5425,7 @@ class App : ToolsBackend
 							~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
 					}
 					import std.datetime : Clock;
-					auto translated = appendSynthesizedHistoryError(
+					auto translated = historyPipeline.appendSynthesizedHistoryError(
 						tid, "Failed to resume session", body);
 					clientHub.sendToSubscribed(tid, Data(
 						toJson(TaskEventEnvelope(tid, Clock.currStdTime,
@@ -5630,7 +5523,7 @@ class App : ToolsBackend
 					"Successor type '%s' resolved agent to '%s' (parent='%s') — not a registered agent",
 					contDef.task_type, contAgent, td.agentType);
 				persistence.setStatus(tid, "failed");
-				appendSynthesizedHistoryError(tid, "Continuation failed", td.error);
+				historyPipeline.appendSynthesizedHistoryError(tid, "Continuation failed", td.error);
 				broadcastTaskUpdate(tid);
 				return;
 			}
@@ -6313,223 +6206,6 @@ class App : ToolsBackend
 		return json[0 .. $ - 1] ~ `,"meta":` ~ meta ~ `}`;
 	}
 
-	/// Append a synthesized error event to td.history. Returns the translated JSON
-	/// for live-broadcast reuse.
-	private string appendSynthesizedHistoryError(int tid, string subject, string body)
-	{
-		import std.datetime : Clock;
-
-		auto translated = synthesizeHistoryErrorEventJson(subject, body);
-		auto envelope = toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-			JSONFragment(translated)));
-		// rawSource is null: synthesized events have no agent-side JSONL line and
-		// must not be persisted on the next history reload.
-		tasks[tid].history.appendLive(Data(envelope.representation), null);
-		return translated;
-	}
-
-	/// Build the Markdown body shown to the user when a task references an
-	/// agent type that isn't registered (orphan).
-	private static string buildOrphanAgentBody(string agentType)
-	{
-		import std.algorithm : map;
-		import std.array : join;
-		import cydo.agent.registry : agentRegistry;
-		auto knownNames = agentRegistry[].map!(r => "`" ~ r.name ~ "`").join(", ");
-		return "This task uses agent `" ~ agentType ~ "`, which is not configured.\n\n"
-			~ "The currently available agents are: " ~ knownNames ~ ".";
-	}
-
-	// `translated` and `rawLine` may be slices into Data-backed (mmap/malloc)
-	// memory whose lifetime is independent of the GC.  jsonParse's fast path
-	// returns slices into its input for unescaped strings (UUIDs always hit
-	// it), so any UUID we lift out must be `.idup`'d before it's stored in
-	// TaskData — otherwise the slice dangles when the source Data is released.
-	private void registerVisibleTurnAnchorFromEvent(int tid, size_t seq, const(char)[] translated, const(char)[] rawLine = null)
-	{
-		import std.algorithm : canFind, startsWith;
-
-		if (tid !in tasks || translated.length == 0)
-			return;
-		auto td = &tasks[tid];
-
-		if (translated.canFind(`"type":"item/started"`) && translated.canFind(`"item_type":"user_message"`))
-		{
-			@JSONPartial
-			static struct UserAnchorProbe
-			{
-				string type;
-				string item_type;
-				@JSONOptional bool is_meta;
-				@JSONOptional bool is_steering;
-				@JSONOptional bool pending;
-				@JSONOptional string uuid;
-			}
-
-			UserAnchorProbe probe;
-			try
-				probe = jsonParse!UserAnchorProbe(translated);
-			catch (Exception)
-				return;
-
-			if (probe.type != "item/started" || probe.item_type != "user_message")
-				return;
-			if (probe.is_meta || probe.pending)
-				return;
-
-			auto uuid = probe.uuid;
-			auto isEnqueue = uuid.length > "enqueue-".length && uuid.startsWith("enqueue-");
-			string checkpointUuid;
-			if (!isEnqueue && uuid.length > 0)
-				checkpointUuid = uuid;
-			else if (rawLine.length > 0)
-			{
-				@JSONPartial static struct RawUserUuidProbe
-				{
-					string type;
-					@JSONOptional string uuid;
-				}
-				try
-				{
-					auto rawProbe = jsonParse!RawUserUuidProbe(rawLine);
-					if (rawProbe.type == "user" && rawProbe.uuid.length > 0)
-						checkpointUuid = rawProbe.uuid;
-				}
-				catch (Exception)
-				{
-				}
-			}
-			auto shouldPend = probe.is_steering && uuid.length == 0;
-			auto anchor = shouldPend ? null : uuid;
-			if (!shouldPend && anchor.length == 0)
-				return;
-
-			td.registerVisibleTurnAnchor(seq, true, probe.is_steering,
-				anchor.idup, checkpointUuid.idup, shouldPend);
-			return;
-		}
-
-		if (translated.canFind(`"type":"turn/stop"`))
-		{
-			@JSONPartial static struct TurnStopAnchorProbe { string type; @JSONOptional string uuid; }
-			TurnStopAnchorProbe probe;
-			try
-				probe = jsonParse!TurnStopAnchorProbe(translated);
-			catch (Exception)
-				return;
-			if (probe.type == "turn/stop" && probe.uuid.length > 0)
-			{
-				auto uuid = probe.uuid.idup;
-				td.registerVisibleTurnAnchor(seq, false, false, uuid, uuid, false);
-			}
-			return;
-		}
-
-		if (translated.canFind(`"type":"turn/delta"`))
-		{
-			@JSONPartial static struct TurnDeltaAnchorProbe { string type; @JSONOptional string uuid; }
-			TurnDeltaAnchorProbe probe;
-			try
-				probe = jsonParse!TurnDeltaAnchorProbe(translated);
-			catch (Exception)
-				return;
-			if (probe.type == "turn/delta" && probe.uuid.length > 0)
-			{
-				auto uuid = probe.uuid.idup;
-				td.registerVisibleTurnAnchor(seq, false, false, uuid, uuid, false);
-			}
-		}
-	}
-
-	private void rebuildVisibleTurnAnchors(int tid)
-	{
-		import ae.utils.array : as;
-		import cydo.task : extractEventFromEnvelope;
-
-		if (tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		td.visibleTurnAnchors = null;
-		foreach (i, ref entry; td.history)
-		{
-			entry.enter((scope ubyte[] bytes) {
-				// `as!(char[])` is a no-copy view of the scope-bound bytes; do not
-				// use `as!string` — that hard-casts mutable bytes to immutable.
-				auto event = extractEventFromEnvelope(bytes.as!(char[]));
-				if (event.length == 0)
-					return;
-				registerVisibleTurnAnchorFromEvent(tid, i, event, td.history.rawAt(i));
-			});
-		}
-	}
-
-	private void backfillHistoryAnchor(int tid, size_t seq, string anchor)
-	{
-		import std.algorithm : canFind;
-		import ae.utils.array : as;
-		import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
-		import cydo.agent.protocol : ItemStartedEvent;
-
-		if (tid !in tasks || anchor.length == 0)
-			return;
-		auto td = &tasks[tid];
-		if (seq >= td.history.length)
-			return;
-
-		// Build the replacement envelope inside `enter` so the slices feeding
-		// `toJson` (envelope → event → userEv fields) reference scope-bound
-		// memory whose lifetime outlives the parse → reserialize step.
-		// `as!(char[])` is a no-copy view; `as!string` would hard-cast to immutable.
-		// opIndex returns ref const(Data) so the lambda receives const bytes.
-		Data replacement;
-		td.history[seq].enter((scope const(ubyte)[] bytes) {
-			auto envelope = bytes.as!(char[]);
-			auto event = extractEventFromEnvelope(envelope);
-			if (event.length == 0
-				|| !event.canFind(`"type":"item/started"`)
-				|| !event.canFind(`"item_type":"user_message"`))
-				return;
-
-			ItemStartedEvent userEv;
-			try
-				userEv = jsonParse!ItemStartedEvent(event);
-			catch (Exception)
-				return;
-			if (userEv.uuid == anchor)
-				return;
-			userEv.uuid = anchor;
-			// `userEv` carries string slices into `bytes` (scope-bound); the inner
-			// toJson reads them synchronously here, and the resulting Data copy is
-			// what escapes the scope.
-			replacement = Data(toJson(TaskEventEnvelope(tid,
-				extractTsFromEnvelope(envelope),
-				JSONFragment(toJson(userEv)))).representation);
-		});
-		if (replacement.length > 0)
-			td.history.replaceAt(seq, replacement);
-	}
-
-	private static bool isSessionStatusEvent(string translated)
-	{
-		import std.algorithm : canFind;
-		return translated.canFind(`"type":"session/status"`)
-			|| translated.canFind(`"type":"session\/status"`);
-	}
-
-	private static bool isTurnResultEvent(string translated)
-	{
-		import std.algorithm : canFind;
-		return translated.canFind(`"type":"turn/result"`)
-			|| translated.canFind(`"type":"turn\/result"`);
-	}
-
-	private static bool isProcessExitEvent(string translated)
-	{
-		import std.algorithm : canFind;
-		return translated.canFind(`"type":"process/exit"`)
-			|| translated.canFind(`"type":"process\/exit"`);
-	}
-
 	private bool updateClaudeUsageFromEvent(int tid, string translated)
 	{
 		if (tid !in tasks)
@@ -6541,353 +6217,6 @@ class App : ToolsBackend
 		if (changed)
 			clientHub.broadcast(payload);
 		return changed;
-	}
-
-	private void cacheSessionStatusEvent(int tid, string translated, long ts)
-	{
-		if (tid !in tasks)
-			return;
-
-		@JSONPartial static struct StatusProbe
-		{
-			string type;
-			@JSONOptional string status;
-		}
-
-		try
-		{
-			auto probe = jsonParse!StatusProbe(translated);
-			if (probe.type != "session/status")
-				return;
-			import std.string : strip;
-			if (probe.status.strip.length == 0)
-			{
-				tasks[tid].clearLastSessionStatus();
-				return;
-			}
-			tasks[tid].setLastSessionStatus(translated, ts);
-		}
-		catch (Exception)
-		{
-			// Malformed status payloads are never durable and should not linger.
-			tasks[tid].clearLastSessionStatus();
-		}
-	}
-
-	private static TranslatedEvent[] filterTransientSessionStatusEvents(
-		TranslatedEvent[] events)
-	{
-		if (events.length == 0)
-			return events;
-
-		TranslatedEvent[] filtered;
-		foreach (ev; events)
-		{
-			if (!isSessionStatusEvent(ev.translated))
-			{
-				filtered ~= ev;
-				continue;
-			}
-		}
-		return filtered;
-	}
-
-	private size_t appendAndBroadcastTaskEvent(int tid, TranslatedEvent ev)
-	{
-		if (tid !in tasks)
-			return 0;
-
-		if (isTurnResultEvent(ev.translated) || isProcessExitEvent(ev.translated))
-			tasks[tid].clearLastSessionStatus();
-
-		if (isSessionStatusEvent(ev.translated))
-		{
-			cacheSessionStatusEvent(tid, ev.translated, ev.ts.stdTime);
-			clientHub.sendToSubscribed(tid, Data(
-				toJson(TaskEventEnvelope(tid, ev.ts.stdTime,
-					JSONFragment(ev.translated))).representation));
-			return cast(size_t) -1;
-		}
-
-		// Persist before live broadcast. A subscriber can consume the event live;
-		// a non-subscriber or reconnecting client will get the same event from
-		// request_history for the current history lineage.
-		// appendLive returns cast(size_t)-1 when the store is deferred (startup
-		// resume in progress). In that case no subscribers exist for this tid
-		// and anchors are rebuilt at load time — skip the broadcast/anchor work.
-		auto historyData = Data(toJson(TaskEventEnvelope(tid, ev.ts.stdTime, JSONFragment(ev.translated))).representation);
-		bool merged = mergeStreamingDelta(tid, ev.translated, historyData);
-		size_t seq;
-		if (merged)
-			seq = tasks[tid].history.isLoaded
-				? tasks[tid].history.length - 1 : cast(size_t) -1;
-		else
-			seq = tasks[tid].history.appendLive(historyData, ev.raw);
-
-		if (seq == cast(size_t) -1)
-			return seq;
-
-		if (!merged)
-			registerVisibleTurnAnchorFromEvent(tid, seq, ev.translated, ev.raw);
-		clientHub.sendToSubscribed(tid, Data(
-			toJson(TaskEventSeqEnvelope(tid, cast(int) seq, ev.ts.stdTime,
-				JSONFragment(ev.translated))).representation));
-		return seq;
-	}
-
-	private void broadcastTask(int tid, TranslatedEvent ev)
-	{
-		// Apply timestamp fallback: use backend receipt time if agent provided none.
-		import std.datetime : Clock;
-		import std.algorithm : canFind, startsWith;
-		import ae.utils.time.types : AbsTime;
-		if (ev.ts == AbsTime.init)
-			ev.ts = AbsTime(Clock.currStdTime);
-
-		// Extract agent session ID from translated event
-		if (tid in tasks && tasks[tid].agentSessionId.length == 0)
-			tryExtractAgentSessionId(tid, ev.translated);
-		ev.translated = normalizeKnownSystemMessageMeta(ev.translated, tid);
-		updateClaudeUsageFromEvent(tid, ev.translated);
-		if (tid in tasks && isCompactionReminderEchoEvent(ev.translated))
-			tasks[tid].compactionReminderInFlight = true;
-		auto shouldSendCompactionReminder = tid in tasks
-			&& (isCompactionReminderTriggerRaw(ev.raw)
-				|| isCompactionReminderTriggerEvent(ev.translated));
-		if (shouldSendCompactionReminder)
-			maybeSendCompactionReminderSteering(tid);
-
-		// Intercept queue-operation events for steering message handling
-		if (isQueueOperation(ev.translated))
-		{
-				if (auto td = tid in tasks)
-				{
-					import ae.utils.json : jsonParse;
-					auto op = jsonParse!QueueOperationProbe(ev.translated);
-					if (op.operation == "enqueue")
-					{
-						if (op.content.startsWith(systemMessagePrefix(
-							config.system_keyword,
-							KnownSystemMessageKind.postCompactionTaskModeReminder)))
-							td.compactionReminderInFlight = true;
-						td.enqueueSteering(op.content, ev.translated);
-						return; // already displayed via unconfirmedUserEvent
-					}
-
-				// Compacted back-to-back queue operations can leave one dequeued
-				// steering turn without a following user echo; flush it now.
-				if ((op.operation == "dequeue" || op.operation == "remove")
-					&& td.hasPendingDequeuedSteering())
-				{
-					string pendingText, pendingRaw;
-					if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
-					{
-						auto pendingSteeringEv = buildSyntheticUserEvent(pendingText, true);
-						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, pendingSteeringEv, tid),
-								pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
-					}
-				}
-
-				if (op.operation == "dequeue")
-				{
-					string text, enqueueRaw;
-					if (td.popSteering(text, enqueueRaw))
-						td.setPendingDequeuedSteering(text, enqueueRaw);
-					else
-						td.clearPendingDequeuedSteering();
-					return; // the real message/user follows
-				}
-				else if (op.operation == "remove")
-				{
-					string text, enqueueRaw;
-					if (td.popSteering(text, enqueueRaw))
-					{
-						// Broadcast synthetic steering confirmation
-						auto steeringEv = buildSyntheticUserEvent(text, true);
-						appendAndBroadcastTaskEvent(tid,
-							TranslatedEvent(toJsonWithSyntheticUserMeta(text, steeringEv, tid),
-								enqueueRaw.length > 0 ? enqueueRaw : null, ev.ts));
-					}
-					return;
-				}
-			}
-			return; // unknown queue operation — consume silently
-		}
-
-		if (tid in tasks && tasks[tid].hasPendingDequeuedSteering())
-		{
-			auto td = &tasks[tid];
-			auto ta = agentForTask(tid);
-			if (ev.raw.length > 0 && ta.isAssistantMessageLine(ev.raw))
-			{
-				string pendingText, pendingRaw;
-				if (td.popPendingDequeuedSteering(pendingText, pendingRaw))
-				{
-					auto steeringEv = buildSyntheticUserEvent(pendingText, true);
-					appendAndBroadcastTaskEvent(tid,
-						TranslatedEvent(toJsonWithSyntheticUserMeta(pendingText, steeringEv, tid),
-							pendingRaw.length > 0 ? pendingRaw : null, ev.ts));
-				}
-			}
-			else if (ev.translated.canFind(`"type":"item/started"`)
-				&& ev.translated.canFind(`"item_type":"user_message"`))
-			{
-				@JSONPartial static struct SteeringEchoProbe
-				{
-					string type;
-					string item_type;
-					@JSONOptional bool is_steering;
-					@JSONOptional string uuid;
-				}
-				SteeringEchoProbe probe;
-				try
-				{
-					probe = jsonParse!SteeringEchoProbe(ev.translated);
-					if (probe.type == "item/started"
-						&& probe.item_type == "user_message"
-						&& probe.is_steering)
-					{
-						if (probe.uuid.length > 0 && !probe.uuid.startsWith("enqueue-"))
-						{
-							import cydo.agent.protocol : ItemStartedEvent;
-							auto userEv = jsonParse!ItemStartedEvent(ev.translated);
-							userEv.uuid = null;
-							ev.translated = toJson(userEv);
-						}
-						td.clearPendingDequeuedSteering();
-					}
-				}
-				catch (Exception)
-				{
-					// Keep the original event if parsing fails.
-				}
-			}
-		}
-		if (tid in tasks && isCompactionReminderSteerFailureEvent(ev.translated))
-			tasks[tid].compactionReminderInFlight = false;
-
-		// Tag the pending nonce onto non-replay user_message events so the
-		// frontend reducer can deduplicate optimistic placeholders by nonce alone.
-		if (tid in tasks && tasks[tid].pendingUserNonce.length > 0)
-		{
-			import std.algorithm : canFind;
-			if (ev.translated.canFind(`"type":"item/started"`)
-				&& ev.translated.canFind(`"item_type":"user_message"`))
-			{
-				@JSONPartial static struct UserMsgTagProbe
-				{
-					string type;
-					string item_type;
-					@JSONOptional bool is_replay;
-					@JSONOptional bool is_meta;
-					@JSONOptional bool pending;
-				}
-				try
-				{
-					auto probe = jsonParse!UserMsgTagProbe(ev.translated);
-					if (probe.type == "item/started"
-						&& probe.item_type == "user_message"
-						&& !probe.is_replay && !probe.is_meta && !probe.pending)
-					{
-						auto taggedNonce = tasks[tid].pendingUserNonce;
-						tasks[tid].pendingUserNonce = null;
-						ev.translated = ev.translated[0 .. $ - 1]
-							~ `,"correlation_id":` ~ toJson(taggedNonce) ~ `}`;
-					}
-				}
-				catch (Exception) {}
-			}
-		}
-
-		appendAndBroadcastTaskEvent(tid, ev);
-	}
-
-	/// Try to merge an item/delta into the last history entry.
-	/// Returns true if merged (caller should NOT append), false otherwise.
-	private bool mergeStreamingDelta(int tid, string translated, Data data)
-	{
-		import std.algorithm : canFind;
-
-		// Only merge item/delta events.
-		if (!translated.canFind(`"type":"item/delta"`))
-			return false;
-
-		auto td = &tasks[tid];
-		if (td.history.lastEventContents().length == 0)
-			return false;
-
-		auto lastEntry = td.history.lastEventContents();
-		if (lastEntry.length > 64 * 1024)
-			return false;
-		if (!lastEntry.canFind(`"type":"item/delta"`) &&
-		    !lastEntry.canFind(`"type":"item\/delta"`))
-			return false;
-
-		// Both are item/delta — check that item_id matches.
-		auto lastId = extractItemId(lastEntry);
-		auto newId = extractItemId(translated);
-		if (lastId is null || newId is null || lastId != newId)
-			return false;
-
-		// Merge: concatenate the `content` fields.
-		auto merged = mergeItemDeltas(lastEntry, translated);
-		if (merged is null)
-			return false;
-
-		// Reconstruct envelope from merged content, preserving the original ts.
-		import std.json : parseJSON;
-		auto prevTs = td.history.lastEventTs();
-		auto mergedObj = parseJSON(merged);
-		auto canonical = toJson(TaskEventEnvelope(tid, prevTs,
-			JSONFragment(mergedObj["event"].toString())));
-		td.history.replaceLastEvent(Data(canonical.representation));
-		return true;
-	}
-
-	/// Extract the "item_id" string value from an item/delta event string.
-	/// Returns null if not found.
-	private static string extractItemId(const(char)[] s)
-	{
-		import std.string : indexOf;
-		enum key = `"item_id":"`;
-		auto idx = s.indexOf(key);
-		if (idx < 0)
-			return null;
-		auto start = idx + key.length;
-		auto end = s.indexOf('"', start);
-		if (end < 0 || end <= start)
-			return null;
-		return cast(string) s[start .. end];
-	}
-
-	/// Merge two item/delta envelope strings by concatenating content.
-	/// Returns the merged envelope string, or null if merging failed.
-	private string mergeItemDeltas(const(char)[] lastEnvelope, string newTranslated)
-	{
-		import std.json : parseJSON, JSONValue, JSONType;
-
-		JSONValue lastJson, newEventJson;
-		try
-		{
-			lastJson = parseJSON(lastEnvelope);
-			newEventJson = parseJSON(newTranslated);
-		}
-		catch (Exception e)
-		{ tracef("mergeItemDeltas: JSON parse error: %s", e.msg); return null; }
-
-		auto lastEvent = lastJson["event"];
-		// Concatenate the `content` field.
-		if (auto lastContent = "content" in lastEvent.objectNoRef)
-		{
-			if (auto newContent = "content" in newEventJson.objectNoRef)
-			{
-				(*lastContent).str = (*lastContent).str ~ (*newContent).str;
-				return lastJson.toString();
-			}
-		}
-
-		return null;
 	}
 
 	/// Try to extract agent session ID from an output line using the Agent interface.
@@ -7067,7 +6396,7 @@ class App : ToolsBackend
 			import cydo.agent.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = "failed to generate title: " ~ e.msg;
-			broadcastTask(tid, TranslatedEvent(toJson(ev), null));
+			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 		}).ignoreResult();
 
 	}
@@ -7220,7 +6549,7 @@ class App : ToolsBackend
 	{
 		if (tid !in tasks)
 			return "";
-		ensureHistoryLoaded(tid);
+		historyPipeline.ensureHistoryLoaded(tid);
 		foreach_reverse (ref d; tasks[tid].history)
 		{
 			auto envelope = cast(string) d.toGC();
@@ -7258,7 +6587,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		ensureHistoryLoaded(tid);
+		historyPipeline.ensureHistoryLoaded(tid);
 		auto history = buildAbbreviatedHistory(tid);
 		if (history.length == 0)
 		{
