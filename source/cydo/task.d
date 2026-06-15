@@ -1239,7 +1239,42 @@ unittest
         assert(hs.rawAt(4) == "praw1");
     }
 
-    // 5. load() with empty result: pending event at seq 0.
+    // 5. load() keeps collecting deferred live events until the loader returns,
+    //    then appends the full pending buffer after the loaded prefix.
+    {
+        HistoryStore hs;
+        hs.reset(Watermark.atBytes(42));
+        hs.appendLive(makeData("pending-before"), "praw-before");
+
+        hs.load((_) {
+            auto deferred0 = hs.appendLive(makeData("pending-during0"), "praw-during0");
+            auto deferred1 = hs.appendLive(makeData("pending-during1"), "praw-during1");
+            assert(deferred0 == cast(size_t) -1);
+            assert(deferred1 == cast(size_t) -1);
+
+            LoadedHistory lh;
+            lh.history ~= makeData("loaded0");
+            lh.rawSource ~= "lraw0";
+            lh.history ~= makeData("loaded1");
+            lh.rawSource ~= "lraw1";
+            return lh;
+        });
+
+        assert(hs.isLoaded);
+        assert(hs.length == 5);
+        assert(cast(string) hs[0].unsafeContents == "loaded0");
+        assert(cast(string) hs[1].unsafeContents == "loaded1");
+        assert(cast(string) hs[2].unsafeContents == "pending-before");
+        assert(cast(string) hs[3].unsafeContents == "pending-during0");
+        assert(cast(string) hs[4].unsafeContents == "pending-during1");
+        assert(hs.rawAt(0) == "lraw0");
+        assert(hs.rawAt(1) == "lraw1");
+        assert(hs.rawAt(2) == "praw-before");
+        assert(hs.rawAt(3) == "praw-during0");
+        assert(hs.rawAt(4) == "praw-during1");
+    }
+
+    // 6. load() with empty result: pending event at seq 0.
     {
         HistoryStore hs;
         hs.reset(Watermark.atBytes(42));
@@ -1251,7 +1286,7 @@ unittest
         assert(hs.rawAt(0) == "r");
     }
 
-    // 6. replaceLastEvent in both states.
+    // 7. replaceLastEvent in both states.
     {
         // Deferred: replaceLastEvent mutates pending tail.
         HistoryStore hs;
@@ -1269,7 +1304,7 @@ unittest
         assert(cast(string) hs[hs.length - 1].unsafeContents == "mutated");
     }
 
-    // 7. replaceAt asserts for non-loaded state (deferred).
+    // 8. replaceAt asserts for non-loaded state (deferred).
     {
         HistoryStore hs;
         hs.reset(Watermark.atBytes(5));
@@ -1277,7 +1312,7 @@ unittest
         assertThrown!AssertError(hs.replaceAt(0, makeData("y")));
     }
 
-    // 8. Invariant: loaded state must have empty pending buffer; parallel arrays
+    // 9. Invariant: loaded state must have empty pending buffer; parallel arrays
     //    must stay length-matched. D's invariant fires on every public method entry.
     {
         // Violate loaded-implies-empty-pending by directly setting pendingEvents_.
@@ -1306,7 +1341,7 @@ unittest
         hs2.history_ = DataVec();
     }
 
-    // 9. reset() re-snapshots the watermark; next load receives new maxBytes.
+    // 10. reset() re-snapshots the watermark; next load receives new maxBytes.
     {
         HistoryStore hs;
         hs.reset(Watermark.atBytes(10));
@@ -1320,7 +1355,7 @@ unittest
         assert(hs.length == 0);
     }
 
-    // 10. Watermark.unreadable() → deferred with maxBytes==0.
+    // 11. Watermark.unreadable() → deferred with maxBytes==0.
     {
         HistoryStore hs;
         hs.reset(Watermark.unreadable());
