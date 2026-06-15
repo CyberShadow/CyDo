@@ -51,10 +51,12 @@ import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSna
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
+import cydo.config_watcher : ConfigWatcher, ConfigWatcherHost;
+import cydo.discovery_service : DiscoveryService, DiscoveryServiceHost,
+	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
-import cydo.inotify : RefCountedINotify;
 import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.logging : installRobustLogger;
@@ -64,7 +66,7 @@ import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStat
 	TransportAdapter, WebSocketCallbacks;
 import cydo.usage_tracker : AgentUsageTracker;
 
-import cydo.agent.agent : Agent, DiscoveredSession, SessionConfig, SessionMeta;
+import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, QuestionResult, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
@@ -73,9 +75,8 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
-import cydo.sandbox : ProcessLaunch, buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
-	prepareProcessLaunch, resolveExecutablePath,
-	resolveSandbox, resolveSandboxForDiscovery, runtimeDir;
+import cydo.sandbox : ProcessLaunch, cleanup, prepareProcessLaunch,
+	resolveExecutablePath, resolveSandbox, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, formatCreatableTaskTypes, formatSwitchModes, formatHandoffs,
 	loadSystemPrompt, loadProjectMemory, resolveAgent, isRegisteredAgent;
@@ -566,7 +567,6 @@ mixin main!run;
 
 class App : ToolsBackend
 {
-	import ae.sys.inotify : INotify, iNotify;
 	import cydo.jsonl : JsonlTracker;
 
 	private TransportAdapter transport;
@@ -575,7 +575,8 @@ class App : ToolsBackend
 	private Persistence persistence;
 	private CydoConfig config;
 	private string taskDirTemplate;
-	private WorkspaceInfo[] workspacesInfo;
+	private DiscoveryService discoveryService;
+	private ConfigWatcher configWatcher;
 	private Agent agent; // default agent
 	private Agent[string] agentsByName;
 	private TaskTypeCatalog taskTypeCatalog;
@@ -603,15 +604,6 @@ class App : ToolsBackend
 	private QuestionRoute[int] questionRoutes;         // qid → route metadata
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
-	// inotify watches for config file hot-reload
-	private INotify.WatchDescriptor configFileWatch;
-	private INotify.WatchDescriptor configDirWatch;
-	private bool configFileWatchActive;
-	private bool configDirWatchActive;
-	// inotify watches for per-project config hot-reload (projectPath → watch)
-	private RefCountedINotify projectINotify;
-	private RefCountedINotify.Handle[string] projectDirWatches;
-	private RefCountedINotify.Handle[string] projectFileWatches;
 	// HTTP basic auth credentials (from environment)
 	private string authUser;
 	private string authPass;
@@ -622,8 +614,6 @@ class App : ToolsBackend
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
-	// True while enumerateSessions() or onConfigChanged() is scanning for sessions.
-	private bool scanInProgress;
 
 	// Active TerminalProcess instances (Bash MCP tool calls in flight).
 	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
@@ -632,21 +622,6 @@ class App : ToolsBackend
 	// Cache of compiled template regexes keyed on raw template source text.
 	// Avoids recompiling the same template on every history replay event.
 	private CompiledTemplate[string] compiledTemplateCache;
-
-	/// Result from background discovery thread for a single session.
-	private struct DiscoveryResult
-	{
-		string agentType;      // driver name — used as cache key (e.g. "claude")
-		string importAgentName; // agent name to attribute new importable tasks to
-		string sessionId;
-		long mtime;
-		string enumProjectPath; // from enumerateAllSessions (best-effort, may be empty)
-		// Metadata — either from cache hit or from readSessionMeta call
-		string title;
-		string projectPath;
-		bool fromCache;
-		bool hasMessages = true; // false for ghost sessions (no user messages)
-	}
 
 	void start()
 	{
@@ -728,6 +703,28 @@ class App : ToolsBackend
 				return td.archiveQueue.setGoal(goal);
 			},
 		));
+		discoveryService = new DiscoveryService(DiscoveryServiceHost(
+			snapshotTasks: &snapshotDiscoveryTasks,
+			loadSessionMetaCache: () => persistence.loadSessionMetaCache(),
+			withMutationTransaction: &withDiscoveryMutationTransaction,
+			importableHistoryPath: &importableHistoryPath,
+			deleteImportableTask: &deleteImportableTask,
+			createImportableTask: &createImportableTask,
+			broadcastWorkspaces: &broadcastDiscoveryWorkspaces,
+			broadcastScanStatus: &broadcastDiscoveryScanStatus,
+			deleteSessionMetaCacheEntry: (string agentType, string sessionId) {
+				persistence.deleteSessionMetaCacheEntry(agentType, sessionId);
+			},
+			upsertSessionMetaCache: (string agentType, string sessionId, long mtime,
+				string projectPath, string title, bool hasMessages) {
+				persistence.upsertSessionMetaCache(agentType, sessionId, mtime,
+					projectPath, title, hasMessages);
+			},
+		));
+		configWatcher = new ConfigWatcher(ConfigWatcherHost(
+			onConfigChanged: &onConfigChanged,
+			onProjectConfigChanged: &onProjectConfigChanged,
+		));
 
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
@@ -748,10 +745,10 @@ class App : ToolsBackend
 			infof("Loaded %d task types", types.length);
 
 		// Discover projects in all workspaces
-		discoverAllWorkspaces();
+		discoveryService.discoverAllWorkspaces(config);
 
 		// Watch config file for hot-reload
-		startConfigWatch();
+		configWatcher.start();
 
 		// Load persisted tasks (metadata only — history loaded on demand)
 		foreach (row; persistence.loadTasks())
@@ -875,7 +872,7 @@ class App : ToolsBackend
 				td.lastActive = td.createdAt;
 		}
 
-		enumerateSessions();
+		discoveryService.enumerateSessions(config, agentsByName);
 
 		import std.process : environment;
 
@@ -1050,30 +1047,15 @@ class App : ToolsBackend
 						c.conn.disconnect("shutting down");
 			}
 		}
-		// Remove inotify watches so the event loop can exit.
-		if (configFileWatchActive)
-		{
-			iNotify.remove(configFileWatch);
-			configFileWatchActive = false;
-		}
-		if (configDirWatchActive)
-		{
-			iNotify.remove(configDirWatch);
-			configDirWatchActive = false;
-		}
-		foreach (projectPath, handle; projectFileWatches)
-			projectINotify.remove(handle);
-		projectFileWatches = null;
-		foreach (projectPath, handle; projectDirWatches)
-			projectINotify.remove(handle);
-		projectDirWatches = null;
+		if (configWatcher !is null)
+			configWatcher.stop();
 		infof("shutdown() complete");
 	}
 
 	private void onWebSocketAccepted(WebSocketAdapter ws)
 	{
 		clientHub.add(ws);
-		ws.send(Data(buildWorkspacesList(workspacesInfo).representation));
+		ws.send(Data(buildWorkspacesList(discoveryService.workspacesInfo).representation));
 		ws.send(Data(buildTaskTypesList(
 			taskTypeCatalog.getTaskTypes(),
 			taskTypeCatalog.getEntryPoints(),
@@ -1087,7 +1069,7 @@ class App : ToolsBackend
 			webDistDir,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
-		if (scanInProgress)
+		if (discoveryService.scanInProgress)
 			ws.send(Data(toJson(ScanStatusMessage("scan_status", true)).representation));
 		foreach (payload; agentUsageTracker.snapshotMessages())
 			ws.send(Data(payload.representation));
@@ -1720,7 +1702,7 @@ class App : ToolsBackend
 	{
 		if (workspaceName.length == 0 || projectPath.length == 0)
 			return false;
-		foreach (ref wi; workspacesInfo)
+		foreach (ref wi; discoveryService.workspacesInfo)
 		{
 			if (wi.name != workspaceName)
 				continue;
@@ -1736,7 +1718,7 @@ class App : ToolsBackend
 	{
 		if (projectPath.length == 0)
 			return;
-		foreach (ref wi; workspacesInfo)
+		foreach (ref wi; discoveryService.workspacesInfo)
 		{
 			foreach (ref project; wi.projects)
 			{
@@ -4569,6 +4551,80 @@ class App : ToolsBackend
 		ws.send(Data(toJson(ErrorMessage("error", message, tid)).representation));
 	}
 
+	private DiscoveryTaskSnapshot[int] snapshotDiscoveryTasks()
+	{
+		DiscoveryTaskSnapshot[int] snapshot;
+		foreach (tid, ref td; tasks)
+			snapshot[tid] = DiscoveryTaskSnapshot(
+				tid,
+				td.parentTid,
+				td.status,
+				td.agentSessionId,
+				td.agentType,
+				td.projectPath,
+			);
+		return snapshot;
+	}
+
+	private void withDiscoveryMutationTransaction(scope void delegate() work)
+	{
+		persistence.db.db.exec("BEGIN TRANSACTION;");
+		scope(success) persistence.db.db.exec("COMMIT TRANSACTION;");
+		scope(failure) persistence.db.db.exec("ROLLBACK TRANSACTION;");
+		work();
+	}
+
+	private string importableHistoryPath(int tid)
+	{
+		auto td = tid in tasks;
+		assert(td !is null, format!"Importable task %d not found"(tid));
+		return agentForTask(tid).historyPath(td.agentSessionId, effectiveCwd(td));
+	}
+
+	private void deleteImportableTask(int tid)
+	{
+		tasks.remove(tid);
+		persistence.deleteTask(tid);
+		clientHub.broadcast(toJson(TaskDeletedMessage("task_deleted", tid)));
+	}
+
+	private void createImportableTask(ImportableTaskSpec spec)
+	{
+		auto tid = createTask("", spec.projectPath, spec.agentName);
+		auto td = &tasks[tid];
+		td.status = "importable";
+		td.agentSessionId = spec.sessionId;
+		td.title = spec.title;
+		td.lastActive = spec.lastActive;
+		{
+			Watermark wm;
+			auto importTa = tryAgentForTask(tid);
+			if (importTa)
+			{
+				auto jp = importTa.historyPath(spec.sessionId, spec.projectPath);
+				wm = watermarkFromPath(jp);
+			}
+			td.history.reset(wm);
+		}
+		persistence.setStatus(tid, "importable");
+		persistence.setAgentSessionId(tid, spec.sessionId);
+		persistence.setTitle(tid, spec.title);
+		persistence.setLastActive(tid, spec.lastActive);
+
+		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, "", spec.projectPath, 0, "")));
+		broadcastTaskUpdate(tid);
+	}
+
+	private void broadcastDiscoveryWorkspaces(WorkspaceInfo[] workspaces)
+	{
+		clientHub.broadcast(buildWorkspacesList(workspaces));
+	}
+
+	private void broadcastDiscoveryScanStatus(bool active)
+	{
+		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", active)));
+	}
+
 	private string worktreePath(const TaskData* td)
 	{
 		if (td is null)
@@ -6873,453 +6929,6 @@ class App : ToolsBackend
 		broadcastTaskUpdate(tid);
 	}
 
-	/// Enumerate external sessions and create importable tasks for new ones.
-	private void enumerateSessions()
-	{
-		scanInProgress = true;
-		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", true)));
-		// Collect all known agent session IDs (agentType ~ "\0" ~ sessionId for uniqueness)
-		bool[string] knownSessionIds;
-		foreach (ref td; tasks)
-			if (td.agentSessionId.length > 0)
-				knownSessionIds[td.agentType ~ "\0" ~ td.agentSessionId] = true;
-
-		// Load cache into memory map keyed by agentType ~ "\0" ~ sessionId
-		Persistence.CacheRow[string] cacheMap;
-		foreach (row; persistence.loadSessionMetaCache())
-			cacheMap[row.agentType ~ "\0" ~ row.sessionId] = row;
-
-		// Snapshot one Agent per unique driver to avoid double-discovering sessions
-		// when multiple agentsByName entries share the same driver.
-		Agent[] agentList;
-		string[] driverNames;       // driver name (e.g. "claude") per entry — used as cache key
-		string[] importAgentNames;  // agent name to attribute discovered sessions to
-		{
-			bool[string] seenDriver;
-			foreach (name, a; agentsByName)
-			{
-				import std.conv : to;
-				auto driverStr = to!string(a.driver);
-				if (driverStr in seenDriver) continue;
-				seenDriver[driverStr] = true;
-				agentList ~= a;
-				driverNames ~= driverStr;
-				importAgentNames ~= name;
-			}
-		}
-
-		// Orphan cleanup: remove importable tasks whose files no longer exist
-		{
-			int[] toDelete;
-			foreach (ref td; tasks)
-			{
-				if (td.status != "importable")
-					continue;
-				try
-				{
-					auto ta = agentForTask(td.tid);
-					auto jp = ta.historyPath(td.agentSessionId, effectiveCwd(&td));
-					import std.file : exists;
-					if (jp.length == 0 || !exists(jp))
-						toDelete ~= td.tid;
-				}
-				catch (Exception)
-					toDelete ~= td.tid;
-			}
-			foreach (delTid; toDelete)
-			{
-				tasks.remove(delTid);
-				persistence.deleteTask(delTid);
-				clientHub.broadcast(toJson(TaskDeletedMessage("task_deleted", delTid)));
-			}
-		}
-
-		// Capture cache keys for orphan cache cleanup after scan
-		string[] cacheKeys = cacheMap.keys;
-
-		// Snapshot known project paths for background thread project matching
-		string[] knownProjectPaths;
-		foreach (ref wi; workspacesInfo)
-			foreach (ref pi; wi.projects)
-				knownProjectPaths ~= pi.path;
-
-		// Launch background discovery scan (captures agentList, driverNames, importAgentNames,
-		// knownSessionIds, cacheMap, knownProjectPaths by value — safe for background thread)
-		threadAsync({
-			DiscoveryResult[] results;
-			foreach (idx, agent; agentList)
-			{
-				auto driverName = driverNames[idx];
-				DiscoveredSession[] discovered;
-				try
-					discovered = agent.enumerateAllSessions();
-				catch (Exception e)
-				{
-					warningf("enumerateSessions: error enumerating %s sessions: %s",
-						driverName, e.msg);
-					continue;
-				}
-
-				foreach (ref ds; discovered)
-				{
-					auto compositeKey = driverName ~ "\0" ~ ds.sessionId;
-					if (compositeKey in knownSessionIds)
-						continue;
-
-					auto cachedp = compositeKey in cacheMap;
-
-					DiscoveryResult dr;
-					dr.agentType = driverName;
-					dr.importAgentName = importAgentNames[idx];
-					dr.sessionId = ds.sessionId;
-					dr.mtime = ds.mtime;
-					dr.enumProjectPath = ds.projectPath.length > 0
-						? ds.projectPath
-						: agent.matchProject(ds.sessionId, knownProjectPaths);
-
-					if (cachedp !is null && cachedp.mtime == ds.mtime)
-					{
-						dr.title = cachedp.title;
-						dr.projectPath = cachedp.projectPath;
-						dr.hasMessages = cachedp.hasMessages;
-						dr.fromCache = true;
-					}
-					else
-					{
-						try
-						{
-							auto meta = agent.readSessionMeta(ds.sessionId);
-							dr.title = meta.title;
-							dr.projectPath = meta.projectPath;
-							dr.hasMessages = meta.hasMessages;
-						}
-						catch (Exception e)
-							warningf("enumerateSessions: error reading meta for %s/%s: %s",
-								driverName, ds.sessionId, e.msg);
-						dr.fromCache = false;
-					}
-					results ~= dr;
-				}
-			}
-			return results;
-		}).then((DiscoveryResult[] results) {
-			// Track discovered (agentType, sessionId) for cache orphan cleanup
-			bool[string] discoveredKeys;
-			foreach (ref r; results)
-				discoveredKeys[r.agentType ~ "\0" ~ r.sessionId] = true;
-
-			persistence.db.db.exec("BEGIN TRANSACTION;");
-			scope(success) persistence.db.db.exec("COMMIT TRANSACTION;");
-			scope(failure) persistence.db.db.exec("ROLLBACK TRANSACTION;");
-
-			// Delete orphaned cache entries (sessions that disappeared)
-			foreach (key; cacheKeys)
-				if (key !in discoveredKeys)
-				{
-					import std.string : indexOf;
-					auto sep = key.indexOf('\0');
-					if (sep >= 0)
-						persistence.deleteSessionMetaCacheEntry(key[0 .. sep], key[sep + 1 .. $]);
-				}
-
-			foreach (ref r; results)
-			{
-				// Re-check: a new task might have been created during the scan
-				bool alreadyKnown = false;
-				foreach (ref td; tasks)
-					if (td.agentSessionId == r.sessionId && td.agentType == r.agentType)
-					{ alreadyKnown = true; break; }
-				if (alreadyKnown)
-					continue;
-
-				string finalProjectPath = r.projectPath.length > 0 ? r.projectPath : r.enumProjectPath;
-
-				if (!r.hasMessages)
-				{
-					// Ghost session: no user messages. Cache the result so we don't re-read it.
-					if (!r.fromCache)
-						persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
-							finalProjectPath, r.title, false);
-					continue;
-				}
-
-				string finalTitle;
-				if (r.title.length > 0)
-					finalTitle = r.title;
-				else
-					finalTitle = "(untitled)"; // safety net — should not happen for sessions with messages
-
-				if (!r.fromCache)
-					persistence.upsertSessionMetaCache(r.agentType, r.sessionId, r.mtime,
-						finalProjectPath, finalTitle, true);
-
-				// Create importable task row — workspace resolved at display time
-				auto tid = createTask("", finalProjectPath, r.importAgentName);
-				auto td = &tasks[tid];
-				td.status = "importable";
-				td.agentSessionId = r.sessionId;
-				td.title = finalTitle;
-				td.lastActive = r.mtime;
-				{
-					Watermark wm;
-					auto importTa = tryAgentForTask(tid);
-					if (importTa)
-					{
-						auto jp = importTa.historyPath(r.sessionId, finalProjectPath);
-						wm = watermarkFromPath(jp);
-					}
-					td.history.reset(wm);
-				}
-				persistence.setStatus(tid, "importable");
-				persistence.setAgentSessionId(tid, r.sessionId);
-				persistence.setTitle(tid, finalTitle);
-				persistence.setLastActive(tid, r.mtime);
-
-				clientHub.broadcast(toJson(TaskCreatedMessage("task_created", tid, "", finalProjectPath, 0, "")));
-				broadcastTaskUpdate(tid);
-			}
-
-			// Refresh virtual projects now that importable tasks are known
-			{
-				import std.algorithm : filter;
-				import std.array : array;
-				foreach (ref wi; workspacesInfo)
-					wi.projects = wi.projects.filter!(p => !p.virtual_).array;
-				workspacesInfo = workspacesInfo.filter!(wi => wi.name != "" || wi.projects.length > 0).array;
-			}
-			injectVirtualProjects();
-			clientHub.broadcast(buildWorkspacesList(workspacesInfo));
-			scanInProgress = false;
-			clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
-		}).ignoreResult();
-	}
-
-	/// Discover projects in all configured workspaces and populate workspacesInfo.
-	private void discoverAllWorkspaces()
-	{
-		import std.json : parseJSON;
-		import std.process : execute;
-
-		workspacesInfo = null;
-		foreach (ref ws; config.workspaces)
-		{
-			auto sandbox = resolveSandboxForDiscovery(
-				config.sandbox, ws.sandbox, ws.root, cydoBinaryDir());
-			auto cmdPrefix = buildCommandPrefix(sandbox, "/");
-			auto isProjectExpr = ws.project_discovery.is_project;
-			auto recurseWhenExpr = ws.project_discovery.recurse_when;
-			auto cmd = (cmdPrefix !is null ? cmdPrefix : []) ~ cydoBinaryPath
-				~ ["discover", ws.root, ws.name, isProjectExpr, recurseWhenExpr]
-				~ ws.exclude;
-
-			typeof(execute(cmd)) result;
-			try
-				result = execute(cmd);
-			catch (Exception e)
-			{
-				sandbox.cleanup();
-				warningf("Discovery subprocess failed for workspace '%s': %s", ws.name, e.msg);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
-				continue;
-			}
-			sandbox.cleanup();
-
-			if (result.status != 0)
-			{
-				warningf("Discovery failed for workspace '%s': exit %d", ws.name, result.status);
-				workspacesInfo ~= WorkspaceInfo(ws.name, null, ws.default_agent, ws.default_task_type);
-				continue;
-			}
-
-			ProjectInfo[] projInfos;
-			try
-			{
-				auto json = parseJSON(result.output);
-				foreach (entry; json.array)
-					projInfos ~= ProjectInfo(entry["name"].str, entry["path"].str, false, true);
-			}
-			catch (Exception e)
-				warningf("Discovery JSON parse failed for workspace '%s': %s", ws.name, e.msg);
-
-			workspacesInfo ~= WorkspaceInfo(ws.name, projInfos, ws.default_agent, ws.default_task_type);
-
-			tracef("Workspace '%s' (%s): %d project(s)", ws.name, ws.root, projInfos.length);
-			foreach (ref p; projInfos)
-				tracef("  - %s (%s)", p.name, p.path);
-		}
-		injectVirtualProjects();
-	}
-
-	/// Inject virtual ProjectInfo entries for task projectPaths not already covered by
-	/// discovered projects. Must be called after workspacesInfo is populated.
-	private void injectVirtualProjects()
-	{
-		import std.algorithm : startsWith;
-		import std.path : relativePath;
-
-		// Collect all distinct projectPaths from all tasks
-		bool[string] seen;
-		string[] taskPaths;
-		foreach (ref td; tasks)
-			if (td.parentTid == 0 && td.projectPath.length > 0 && td.projectPath !in seen)
-			{
-				seen[td.projectPath] = true;
-				taskPaths ~= td.projectPath;
-			}
-
-		// Build set of already-covered paths
-		bool[string] coveredPaths;
-		foreach (ref wi; workspacesInfo)
-			foreach (ref pi; wi.projects)
-				coveredPaths[pi.path] = true;
-
-		// For each uncovered path, find which workspace(s) it belongs to
-		string[] orphanedPaths;
-		foreach (projectPath; taskPaths)
-		{
-			if (projectPath in coveredPaths)
-				continue;
-
-			bool matched = false;
-			foreach (ref ws; config.workspaces)
-			{
-				auto wsRoot = ws.root;
-				if (projectPath == wsRoot ||
-				    projectPath.startsWith(wsRoot ~ "/"))
-				{
-					matched = true;
-					auto relName = relativePath(projectPath, wsRoot);
-					auto vp = ProjectInfo(relName, projectPath, true, exists(projectPath));
-					// Find WorkspaceInfo for this workspace
-					bool found = false;
-					foreach (ref wi; workspacesInfo)
-						if (wi.name == ws.name)
-						{
-							wi.projects ~= vp;
-							found = true;
-							break;
-						}
-					if (!found)
-						workspacesInfo ~= WorkspaceInfo(ws.name, [vp], ws.default_agent, ws.default_task_type);
-				}
-			}
-			if (!matched)
-				orphanedPaths ~= projectPath;
-		}
-
-		// Handle orphaned paths (not under any workspace root)
-		if (orphanedPaths.length > 0)
-		{
-			// Find or create synthetic workspace with name ""
-			WorkspaceInfo* synthWs = null;
-			foreach (ref wi; workspacesInfo)
-				if (wi.name == "")
-				{ synthWs = &wi; break; }
-
-			if (synthWs is null)
-			{
-				workspacesInfo ~= WorkspaceInfo("", null, "", "");
-				synthWs = &workspacesInfo[$ - 1];
-			}
-
-			// Re-check coverage (synthetic workspace may already have some paths)
-			bool[string] synthCovered;
-			foreach (ref pi; synthWs.projects)
-				synthCovered[pi.path] = true;
-
-			foreach (projectPath; orphanedPaths)
-				if (projectPath !in synthCovered)
-					synthWs.projects ~= ProjectInfo(projectPath, projectPath, true, exists(projectPath));
-		}
-	}
-
-	unittest
-	{
-		import cydo.config : WorkspaceConfig;
-
-		auto app = new App();
-
-		// Set up a workspace with one already-discovered project
-		app.config.workspaces = [WorkspaceConfig("ws", "/tmp/ws")];
-		app.workspacesInfo = [WorkspaceInfo("ws", [ProjectInfo("proj", "/tmp/ws/proj", false, true)], "", "")];
-
-		// Root task (parentTid=0) with a projectPath not yet covered — should produce a virtual project
-		app.tasks[1].parentTid = 0;
-		app.tasks[1].projectPath = "/tmp/other";
-
-		// Subtask (parentTid != 0) whose projectPath is a worktree path — must NOT produce a virtual project
-		app.tasks[2].parentTid = 1;
-		app.tasks[2].projectPath = "/tmp/ws/.cydo/tasks/42/worktree";
-
-		app.injectVirtualProjects();
-
-		// Virtual project for root task's path must appear under "ws" workspace
-		bool foundOther = false;
-		bool foundWorktree = false;
-		foreach (ref wi; app.workspacesInfo)
-			foreach (ref pi; wi.projects)
-			{
-				if (pi.path == "/tmp/other")    foundOther = true;
-				if (pi.path == "/tmp/ws/.cydo/tasks/42/worktree") foundWorktree = true;
-			}
-		assert(foundOther, "virtual project for root task path must exist");
-		assert(!foundWorktree, "virtual project for subtask worktree path must not exist");
-	}
-
-	/// Watch the config file for changes and reload on modification.
-	/// Handles both direct saves (closeWrite) and editor write-and-rename (vim, etc.)
-	/// by also watching the config directory for create events.
-	private void startConfigWatch()
-	{
-		import std.file : exists;
-		import std.path : baseName, dirName;
-		import cydo.config : configPath;
-
-		auto cfgPath = configPath;
-		auto cfgDir = dirName(cfgPath);
-		auto cfgFileName = baseName(cfgPath);
-
-		if (!exists(cfgDir))
-		{
-			warningf("Config directory %s does not exist, skipping config watch", cfgDir);
-			return;
-		}
-
-		// Watch the file itself for direct writes
-		if (exists(cfgPath))
-			watchConfigFile(cfgPath);
-
-		// Watch the directory for create events (editor write-and-rename)
-		configDirWatch = iNotify.add(cfgDir, INotify.Mask.create | INotify.Mask.movedTo,
-			(in char[] name, INotify.Mask mask, uint cookie)
-			{
-				if (name == cfgFileName)
-				{
-					// File was replaced — re-watch the new file
-					if (configFileWatchActive)
-					{
-						iNotify.remove(configFileWatch);
-						configFileWatchActive = false;
-					}
-					watchConfigFile(cfgPath);
-					onConfigChanged();
-				}
-			}
-		);
-		configDirWatchActive = true;
-	}
-
-	private void watchConfigFile(string cfgPath)
-	{
-		configFileWatch = iNotify.add(cfgPath, INotify.Mask.closeWrite,
-			(in char[] name, INotify.Mask mask, uint cookie)
-			{
-				onConfigChanged();
-			}
-		);
-		configFileWatchActive = true;
-	}
-
 	private void onConfigChanged()
 	{
 		infof("Config file changed, reloading...");
@@ -7373,53 +6982,17 @@ class App : ToolsBackend
 		agent = agentsByName[defaultName];
 
 		taskTypeCatalog.invalidateAll();
-		scanInProgress = true;
-		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", true)));
-		discoverAllWorkspaces();
+		discoveryService.beginScan();
+		discoveryService.discoverAllWorkspaces(config);
 		clientHub.broadcast(buildAgentsList(snapshotAgentEntries(), config.default_agent));
-		clientHub.broadcast(buildWorkspacesList(workspacesInfo));
+		clientHub.broadcast(buildWorkspacesList(discoveryService.workspacesInfo));
 		clientHub.broadcast(buildServerStatus(
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
 		));
 		infof("Config reloaded successfully");
-		scanInProgress = false;
-		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", false)));
-	}
-
-	private void ensureProjectWatch(string projectPath)
-	{
-		import std.path : buildPath;
-		if (projectPath in projectDirWatches)
-			return;  // already watching
-
-		auto cydoDir = buildPath(projectPath, ".cydo");
-		if (!exists(cydoDir))
-			return;  // nothing to watch yet
-
-		projectDirWatches[projectPath] = projectINotify.add(
-			cydoDir,
-			INotify.Mask.closeWrite | INotify.Mask.create | INotify.Mask.movedTo,
-			(in char[] name, INotify.Mask mask, uint cookie)
-			{
-				if (name == "task-types.yaml" || name == "defs")
-					onProjectConfigChanged(projectPath);
-			}
-		);
-
-		auto typesFile = buildPath(cydoDir, "task-types.yaml");
-		if (exists(typesFile))
-		{
-			projectFileWatches[projectPath] = projectINotify.add(
-				typesFile,
-				INotify.Mask.closeWrite,
-				(in char[] name, INotify.Mask mask, uint cookie)
-				{
-					onProjectConfigChanged(projectPath);
-				}
-			);
-		}
+		discoveryService.endScan();
 	}
 
 	private void onProjectConfigChanged(string projectPath)
@@ -7435,9 +7008,9 @@ class App : ToolsBackend
 
 	private void handleRefreshWorkspacesMsg()
 	{
-		discoverAllWorkspaces();
-		clientHub.broadcast(buildWorkspacesList(workspacesInfo));
-		enumerateSessions();
+		discoveryService.discoverAllWorkspaces(config);
+		clientHub.broadcast(buildWorkspacesList(discoveryService.workspacesInfo));
+		discoveryService.enumerateSessions(config, agentsByName);
 	}
 
 	/// Read a prompt template file from the prompt search path and substitute variables.
@@ -7551,7 +7124,7 @@ class App : ToolsBackend
 			).representation));
 		else
 		{
-			ensureProjectWatch(json.project_path);
+			configWatcher.ensureProjectWatch(json.project_path);
 			ws.send(Data(buildTaskTypesListForProject(
 				json.project_path,
 				taskTypeCatalog.getTaskTypesForProject(json.project_path),
