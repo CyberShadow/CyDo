@@ -775,6 +775,70 @@ class App : ToolsBackend
 			findAgentSandbox: &findAgentSandbox,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
 			mcpSocketPath: () => transport.mcpSocketPath,
+			agentForTask: &agentForTask,
+			tryAgentForTask: &tryAgentForTask,
+			clearLastActive: (int tid) {
+				persistence.clearLastActive(tid);
+			},
+			broadcastTask: (int tid, TranslatedEvent ev) {
+				historyPipeline.broadcastTask(tid, ev);
+			},
+			appendSynthesizedHistoryError: (int tid, string subject, string body) {
+				return historyPipeline.appendSynthesizedHistoryError(tid, subject, body);
+			},
+			broadcastAppendedTaskEvent: &broadcastAppendedTaskEvent,
+			sendAgentAck: &sendAgentAck,
+			broadcastTaskUpdate: &broadcastTaskUpdate,
+			onTaskTurnCompletedAlive: &onTaskTurnCompletedAlive,
+			drainIdleCallbacksForTurnResult: &drainIdleCallbacksForTurnResult,
+			drainIdleCallbacksOnExit: &drainIdleCallbacksOnExit,
+			hasPendingSubTask: &hasPendingSubTask,
+			hasTaskDependency: &hasTaskDependency,
+			hasPendingChildQuestion: &hasPendingChildQuestion,
+			sendPendingChildAnswerReminder: &sendPendingChildAnswerReminder,
+			checkDeclaredOutputs: &checkDeclaredOutputs,
+			finalizeCompletedSubTask: &finalizeCompletedSubTask,
+			deliverFailedPendingSubTaskResult: &deliverFailedPendingSubTaskResult,
+			deliverWaitingParentResultsIfReady: &deliverWaitingParentResultsIfReady,
+			deliverBatchResults: &deliverBatchResults,
+			failPendingAskUserQuestionOnExit: &failPendingAskUserQuestionOnExit,
+			failPendingPermissionPromptOnExit: &failPendingPermissionPromptOnExit,
+			failPendingAskRouteOnExit: &failPendingAskRouteOnExit,
+			cancelExitBackgroundWork: &cancelExitBackgroundWork,
+			resetHistoryWatermarkOnly: &resetHistoryWatermarkOnly,
+			resetHistoryWatermarkAfterExit: &resetHistoryWatermarkAfterExit,
+			unsubscribeTaskHistorySubscribers: (int tid) {
+				clientHub.unsubscribeAll(tid);
+			},
+			touchAndPersistLastActive: &touchAndPersistLastActive,
+			findAliveAncestor: &findAliveAncestor,
+			broadcastFocusHint: &broadcastFocusHint,
+			persistStatus: (int tid, string status) {
+				persistence.setStatus(tid, status);
+			},
+			persistResultText: (int tid, string resultText) {
+				persistence.setResultText(tid, resultText);
+			},
+			requestMissingOutputs: &requestMissingOutputs,
+			spawnContinuation: &spawnContinuation,
+			spawnOnYieldContinuation: &spawnOnYieldContinuation,
+			emitTaskReload: (int tid) {
+				emitTaskReload(tid);
+			},
+			startJsonlWatch: (int tid) {
+				jsonlTracker.startJsonlWatch(tid);
+			},
+			stopJsonlWatch: (int tid) {
+				jsonlTracker.stopJsonlWatch(tid);
+			},
+			broadcastForkableUuidsFromFile: (int tid) {
+				jsonlTracker.broadcastForkableUuidsFromFile(tid);
+			},
+			sendSystemRestartNudge: &sendSystemNudge,
+			loadPersistedTaskDeps: &loadPersistedTaskDeps,
+			snapshotTaskIds: &snapshotTaskIdsForResume,
+			waitingTaskChildrenAllDone: &waitingTaskChildrenAllDone,
+			shuttingDown: () => shuttingDown,
 			taskTypeCatalog: taskTypeCatalog,
 		));
 
@@ -1842,6 +1906,7 @@ class App : ToolsBackend
 			string prompt;
 			string label;
 			string meta;
+			string promptNonce;
 			if (currentRoute.afterAnswer == QuestionAfterAnswer.completeAnswererOnIdle)
 			{
 				auto followUpMsgSubject = followUpFromParentSubject(currentRoute.qid);
@@ -1863,6 +1928,7 @@ class App : ToolsBackend
 					KnownSystemMessageKind.followUpFromParent,
 					followUpMsgSubject,
 					["message": message], "message");
+				promptNonce = "follow-up:" ~ to!string(currentRoute.qid);
 			}
 			else
 			{
@@ -1873,8 +1939,10 @@ class App : ToolsBackend
 				meta = buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.questionFromTask, qftSubject,
 					["message": message], "message");
+				promptNonce = "question:" ~ to!string(currentRoute.qid);
 			}
-			sendTaskMessage(currentRoute.answererTid, [ContentBlock("text", prompt)], null, meta);
+			sendTaskMessage(currentRoute.answererTid, [ContentBlock("text", prompt)],
+				null, meta, promptNonce);
 
 			if (auto routePtr = currentRoute.qid in questionRoutes)
 				(*routePtr).delivered = true;
@@ -3273,7 +3341,7 @@ class App : ToolsBackend
 					tasks[childTid].agentSessionId = outcome.threadId;
 					persistence.setAgentSessionId(childTid, outcome.threadId);
 					tasks[childTid].processQueue = new StateQueue!ProcessState(
-						(ProcessState goal) => processTransition(childTid, goal),
+						makeProcessQueueSF(childTid),
 						ProcessState.Dead,
 					);
 					tasks[childTid].archiveQueue = new StateQueue!ArchiveState(
@@ -3326,7 +3394,7 @@ class App : ToolsBackend
 		newTd.lastActive = newTd.createdAt;
 		tasks[result.tid] = move(newTd);
 		tasks[result.tid].processQueue = new StateQueue!ProcessState(
-			(ProcessState goal) => processTransition(result.tid, goal),
+			makeProcessQueueSF(result.tid),
 			ProcessState.Dead,
 		);
 		tasks[result.tid].archiveQueue = new StateQueue!ArchiveState(
@@ -3624,7 +3692,7 @@ class App : ToolsBackend
 					persistence.setTitle(backup.tid, bTd.title);
 					tasks[backup.tid] = move(bTd);
 					tasks[backup.tid].processQueue = new StateQueue!ProcessState(
-						(ProcessState goal) => processTransition(backup.tid, goal),
+						makeProcessQueueSF(backup.tid),
 						ProcessState.Dead,
 					);
 					tasks[backup.tid].archiveQueue = new StateQueue!ArchiveState(
@@ -4577,7 +4645,7 @@ class App : ToolsBackend
 		td.lastActive = td.createdAt;
 		tasks[tid] = move(td);
 		tasks[tid].processQueue = new StateQueue!ProcessState(
-			(ProcessState goal) => processTransition(tid, goal),
+			makeProcessQueueSF(tid),
 			ProcessState.Dead,
 		);
 		tasks[tid].archiveQueue = new StateQueue!ArchiveState(
@@ -4774,454 +4842,7 @@ class App : ToolsBackend
 
 	private void spawnTaskSession(int tid)
 	{
-		auto td = &tasks[tid];
-		assert(td.taskType.length > 0, "Task must have a task_type before spawning session");
-		td.wasKilledByUser = false;
-		td.hadTurnResult = false;
-		td.stdinClosed = false;
-		td.clearLastSessionStatus();
-		td.compactionReminderInFlight = false;
-
-		// Look up the correct agent for this task's agent type
-		auto taskAgent = agentForTask(tid);
-
-		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
-		td.session = taskAgent.createSession(tid, td.agentSessionId,
-			launch.processLaunch, launch.sessionConfig);
-		persistence.clearLastActive(tid);
-
-		// Track MCP config temp file for cleanup
-		if (taskAgent.lastMcpConfigPath.length > 0)
-			td.launch.sandbox.tempFiles ~= taskAgent.lastMcpConfigPath;
-
-		// Start watching the JSONL file for forkable UUIDs.
-		// For resumed tasks agentSessionId is already set; for new tasks
-		// it will be set later in tryExtractAgentSessionId which also calls this.
-		if (td.agentSessionId.length > 0)
-			jsonlTracker.startJsonlWatch(tid);
-
-		td.session.onOutput = (TranslatedEvent ev) {
-			historyPipeline.broadcastTask(tid, ev);
-
-			if (!td.isProcessing && td.hadTurnResult)
-			{
-				td.isProcessing = true;
-				broadcastTaskUpdate(tid);
-			}
-
-			if (taskAgent.isTurnResult(ev.translated))
-			{
-				// Turn completed — no longer processing, but still alive.
-				td.isProcessing = false;
-				td.hadTurnResult = true;
-				td.compactionReminderInFlight = false;
-
-				// Re-try JSONL watch if not yet established (Codex may
-				// not have the file at session-start time).
-				// Guard against calling startJsonlWatch after shutdown() has
-				// already removed all watches — a new watch would re-open the
-				// inotify fd and create a non-daemon FileConnection, keeping
-				// the event loop alive indefinitely after SIGTERM.
-				if (!shuttingDown)
-					jsonlTracker.startJsonlWatch(tid);
-
-				// Broadcast forkable UUIDs now that JSONL should exist.
-				if (!shuttingDown)
-					jsonlTracker.broadcastForkableUuidsFromFile(tid);
-
-				// Capture the canonical result text for sub-task output.
-				td.resultText = taskAgent.extractResultText(ev.translated);
-
-				// For sub-tasks and continuations: close stdin so the process exits cleanly.
-				// Interactive tasks stay open for user input — flag for attention.
-				// Also check taskDeps for post-restart sub-tasks (no promise in pendingSubTasks).
-				// Also close stdin for tasks with on_yield (they auto-continue on exit).
-				auto onYieldTypeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-				bool hasOnYield = onYieldTypeDef !is null && onYieldTypeDef.on_yield.task_type.length > 0;
-				if (tid in pendingSubTasks || td.pendingContinuation !is null
-					|| tid in taskDeps || hasOnYield || td.onIdleCallbacks.length > 0)
-				{
-					// Drain idle callbacks if any — they take priority over normal completion.
-					if (td.onIdleCallbacks.length > 0)
-						{
-							auto cbs = td.onIdleCallbacks.dup;
-							td.onIdleCallbacks = null;
-							foreach (cb; cbs)
-								cb();
-							// If the callback set the task to "active" (e.g., sent a question),
-							// or restored it to "alive" (deferred delivery path), keep stdin open.
-							if (td.status == "active" || td.status == "alive")
-							{
-								broadcastTaskUpdate(tid);
-								return;
-							}
-							// Otherwise fall through — e.g., deferred answer was delivered,
-							// task is "completed", proceed with normal stdin close.
-						}
-					else if (tid in pendingSubTasks)
-					{
-						if (td.pendingContinuation is null && !hasOnYield)
-						{
-							auto missingOutputs = checkDeclaredOutputs(tid);
-							if (missingOutputs is null)
-								finalizeCompletedSubTask(tid, true);
-							else
-								tracef("onOutput: tid=%d deferring sub-task finalization; %s",
-									tid, missingOutputs);
-						}
-					}
-
-					// If a pendingContinuation (SwitchMode/Handoff) was accepted, this is a
-					// backend-requested terminal yield — close stdin and let onExit handle it.
-					// Otherwise, enforce unanswered child questions: send the reminder instead
-					// of closing stdin so the agent answers before completing its turn.
-					int _pcChildTid;
-					string _pcQuestion;
-					int _pcQid;
-					bool hasPendingChildQuestion =
-						td.pendingContinuation is null &&
-						findPendingChildQuestion(tid, _pcChildTid, _pcQuestion, _pcQid);
-
-					if (hasPendingChildQuestion)
-					{
-						sendPendingChildAnswerReminder(tid);
-					}
-					else
-					{
-						td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-						td.session.closeStdin();
-						td.session.killAfterTimeout(5.seconds);
-					}
-				}
-				else
-				{
-					if (td.onIdleCallbacks.length > 0)
-					{
-						auto cbs = td.onIdleCallbacks.dup;
-						td.onIdleCallbacks = null;
-						foreach (cb; cbs)
-							cb();
-						// Don't set "alive" — callbacks took over.
-					}
-					else
-					{
-						td.status = "alive";
-						persistence.setStatus(tid, "alive");
-						td.needsAttention = true;
-						persistence.setNeedsAttention(tid, true);
-						td.notificationBody = td.resultText.length > 0 ? truncateTitle(td.resultText, 200) : extractLastAssistantText(tid);
-						touchTask(tid);
-						persistence.setLastActive(tid, tasks[tid].lastActive);
-						try
-							generateSuggestions(tid);
-						catch (Exception e)
-							warningf("Error generating suggestions: %s", e.msg);
-					}
-				}
-				broadcastTaskUpdate(tid);
-			}
-			};
-
-		td.session.onAgentAck = (string nonce) {
-			if (nonce.length == 0)
-				return;
-			auto ackEnv = AgentAckEnvelope(tid, nonce);
-			clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
-		};
-
-		string lastStderr;
-
-		td.session.onStderr = (string line) {
-			import ae.utils.json : toJson;
-			import cydo.agent.protocol : ProcessStderrEvent;
-			ProcessStderrEvent ev;
-			ev.text = line;
-			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
-			lastStderr = line;
-		};
-
-		td.session.onExit = (int exitCode) {
-			// During shutdown, skip all exit handling so task status stays
-			// "alive" in the DB and can be resumed after restart.
-			if (shuttingDown)
-				return;
-			touchTask(tid);
-			persistence.setLastActive(tid, tasks[tid].lastActive);
-			import ae.utils.json : toJson;
-			import cydo.agent.protocol : ProcessExitEvent;
-			tracef("onExit: tid=%d exitCode=%d status=%s",
-				tid, exitCode, tid in tasks ? tasks[tid].status : "(gone)");
-			ProcessExitEvent ev;
-			ev.code = exitCode;
-			// Compute hasOnYield from task type alone — independent of exit code,
-			// since killAfterTimeout may produce non-zero exits for valid continuations.
-			auto onYieldDef = (tasks[tid].pendingContinuation is null)
-				? taskTypeCatalog.getTaskTypesForProject(tasks[tid].projectPath).byName(tasks[tid].taskType) : null;
-			bool hasOnYield = onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0;
-			// Treat intentional kills as clean when there's a pending continuation
-			// or on_yield — we know we killed the process via killAfterTimeout.
-			// Explicit user kills are never clean regardless.
-			auto cleanExit = (exitCode == 0 || tasks[tid].pendingContinuation !is null || hasOnYield)
-				&& !tasks[tid].wasKilledByUser;
-			if (cleanExit && (tasks[tid].pendingContinuation !is null || hasOnYield))
-				ev.is_continuation = true;
-			// Suppress auto-navigation when yield enforcement is active:
-			// if a child has an unanswered Ask question, the process was
-			// restarted by yield enforcement and will restart again.
-			if (!ev.is_continuation)
-			{
-				int pendingChildTid;
-				string pendingQuestion;
-				int pendingQid;
-				if (findPendingChildQuestion(tid, pendingChildTid, pendingQuestion, pendingQid))
-					ev.is_continuation = true;
-			}
-			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
-			if (tid !in tasks)
-				return;
-			tasks[tid].isProcessing = false;
-			tasks[tid].stdinClosed = false;
-			if (exitCode != 0)
-				tasks[tid].error = lastStderr;
-			cleanup(tasks[tid].launch.sandbox);
-			jsonlTracker.stopJsonlWatch(tid);
-
-			// Fulfill pending AskUserQuestion promise with error if session dies
-			if (auto askPending = tid in pendingAskUserQuestions)
-			{
-				askPending.fulfill(McpResult("Session ended while waiting for user response", true));
-				pendingAskUserQuestions.remove(tid);
-				tasks[tid].pendingAskToolUseId = null;
-				tasks[tid].pendingAskQuestions = JSONFragment.init;
-				tasks[tid].needsAttention = false;
-				persistence.setNeedsAttention(tid, false);
-				tasks[tid].hasPendingQuestion = false;
-				tasks[tid].notificationBody = "";
-			}
-
-			// Fulfill pending PermissionPrompt promise with deny if session dies
-			if (auto permPending = tid in pendingPermissionPrompts)
-			{
-				permPending.fulfill(McpResult(makePermissionDenyJson("Task exited"), false));
-				pendingPermissionPrompts.remove(tid);
-				pendingPermissionInputs.remove(tid);
-				tasks[tid].pendingPermissionToolUseId = null;
-				tasks[tid].pendingPermissionToolName = null;
-				tasks[tid].pendingPermissionInput = JSONFragment.init;
-			}
-
-			// Drain idle callbacks on exit — task won't yield again.
-			if (tasks[tid].onIdleCallbacks.length > 0)
-			{
-				auto cbs = tasks[tid].onIdleCallbacks.dup;
-				tasks[tid].onIdleCallbacks = null;
-				foreach (cb; cbs)
-					cb();
-			}
-
-			// Preserve parent/child Ask behavior: if this task exits while blocked
-			// on its own Ask(), fail that specific route and clear route state.
-			if (tasks[tid].pendingAskPromise !is null && tasks[tid].pendingAskQid > 0)
-				failQuestionRoute(tasks[tid].pendingAskQid, "Session ended while waiting for Ask response");
-
-			// Kill any in-flight one-shot subprocesses (title/suggestion generation).
-			if (tasks[tid].titleGenKill !is null)
-			{
-				tasks[tid].titleGenKill();
-				tasks[tid].titleGenKill = null;
-			}
-			if (tasks[tid].suggestGenKill !is null)
-			{
-				tasks[tid].suggestGenKill();
-				tasks[tid].suggestGenKill = null;
-			}
-
-			// Force JSONL reload on next request_history so that
-			// fork IDs from the file replace live-stream UUIDs.
-			auto ta = tryAgentForTask(tid);
-			{
-				Watermark wm;
-				if (ta && tasks[tid].agentSessionId.length > 0)
-				{
-					auto jp = ta.historyPath(tasks[tid].agentSessionId, effectiveCwd(&tasks[tid]));
-					wm = watermarkFromPath(jp);
-				}
-				tasks[tid].history.reset(wm);
-			}
-			tasks[tid].recentNonces = null;
-			clientHub.unsubscribeAll(tid);
-
-			// --- StateQueue notification ---
-			bool intentionalExit = tasks[tid].processQueue.goalState != ProcessState.Alive
-				|| (ta !is null && ta.driver == AgentDriver.codex && exitCode == 143);
-
-			if (tasks[tid].killPromise !is null)
-			{
-				// Active Dead transition in progress — fulfill its promise
-				auto p = tasks[tid].killPromise;
-				tasks[tid].killPromise = null;
-				p.fulfill(ProcessState.Dead);
-			}
-			else
-			{
-				// No active Dead transition — unexpected external state change.
-				tasks[tid].processQueue.setCurrentState(ProcessState.Dead);
-				if (!intentionalExit)
-					tasks[tid].processQueue.setGoal(ProcessState.Dead).ignoreResult();
-			}
-
-			if (tasks[tid].undoStopInProgress)
-			{
-				tasks[tid].undoStopInProgress = false;
-				return;
-			}
-
-			if (!intentionalExit)
-			{
-				// Crash — fail the task immediately, no retry
-				tasks[tid].status = "failed";
-				if (tasks[tid].error.length == 0)
-					tasks[tid].error = "Process exited unexpectedly";
-				persistence.setStatus(tid, "failed");
-				if (tasks[tid].relationType != "fork")
-				{
-					auto ancestor = findAliveAncestor(tid);
-					if (ancestor >= 0)
-						broadcastFocusHint(tid, ancestor);
-				}
-				broadcastTaskUpdate(tid);
-				return;
-			}
-
-			// Continuation: transition to successor instead of completing
-			if (cleanExit && tasks[tid].pendingContinuation !is null)
-			{
-				spawnContinuation(tid);
-				return;
-			}
-
-			// on_yield: auto-continuation on clean exit without explicit SwitchMode/Handoff
-			if (hasOnYield && cleanExit)
-			{
-				infof("on_yield: tid=%d type=%s → %s",
-					tid, tasks[tid].taskType, onYieldDef.on_yield.task_type);
-				executeContinuation(tid, onYieldDef.on_yield, tasks[tid].resultText, "on_yield");
-				return;
-			}
-
-			// Output enforcement: check declared outputs before completing.
-			// Skip when user stopped the task — they may resume or abandon it.
-			// Only nudge when a consumer (parent task or pending MCP call) is awaiting
-			// the result; user-managed exits and post-delivery exits should not enforce.
-			bool consumerWaiting = (tid in pendingSubTasks) !is null || (tid in taskDeps) !is null;
-			if (cleanExit && consumerWaiting)
-			{
-				auto missing = checkDeclaredOutputs(tid);
-				if (missing !is null && !tasks[tid].outputEnforcementAttempted)
-				{
-					tasks[tid].outputEnforcementAttempted = true;
-					infof("Output enforcement: tid=%d missing outputs, resuming: %s", tid, missing);
-					auto enfMissing = missing;
-					tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-						auto msg = wrapKnownSystemMessage(config.system_keyword,
-							KnownSystemMessageKind.missingRequiredOutputs,
-							"Your task type declares outputs that were not produced:\n"
-								~ enfMissing ~ "\n\n"
-								~ "Please produce the missing output(s) before finishing. "
-								~ "Write your report to your output file if you haven't already.");
-						auto outputsMeta = buildKnownSystemMessageMeta(
-							KnownSystemMessageKind.missingRequiredOutputs);
-						sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
-					}).ignoreResult();
-					return; // Don't complete yet — wait for the agent to try again
-				}
-				if (missing !is null)
-					warningf("Output enforcement: tid=%d still missing outputs after retry: %s", tid, missing);
-			}
-
-			if (tasks[tid].status != "completed")
-				tasks[tid].status = exitCode == 0 ? "completed" : "failed";
-			persistence.setStatus(tid, tasks[tid].status);
-			persistence.setResultText(tid, tasks[tid].resultText);
-
-			bool deliveredPendingSubTask = false;
-			if (tasks[tid].status == "completed")
-			{
-				// Keep completion finalization behavior aligned with onOutput.
-				deliveredPendingSubTask = finalizeCompletedSubTask(tid);
-			}
-			else if (auto pending = tid in pendingSubTasks)
-			{
-				auto taskResult = buildTaskResult(tid);
-				auto resultJson = toJson(taskResult);
-				pending.fulfill(McpResult.structured(resultJson, true));
-				pendingSubTasks.remove(tid);
-				deliveredPendingSubTask = true;
-				// Deps left intact — cleaned by onToolCallDelivered() on success,
-				// or used by deliverBatchResults() as fallback if MCP delivery fails.
-			}
-
-			if (!deliveredPendingSubTask)
-			{
-				if (auto parentTidPtr = tid in taskDeps)
-				{
-					if (tid in liveDeliveredSubTasks)
-					{
-						tracef("onExit Branch B: child tid=%d already delivered to live batch, skipping fallback",
-							tid);
-					}
-					else
-					{
-						// Post-restart path: no promise — batch deliver when all children done
-						auto parentTid = *parentTidPtr;
-						tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
-							tid, tasks[tid].status, parentTid);
-						if (parentTid in tasks)
-						{
-							// Check if ALL children of this parent are completed/failed
-							bool allDone = true;
-							foreach (childTid, depParent; taskDeps)
-							{
-								if (depParent == parentTid && childTid in tasks
-									&& tasks[childTid].status != "completed"
-									&& tasks[childTid].status != "failed")
-								{
-									tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
-										childTid, tasks[childTid].status);
-									allDone = false;
-									break;
-								}
-							}
-
-							if (allDone)
-								deliverBatchResults(parentTid);
-							// else: wait — remaining children will trigger this check
-						}
-						else
-							tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
-					}
-				}
-			}
-
-			// Notify frontends to re-request history (in-memory history
-			// already contains both JSONL and stdout-only messages like result).
-			emitTaskReload(tid);
-			// No attention on exit — the session is over and there's
-			// nothing for the user to act on.  Turn-complete attention
-			// (in onOutput) is sufficient for interactive tasks.
-			if (tasks[tid].relationType != "fork")
-			{
-				auto ancestor = findAliveAncestor(tid);
-				if (ancestor >= 0)
-					broadcastFocusHint(tid, ancestor);
-			}
-			broadcastTaskUpdate(tid);
-		};
-
-		td.status = "active";
-		persistence.setStatus(tid, "active");
-		td.error = null;
+		taskSessionRunner.spawnTaskSession(tid);
 	}
 
 	/// Returns a stateFunc delegate bound to a specific tid.
@@ -5229,7 +4850,7 @@ class App : ToolsBackend
 	/// the D closure-capture bug where all loop iterations share the same `rowTid`.
 	private Promise!ProcessState delegate(ProcessState) makeProcessQueueSF(int tid)
 	{
-		return (ProcessState goal) => processTransition(tid, goal);
+		return taskSessionRunner.makeProcessQueueSF(tid);
 	}
 
 	/// Returns an archive transition stateFunc bound to a specific tid.
@@ -5242,86 +4863,7 @@ class App : ToolsBackend
 
 	private Promise!ProcessState processTransition(int tid, ProcessState goal)
 	{
-		if (tid !in tasks)
-			return reject!ProcessState(new Exception("Task not found"));
-
-		auto td = &tasks[tid];
-
-		if (goal == ProcessState.Alive)
-		{
-			if (shuttingDown)
-				return reject!ProcessState(new Exception("Shutting down"));
-			try
-				spawnTaskSession(tid);
-			catch (Exception e)
-			{
-				td.status = "failed";
-				td.error = e.msg;
-				persistence.setStatus(tid, "failed");
-				{
-					import std.algorithm : canFind;
-					string body;
-					if (e.msg.canFind("No such file") || e.msg.canFind("not found"))
-					{
-						import std.conv : to;
-						import std.string : toUpper;
-						auto ta = tryAgentForTask(tid);
-						string binEnvVar;
-						string installHint;
-						if (ta is null)
-						{
-							binEnvVar = "CYDO_" ~ td.agentType.toUpper ~ "_BIN";
-							installHint = "the appropriate package for your agent";
-						}
-						else
-						{
-							binEnvVar = "CYDO_" ~ to!string(ta.driver).toUpper ~ "_BIN";
-							final switch (ta.driver)
-							{
-								case AgentDriver.claude:
-									installHint = "`npm install -g @anthropic-ai/claude-code`";
-									break;
-								case AgentDriver.codex:
-									installHint = "`npm install -g @openai/codex`";
-									break;
-								case AgentDriver.copilot:
-									installHint = "the appropriate package for your agent";
-									break;
-							}
-						}
-						body = "The **`" ~ td.agentType ~ "`** CLI was not found on `PATH`.\n\n"
-							~ "Install it (e.g. via " ~ installHint ~ ") or set the `"
-							~ binEnvVar ~ "` environment variable to its absolute path, "
-							~ "then click **Resume** again.";
-					}
-					else
-					{
-						body = "Failed to resume session.\n\n```\n"
-							~ e.classinfo.name ~ ": " ~ e.msg ~ "\n```";
-					}
-					import std.datetime : Clock;
-					auto translated = historyPipeline.appendSynthesizedHistoryError(
-						tid, "Failed to resume session", body);
-					clientHub.sendToSubscribed(tid, Data(
-						toJson(TaskEventEnvelope(tid, Clock.currStdTime,
-							JSONFragment(translated))).representation));
-				}
-				broadcastTaskUpdate(tid);
-				return reject!ProcessState(e);
-			}
-			broadcastTaskUpdate(tid);
-			return resolve(ProcessState.Alive);
-		}
-		else  // Dead
-		{
-			// If session is already gone, resolve immediately.
-			if (td.session is null || !td.session.alive)
-				return resolve(ProcessState.Dead);
-			// Don't actively kill — caller must initiate (closeStdin/stop).
-			// Just wait for onExit to fulfill this promise.
-			td.killPromise = new Promise!ProcessState;
-			return td.killPromise;
-		}
+		return taskSessionRunner.processTransition(tid, goal);
 	}
 
 	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
@@ -5500,6 +5042,306 @@ class App : ToolsBackend
 		}
 
 		executeContinuation(tid, *contDefP, hPrompt, contKey);
+	}
+
+	private void spawnOnYieldContinuation(int tid)
+	{
+		auto td = tid in tasks;
+		assert(td !is null, format!"Task %d not found for on_yield continuation"(tid));
+
+		auto onYieldDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath)
+			.byName(td.taskType);
+		assert(onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0,
+			format!"Task %d has no on_yield continuation"(tid));
+
+		executeContinuation(tid, onYieldDef.on_yield, td.resultText, "on_yield");
+	}
+
+	private void sendAgentAck(int tid, string nonce)
+	{
+		if (nonce.length == 0)
+			return;
+		auto ackEnv = AgentAckEnvelope(tid, nonce);
+		clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
+	}
+
+	private void broadcastAppendedTaskEvent(int tid, string translated)
+	{
+		import std.datetime : Clock;
+
+		if (translated.length == 0)
+			return;
+		clientHub.sendToSubscribed(tid, Data(
+			toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+				JSONFragment(translated))).representation));
+	}
+
+	private void touchAndPersistLastActive(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		touchTask(tid);
+		persistence.setLastActive(tid, tasks[tid].lastActive);
+	}
+
+	private void onTaskTurnCompletedAlive(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		td.status = "alive";
+		persistence.setStatus(tid, "alive");
+		td.needsAttention = true;
+		persistence.setNeedsAttention(tid, true);
+		td.notificationBody = td.resultText.length > 0
+			? truncateTitle(td.resultText, 200)
+			: extractLastAssistantText(tid);
+		touchAndPersistLastActive(tid);
+		try
+			generateSuggestions(tid);
+		catch (Exception e)
+			warningf("Error generating suggestions: %s", e.msg);
+	}
+
+	private bool drainIdleCallbacksForTurnResult(int tid)
+	{
+		if (tid !in tasks)
+			return false;
+		auto td = &tasks[tid];
+		if (td.onIdleCallbacks.length == 0)
+			return false;
+
+		auto callbacks = td.onIdleCallbacks.dup;
+		td.onIdleCallbacks = null;
+		foreach (cb; callbacks)
+			cb();
+
+		if (tid !in tasks)
+			return false;
+		td = &tasks[tid];
+		return td.status == "active" || td.status == "alive";
+	}
+
+	private void drainIdleCallbacksOnExit(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		auto td = &tasks[tid];
+		if (td.onIdleCallbacks.length == 0)
+			return;
+
+		auto callbacks = td.onIdleCallbacks.dup;
+		td.onIdleCallbacks = null;
+		foreach (cb; callbacks)
+			cb();
+	}
+
+	private bool hasPendingSubTask(int tid)
+	{
+		return (tid in pendingSubTasks) !is null;
+	}
+
+	private bool hasTaskDependency(int tid)
+	{
+		return (tid in taskDeps) !is null;
+	}
+
+	private bool hasPendingChildQuestion(int tid)
+	{
+		int childTid;
+		string question;
+		int qid;
+		return findPendingChildQuestion(tid, childTid, question, qid);
+	}
+
+	private void failPendingAskUserQuestionOnExit(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		if (auto askPending = tid in pendingAskUserQuestions)
+		{
+			askPending.fulfill(McpResult("Session ended while waiting for user response", true));
+			pendingAskUserQuestions.remove(tid);
+			tasks[tid].pendingAskToolUseId = null;
+			tasks[tid].pendingAskQuestions = JSONFragment.init;
+			tasks[tid].needsAttention = false;
+			persistence.setNeedsAttention(tid, false);
+			tasks[tid].hasPendingQuestion = false;
+			tasks[tid].notificationBody = "";
+		}
+	}
+
+	private void failPendingPermissionPromptOnExit(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		if (auto permPending = tid in pendingPermissionPrompts)
+		{
+			permPending.fulfill(McpResult(makePermissionDenyJson("Task exited"), false));
+			pendingPermissionPrompts.remove(tid);
+			pendingPermissionInputs.remove(tid);
+			tasks[tid].pendingPermissionToolUseId = null;
+			tasks[tid].pendingPermissionToolName = null;
+			tasks[tid].pendingPermissionInput = JSONFragment.init;
+		}
+	}
+
+	private void failPendingAskRouteOnExit(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		if (tasks[tid].pendingAskPromise !is null && tasks[tid].pendingAskQid > 0)
+			failQuestionRoute(tasks[tid].pendingAskQid,
+				"Session ended while waiting for Ask response");
+	}
+
+	private void cancelExitBackgroundWork(int tid)
+	{
+		if (tid !in tasks)
+			return;
+		if (tasks[tid].titleGenKill !is null)
+		{
+			tasks[tid].titleGenKill();
+			tasks[tid].titleGenKill = null;
+		}
+		if (tasks[tid].suggestGenKill !is null)
+		{
+			tasks[tid].suggestGenKill();
+			tasks[tid].suggestGenKill = null;
+		}
+	}
+
+	private void resetHistoryWatermarkAfterExit(int tid)
+	{
+		resetHistoryWatermark(tid, true);
+	}
+
+	private void resetHistoryWatermarkOnly(int tid)
+	{
+		resetHistoryWatermark(tid, false);
+	}
+
+	private void resetHistoryWatermark(int tid, bool unsubscribeSubscribers)
+	{
+		if (tid !in tasks)
+			return;
+		auto ta = tryAgentForTask(tid);
+		{
+			Watermark wm;
+			if (ta && tasks[tid].agentSessionId.length > 0)
+			{
+				auto jp = ta.historyPath(tasks[tid].agentSessionId, effectiveCwd(&tasks[tid]));
+				wm = watermarkFromPath(jp);
+			}
+			tasks[tid].history.reset(wm);
+		}
+		if (unsubscribeSubscribers)
+			clientHub.unsubscribeAll(tid);
+	}
+
+	private void requestMissingOutputs(int tid, string missing)
+	{
+		if (tid !in tasks)
+			return;
+		auto enfMissing = missing;
+		tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
+			auto msg = wrapKnownSystemMessage(config.system_keyword,
+				KnownSystemMessageKind.missingRequiredOutputs,
+				"Your task type declares outputs that were not produced:\n"
+					~ enfMissing ~ "\n\n"
+					~ "Please produce the missing output(s) before finishing. "
+					~ "Write your report to your output file if you haven't already.");
+			auto outputsMeta = buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.missingRequiredOutputs);
+			sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
+		}).ignoreResult();
+	}
+
+	private bool deliverFailedPendingSubTaskResult(int tid)
+	{
+		import ae.utils.json : toJson;
+
+		auto pending = tid in pendingSubTasks;
+		if (pending is null)
+			return false;
+
+		auto taskResult = buildTaskResult(tid);
+		auto resultJson = toJson(taskResult);
+		pending.fulfill(McpResult.structured(resultJson, true));
+		pendingSubTasks.remove(tid);
+		// Deps left intact — cleaned by onToolCallDelivered() on success,
+		// or used by deliverBatchResults() as fallback if MCP delivery fails.
+		return true;
+	}
+
+	private void deliverWaitingParentResultsIfReady(int tid)
+	{
+		if (auto parentTidPtr = tid in taskDeps)
+		{
+			if (tid in liveDeliveredSubTasks)
+			{
+				tracef("onExit Branch B: child tid=%d already delivered to live batch, skipping fallback",
+					tid);
+			}
+			else
+			{
+				auto parentTid = *parentTidPtr;
+				tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
+					tid, tasks[tid].status, parentTid);
+				if (parentTid in tasks)
+				{
+					bool allDone = true;
+					foreach (childTid, depParent; taskDeps)
+					{
+						if (depParent == parentTid && childTid in tasks
+							&& tasks[childTid].status != "completed"
+							&& tasks[childTid].status != "failed")
+						{
+							tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
+								childTid, tasks[childTid].status);
+							allDone = false;
+							break;
+						}
+					}
+
+					if (allDone)
+						deliverBatchResults(parentTid);
+				}
+				else
+					tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
+			}
+		}
+	}
+
+	private void loadPersistedTaskDeps()
+	{
+		foreach (parentTid, children; persistence.loadTaskDeps())
+			foreach (childTid; children)
+				taskDeps[childTid] = parentTid;
+	}
+
+	private int[] snapshotTaskIdsForResume()
+	{
+		int[] tids;
+		foreach (tid, ref td; tasks)
+			tids ~= tid;
+		return tids;
+	}
+
+	private bool waitingTaskChildrenAllDone(int tid)
+	{
+		foreach (childTid, parentTid; taskDeps)
+			if (parentTid == tid && childTid in tasks
+				&& tasks[childTid].status != "completed"
+				&& tasks[childTid].status != "failed"
+				&& tasks[childTid].status != "importable")
+			{
+				tracef("resumeInFlightTasks: tid=%d waiting, child tid=%d still %s",
+					tid, childTid, tasks[childTid].status);
+				return false;
+			}
+
+		return true;
 	}
 
 	private string defaultAgentName(string workspaceName)
@@ -5850,90 +5692,12 @@ class App : ToolsBackend
 
 	private void resumeInFlightTasks()
 	{
-		// Load persisted dependencies into memory.
-		foreach (parentTid, children; persistence.loadTaskDeps())
-			foreach (childTid; children)
-				taskDeps[childTid] = parentTid;
-
-		// Collect tasks that need resuming
-		int[] toResume;
-		foreach (ref td; tasks)
-		{
-			if (td.status == "alive" || td.status == "active" || td.status == "waiting")
-				toResume ~= td.tid;
-		}
-
-		if (toResume.length == 0)
-			return;
-
-		infof("Resuming %d in-flight task(s) after restart", toResume.length);
-
-		// Resume order doesn't matter: children that already completed have
-		// their results in the DB; children still in-flight will deliver
-		// results via the fallback onExit path when they eventually finish.
-		foreach (i, tid; toResume)
-		{
-			if (tid !in tasks)
-				continue;
-			auto status = tasks[tid].status;
-			infof("Resuming session %d/%d (tid=%d, agent=%s, status=%s)",
-				i + 1, toResume.length, tid, tasks[tid].agentType, status);
-
-			if (status == "waiting")
-			{
-				// Check if all children already completed
-				bool allChildrenDone = true;
-				foreach (childTid, parentTid; taskDeps)
-					if (parentTid == tid && childTid in tasks
-						&& tasks[childTid].status != "completed" && tasks[childTid].status != "failed"
-					&& tasks[childTid].status != "importable")
-					{
-						tracef("resumeInFlightTasks: tid=%d waiting, child tid=%d still %s",
-							tid, childTid, tasks[childTid].status);
-						allChildrenDone = false;
-						break;
-					}
-
-				if (allChildrenDone)
-				{
-					tracef("resumeInFlightTasks: tid=%d waiting, all children done — resuming with batch delivery", tid);
-					resumeAndDeliverResults(tid);
-				}
-				else
-				{
-					tracef("resumeInFlightTasks: tid=%d waiting, children still running — resuming without message", tid);
-					resumeWaitingTask(tid);
-				}
-			}
-			else if (status == "active")
-			{
-				resumeActiveTask(tid);
-			}
-			else if (status == "alive")
-			{
-				resumeTask(tid).ignoreResult();
-			}
-		}
+		taskSessionRunner.resumeInFlightTasks();
 	}
 
 	private Promise!void resumeTask(int tid)
 	{
-		if (tid !in tasks)
-			return resolve();
-		auto td = &tasks[tid];
-		auto savedStatus = td.status;
-		return td.processQueue.setGoal(ProcessState.Alive).then(() {
-			auto td = &tasks[tid];
-			// spawnTaskSession sets status to "active"; restore the original status
-			// for "alive" (idle) or "waiting" tasks so a subsequent restart handles
-			// them properly.
-			if (savedStatus != "active")
-			{
-				td.status = savedStatus;
-				persistence.setStatus(tid, savedStatus);
-			}
-			broadcastTaskUpdate(tid);
-		});
+		return taskSessionRunner.resumeTask(tid);
 	}
 
 	private void sendSystemNudge(int tid)
@@ -5992,14 +5756,12 @@ class App : ToolsBackend
 
 	private void resumeAndDeliverResults(int tid)
 	{
-		resumeTask(tid).then(() {
-			deliverBatchResults(tid);
-		}).ignoreResult();
+		taskSessionRunner.resumeAndDeliverResults(tid);
 	}
 
 	private void resumeWaitingTask(int tid)
 	{
-		resumeTask(tid).ignoreResult();
+		taskSessionRunner.resumeWaitingTask(tid);
 	}
 
 	/// Resume an "active" task and send it a system nudge once alive.
@@ -6007,9 +5769,7 @@ class App : ToolsBackend
 	/// the D closure-capture bug where all loop iterations share the same `tid`.
 	private void resumeActiveTask(int tid)
 	{
-		resumeTask(tid).then(() {
-			sendSystemNudge(tid);
-		}).ignoreResult();
+		taskSessionRunner.resumeActiveTask(tid);
 	}
 
 	/// Broadcast a task reload boundary and invalidate in-flight derived work.

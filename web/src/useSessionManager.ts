@@ -1771,8 +1771,8 @@ export function useTaskManager(
           if (agentType) connRef.current?.setAgentName(draftTid, agentType);
         }
         const nonce = crypto.randomUUID();
-        connRef.current?.sendMessage(draftTid, content, nonce);
         outbox.add({ tid: draftTid, nonce, content, createdAt: Date.now() });
+        connRef.current?.sendMessage(draftTid, content, nonce);
         // Insert optimistic placeholder (ackState=4)
         if (taskState) {
           const msgId = `opt-${++taskState.msgIdCounter}`;
