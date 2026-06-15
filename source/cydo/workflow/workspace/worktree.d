@@ -17,6 +17,14 @@ private enum ArchiveRefState
 
 private ArchiveRefState getArchiveRefState(string projectPath, int tid)
 {
+    // a non-git projectPath (e.g. an "unrestricted" workspace rooted at a plain
+    // directory like $HOME) can't hold an archive ref at all; rev-parse would
+    // bail with "not a git repository" (exit 128), so resolve to Missing before
+    // the strict status check below treats non-0/1 exits as genuine git failures
+    auto insideWorkTree = execute(["git", "-C", projectPath, "rev-parse", "--is-inside-work-tree"]);
+    if (insideWorkTree.status != 0)
+        return ArchiveRefState.Missing;
+
     auto refName = format!"refs/cydo/worktree-archive/%d"(tid);
     auto cmd = ["git", "-C", projectPath, "rev-parse", "--verify", "--quiet", refName];
     auto result = execute(cmd);
@@ -32,6 +40,34 @@ private ArchiveRefState getArchiveRefState(string projectPath, int tid)
 bool hasArchiveRef(string projectPath, int tid)
 {
     return getArchiveRefState(projectPath, tid) == ArchiveRefState.Present;
+}
+
+unittest
+{
+    import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir;
+    import std.path : buildPath;
+    import std.process : execute;
+
+    auto dir = buildPath(tempDir(), "cydo-archive-ref-state-unittest");
+    if (exists(dir))
+        rmdirRecurse(dir);
+    mkdirRecurse(dir);
+    scope(exit) rmdirRecurse(dir);
+
+    // a non-git projectPath makes `git -C` exit 128; before the fix that
+    // non-0/1 status was treated as a genuine git failure and threw. it must
+    // resolve to Missing instead.
+    assert(getArchiveRefState(dir, 1) == ArchiveRefState.Missing);
+
+    // inside a real repo the genuine 0/1 path still holds: Missing until the
+    // ref exists, Present once it does, and per-tid.
+    execute(["git", "-C", dir, "init", "-q"]);
+    assert(getArchiveRefState(dir, 1) == ArchiveRefState.Missing);
+
+    execute(["git", "-C", dir, "commit", "-q", "--allow-empty", "-m", "seed"]);
+    execute(["git", "-C", dir, "update-ref", "refs/cydo/worktree-archive/1", "HEAD"]);
+    assert(getArchiveRefState(dir, 1) == ArchiveRefState.Present);
+    assert(getArchiveRefState(dir, 2) == ArchiveRefState.Missing);
 }
 
 private void throwGitFailure(string context, int tid, string[] cmd, string output)
