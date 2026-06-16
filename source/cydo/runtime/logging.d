@@ -1,4 +1,4 @@
-module cydo.logging;
+module cydo.runtime.logging;
 
 import core.stdc.errno : EINTR, errno;
 import core.sys.posix.unistd : STDERR_FILENO, write;

@@ -1,4 +1,4 @@
-module cydo.shutdown;
+module cydo.runtime.shutdown;
 
 import ae.net.asockets : DisconnectType;
 import ae.sys.data : Data;
