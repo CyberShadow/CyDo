@@ -14,7 +14,8 @@ import ae.utils.promise : Promise, reject, resolve;
 import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.config : AgentDriver, PathMode, SandboxConfig;
-import cydo.sandbox : ProcessLaunch, prepareProcessLaunch, resolveSandbox;
+import cydo.launch.types : AgentSandboxConfig, ProcessLaunch;
+import launchSandbox = cydo.sandbox;
 import cydo.task : ProcessState, TaskData;
 import cydo.task_type_catalog : TaskTypeCatalog;
 import cydo.tasktype : TaskTypeDef, formatCreatableTaskTypes, formatHandoffs,
@@ -131,8 +132,14 @@ class TaskSessionRunner
 		auto wsRoot = host_.findWorkspaceRoot(td.workspace);
 		auto agentTypeSandbox = host_.findAgentSandbox(td.agentType);
 		bool readOnly = typeDef !is null && typeDef.read_only;
-		auto sandbox = resolveSandbox(host_.globalSandbox(), agentTypeSandbox, wsSandbox,
-			taskAgent, workDir, wsRoot, readOnly);
+		AgentSandboxConfig agentSandbox;
+		agentSandbox.configureSandbox = (ref PathMode[string] paths, ref string[string] env) {
+			taskAgent.configureSandbox(paths, env);
+		};
+		agentSandbox.gitName = taskAgent.gitName;
+		agentSandbox.gitEmail = taskAgent.gitEmail;
+		auto sandbox = launchSandbox.resolveSandbox(host_.globalSandbox(), agentTypeSandbox, wsSandbox,
+			agentSandbox, workDir, wsRoot, readOnly);
 
 		sandbox.paths[tdDir] = PathMode.rw;
 
@@ -187,7 +194,7 @@ class TaskSessionRunner
 		}
 
 		sandbox.sharedTmpPath = host_.resolveSharedTmpPath(tid);
-		td.launch = prepareProcessLaunch(sandbox, chdir,
+		td.launch = launchSandbox.prepareProcessLaunch(sandbox, chdir,
 			taskAgent.executableName(sandbox.env));
 
 		sessionConfig.workspace = td.workspace;

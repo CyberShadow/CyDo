@@ -28,9 +28,10 @@ import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedE
 	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentDriver, PathMode;
-import cydo.sandbox : ProcessLaunch, cleanup, cydoBinaryDir, cydoBinaryPath,
-	effectiveEnvValue, executableMountPaths, resolveExecutablePath,
-	withProcessLaunchEnv;
+import cydo.launch.types : ProcessLaunch;
+import cydo.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+	executableMountPaths, resolveExecutablePath;
+import launchSandbox = cydo.sandbox;
 import cydo.text.title : truncateTitle;
 
 // ---------------------------------------------------------------------------
@@ -1679,7 +1680,8 @@ class CodexAgent : Agent
 
 		auto promise = new Promise!string;
 		auto oneShotHome = prepareIsolatedOneShotHome(launch);
-		auto oneShotLaunch = withProcessLaunchEnv(launch, "CODEX_HOME", oneShotHome);
+		auto oneShotLaunch = launchSandbox.withProcessLaunchEnv(launch, "CODEX_HOME",
+			oneShotHome);
 
 		string[] codexArgs = [
 			oneShotLaunch.executablePath.length > 0

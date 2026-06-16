@@ -9,11 +9,11 @@ import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
+import cydo.launch.types : ProcessLaunch;
 import cydo.persist : LoadedHistory;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
-import cydo.sandbox : ProcessLaunch;
 import cydo.tasktype : substituteVars;
 import std.exception : enforce;
 import std.format : format;

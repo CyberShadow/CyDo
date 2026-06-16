@@ -10,8 +10,8 @@ import core.sys.posix.unistd : X_OK, access;
 
 import configy.attributes : SetInfo;
 
-import cydo.agent.agent : Agent;
 import cydo.config : GitIdentityConfig, PathMode, SandboxConfig;
+import cydo.launch.types : AgentSandboxConfig, ProcessLaunch, ResolvedSandbox;
 
 /// Absolute path to the currently running cydo binary, resolved at
 /// module init to avoid /proc/self/exe returning a "(deleted)" suffix
@@ -30,40 +30,14 @@ string cydoBinaryDir()
 	return path.length > 0 ? dirName(path) : "";
 }
 
-/// Resolved sandbox configuration after merging all layers.
-struct ResolvedSandbox
-{
-	bool isolate_filesystem;
-	bool isolate_processes;
-	bool isolate_environment;
-	PathMode[string] paths;
-	string[string] env;
-	string gitName;
-	string gitEmail;
-	string[] tempFiles; // temp files to clean up on exit
-	string sharedTmpPath; // host-side directory bind-mounted as /tmp
-
-	@property bool useBwrap() const { return isolate_filesystem || isolate_processes; }
-}
-
-/// Prepared process launch for a task-scoped subprocess.
-/// Carries the resolved sandbox, effective working directory, and the
-/// fully materialized command prefix used to enforce that sandbox.
-struct ProcessLaunch
-{
-	ResolvedSandbox sandbox;
-	string workDir;
-	string[] cmdPrefix;
-	string executablePath;
-}
-
 /// Merge sandbox config layers: global config → per-agent config → default
 /// workspace/project mounts → per-workspace config → agent defaults.
 /// When readOnly is true, all config/workspace/project paths are downgraded
 /// to ro before the agent layer runs — so agent-declared paths (e.g. ~/.claude)
 /// stay rw while the project tree becomes read-only.
 ResolvedSandbox resolveSandbox(SandboxConfig global, SandboxConfig agentTypeConfig,
-	SandboxConfig workspace, Agent agent, string projectDir, string wsRoot = "",
+	SandboxConfig workspace, AgentSandboxConfig agent, string projectDir,
+	string wsRoot = "",
 	bool readOnly = false)
 {
 	ResolvedSandbox result;
@@ -287,8 +261,6 @@ unittest
 	import std.file : exists, mkdirRecurse, rmdirRecurse;
 	import std.path : buildPath;
 
-	import cydo.agent.claude : ClaudeCodeAgent;
-
 	auto wsRoot = buildPath("/tmp", "cydo-sandbox-ws-root");
 	auto projectDir = buildPath(wsRoot, "project");
 	if (exists(wsRoot))
@@ -302,7 +274,8 @@ unittest
 	SandboxConfig workspace;
 	workspace.paths = [wsRoot : PathMode.tmpfs];
 
-	auto agent = new ClaudeCodeAgent();
+	AgentSandboxConfig agent;
+	agent.configureSandbox = (ref PathMode[string] paths, ref string[string] env) {};
 	auto taskSandbox = resolveSandbox(SandboxConfig.init, SandboxConfig.init,
 		workspace, agent, projectDir, wsRoot);
 	assert(taskSandbox.paths[wsRoot] == PathMode.tmpfs);
@@ -311,6 +284,79 @@ unittest
 	auto discoverySandbox = resolveSandboxForDiscovery(SandboxConfig.init,
 		workspace, wsRoot, "");
 	assert(discoverySandbox.paths[wsRoot] == PathMode.tmpfs);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse;
+	import std.path : buildPath;
+
+	auto root = buildPath("/tmp", "cydo-sandbox-agent-config");
+	auto wsRoot = buildPath(root, "workspace");
+	auto projectDir = buildPath(wsRoot, "project");
+	auto globalDir = buildPath(root, "global");
+	auto agentTypeDir = buildPath(root, "agent-type");
+	auto workspaceDir = buildPath(root, "workspace-layer");
+	auto agentStateDir = buildPath(root, "agent-state");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope(exit)
+		if (exists(root))
+			rmdirRecurse(root);
+
+	foreach (path; [projectDir, globalDir, agentTypeDir, workspaceDir, agentStateDir])
+		mkdirRecurse(path);
+
+	SandboxConfig global;
+	global.paths[globalDir] = PathMode.rw;
+	global.env["GLOBAL_ONLY"] = "global";
+	global.env["MERGED"] = "global";
+	global.git.name = "Global Name";
+	global.git.email = "global@example.com";
+
+	SandboxConfig agentTypeConfig;
+	agentTypeConfig.paths[agentTypeDir] = PathMode.rw;
+	agentTypeConfig.env["AGENT_ONLY"] = "agent";
+	agentTypeConfig.env["MERGED"] = "agent";
+	agentTypeConfig.git.name = "Agent Type Name";
+
+	SandboxConfig workspace;
+	workspace.paths[workspaceDir] = PathMode.rw;
+	workspace.env["WORKSPACE_ONLY"] = "workspace";
+	workspace.env["MERGED"] = "workspace";
+	workspace.git.email = "workspace@example.com";
+
+	bool configureCalled;
+	AgentSandboxConfig agent;
+	agent.configureSandbox = (ref PathMode[string] paths, ref string[string] env) {
+		configureCalled = true;
+		assert(env["GLOBAL_ONLY"] == "global");
+		assert(env["AGENT_ONLY"] == "agent");
+		assert(env["WORKSPACE_ONLY"] == "workspace");
+		assert(env["MERGED"] == "workspace");
+		assert(paths[wsRoot] == PathMode.ro);
+		assert(paths[projectDir] == PathMode.ro);
+		assert(paths[globalDir] == PathMode.ro);
+		assert(paths[agentTypeDir] == PathMode.ro);
+		assert(paths[workspaceDir] == PathMode.ro);
+		paths[agentStateDir] = PathMode.rw;
+		env["AGENT_ADDED"] = "present";
+	};
+	agent.gitName = "Agent Default Name";
+	agent.gitEmail = "agent@example.com";
+
+	auto resolved = resolveSandbox(global, agentTypeConfig, workspace, agent,
+		projectDir, wsRoot, true);
+	assert(configureCalled);
+	assert(resolved.paths[wsRoot] == PathMode.ro);
+	assert(resolved.paths[projectDir] == PathMode.ro);
+	assert(resolved.paths[globalDir] == PathMode.ro);
+	assert(resolved.paths[agentTypeDir] == PathMode.ro);
+	assert(resolved.paths[workspaceDir] == PathMode.ro);
+	assert(resolved.paths[agentStateDir] == PathMode.rw);
+	assert(resolved.env["AGENT_ADDED"] == "present");
+	assert(resolved.gitName == "Agent Type Name");
+	assert(resolved.gitEmail == "workspace@example.com");
 }
 
 /// Build the command prefix for running a process with sandbox settings.
