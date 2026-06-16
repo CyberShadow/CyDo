@@ -8,7 +8,7 @@
 /// This wrapper deduplicates: multiple consumers can watch the same path
 /// and each gets their own callback via fan-out.  The kernel watch is
 /// created on first add and removed when the last consumer unregisters.
-module cydo.inotify;
+module cydo.platform.inotify;
 
 import ae.sys.inotify : INotify, iNotify;
 
