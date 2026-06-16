@@ -1,4 +1,4 @@
-module cydo.task;
+module cydo.tasks.model;
 
 private string[string] repoPathCache;
 
@@ -196,7 +196,7 @@ public:
     long lastEventTs() const
     {
         assertInitialized();
-        import cydo.task : extractTsFromEnvelope;
+        import cydo.tasks.model : extractTsFromEnvelope;
         auto contents = lastEventContents();
         if (contents.length == 0)
             return 0;

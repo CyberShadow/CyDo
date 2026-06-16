@@ -11,7 +11,7 @@ import ae.sys.timing : setTimeout, TimerTask;
 import cydo.agent.agent : Agent, ForkableIdInfo;
 import cydo.config : AgentDriver;
 import cydo.platform.inotify : RefCountedINotify;
-import cydo.task : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, Watermark,
+import cydo.tasks.model : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, Watermark,
 	extractEventFromEnvelope;
 
 struct JsonlTracker

@@ -13,7 +13,7 @@ import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.mcp : McpResult;
 import cydo.system.known_messages : KnownSystemMessageKind, followUpFromParentSubject,
 	questionFromTaskSubject, wrapKnownSystemMessage;
-import cydo.task : TaskData;
+import cydo.tasks.model : TaskData;
 import cydo.text.title : truncateTitle;
 
 package(cydo):

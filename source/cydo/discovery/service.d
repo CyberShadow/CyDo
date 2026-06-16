@@ -17,7 +17,7 @@ import cydo.config : CydoConfig;
 import cydo.storage.persistence : Persistence;
 import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandboxForDiscovery;
-import cydo.task : ProjectInfo, WorkspaceInfo;
+import cydo.tasks.model : ProjectInfo, WorkspaceInfo;
 
 package(cydo):
 

@@ -6,7 +6,7 @@ import cydo.agent.agent : Agent;
 import cydo.config : AgentDriver;
 import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.storage.persistence : Persistence, loadTaskHistory;
-import cydo.task : TypeInfoEntry;
+import cydo.tasks.model : TypeInfoEntry;
 
 /// Recursively collect all tasks reachable from rootTids via parent_tid.
 /// Returns the deduplicated set (roots + all descendants).
@@ -60,7 +60,7 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 	import std.format : format;
 
 	import cydo.agent.registry : agentRegistry;
-	import cydo.task : extractEventFromEnvelope, extractTsFromEnvelope;
+	import cydo.tasks.model : extractEventFromEnvelope, extractTsFromEnvelope;
 
 	// Serialize task metadata
 	static struct TaskExport

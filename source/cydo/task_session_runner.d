@@ -16,7 +16,7 @@ import cydo.agent.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEve
 import cydo.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.launch.types : AgentSandboxConfig, ProcessLaunch;
 import launchSandbox = cydo.launch.sandbox;
-import cydo.task : ProcessState, TaskData;
+import cydo.tasks.model : ProcessState, TaskData;
 import cydo.task_type_catalog : TaskTypeCatalog;
 import cydo.tasktype : TaskTypeDef, formatCreatableTaskTypes, formatHandoffs,
 	isInteractive, formatSwitchModes, loadSystemPrompt, byName;

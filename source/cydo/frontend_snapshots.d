@@ -6,7 +6,7 @@ import std.regex : matchFirst, regex;
 
 import ae.utils.json : toJson;
 
-import cydo.task : AgentInfoEntry, AgentsListMessage, EntryPointEntry,
+import cydo.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEntry,
 	NoticesListMessage, Notice, ProjectTaskTypesListMessage,
 	ServerStatusMessage, TaskListEntry, TaskTypesListMessage,
 	TasksListMessage, TaskData, TypeInfoEntry, WorkspaceInfo,
