@@ -43,7 +43,7 @@ import cydo.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.question_router : QuestionRouter, QuestionRouterHost;
 import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
-import cydo.task_type_catalog : TaskTypeCatalog;
+import cydo.task_types.catalog : TaskTypeCatalog;
 import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
@@ -60,7 +60,7 @@ import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConf
 import cydo.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
+import cydo.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
 import cydo.system.framing : tryParseSystemFraming, tryExtractSubject,
@@ -125,14 +125,14 @@ static:
 	@(`Simulate task type workflow.`)
 	void simulate()
 	{
-		import cydo.tasktype : runSimulator;
+		import cydo.task_types.definition : runSimulator;
 		runSimulator(resolveTaskTypesPath());
 	}
 
 	@(`Generate Graphviz dot output for task types.`)
 	void dot()
 	{
-		import cydo.tasktype : runDot;
+		import cydo.task_types.definition : runDot;
 		runDot(resolveTaskTypesPath());
 	}
 
@@ -273,7 +273,7 @@ static:
 		import ae.utils.json : jsonParse, JSONPartial;
 		import cydo.agent.agent : Agent;
 		import cydo.agent.registry : agentRegistry;
-		import cydo.tasktype : substituteVars;
+		import cydo.task_types.definition : substituteVars;
 
 		initLogger();
 		auto config = loadConfig();
@@ -424,7 +424,7 @@ static:
 
 		// Load task type definitions for icon info
 		import cydo.tasks.model : TypeInfoEntry;
-		import cydo.tasktype : loadTaskTypes;
+		import cydo.task_types.definition : loadTaskTypes;
 		auto taskTypesPath = buildPath(baseDir, "defs/task-types.yaml");
 		auto taskTypeConfig = loadTaskTypes(taskTypesPath);
 		TypeInfoEntry[] typeInfo;

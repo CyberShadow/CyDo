@@ -14,7 +14,7 @@ import cydo.storage.persistence : LoadedHistory;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
-import cydo.tasktype : substituteVars;
+import cydo.task_types.definition : substituteVars;
 import std.exception : enforce;
 import std.format : format;
 import std.path : buildPath, expandTilde;

@@ -1,8 +1,8 @@
-module cydo.task_type_catalog;
+module cydo.task_types.catalog;
 
 import std.logger : warningf;
 
-import cydo.tasktype : TaskTypeDef, UserEntryPointDef, byName, computeReachesWorktree,
+import cydo.task_types.definition : TaskTypeDef, UserEntryPointDef, byName, computeReachesWorktree,
 	computeTreeReadOnly, loadTaskTypes, validateTaskTypes;
 
 private struct ProjectTypeCache

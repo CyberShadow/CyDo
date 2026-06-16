@@ -11,7 +11,7 @@ import cydo.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEntry,
 	ServerStatusMessage, TaskListEntry, TaskTypesListMessage,
 	TasksListMessage, TaskData, TypeInfoEntry, WorkspaceInfo,
 	WorkspacesListMessage, stdTimeToUnixMillis;
-import cydo.tasktype : TaskTypeDef, UserEntryPointDef, byName;
+import cydo.task_types.definition : TaskTypeDef, UserEntryPointDef, byName;
 
 TaskListEntry buildTaskEntry(ref TaskData td)
 {

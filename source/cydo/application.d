@@ -47,7 +47,7 @@ import cydo.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.question_router : QuestionRouter, QuestionRouterHost;
 import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
-import cydo.task_type_catalog : TaskTypeCatalog;
+import cydo.task_types.catalog : TaskTypeCatalog;
 import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
@@ -65,7 +65,7 @@ import cydo.storage.persistence : ForkResult, LoadedHistory, Persistence, countL
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.runtime.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
-import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
+import cydo.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
 import cydo.system.framing : tryParseSystemFraming, tryExtractSubject,
