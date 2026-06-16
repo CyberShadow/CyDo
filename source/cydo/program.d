@@ -27,8 +27,8 @@ import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.tasks.model : BatchSignal;
 import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
-import cydo.batchrouter : BatchConsumeKind;
-import cydo.batchregistry : BatchHandle, BatchRegistry;
+import cydo.batch.router : BatchConsumeKind;
+import cydo.batch.registry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
 import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,

@@ -1,4 +1,4 @@
-module cydo.batchregistry;
+module cydo.batch.registry;
 
 /**
  * Live batch registry for CyDo's `Task(...)` tool calls.
@@ -25,7 +25,7 @@ import std.conv : to;
 
 import ae.utils.promise : Promise;
 
-import cydo.batchrouter : BatchConsumeKind, BatchConsumeResult, BatchState, buildBatchState,
+import cydo.batch.router : BatchConsumeKind, BatchConsumeResult, BatchState, buildBatchState,
 	consumeBatchSignal, validateBatchCompletion;
 import cydo.mcp : McpResult;
 import cydo.tasks.model : BatchSignal;

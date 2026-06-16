@@ -1,4 +1,4 @@
-module cydo.batchrouter;
+module cydo.batch.router;
 
 import std.format : format;
 
