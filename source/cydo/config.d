@@ -93,7 +93,6 @@ private void applyPostLoadFixups(ref CydoConfig config)
 {
 	ensureDefaultWorkspace(config);
 	normalizeWorkspacePaths(config);
-	applyAgentDriverOverlay(config);
 }
 
 private void ensureDefaultWorkspace(ref CydoConfig config)
@@ -107,41 +106,4 @@ private void normalizeWorkspacePaths(ref CydoConfig config)
 	import std.path : absolutePath, buildNormalizedPath, expandTilde;
 	foreach (ref ws; config.workspaces)
 		ws.root = buildNormalizedPath(absolutePath(expandTilde(ws.root)));
-}
-
-private void applyAgentDriverOverlay(ref CydoConfig config)
-{
-	import std.conv : to;
-	import cydo.agent.registry : agentRegistry;
-
-	// Pass 1: infer driver from the AA key when it matches a known driver name
-	foreach (name, ref ac; config.agents)
-	{
-		if (!ac.driver.set)
-		{
-			try
-				ac.driver = SetInfo!AgentDriver(to!AgentDriver(name), true);
-			catch (Exception e)
-				throw new Exception(
-					"agents['" ~ name ~ "']: driver field is required (not a known driver name)");
-		}
-	}
-
-	// Pass 2: synthesize default entries for any driver not yet covered
-	foreach (reg; agentRegistry)
-	{
-		auto driverEnum = to!AgentDriver(reg.name);
-		bool covered = false;
-		foreach (name, ref ac; config.agents)
-		{
-			if (name == reg.name) { covered = true; break; }
-			if (ac.driver.set && ac.driver.value == driverEnum) { covered = true; break; }
-		}
-		if (!covered)
-		{
-			AgentConfig synthesized;
-			synthesized.driver = SetInfo!AgentDriver(driverEnum, true);
-			config.agents[reg.name] = synthesized;
-		}
-	}
 }

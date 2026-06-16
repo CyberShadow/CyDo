@@ -60,9 +60,10 @@ import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
+import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
+import cydo.runtime.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
@@ -157,7 +158,7 @@ class App : ToolsBackend
 			import cydo.sandbox : runtimeDir;
 			createPidFile("cydo.pid", runtimeDir());
 		}
-		config = loadConfig();
+		config = loadRuntimeConfig();
 		taskDirTemplate = config.task_dir.length > 0 ? config.task_dir : defaultTaskDirTemplate;
 		applyConfiguredLogLevel(config.log_level);
 		foreach (name, ref ac; config.agents)
@@ -4936,7 +4937,7 @@ class App : ToolsBackend
 	private void onConfigChanged()
 	{
 		infof("Config file changed, reloading...");
-		auto result = reloadConfig();
+		auto result = reloadRuntimeConfig();
 		if (result.isNull())
 		{
 			warningf("Config reload failed (parse error), keeping current config");
