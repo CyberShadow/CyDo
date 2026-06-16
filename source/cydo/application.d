@@ -52,7 +52,7 @@ import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
-import cydo.usage_tracker : AgentUsageTracker;
+import cydo.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.agent : Agent;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,

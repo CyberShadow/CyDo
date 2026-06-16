@@ -1,4 +1,4 @@
-module cydo.usage_tracker;
+module cydo.usage.tracker;
 
 import std.math : fabs, isFinite, isNaN;
 
