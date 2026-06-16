@@ -1,4 +1,4 @@
-module cydo.jsonl_edit;
+module cydo.history.jsonl_edit;
 
 /// Replace text content for editable user-facing messages in JSONL.
 /// Supports both type:"user" message lines and queue-operation enqueue lines.

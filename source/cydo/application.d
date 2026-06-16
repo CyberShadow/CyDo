@@ -40,10 +40,10 @@ import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
-import cydo.history_pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
+import cydo.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;
-import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
-import cydo.jsonl_edit : replaceUserMessageContent;
+import cydo.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
+import cydo.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.question_router : QuestionRouter, QuestionRouterHost;
 import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
@@ -81,7 +81,7 @@ import cydo.workspace.worktree;
 
 class App : ToolsBackend
 {
-	import cydo.jsonl : JsonlTracker;
+	import cydo.history.jsonl_tracker : JsonlTracker;
 
 	private TransportAdapter transport;
 	private ClientHub clientHub = new ClientHub();

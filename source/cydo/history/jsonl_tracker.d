@@ -1,4 +1,4 @@
-module cydo.jsonl;
+module cydo.history.jsonl_tracker;
 
 import std.stdio : File;
 import std.string : representation;

@@ -1,4 +1,4 @@
-module cydo.history_pipeline;
+module cydo.history.pipeline;
 
 import std.algorithm : canFind, startsWith;
 import std.file : append, exists, mkdirRecurse, read;
