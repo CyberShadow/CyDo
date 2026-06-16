@@ -30,7 +30,7 @@ import cydo.mcp : McpResult;
 import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
-import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
@@ -77,7 +77,7 @@ import cydo.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMa
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.task;
 import cydo.text.title : truncateTitle;
-import cydo.worktree;
+import cydo.workspace.worktree;
 
 class App : ToolsBackend
 {

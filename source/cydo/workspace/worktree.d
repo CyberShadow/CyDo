@@ -1,4 +1,4 @@
-module cydo.worktree;
+module cydo.workspace.worktree;
 
 import std.algorithm : filter;
 import std.array : array, join;

@@ -26,7 +26,7 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
-import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
@@ -71,7 +71,7 @@ import cydo.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMa
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.task;
-import cydo.worktree;
+import cydo.workspace.worktree;
 import cydo.application : App, initLogger, applyConfiguredLogLevel;
 import cydo.runtime.shutdown : setupShutdownPipe;
 
