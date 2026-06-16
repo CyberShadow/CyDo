@@ -44,7 +44,7 @@ import cydo.runtime.logging : installRobustLogger;
 import cydo.question_router : QuestionRouter, QuestionRouterHost;
 import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.task_types.catalog : TaskTypeCatalog;
-import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
+import cydo.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;

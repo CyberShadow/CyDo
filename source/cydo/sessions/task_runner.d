@@ -1,4 +1,4 @@
-module cydo.task_session_runner;
+module cydo.sessions.task_runner;
 
 import core.time : seconds;
 
