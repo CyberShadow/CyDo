@@ -1,4 +1,4 @@
-module cydo.export_;
+module cydo.exporter.html;
 
 import ae.utils.json : JSONFragment, toJson;
 

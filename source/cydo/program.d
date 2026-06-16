@@ -374,7 +374,7 @@ static:
 
 		import ae.utils.path : findProgramDirectory;
 
-		import cydo.export_ : buildExportHtml, collectTaskTree, exportTaskData;
+		import cydo.exporter.html : buildExportHtml, collectTaskTree, exportTaskData;
 		import cydo.persist : openDatabase;
 
 		if (tids.length == 0)
