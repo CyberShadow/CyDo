@@ -24,6 +24,7 @@ import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
+import cydo.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
 alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args);
@@ -295,8 +296,6 @@ class CopilotAgent : Agent
 		import std.algorithm : canFind;
 		import std.path : buildPath;
 		import std.stdio : File;
-		import cydo.task : truncateTitle;
-
 		auto pathp = sessionId in sessionIdToDirPath_;
 		if (pathp is null)
 			return SessionMeta.init;

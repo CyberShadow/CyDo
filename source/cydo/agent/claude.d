@@ -20,6 +20,7 @@ import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, ResolvedSandbox, buildCommandPrefix, cleanup,
 	cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
+import cydo.text.title : truncateTitle;
 
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent
@@ -252,8 +253,6 @@ class ClaudeCodeAgent : Agent
 	SessionMeta readSessionMeta(string sessionId)
 	{
 		import std.stdio : File;
-		import cydo.task : truncateTitle;
-
 		auto pathp = sessionId in sessionIdToPath_;
 		if (pathp is null)
 			return SessionMeta.init;

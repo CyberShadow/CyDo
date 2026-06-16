@@ -74,6 +74,7 @@ import cydo.system_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.task;
+import cydo.text.title : truncateTitle;
 import cydo.worktree;
 
 class App : ToolsBackend

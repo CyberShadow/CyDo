@@ -31,6 +31,7 @@ import cydo.config : AgentDriver, PathMode;
 import cydo.sandbox : ProcessLaunch, cleanup, cydoBinaryDir, cydoBinaryPath,
 	effectiveEnvValue, executableMountPaths, resolveExecutablePath,
 	withProcessLaunchEnv;
+import cydo.text.title : truncateTitle;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC param/result structs for the Codex app-server protocol.
@@ -1567,8 +1568,6 @@ class CodexAgent : Agent
 	{
 		import std.algorithm : canFind;
 		import std.stdio : File;
-		import cydo.task : truncateTitle;
-
 		auto pathp = sessionId in sessionIdToPath_;
 		if (pathp is null)
 			return SessionMeta.init;

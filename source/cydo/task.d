@@ -1099,17 +1099,6 @@ struct McpContentResult
 	@JSONOptional JSONFragment structuredContent;
 }
 
-/// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
-string truncateTitle(string text, size_t maxLen)
-{
-	import std.regex : ctRegex, replaceAll;
-
-	auto cleaned = text.replaceAll(ctRegex!`\s+`, " ");
-	if (cleaned.length <= maxLen)
-		return cleaned;
-	return cleaned[0 .. maxLen] ~ "…";
-}
-
 /// Convert D StdTime (hnsecs since Windows epoch) to unix milliseconds.
 /// Returns 0 if the input is 0 (not set).
 long stdTimeToUnixMillis(long stdTime)
