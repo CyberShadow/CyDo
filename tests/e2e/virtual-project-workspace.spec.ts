@@ -103,7 +103,7 @@ function initGitRepo(dir: string): void {
 /**
  * Pre-seed the CyDo SQLite database with a fully-migrated schema and one task.
  *
- * Sets PRAGMA user_version=19 (matching the 19 migration entries in persist.d)
+ * Sets PRAGMA user_version=19 (matching the 19 migration entries in storage/persistence.d)
  * so the backend's migration runner skips all migrations and uses this schema as-is.
  */
 function seedDatabase(

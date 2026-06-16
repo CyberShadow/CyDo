@@ -40,7 +40,7 @@ below assume the listed order.
 Single atomic commit covering both the DB column and all D code references.
 
 **Files:**
-- `persist.d`: Add migration 7: `ALTER TABLE tasks RENAME COLUMN claude_session_id TO agent_session_id`. Update `setClaudeSessionId` → `setAgentSessionId`, `TaskRow.claudeSessionId` → `agentSessionId`, `ForkResult.claudeSessionId` → `agentSessionId`, all SQL strings.
+- `storage/persistence.d`: Add migration 7: `ALTER TABLE tasks RENAME COLUMN claude_session_id TO agent_session_id`. Update `setClaudeSessionId` → `setAgentSessionId`, `TaskRow.claudeSessionId` → `agentSessionId`, `ForkResult.claudeSessionId` → `agentSessionId`, all SQL strings.
 - `app.d`: Rename `TaskData.claudeSessionId` → `agentSessionId` (~15 usages). Update error messages: "Task has no Claude session ID" → "Task has no agent session ID". Rename `tryExtractClaudeSessionId` → `tryExtractAgentSessionId`.
 
 **Risk:** Safe rename + DB migration.
@@ -48,7 +48,7 @@ Single atomic commit covering both the DB column and all D code references.
 #### A2. Add `agent_type` column to tasks table
 
 **Files:**
-- `persist.d`: Add migration 8: `ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude'`. Add field to `TaskRow` struct. Add `setAgentType()` method.
+- `storage/persistence.d`: Add migration 8: `ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude'`. Add field to `TaskRow` struct. Add `setAgentType()` method.
 - `app.d`: Set `agent_type` on task creation. Propagate in `tasks_list` control messages.
 
 **Frontend:** Add `agent_type` field to `TasksListEntry` in `schemas.ts` / `types.ts`. Display in sidebar if desired (optional, can be deferred).
@@ -113,14 +113,14 @@ Both parse Claude-specific JSON. Add to `Agent` interface.
 `claudeJsonlPath()` hardcodes `~/.claude/projects/<mangled>/<uuid>.jsonl`.
 Make it a method on `Agent` so each backend can specify its own path.
 
-The free function in `persist.d` becomes a `ClaudeCodeAgent` method.
-The `persist.d` functions that use it (`loadTaskHistory`, `forkTask`,
+The free function in `storage/persistence.d` becomes a `ClaudeCodeAgent` method.
+The `storage/persistence.d` functions that use it (`loadTaskHistory`, `forkTask`,
 `truncateJsonl`, etc.) now take a path parameter instead of computing it.
 
 **Files:**
 - `agent.d`: Add `string historyPath(string sessionId, string projectPath)` and `string translateHistoryLine(string line)` (returns agnostic event JSON; Claude returns the line unchanged since its JSONL is already in raw Claude format that will be translated by `translateClaudeEvent`; Codex translates from `{timestamp, type, payload}` to agnostic events).
 - `claude.d`: Implement `historyPath` with current mangling logic, `translateHistoryLine` returns input unchanged.
-- `persist.d`: Change `loadTaskHistory`, `forkTask`, `truncateJsonl`, `countMessagesAfterUuid`, `lastUuidInJsonl`, `extractForkableUuids` to accept a `string jsonlPath` parameter instead of `(sessionId, projectPath)`.
+- `storage/persistence.d`: Change `loadTaskHistory`, `forkTask`, `truncateJsonl`, `countMessagesAfterUuid`, `lastUuidInJsonl`, `extractForkableUuids` to accept a `string jsonlPath` parameter instead of `(sessionId, projectPath)`.
 - `app.d`: Compute path via `agent.historyPath(...)` and pass to persist functions.
 
 **Risk:** Medium — many call site updates, but mechanically straightforward.
@@ -151,7 +151,7 @@ assumptions (session ID field rewriting with `"sessionId":"..."` and
   - `@property bool supportsFileRevert()` — whether file revert is supported (Claude: true, Codex: false)
   - `void rewindFiles(string sessionId, string afterUuid, string cwd)` — replaces `spawnRewindFiles` (only called when `supportsFileRevert`)
 - `claude.d`: Implement all three.
-- `persist.d`: `forkTask()` takes an Agent parameter for `rewriteSessionId`. Or simpler: pass a rewrite delegate.
+- `storage/persistence.d`: `forkTask()` takes an Agent parameter for `rewriteSessionId`. Or simpler: pass a rewrite delegate.
 - `app.d`: Update fork/undo code paths.
 
 **Risk:** Medium — largest diff, but JSONL manipulation logic is self-contained.
@@ -1119,7 +1119,7 @@ history replay (`fileEvent` path), do the same when wrapping stored lines.
 
 **Supersedes `forkable_uuids`:** The existing `forkable_uuids` control
 message (`sendForkableUuidsFromFile` in app.d, `extractForkableUuids` in
-persist.d) is no longer needed — the frontend builds its fork point list
+storage/persistence.d) is no longer needed — the frontend builds its fork point list
 from `forkPoint` flags on individual events. Remove the
 `forkable_uuids` message and its supporting functions as part of A12
 (protocol translation) or A14 (frontend reducer update).

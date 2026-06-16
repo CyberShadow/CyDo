@@ -93,7 +93,7 @@ No migration step needed. The `fileEvent` field disappears entirely.
 
 ### 1. Backend
 
-#### 1a. `source/cydo/persist.d` (~line 237)
+#### 1a. `source/cydo/storage/persistence.d` (~line 237)
 
 Change the envelope construction from `"fileEvent":` to `"event":`:
 

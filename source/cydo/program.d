@@ -57,7 +57,7 @@ import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
-import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
+import cydo.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
@@ -375,7 +375,7 @@ static:
 		import ae.utils.path : findProgramDirectory;
 
 		import cydo.exporter.html : buildExportHtml, collectTaskTree, exportTaskData;
-		import cydo.persist : openDatabase;
+		import cydo.storage.persistence : openDatabase;
 
 		if (tids.length == 0)
 		{

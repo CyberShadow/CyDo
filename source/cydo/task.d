@@ -10,7 +10,7 @@ import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
 import cydo.launch.types : ProcessLaunch;
-import cydo.persist : LoadedHistory;
+import cydo.storage.persistence : LoadedHistory;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;

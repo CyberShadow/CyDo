@@ -78,7 +78,7 @@ Single-threaded async event loop (`ae.net.asockets.socketManager`). Serves HTTP 
 - `source/cydo/agent/claude.d` — Spawns `claude` CLI process, formats NDJSON input, handles output stream
 - `source/cydo/agent/process.d` — Wraps posix pipes/signals, async I/O via `FileConnection`/`Duplex`/`LineBufferedAdapter`
 - `source/cydo/agent/session.d` — `AgentSession` interface (sendMessage, interrupt, stop, callbacks)
-- `source/cydo/persist.d` — SQLite persistence (sessions table, session history loading from Claude's JSONL files)
+- `source/cydo/storage/persistence.d` — SQLite persistence (sessions table, session history loading from Claude's JSONL files)
 
 Key ae modules used: `ae.net.http.*`, `ae.net.asockets`, `ae.sys.process`, `ae.sys.database`, `ae.utils.json`.
 

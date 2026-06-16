@@ -13,7 +13,7 @@ Claude Code provides all the building blocks needed:
 - **File revert (cold session):** `--rewind-files <uuid>` hidden CLI flag, or
   manual restore from `~/.claude/file-history/` backups.
 - **Conversation rollback (cold):** JSONL truncation at a target UUID (already
-  implemented as `forkTask()` in `persist.d`).
+  implemented as `forkTask()` in `storage/persistence.d`).
 - **Conversation rollback (running):** No protocol support — must stop the
   process, truncate JSONL, and resume.
 
@@ -374,7 +374,7 @@ tool inputs.
 
 ## 6. Existing CyDo Infrastructure
 
-### Fork mechanism (`persist.d:190-233`)
+### Fork mechanism (`storage/persistence.d:190-233`)
 
 `forkTask()` already implements JSONL truncation:
 1. Read source JSONL
@@ -386,7 +386,7 @@ tool inputs.
 This is **non-destructive** — the original session is untouched. The fork must
 be explicitly resumed via `claude --resume <new-uuid>`.
 
-### Forkable UUIDs (`persist.d:237-256`)
+### Forkable UUIDs (`storage/persistence.d:237-256`)
 
 `extractForkableUuids()` scans JSONL for `user` and `assistant` message UUIDs.
 These are sent to the frontend as `forkable_uuids` for the fork UI.
@@ -518,7 +518,7 @@ as a last resort.
   documentation including `rewind_files`
 - [Session forking research](session-forking.md) — JSONL truncation mechanism
 - [JSONL vs stream-json comparison](jsonl-vs-stream-json.md) — format differences
-- `source/cydo/persist.d` — existing fork implementation
+- `source/cydo/storage/persistence.d` — existing fork implementation
 - `source/cydo/agent/claude.d` — agent process management
 - `source/cydo/agent/session.d` — session interface
 - `web/src/schemas.ts:498-504` — `FileHistorySnapshotSchema`

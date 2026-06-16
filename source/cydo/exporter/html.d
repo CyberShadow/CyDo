@@ -5,7 +5,7 @@ import ae.utils.json : JSONFragment, toJson;
 import cydo.agent.agent : Agent;
 import cydo.config : AgentDriver;
 import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
-import cydo.persist : Persistence, loadTaskHistory;
+import cydo.storage.persistence : Persistence, loadTaskHistory;
 import cydo.task : TypeInfoEntry;
 
 /// Recursively collect all tasks reachable from rootTids via parent_tid.
