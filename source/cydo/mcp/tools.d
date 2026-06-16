@@ -3,6 +3,7 @@ module cydo.mcp.tools;
 
 import ae.utils.json : JSONFragment;
 import cydo.mcp : Description, McpName, McpResult;
+import cydo.mcp.payloads : TaskResult;
 
 /// Specification for a single sub-task.
 struct TaskSpec
@@ -323,7 +324,6 @@ class CydoToolsImpl : CydoTools
 			if (errors.length == 1)
 				return firstError.error;
 			// Multiple failures: aggregate into a single TaskResult.
-			import cydo.task : TaskResult;
 			auto msg = errors.join("\n");
 			return McpResult.structured(toJson(TaskResult(
 				summary: msg,
@@ -375,4 +375,106 @@ class CydoToolsImpl : CydoTools
 		import ae.utils.promise.await : await;
 		return app.handlePermissionPrompt(callerTid, tool_use_id, tool_name, input).await();
 	}
+}
+
+unittest
+{
+	import ae.utils.json : jsonParse, toJson;
+	import cydo.mcp.payloads : TaskResult;
+	import std.algorithm.searching : canFind;
+
+	final class FakeToolsBackend : ToolsBackend
+	{
+		ValidatedTask handleCreateTask(string callerTid, int specIndex,
+			string description, string taskType, string prompt)
+		{
+			auto message = "invalid " ~ taskType;
+			return ValidatedTask(McpResult.structured(toJson(TaskResult(
+				summary: message,
+				error: message,
+				status: "error",
+			)), true));
+		}
+
+		bool wouldBeWriter(string callerTid, string taskType)
+		{
+			return false;
+		}
+
+		McpResult handleSwitchMode(string callerTid, string continuation)
+		{
+			assert(0, "unexpected call");
+		}
+
+		McpResult handleHandoff(string callerTid, string continuation, string prompt)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleBash(string callerTid, string command)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult registerBatchAndAwait(string callerTid, LaunchedTask[] launchedTasks)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleAsk(string callerTid, string message, int targetTid)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handleAnswer(string callerTid, int qid, string message)
+		{
+			assert(0, "unexpected call");
+		}
+
+		Promise!McpResult handlePermissionPrompt(string callerTid, string toolUseId,
+			string toolName, JSONFragment input)
+		{
+			assert(0, "unexpected call");
+		}
+	}
+
+	auto impl = new CydoToolsImpl(new FakeToolsBackend, "17");
+	auto result = impl.createTasks([
+		TaskSpec("first", "alpha", "prompt a"),
+		TaskSpec("second", "beta", "prompt b"),
+	]);
+
+	assert(result.isError);
+	assert(result.structuredContent.json == result.text);
+	assert(!result.text.canFind(`"output_file"`));
+	assert(!result.text.canFind(`"worktree"`));
+	assert(!result.text.canFind(`"note"`));
+	assert(!result.text.canFind(`"tid"`));
+	assert(!result.text.canFind(`"qid"`));
+	assert(!result.text.canFind(`"commits"`));
+
+	auto payload = jsonParse!TaskResult(result.text);
+	auto expected = "Task 1 (alpha): " ~ toJson(TaskResult(
+		summary: "invalid alpha",
+		error: "invalid alpha",
+		status: "error",
+	)) ~ "\nTask 2 (beta): " ~ toJson(TaskResult(
+		summary: "invalid beta",
+		error: "invalid beta",
+		status: "error",
+	));
+	assert(payload.summary == expected);
+	assert(payload.error == expected);
+	assert(payload.status == "error");
+	assert(payload.output_file is null);
+	assert(payload.worktree is null);
+	assert(payload.note is null);
+	assert(payload.tid == 0);
+	assert(payload.qid == 0);
+	assert(payload.commits is null);
 }

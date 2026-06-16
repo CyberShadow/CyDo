@@ -27,6 +27,7 @@ import ae.utils.statequeue : StateQueue;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
+import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.task : BatchSignal;
 import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;

@@ -16,8 +16,8 @@ import ae.utils.json : JSONFragment, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
 
 import cydo.mcp : McpResult;
+import cydo.mcp.payloads : McpContentItem, McpContentResult;
 import cydo.sandbox : runtimeDir;
-import cydo.task : McpContentItem, McpContentResult;
 
 package(cydo):
 
