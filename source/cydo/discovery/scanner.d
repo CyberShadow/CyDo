@@ -1,4 +1,4 @@
-module cydo.discover;
+module cydo.discovery.scanner;
 
 import std.path : baseName, buildPath, relativePath;
 import std.file : exists, isDir, isSymlink, dirEntries, SpanMode;

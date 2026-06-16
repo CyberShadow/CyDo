@@ -31,7 +31,7 @@ import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
 import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
-import cydo.discovery_service : DiscoveryService, DiscoveryServiceHost,
+import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
@@ -154,7 +154,7 @@ static:
 		Parameter!(immutable(string)[], "Patterns to exclude.") exclude = null,
 	)
 	{
-		import cydo.discover : runDiscover;
+		import cydo.discovery.scanner : runDiscover;
 		runDiscover(root, name, isProjectExpr, recurseWhenExpr, cast(string[]) exclude);
 	}
 
@@ -164,7 +164,7 @@ static:
 	)
 	{
 		import cydo.config : loadConfig;
-		import cydo.discover : discoverProjects, ProjectDiscoveryConfig;
+		import cydo.discovery.scanner : discoverProjects, ProjectDiscoveryConfig;
 		import std.file : getcwd;
 		import std.path : absolutePath, expandTilde;
 		import std.process : browse, environment, execute, spawnProcess;

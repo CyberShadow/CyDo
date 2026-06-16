@@ -35,7 +35,7 @@ import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
 import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
-import cydo.discovery_service : DiscoveryService, DiscoveryServiceHost,
+import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
