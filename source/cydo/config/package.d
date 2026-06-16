@@ -5,8 +5,6 @@ import configy.read : parseConfigFileSimple;
 
 import std.typecons : Nullable;
 
-import cydo.discovery.scanner : ProjectDiscoveryConfig;
-
 enum PathMode { ro, rw, always_rw, tmpfs, empty_dir, empty_file }
 
 struct GitIdentityConfig
@@ -33,6 +31,12 @@ struct AgentConfig
 	@Optional SandboxConfig sandbox;
 	@Optional string[string] model_aliases;
 	@Optional string display_name;
+}
+
+struct ProjectDiscoveryConfig
+{
+	@Optional string is_project;
+	@Optional string recurse_when;
 }
 
 struct WorkspaceConfig

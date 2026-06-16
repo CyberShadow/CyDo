@@ -163,8 +163,8 @@ static:
 		Parameter!(string, "Path to open.") path = null,
 	)
 	{
-		import cydo.config : loadConfig;
-		import cydo.discovery.scanner : discoverProjects, ProjectDiscoveryConfig;
+		import cydo.config : ProjectDiscoveryConfig, loadConfig;
+		import cydo.discovery.scanner : discoverProjects;
 		import std.file : getcwd;
 		import std.path : absolutePath, expandTilde;
 		import std.process : browse, environment, execute, spawnProcess;

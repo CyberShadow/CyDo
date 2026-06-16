@@ -1,20 +1,10 @@
 module cydo.discovery.scanner;
 
+import cydo.config : ProjectDiscoveryConfig;
+
 import std.path : baseName, buildPath, relativePath;
 import std.file : exists, isDir, isSymlink, dirEntries, SpanMode;
 import std.logger : warningf;
-
-// ---------------------------------------------------------------------------
-// ProjectDiscoveryConfig — holds the djinja expression strings for discovery
-// ---------------------------------------------------------------------------
-
-struct ProjectDiscoveryConfig
-{
-	import configy.attributes : Optional;
-
-	@Optional string is_project;
-	@Optional string recurse_when;
-}
 
 // ---------------------------------------------------------------------------
 // Discovery constants and types
