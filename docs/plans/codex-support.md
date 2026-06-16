@@ -163,7 +163,7 @@ Replace `new ClaudeCodeAgent()` with config-driven factory.
 **Files:**
 - `agent.d` or new `factory.d`: `Agent createAgent(string agentType)` function. Returns `ClaudeCodeAgent` for "claude", will return `CodexAgent` for "codex" in Phase B.
 - `app.d`: Replace `agent = new ClaudeCodeAgent()` (line 105) with `agent = createAgent(config.defaultAgentType)`. For per-task agent types, use `tasks[tid].agentType`.
-- `config.d`: Add `defaultAgentType` setting (defaults to "claude").
+- `config/package.d`: Add `defaultAgentType` setting (defaults to "claude").
 
 **Depends on:** A2 (agent_type column), A8 (no cast to concrete type).
 

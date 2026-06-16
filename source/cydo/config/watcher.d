@@ -1,4 +1,4 @@
-module cydo.config_watcher;
+module cydo.config.watcher;
 
 import std.file : exists;
 import std.logger : warningf;

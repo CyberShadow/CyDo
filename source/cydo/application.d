@@ -34,7 +34,7 @@ import cydo.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSna
 import cydo.batchrouter : BatchConsumeKind;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.client_hub : ClientHub;
-import cydo.config_watcher : ConfigWatcher, ConfigWatcherHost;
+import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.discovery_service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
