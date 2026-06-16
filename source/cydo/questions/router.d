@@ -1,4 +1,4 @@
-module cydo.question_router;
+module cydo.questions.router;
 
 import std.conv : to;
 import std.datetime.systime : Clock;
