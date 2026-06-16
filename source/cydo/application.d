@@ -68,10 +68,10 @@ import cydo.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
-import cydo.system_message : tryParseSystemFraming, tryExtractSubject,
+import cydo.system.framing : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
-import cydo.system_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
+import cydo.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
 	handoffSubject, modeSwitchSubject, sessionStartSubject,
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
@@ -4839,7 +4839,7 @@ class App : ToolsBackend
 	/// injected by CyDo, not typed by the user.
 	private string wrapSystemMessage(string subject, string body = null)
 	{
-		import cydo.system_message : wrapSystemMessageFn = wrapSystemMessage;
+		import cydo.system.framing : wrapSystemMessageFn = wrapSystemMessage;
 		return wrapSystemMessageFn(config.system_keyword, subject, body);
 	}
 

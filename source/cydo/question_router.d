@@ -11,7 +11,7 @@ import ae.utils.promise : Promise, resolve;
 import cydo.agent.protocol : AnswerResult, ContentBlock, QuestionResult;
 import cydo.batchregistry : BatchHandle, BatchRegistry;
 import cydo.mcp : McpResult;
-import cydo.system_messages : KnownSystemMessageKind, followUpFromParentSubject,
+import cydo.system.known_messages : KnownSystemMessageKind, followUpFromParentSubject,
 	questionFromTaskSubject, wrapKnownSystemMessage;
 import cydo.task : TaskData;
 import cydo.text.title : truncateTitle;

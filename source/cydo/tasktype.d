@@ -297,7 +297,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
-	import cydo.system_message : validateTemplateSource;
+	import cydo.system.framing : validateTemplateSource;
 
 	string[] errors;
 
