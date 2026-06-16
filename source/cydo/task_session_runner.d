@@ -15,7 +15,7 @@ import cydo.agent.agent : Agent, SessionConfig;
 import cydo.agent.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.launch.types : AgentSandboxConfig, ProcessLaunch;
-import launchSandbox = cydo.sandbox;
+import launchSandbox = cydo.launch.sandbox;
 import cydo.task : ProcessState, TaskData;
 import cydo.task_type_catalog : TaskTypeCatalog;
 import cydo.tasktype : TaskTypeDef, formatCreatableTaskTypes, formatHandoffs,
@@ -687,7 +687,7 @@ private:
 
 	void cleanupTaskLaunch(TaskData* td)
 	{
-		import cydo.sandbox : cleanup;
+		import cydo.launch.sandbox : cleanup;
 
 		cleanup(td.launch.sandbox);
 	}

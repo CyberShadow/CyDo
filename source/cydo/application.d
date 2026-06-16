@@ -64,7 +64,7 @@ import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConf
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.runtime.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
-import cydo.sandbox : cleanup, resolveExecutablePath, runtimeDir;
+import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
@@ -155,7 +155,7 @@ class App : ToolsBackend
 		}
 		{
 			persistence = openDatabase();
-			import cydo.sandbox : runtimeDir;
+			import cydo.launch.sandbox : runtimeDir;
 			createPidFile("cydo.pid", runtimeDir());
 		}
 		config = loadRuntimeConfig();

@@ -29,9 +29,9 @@ import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedE
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentDriver, PathMode;
 import cydo.launch.types : ProcessLaunch;
-import cydo.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+import cydo.launch.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
-import launchSandbox = cydo.sandbox;
+import launchSandbox = cydo.launch.sandbox;
 import cydo.text.title : truncateTitle;
 
 // ---------------------------------------------------------------------------

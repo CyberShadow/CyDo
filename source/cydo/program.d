@@ -59,7 +59,7 @@ import cydo.agent.terminal : TerminalProcess;
 import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.persist : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
-import cydo.sandbox : cleanup, resolveExecutablePath, runtimeDir;
+import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.tasktype : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;

@@ -18,7 +18,7 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentDriver, PathMode;
 import cydo.launch.types : ProcessLaunch, ResolvedSandbox;
-import cydo.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	effectiveEnvValue, executableMountPaths, resolveExecutablePath;
 import cydo.text.title : truncateTitle;
 

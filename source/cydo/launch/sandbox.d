@@ -1,4 +1,4 @@
-module cydo.sandbox;
+module cydo.launch.sandbox;
 
 import std.file : exists, isFile, isSymlink, readLink, readText;
 import std.path : buildPath, dirName, expandTilde;

@@ -17,7 +17,7 @@ import ae.utils.promise : Promise;
 
 import cydo.mcp : McpResult;
 import cydo.mcp.payloads : McpContentItem, McpContentResult;
-import cydo.sandbox : runtimeDir;
+import cydo.launch.sandbox : runtimeDir;
 
 package(cydo):
 

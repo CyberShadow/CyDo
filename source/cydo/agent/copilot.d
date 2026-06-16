@@ -22,7 +22,7 @@ import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 import cydo.agent.session : AgentSession;
 import cydo.config : AgentDriver, PathMode;
 import cydo.launch.types : ProcessLaunch;
-import cydo.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+import cydo.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
 import cydo.text.title : truncateTitle;

@@ -15,7 +15,7 @@ import ae.utils.promise.concurrency : threadAsync;
 import cydo.agent.agent : Agent, DiscoveredSession;
 import cydo.config : CydoConfig;
 import cydo.persist : Persistence;
-import cydo.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandboxForDiscovery;
 import cydo.task : ProjectInfo, WorkspaceInfo;
 
