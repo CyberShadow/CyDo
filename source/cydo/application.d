@@ -46,7 +46,7 @@ import cydo.history_abbrev : buildAbbreviatedHistoryFromStrings, extractMessageT
 import cydo.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.question_router : QuestionRouter, QuestionRouterHost;
-import cydo.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
+import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.task_type_catalog : TaskTypeCatalog;
 import cydo.task_session_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;

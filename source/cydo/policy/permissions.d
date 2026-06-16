@@ -1,4 +1,4 @@
-module cydo.permissions;
+module cydo.policy.permissions;
 
 import std.logger : warningf;
 
