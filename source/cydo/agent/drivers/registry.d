@@ -21,3 +21,11 @@ immutable agentRegistry = [
 		function Agent() { import cydo.agent.drivers.copilot : CopilotAgent; return new CopilotAgent(); },
 	),
 ];
+
+bool isRegisteredAgent(string name)
+{
+	foreach (ref registration; agentRegistry)
+		if (registration.name == name)
+			return true;
+	return false;
+}

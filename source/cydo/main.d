@@ -54,6 +54,7 @@ import cydo.agent.contract : Agent;
 import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
+import cydo.agent.drivers.registry : isRegisteredAgent;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
@@ -62,7 +63,7 @@ import cydo.domain.storage.persistence : ForkResult, LoadedHistory, Persistence,
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
-	loadProjectMemory, resolveAgent, isRegisteredAgent;
+	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
@@ -126,14 +127,14 @@ static:
 	void simulate()
 	{
 		import cydo.domain.task_types.definition : runSimulator;
-		runSimulator(resolveTaskTypesPath());
+		runSimulator(resolveTaskTypesPath(), &isRegisteredAgent);
 	}
 
 	@(`Generate Graphviz dot output for task types.`)
 	void dot()
 	{
 		import cydo.domain.task_types.definition : runDot;
-		runDot(resolveTaskTypesPath());
+		runDot(resolveTaskTypesPath(), &isRegisteredAgent);
 	}
 
 	@(`Dump agent context for a task type.`)
@@ -142,7 +143,7 @@ static:
 	)
 	{
 		import cydo.cli.tasktype_context : runDumpContext;
-		runDumpContext(resolveTaskTypesPath(), typeName);
+		runDumpContext(resolveTaskTypesPath(), typeName, &isRegisteredAgent);
 	}
 
 	/// Discover projects in a workspace.

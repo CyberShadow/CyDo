@@ -63,7 +63,7 @@ private string renderDumpContextToolsSection(
 	return rendered;
 }
 
-void runDumpContext(string path, string typeName)
+void runDumpContext(string path, string typeName, bool function(string) isKnownAgent)
 {
 	auto typesDir = dirName(path);
 
@@ -76,7 +76,7 @@ void runDumpContext(string path, string typeName)
 		return;
 	}
 
-	auto errors = validateTaskTypes(config.types, config.entryPoints, [typesDir]);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, isKnownAgent, [typesDir]);
 	if (errors.length > 0)
 	{
 		foreach (e; errors)

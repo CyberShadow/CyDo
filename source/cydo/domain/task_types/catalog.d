@@ -18,11 +18,13 @@ class TaskTypeCatalog
 	private ProjectTypeCache[string] taskTypesByProject;
 	private string taskTypesDir;
 	private string taskTypesPath;
+	private bool function(string) isKnownAgent;
 
-	this(string taskTypesDir, string taskTypesPath)
+	this(string taskTypesDir, string taskTypesPath, bool function(string) isKnownAgent)
 	{
 		this.taskTypesDir = taskTypesDir;
 		this.taskTypesPath = taskTypesPath;
+		this.isKnownAgent = isKnownAgent;
 	}
 
 	string[] promptSearchPath(string projectPath)
@@ -47,7 +49,8 @@ class TaskTypeCatalog
 			auto projectTypesPath = projectPath.length > 0
 				? buildPath(projectPath, ".cydo/task-types.yaml") : "";
 			auto config = loadTaskTypes(taskTypesPath, userTypesPath, projectTypesPath);
-			auto errors = validateTaskTypes(config.types, config.entryPoints, promptSearchPath(projectPath));
+			auto errors = validateTaskTypes(config.types, config.entryPoints,
+				isKnownAgent, promptSearchPath(projectPath));
 			foreach (e; errors)
 				warningf("task type: %s", e);
 			taskTypesByProject[projectPath] = ProjectTypeCache(
@@ -151,6 +154,11 @@ version (unittest) private void writeProjectTaskTypes(string projectPath, string
 	write(buildPath(projectPath, ".cydo", "task-types.yaml"), yaml);
 }
 
+version (unittest) private bool isKnownTestAgent(string name)
+{
+	return ["claude", "codex", "copilot"].canFind(name);
+}
+
 unittest
 {
 	auto tmp = makeTempRoot("cydo-test-task-type-catalog-fallback");
@@ -186,7 +194,7 @@ unittest
 		~ "    description: Start\n"
 		~ "    prompt_template: prompts/start.md\n");
 
-	auto catalog = new TaskTypeCatalog(defsDir, globalPath);
+	auto catalog = new TaskTypeCatalog(defsDir, globalPath, &isKnownTestAgent);
 	auto loaded = catalog.getTaskTypesForProject("");
 	assert(loaded.byName("alpha") !is null);
 
@@ -238,7 +246,7 @@ unittest
 		~ "    description: Start\n"
 		~ "    prompt_template: prompts/start.md\n");
 
-	auto catalog = new TaskTypeCatalog(defsDir, globalPath);
+	auto catalog = new TaskTypeCatalog(defsDir, globalPath, &isKnownTestAgent);
 	catalog.getTaskTypes();
 
 	auto projectPath = buildPath(tmp, "project");
@@ -297,7 +305,7 @@ unittest
 		~ "  child:\n"
 		~ "    model_class: large\n");
 
-	auto catalog = new TaskTypeCatalog(defsDir, globalPath);
+	auto catalog = new TaskTypeCatalog(defsDir, globalPath, &isKnownTestAgent);
 	catalog.getTaskTypes();
 	catalog.getTaskTypesForProject(projectPath);
 

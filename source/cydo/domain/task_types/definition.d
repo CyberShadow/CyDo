@@ -279,21 +279,12 @@ string resolveAgent(string expr, string parentAgentType)
 	return substituteVars(expr, ["parent_agent_type": parentAgentType]).strip;
 }
 
-/// Returns true iff `name` is a registered agent binary (claude, codex, copilot).
-bool isRegisteredAgent(string name)
-{
-	import cydo.agent.drivers.registry : agentRegistry;
-	foreach (ref r; agentRegistry)
-		if (r.name == name)
-			return true;
-	return false;
-}
-
 // ---------------------------------------------------------------------------
 // Validator
 // ---------------------------------------------------------------------------
 
-string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints, string[] typesDirs = null)
+string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
+	bool function(string) isKnownAgent, string[] typesDirs = null)
 {
 	import std.file : exists, readText;
 	import std.path : buildPath;
@@ -603,7 +594,7 @@ string[] validateTaskTypes(TaskTypeDef[] types, UserEntryPointDef[] entryPoints,
 	// 1. Literal-agent check: hardcoded values (no '{{') must name a known agent.
 	foreach (ref def; types)
 	{
-		if (!def.agent.canFind("{{") && !isRegisteredAgent(def.agent))
+		if (!def.agent.canFind("{{") && !isKnownAgent(def.agent))
 			errors ~= format("%s: agent '%s' is not a registered agent", def.name, def.agent);
 	}
 
@@ -1400,6 +1391,16 @@ unittest
 // Agent field unit tests
 // ---------------------------------------------------------------------------
 
+version (unittest) private bool isKnownTestAgent(string name)
+{
+	return ["claude", "codex", "copilot"].canFind(name);
+}
+
+version (unittest) private bool rejectAllTestAgents(string name)
+{
+	return false;
+}
+
 unittest // 1. loadTaskTypes injects defaultAgentExpr when no agent: field is present
 {
 	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
@@ -1437,9 +1438,8 @@ unittest // 3. Validator emits error for unregistered hardcoded literal
 	t.model_class = "large";
 	t.agent = "codeex"; // typo
 
-	auto errors = validateTaskTypes([t], []);
-	import std.algorithm : any;
-	assert(errors.any!(e => e.canFind("foo") && e.canFind("not a registered agent")), errors.to!string);
+	auto errors = validateTaskTypes([t], [], &isKnownTestAgent);
+	assert(errors.canFind("foo: agent 'codeex' is not a registered agent"), errors.to!string);
 }
 
 unittest // 4. Validator errors on keep_context cluster with disagreeing hardcoded agents (with entry points)
@@ -1465,7 +1465,7 @@ unittest // 4. Validator errors on keep_context cluster with disagreeing hardcod
 	ep.description = "Start triage";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([triage, implement], [ep]);
+	auto errors = validateTaskTypes([triage, implement], [ep], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("triage") && e.canFind("implement")), errors.to!string);
@@ -1500,32 +1500,22 @@ unittest // 5. Validator enforces keep_context cluster even without any entry po
 	ep.description = "Start";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([a, b, root], [ep]);
+	auto errors = validateTaskTypes([a, b, root], [ep], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
 }
 
-unittest // 6. Validator allows mixed hardcoded+default cluster (no error)
+unittest // 6. Validator allows {{ parent_agent_type }} / defaultAgentExpr even when predicate rejects the raw string
 {
-	TaskTypeDef triage;
-	triage.name = "triage";
-	triage.model_class = "large";
-	triage.agent = "codex";
-	ContinuationDef cont;
-	cont.task_type = "implement";
-	cont.keep_context = true;
-	cont.prompt_template = "switch.md";
-	triage.continuations["go"] = cont;
-
 	TaskTypeDef implement;
 	implement.name = "implement";
 	implement.model_class = "large";
 	implement.agent = defaultAgentExpr; // dynamic — not hardcoded
 
-	auto errors = validateTaskTypes([triage, implement], []);
-	import std.algorithm : any;
-	assert(!errors.any!(e => e.canFind("keep_context cluster")), errors.to!string);
+	auto errors = validateTaskTypes([implement], [], &rejectAllTestAgents);
+	assert(!errors.canFind("implement: agent '{{ parent_agent_type }}' is not a registered agent"),
+		errors.to!string);
 }
 
 unittest // 7. Validator errors when on_yield keep_context connects disagreeing hardcoded agents
@@ -1545,7 +1535,7 @@ unittest // 7. Validator errors when on_yield keep_context connects disagreeing 
 	b.model_class = "large";
 	b.agent = "codex";
 
-	auto errors = validateTaskTypes([a, b], []);
+	auto errors = validateTaskTypes([a, b], [], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("keep_context cluster")
 		&& e.canFind("atype") && e.canFind("btype")), errors.to!string);
@@ -1564,7 +1554,7 @@ unittest // 8. Validator warns when entry point target has non-default agent (ro
 	ep.description = "Start";
 	ep.prompt_template = "start.md";
 
-	auto errors = validateTaskTypes([triage], [ep]);
+	auto errors = validateTaskTypes([triage], [ep], &isKnownTestAgent);
 	import std.algorithm : any;
 	assert(errors.any!(e => e.canFind("entry_point") && e.canFind("start")
 		&& e.canFind("triage") && e.canFind("ignored at root creation")), errors.to!string);
@@ -1834,7 +1824,7 @@ void generateDot(TaskTypeDef[] types, UserEntryPointDef[] entryPoints)
 // ---------------------------------------------------------------------------
 
 /// Load and validate task types from a YAML file, returning null on error.
-private TaskTypeConfig* loadAndValidate(string path)
+private TaskTypeConfig* loadAndValidate(string path, bool function(string) isKnownAgent)
 {
 	TaskTypeConfig config;
 	try
@@ -1846,7 +1836,7 @@ private TaskTypeConfig* loadAndValidate(string path)
 	}
 
 	import std.path : dirName;
-	auto errors = validateTaskTypes(config.types, config.entryPoints, [dirName(path)]);
+	auto errors = validateTaskTypes(config.types, config.entryPoints, isKnownAgent, [dirName(path)]);
 	if (errors.length > 0)
 	{
 		writeln("=== Validation Errors ===\n");
@@ -1858,9 +1848,9 @@ private TaskTypeConfig* loadAndValidate(string path)
 	return new TaskTypeConfig(config.types, config.entryPoints);
 }
 
-void runSimulator(string path)
+void runSimulator(string path, bool function(string) isKnownAgent)
 {
-	auto config = loadAndValidate(path);
+	auto config = loadAndValidate(path, isKnownAgent);
 	if (config is null)
 		return;
 
@@ -1869,9 +1859,9 @@ void runSimulator(string path)
 	simulateWorkflow(config.types, config.entryPoints);
 }
 
-void runDot(string path)
+void runDot(string path, bool function(string) isKnownAgent)
 {
-	auto config = loadAndValidate(path);
+	auto config = loadAndValidate(path, isKnownAgent);
 	if (config is null)
 		return;
 
