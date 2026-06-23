@@ -347,6 +347,7 @@ class App : ToolsBackend
 		));
 		questionRouter = new QuestionRouter(QuestionRouterHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			isTaskAlive: &taskAlive,
 			tasksShareWorkspace: (int aTid, int bTid) {
 				auto aTd = aTid in tasks;
 				auto bTd = bTid in tasks;
@@ -645,21 +646,9 @@ class App : ToolsBackend
 	{
 		infof("shutdown() called, cleaning up resources");
 		shuttingDown = true;
+		taskSessionRunner.shutdownSessions();
 		foreach (ref td; tasks)
 		{
-			if (td.session)
-			{
-				// stop() only if the process is still alive; killAfterTimeout is
-				// always needed — when bwrap exits from the process-group SIGTERM
-				// before shutdown() runs, asyncWait fires first (exited=true, alive=false)
-				// but an orphaned child inside the namespace may still hold the pipe
-				// write-ends open.  killAfterTimeout's forceClosePipes (2.5 s) closes
-				// the backend side of the pipes so the event loop can drain.
-				if (td.session.alive)
-					td.session.stop();
-				import core.time : seconds;
-				td.session.killAfterTimeout(0.seconds);
-			}
 			if (td.titleGenKill !is null)
 			{
 				td.titleGenKill();
@@ -749,7 +738,7 @@ class App : ToolsBackend
 			config.default_task_type,
 		).representation));
 		ws.send(Data(buildAgentsList(snapshotAgentEntries(), config.default_agent).representation));
-		ws.send(Data(buildTasksList(tasks).representation));
+		ws.send(Data(buildCurrentTasksList().representation));
 		ws.send(Data(buildServerStatus(
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
@@ -795,7 +784,7 @@ class App : ToolsBackend
 			return false;
 
 		tdp.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-		tdp.session.interrupt();
+		taskSessionRunner.interruptTask(parsedTid);
 		return true;
 	}
 
@@ -1705,7 +1694,7 @@ class App : ToolsBackend
 	{
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks) return;
-		if (tasks[tid].alive) return; // can't change type of a running task
+		if (taskAlive(tid)) return; // can't change type of a running task
 		if (json.task_type.length == 0) return;
 		if (taskTypeCatalog.getTaskTypesForProject(tasks[tid].projectPath).byName(json.task_type) is null) return;
 		tasks[tid].entryPoint = "";
@@ -1719,7 +1708,7 @@ class App : ToolsBackend
 	{
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks) return;
-		if (tasks[tid].alive) return; // can't change type of a running task
+		if (taskAlive(tid)) return; // can't change type of a running task
 		if (json.entry_point.length == 0) return;
 		auto ep = taskTypeCatalog.getEntryPointsForProject(tasks[tid].projectPath).byName(json.entry_point);
 		if (ep is null) return;
@@ -1735,7 +1724,7 @@ class App : ToolsBackend
 	{
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks) return;
-		if (tasks[tid].alive) return; // can't change type of a running task
+		if (taskAlive(tid)) return; // can't change type of a running task
 		if (json.agent_name.length == 0) return;
 		// config.agents always contains at least the three driver names (overlay in commit 1).
 		bool found = false;
@@ -2163,7 +2152,7 @@ class App : ToolsBackend
 		// Only resume if we have an agent session ID and no running process
 		if (td.agentSessionId.length == 0)
 			return;
-		if (td.session !is null && td.session.alive)
+		if (taskAlive(tid))
 			return;
 		td.needsAttention = false;
 		persistence.setNeedsAttention(tid, false);
@@ -2200,9 +2189,7 @@ class App : ToolsBackend
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
-		auto td = &tasks[tid];
-		if (td.session)
-			td.session.interrupt();
+		taskSessionRunner.interruptTask(tid);
 	}
 
 	private void handleSigintMsg(WsMessage json)
@@ -2210,9 +2197,7 @@ class App : ToolsBackend
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
 			return;
-		auto td = &tasks[tid];
-		if (td.session)
-			td.session.sigint();
+		taskSessionRunner.sigintTask(tid);
 	}
 
 	private void handleCloseStdinMsg(WsMessage json)
@@ -2221,12 +2206,12 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		if (td.session)
+		if (sessionForTask(tid) !is null)
 		{
 			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 			td.stdinClosed = true;
 			broadcastTaskUpdate(tid);
-			td.session.closeStdin();
+			taskSessionRunner.closeTaskStdin(tid);
 		}
 	}
 
@@ -2236,11 +2221,11 @@ class App : ToolsBackend
 		if (tid < 0 || tid !in tasks)
 			return;
 		auto td = &tasks[tid];
-		if (td.session)
+		if (sessionForTask(tid) !is null)
 		{
 			td.wasKilledByUser = true;
 			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-			td.session.stop();
+			taskSessionRunner.stopTask(tid);
 		}
 	}
 
@@ -2289,7 +2274,7 @@ class App : ToolsBackend
 			return;
 		auto td = &tasks[tid];
 		// Only allow deletion of empty pending tasks (no agent has run)
-		if (td.agentSessionId.length > 0 || td.alive || td.status != "pending")
+		if (td.agentSessionId.length > 0 || taskAlive(tid) || td.status != "pending")
 			return;
 		// Clean up subscriptions
 		clientHub.unsubscribeAll(tid);
@@ -2516,7 +2501,7 @@ class App : ToolsBackend
 		}
 		else
 		{
-			if (td.session && td.session.alive)
+			if (taskAlive(tid))
 			{
 				// Codex alive path: use thread/rollback RPC instead of killing
 				import cydo.agent.drivers.codex : ThreadRollbackOutcome;
@@ -2526,7 +2511,7 @@ class App : ToolsBackend
 					import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, CodexSession,
 						countActiveUserTurnsAfterForkId;
 
-					auto codexSession = cast(CodexSession) td.session;
+					auto codexSession = cast(CodexSession) sessionForTask(tid);
 					if (codexSession is null || !codexSession.canRollbackThread)
 					{
 						fallbackUndoKillAndTruncate(ws, tid, json);
@@ -2663,7 +2648,7 @@ class App : ToolsBackend
 			}
 			performUndoExecution(ws, tid, json);
 		}).ignoreResult();
-		td.session.stop();
+		taskSessionRunner.stopTask(tid);
 	}
 
 	private void performUndoExecution(WebSocketAdapter ws, int tid, WsMessage json)
@@ -2824,7 +2809,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		if (td.session && td.session.alive)
+		if (taskAlive(tid))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing messages", tid)).representation));
 			return;
@@ -2883,7 +2868,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		if (td.session && td.session.alive)
+		if (taskAlive(tid))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing events", tid)).representation));
 			return;
@@ -3085,10 +3070,12 @@ class App : ToolsBackend
 		// before any agent write, preserves the pre-compaction content for undo.
 		if (captureUndoSnapshot)
 			jsonlTracker.captureUndoSnapshot(tid);
-		const(ContentBlock)[] toSend = td.session.supportsImages
+		auto session = sessionForTask(tid);
+		assert(session !is null, "Task session must exist when sending a message");
+		const(ContentBlock)[] toSend = session.supportsImages
 			? content
 			: content.filter!(b => b.type != "image").array;
-		td.session.sendMessage(toSend, nonce);
+		session.sendMessage(toSend, nonce);
 		td.isProcessing = true;
 		touchTask(tid);
 		td.needsAttention = false;
@@ -3535,7 +3522,7 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		if (td.compactionReminderInFlight)
 			return false;
-		if (td.session is null || !td.session.alive)
+		if (!taskAlive(tid))
 			return false;
 		if (td.processQueue.goalState != ProcessState.Alive)
 			return false;
@@ -3640,7 +3627,7 @@ class App : ToolsBackend
 		if (td is null)
 			return false;
 		task = ArchiveTaskSnapshot(td.tid, td.parentTid, td.archived, td.archiving,
-			td.alive, td.workspace, td.projectPath);
+			taskAlive(tid), td.workspace, td.projectPath);
 		return true;
 	}
 
@@ -3649,7 +3636,7 @@ class App : ToolsBackend
 		ArchiveTaskSnapshot[int] snapshot;
 		foreach (tid, ref td; tasks)
 			snapshot[tid] = ArchiveTaskSnapshot(td.tid, td.parentTid, td.archived,
-				td.archiving, td.alive, td.workspace, td.projectPath);
+				td.archiving, taskAlive(tid), td.workspace, td.projectPath);
 		return snapshot;
 	}
 
@@ -3881,7 +3868,7 @@ class App : ToolsBackend
 	private void materializePendingTask(int tid)
 	{
 		auto td = &tasks[tid];
-		if (td.alive || td.status != "pending" || td.description.length > 0)
+		if (taskAlive(tid) || td.status != "pending" || td.description.length > 0)
 			return;
 
 		if (td.entryPoint.length == 0)
@@ -4786,10 +4773,11 @@ class App : ToolsBackend
 		}
 
 		auto td = &tasks[parentTid];
-		if (td.session is null || !td.session.alive)
+		auto session = sessionForTask(parentTid);
+		if (session is null || !session.alive)
 		{
 			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, retrying via deliverBatchResults",
-				parentTid, td.session is null ? "is null" : "not alive");
+				parentTid, session is null ? "is null" : "not alive");
 			deliverBatchResults(parentTid);
 			return;
 		}
@@ -4863,8 +4851,7 @@ class App : ToolsBackend
 		socketManager.onNextTick(() {
 			if (tid !in tasks)
 				return;
-			auto td = &tasks[tid];
-			if (td.session is null || !td.session.alive)
+			if (!taskAlive(tid))
 				return;
 			enum nudgeBody = "Your session was interrupted by a backend restart. "
 				~ "Continue from where you left off. If you had a tool call in progress "
@@ -5195,11 +5182,35 @@ class App : ToolsBackend
 		tasks[tid].lastActive = Clock.currStdTime;
 	}
 
+	private AgentSession sessionForTask(int tid)
+	{
+		return taskSessionRunner.sessionForTask(tid);
+	}
+
+	private bool taskAlive(int tid)
+	{
+		return taskSessionRunner.taskAlive(tid);
+	}
+
+	private bool taskCanStop(int tid)
+	{
+		return taskSessionRunner.taskCanStop(tid, tasks[tid].stdinClosed);
+	}
+
+	private string buildCurrentTasksList()
+	{
+		TaskListEntry[] entries;
+		foreach (tid, ref td; tasks)
+			entries ~= buildTaskEntry(td, taskAlive(tid), taskCanStop(tid));
+		return buildTasksList(entries);
+	}
+
 	private void broadcastTaskUpdate(int tid)
 	{
 		import ae.utils.json : toJson;
 
-		clientHub.broadcast(toJson(TaskUpdatedMessage("task_updated", buildTaskEntry(tasks[tid]))));
+		clientHub.broadcast(toJson(TaskUpdatedMessage("task_updated",
+			buildTaskEntry(tasks[tid], taskAlive(tid), taskCanStop(tid)))));
 	}
 
 	private void broadcastFocusHint(int fromTid, int toTid)
@@ -5224,7 +5235,7 @@ class App : ToolsBackend
 		while (targetTid in tasks)
 		{
 			auto target = &tasks[targetTid];
-			if (target.parentTid == 0 || target.alive)
+			if (target.parentTid == 0 || taskAlive(targetTid))
 				break;
 			targetTid = target.parentTid;
 		}

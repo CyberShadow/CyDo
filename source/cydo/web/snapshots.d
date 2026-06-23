@@ -13,23 +13,18 @@ import cydo.domain.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEn
 	WorkspacesListMessage, stdTimeToUnixMillis;
 import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byName;
 
-TaskListEntry buildTaskEntry(ref TaskData td)
+TaskListEntry buildTaskEntry(ref TaskData td, bool alive, bool canStop)
 {
-	const supportsEndingStop = td.session !is null && td.session.canStopAfterCloseStdin;
-	const canStop = td.alive && (!td.stdinClosed || supportsEndingStop);
-	return TaskListEntry(td.tid, td.alive,
-		td.agentSessionId.length > 0 && !td.alive && td.status != "importable",
+	return TaskListEntry(td.tid, alive,
+		td.agentSessionId.length > 0 && !alive && td.status != "importable",
 		td.isProcessing, td.stdinClosed, canStop, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 		td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, td.status,
 		td.taskType, td.entryPoint, td.agentType, td.archived, td.archiving, td.draft, td.error,
 		stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 }
 
-string buildTasksList(ref TaskData[int] tasksById)
+string buildTasksList(TaskListEntry[] entries)
 {
-	TaskListEntry[] entries;
-	foreach (ref td; tasksById)
-		entries ~= buildTaskEntry(td);
 	return toJson(TasksListMessage("tasks_list", entries));
 }
 

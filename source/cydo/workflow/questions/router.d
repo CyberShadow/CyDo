@@ -52,6 +52,7 @@ struct QuestionRegistration
 struct QuestionRouterHost
 {
 	TaskData* delegate(int tid) getTask;
+	bool delegate(int tid) isTaskAlive;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
 	string delegate(int tid) taskWorkspaceLabel;
 	string delegate() systemKeyword;
@@ -426,7 +427,7 @@ private:
 				return;
 
 			auto currentAnswerer = host_.getTask(currentRoute.answererTid);
-			if (currentAnswerer is null || !currentAnswerer.alive)
+			if (currentAnswerer is null || !host_.isTaskAlive(currentRoute.answererTid))
 			{
 				failQuestionRoute(currentRoute.qid,
 					"Session ended while waiting for Ask response");
@@ -499,7 +500,7 @@ private:
 				if (routePtr is null)
 					return;
 				auto currentAnswerer = host_.getTask((*routePtr).answererTid);
-				if (currentAnswerer is null || !currentAnswerer.alive)
+				if (currentAnswerer is null || !host_.isTaskAlive((*routePtr).answererTid))
 				{
 					failQuestionRoute((*routePtr).qid,
 						"Session ended while waiting for Ask response");
@@ -534,7 +535,7 @@ private:
 
 			auto currentRoute = *routePtr;
 			auto answererTd = host_.getTask(currentRoute.answererTid);
-			if (answererTd is null || !answererTd.alive)
+			if (answererTd is null || !host_.isTaskAlive(currentRoute.answererTid))
 			{
 				failQuestionRoute(currentRoute.qid,
 					"Session ended while waiting for Ask response");

@@ -12,7 +12,6 @@ import cydo.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
 
-import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
 import cydo.domain.task_types.definition : substituteVars;
 import std.exception : enforce;
@@ -498,10 +497,8 @@ struct TaskData
 	/// Nonce of the last user message sent to the agent; tagged onto the
 	/// agent's user_message echo so the reducer can dedupe by nonce alone.
 	string pendingUserNonce;
-	AgentSession session;
 	ProcessLaunch launch;
 	HistoryStore history;     // unified: JSONL file events + live stdout events
-	@property bool alive() { return session !is null && session.alive; }
 	StateQueue!ProcessState* processQueue;
 	StateQueue!ArchiveState* archiveQueue;
 	bool archiving;  // true while an archive/unarchive transition is in progress

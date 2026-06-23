@@ -12,6 +12,7 @@ import ae.utils.json : toJson;
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
+import cydo.agent.session : AgentSession;
 import cydo.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.runtime.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.runtime.launch.types : AgentSandboxConfig, ProcessLaunch;
@@ -93,10 +94,69 @@ struct TaskSessionRunnerHost
 class TaskSessionRunner
 {
 	private TaskSessionRunnerHost host_;
+	private AgentSession[int] sessions_;
 
 	this(TaskSessionRunnerHost host)
 	{
 		host_ = host;
+	}
+
+	AgentSession sessionForTask(int tid)
+	{
+		if (auto session = tid in sessions_)
+			return *session;
+		return null;
+	}
+
+	bool taskAlive(int tid)
+	{
+		auto session = sessionForTask(tid);
+		return session !is null && session.alive;
+	}
+
+	bool taskCanStop(int tid, bool stdinClosed)
+	{
+		auto session = sessionForTask(tid);
+		return session !is null
+			&& session.alive
+			&& (!stdinClosed || session.canStopAfterCloseStdin);
+	}
+
+	void shutdownSessions()
+	{
+		AgentSession[] snapshot;
+		foreach (session; sessions_)
+			snapshot ~= session;
+		foreach (session; snapshot)
+		{
+			if (session.alive)
+				session.stop();
+			session.killAfterTimeout(0.seconds);
+		}
+	}
+
+	void interruptTask(int tid)
+	{
+		if (auto session = sessionForTask(tid))
+			session.interrupt();
+	}
+
+	void sigintTask(int tid)
+	{
+		if (auto session = sessionForTask(tid))
+			session.sigint();
+	}
+
+	void closeTaskStdin(int tid)
+	{
+		if (auto session = sessionForTask(tid))
+			session.closeStdin();
+	}
+
+	void stopTask(int tid)
+	{
+		if (auto session = sessionForTask(tid))
+			session.stop();
 	}
 
 	TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
@@ -236,8 +296,9 @@ class TaskSessionRunner
 		auto typeDef = currentTaskTypeDef(td);
 		auto launch = prepareTaskSessionLaunch(tid, taskAgent, typeDef);
 		td = requireTask(tid, "Task disappeared before session creation");
-		td.session = taskAgent.createSession(tid, td.agentSessionId,
+		auto session = taskAgent.createSession(tid, td.agentSessionId,
 			launch.processLaunch, launch.sessionConfig);
+		sessions_[tid] = session;
 		host_.clearLastActive(tid);
 
 		if (taskAgent.lastMcpConfigPath.length > 0)
@@ -246,7 +307,7 @@ class TaskSessionRunner
 		if (td.agentSessionId.length > 0)
 			host_.startJsonlWatch(tid);
 
-		td.session.onOutput = (TranslatedEvent ev) {
+		session.onOutput = (TranslatedEvent ev) {
 			host_.broadcastTask(tid, ev);
 
 			auto current = host_.getTask(tid);
@@ -322,8 +383,8 @@ class TaskSessionRunner
 				else
 				{
 					current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-					current.session.closeStdin();
-					current.session.killAfterTimeout(5.seconds);
+					session.closeStdin();
+					session.killAfterTimeout(5.seconds);
 				}
 			}
 			else
@@ -337,7 +398,7 @@ class TaskSessionRunner
 			host_.broadcastTaskUpdate(tid);
 		};
 
-		td.session.onAgentAck = (string nonce) {
+		session.onAgentAck = (string nonce) {
 			if (nonce.length == 0)
 				return;
 			host_.sendAgentAck(tid, nonce);
@@ -345,14 +406,17 @@ class TaskSessionRunner
 
 		string lastStderr;
 
-		td.session.onStderr = (string line) {
+		session.onStderr = (string line) {
 			ProcessStderrEvent ev;
 			ev.text = line;
 			host_.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
 			lastStderr = line;
 		};
 
-		td.session.onExit = (int exitCode) {
+		session.onExit = (int exitCode) {
+			if (auto stored = tid in sessions_)
+				if (*stored is session)
+					sessions_.remove(tid);
 			if (host_.shuttingDown())
 				return;
 
@@ -555,7 +619,7 @@ class TaskSessionRunner
 			return resolve(ProcessState.Alive);
 		}
 
-		if (td.session is null || !td.session.alive)
+		if (!taskAlive(tid))
 			return resolve(ProcessState.Dead);
 
 		td.killPromise = new Promise!ProcessState;
