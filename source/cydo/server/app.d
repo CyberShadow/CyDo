@@ -31,6 +31,8 @@ import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.domain.tasks.model : BatchSignal;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
+import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
 import cydo.workflow.batch.router : BatchConsumeKind;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
@@ -123,6 +125,8 @@ class App : ToolsBackend
 	private Notice[string] activeNotices;
 	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
 	private ArchiveManager archiveManager;
+	private TaskPathResolver taskPathResolver;
+	private WorktreeAllocator worktreeAllocator;
 	private HistoryEventPipeline historyPipeline;
 	private TaskSessionRunner taskSessionRunner;
 	private DerivedTextJobs derivedTextJobs;
@@ -162,6 +166,11 @@ class App : ToolsBackend
 		config = loadRuntimeConfig();
 		taskDirTemplate = config.task_dir.length > 0 ? config.task_dir : defaultTaskDirTemplate;
 		applyConfiguredLogLevel(config.log_level);
+		taskPathResolver = new TaskPathResolver(TaskPathResolverHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			workspaces: () => config.workspaces,
+			taskDirTemplate: () => taskDirTemplate,
+		));
 		foreach (name, ref ac; config.agents)
 		{
 			auto driver = ac.driver.value;
@@ -195,7 +204,7 @@ class App : ToolsBackend
 		archiveManager = new ArchiveManager(ArchiveManagerHost(
 			tryGetTask: &tryGetArchiveTask,
 			snapshotTasks: &snapshotArchiveTasks,
-			tryTaskDir: &tryResolveArchiveTaskDir,
+			tryTaskDir: &taskPathResolver.tryResolveTaskDir,
 			updateTaskState: &updateArchiveTaskState,
 			persistArchived: (int tid, bool archived) {
 				persistence.setArchived(tid, archived);
@@ -209,6 +218,15 @@ class App : ToolsBackend
 					format!"Archive queue missing for task %d"(tid));
 				return td.archiveQueue.setGoal(goal);
 			},
+		));
+		worktreeAllocator = new WorktreeAllocator(WorktreeAllocatorHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			persistWorktreeTid: (int tid, int worktreeTid) {
+				persistence.setWorktreeTid(tid, worktreeTid);
+			},
+			findRootTid: &findRootTid,
+			taskDir: &taskPathResolver.taskDir,
+			worktreePath: &taskPathResolver.worktreePath,
 		));
 		discoveryService = new DiscoveryService(DiscoveryServiceHost(
 			snapshotTasks: &snapshotDiscoveryTasks,
@@ -252,7 +270,7 @@ class App : ToolsBackend
 			tryAgentForTask: &tryAgentForTask,
 			effectiveCwd: (int tid) {
 				auto td = tid in tasks;
-				return effectiveCwd(td);
+				return taskPathResolver.effectiveCwd(td);
 			},
 			injectAgentNameIntoSessionInit: &injectAgentNameIntoSessionInit,
 			normalizeKnownSystemMessageMeta: (string translated, int tid) {
@@ -270,7 +288,7 @@ class App : ToolsBackend
 				assert(td !is null,
 					format!"Forkable UUID replay requested for missing task %d"(tid));
 				jsonlTracker.sendForkableUuidsFromFile(ws, tid, td.agentSessionId,
-					effectiveCwd(td));
+					taskPathResolver.effectiveCwd(td));
 			},
 			broadcastForkableUuids: (int tid) {
 				jsonlTracker.broadcastForkableUuidsFromFile(tid);
@@ -312,13 +330,13 @@ class App : ToolsBackend
 		));
 		taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
-			taskDir: &taskDir,
-			outputPath: &outputPath,
-			effectiveCwd: &effectiveCwd,
-			worktreePath: &worktreePath,
+			taskDir: &taskPathResolver.taskDir,
+			outputPath: &taskPathResolver.outputPath,
+			effectiveCwd: &taskPathResolver.effectiveCwd,
+			worktreePath: &taskPathResolver.worktreePath,
 			globalSandbox: () => config.sandbox,
 			findWorkspaceSandbox: &findWorkspaceSandbox,
-			findWorkspaceRoot: &findWorkspaceRoot,
+			findWorkspaceRoot: &taskPathResolver.findWorkspaceRoot,
 			findWorkspacePermissionPolicy: &findWorkspacePermissionPolicy,
 			findAgentSandbox: &findAgentSandbox,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
@@ -466,7 +484,7 @@ class App : ToolsBackend
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
 		jsonlTracker.getEffectiveCwd = (int tid) {
 			auto td = tid in tasks;
-			return effectiveCwd(td);
+			return taskPathResolver.effectiveCwd(td);
 		};
 		jsonlTracker.sendToSubscribed = (int tid, string msg) =>
 			clientHub.sendToSubscribed(tid, Data(msg.representation));
@@ -537,7 +555,7 @@ class App : ToolsBackend
 						// an orphan agent: keep deferred and synthesize on demand.
 						string cwd;
 						try
-							cwd = effectiveCwd(td2);
+							cwd = taskPathResolver.effectiveCwd(td2);
 						catch (Exception)
 							cwd = "";
 						if (cwd.length == 0)
@@ -561,7 +579,7 @@ class App : ToolsBackend
 		foreach (tid, ref td; tasks)
 		{
 			import std.file : isSymlink, remove;
-			auto td_dir = tryTaskDir(td);
+			auto td_dir = taskPathResolver.tryTaskDir(td);
 			if (td_dir.length == 0)
 				continue;
 			auto wtPath = worktreePathForTaskDir(td_dir);
@@ -590,7 +608,7 @@ class App : ToolsBackend
 				try
 				{
 					auto ta = agentForTask(td.tid);
-					auto jp = ta.historyPath(td.agentSessionId, effectiveCwd(&td));
+					auto jp = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(&td));
 					if (jp.length > 0)
 					{
 						import std.file : exists, timeLastModified;
@@ -984,13 +1002,15 @@ class App : ToolsBackend
 				{
 					edgeTemplate = edge.prompt_template;
 					childTd.resultNote = substituteVars(edge.result_note,
-						["output_dir": taskDir(pd)]);
-					setupWorktreeForEdge(childTid, parentTid, edge.worktree);
+						["output_dir": taskPathResolver.taskDir(pd)]);
+					worktreeAllocator.setupForEdge(childTid, parentTid, edge.worktree);
 				}
 			}
 
 			// Configure and spawn child agent
-			auto renderedPrompt = renderPrompt(*ctd, prompt, taskTypeCatalog.promptSearchPath(childTd.projectPath), outputPath(childTd), edgeTemplate);
+			auto renderedPrompt = renderPrompt(*ctd, prompt,
+				taskTypeCatalog.promptSearchPath(childTd.projectPath),
+				taskPathResolver.outputPath(childTd), edgeTemplate);
 			renderedPrompt = prependTaskFraming(renderedPrompt,
 				taskSystemPromptForMessage(childTid, ctd),
 				loadProjectMemory(ctd, childTd.repoPath, taskTypeCatalog.promptSearchPath(childTd.projectPath)));
@@ -1823,7 +1843,9 @@ class App : ToolsBackend
 			{
 				import std.algorithm : filter;
 				import std.array : array;
-				auto rendered = renderPrompt(*typeDef, textContent, taskTypeCatalog.promptSearchPath(td.projectPath), outputPath(td), epTemplate);
+				auto rendered = renderPrompt(*typeDef, textContent,
+					taskTypeCatalog.promptSearchPath(td.projectPath),
+					taskPathResolver.outputPath(td), epTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
 					loadProjectMemory(typeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
@@ -2111,7 +2133,7 @@ class App : ToolsBackend
 						entryPointTemplate = ep.prompt_template;
 				}
 				auto rendered = renderPrompt(*typeDef, textContent, taskTypeCatalog.promptSearchPath(td.projectPath),
-					outputPath(td), entryPointTemplate);
+					taskPathResolver.outputPath(td), entryPointTemplate);
 				rendered = prependTaskFraming(rendered,
 					taskSystemPromptForMessage(tid, typeDef),
 					loadProjectMemory(typeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
@@ -2334,7 +2356,7 @@ class App : ToolsBackend
 		auto ta = agentForTask(tid);
 		if (auto ca = cast(CodexAgent) ta)
 		{
-			auto sourcePath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+			auto sourcePath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
 			if (sourcePath.length == 0)
 			{
 				ws.send(Data(toJson(ErrorMessage("error",
@@ -2411,7 +2433,7 @@ class App : ToolsBackend
 					// reads the correct post-fork byte range.
 					{
 						auto jp = childAgent.historyPath(outcome.threadId,
-							effectiveCwd(&tasks[childTid]));
+							taskPathResolver.effectiveCwd(&tasks[childTid]));
 						tasks[childTid].history.reset(watermarkFromPath(jp));
 					}
 
@@ -2429,7 +2451,7 @@ class App : ToolsBackend
 			// destination should live under the real project path so the
 			// fork task (which has projectPath, not a worktree) can find it.
 			(string sid) => ta.historyPath(sid,
-				sid == td.agentSessionId ? effectiveCwd(td) : td.projectPath),
+				sid == td.agentSessionId ? taskPathResolver.effectiveCwd(td) : td.projectPath),
 			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 			td.description, td.taskType, td.agentType);
 		if (result.tid < 0)
@@ -2461,7 +2483,8 @@ class App : ToolsBackend
 			ArchiveState.Unarchived,
 		);
 		{
-			auto jp = ta.historyPath(result.agentSessionId, effectiveCwd(&tasks[result.tid]));
+			auto jp = ta.historyPath(result.agentSessionId,
+				taskPathResolver.effectiveCwd(&tasks[result.tid]));
 			tasks[result.tid].history.reset(watermarkFromPath(jp));
 		}
 
@@ -2493,7 +2516,7 @@ class App : ToolsBackend
 				import std.file : exists, readText;
 				import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
 
-				auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+				auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
 				if (jsonlPath.length == 0 || !exists(jsonlPath))
 				{
 					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -2518,7 +2541,8 @@ class App : ToolsBackend
 			}
 
 			auto count = countLinesAfterForkId(
-				ta.historyPath(td.agentSessionId, effectiveCwd(td)), json.after_uuid,
+				ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td)),
+				json.after_uuid,
 				&ta.forkIdMatchesLine,
 				&ta.isForkableLine);
 			if (count < 0)
@@ -2548,7 +2572,8 @@ class App : ToolsBackend
 						return;
 					}
 
-					auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+					auto jsonlPath = ta.historyPath(td.agentSessionId,
+						taskPathResolver.effectiveCwd(td));
 					if (jsonlPath.length == 0 || !exists(jsonlPath))
 					{
 						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
@@ -2588,7 +2613,8 @@ class App : ToolsBackend
 							// Reload history (marker-aware reading skips rolled-back turns).
 							auto td2 = &tasks[tid];
 							{
-								auto jp = ta.historyPath(td2.agentSessionId, effectiveCwd(td2));
+								auto jp = ta.historyPath(td2.agentSessionId,
+									taskPathResolver.effectiveCwd(td2));
 								td2.history.reset(watermarkFromPath(jp));
 							}
 							clientHub.unsubscribeAll(tid);
@@ -2600,7 +2626,8 @@ class App : ToolsBackend
 							if (td2.pendingSteeringTexts.length > 0)
 							{
 								import std.file : readText, exists;
-								auto histPath = ta.historyPath(td2.agentSessionId, effectiveCwd(td2));
+								auto histPath = ta.historyPath(td2.agentSessionId,
+									taskPathResolver.effectiveCwd(td2));
 								if (histPath.length > 0 && histPath.exists)
 								{
 									auto forkIds = ta.extractForkableIdsWithInfo(readText(histPath));
@@ -2645,7 +2672,8 @@ class App : ToolsBackend
 		// undo click arrives.  The snapshot was taken on the last
 		// forkId-producing event, preserving line-based fork IDs that
 		// would otherwise be invalidated by compaction.
-		auto jsonlPathSnap = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+		auto jsonlPathSnap = ta.historyPath(td.agentSessionId,
+			taskPathResolver.effectiveCwd(td));
 		auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
 		jsonlTracker.clearUndoJsonl(tid);
 
@@ -2708,7 +2736,8 @@ class App : ToolsBackend
 
 			if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
 			{
-				auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid, effectiveCwd(td), td.launch);
+				auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid,
+					taskPathResolver.effectiveCwd(td), td.launch);
 				if (rewindResult.success)
 					rewindOutput = rewindResult.output;
 				else if (!rewindResult.output.canFind("No file checkpoint found"))
@@ -2723,14 +2752,15 @@ class App : ToolsBackend
 		// 2. Back up pre-undo state as a child task
 		if (json.revert_conversation)
 		{
-			auto lastForkId = lastForkIdInJsonl(ta.historyPath(td.agentSessionId, effectiveCwd(td)),
+			auto lastForkId = lastForkIdInJsonl(
+				ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td)),
 				&ta.extractForkableIds);
 			if (lastForkId.length > 0)
 			{
 				auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
 					td.projectPath, td.workspace, td.title,
 					(string sid) => ta.historyPath(sid,
-						sid == td.agentSessionId ? effectiveCwd(td) : td.projectPath),
+						sid == td.agentSessionId ? taskPathResolver.effectiveCwd(td) : td.projectPath),
 					&ta.rewriteSessionId, &ta.forkIdMatchesLine,
 					td.description, td.taskType, td.agentType);
 				if (backup.tid >= 0)
@@ -2759,7 +2789,8 @@ class App : ToolsBackend
 						ArchiveState.Unarchived,
 					);
 					{
-							auto jp = ta.historyPath(backup.agentSessionId, effectiveCwd(&tasks[backup.tid]));
+							auto jp = ta.historyPath(backup.agentSessionId,
+								taskPathResolver.effectiveCwd(&tasks[backup.tid]));
 							tasks[backup.tid].history.reset(watermarkFromPath(jp));
 						}
 					clientHub.broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
@@ -2771,7 +2802,8 @@ class App : ToolsBackend
 		// 3. Truncate conversation history
 		if (json.revert_conversation)
 		{
-			auto histJsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+			auto histJsonlPath = ta.historyPath(td.agentSessionId,
+				taskPathResolver.effectiveCwd(td));
 			auto removed = truncateJsonl(histJsonlPath, json.after_uuid, &ta.forkIdMatchesLine, true);
 			if (removed < 0)
 			{
@@ -2787,7 +2819,8 @@ class App : ToolsBackend
 			{
 				import std.file : readText, exists;
 				import std.string : splitLines;
-				auto histPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+				auto histPath = ta.historyPath(td.agentSessionId,
+					taskPathResolver.effectiveCwd(td));
 				if (histPath.length > 0 && histPath.exists)
 				{
 					int remaining = 0;
@@ -2846,7 +2879,7 @@ class App : ToolsBackend
 		}
 
 		auto ta = agentForTask(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+		auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 		auto targetUuid = json.after_uuid;
 		string fallbackUuid;
@@ -2921,7 +2954,7 @@ class App : ToolsBackend
 
 		auto sourceLine = td.history.sourceLineAt(seq);
 		auto ta = agentForTask(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
+		auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 
 		string[] compactLines;
@@ -3125,7 +3158,8 @@ class App : ToolsBackend
 			return null;
 
 		auto td = &tasks[tid];
-		return loadSystemPrompt(*typeDef, taskTypeCatalog.promptSearchPath(td.projectPath), outputPath(*td));
+		return loadSystemPrompt(*typeDef, taskTypeCatalog.promptSearchPath(td.projectPath),
+			taskPathResolver.outputPath(*td));
 	}
 
 	/// Find the first child of tid that has an unanswered Ask question.
@@ -3342,86 +3376,6 @@ class App : ToolsBackend
 		return true;
 	}
 
-	private static bool pathIsUnderRoot(string path, string root)
-	{
-		import std.algorithm : startsWith;
-		return root.length > 0 && (path == root || path.startsWith(root ~ "/"));
-	}
-
-	private string workspaceRootForTask(int tid, string workspace, string projectPath)
-	{
-		if (workspace.length > 0)
-		{
-			auto wsRoot = findWorkspaceRoot(workspace);
-			if (wsRoot.length == 0)
-				throw new Exception(format!"Cannot resolve task_dir for task %d: unknown workspace '%s'"(tid, workspace));
-			return wsRoot;
-		}
-
-		string matchedRoot;
-		if (projectPath.length > 0)
-			foreach (ref ws; config.workspaces)
-				if (pathIsUnderRoot(projectPath, ws.root))
-				{
-					if (matchedRoot.length > 0 && matchedRoot != ws.root)
-						throw new Exception(format!"Cannot resolve task_dir for task %d: project path '%s' matches multiple workspace roots ('%s' and '%s')"(
-							tid, projectPath, matchedRoot, ws.root));
-					matchedRoot = ws.root;
-				}
-		if (matchedRoot.length > 0)
-			return matchedRoot;
-
-		throw new Exception(format!"Cannot resolve task_dir for task %d: missing workspace_root"(tid));
-	}
-
-	private string resolveTaskDirForTask(int tid, string workspace, string projectPath)
-	{
-		auto repoPath = resolveProjectRepoPath(projectPath);
-		auto wsRoot = workspaceRootForTask(tid, workspace, projectPath);
-		return resolveTaskDir(tid, workspace, wsRoot, projectPath, repoPath, taskDirTemplate);
-	}
-
-	/// Resolve a task's directory on demand. Throws if the task lacks the
-	/// workspace metadata needed to compute the path — operations that need
-	/// taskDir fail fast at the point of use, while tasks that only sit in
-	/// the in-memory map (legacy completed runs, importable rows that haven't
-	/// been activated) can still be loaded.
-	private string taskDir(ref const TaskData td)
-	{
-		return resolveTaskDirForTask(td.tid, td.workspace, td.projectPath);
-	}
-
-	private string taskDir(const TaskData* td)
-	{
-		if (td is null)
-			throw new Exception("TaskData pointer must not be null");
-		return taskDir(*td);
-	}
-
-	/// Resolve a task's output.md path on demand.
-	private string outputPath(ref const TaskData td)
-	{
-		return outputPathForTaskDir(taskDir(td));
-	}
-
-	private string outputPath(const TaskData* td)
-	{
-		if (td is null)
-			throw new Exception("TaskData pointer must not be null");
-		return outputPath(*td);
-	}
-
-	/// Best-effort variant for code that runs over every task and must
-	/// tolerate legacy rows that can't resolve a workspace. Returns "" on
-	/// failure instead of throwing.
-	private string tryTaskDir(ref const TaskData td)
-	{
-		try
-			return taskDir(td);
-		catch (Exception)
-			return "";
-	}
-
 	private bool tryGetArchiveTask(int tid, out ArchiveTaskSnapshot task)
 	{
 		auto td = tid in tasks;
@@ -3439,14 +3393,6 @@ class App : ToolsBackend
 			snapshot[tid] = ArchiveTaskSnapshot(td.tid, td.parentTid, td.archived,
 				td.archiving, taskAlive(tid), td.workspace, td.projectPath);
 		return snapshot;
-	}
-
-	private string tryResolveArchiveTaskDir(int tid, string workspace, string projectPath)
-	{
-		try
-			return resolveTaskDirForTask(tid, workspace, projectPath);
-		catch (Exception)
-			return "";
 	}
 
 	private bool updateArchiveTaskState(int tid, bool archived, bool archiving)
@@ -3491,7 +3437,8 @@ class App : ToolsBackend
 	{
 		auto td = tid in tasks;
 		assert(td !is null, format!"Importable task %d not found"(tid));
-		return agentForTask(tid).historyPath(td.agentSessionId, effectiveCwd(td));
+		return agentForTask(tid).historyPath(td.agentSessionId,
+			taskPathResolver.effectiveCwd(td));
 	}
 
 	private void deleteImportableTask(int tid)
@@ -3536,35 +3483,6 @@ class App : ToolsBackend
 	private void broadcastDiscoveryScanStatus(bool active)
 	{
 		clientHub.broadcast(toJson(ScanStatusMessage("scan_status", active)));
-	}
-
-	private string worktreePath(const TaskData* td)
-	{
-		if (td is null)
-			throw new Exception("TaskData pointer must not be null");
-		if (td.worktreeTid <= 0)
-			return "";
-
-		auto ownerTd = td.worktreeTid in tasks;
-		if (ownerTd is null)
-			throw new Exception(format!"Task %d references missing worktree owner task %d"(td.tid, td.worktreeTid));
-		return worktreePathForTaskDir(taskDir(ownerTd));
-	}
-
-	private string effectiveCwd(const TaskData* td)
-	{
-		if (td is null)
-			throw new Exception("TaskData pointer must not be null");
-		return td.effectiveCwd(worktreePath(td));
-	}
-
-	private void setTaskWorktreeTid(int tid, int worktreeTid)
-	{
-		auto td = tid in tasks;
-		if (td is null)
-			throw new Exception(format!"Task %d not found while setting worktree owner %d"(tid, worktreeTid));
-		td.worktreeTid = worktreeTid;
-		persistence.setWorktreeTid(tid, worktreeTid);
 	}
 
 	private int createTask(string workspace = "", string projectPath = "", string agentName = "",
@@ -3646,23 +3564,6 @@ class App : ToolsBackend
 		return createAgentByDriver(ac.driver.value);
 	}
 
-	/// Set up a worktree for a task based on the edge's WorktreeMode.
-	private void setupWorktreeForEdge(int childTid, int parentTid, WorktreeMode mode)
-	{
-		final switch (mode)
-		{
-			case WorktreeMode.inherit:
-				setupWorktreeInherit(childTid, parentTid);
-				break;
-			case WorktreeMode.require:
-				setupWorktreeRequire(childTid, parentTid);
-				break;
-			case WorktreeMode.fork:
-				setupWorktreeFork(childTid, parentTid);
-				break;
-		}
-	}
-
 	/// Finalize pending task runtime state right before the first message starts it.
 	/// This keeps draft tasks cheap and defers worktree creation until the task
 	/// is actually materialized by the first send.
@@ -3680,93 +3581,7 @@ class App : ToolsBackend
 			return;
 		if (td.worktreeTid > 0 || ep.worktree == WorktreeMode.inherit)
 			return;
-		setupWorktreeForEdge(tid, td.parentTid, ep.worktree);
-	}
-
-	/// Inherit: if the parent has a worktree, the child shares it.
-	private void setupWorktreeInherit(int childTid, int parentTid)
-	{
-		auto parentTd = parentTid in tasks;
-		if (parentTd is null || parentTd.worktreeTid <= 0)
-			return;
-		setTaskWorktreeTid(childTid, parentTd.worktreeTid);
-	}
-
-	/// Require: walk up ancestors to find an existing worktree. If none found,
-	/// create one at the root task's directory. The child then shares that worktree.
-	/// The root task's own worktree_tid stays 0 (root tasks never chdir).
-	private void setupWorktreeRequire(int childTid, int parentTid)
-	{
-		// Walk up to find nearest ancestor with a worktree
-		int current = parentTid;
-		while (current > 0)
-		{
-			auto ancestorTd = current in tasks;
-			if (ancestorTd is null)
-				break;
-			if (ancestorTd.worktreeTid > 0)
-			{
-				// Found an ancestor with a worktree — share it
-				setTaskWorktreeTid(childTid, ancestorTd.worktreeTid);
-				return;
-			}
-			current = ancestorTd.parentTid;
-		}
-		// No ancestor has a worktree — create one at the root task's directory
-		int rootTid = findRootTid(childTid);
-		auto rootTd = rootTid in tasks;
-		if (rootTd is null)
-			throw new Exception(format!"Root task %d not found while creating required worktree for task %d"(rootTid, childTid));
-
-		import std.file : exists, mkdirRecurse;
-		auto rootTaskDir = taskDir(rootTd);
-		auto wtPath = worktreePathForTaskDir(rootTaskDir);
-		if (!exists(wtPath))
-		{
-			mkdirRecurse(rootTaskDir);
-			import std.process : execute;
-			auto workDir = rootTd.projectPath.length > 0 ? rootTd.projectPath : null;
-			auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-			if (gitResult.status != 0)
-			{
-				errorf("Failed to create worktree for require at root task %d: %s", rootTid, gitResult.output);
-				return;
-			}
-			infof("Created shared worktree at root task %d: %s", rootTid, wtPath);
-		}
-		// Child points to the root's worktree. Root's worktree_tid stays 0.
-		setTaskWorktreeTid(childTid, rootTid);
-	}
-
-	/// Fork: create a new isolated worktree for this task.
-	private void setupWorktreeFork(int childTid, int parentTid)
-	{
-		auto td = &tasks[childTid];
-		if (td.worktreeTid > 0)
-			return;
-
-		import std.file : mkdirRecurse;
-		import std.process : execute;
-
-		auto childTaskDir = taskDir(*td);
-		mkdirRecurse(childTaskDir);
-		auto wtPath = worktreePathForTaskDir(childTaskDir);
-
-		// Determine base: parent's worktree if available, else project dir
-		auto parentTd = parentTid in tasks;
-		string baseFrom;
-		if (parentTd !is null && parentTd.worktreeTid > 0)
-			baseFrom = worktreePath(parentTd);
-		auto workDir = baseFrom.length > 0 ? baseFrom : (td.projectPath.length > 0 ? td.projectPath : null);
-
-		auto gitResult = execute(["git", "-C", workDir, "worktree", "add", "--detach", wtPath]);
-		if (gitResult.status == 0)
-		{
-			setTaskWorktreeTid(childTid, childTid);  // owns its own worktree
-			infof("Created fork worktree for task %d: %s", childTid, wtPath);
-		}
-		else
-			errorf("Failed to create fork worktree for task %d: %s", childTid, gitResult.output);
+		worktreeAllocator.setupForEdge(tid, td.parentTid, ep.worktree);
 	}
 
 	private TaskSessionLaunch prepareTaskSessionLaunch(int tid, Agent taskAgent,
@@ -3844,7 +3659,7 @@ class App : ToolsBackend
 			// Send the continuation's prompt template as first message to successor.
 			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
 				"Continue from where you left off.", taskTypeCatalog.promptSearchPath(td.projectPath),
-				["result_text": resultText, "output_dir": taskDir(*td)]);
+				["result_text": resultText, "output_dir": taskPathResolver.taskDir(*td)]);
 			renderedContinuationPrompt = "`SwitchMode` to `" ~ edgeName
 				~ "` successful.\n\n" ~ renderedContinuationPrompt;
 			renderedContinuationPrompt = prependTaskFraming(
@@ -3924,11 +3739,12 @@ class App : ToolsBackend
 			}
 
 			// Set up worktree from edge config
-			setupWorktreeForEdge(childTid, tid, contDef.worktree);
+			worktreeAllocator.setupForEdge(childTid, tid, contDef.worktree);
 
 			// Spawn the successor agent
 			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
-				taskTypeCatalog.promptSearchPath(childTd.projectPath), outputPath(*childTd), contDef.prompt_template,
+				taskTypeCatalog.promptSearchPath(childTd.projectPath),
+				taskPathResolver.outputPath(*childTd), contDef.prompt_template,
 				["result_text": resultText]);
 			renderedSuccessorPrompt = prependTaskFraming(renderedSuccessorPrompt,
 				taskSystemPromptForMessage(childTid, newTypeDef),
@@ -4161,7 +3977,8 @@ class App : ToolsBackend
 			Watermark wm;
 			if (ta && tasks[tid].agentSessionId.length > 0)
 			{
-				auto jp = ta.historyPath(tasks[tid].agentSessionId, effectiveCwd(&tasks[tid]));
+				auto jp = ta.historyPath(tasks[tid].agentSessionId,
+					taskPathResolver.effectiveCwd(&tasks[tid]));
 				wm = watermarkFromPath(jp);
 			}
 			tasks[tid].history.reset(wm);
@@ -4304,14 +4121,6 @@ class App : ToolsBackend
 		return SandboxConfig.init;
 	}
 
-	private string findWorkspaceRoot(string workspaceName)
-	{
-		foreach (ref ws; config.workspaces)
-			if (ws.name == workspaceName)
-				return ws.root;
-		return "";
-	}
-
 	private string findWorkspacePermissionPolicy(string workspaceName)
 	{
 		foreach (ref ws; config.workspaces)
@@ -4348,7 +4157,7 @@ class App : ToolsBackend
 				continue;
 			}
 			if (ancestor.hasWorktree && ancestor.worktreeTid != td.worktreeTid)
-				forkPath = worktreePath(ancestor);
+				forkPath = taskPathResolver.worktreePath(ancestor);
 			else
 				forkPath = ancestor.projectPath;
 			break;
@@ -4388,7 +4197,7 @@ class App : ToolsBackend
 			final switch (ot)
 			{
 			case OutputType.report:
-				auto tdOut = outputPath(*td);
+				auto tdOut = taskPathResolver.outputPath(*td);
 				if (tdOut.length == 0 || !exists(tdOut))
 					missing ~= "report (expected at " ~ tdOut ~ ")";
 				break;
@@ -4400,7 +4209,7 @@ class App : ToolsBackend
 					break;
 				}
 				{
-					auto wtPath = worktreePath(td);
+					auto wtPath = taskPathResolver.worktreePath(td);
 					auto parentHead = getWorktreeForkBaseHead(*td);
 					bool hasCommits;
 					if (parentHead.length > 0)
@@ -4424,7 +4233,7 @@ class App : ToolsBackend
 					break;
 				}
 				{
-					auto wtPath = worktreePath(td);
+					auto wtPath = taskPathResolver.worktreePath(td);
 					auto statusResult = execute(["git", "-C", wtPath, "status", "--porcelain"]);
 					if (statusResult.status == 0 && statusResult.output.strip.length > 0)
 					{
@@ -4467,7 +4276,7 @@ class App : ToolsBackend
 		import std.range : retro;
 		import std.string : splitLines, strip;
 		auto td = &tasks[tid];
-		auto tdOut = outputPath(*td);
+		auto tdOut = taskPathResolver.outputPath(*td);
 		bool hasOutput = tdOut.length > 0 && exists(tdOut);
 		bool hasWorktree = td.hasWorktree;
 		bool isFailed = td.status == "failed";
@@ -4483,7 +4292,7 @@ class App : ToolsBackend
 		auto result = TaskResult(
 			summary: summary,
 			output_file: hasOutput ? tdOut : null,
-			worktree: hasWorktree ? worktreePath(td) : null,
+			worktree: hasWorktree ? taskPathResolver.worktreePath(td) : null,
 			note: note.length > 0 ? note : td.resultNote,
 			error: isFailed ? summary : null,
 			status: isFailed ? "error" : "success",
@@ -4497,7 +4306,7 @@ class App : ToolsBackend
 			auto parentHead = getWorktreeForkBaseHead(*td);
 			if (parentHead.length > 0)
 			{
-				auto logResult = execute(["git", "-C", worktreePath(td),
+				auto logResult = execute(["git", "-C", taskPathResolver.worktreePath(td),
 					"log", "--format=%H", parentHead ~ "..HEAD"]);
 				if (logResult.status == 0 && logResult.output.strip.length > 0)
 					result.commits = logResult.output.strip.splitLines;
