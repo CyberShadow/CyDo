@@ -518,7 +518,7 @@ as a last resort.
   documentation including `rewind_files`
 - [Session forking research](session-forking.md) — JSONL truncation mechanism
 - [JSONL vs stream-json comparison](jsonl-vs-stream-json.md) — format differences
-- `source/cydo/storage/persistence.d` — existing fork implementation
+- `source/cydo/domain/storage/persistence.d` — existing fork implementation
 - `source/cydo/agent/claude.d` — agent process management
 - `source/cydo/agent/session.d` — session interface
 - `web/src/schemas.ts:498-504` — `FileHistorySnapshotSchema`
