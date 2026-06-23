@@ -1,4 +1,4 @@
-module cydo.frontend_snapshots;
+module cydo.web.snapshots;
 
 import std.file : exists, readText;
 import std.logger : warningf;

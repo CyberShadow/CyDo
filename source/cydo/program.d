@@ -29,11 +29,11 @@ import cydo.tasks.model : BatchSignal;
 import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.batch.router : BatchConsumeKind;
 import cydo.batch.registry : BatchHandle, BatchRegistry;
-import cydo.client_hub : ClientHub;
+import cydo.web.client_hub : ClientHub;
 import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
-import cydo.frontend_snapshots : buildAgentsList, buildNoticesList,
+import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
 import cydo.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
@@ -46,7 +46,7 @@ import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJs
 import cydo.task_types.catalog : TaskTypeCatalog;
 import cydo.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
-import cydo.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
+import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
 import cydo.usage.tracker : AgentUsageTracker;
 

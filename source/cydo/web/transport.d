@@ -1,4 +1,4 @@
-module cydo.transport;
+module cydo.web.transport;
 
 import std.conv : ConvException, to;
 import std.file : exists, isFile, remove;

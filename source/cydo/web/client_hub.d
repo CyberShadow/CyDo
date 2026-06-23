@@ -1,4 +1,4 @@
-module cydo.client_hub;
+module cydo.web.client_hub;
 
 import std.algorithm : remove;
 import std.string : representation;
