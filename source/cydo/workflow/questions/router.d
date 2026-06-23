@@ -9,7 +9,7 @@ import ae.utils.json : toJson;
 import ae.utils.promise : Promise, resolve, race;
 import ae.utils.promise.await : async, await;
 
-import cydo.agent.protocol : AnswerResult, ContentBlock, QuestionResult;
+import cydo.protocol : AnswerResult, ContentBlock, QuestionResult;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.mcp : McpResult;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind, followUpFromParentSubject,

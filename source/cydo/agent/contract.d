@@ -2,7 +2,7 @@ module cydo.agent.contract;
 
 import ae.utils.promise : Promise;
 
-import cydo.agent.protocol : TranslatedEvent;
+import cydo.protocol : TranslatedEvent;
 import cydo.agent.session : AgentSession;
 import cydo.runtime.config : AgentDriver, PathMode;
 import cydo.runtime.launch.types : ProcessLaunch;

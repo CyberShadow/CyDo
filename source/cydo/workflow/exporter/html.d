@@ -4,7 +4,7 @@ import ae.utils.json : JSONFragment, toJson;
 
 import cydo.agent.contract : Agent;
 import cydo.runtime.config : AgentDriver;
-import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
+import cydo.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.domain.storage.persistence : Persistence, loadTaskHistory;
 import cydo.domain.tasks.model : TypeInfoEntry;
 

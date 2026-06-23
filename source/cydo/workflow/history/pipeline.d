@@ -15,7 +15,7 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.contract : Agent;
-import cydo.agent.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
+import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskEventSeqEnvelope, TranslatedEvent, UnconfirmedUserEventEnvelope,
 	extractContentText;
 import cydo.runtime.config : AgentDriver;
@@ -304,7 +304,7 @@ class HistoryEventPipeline
 		const(ContentBlock)[] broadcastContent = null, string cydoMeta = null,
 		string nonce = null)
 	{
-		import cydo.agent.protocol : ItemStartedEvent;
+		import cydo.protocol : ItemStartedEvent;
 
 		auto td = host_.getTask(tid);
 		if (td is null)
@@ -411,7 +411,7 @@ class HistoryEventPipeline
 
 	void backfillHistoryAnchor(int tid, size_t seq, string anchor)
 	{
-		import cydo.agent.protocol : ItemStartedEvent;
+		import cydo.protocol : ItemStartedEvent;
 
 		auto td = host_.getTask(tid);
 		if (td is null || anchor.length == 0 || seq >= td.history.length)

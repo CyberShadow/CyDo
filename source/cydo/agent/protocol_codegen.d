@@ -1,11 +1,11 @@
-/// CTFE-based TypeScript codegen for cydo.agent.protocol structs.
+/// CTFE-based TypeScript codegen for cydo.protocol structs.
 /// Emits TypeScript interface declarations to stdout.
 module cydo.agent.protocol_codegen;
 
 import std.meta : AliasSeq, Filter, staticIndexOf, templateNot;
 import std.traits : Fields, FieldNameTuple, isArray, ForeachType;
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONExtras;
-import cydo.agent.protocol;
+import cydo.protocol;
 
 // ---------------------------------------------------------------------------
 // Compile-time type name mapping
@@ -85,7 +85,7 @@ private template _buildProtocolStructList(names...)
 		alias _buildProtocolStructList = AliasSeq!();
 	else
 	{
-		alias _T = __traits(getMember, cydo.agent.protocol, names[0]);
+		alias _T = __traits(getMember, cydo.protocol, names[0]);
 		static if (is(_T == struct))
 			alias _buildProtocolStructList = AliasSeq!(_T, _buildProtocolStructList!(names[1 .. $]));
 		else
@@ -93,7 +93,7 @@ private template _buildProtocolStructList(names...)
 	}
 }
 
-alias allProtocolStructs = _buildProtocolStructList!(__traits(allMembers, cydo.agent.protocol));
+alias allProtocolStructs = _buildProtocolStructList!(__traits(allMembers, cydo.protocol));
 
 // Filter to event structs only.
 alias EventStructs = Filter!(isEventStruct, allProtocolStructs);

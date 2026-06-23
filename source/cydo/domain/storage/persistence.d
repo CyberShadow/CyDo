@@ -11,7 +11,7 @@ import ae.sys.dataset : DataVec;
 
 import ae.utils.json : JSONFragment, toJson;
 
-import cydo.agent.protocol : TaskEventEnvelope, TranslatedEvent;
+import cydo.protocol : TaskEventEnvelope, TranslatedEvent;
 
 /// Open the cydo database, preferring the legacy data/cydo.db if present.
 Persistence openDatabase()

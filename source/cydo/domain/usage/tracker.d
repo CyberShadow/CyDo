@@ -4,7 +4,7 @@ import std.math : fabs, isFinite, isNaN;
 
 import ae.utils.json : JSONOptional, jsonParse, toJson;
 
-import cydo.agent.protocol : SessionRateLimitEvent;
+import cydo.protocol : SessionRateLimitEvent;
 
 private struct AgentUsageLimitWindowMessage
 {

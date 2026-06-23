@@ -13,7 +13,7 @@ import ae.utils.promise : Promise;
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
-import cydo.agent.protocol;
+import cydo.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
 import cydo.runtime.config : AgentDriver, PathMode;
@@ -873,7 +873,7 @@ class ClaudeCodeSession : AgentSession
 			probe = jsonParse!TypeProbe(rawLine);
 		catch (Exception)
 		{
-			import cydo.agent.protocol : makeUnrecognizedEvent;
+			import cydo.protocol : makeUnrecognizedEvent;
 			import ae.utils.json : toJson;
 			emitEvent(TranslatedEvent(makeUnrecognizedEvent("non-JSON output"), toJson(rawLine)));
 			return;
@@ -950,7 +950,7 @@ class ClaudeCodeSession : AgentSession
 					activeItemIds_[idx] = itemId;
 					activeItemTypes_[idx] = blockType;
 
-					import cydo.agent.protocol : ItemStartedEvent, decomposeToolName;
+					import cydo.protocol : ItemStartedEvent, decomposeToolName;
 					ItemStartedEvent ev;
 					ev.item_id = itemId;
 					ev.item_type = blockType;
@@ -988,7 +988,7 @@ class ClaudeCodeSession : AgentSession
 					if (idx >= activeItemIds_.length || activeItemIds_[idx] is null)
 						return;
 
-					import cydo.agent.protocol : ItemDeltaEvent;
+					import cydo.protocol : ItemDeltaEvent;
 					ItemDeltaEvent ev;
 					ev.item_id = activeItemIds_[idx];
 					if (probe.delta.type == "thinking_delta")
@@ -1022,7 +1022,7 @@ class ClaudeCodeSession : AgentSession
 					auto idx = probe.index;
 					if (idx < activeItemIds_.length && activeItemIds_[idx] !is null)
 					{
-						import cydo.agent.protocol : ItemCompletedEvent;
+						import cydo.protocol : ItemCompletedEvent;
 						ItemCompletedEvent ev;
 						ev.item_id = activeItemIds_[idx];
 						if (auto extras = activeItemIds_[idx] in blockExtras_)
@@ -1037,7 +1037,7 @@ class ClaudeCodeSession : AgentSession
 
 			case "message_stop":
 			{
-				import cydo.agent.protocol : TurnStopEvent;
+				import cydo.protocol : TurnStopEvent;
 				TurnStopEvent tsev;
 				emitEvent(TranslatedEvent(toJson(tsev), rawLine));
 				activeItemIds_ = null;
@@ -1060,7 +1060,7 @@ class ClaudeCodeSession : AgentSession
 	/// messages even in the live stream, so they are processed like history.
 	private void translateAssistantLive(string rawLine)
 	{
-		import cydo.agent.protocol : TurnDeltaEvent, UsageInfo;
+		import cydo.protocol : TurnDeltaEvent, UsageInfo;
 
 		@JSONPartial static struct ClaudeBlock
 		{
@@ -1129,7 +1129,7 @@ class ClaudeCodeSession : AgentSession
 		// Process them like history messages instead (ItemStarted+Completed+TurnStop).
 		if (raw.parent_tool_use_id.length > 0)
 		{
-			import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent,
+			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent,
 				TurnStopEvent, decomposeToolName;
 
 			foreach (idx, ref b; raw.message.content)
@@ -1233,7 +1233,7 @@ class ClaudeCodeSession : AgentSession
 
 	private void normalizeUserLive(string rawLine)
 	{
-		import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
+		import cydo.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
 
 		@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 		@JSONPartial static struct ClaudeUser
@@ -1475,7 +1475,7 @@ string generateMcpConfig(int tid, string creatableTaskTypes = "",
 /// Returns a JSONFragment suitable for embedding in ClaudeInputMessage.content.
 private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 {
-	import cydo.agent.protocol : ContentBlock;
+	import cydo.protocol : ContentBlock;
 
 	string json = "[";
 	foreach (i, ref b; blocks)
@@ -1511,7 +1511,7 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 /// Returns zero or more agnostic event pairs.
 private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 {
-	import cydo.agent.protocol : parseIso8601Timestamp;
+	import cydo.protocol : parseIso8601Timestamp;
 
 	@JSONPartial static struct TypeProbe { string type; string subtype; }
 	TypeProbe probe;
@@ -1572,7 +1572,7 @@ unittest
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
 private TranslatedEvent[] translateAssistantHistory(string rawLine)
 {
-	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
+	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent,
 		UsageInfo, decomposeToolName;
 
 	static struct ClaudeThinkingBlock
@@ -1710,7 +1710,7 @@ private TranslatedEvent[] translateAssistantHistory(string rawLine)
 /// Translate a Claude history user message to item/result + item/started events.
 private TranslatedEvent[] normalizeUserHistory(string rawLine)
 {
-	import cydo.agent.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
+	import cydo.protocol : ContentBlock, ItemStartedEvent, ItemResultEvent;
 
 	@JSONPartial static struct ClaudeUserMsg { JSONFragment content; }
 	@JSONPartial static struct ClaudeUser
@@ -1872,7 +1872,7 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 	catch (Exception e)
 	{
 		tracef("translateEvent: type probe parse error: %s", e.msg);
-		import cydo.agent.protocol : makeUnrecognizedEvent;
+		import cydo.protocol : makeUnrecognizedEvent;
 		return makeUnrecognizedEvent("JSON parse error: " ~ e.msg);
 	}
 
@@ -1898,7 +1898,7 @@ private string translateClaudeEventInner(string rawLine, string agentName)
 		case "file-history-snapshot":
 			return null; // not used by frontend
 		default:
-			import cydo.agent.protocol : makeUnrecognizedEvent;
+			import cydo.protocol : makeUnrecognizedEvent;
 			return makeUnrecognizedEvent("unknown event type: " ~ probe.type);
 	}
 }
@@ -1966,7 +1966,7 @@ private string translateSessionInit(string rawLine, string agentName)
 	try
 		raw = jsonParse!ClaudeInit(rawLine);
 	catch (Exception e)
-	{ tracef("translateSystemInit: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("session/init parse error: " ~ e.msg); }
+	{ tracef("translateSystemInit: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("session/init parse error: " ~ e.msg); }
 
 	SessionInitEvent ev;
 	ev.session_id    = raw.session_id;
@@ -2048,7 +2048,7 @@ private string normalizeTurnResult(string rawLine)
 	try
 		raw = jsonParse!ClaudeResult(rawLine);
 	catch (Exception e)
-	{ tracef("translateResult: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("turn/result parse error: " ~ e.msg); }
+	{ tracef("translateResult: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("turn/result parse error: " ~ e.msg); }
 
 	TurnResultEvent ev;
 	ev.subtype            = raw.subtype;
@@ -2150,7 +2150,7 @@ unittest
 /// Translate "control_response" event to control/response.
 private string translateControlResponse(string rawLine)
 {
-	import cydo.agent.protocol : ControlResponse;
+	import cydo.protocol : ControlResponse;
 	@JSONPartial static struct RawControlResponse { ControlResponse response; }
 	try
 	{
@@ -2269,7 +2269,7 @@ private string translateApiRetry(string rawLine)
 	}
 	try
 	{
-		import cydo.agent.protocol : AgentErrorEvent;
+		import cydo.protocol : AgentErrorEvent;
 		auto raw = jsonParse!RawApiRetry(rawLine);
 		AgentErrorEvent ev;
 		ev.message = format("API error: %d %s (attempt %d/%d)",
@@ -2278,7 +2278,7 @@ private string translateApiRetry(string rawLine)
 		return toJson(ev);
 	}
 	catch (Exception e)
-	{ tracef("translateApiRetry: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("api_retry parse error: " ~ e.msg); }
+	{ tracef("translateApiRetry: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("api_retry parse error: " ~ e.msg); }
 }
 
 unittest
@@ -2379,7 +2379,7 @@ private string normalizeTaskStarted(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskStarted(rawLine);
 	catch (Exception e)
-	{ tracef("translateTaskStarted: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/started parse error: " ~ e.msg); }
+	{ tracef("translateTaskStarted: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/started parse error: " ~ e.msg); }
 
 	TaskStartedEvent ev;
 	ev.task_id      = raw.task_id;
@@ -2425,7 +2425,7 @@ private string normalizeTaskNotification(string rawLine)
 	try
 		raw = jsonParse!ClaudeTaskNotification(rawLine);
 	catch (Exception e)
-	{ tracef("translateTaskNotification: parse error: %s", e.msg); import cydo.agent.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/notification parse error: " ~ e.msg); }
+	{ tracef("translateTaskNotification: parse error: %s", e.msg); import cydo.protocol : makeUnrecognizedEvent; return makeUnrecognizedEvent("task/notification parse error: " ~ e.msg); }
 
 	TaskNotificationEvent ev;
 	ev.task_id     = raw.task_id;

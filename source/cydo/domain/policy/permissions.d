@@ -4,7 +4,7 @@ import std.logger : warningf;
 
 import ae.utils.json : JSONFragment, toJson;
 
-import cydo.agent.protocol : PermissionAllow, PermissionDeny;
+import cydo.protocol : PermissionAllow, PermissionDeny;
 
 import uninode.node : UniNode;
 

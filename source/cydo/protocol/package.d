@@ -1,4 +1,4 @@
-module cydo.agent.protocol;
+module cydo.protocol;
 
 import ae.utils.json : JSONFragment, JSONName, JSONOptional, JSONExtras, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;

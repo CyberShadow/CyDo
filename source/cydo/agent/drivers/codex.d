@@ -24,7 +24,7 @@ import ae.utils.promise : Promise, resolve;
 
 import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
-import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
+import cydo.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
 	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
 import cydo.runtime.config : AgentDriver, PathMode;
@@ -470,7 +470,7 @@ private string extractErrorMessage(ErrorParams params)
 
 private TranslatedEvent makeAgentErrorTranslatedEvent(ErrorParams params)
 {
-	import cydo.agent.protocol : AgentErrorEvent;
+	import cydo.protocol : AgentErrorEvent;
 
 	AgentErrorEvent ev;
 	ev.message = extractErrorMessage(params);
@@ -480,7 +480,7 @@ private TranslatedEvent makeAgentErrorTranslatedEvent(ErrorParams params)
 
 private TranslatedEvent makeAgentWarningTranslatedEvent(WarningParams params)
 {
-	import cydo.agent.protocol : AgentWarningEvent;
+	import cydo.protocol : AgentWarningEvent;
 
 	AgentWarningEvent ev;
 	ev.message = params.message;
@@ -727,7 +727,7 @@ class AppServerProcess
 			return serverDispatcher.dispatch(request).then((JsonRpcResponse resp) {
 				if (resp.isError && resp.error.get.code == JsonRpcErrorCode.methodNotFound)
 				{
-					import cydo.agent.protocol : makeUnrecognizedEvent;
+					import cydo.protocol : makeUnrecognizedEvent;
 					auto paramsJson = request.params ? request.params.toJson() : "null";
 					auto rawJsonRpc = `{"jsonrpc":"2.0","method":"` ~ request.method ~ `","params":`
 						~ paramsJson ~ `}`;
@@ -1403,7 +1403,7 @@ class CodexAgent : Agent
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
 		import std.conv : to;
-		import cydo.agent.protocol : parseIso8601Timestamp;
+		import cydo.protocol : parseIso8601Timestamp;
 
 		// Codex JSONL lines: { timestamp, type, payload }
 		// type is one of: session_meta, response_item, event_msg, turn_context, compacted
@@ -1831,7 +1831,7 @@ class CodexSession : AgentSession
 		server.registerSession(threadId, this);
 
 		// Emit synthetic session/init with raw RPC response as _raw.
-		import cydo.agent.protocol : SessionInitEvent;
+		import cydo.protocol : SessionInitEvent;
 		SessionInitEvent initEv;
 		initEv.session_id      = threadId;
 		initEv.model           = model;
@@ -2012,7 +2012,7 @@ class CodexSession : AgentSession
 
 	package void handleItemStarted(ItemStartedParams params, string rawNotification)
 	{
-		import cydo.agent.protocol : ItemStartedEvent;
+		import cydo.protocol : ItemStartedEvent;
 		if (params.turnId.length > 0)
 			activeTurnId_ = params.turnId;
 
@@ -2116,7 +2116,7 @@ class CodexSession : AgentSession
 				break;
 			case "contextCompaction":
 				activeItemTypes_[itemId] = "contextCompaction";
-				import cydo.agent.protocol : SessionStatusEvent;
+				import cydo.protocol : SessionStatusEvent;
 				SessionStatusEvent statusEv;
 				statusEv.status = "Compacting context...";
 				if (outputHandler_)
@@ -2159,7 +2159,7 @@ class CodexSession : AgentSession
 				lastResultText_ ~= params.delta;
 		}
 
-		import cydo.agent.protocol : ItemDeltaEvent;
+		import cydo.protocol : ItemDeltaEvent;
 		ItemDeltaEvent ev;
 		ev.item_id = itemId;
 		ev.delta_type = deltaType;
@@ -2173,7 +2173,7 @@ class CodexSession : AgentSession
 		if (outputHandler_ is null)
 			return;
 
-		import cydo.agent.protocol : ItemDeltaEvent;
+		import cydo.protocol : ItemDeltaEvent;
 		ItemDeltaEvent ev;
 		ev.item_id = params.itemId.length > 0 ? params.itemId : activeItemId_;
 		ev.delta_type = "stdin_delta";
@@ -2199,7 +2199,7 @@ class CodexSession : AgentSession
 			// Codex 0.139 reports compaction as an item instead of sending the
 			// older thread/compacted notification.  Clear the transient status
 			// and emit CyDo's durable compact-boundary event.
-			import cydo.agent.protocol : SessionStatusEvent;
+			import cydo.protocol : SessionStatusEvent;
 			SessionStatusEvent clearEv;
 			if (outputHandler_)
 			{
@@ -2212,7 +2212,7 @@ class CodexSession : AgentSession
 			return;
 		}
 
-		import cydo.agent.protocol : ItemCompletedEvent, ItemResultEvent;
+		import cydo.protocol : ItemCompletedEvent, ItemResultEvent;
 		ItemCompletedEvent ev;
 		ev.item_id = itemId;
 		ev.is_error = params.item.is_error;
@@ -2422,7 +2422,7 @@ class CodexSession : AgentSession
 		// 1. turn/stop — only if items were emitted since the last intermediate stop
 		if (hadItemsSinceLastStop_ && outputHandler_)
 		{
-			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
+			import cydo.protocol : TurnStopEvent, UsageInfo;
 			TurnStopEvent tsev;
 			tsev.model = model;
 			tsev.usage = UsageInfo(0, 0);
@@ -2433,7 +2433,7 @@ class CodexSession : AgentSession
 		// 2. turn/result — always emitted
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+			import cydo.protocol : TurnResultEvent, UsageInfo;
 			TurnResultEvent tre;
 			tre.subtype = "success";
 			tre.num_turns = 1;
@@ -2453,7 +2453,7 @@ class CodexSession : AgentSession
 
 		if (outputHandler_)
 		{
-			import cydo.agent.protocol : TurnStopEvent, UsageInfo;
+			import cydo.protocol : TurnStopEvent, UsageInfo;
 			TurnStopEvent tsev;
 			tsev.model = model;
 			if (params.tokenUsage != TokenUsagePayload.init
@@ -3070,7 +3070,7 @@ string translateRolloutSessionMeta(string line)
 	if (probe.payload.id.length == 0)
 		return null;
 
-	import cydo.agent.protocol : SessionInitEvent;
+	import cydo.protocol : SessionInitEvent;
 	SessionInitEvent ev;
 	ev.session_id      = probe.payload.id;
 	ev.model           = "";
@@ -3213,7 +3213,7 @@ string[] translateRolloutResponseItem(string line, string forkId = null, bool fo
 		tr ~= `}`;
 
 		// Emit item/result with empty content and structured tool_result
-		import cydo.agent.protocol : ItemResultEvent;
+		import cydo.protocol : ItemResultEvent;
 		ItemResultEvent resEv;
 		resEv.item_id = callId;
 		resEv.content = JSONFragment(`[{"type":"text","text":""}]`);
@@ -3253,7 +3253,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 
 	if (role == "assistant")
 	{
-		import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo;
+		import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo;
 
 		// Parse content blocks from the JSON array string
 		@JSONPartial
@@ -3297,7 +3297,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 	}
 	else // user, developer, system
 	{
-		import cydo.agent.protocol : ItemStartedEvent;
+		import cydo.protocol : ItemStartedEvent;
 
 		// Extract text from the content array
 		@JSONPartial
@@ -3333,7 +3333,7 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 string[] translateRolloutToolUse(string callId, string toolName, string inputJson, string namespace = "")
 {
 	import std.uuid : randomUUID;
-	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo, decomposeToolName;
+	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, TurnStopEvent, UsageInfo, decomposeToolName;
 
 	if (callId.length == 0)
 		callId = randomUUID().toString();
@@ -3410,7 +3410,7 @@ Nullable!string tryExtractRolloutOutputJson(string outputJson)
 
 string translateRolloutToolResult(string callId, string outputJson)
 {
-	import cydo.agent.protocol : ItemResultEvent;
+	import cydo.protocol : ItemResultEvent;
 
 	ItemResultEvent ev;
 	ev.item_id = callId;
@@ -3461,7 +3461,7 @@ string[] translateRolloutReasoning(string summaryJson, string contentJson)
 	if (thinkingText.length == 0)
 		return [];
 
-	import cydo.agent.protocol : ItemStartedEvent, ItemCompletedEvent;
+	import cydo.protocol : ItemStartedEvent, ItemCompletedEvent;
 
 	ItemStartedEvent startEv;
 	startEv.item_id = "codex-reasoning";
@@ -3497,7 +3497,7 @@ string translateRolloutEventMsg(string line)
 
 	if (probe.payload.type == "task_complete")
 	{
-		import cydo.agent.protocol : TurnResultEvent, UsageInfo;
+		import cydo.protocol : TurnResultEvent, UsageInfo;
 		TurnResultEvent ev;
 		ev.subtype = "success";
 		ev.num_turns = 1;
@@ -3532,7 +3532,7 @@ string extractCommandInput(JSONFragment action)
 			import std.array : join;
 			cmd = act.command.join(" ");
 		}
-		import cydo.agent.protocol : CommandInput;
+		import cydo.protocol : CommandInput;
 		return toJson(CommandInput(cmd, ""));
 	}
 	catch (Exception e)
@@ -3543,7 +3543,7 @@ string extractCommandInput(JSONFragment action)
 string extractCommandExecutionInput(JSONFragment commandActions, JSONFragment action, string command)
 {
 	import std.algorithm.searching : canFind;
-	import cydo.agent.protocol : CommandInput;
+	import cydo.protocol : CommandInput;
 
 	auto actionCommand = extractCommandActionsCommand(commandActions);
 	if (actionCommand.length > 0)
@@ -3570,7 +3570,7 @@ string extractCommandActionsInput(JSONFragment commandActions)
 	if (command.length == 0)
 		return `{}`;
 
-	import cydo.agent.protocol : CommandInput;
+	import cydo.protocol : CommandInput;
 	return toJson(CommandInput(command, ""));
 }
 

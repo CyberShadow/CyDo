@@ -2,7 +2,7 @@ module cydo.agent.session;
 
 import core.time : Duration;
 
-import cydo.agent.protocol : ContentBlock, TranslatedEvent;
+import cydo.protocol : ContentBlock, TranslatedEvent;
 
 /// Abstract agent session interface.
 /// Decouples the transport (WebSocket) from the agent implementation.

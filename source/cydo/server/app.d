@@ -55,7 +55,7 @@ import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookup
 import cydo.domain.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.contract : Agent;
-import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
+import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
@@ -938,7 +938,7 @@ class App : ToolsBackend
 			// Inject cydo/task_spawned into parent's event stream so the frontend
 			// can show an "Open task →" link without any side-channel state.
 			{
-				import cydo.agent.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
+				import cydo.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
 				import ae.utils.time.types : AbsTime;
 				import std.datetime : Clock;
 				CydoTaskSpawnedEvent spawnEv;
@@ -1997,7 +1997,7 @@ class App : ToolsBackend
 					{
 						if (probe.uuid.length > 0 && !probe.uuid.startsWith("enqueue-"))
 						{
-							import cydo.agent.protocol : ItemStartedEvent;
+							import cydo.protocol : ItemStartedEvent;
 							auto userEv = jsonParse!ItemStartedEvent(plan.currentEvent.translated);
 							userEv.uuid = null;
 							plan.currentEvent.translated = toJson(userEv);
@@ -3374,7 +3374,7 @@ class App : ToolsBackend
 	private string injectAgentNameIntoSessionInit(string translated, string agentName)
 	{
 		import std.algorithm : canFind;
-		import cydo.agent.protocol : SessionInitEvent;
+		import cydo.protocol : SessionInitEvent;
 
 		if (translated.length == 0
 			|| agentName.length == 0
@@ -5178,7 +5178,7 @@ class App : ToolsBackend
 			tasks[tid].titleGenHandle = null;
 			tasks[tid].titleGenKill = null;
 			import ae.utils.json : toJson;
-			import cydo.agent.protocol : ProcessStderrEvent;
+			import cydo.protocol : ProcessStderrEvent;
 			ProcessStderrEvent ev;
 			ev.text = "failed to generate title: " ~ e.msg;
 			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));

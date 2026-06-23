@@ -51,7 +51,7 @@ import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookup
 import cydo.domain.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.contract : Agent;
-import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
+import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;

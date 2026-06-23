@@ -12,7 +12,7 @@ import ae.utils.json : toJson;
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
-import cydo.agent.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
+import cydo.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.runtime.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.runtime.launch.types : AgentSandboxConfig, ProcessLaunch;
 import launchSandbox = cydo.runtime.launch.sandbox;

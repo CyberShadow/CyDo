@@ -15,7 +15,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
 import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
-import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
+import cydo.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
@@ -404,7 +404,7 @@ class CopilotAgent : Agent
 		catch (Exception)
 			return null;
 
-		import cydo.agent.protocol : parseIso8601Timestamp;
+		import cydo.protocol : parseIso8601Timestamp;
 		auto ts = parseIso8601Timestamp(base.timestamp);
 
 		string[] evStrings;
@@ -1023,7 +1023,7 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			return;
 		}
 
-		import cydo.agent.protocol : parseIso8601Timestamp;
+		import cydo.protocol : parseIso8601Timestamp;
 		currentEventTs_ = parseIso8601Timestamp(event.timestamp);
 		auto data = JSONFragment(event.data.toJson());
 		currentRawJson_ = data.json;
