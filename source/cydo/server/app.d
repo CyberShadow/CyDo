@@ -46,6 +46,8 @@ import cydo.workflow.history.abbrev : extractMessageText;
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
+import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
+	SystemMessageNormalizerHost, buildCydoMeta;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
@@ -69,13 +71,11 @@ import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent;
-import cydo.foundation.system.framing : tryParseSystemFraming, tryExtractSubject,
-	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
-	tryMatchTemplate, validateTemplateSource;
-import cydo.foundation.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
+import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
+import cydo.foundation.system.known_messages : KnownSystemMessageKind,
 	handoffSubject, modeSwitchSubject, sessionStartSubject,
-	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
-	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
+	subTaskWaitingForAnswerSubject, systemMessagePrefix,
+	taskPromptSubject, wrapKnownSystemMessage;
 import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.workflow.history.jsonl_store : ForkResult, countLinesAfterForkId,
@@ -126,6 +126,7 @@ class App : ToolsBackend
 	private HistoryEventPipeline historyPipeline;
 	private TaskSessionRunner taskSessionRunner;
 	private DerivedTextJobs derivedTextJobs;
+	private SystemMessageNormalizer systemMessageNormalizer;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -133,11 +134,6 @@ class App : ToolsBackend
 	// Active TerminalProcess instances (Bash MCP tool calls in flight).
 	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
 	private TerminalProcess[] activeTerminals;
-
-	// Cache of compiled template regexes keyed on raw template source text.
-	// Avoids recompiling the same template on every history replay event.
-	private CompiledTemplate[string] compiledTemplateCache;
-
 	void start()
 	{
 		initLogger();
@@ -236,6 +232,21 @@ class App : ToolsBackend
 			onConfigChanged: &onConfigChanged,
 			onProjectConfigChanged: &onProjectConfigChanged,
 		));
+		systemMessageNormalizer = new SystemMessageNormalizer(
+			SystemMessageNormalizerHost(
+				systemKeyword: () => config.system_keyword,
+				projectPathForTask: (int tid) {
+					auto td = tid in tasks;
+					return td !is null ? td.projectPath : null;
+				},
+				taskTypesForProject: (string projectPath) {
+					return taskTypeCatalog.getTaskTypesForProject(projectPath);
+				},
+				entryPointsForProject: (string projectPath) {
+					return taskTypeCatalog.getEntryPointsForProject(projectPath);
+				},
+				loadTemplateText: &loadTemplateText,
+			));
 		historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 			tryAgentForTask: &tryAgentForTask,
@@ -244,7 +255,9 @@ class App : ToolsBackend
 				return effectiveCwd(td);
 			},
 			injectAgentNameIntoSessionInit: &injectAgentNameIntoSessionInit,
-			normalizeKnownSystemMessageMeta: &normalizeKnownSystemMessageMeta,
+			normalizeKnownSystemMessageMeta: (string translated, int tid) {
+				return systemMessageNormalizer.normalizeKnownSystemMessageMeta(translated, tid);
+			},
 			synthesizeHistoryErrorEventJson: &synthesizeHistoryErrorEventJson,
 			sendToSubscribed: (int tid, Data data) {
 				clientHub.sendToSubscribed(tid, data);
@@ -395,7 +408,11 @@ class App : ToolsBackend
 			},
 			systemKeyword: () => config.system_keyword,
 			readPromptFile: &readPromptFile,
-			buildKnownSystemMessageMeta: &buildKnownSystemMessageMeta,
+			buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
+				string subject, string[string] vars, string bodyVar) {
+				return systemMessageNormalizer.buildKnownSystemMessageMeta(
+					kind, subject, vars, bodyVar);
+			},
 			sendTaskMessage: (int tid, const(ContentBlock)[] content,
 				string cydoMeta, string nonce) {
 				sendTaskMessage(tid, content, null, cydoMeta, nonce);
@@ -981,7 +998,7 @@ class App : ToolsBackend
 			// When ptd has no creatable_tasks (degenerate), fall back to no-arrow form.
 			auto parentTypeForSubject = (ptd !is null && ptd.creatable_tasks.length > 0) ? pd.taskType : "";
 			auto taskPromptMsgSubject = taskPromptSubject(parentTypeForSubject, taskType);
-			auto subtaskMeta = buildKnownSystemMessageMeta(
+			auto subtaskMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.taskPrompt,
 				taskPromptMsgSubject,
 				["task_description": prompt], "task_description");
@@ -1820,7 +1837,7 @@ class App : ToolsBackend
 			}
 			auto msgContent = blocks;
 			auto msgMeta = typeDef !is null
-				? buildKnownSystemMessageMeta(
+				? systemMessageNormalizer.buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.sessionStart,
 					sessionStartMsgSubject,
 					["task_description": textContent], "task_description")
@@ -2106,7 +2123,7 @@ class App : ToolsBackend
 					KnownSystemMessageKind.sessionStart, rendered, sessionStartMsgSubject))
 					~ blocks.filter!(b => b.type == "image").array;
 				// Attach metadata so the frontend can render this as a collapsible system message.
-				userMsgMeta = buildKnownSystemMessageMeta(
+				userMsgMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 					KnownSystemMessageKind.sessionStart,
 					sessionStartMsgSubject,
 					["task_description": textContent], "task_description");
@@ -3111,41 +3128,6 @@ class App : ToolsBackend
 		return loadSystemPrompt(*typeDef, taskTypeCatalog.promptSearchPath(td.projectPath), outputPath(*td));
 	}
 
-	private static string prependTaskFraming(string promptText, string systemPrompt,
-		string projectMemory = null)
-	{
-		string head;
-		if (projectMemory.length > 0)
-			head ~= projectMemory ~ "\n\n";
-		if (systemPrompt.length > 0)
-			head ~= "[TASK DESCRIPTION]\n" ~ systemPrompt
-				~ "\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\n";
-		if (head.length == 0)
-			return promptText;
-		return head ~ promptText;
-	}
-
-	unittest
-	{
-		import std.algorithm : canFind, countUntil;
-
-		// system prompt alone — byte-for-byte matches old prependTaskSystemPrompt
-		assert(prependTaskFraming("text", "sys") ==
-			"[TASK DESCRIPTION]\nsys\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\ntext");
-		// neither — no-op
-		assert(prependTaskFraming("text", null, null) == "text");
-		// memory alone — no [TASK PROMPT] wrapper
-		assert(prependTaskFraming("text", null, "mem\n") ==
-			"mem\n\n\ntext");
-		// both — memory before task description, [TASK PROMPT] present
-		auto both = prependTaskFraming("text", "sys", "mem\n");
-		assert(both.canFind("mem\n"), both);
-		assert(both.canFind("[TASK DESCRIPTION]"), both);
-		assert(both.canFind("[TASK PROMPT]"), both);
-		// memory precedes task description
-		assert(both.countUntil("mem") < both.countUntil("[TASK DESCRIPTION]"), both);
-	}
-
 	/// Find the first child of tid that has an unanswered Ask question.
 	/// Returns true if found; sets childTid, question, and qid via out params.
 	private bool findPendingChildQuestion(int tid, out int childTid, out string question, out int qid)
@@ -3191,184 +3173,11 @@ class App : ToolsBackend
 			reminderBody,
 			reminderSubject);
 		auto reminderBlocks = [ContentBlock("text", reminder)];
-		auto askReminderMeta = buildKnownSystemMessageMeta(
+		auto askReminderMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 			KnownSystemMessageKind.subTaskWaitingForAnswer,
 			reminderSubject,
 			["question": question], "question");
 		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
-	}
-
-	private string buildKnownSystemMessageMeta(KnownSystemMessageKind kind, string subject = null,
-		string[string] vars = null, string bodyVar = null)
-	{
-		auto resolvedSubject = subject.length > 0 ? subject : systemMessageSubject(kind);
-		KnownSystemMessageMatch match;
-		auto label = tryKnownSystemMessageMatch(resolvedSubject, match)
-			? match.label
-			: resolvedSubject;
-		return buildCydoMeta(label, vars, bodyVar, bodyMarkdownForKind(kind));
-	}
-
-	private bool tryExtractSystemMessageSubject(string text, out string subject)
-	{
-		return tryExtractSubject(config.system_keyword, text, subject);
-	}
-
-	/// Return the template variable name that holds the body content for a given
-	/// kind, or null if the kind produces label-only meta.
-	private static string bodyVarForKind(KnownSystemMessageKind kind)
-	{
-		switch (kind)
-		{
-		case KnownSystemMessageKind.taskPrompt:
-		case KnownSystemMessageKind.sessionStart:
-		case KnownSystemMessageKind.handoff:
-			return "task_description";
-		case KnownSystemMessageKind.followUpFromParent:
-		case KnownSystemMessageKind.questionFromTask:
-			return "message";
-		case KnownSystemMessageKind.subTaskWaitingForAnswer:
-			return "question";
-		default:
-			return null;
-		}
-	}
-
-	/// Whether the body of a known-system-message of this kind should be rendered
-	/// as Markdown.
-	///
-	/// Rule: Markdown for content originating from an LLM/agent or a .md prompt
-	/// file; plain text for content typed by the user. `sessionStart` is the only
-	/// kind whose body is user-typed (the user's first message wrapped into a
-	/// session-start system message); everything else carries agent-generated content.
-	private static bool bodyMarkdownForKind(KnownSystemMessageKind kind)
-	{
-		final switch (kind)
-		{
-		case KnownSystemMessageKind.taskPrompt:
-		case KnownSystemMessageKind.followUpFromParent:
-		case KnownSystemMessageKind.questionFromTask:
-		case KnownSystemMessageKind.subTaskWaitingForAnswer:
-		case KnownSystemMessageKind.handoff:
-			return true;
-		case KnownSystemMessageKind.sessionStart:
-			return false;
-		case KnownSystemMessageKind.missingRequiredOutputs:
-		case KnownSystemMessageKind.subTaskResults:
-		case KnownSystemMessageKind.restartNudge:
-		case KnownSystemMessageKind.postCompactionTaskModeReminder:
-		case KnownSystemMessageKind.modeSwitch:
-			return false; // label-only kinds — no body, value is unused
-		}
-	}
-
-	/// Resolve (sourceType, edgeName) → prompt-template path using the same
-	/// project-scoped task-type config the renderer used.
-	/// Returns null when the edge can't be resolved (renamed/removed/legacy).
-	private string resolveEdgePromptTemplate(string projectPath,
-		KnownSystemMessageKind kind, string sourceType, string edgeName)
-	{
-		switch (kind)
-		{
-		case KnownSystemMessageKind.taskPrompt:
-			if (sourceType.length == 0 || edgeName.length == 0) return null;
-			auto parentDef = taskTypeCatalog.getTaskTypesForProject(projectPath).byName(sourceType);
-			if (parentDef is null) return null;
-			auto edge = parentDef.creatable_tasks.byName(edgeName);
-			return edge !is null ? edge.prompt_template : null;
-
-		case KnownSystemMessageKind.sessionStart:
-			if (edgeName.length == 0) return null;
-			auto ep = taskTypeCatalog.getEntryPointsForProject(projectPath).byName(edgeName);
-			return ep !is null ? ep.prompt_template : null;
-
-		case KnownSystemMessageKind.handoff:
-		case KnownSystemMessageKind.modeSwitch:
-			if (sourceType.length == 0 || edgeName.length == 0) return null;
-			auto srcDef = taskTypeCatalog.getTaskTypesForProject(projectPath).byName(sourceType);
-			if (srcDef is null) return null;
-			if (edgeName == "on_yield")
-				return srcDef.on_yield.prompt_template;
-			if (auto contP = edgeName in srcDef.continuations)
-				return contP.prompt_template;
-			return null;
-
-		case KnownSystemMessageKind.followUpFromParent:
-			return "prompts/follow_up_from_parent.md";
-
-		case KnownSystemMessageKind.questionFromTask:
-			return "prompts/question_from_task.md";
-
-		case KnownSystemMessageKind.subTaskWaitingForAnswer:
-			return "prompts/sub_task_waiting_for_answer.md";
-
-		default:
-			return null;
-		}
-	}
-
-	/// Read a prompt template file from the search path without variable substitution.
-	private string readTemplateText(string templateName, string projectPath)
-	{
-		import std.file : exists, readText;
-		import std.path : buildPath;
-
-		foreach (dir; taskTypeCatalog.promptSearchPath(projectPath))
-		{
-			auto path = buildPath(dir, templateName);
-			if (exists(path))
-				return readText(path);
-		}
-		return null;
-	}
-
-	/// Reverse-extract meta from a known-system-message user event by matching
-	/// the rendered body against the template that produced it.
-	/// tid is used to look up the project path for template resolution.
-	private string cydoMetaForKnownSystemSubject(int tid, string subject, string text)
-	{
-		KnownSystemMessageMatch match;
-		if (!tryKnownSystemMessageMatch(subject, match))
-			return null;
-
-		auto bodyVar = bodyVarForKind(match.kind);
-		if (bodyVar is null)
-			return buildCydoMeta(match.label);
-
-		ParsedSystemFraming framing;
-		if (!tryParseSystemFraming(config.system_keyword, text, framing))
-			return buildCydoMeta(match.label);
-
-		auto inner = stripTaskSystemPromptWrapper(framing.body);
-
-		string projectPath = (tid in tasks) ? tasks[tid].projectPath : null;
-		auto templatePath = resolveEdgePromptTemplate(projectPath, match.kind,
-			match.sourceType, match.edgeName);
-		if (templatePath.length == 0)
-			return buildCydoMeta(match.label);
-
-		auto templateText = readTemplateText(templatePath, projectPath);
-		if (templateText.length == 0)
-		{
-			warningf("template '%s' not found on prompt search path; falling back to label-only meta",
-				templatePath);
-			return buildCydoMeta(match.label);
-		}
-
-		if (templateText !in compiledTemplateCache)
-			compiledTemplateCache[templateText] = compileTemplate(templateText);
-		auto compiled = compiledTemplateCache[templateText];
-
-		string[string] vars;
-		if (!tryMatchTemplate(compiled, inner, vars))
-			return buildCydoMeta(match.label);
-
-		string[string] bodyVars;
-		if (auto v = bodyVar in vars)
-			bodyVars[bodyVar] = *v;
-
-		return buildCydoMeta(match.label, bodyVars, bodyVar,
-			bodyMarkdownForKind(match.kind));
 	}
 
 	/// Inject agent_name into session/init events whose translation pipeline
@@ -3396,26 +3205,6 @@ class App : ToolsBackend
 		return toJson(ev);
 	}
 
-	private string normalizeKnownSystemMessageMeta(string translated, int tid = -1)
-	{
-		import std.algorithm : canFind;
-
-		if (translated.length == 0
-			|| translated.canFind(`"meta":`)
-			|| !translated.canFind(`"type":"item/started"`)
-			|| !translated.canFind(`"item_type":"user_message"`))
-			return translated;
-
-		string subject;
-		auto text = extractMessageText(translated);
-		if (!tryExtractSystemMessageSubject(text, subject))
-			return translated;
-
-		auto meta = cydoMetaForKnownSystemSubject(tid, subject, text);
-		if (meta.length == 0)
-			return translated;
-		return translated[0 .. $ - 1] ~ `,"meta":` ~ meta ~ `}`;
-	}
 
 	private string buildPostCompactionReminder(int tid)
 	{
@@ -3494,7 +3283,7 @@ class App : ToolsBackend
 
 		auto translated = toJson(ev);
 		return text.startsWith("[" ~ config.system_keyword ~ ":")
-			? normalizeKnownSystemMessageMeta(translated, tid)
+			? systemMessageNormalizer.normalizeKnownSystemMessageMeta(translated, tid)
 			: translated;
 	}
 
@@ -3547,7 +3336,7 @@ class App : ToolsBackend
 		import std.algorithm : filter;
 		import std.array : array;
 		auto reminderBlocks = [ContentBlock("text", reminder)];
-		auto reminderMeta = buildKnownSystemMessageMeta(
+		auto reminderMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 			KnownSystemMessageKind.postCompactionTaskModeReminder);
 		sendPreparedTaskMessage(tid, reminderBlocks, null, reminderMeta, false);
 		return true;
@@ -4062,8 +3851,8 @@ class App : ToolsBackend
 				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef),
 				loadProjectMemory(newTypeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
 			auto modeSwitchMsgSubject = modeSwitchSubject(sourceTaskType, edgeName);
-			auto contMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.modeSwitch,
-				modeSwitchMsgSubject);
+			auto contMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.modeSwitch, modeSwitchMsgSubject);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(tid,
 					[ContentBlock("text", wrapKnownSystemMessage(
@@ -4145,7 +3934,8 @@ class App : ToolsBackend
 				taskSystemPromptForMessage(childTid, newTypeDef),
 				loadProjectMemory(newTypeDef, childTd.repoPath, taskTypeCatalog.promptSearchPath(childTd.projectPath)));
 			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
-			auto handoffMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.handoff,
+			auto handoffMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.handoff,
 				handoffMsgSubject, ["task_description": successorPrompt], "task_description");
 			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
 				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
@@ -4392,7 +4182,7 @@ class App : ToolsBackend
 					~ enfMissing ~ "\n\n"
 					~ "Please produce the missing output(s) before finishing. "
 					~ "Write your report to your output file if you haven't already.");
-			auto outputsMeta = buildKnownSystemMessageMeta(
+			auto outputsMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.missingRequiredOutputs);
 			sendTaskMessage(tid, [ContentBlock("text", msg)], null, outputsMeta);
 		}).ignoreResult();
@@ -4814,7 +4604,8 @@ class App : ToolsBackend
 				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
 				~ "Continue from where you left off. Process these results as if they "
 				~ "were returned normally by the Task tool.");
-		auto resultsMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.subTaskResults);
+		auto resultsMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
+			KnownSystemMessageKind.subTaskResults);
 		sendTaskMessage(parentTid, [ContentBlock("text", msg)], null, resultsMeta);
 
 		// Clean up all deps
@@ -4859,7 +4650,8 @@ class App : ToolsBackend
 				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.";
 			auto nudgeText = wrapKnownSystemMessage(config.system_keyword,
 				KnownSystemMessageKind.restartNudge, nudgeBody);
-			auto nudgeMeta = buildKnownSystemMessageMeta(KnownSystemMessageKind.restartNudge);
+			auto nudgeMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
+				KnownSystemMessageKind.restartNudge);
 			sendTaskMessage(tid, [ContentBlock("text", nudgeText)], null, nudgeMeta);
 		});
 	}
@@ -4934,29 +4726,6 @@ class App : ToolsBackend
 	{
 		import cydo.foundation.system.framing : wrapSystemMessageFn = wrapSystemMessage;
 		return wrapSystemMessageFn(config.system_keyword, subject, body);
-	}
-
-	/// Build metadata JSON for a system-generated user message.
-	/// The result is a JSON string (or null) to be injected as "meta" in the
-	/// unconfirmed-user-event envelope. NOT sent to the agent.
-	private string buildCydoMeta(string label, string[string] vars = null,
-		string bodyVar = null, bool bodyMarkdown = false, string severity = null)
-	{
-		import ae.utils.json : JSONOptional, toJson;
-		struct CydoMeta {
-			string label;
-			@JSONOptional string[string] vars;
-			@JSONOptional string bodyVar;
-			@JSONOptional bool bodyMarkdown;
-			@JSONOptional string severity;
-		}
-		CydoMeta m;
-		m.label = label;
-		m.vars = vars;
-		m.bodyVar = bodyVar;
-		m.bodyMarkdown = bodyMarkdown;
-		m.severity = severity;
-		return toJson(m);
 	}
 
 	/// Build an `item/started` envelope JSON for a synthesized error system-message.
@@ -5125,6 +4894,21 @@ class App : ToolsBackend
 		}
 		warningf("Prompt file not found: %s", relativePath);
 		return "";
+	}
+
+	/// Read a prompt template file from the search path without variable substitution.
+	private string loadTemplateText(string templateName, string projectPath)
+	{
+		import std.file : exists, readText;
+		import std.path : buildPath;
+
+		foreach (dir; taskTypeCatalog.promptSearchPath(projectPath))
+		{
+			auto path = buildPath(dir, templateName);
+			if (exists(path))
+				return readText(path);
+		}
+		return null;
 	}
 
 	private void touchTask(int tid)

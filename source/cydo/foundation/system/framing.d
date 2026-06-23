@@ -28,6 +28,22 @@ string wrapSystemMessage(string keyword, string subject, string body = null)
     return "[" ~ keyword ~ ": " ~ subject ~ "]\n\n" ~ body ~ "\n\n[/" ~ keyword ~ "]";
 }
 
+/// Prepend project-memory and task-description framing ahead of a rendered
+/// prompt template before sending it to an agent.
+string prependTaskFraming(string promptText, string systemPrompt,
+    string projectMemory = null)
+{
+    string head;
+    if (projectMemory.length > 0)
+        head ~= projectMemory ~ "\n\n";
+    if (systemPrompt.length > 0)
+        head ~= "[TASK DESCRIPTION]\n" ~ systemPrompt
+            ~ "\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\n";
+    if (head.length == 0)
+        return promptText;
+    return head ~ promptText;
+}
+
 struct ParsedSystemFraming
 {
     string subject;
@@ -109,6 +125,27 @@ string stripTaskSystemPromptWrapper(string body)
     }
 
     return body;
+}
+
+unittest
+{
+    import std.algorithm : canFind, countUntil;
+
+    // system prompt alone — byte-for-byte matches old prependTaskSystemPrompt
+    assert(prependTaskFraming("text", "sys") ==
+        "[TASK DESCRIPTION]\nsys\n\n[END TASK DESCRIPTION]\n\n[TASK PROMPT]\ntext");
+    // neither — no-op
+    assert(prependTaskFraming("text", null, null) == "text");
+    // memory alone — no [TASK PROMPT] wrapper
+    assert(prependTaskFraming("text", null, "mem\n") ==
+        "mem\n\n\ntext");
+    // both — memory before task description, [TASK PROMPT] present
+    auto both = prependTaskFraming("text", "sys", "mem\n");
+    assert(both.canFind("mem\n"), both);
+    assert(both.canFind("[TASK DESCRIPTION]"), both);
+    assert(both.canFind("[TASK PROMPT]"), both);
+    // memory precedes task description
+    assert(both.countUntil("mem") < both.countUntil("[TASK DESCRIPTION]"), both);
 }
 
 // ---------------------------------------------------------------------------
