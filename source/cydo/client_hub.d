@@ -101,12 +101,19 @@ unittest
 		{
 			super(new class IConnection
 			{
-				@property ConnectionState state() { return ConnectionState.connected; }
+				ConnectionState state_ = ConnectionState.connected;
+				DisconnectHandler disconnectHandler;
+
+				@property ConnectionState state() { return state_; }
 				void send(scope Data[] data, int priority) {}
-				void disconnect(string reason, DisconnectType type) {}
+				void disconnect(string reason, DisconnectType type)
+				{
+					state_ = ConnectionState.disconnected;
+					disconnectHandler(reason, type);
+				}
 				@property void handleConnect(ConnectHandler value) {}
 				@property void handleReadData(ReadDataHandler value) {}
-				@property void handleDisconnect(DisconnectHandler value) {}
+				@property void handleDisconnect(DisconnectHandler value) { disconnectHandler = value; }
 				@property void handleBufferFlushed(BufferFlushedHandler value) {}
 			});
 		}
@@ -121,6 +128,12 @@ unittest
 	auto excluded = new StubWebSocketAdapter();
 	auto included = new StubWebSocketAdapter();
 	auto otherTid = new StubWebSocketAdapter();
+	scope(exit)
+	{
+		excluded.disconnect("test complete", DisconnectType.requested);
+		included.disconnect("test complete", DisconnectType.requested);
+		otherTid.disconnect("test complete", DisconnectType.requested);
+	}
 	hub.add(excluded);
 	hub.add(included);
 	hub.add(otherTid);
