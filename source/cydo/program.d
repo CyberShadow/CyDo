@@ -72,7 +72,7 @@ import cydo.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMa
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.tasks.model;
 import cydo.workspace.worktree;
-import cydo.application : App, initLogger, applyConfiguredLogLevel;
+import cydo.server.app : App, initLogger, applyConfiguredLogLevel;
 import cydo.runtime.shutdown : setupShutdownPipe;
 
 private string resolveTaskTypesPath()

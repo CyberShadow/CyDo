@@ -1,4 +1,4 @@
-module cydo.application;
+module cydo.server.app;
 
 import core.lifetime : move;
 import core.time : seconds;
