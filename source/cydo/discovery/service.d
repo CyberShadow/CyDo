@@ -13,9 +13,9 @@ import ae.utils.promise : Promise, resolve;
 import ae.utils.promise.concurrency : threadAsync;
 
 import cydo.agent.contract : Agent, DiscoveredSession;
-import cydo.config : CydoConfig;
+import cydo.runtime.config : CydoConfig;
 import cydo.storage.persistence : Persistence;
-import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandboxForDiscovery;
 import cydo.tasks.model : ProjectInfo, WorkspaceInfo;
 

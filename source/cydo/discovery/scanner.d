@@ -1,6 +1,6 @@
 module cydo.discovery.scanner;
 
-import cydo.config : ProjectDiscoveryConfig;
+import cydo.runtime.config : ProjectDiscoveryConfig;
 
 import std.path : baseName, buildPath, relativePath;
 import std.file : exists, isDir, isSymlink, dirEntries, SpanMode;

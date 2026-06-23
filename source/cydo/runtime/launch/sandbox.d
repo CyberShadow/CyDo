@@ -1,4 +1,4 @@
-module cydo.launch.sandbox;
+module cydo.runtime.launch.sandbox;
 
 import std.file : exists, isFile, isSymlink, readLink, readText;
 import std.path : buildPath, dirName, expandTilde;
@@ -10,8 +10,8 @@ import core.sys.posix.unistd : X_OK, access;
 
 import configy.attributes : SetInfo;
 
-import cydo.config : GitIdentityConfig, PathMode, SandboxConfig;
-import cydo.launch.types : AgentSandboxConfig, ProcessLaunch, ResolvedSandbox;
+import cydo.runtime.config : GitIdentityConfig, PathMode, SandboxConfig;
+import cydo.runtime.launch.types : AgentSandboxConfig, ProcessLaunch, ResolvedSandbox;
 
 /// Absolute path to the currently running cydo binary, resolved at
 /// module init to avoid /proc/self/exe returning a "(deleted)" suffix

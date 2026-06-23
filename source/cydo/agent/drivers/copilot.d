@@ -20,9 +20,9 @@ import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,
 	TurnStopEvent, UsageInfo;
 import cydo.agent.session : AgentSession;
-import cydo.config : AgentDriver, PathMode;
-import cydo.launch.types : ProcessLaunch;
-import cydo.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+import cydo.runtime.config : AgentDriver, PathMode;
+import cydo.runtime.launch.types : ProcessLaunch;
+import cydo.runtime.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
 import cydo.foundation.text.title : truncateTitle;

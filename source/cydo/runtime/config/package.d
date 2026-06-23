@@ -1,4 +1,4 @@
-module cydo.config;
+module cydo.runtime.config;
 
 import configy.attributes : Key, Optional, SetInfo;
 import configy.read : parseConfigFileSimple;

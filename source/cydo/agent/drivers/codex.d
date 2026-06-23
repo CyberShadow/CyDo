@@ -27,11 +27,11 @@ import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
 	TranslatedEvent, extrasToFragment;
 import cydo.agent.session : AgentSession;
-import cydo.config : AgentDriver, PathMode;
-import cydo.launch.types : ProcessLaunch;
-import cydo.launch.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
+import cydo.runtime.config : AgentDriver, PathMode;
+import cydo.runtime.launch.types : ProcessLaunch;
+import cydo.runtime.launch.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
-import launchSandbox = cydo.launch.sandbox;
+import launchSandbox = cydo.runtime.launch.sandbox;
 import cydo.foundation.text.title : truncateTitle;
 
 // ---------------------------------------------------------------------------

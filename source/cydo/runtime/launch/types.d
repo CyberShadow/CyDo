@@ -1,6 +1,6 @@
-module cydo.launch.types;
+module cydo.runtime.launch.types;
 
-import cydo.config : PathMode;
+import cydo.runtime.config : PathMode;
 
 struct AgentSandboxConfig
 {

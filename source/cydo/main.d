@@ -30,7 +30,7 @@ import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, Arch
 import cydo.batch.router : BatchConsumeKind;
 import cydo.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
-import cydo.config.watcher : ConfigWatcher, ConfigWatcherHost;
+import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
@@ -56,10 +56,10 @@ import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
-import cydo.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig, loadConfig, reloadConfig;
 import cydo.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
-import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
+import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
@@ -163,7 +163,7 @@ static:
 		Parameter!(string, "Path to open.") path = null,
 	)
 	{
-		import cydo.config : ProjectDiscoveryConfig, loadConfig;
+		import cydo.runtime.config : ProjectDiscoveryConfig, loadConfig;
 		import cydo.discovery.scanner : discoverProjects;
 		import std.file : getcwd;
 		import std.path : absolutePath, expandTilde;

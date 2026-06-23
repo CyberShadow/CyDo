@@ -18,7 +18,7 @@ import cydo.agent.contract : Agent;
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskEventSeqEnvelope, TranslatedEvent, UnconfirmedUserEventEnvelope,
 	extractContentText;
-import cydo.config : AgentDriver;
+import cydo.runtime.config : AgentDriver;
 import cydo.storage.persistence : LoadedHistory, loadTaskHistory;
 import cydo.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMessage,
 	TaskHistoryStartMessage, buildSyntheticUserEvent, extractEventFromEnvelope,

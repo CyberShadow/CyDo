@@ -16,9 +16,9 @@ import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHa
 import cydo.agent.protocol;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.session : AgentSession;
-import cydo.config : AgentDriver, PathMode;
-import cydo.launch.types : ProcessLaunch, ResolvedSandbox;
-import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
+import cydo.runtime.config : AgentDriver, PathMode;
+import cydo.runtime.launch.types : ProcessLaunch, ResolvedSandbox;
+import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	effectiveEnvValue, executableMountPaths, resolveExecutablePath;
 import cydo.foundation.text.title : truncateTitle;
 

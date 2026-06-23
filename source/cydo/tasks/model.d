@@ -9,7 +9,7 @@ import ae.utils.promise : Promise, PromiseQueue;
 import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
-import cydo.launch.types : ProcessLaunch;
+import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.storage.persistence : LoadedHistory;
 
 import cydo.agent.session : AgentSession;

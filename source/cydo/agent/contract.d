@@ -4,8 +4,8 @@ import ae.utils.promise : Promise;
 
 import cydo.agent.protocol : TranslatedEvent;
 import cydo.agent.session : AgentSession;
-import cydo.config : AgentDriver, PathMode;
-import cydo.launch.types : ProcessLaunch;
+import cydo.runtime.config : AgentDriver, PathMode;
+import cydo.runtime.launch.types : ProcessLaunch;
 
 /// Per-session configuration passed to createSession.
 struct SessionConfig

@@ -1,4 +1,4 @@
-module cydo.runtime.config_resolution;
+module cydo.server.config_resolution;
 
 import configy.attributes : SetInfo;
 
@@ -6,7 +6,7 @@ import std.conv : to;
 import std.typecons : Nullable;
 
 import cydo.agent.drivers.registry : agentRegistry;
-import cydo.config : AgentConfig, AgentDriver, CydoConfig, loadConfig, reloadConfig;
+import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, loadConfig, reloadConfig;
 
 void resolveConfig(ref CydoConfig config)
 {

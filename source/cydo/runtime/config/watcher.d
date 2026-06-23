@@ -1,4 +1,4 @@
-module cydo.config.watcher;
+module cydo.runtime.config.watcher;
 
 import std.file : exists;
 import std.logger : warningf;
@@ -6,7 +6,7 @@ import std.path : baseName, buildPath, dirName;
 
 import ae.sys.inotify : INotify, iNotify;
 
-import cydo.config : configPath;
+import cydo.runtime.config : configPath;
 import cydo.foundation.platform.inotify : RefCountedINotify;
 
 package(cydo):
