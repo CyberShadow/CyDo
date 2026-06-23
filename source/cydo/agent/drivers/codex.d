@@ -1,4 +1,4 @@
-module cydo.agent.codex;
+module cydo.agent.drivers.codex;
 
 import core.time : Duration, seconds;
 

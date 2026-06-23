@@ -1,4 +1,4 @@
-module cydo.agent.claude;
+module cydo.agent.drivers.claude;
 
 import core.time : Duration, seconds;
 

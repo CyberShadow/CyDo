@@ -167,7 +167,7 @@ class App : ToolsBackend
 			auto a = createAgentByDriver(driver);
 			a.setModelAliases(ac.model_aliases);
 			{
-				import cydo.agent.copilot : CopilotAgent;
+				import cydo.agent.drivers.copilot : CopilotAgent;
 				if (auto ca = cast(CopilotAgent) a)
 					ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 						dispatchTool(tool, callerTid, args);
@@ -673,7 +673,7 @@ class App : ToolsBackend
 			t.forceKill();
 		jsonlTracker.stopAllWatches();
 		{
-			import cydo.agent.codex : CodexAgent;
+			import cydo.agent.drivers.codex : CodexAgent;
 			foreach (a; agentsByName)
 				if (auto ca = cast(CodexAgent) a)
 					ca.shutdownAllServers();
@@ -2301,7 +2301,7 @@ class App : ToolsBackend
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
-		import cydo.agent.codex : CodexAgent, ThreadForkOutcome;
+		import cydo.agent.drivers.codex : CodexAgent, ThreadForkOutcome;
 
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
@@ -2455,7 +2455,7 @@ class App : ToolsBackend
 	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
 		import ae.utils.json : toJson;
-		import cydo.agent.codex : CodexAgent;
+		import cydo.agent.drivers.codex : CodexAgent;
 
 		auto tid = json.tid;
 		if (tid < 0 || tid !in tasks)
@@ -2473,7 +2473,7 @@ class App : ToolsBackend
 			if (cast(CodexAgent) ta !is null)
 			{
 				import std.file : exists, readText;
-				import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
+				import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
 
 				auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
 				if (jsonlPath.length == 0 || !exists(jsonlPath))
@@ -2516,11 +2516,11 @@ class App : ToolsBackend
 			if (td.session && td.session.alive)
 			{
 				// Codex alive path: use thread/rollback RPC instead of killing
-				import cydo.agent.codex : ThreadRollbackOutcome;
+				import cydo.agent.drivers.codex : ThreadRollbackOutcome;
 				if (auto ca = cast(CodexAgent) ta)
 				{
 					import std.file : exists, readText;
-					import cydo.agent.codex : CodexActiveUserTurnsAfterStatus, CodexSession,
+					import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, CodexSession,
 						countActiveUserTurnsAfterForkId;
 
 					auto codexSession = cast(CodexSession) td.session;
@@ -3709,7 +3709,7 @@ class App : ToolsBackend
 		if (auto ac = td.agentType in config.agents)
 			a.setModelAliases(ac.model_aliases);
 		{
-			import cydo.agent.copilot : CopilotAgent;
+			import cydo.agent.drivers.copilot : CopilotAgent;
 			if (auto ca = cast(CopilotAgent) a)
 				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 					dispatchTool(tool, callerTid, args);
@@ -4974,7 +4974,7 @@ class App : ToolsBackend
 				auto a = createAgentByDriver(ac.driver.value);
 				a.setModelAliases(ac.model_aliases);
 				{
-					import cydo.agent.copilot : CopilotAgent;
+					import cydo.agent.drivers.copilot : CopilotAgent;
 					if (auto ca = cast(CopilotAgent) a)
 						ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 							dispatchTool(tool, callerTid, args);

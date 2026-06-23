@@ -106,7 +106,7 @@ class HistoryEventPipeline
 			{
 				if (exists(jsonlPath))
 				{
-					import cydo.agent.codex : computeRollbackSkipLines;
+					import cydo.agent.drivers.codex : computeRollbackSkipLines;
 					rollbackSkipLines = computeRollbackSkipLines(
 						cast(string) read(jsonlPath, cast(size_t) maxBytes));
 				}

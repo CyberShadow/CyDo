@@ -1,4 +1,4 @@
-module cydo.agent.copilot;
+module cydo.agent.drivers.copilot;
 
 import core.time : Duration;
 

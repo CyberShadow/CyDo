@@ -122,7 +122,7 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 			import std.file : exists, readText;
 			if (exists(jsonlPath))
 			{
-				import cydo.agent.codex : computeRollbackSkipLines;
+				import cydo.agent.drivers.codex : computeRollbackSkipLines;
 				rollbackSkipLines = computeRollbackSkipLines(readText(jsonlPath));
 			}
 		}

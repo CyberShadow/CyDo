@@ -12,12 +12,12 @@ struct AgentRegistration
 /// The agent registry. To add a new agent, add an entry here.
 immutable agentRegistry = [
 	AgentRegistration("claude", "Claude Code",
-		function Agent() { import cydo.agent.claude : ClaudeCodeAgent; return new ClaudeCodeAgent(); },
+		function Agent() { import cydo.agent.drivers.claude : ClaudeCodeAgent; return new ClaudeCodeAgent(); },
 	),
 	AgentRegistration("codex", "Codex",
-		function Agent() { import cydo.agent.codex : CodexAgent; return new CodexAgent(); },
+		function Agent() { import cydo.agent.drivers.codex : CodexAgent; return new CodexAgent(); },
 	),
 	AgentRegistration("copilot", "Copilot",
-		function Agent() { import cydo.agent.copilot : CopilotAgent; return new CopilotAgent(); },
+		function Agent() { import cydo.agent.drivers.copilot : CopilotAgent; return new CopilotAgent(); },
 	),
 ];
