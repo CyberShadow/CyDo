@@ -225,7 +225,7 @@ struct ValidatedTask
 }
 
 /// Backend interface — methods that CydoToolsImpl needs from the application.
-/// App implements this; the indirection breaks the compile-time dependency on cydo.app.
+/// App implements this; the indirection breaks the compile-time dependency on cydo.server.app.
 interface ToolsBackend
 {
 	ValidatedTask handleCreateTask(string callerTid, int specIndex,

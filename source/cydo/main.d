@@ -1,4 +1,4 @@
-module cydo.program;
+module cydo.main;
 
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
@@ -460,3 +460,5 @@ void run(string[] args)
 	enum config = () { import std.getopt : config; FunOptConfig c; c.getoptConfig = [config.stopOnFirstNonOption]; return c; }();
 	funopt!(dispatch, config, usageFun)(args);
 }
+
+mixin main!run;
