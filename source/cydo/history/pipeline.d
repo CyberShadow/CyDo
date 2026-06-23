@@ -169,19 +169,34 @@ class HistoryEventPipeline
 				{
 					if (ta.isUserMessageLine(line))
 					{
-						auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
-						lastDequeuedText = null;
-						lastDequeuedEnqueueLineNum = 0;
 						auto ts = ta.translateHistoryLine(line, lineNum);
+						// a type:"user" JSONL line translates to either an
+						// item/started user_message (the steering echo we're waiting
+						// for) or an item/result (a tool_result that landed while the
+						// turn was mid-tool-use). only the former is the dequeued echo;
+						// parsing an item/result as ItemStartedEvent throws on its
+						// tool_result field, so peek at the type first
+						bool firstIsItemStarted = false;
 						if (ts.length > 0)
 						{
+							@JSONPartial static struct TypeProbe { string type; }
+							firstIsItemStarted =
+								jsonParse!TypeProbe(ts[0].translated).type == "item/started";
+						}
+						if (firstIsItemStarted)
+						{
+							auto savedEnqueueLineNum = lastDequeuedEnqueueLineNum;
+							lastDequeuedText = null;
+							lastDequeuedEnqueueLineNum = 0;
 							auto enqueueUuid = format!"enqueue-%d"(savedEnqueueLineNum);
 							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
 							if (ev.is_steering)
 								ev.uuid = enqueueUuid;
 							return stripTransientStatus([TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
 						}
-						return [];
+						// not the echo (tool_result, or empty translation): pass
+						// through unchanged and stay deferred for the real echo
+						return stripTransientStatus(ts);
 					}
 					if (ta.isAssistantMessageLine(line))
 					{
@@ -706,4 +721,102 @@ private:
 		return translated.canFind(`"type":"queue-operation"`)
 			|| translated.canFind(`"type":"queue\/operation"`);
 	}
+}
+
+// Regression test: a task history where a queue dequeue is immediately followed
+// by a tool_result line (the turn was interrupted mid-tool-use, so the next
+// type:"user" line is NOT the steering echo) must not crash history loading.
+// The deferred-dequeue branch used to parse that line strictly as an
+// ItemStartedEvent; the translated item/result carries a tool_result field that
+// ItemStartedEvent doesn't declare, so the strict parse threw an uncaught
+// "Unknown field tool_result" and the task could never open.
+unittest
+{
+	import std.algorithm : canFind;
+	import std.array : join;
+	import std.file : exists, getSize, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath, dirName;
+	import std.process : environment;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.tasks.model : Watermark;
+
+	auto dir = buildPath("/tmp", "cydo-history-tool-result-after-dequeue");
+	if (exists(dir))
+		rmdirRecurse(dir);
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto projectPath = buildPath(dir, "project");
+	mkdirRecurse(projectPath);
+
+	// Point ClaudeCodeAgent.historyPath at a writable temp location.
+	auto oldConfigDir = environment.get("CLAUDE_CONFIG_DIR");
+	environment["CLAUDE_CONFIG_DIR"] = buildPath(dir, "claude");
+	scope(exit)
+	{
+		if (oldConfigDir is null)
+			environment.remove("CLAUDE_CONFIG_DIR");
+		else
+			environment["CLAUDE_CONFIG_DIR"] = oldConfigDir;
+	}
+
+	enum tid = 1;
+	auto td = TaskData(tid, "local", projectPath);
+	td.agentType = "claude";
+	td.agentSessionId = "S";
+	td.worktreeTid = 0;
+
+	Agent agent = new ClaudeCodeAgent();
+
+	// enqueue, dequeue, then a type:"user" line carrying a tool_result. The
+	// toolUseResult sidecar makes the translated item/result include a
+	// tool_result field — exactly the field the old strict parse choked on.
+	auto jsonlPath = agent.historyPath(td.agentSessionId, projectPath);
+	mkdirRecurse(dirName(jsonlPath));
+	auto jsonl = [
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"are you under control?"}`,
+		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}`,
+		`{"parentUuid":"p","isSidechain":false,"type":"user","toolUseResult":{"stdout":"ok"},"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]}}`,
+	].join("\n") ~ "\n";
+	write(jsonlPath, jsonl);
+
+	td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
+
+	// Minimal host: ensureHistoryLoaded on a queue-op history only touches
+	// getTask/tryAgentForTask/effectiveCwd/injectAgentNameIntoSessionInit. The
+	// remaining delegates are stubbed no-ops so a stray call can't null-deref.
+	HistoryEventPipelineHost host;
+	host.getTask = (int t) => t == tid ? &td : null;
+	host.tryAgentForTask = (int t) => agent;
+	host.effectiveCwd = (int t) => projectPath;
+	host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
+	host.synthesizeHistoryErrorEventJson = (string subject, string body) => "";
+	host.sendToSubscribed = (int t, Data d) {};
+	host.subscribe = (WebSocketAdapter ws, int t) {};
+	host.sendForkableUuids = (WebSocketAdapter ws, int t) {};
+	host.broadcastForkableUuids = (int t) {};
+	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
+	host.onHistorySubscribed = (int t) {};
+	host.ensureAgentSessionIdFromEvent = (int t, string line) {};
+	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
+	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
+
+	auto pipeline = new HistoryEventPipeline(host);
+
+	// Before the fix this throws object.Exception "Unknown field tool_result".
+	pipeline.ensureHistoryLoaded(tid);
+
+	assert(td.history.isLoaded, "history must load without throwing");
+
+	// The tool_result must survive translation as an item/result event rather
+	// than being dropped by the (mis)parse as a steering echo.
+	bool sawToolResult = false;
+	foreach (ref ev; td.history)
+	{
+		auto s = cast(string) ev.toGC();
+		if (s.canFind(`"item/result"`) && s.canFind("tool_result"))
+			sawToolResult = true;
+	}
+	assert(sawToolResult, "tool_result event missing from loaded history");
 }
