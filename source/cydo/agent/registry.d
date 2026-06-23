@@ -1,6 +1,6 @@
 module cydo.agent.registry;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.contract : Agent;
 
 struct AgentRegistration
 {

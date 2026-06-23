@@ -22,7 +22,7 @@ import ae.utils.serialization.store : SerializedObject;
 private alias SO = SerializedObject!(immutable char);
 import ae.utils.promise : Promise, resolve;
 
-import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
+import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.process : AgentProcess, FramingMode;
 import cydo.agent.protocol : ContentBlock, ProcessStderrEvent, SessionCompactedEvent,
 	TranslatedEvent, extrasToFragment;

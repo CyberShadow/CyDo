@@ -8,7 +8,7 @@ import ae.sys.data : Data;
 import ae.sys.inotify : INotify;
 import ae.sys.timing : setTimeout, TimerTask;
 
-import cydo.agent.agent : Agent, ForkableIdInfo;
+import cydo.agent.contract : Agent, ForkableIdInfo;
 import cydo.config : AgentDriver;
 import cydo.platform.inotify : RefCountedINotify;
 import cydo.tasks.model : AssignUuidsMessage, ForkableUuidsMessage, TaskData, UuidAssignment, Watermark,

@@ -1,4 +1,4 @@
-module cydo.agent.agent;
+module cydo.agent.contract;
 
 import ae.utils.promise : Promise;
 

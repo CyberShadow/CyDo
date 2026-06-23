@@ -11,7 +11,7 @@ import std.logger : infof, tracef, warningf;
 import ae.utils.json : toJson;
 import ae.utils.promise : Promise, reject, resolve;
 
-import cydo.agent.agent : Agent, SessionConfig;
+import cydo.agent.contract : Agent, SessionConfig;
 import cydo.agent.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.launch.types : AgentSandboxConfig, ProcessLaunch;

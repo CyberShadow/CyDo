@@ -50,7 +50,7 @@ import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookup
 	TransportAdapter, WebSocketCallbacks;
 import cydo.usage.tracker : AgentUsageTracker;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.contract : Agent;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	ItemStartedEvent, SessionRateLimitEvent, TaskEventEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, extractContentText;
@@ -271,7 +271,7 @@ static:
 		import std.path : buildPath;
 		import std.string : strip, splitLines;
 		import ae.utils.json : jsonParse, JSONPartial;
-		import cydo.agent.agent : Agent;
+		import cydo.agent.contract : Agent;
 		import cydo.agent.registry : agentRegistry;
 		import cydo.task_types.definition : substituteVars;
 

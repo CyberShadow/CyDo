@@ -14,7 +14,7 @@ import cydo.agent.sdk : SdkProcess, SdkSessionHandler,
 	SdkPermissionRequest, SdkPermissionResult,
 	SdkToolCallRequest, SdkToolCallResult, SdkToolResult,
 	SdkEvent, EmptyResult;
-import cydo.agent.agent : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
+import cydo.agent.contract : Agent, DiscoveredSession, ForkableIdInfo, OneShotHandle, RewindResult, SessionConfig, SessionMeta;
 import cydo.agent.protocol : ContentBlock, ItemCompletedEvent, ItemDeltaEvent,
 	ItemResultEvent, ItemStartedEvent, makeUnrecognizedEvent, ProcessExitEvent,
 	ProcessStderrEvent, SessionInitEvent, TranslatedEvent, TurnResultEvent,

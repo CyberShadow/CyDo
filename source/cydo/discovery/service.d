@@ -12,7 +12,7 @@ import std.process : execute;
 import ae.utils.promise : Promise, resolve;
 import ae.utils.promise.concurrency : threadAsync;
 
-import cydo.agent.agent : Agent, DiscoveredSession;
+import cydo.agent.contract : Agent, DiscoveredSession;
 import cydo.config : CydoConfig;
 import cydo.storage.persistence : Persistence;
 import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,

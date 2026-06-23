@@ -2,7 +2,7 @@ module cydo.exporter.html;
 
 import ae.utils.json : JSONFragment, toJson;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.contract : Agent;
 import cydo.config : AgentDriver;
 import cydo.agent.protocol : TaskEventSeqEnvelope, TranslatedEvent;
 import cydo.storage.persistence : Persistence, loadTaskHistory;

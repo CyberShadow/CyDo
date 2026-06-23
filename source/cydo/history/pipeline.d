@@ -14,7 +14,7 @@ import ae.utils.array : as;
 import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.time.types : AbsTime;
 
-import cydo.agent.agent : Agent;
+import cydo.agent.contract : Agent;
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskEventSeqEnvelope, TranslatedEvent, UnconfirmedUserEventEnvelope,
 	extractContentText;
