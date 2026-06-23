@@ -1,4 +1,4 @@
-module cydo.discovery.scanner;
+module cydo.workflow.discovery.scanner;
 
 import cydo.runtime.config : ProjectDiscoveryConfig;
 

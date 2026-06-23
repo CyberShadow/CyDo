@@ -1,4 +1,4 @@
-module cydo.discovery.service;
+module cydo.workflow.discovery.service;
 
 import std.algorithm : filter, startsWith;
 import std.array : array;

@@ -30,25 +30,25 @@ import cydo.mcp : McpResult;
 import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.domain.tasks.model : BatchSignal;
-import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
-import cydo.batch.router : BatchConsumeKind;
-import cydo.batch.registry : BatchHandle, BatchRegistry;
+import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+import cydo.workflow.batch.router : BatchConsumeKind;
+import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
-import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
+import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
-import cydo.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
+import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;
-import cydo.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
-import cydo.history.jsonl_edit : replaceUserMessageContent;
+import cydo.workflow.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
+import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
-import cydo.questions.router : QuestionRouter, QuestionRouterHost;
+import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
-import cydo.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
+import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
@@ -77,11 +77,11 @@ import cydo.foundation.system.known_messages : KnownSystemMessageKind, KnownSyst
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
-import cydo.workspace.worktree;
+import cydo.workflow.workspace.worktree;
 
 class App : ToolsBackend
 {
-	import cydo.history.jsonl_tracker : JsonlTracker;
+	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
 
 	private TransportAdapter transport;
 	private ClientHub clientHub = new ClientHub();

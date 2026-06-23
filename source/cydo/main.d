@@ -26,25 +26,25 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
 import cydo.domain.tasks.model : BatchSignal;
-import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
-import cydo.batch.router : BatchConsumeKind;
-import cydo.batch.registry : BatchHandle, BatchRegistry;
+import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
+import cydo.workflow.batch.router : BatchConsumeKind;
+import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
-import cydo.discovery.service : DiscoveryService, DiscoveryServiceHost,
+import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableTaskSpec;
 import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksList, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
-import cydo.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
+import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;
-import cydo.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
-import cydo.history.jsonl_edit : replaceUserMessageContent;
+import cydo.workflow.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
+import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
-import cydo.questions.router : QuestionRouter, QuestionRouterHost;
+import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
-import cydo.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
+import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
@@ -71,7 +71,7 @@ import cydo.foundation.system.known_messages : KnownSystemMessageKind, KnownSyst
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
 import cydo.domain.tasks.model;
-import cydo.workspace.worktree;
+import cydo.workflow.workspace.worktree;
 import cydo.server.app : App, initLogger, applyConfiguredLogLevel;
 import cydo.runtime.shutdown : setupShutdownPipe;
 
@@ -154,7 +154,7 @@ static:
 		Parameter!(immutable(string)[], "Patterns to exclude.") exclude = null,
 	)
 	{
-		import cydo.discovery.scanner : runDiscover;
+		import cydo.workflow.discovery.scanner : runDiscover;
 		runDiscover(root, name, isProjectExpr, recurseWhenExpr, cast(string[]) exclude);
 	}
 
@@ -164,7 +164,7 @@ static:
 	)
 	{
 		import cydo.runtime.config : ProjectDiscoveryConfig, loadConfig;
-		import cydo.discovery.scanner : discoverProjects;
+		import cydo.workflow.discovery.scanner : discoverProjects;
 		import std.file : getcwd;
 		import std.path : absolutePath, expandTilde;
 		import std.process : browse, environment, execute, spawnProcess;
@@ -374,7 +374,7 @@ static:
 
 		import ae.utils.path : findProgramDirectory;
 
-		import cydo.exporter.html : buildExportHtml, collectTaskTree, exportTaskData;
+		import cydo.workflow.exporter.html : buildExportHtml, collectTaskTree, exportTaskData;
 		import cydo.domain.storage.persistence : openDatabase;
 
 		if (tids.length == 0)

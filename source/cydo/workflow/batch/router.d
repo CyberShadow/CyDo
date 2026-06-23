@@ -1,4 +1,4 @@
-module cydo.batch.router;
+module cydo.workflow.batch.router;
 
 import std.format : format;
 

@@ -1,4 +1,4 @@
-module cydo.workspace.archive_manager;
+module cydo.workflow.workspace.archive_manager;
 
 import std.conv : to;
 import std.file : exists, isDir;
@@ -13,7 +13,7 @@ import ae.utils.promise.concurrency : threadAsync;
 import cydo.runtime.launch.sandbox : runtimeDir;
 import cydo.domain.tasks.model : ArchiveState;
 import cydo.domain.tasks.model : worktreePathForTaskDir;
-import cydo.workspace.worktree : archiveWorktree, hasArchiveRef, unarchiveWorktree;
+import cydo.workflow.workspace.worktree : archiveWorktree, hasArchiveRef, unarchiveWorktree;
 
 package(cydo):
 

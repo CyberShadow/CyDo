@@ -1,4 +1,4 @@
-module cydo.history.abbrev;
+module cydo.workflow.history.abbrev;
 
 import std.logger : tracef;
 

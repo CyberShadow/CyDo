@@ -1,4 +1,4 @@
-module cydo.history.jsonl_tracker;
+module cydo.workflow.history.jsonl_tracker;
 
 import std.stdio : File;
 import std.string : representation;
