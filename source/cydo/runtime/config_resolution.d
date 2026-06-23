@@ -5,7 +5,7 @@ import configy.attributes : SetInfo;
 import std.conv : to;
 import std.typecons : Nullable;
 
-import cydo.agent.registry : agentRegistry;
+import cydo.agent.drivers.registry : agentRegistry;
 import cydo.config : AgentConfig, AgentDriver, CydoConfig, loadConfig, reloadConfig;
 
 void resolveConfig(ref CydoConfig config)

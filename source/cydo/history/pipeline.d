@@ -442,7 +442,7 @@ private:
 	{
 		import std.algorithm : map;
 		import std.array : join;
-		import cydo.agent.registry : agentRegistry;
+		import cydo.agent.drivers.registry : agentRegistry;
 		auto knownNames = agentRegistry[].map!(r => "`" ~ r.name ~ "`").join(", ");
 		return "This task uses agent `" ~ agentType ~ "`, which is not configured.\n\n"
 			~ "The currently available agents are: " ~ knownNames ~ ".";

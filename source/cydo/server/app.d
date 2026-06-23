@@ -3733,7 +3733,7 @@ class App : ToolsBackend
 	/// Create an Agent by registered driver enum. Throws if registry doesn't know the driver.
 	private static Agent createAgentByDriver(AgentDriver driver)
 	{
-		import cydo.agent.registry : agentRegistry;
+		import cydo.agent.drivers.registry : agentRegistry;
 		import std.conv : to;
 		auto driverName = to!string(driver);
 		foreach (ref entry; agentRegistry)
@@ -5146,7 +5146,7 @@ class App : ToolsBackend
 
 	private AgentInfoEntry[] snapshotAgentEntries()
 	{
-		import cydo.agent.registry : agentRegistry;
+		import cydo.agent.drivers.registry : agentRegistry;
 		import std.conv : to;
 		import std.path : expandTilde;
 		import std.process : environment;

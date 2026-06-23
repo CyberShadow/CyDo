@@ -272,7 +272,7 @@ static:
 		import std.string : strip, splitLines;
 		import ae.utils.json : jsonParse, JSONPartial;
 		import cydo.agent.contract : Agent;
-		import cydo.agent.registry : agentRegistry;
+		import cydo.agent.drivers.registry : agentRegistry;
 		import cydo.task_types.definition : substituteVars;
 
 		initLogger();

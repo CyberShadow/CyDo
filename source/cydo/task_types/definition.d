@@ -282,7 +282,7 @@ string resolveAgent(string expr, string parentAgentType)
 /// Returns true iff `name` is a registered agent binary (claude, codex, copilot).
 bool isRegisteredAgent(string name)
 {
-	import cydo.agent.registry : agentRegistry;
+	import cydo.agent.drivers.registry : agentRegistry;
 	foreach (ref r; agentRegistry)
 		if (r.name == name)
 			return true;

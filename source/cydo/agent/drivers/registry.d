@@ -1,4 +1,4 @@
-module cydo.agent.registry;
+module cydo.agent.drivers.registry;
 
 import cydo.agent.contract : Agent;
 

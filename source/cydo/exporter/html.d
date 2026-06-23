@@ -59,7 +59,7 @@ string exportTaskData(ref Persistence persistence, Persistence.TaskRow[] taskRow
 {
 	import std.format : format;
 
-	import cydo.agent.registry : agentRegistry;
+	import cydo.agent.drivers.registry : agentRegistry;
 	import cydo.tasks.model : extractEventFromEnvelope, extractTsFromEnvelope;
 
 	// Serialize task metadata
