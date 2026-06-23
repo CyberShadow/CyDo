@@ -1519,7 +1519,7 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 		probe = jsonParse!TypeProbe(rawLine);
 	catch (Exception e)
 	{
-		import cydo.agent.protocol : makeUnrecognizedEvent;
+		import cydo.protocol : makeUnrecognizedEvent;
 		tracef("translateClaudeHistoryEvent: type probe parse error: %s", e.msg);
 		return [TranslatedEvent(makeUnrecognizedEvent("history parse error: " ~ e.msg), rawLine)];
 	}

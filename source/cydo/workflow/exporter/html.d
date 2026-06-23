@@ -5,8 +5,9 @@ import ae.utils.json : JSONFragment, toJson;
 import cydo.agent.contract : Agent;
 import cydo.runtime.config : AgentDriver;
 import cydo.protocol : TaskEventSeqEnvelope, TranslatedEvent;
-import cydo.domain.storage.persistence : Persistence, loadTaskHistory;
+import cydo.domain.storage.persistence : Persistence;
 import cydo.domain.tasks.model : TypeInfoEntry;
+import cydo.workflow.history.jsonl_store : loadTaskHistory;
 
 /// Recursively collect all tasks reachable from rootTids via parent_tid.
 /// Returns the deduplicated set (roots + all descendants).
