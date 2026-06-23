@@ -411,6 +411,27 @@ function renderCydoTaskResult(
   );
 }
 
+function renderCydoAskUserQuestionResult(
+  questions: Array<Record<string, unknown>>,
+  resultText: string,
+): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "AskUserQuestion",
+      toolServer: "cydo",
+      driver: "claude",
+      toolUseId: "tool-q1",
+      input: { questions },
+      result: {
+        toolUseId: "tool-q1",
+        content: [{ type: "text", text: resultText }],
+        isError: false,
+        toolResult: [{ type: "text", text: resultText }],
+      },
+    }),
+  );
+}
+
 describe("cydo:Task ToolCall Open task link", () => {
   const getHref = (id: string) => `/task/${id}`;
 
@@ -487,6 +508,79 @@ describe("cydo:Task ToolCall Open task link", () => {
       undefined,
     );
     expect(html).not.toContain('data-testid="cydo-task-spec-open"');
+  });
+});
+
+describe("cydo:AskUserQuestion result rendering", () => {
+  it("highlights answered choices whose labels contain commas", () => {
+    const q1 =
+      "final_summaries (5 writers) and distilled_trade_ideas (6 writers) share one table via a discriminator column. To make 'wipe partition + insert' safe, which way?";
+    const a1 =
+      "Split one-table-per-asset. Also please add migration code. (I don't think we have a migration system so probably just an imperative migration.)";
+    const q2 =
+      "This is a multi-asset architectural refactor with several genuine design forks. How do you want to proceed?";
+    const a2 = "Design doc first (Recommended)";
+    const q3 =
+      "hierarchy_nodes/edges is one graph built by 4 assets and read by ~14. It cannot cleanly be one-asset-one-table. How should it be treated?";
+    const a3 = "Keep as shared accumulator, delete by level";
+    const resultText = `User has answered your questions: "${q1}"="${a1}". "${q2}"="${a2}". "${q3}"="${a3}".`;
+
+    const html = renderCydoAskUserQuestionResult(
+      [
+        {
+          header: "Shared",
+          question: q1,
+          options: [
+            {
+              label: a1,
+              description: "Split the result storage by asset.",
+            },
+            {
+              label: "Keep shared table",
+              description: "Keep discriminator-based writes.",
+            },
+          ],
+        },
+        {
+          header: "Plan",
+          question: q2,
+          options: [
+            {
+              label: a2,
+              description: "Write the design before implementation.",
+            },
+            {
+              label: "Implement directly",
+              description: "Start with code changes.",
+            },
+          ],
+        },
+        {
+          header: "Cleanup",
+          question: q3,
+          options: [
+            {
+              label: "Delete by level",
+              description: "Track state independently for each level.",
+            },
+            {
+              label: a3,
+              description:
+                "Reuse a shared accumulator while pruning level data.",
+            },
+          ],
+        },
+      ],
+      resultText,
+    );
+
+    expect(html).toMatch(
+      /class="ask-option ask-option-selected"><div class="ask-option-label">Split one-table-per-asset\. Also please add migration code\./,
+    );
+    expect(html).toMatch(
+      /class="ask-option ask-option-selected"><div class="ask-option-label">Keep as shared accumulator, delete by level<\/div>/,
+    );
+    expect((html.match(/ask-option-selected/g) ?? []).length).toBe(3);
   });
 });
 

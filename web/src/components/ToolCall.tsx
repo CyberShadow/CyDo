@@ -1198,7 +1198,9 @@ function AskUserQuestionInput({
               {q.options.map((opt, oi) => {
                 const isSelected =
                   answer != null &&
-                  answer.split(", ").some((a) => a === opt.label);
+                  ((q.multiSelect ?? false)
+                    ? answer.split(", ").some((a) => a === opt.label)
+                    : answer === opt.label);
                 return (
                   <div
                     key={oi}
