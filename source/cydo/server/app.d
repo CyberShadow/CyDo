@@ -42,10 +42,11 @@ import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
 import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;
-import cydo.workflow.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
+import cydo.workflow.history.abbrev : extractMessageText;
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
+import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
@@ -124,6 +125,7 @@ class App : ToolsBackend
 	private ArchiveManager archiveManager;
 	private HistoryEventPipeline historyPipeline;
 	private TaskSessionRunner taskSessionRunner;
+	private DerivedTextJobs derivedTextJobs;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
@@ -265,6 +267,35 @@ class App : ToolsBackend
 			ensureAgentSessionIdFromEvent: &ensureHistoryAgentSessionIdFromEvent,
 			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
 			planBroadcast: &planHistoryBroadcast,
+		));
+		derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			snapshotTaskIds: &snapshotTaskIdsForResume,
+			agentForTask: &agentForTask,
+			hasSubscribers: (int tid) => clientHub.hasSubscribers(tid),
+			ensureHistoryLoaded: (int tid) {
+				historyPipeline.ensureHistoryLoaded(tid);
+			},
+			readPromptFile: (int tid, string relativePath, string[string] vars) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"Prompt read requested for missing task %d"(tid));
+				return readPromptFile(relativePath, td.projectPath, vars);
+			},
+			persistTitle: (int tid, string title) {
+				persistence.setTitle(tid, title);
+			},
+			broadcastTitleUpdate: &broadcastTitleUpdate,
+			broadcastSuggestionsUpdate: &broadcastSuggestionsUpdate,
+			emitTitleGenerationFailure: (int tid, string text) {
+				import ae.utils.json : toJson;
+				import cydo.protocol : ProcessStderrEvent;
+
+				ProcessStderrEvent ev;
+				ev.text = text;
+				historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
+			},
+			devMode: () => config.dev_mode,
 		));
 		taskSessionRunner = new TaskSessionRunner(TaskSessionRunnerHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
@@ -647,19 +678,7 @@ class App : ToolsBackend
 		infof("shutdown() called, cleaning up resources");
 		shuttingDown = true;
 		taskSessionRunner.shutdownSessions();
-		foreach (ref td; tasks)
-		{
-			if (td.titleGenKill !is null)
-			{
-				td.titleGenKill();
-				td.titleGenKill = null;
-			}
-			if (td.suggestGenKill !is null)
-			{
-				td.suggestGenKill();
-				td.suggestGenKill = null;
-			}
-		}
+		derivedTextJobs.cancelAll();
 		// SIGKILL any in-flight Bash MCP tool calls so the event loop can drain.
 		foreach (t; activeTerminals)
 			t.forceKill();
@@ -976,7 +995,7 @@ class App : ToolsBackend
 			{
 				auto promptForTitle = prompt;
 				tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-					generateTitle(childTid, promptForTitle);
+					derivedTextJobs.generateTitle(childTid, promptForTitle);
 				}).ignoreResult();
 			}
 			infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
@@ -1817,7 +1836,7 @@ class App : ToolsBackend
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
 			tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
-				generateTitle(tid, textContent);
+				derivedTextJobs.generateTitle(tid, textContent);
 			}).ignoreResult();
 		}
 	}
@@ -1860,16 +1879,10 @@ class App : ToolsBackend
 
 	private void onHistorySubscribed(int tid)
 	{
-		auto td = tid in tasks;
-		assert(td !is null, format!"History subscribe callback for missing task %d"(tid));
-
-		if (td.suggestGenHandle is null && td.lastSuggestions.length == 0 && td.status == "alive")
-		{
-			try
-				generateSuggestions(tid);
-			catch (Exception e)
-				warningf("Error generating suggestions on subscribe: %s", e.msg);
-		}
+		try
+			derivedTextJobs.onHistorySubscribed(tid);
+		catch (Exception e)
+			warningf("Error generating suggestions on subscribe: %s", e.msg);
 	}
 
 	private void ensureHistoryAgentSessionIdFromEvent(int tid, string line)
@@ -2099,7 +2112,7 @@ class App : ToolsBackend
 					["task_description": textContent], "task_description");
 			}
 		}
-		td.lastSuggestions = null;
+		derivedTextJobs.clearSuggestions(tid);
 		auto msgNonce = json.correlation_id;
 		td.processQueue.setGoal(ProcessState.Alive).then(() {
 			auto td = &tasks[tid];
@@ -2125,7 +2138,7 @@ class App : ToolsBackend
 			persistence.setTitle(tid, td.title);
 			broadcastTitleUpdate(tid, td.title);
 			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				generateTitle(tid, textContent);
+				derivedTextJobs.generateTitle(tid, textContent);
 			}).ignoreResult();
 		}
 
@@ -2162,7 +2175,7 @@ class App : ToolsBackend
 			td.status = "alive";
 			persistence.setStatus(tid, "alive");
 			try
-				generateSuggestions(tid);
+				derivedTextJobs.generateSuggestions(tid);
 			catch (Exception e)
 				warningf("Error generating suggestions: %s", e.msg);
 
@@ -2784,7 +2797,7 @@ class App : ToolsBackend
 				td.status = "active";
 				persistence.setStatus(tid, "active");
 				try
-					generateSuggestions(tid);
+					derivedTextJobs.generateSuggestions(tid);
 				catch (Exception e)
 					warningf("Error generating suggestions: %s", e.msg);
 				broadcastTaskUpdate(tid);
@@ -3081,8 +3094,7 @@ class App : ToolsBackend
 		td.needsAttention = false;
 		persistence.setNeedsAttention(tid, false);
 		td.notificationBody = "";
-		td.suggestGenHandle = null; // cancel any in-flight suggestion generation
-		td.suggestGeneration++;
+		derivedTextJobs.discardInFlightSuggestions(tid);
 		broadcastTaskUpdate(tid);
 	}
 
@@ -4232,7 +4244,7 @@ class App : ToolsBackend
 			: extractLastAssistantText(tid);
 		touchAndPersistLastActive(tid);
 		try
-			generateSuggestions(tid);
+			derivedTextJobs.generateSuggestions(tid);
 		catch (Exception e)
 			warningf("Error generating suggestions: %s", e.msg);
 	}
@@ -4337,18 +4349,7 @@ class App : ToolsBackend
 
 	private void cancelExitBackgroundWork(int tid)
 	{
-		if (tid !in tasks)
-			return;
-		if (tasks[tid].titleGenKill !is null)
-		{
-			tasks[tid].titleGenKill();
-			tasks[tid].titleGenKill = null;
-		}
-		if (tasks[tid].suggestGenKill !is null)
-		{
-			tasks[tid].suggestGenKill();
-			tasks[tid].suggestGenKill = null;
-		}
+		derivedTextJobs.cancelBackgroundWork(tid);
 	}
 
 	private void resetHistoryWatermarkAfterExit(int tid)
@@ -4923,14 +4924,7 @@ class App : ToolsBackend
 		if (tid !in tasks)
 			return;
 		clientHub.unsubscribeAll(tid);
-		auto td = &tasks[tid];
-		// Invalidate cached/in-flight suggestions so pre-reload content cannot replay.
-		td.lastSuggestions = null;
-		td.suggestGeneration++;
-		if (td.suggestGenKill !is null)
-			td.suggestGenKill();
-		td.suggestGenHandle = null;
-		td.suggestGenKill = null;
+		derivedTextJobs.invalidateSuggestions(tid);
 		clientHub.broadcast(toJson(TaskReloadMessage("task_reload", tid, reason)));
 	}
 
@@ -5133,49 +5127,6 @@ class App : ToolsBackend
 		return "";
 	}
 
-	/// Spawn a lightweight claude process to generate a concise title
-	/// from the user's initial message.
-	private void generateTitle(int tid, string userMessage)
-	{
-		auto td = &tasks[tid];
-
-		if (td.titleGenDone || td.titleGenHandle !is null)
-			return;
-
-		auto msg = userMessage.length > 500 ? userMessage[0 .. 500] : userMessage;
-		auto prompt = readPromptFile("prompts/generate-title.md", td.projectPath, ["user_message": msg]);
-		if (prompt.length == 0)
-			return;
-
-		auto titleHandle = agentForTask(tid).completeOneShot(prompt, "small", td.launch);
-		td.titleGenHandle = titleHandle.promise;
-		td.titleGenKill = titleHandle.cancel;
-		td.titleGenHandle.then((string title) {
-			if (tid !in tasks)
-				return;
-			tasks[tid].titleGenHandle = null;
-			tasks[tid].titleGenKill = null;
-			tasks[tid].titleGenDone = true;
-			if (title.length > 0 && title.length < 200)
-			{
-				tasks[tid].title = title;
-				persistence.setTitle(tid, title);
-				broadcastTitleUpdate(tid, title);
-			}
-		}).except((Exception e) {
-			if (tid !in tasks)
-				return;
-			tasks[tid].titleGenHandle = null;
-			tasks[tid].titleGenKill = null;
-			import ae.utils.json : toJson;
-			import cydo.protocol : ProcessStderrEvent;
-			ProcessStderrEvent ev;
-			ev.text = "failed to generate title: " ~ e.msg;
-			historyPipeline.broadcastTask(tid, TranslatedEvent(toJson(ev), null));
-		}).ignoreResult();
-
-	}
-
 	private void touchTask(int tid)
 	{
 		import std.datetime : Clock;
@@ -5361,133 +5312,6 @@ class App : ToolsBackend
 			}
 		}
 		return "";
-	}
-
-	private void generateSuggestions(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-
-		// Only generate for interactive (non-sub-task) sessions
-		if (td.parentTid != 0)
-			return;
-		if (td.wasKilledByUser)
-			return;
-
-		// Don't spawn if a suggestion generation is already in-flight
-		if (td.suggestGenHandle !is null)
-			return;
-
-		// Only generate when someone is actually viewing this task
-		if (!clientHub.hasSubscribers(tid))
-		{
-			tracef("generateSuggestions[%d]: no subscribers, skipping", tid);
-			return;
-		}
-
-		historyPipeline.ensureHistoryLoaded(tid);
-		auto history = buildAbbreviatedHistory(tid);
-		if (history.length == 0)
-		{
-			tracef("generateSuggestions[%d]: empty history, skipping", tid);
-			return;
-		}
-
-		auto prompt = readPromptFile("prompts/generate-suggestions.md", td.projectPath, ["conversation": history]);
-		if (prompt.length == 0)
-		{
-			warningf("generateSuggestions[%d]: prompt file not found or empty", tid);
-			return;
-		}
-		tracef("generateSuggestions[%d]: spawning one-shot (history.length=%d)", tid, history.length);
-
-		string debugDir;
-		{
-			if (config.dev_mode)
-			{
-				import std.datetime : Clock;
-				import std.path : buildPath;
-				import ae.sys.paths : getDataDir;
-				auto now = Clock.currTime;
-				debugDir = buildPath(getDataDir("cydo"), format("suggestion-debug/%04d-%02d-%02dT%02d:%02d:%02d-%d",
-					now.year, cast(int)now.month, now.day,
-					now.hour, now.minute, now.second, tid));
-				import std.file : mkdirRecurse, write;
-				mkdirRecurse(debugDir);
-				// Write context.jsonl — one raw history envelope per line
-				string jsonlContent;
-				foreach (ref d; tasks[tid].history)
-					jsonlContent ~= cast(string) d.toGC() ~ "\n";
-				write(debugDir ~ "/context.jsonl", jsonlContent);
-				// Write meta.json
-				static struct DebugMeta { int tid; string agentType; string taskType; string timestamp; }
-				auto timestamp = format("%04d-%02d-%02dT%02d:%02d:%02d",
-					now.year, cast(int)now.month, now.day,
-					now.hour, now.minute, now.second);
-				write(debugDir ~ "/meta.json", DebugMeta(tid, td.agentType, td.taskType, timestamp).toJson);
-			}
-		}
-
-		td.suggestGeneration++;
-		auto capturedGen = td.suggestGeneration;
-
-		auto suggestHandle = agentForTask(tid).completeOneShot(prompt, "small", td.launch);
-		td.suggestGenHandle = suggestHandle.promise;
-		td.suggestGenKill = suggestHandle.cancel;
-		td.suggestGenHandle.then((string result) {
-			if (tid !in tasks)
-				return;
-			if (tasks[tid].suggestGeneration != capturedGen)
-				return;
-			tasks[tid].suggestGenHandle = null;
-			tasks[tid].suggestGenKill = null;
-
-			if (debugDir.length)
-			{
-				import std.file : write;
-				write(debugDir ~ "/input.txt", prompt);
-				write(debugDir ~ "/output.txt", result);
-			}
-
-				import ae.utils.json : jsonParse;
-				string[] suggestionList;
-				try
-					suggestionList = jsonParse!(string[])(result);
-				catch (Exception e)
-				{
-					warningf("generateSuggestions: failed to parse result: %s\n---\n%s\n---", e.msg, result);
-					broadcastSuggestionsUpdate(tid, []);
-					return;
-				}
-
-			tasks[tid].lastSuggestions = suggestionList;
-			broadcastSuggestionsUpdate(tid, suggestionList);
-		}).except((Exception e) {
-			warningf("generateSuggestions[%d]: one-shot failed: %s", tid, e.msg);
-			if (tid !in tasks)
-				return;
-			tasks[tid].suggestGenHandle = null;
-			tasks[tid].suggestGenKill = null;
-			if (debugDir.length)
-			{
-				import std.file : write;
-				write(debugDir ~ "/input.txt", prompt);
-				write(debugDir ~ "/error.txt", e.msg);
-			}
-		}).ignoreResult();
-
-	}
-
-	/// Build an abbreviated conversation history string for suggestion generation.
-	private string buildAbbreviatedHistory(int tid)
-	{
-		if (tid !in tasks)
-			return "";
-		string[] envelopes;
-		foreach (ref d; tasks[tid].history)
-			envelopes ~= cast(string) d.toGC();
-		return buildAbbreviatedHistoryFromStrings(envelopes);
 	}
 
 }
