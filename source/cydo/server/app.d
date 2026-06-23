@@ -62,7 +62,7 @@ import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
-	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
+	spliceJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
@@ -2906,20 +2906,18 @@ class App : ToolsBackend
 		auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
 
-		// Compact to single line — JSONL requires one JSON object per line.
-		string compactContent;
+		string[] compactLines;
 		try
 		{
-			import std.json : parseJSON;
-			compactContent = parseJSON(newContent).toString();
+			compactLines = compactRawEventObjectSequence(newContent);
 		}
-		catch (Exception)
+		catch (Exception e)
 		{
-			ws.send(Data(toJson(ErrorMessage("error", "Invalid JSON in edited event", tid)).representation));
+			ws.send(Data(toJson(ErrorMessage("error", e.msg, tid)).representation));
 			return;
 		}
 
-		auto edited = editJsonlByContent(jsonlPath, originalLine, compactContent);
+		auto edited = spliceJsonlByContent(jsonlPath, originalLine, compactLines);
 
 		if (!edited)
 		{
@@ -2932,6 +2930,111 @@ class App : ToolsBackend
 
 		emitTaskReload(tid, "edit");
 		broadcastTaskUpdate(tid);
+	}
+
+	private static size_t findJsonObjectEnd(string input, size_t start)
+	{
+		assert(start < input.length && input[start] == '{');
+
+		int depth = 0;
+		bool inString = false;
+		bool escaping = false;
+
+		foreach (i, ch; input[start .. $])
+		{
+			if (inString)
+			{
+				if (escaping)
+				{
+					escaping = false;
+					continue;
+				}
+				if (ch == '\\')
+				{
+					escaping = true;
+					continue;
+				}
+				if (ch == '"')
+					inString = false;
+				continue;
+			}
+
+			switch (ch)
+			{
+				case '"':
+					inString = true;
+					break;
+				case '{':
+					depth++;
+					break;
+				case '}':
+					depth--;
+					if (depth == 0)
+						return start + i + 1;
+					break;
+				default:
+					break;
+			}
+		}
+
+		throw new Exception("Invalid JSON in edited event");
+	}
+
+	private static string[] compactRawEventObjectSequence(string input)
+	{
+		import std.ascii : isWhite;
+		import std.json : JSONType, parseJSON;
+
+		string[] compactLines;
+		size_t pos = 0;
+		while (true)
+		{
+			while (pos < input.length && input[pos].isWhite)
+				pos++;
+			if (pos >= input.length)
+				return compactLines;
+			if (input[pos] != '{')
+				throw new Exception("Edited event must contain only JSON objects");
+
+			auto end = findJsonObjectEnd(input, pos);
+			try
+			{
+				auto parsed = parseJSON(input[pos .. end]);
+				if (parsed.type != JSONType.object)
+					throw new Exception("Edited event must contain only JSON objects");
+				compactLines ~= parsed.toString();
+			}
+			catch (Exception e)
+			{
+				if (e.msg == "Edited event must contain only JSON objects")
+					throw e;
+				throw new Exception("Invalid JSON in edited event");
+			}
+			pos = end;
+		}
+	}
+
+	unittest
+	{
+		import std.exception : assertThrown;
+		import std.json : parseJSON;
+
+		assert(compactRawEventObjectSequence(" \n\t ").length == 0);
+
+		auto compact = compactRawEventObjectSequence(
+			"{\n"
+			~ "  \"message\": \"brace: } and quote: \\\\\\\"\",\n"
+			~ "  \"nested\": {\"value\": 1}\n"
+			~ "}\n"
+			~ "{\"message\":\"two\"}{\"message\":\"three\"}");
+		assert(compact.length == 3);
+		assert(parseJSON(compact[0])["message"].str == `brace: } and quote: \"`);
+		assert(parseJSON(compact[1])["message"].str == "two");
+		assert(parseJSON(compact[2])["message"].str == "three");
+
+		assertThrown!Exception(compactRawEventObjectSequence("null"));
+		assertThrown!Exception(compactRawEventObjectSequence("{\"message\":1} trailing"));
+		assertThrown!Exception(compactRawEventObjectSequence("{\"message\":"));
 	}
 
 	/// Send a user message to a task's agent session.

@@ -1,3 +1,8 @@
+import { execFileSync } from "child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { join } from "path";
+
+import type { Page } from "./fixtures";
 import {
   test,
   expect,
@@ -9,31 +14,79 @@ import {
   lastAssistantText,
 } from "./fixtures";
 
-test("edit raw JSON event persists to disk across reload", async ({
-  page,
-  agentType,
-}) => {
-  await enterSession(page);
-  await sendMessage(page, "run command echo edit-raw-marker");
+type AgentType = "claude" | "codex" | "copilot";
 
-  const timeout = responseTimeout(agentType);
+function currentTaskTid(page: Page): number {
+  const match = page.url().match(/\/task\/(\d+)(?:$|[/?#])/);
+  if (!match) throw new Error(`Could not extract tid from URL: ${page.url()}`);
+  return Number(match[1]);
+}
 
-  // Wait for the tool result so we know the full turn has completed
-  await expect(
-    page.locator(".tool-result", { hasText: "edit-raw-marker" }),
-  ).toBeVisible({ timeout });
+function lookupTaskSession(
+  tid: number,
+): { sessionId: string; projectPath: string; agentType: AgentType } {
+  const row = execFileSync(
+    "sqlite3",
+    [
+      "/tmp/cydo-backend/data/cydo/cydo.db",
+      `SELECT agent_session_id || '|' || project_path || '|' || agent_type FROM tasks WHERE tid = ${tid};`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  if (row.length === 0) throw new Error(`No task row found for tid ${tid}`);
+  const [sessionId, projectPath, agentType] = row.split("|");
+  if (!sessionId || !projectPath || !agentType)
+    throw new Error(`Incomplete task row for tid ${tid}: ${row}`);
+  if (agentType !== "claude" && agentType !== "codex" && agentType !== "copilot")
+    throw new Error(`Unexpected agent type ${agentType}`);
+  return { sessionId, projectPath, agentType };
+}
 
-  // Wait for the final "Done." response
-  await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
+function findFileRecursive(root: string, predicate: (path: string) => boolean): string | null {
+  for (const entry of readdirSync(root)) {
+    const fullPath = join(root, entry);
+    const stat = statSync(fullPath);
+    if (stat.isDirectory()) {
+      const nested = findFileRecursive(fullPath, predicate);
+      if (nested) return nested;
+      continue;
+    }
+    if (predicate(fullPath)) return fullPath;
+  }
+  return null;
+}
 
-  // Stop the session so we can edit
-  await killSession(page, agentType);
+function historyPathForTask(tid: number): string {
+  const { sessionId, projectPath, agentType } = lookupTaskSession(tid);
+  switch (agentType) {
+    case "claude":
+      return `/tmp/claude-test-home/projects/${projectPath.replace(/\//g, "-")}/${sessionId}.jsonl`;
+    case "codex": {
+      const path = findFileRecursive(
+        "/tmp/codex-test-home/sessions",
+        (candidate) =>
+          candidate.endsWith(".jsonl") &&
+          candidate.endsWith(`${sessionId}.jsonl`),
+      );
+      if (!path) throw new Error(`Could not find Codex history file for ${sessionId}`);
+      return path;
+    }
+    case "copilot":
+      return `/tmp/copilot-test-home/session-state/${sessionId}/events.jsonl`;
+  }
+}
 
-  // Find the last assistant message wrapper (the "Done." message)
+function readHistoryFile(historyPath: string): string {
+  if (!existsSync(historyPath))
+    throw new Error(`History file does not exist: ${historyPath}`);
+  return readFileSync(historyPath, "utf8");
+}
+
+async function openRawEditor(page: Page, messageText: string): Promise<string> {
   const assistantMsg = page
     .locator(".message-wrapper")
     .filter({
-      has: assistantText(page, "Done."),
+      has: assistantText(page, messageText),
     })
     .last();
   await assistantMsg.hover();
@@ -42,87 +95,179 @@ test("edit raw JSON event persists to disk across reload", async ({
   await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn.click();
 
-  // Use global locator for source-view since clicking view-source replaces
-  // the text content, which breaks the scoped filter.
   const sourceView = page.locator(".source-view");
   await expect(sourceView).toBeVisible({ timeout: 5_000 });
 
-  // Expand the first event
   const firstEventHeader = sourceView.locator(".source-event-header").first();
   await expect(firstEventHeader).toBeVisible({ timeout: 5_000 });
   await firstEventHeader.click();
 
-  // Switch to Raw tab inside the expanded event
   const rawTab = sourceView.locator(".source-tab", { hasText: "Raw" });
   await expect(rawTab).toBeVisible({ timeout: 5_000 });
   await rawTab.click();
 
-  // Wait for raw JSON to load
   const rawBlock = sourceView.locator(".code-pre-wrap").first();
   await expect(rawBlock).toBeVisible({ timeout: 10_000 });
-
-  // Hover over the block and click edit
   await rawBlock.hover();
+
   const editBtn = rawBlock.locator(".edit-btn");
   await expect(editBtn).toBeVisible({ timeout: 5_000 });
   await editBtn.click();
 
-  // Textarea should appear with the original JSON
   const textarea = page.locator(".raw-edit-textarea");
   await expect(textarea).toBeVisible({ timeout: 5_000 });
+  return textarea.inputValue();
+}
 
-  // Inject a unique marker into the raw JSON
-  const marker = `EDIT_RAW_TEST_${Date.now()}`;
-  const currentValue = await textarea.inputValue();
-  let modified: string;
-  try {
-    const parsed = JSON.parse(currentValue);
-    parsed._test_edit_marker = marker;
-    modified = JSON.stringify(parsed, null, 2);
-  } catch {
-    modified = currentValue.replace(
-      /\}$/,
-      `, "_test_edit_marker": "${marker}"}`,
-    );
+function rewriteFirstMatchingString(
+  value: unknown,
+  needle: string,
+  replacement: string,
+): boolean {
+  if (typeof value === "string") return false;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const child = value[i];
+      if (typeof child === "string" && child.includes(needle)) {
+        value[i] = child.replace(needle, replacement);
+        return true;
+      }
+      if (child && typeof child === "object" && rewriteFirstMatchingString(child, needle, replacement))
+        return true;
+    }
+    return false;
   }
+  if (!value || typeof value !== "object") return false;
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string" && child.includes(needle)) {
+      (value as Record<string, unknown>)[key] = child.replace(needle, replacement);
+      return true;
+    }
+    if (child && typeof child === "object" && rewriteFirstMatchingString(child, needle, replacement))
+      return true;
+  }
+  return false;
+}
 
-  await textarea.fill(modified);
+function rewriteVisibleText(rawJson: string, originalText: string, replacement: string): string {
+  const parsed = JSON.parse(rawJson) as unknown;
+  if (!rewriteFirstMatchingString(parsed, originalText, replacement))
+    throw new Error(`Could not find visible text ${originalText} in raw JSON`);
+  return JSON.stringify(parsed, null, 2);
+}
 
-  // Click Save — triggers JSONL rewrite and session reload
+async function createEditableStoppedSession(page: Page, agentType: AgentType) {
+  await enterSession(page);
+  await sendMessage(page, "run command echo edit-raw-marker");
+
+  const timeout = responseTimeout(agentType);
+  await expect(
+    page.locator(".tool-result", { hasText: "edit-raw-marker" }),
+  ).toBeVisible({ timeout });
+  await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
+  await expect
+    .poll(() => page.url(), { timeout: 15_000 })
+    .toMatch(/\/task\/\d+(?:$|[/?#])/);
+
+  const historyPath = historyPathForTask(currentTaskTid(page));
+
+  await killSession(page, agentType);
+  return { historyPath };
+}
+
+test("edit raw JSON event persists to disk across reload", async ({
+  page,
+  agentType,
+}) => {
+  const { historyPath } = await createEditableStoppedSession(page, agentType);
+
+  const marker = `EDIT_RAW_TEST_${Date.now()}`;
+  const currentValue = await openRawEditor(page, "Done.");
+  const parsed = JSON.parse(currentValue) as Record<string, unknown>;
+  parsed._test_edit_marker = marker;
+  await page.locator(".raw-edit-textarea").fill(JSON.stringify(parsed, null, 2));
+
   await page.locator(".edit-actions .btn-primary").click();
 
-  // Session reloads — wait for messages to reappear
   await expect(lastAssistantText(page, "Done.")).toBeVisible({
     timeout: 15_000,
   });
 
-  // Verify the edit persisted: re-open source view and check the marker
-  const assistantMsgAfter = page
-    .locator(".message-wrapper")
-    .filter({
-      has: assistantText(page, "Done."),
-    })
-    .last();
-  await assistantMsgAfter.hover();
+  const currentFile = readHistoryFile(historyPath);
+  expect(currentFile).toContain(marker);
 
-  const viewSourceBtn2 = assistantMsgAfter.locator(".view-source-btn");
-  await expect(viewSourceBtn2).toBeVisible({ timeout: 5_000 });
-  await viewSourceBtn2.click();
+  const reopenedValue = await openRawEditor(page, "Done.");
+  expect(reopenedValue).toContain(marker);
+});
 
-  const sourceView2 = page.locator(".source-view");
-  const firstEventHeader2 = sourceView2.locator(".source-event-header").first();
-  await expect(firstEventHeader2).toBeVisible({ timeout: 5_000 });
-  await firstEventHeader2.click();
+test("clearing raw JSON deletes the source line instead of writing null", async ({
+  page,
+  agentType,
+}) => {
+  const { historyPath } = await createEditableStoppedSession(page, agentType);
+  const originalFile = readHistoryFile(historyPath);
 
-  const rawTab2 = sourceView2.locator(".source-tab", { hasText: "Raw" });
-  await expect(rawTab2).toBeVisible({ timeout: 5_000 });
-  await rawTab2.click();
+  await openRawEditor(page, "Done.");
+  await page.locator(".raw-edit-textarea").fill("");
+  await page.locator(".edit-actions .btn-primary").click();
 
-  await expect(sourceView2.locator(".code-pre-wrap").first()).toBeVisible({
-    timeout: 10_000,
+  await expect(lastAssistantText(page, "Done.")).not.toBeVisible({
+    timeout: 15_000,
   });
-  // The marker injected into the raw event must survive the JSONL round-trip
-  await expect(
-    sourceView2.locator(".code-pre-wrap", { hasText: marker }),
-  ).toBeVisible({ timeout: 5_000 });
+
+  const rewrittenFile = readHistoryFile(historyPath);
+  expect(rewrittenFile).not.toContain("\nnull\n");
+  expect(rewrittenFile).not.toContain("\nnull");
+  expect(rewrittenFile.length).toBeLessThan(originalFile.length);
+});
+
+test("editing raw JSON to two top-level objects expands into two history lines", async ({
+  page,
+  agentType,
+}) => {
+  const { historyPath } = await createEditableStoppedSession(page, agentType);
+
+  const currentValue = await openRawEditor(page, "Done.");
+  const firstText = `EDIT_RAW_MULTI_A_${Date.now()}`;
+  const secondText = `EDIT_RAW_MULTI_B_${Date.now()}`;
+  const firstObject = rewriteVisibleText(currentValue, "Done.", firstText);
+  const secondObject = rewriteVisibleText(currentValue, "Done.", secondText);
+
+  await page
+    .locator(".raw-edit-textarea")
+    .fill(`${firstObject}\n${secondObject}`);
+  await page.locator(".edit-actions .btn-primary").click();
+
+  await expect(lastAssistantText(page, firstText)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(lastAssistantText(page, secondText)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const rawLines = readHistoryFile(historyPath)
+    .split("\n")
+    .filter((line) => line.trim().length > 0);
+  expect(rawLines.filter((line) => line.includes(firstText))).toHaveLength(1);
+  expect(rawLines.filter((line) => line.includes(secondText))).toHaveLength(1);
+});
+
+test("invalid raw JSON edit is rejected and leaves the JSONL file unchanged", async ({
+  page,
+  agentType,
+}) => {
+  const { historyPath } = await createEditableStoppedSession(page, agentType);
+  const originalFile = readHistoryFile(historyPath);
+
+  await openRawEditor(page, "Done.");
+  await page.locator(".raw-edit-textarea").fill("null");
+  const dialogPromise = page.waitForEvent("dialog").then(async (dialog) => {
+    const message = dialog.message();
+    await dialog.dismiss();
+    return message;
+  });
+  await page.locator(".edit-actions .btn-primary").click();
+  expect(await dialogPromise).toMatch(/Invalid JSON|JSON objects/);
+
+  expect(readHistoryFile(historyPath)).toBe(originalFile);
 });

@@ -533,9 +533,9 @@ bool editJsonlMessage(string jsonlPath, string targetId,
 	return true;
 }
 
-/// Edit a JSONL line identified by its exact original content.
-/// Returns true if the line was found and replaced.
-bool editJsonlByContent(string jsonlPath, string originalLine, string newLine)
+/// Replace the first JSONL line identified by its exact original content.
+/// Returns true if the line was found and spliced.
+bool spliceJsonlByContent(string jsonlPath, string originalLine, string[] newLines)
 {
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
@@ -553,7 +553,8 @@ bool editJsonlByContent(string jsonlPath, string originalLine, string newLine)
 		if (!found && line == originalLine)
 		{
 			found = true;
-			output ~= newLine ~ "\n";
+			foreach (newLine; newLines)
+				output ~= newLine ~ "\n";
 		}
 		else
 			output ~= line ~ "\n";
@@ -564,6 +565,27 @@ bool editJsonlByContent(string jsonlPath, string originalLine, string newLine)
 
 	write(jsonlPath, output);
 	return true;
+}
+
+unittest
+{
+	import std.array : join;
+	import std.file : mkdirRecurse, rmdirRecurse, write, readText;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-splice-jsonl-by-content");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	write(jsonlPath, [`{"a":1}`, "", `{"b":2}`, `{"c":3}`].join("\n") ~ "\n");
+
+	assert(spliceJsonlByContent(jsonlPath, `{"b":2}`,
+		[`{"x":1}`, `{"y":2}`]));
+	assert(readText(jsonlPath) == [`{"a":1}`, `{"x":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
+
+	assert(spliceJsonlByContent(jsonlPath, `{"x":1}`, []));
+	assert(readText(jsonlPath) == [`{"a":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
 }
 
 bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
