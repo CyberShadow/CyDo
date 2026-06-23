@@ -392,8 +392,8 @@ class TaskSessionRunner
 
 			host_.failPendingAskUserQuestionOnExit(tid);
 			host_.failPendingPermissionPromptOnExit(tid);
-			host_.drainIdleCallbacksOnExit(tid);
 			host_.failPendingAskRouteOnExit(tid);
+			host_.drainIdleCallbacksOnExit(tid);
 			host_.cancelExitBackgroundWork(tid);
 
 			bool missingExecutableLaunchFailure = exitCode != 0

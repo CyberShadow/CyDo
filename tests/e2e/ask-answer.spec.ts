@@ -1095,6 +1095,57 @@ test("Ask/Answer: Ask to busy (waiting) sub-task is enqueued", async ({
   ).toBeVisible({ timeout: 60_000 });
 });
 
+test("Ask/Answer: Ask to busy sub-task fails if child exits before delivery", async ({
+  page,
+  agentType,
+}) => {
+  test.setTimeout(TALK_TIMEOUT);
+
+  await enterSession(page);
+
+  // "call busy-child-test" creates:
+  //   - child A (tid=2): waits on a stalling grandchild (tid=4)
+  //   - child B (tid=3): asks the parent so the parent can issue another Ask
+  await sendMessage(page, "call busy-child-test");
+
+  await page.locator('.sidebar-item[data-tid="4"]').waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText("Done.", { exact: true })
+      .last(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Parent asks the busy child. Delivery is queued on the child's idle callbacks.
+  await sendMessage(page, "call ask 2 child-exit-before-delivery?");
+  await expect(
+    page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // Stop the child before it can become idle and drain the queued injected Ask.
+  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+  await page.getByRole("button", { name: "Kill" }).click({ timeout: 30_000 });
+
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(
+    page
+      .locator('[style*="display: contents"] .message-list')
+      .getByText(/Session ended while waiting for Ask response/i)
+      .last(),
+  ).toBeVisible({ timeout: 15_000 });
+});
+
 test("Ask/Answer: yield enforcement steers parent with unanswered child question", async ({
   page,
   agentType,

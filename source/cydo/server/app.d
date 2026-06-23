@@ -4231,6 +4231,12 @@ class App : ToolsBackend
 	{
 		if (tid !in tasks)
 			return;
+		if (tasks[tid].wasKilledByUser
+			|| (tasks[tid].pendingContinuation is null && !hasPendingChildQuestion(tid)))
+		{
+			questionRouter.failQuestionRoutesForAnswerer(tid,
+				"Session ended while waiting for Ask response");
+		}
 		if (tasks[tid].pendingAskPromise !is null && tasks[tid].pendingAskQid > 0)
 			questionRouter.failQuestionRoute(tasks[tid].pendingAskQid,
 				"Session ended while waiting for Ask response");

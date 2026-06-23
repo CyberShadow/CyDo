@@ -6,7 +6,8 @@ import std.format : format;
 import std.logger : errorf;
 
 import ae.utils.json : toJson;
-import ae.utils.promise : Promise, resolve;
+import ae.utils.promise : Promise, resolve, race;
+import ae.utils.promise.await : async, await;
 
 import cydo.agent.protocol : AnswerResult, ContentBlock, QuestionResult;
 import cydo.batch.registry : BatchHandle, BatchRegistry;
@@ -109,6 +110,16 @@ public:
 		if (auto qp = qid in pendingQuestions_)
 			(*qp).fulfill(McpResult(message, true));
 		clearQuestionRoute(qid);
+	}
+
+	void failQuestionRoutesForAnswerer(int answererTid, string message)
+	{
+		int[] qids;
+		foreach (qid, route; questionRoutes_)
+			if (route.answererTid == answererTid)
+				qids ~= qid;
+		foreach (qid; qids)
+			failQuestionRoute(qid, message);
 	}
 
 	McpResult buildQuestionResult(int childTid, int qid, string questionText)
@@ -600,13 +611,17 @@ private:
 			askerTd.pendingAskQid = qid;
 		}
 
+		Promise!McpResult routeErrorPromise;
 		if (currentRoute.wait == QuestionWait.batchLoop)
 		{
+			routeErrorPromise = new Promise!McpResult;
 			auto handle = BatchHandle(currentRoute.askerTid, currentRoute.batchId);
 			auto slot = currentRoute.batchSlot;
 			auto childTid = currentRoute.batchChildTid;
 			promise.then((McpResult r) {
 				string error;
+				if (r.isError)
+					routeErrorPromise.fulfill(r);
 				if (!batchRegistry_.enqueueChildDone(handle, slot, childTid, r, error))
 					errorf("batch router error: %s", error);
 				clearQuestionRoute(qid);
@@ -651,7 +666,11 @@ private:
 			deliverInjectedQuestion(currentRoute, message);
 
 		if (currentRoute.wait == QuestionWait.batchLoop)
-			return host_.awaitBatchLoop(currentRoute.askerTid, currentRoute.batchId);
+		{
+			auto batchPromise = async(host_.awaitBatchLoop(currentRoute.askerTid,
+				currentRoute.batchId).await);
+			return race([routeErrorPromise, batchPromise]);
+		}
 		return promise;
 	}
 }
