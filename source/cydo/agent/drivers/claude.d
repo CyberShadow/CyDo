@@ -1517,8 +1517,12 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 	TypeProbe probe;
 	try
 		probe = jsonParse!TypeProbe(rawLine);
-	catch (Exception)
-	{ return [TranslatedEvent(rawLine, rawLine)]; }
+	catch (Exception e)
+	{
+		import cydo.agent.protocol : makeUnrecognizedEvent;
+		tracef("translateClaudeHistoryEvent: type probe parse error: %s", e.msg);
+		return [TranslatedEvent(makeUnrecognizedEvent("history parse error: " ~ e.msg), rawLine)];
+	}
 
 	// Probe timestamp from the JSONL line (present on history lines).
 	@JSONPartial static struct TimestampProbe { @JSONOptional string timestamp; }
@@ -1546,6 +1550,23 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 		if (ev.ts == AbsTime.init)
 			ev.ts = ts;
 	return result;
+}
+
+unittest
+{
+	@JSONPartial static struct EventTypeProbe
+	{
+		string type;
+	}
+
+	auto translated = translateClaudeHistoryEvent("null");
+	assert(translated.length == 1);
+	assert(translated[0].translated != "null");
+	assert(translated[0].translated.length > 0);
+	assert(translated[0].raw == "null");
+
+	auto ev = jsonParse!EventTypeProbe(translated[0].translated);
+	assert(ev.type == "agent/unrecognized");
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.
