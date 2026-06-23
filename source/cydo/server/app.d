@@ -29,7 +29,7 @@ mixin SSLUseLib;
 import cydo.mcp : McpResult;
 import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
-import cydo.tasks.model : BatchSignal;
+import cydo.domain.tasks.model : BatchSignal;
 import cydo.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.batch.router : BatchConsumeKind;
 import cydo.batch.registry : BatchHandle, BatchRegistry;
@@ -46,13 +46,13 @@ import cydo.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageT
 import cydo.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.questions.router : QuestionRouter, QuestionRouterHost;
-import cydo.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
-import cydo.task_types.catalog : TaskTypeCatalog;
+import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
+import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
-import cydo.usage.tracker : AgentUsageTracker;
+import cydo.domain.usage.tracker : AgentUsageTracker;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
@@ -61,11 +61,11 @@ import cydo.agent.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
-import cydo.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
+import cydo.domain.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
 	editJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
-import cydo.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
+import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
 import cydo.foundation.system.framing : tryParseSystemFraming, tryExtractSubject,
@@ -75,7 +75,7 @@ import cydo.foundation.system.known_messages : KnownSystemMessageKind, KnownSyst
 	handoffSubject, modeSwitchSubject, sessionStartSubject,
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;
-import cydo.tasks.model;
+import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.workspace.worktree;
 

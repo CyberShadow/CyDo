@@ -5,7 +5,7 @@ import std.format : format;
 import ae.utils.promise : PromiseQueue;
 
 import cydo.mcp : McpResult;
-import cydo.tasks.model : BatchSignal;
+import cydo.domain.tasks.model : BatchSignal;
 
 package(cydo):
 

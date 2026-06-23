@@ -12,7 +12,7 @@ import ae.utils.json : jsonParse, toJson;
 
 import cydo.mcp.binding : ToolsList, buildToolsListJson;
 import cydo.mcp.tools : CydoTools;
-import cydo.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
+import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, computeReachesWorktree,
 	computeTreeReadOnly, formatCreatableTaskTypes, formatHandoffs,
 	formatSwitchModes, isInteractive, loadTaskTypes, renderPrompt,

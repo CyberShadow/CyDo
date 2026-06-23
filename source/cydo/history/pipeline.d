@@ -19,8 +19,8 @@ import cydo.agent.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskEventSeqEnvelope, TranslatedEvent, UnconfirmedUserEventEnvelope,
 	extractContentText;
 import cydo.runtime.config : AgentDriver;
-import cydo.storage.persistence : LoadedHistory, loadTaskHistory;
-import cydo.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMessage,
+import cydo.domain.storage.persistence : LoadedHistory, loadTaskHistory;
+import cydo.domain.tasks.model : QueueOperationProbe, TaskData, TaskHistoryEndMessage,
 	TaskHistoryStartMessage, buildSyntheticUserEvent, extractEventFromEnvelope,
 	extractTsFromEnvelope;
 
@@ -738,7 +738,7 @@ unittest
 	import std.path : buildPath, dirName;
 	import std.process : environment;
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
-	import cydo.tasks.model : Watermark;
+	import cydo.domain.tasks.model : Watermark;
 
 	auto dir = buildPath("/tmp", "cydo-history-tool-result-after-dequeue");
 	if (exists(dir))

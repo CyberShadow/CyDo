@@ -11,8 +11,8 @@ import ae.utils.promise : Promise;
 import ae.utils.promise.concurrency : threadAsync;
 
 import cydo.runtime.launch.sandbox : runtimeDir;
-import cydo.tasks.model : ArchiveState;
-import cydo.tasks.model : worktreePathForTaskDir;
+import cydo.domain.tasks.model : ArchiveState;
+import cydo.domain.tasks.model : worktreePathForTaskDir;
 import cydo.workspace.worktree : archiveWorktree, hasArchiveRef, unarchiveWorktree;
 
 package(cydo):

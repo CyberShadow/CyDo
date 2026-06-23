@@ -14,10 +14,10 @@ import ae.utils.promise.concurrency : threadAsync;
 
 import cydo.agent.contract : Agent, DiscoveredSession;
 import cydo.runtime.config : CydoConfig;
-import cydo.storage.persistence : Persistence;
+import cydo.domain.storage.persistence : Persistence;
 import cydo.runtime.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	resolveSandboxForDiscovery;
-import cydo.tasks.model : ProjectInfo, WorkspaceInfo;
+import cydo.domain.tasks.model : ProjectInfo, WorkspaceInfo;
 
 package(cydo):
 

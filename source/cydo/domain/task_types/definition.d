@@ -2,7 +2,7 @@
 ///
 /// Task types define agent behavior, capabilities, and flow control.
 /// See docs/task-types.md for the design document.
-module cydo.task_types.definition;
+module cydo.domain.task_types.definition;
 
 import configy.attributes : Key, Optional;
 

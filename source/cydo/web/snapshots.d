@@ -6,12 +6,12 @@ import std.regex : matchFirst, regex;
 
 import ae.utils.json : toJson;
 
-import cydo.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEntry,
+import cydo.domain.tasks.model : AgentInfoEntry, AgentsListMessage, EntryPointEntry,
 	NoticesListMessage, Notice, ProjectTaskTypesListMessage,
 	ServerStatusMessage, TaskListEntry, TaskTypesListMessage,
 	TasksListMessage, TaskData, TypeInfoEntry, WorkspaceInfo,
 	WorkspacesListMessage, stdTimeToUnixMillis;
-import cydo.task_types.definition : TaskTypeDef, UserEntryPointDef, byName;
+import cydo.domain.task_types.definition : TaskTypeDef, UserEntryPointDef, byName;
 
 TaskListEntry buildTaskEntry(ref TaskData td)
 {

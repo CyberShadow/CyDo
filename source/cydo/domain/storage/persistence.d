@@ -1,4 +1,4 @@
-module cydo.storage.persistence;
+module cydo.domain.storage.persistence;
 
 import core.lifetime : move;
 

@@ -1,4 +1,4 @@
-module cydo.tasks.model;
+module cydo.domain.tasks.model;
 
 private string[string] repoPathCache;
 
@@ -10,11 +10,11 @@ import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
-import cydo.storage.persistence : LoadedHistory;
+import cydo.domain.storage.persistence : LoadedHistory;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
-import cydo.task_types.definition : substituteVars;
+import cydo.domain.task_types.definition : substituteVars;
 import std.exception : enforce;
 import std.format : format;
 import std.path : buildPath, expandTilde;
@@ -196,7 +196,7 @@ public:
     long lastEventTs() const
     {
         assertInitialized();
-        import cydo.tasks.model : extractTsFromEnvelope;
+        import cydo.domain.tasks.model : extractTsFromEnvelope;
         auto contents = lastEventContents();
         if (contents.length == 0)
             return 0;

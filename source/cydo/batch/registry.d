@@ -28,7 +28,7 @@ import ae.utils.promise : Promise;
 import cydo.batch.router : BatchConsumeKind, BatchConsumeResult, BatchState, buildBatchState,
 	consumeBatchSignal, validateBatchCompletion;
 import cydo.mcp : McpResult;
-import cydo.tasks.model : BatchSignal;
+import cydo.domain.tasks.model : BatchSignal;
 
 package(cydo):
 

@@ -2,7 +2,7 @@ module cydo.history.abbrev;
 
 import std.logger : tracef;
 
-import cydo.tasks.model : extractEventFromEnvelope;
+import cydo.domain.tasks.model : extractEventFromEnvelope;
 
 /// Extract text content from a translated protocol event. Handles agnostic
 /// protocol (item/started user_message, item/completed) and legacy formats.
