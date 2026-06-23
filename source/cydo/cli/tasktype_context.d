@@ -1,4 +1,4 @@
-module cydo.tools.tasktype_context;
+module cydo.cli.tasktype_context;
 
 import std.algorithm : filter, map;
 import std.array : join;

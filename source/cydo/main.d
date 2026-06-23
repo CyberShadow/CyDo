@@ -141,7 +141,7 @@ static:
 		Parameter!(string, "Task type name.") typeName,
 	)
 	{
-		import cydo.tools.tasktype_context : runDumpContext;
+		import cydo.cli.tasktype_context : runDumpContext;
 		runDumpContext(resolveTaskTypesPath(), typeName);
 	}
 
