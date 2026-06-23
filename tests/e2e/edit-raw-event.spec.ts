@@ -1,5 +1,8 @@
-import { execFileSync } from "child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { test as isolatedTest } from "@playwright/test";
+import type { Locator } from "@playwright/test";
+import type { ChildProcess } from "child_process";
+import { execFileSync, spawn } from "child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import type { Page } from "./fixtures";
@@ -15,6 +18,8 @@ import {
 } from "./fixtures";
 
 type AgentType = "claude" | "codex" | "copilot";
+
+const BACKEND_URL = "http://localhost:3940";
 
 function currentTaskTid(page: Page): number {
   const match = page.url().match(/\/task\/(\d+)(?:$|[/?#])/);
@@ -82,6 +87,10 @@ function readHistoryFile(historyPath: string): string {
   return readFileSync(historyPath, "utf8");
 }
 
+function compactRawJson(rawJson: string): string {
+  return JSON.stringify(JSON.parse(rawJson) as unknown);
+}
+
 async function openRawEditor(page: Page, messageText: string): Promise<string> {
   const assistantMsg = page
     .locator(".message-wrapper")
@@ -89,9 +98,23 @@ async function openRawEditor(page: Page, messageText: string): Promise<string> {
       has: assistantText(page, messageText),
     })
     .last();
-  await assistantMsg.hover();
+  return openRawEditorForMessageWrapper(page, assistantMsg);
+}
 
-  const viewSourceBtn = assistantMsg.locator(".view-source-btn");
+async function openRawEditorForUserMessage(page: Page, messageText: string): Promise<string> {
+  const userMsg = page
+    .locator(".message-wrapper")
+    .filter({
+      has: page.locator(".message.user-message", { hasText: messageText }),
+    })
+    .last();
+  return openRawEditorForMessageWrapper(page, userMsg);
+}
+
+async function openRawEditorForMessageWrapper(page: Page, messageWrapper: Locator): Promise<string> {
+  await messageWrapper.hover();
+
+  const viewSourceBtn = messageWrapper.locator(".view-source-btn");
   await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
   await viewSourceBtn.click();
 
@@ -173,6 +196,69 @@ async function createEditableStoppedSession(page: Page, agentType: AgentType) {
 
   await killSession(page, agentType);
   return { historyPath };
+}
+
+async function waitForBackend(proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
+  const processExited = new Promise<never>((_, reject) => {
+    if (proc.exitCode !== null) {
+      reject(new Error(`Backend already exited with code ${proc.exitCode}`));
+      return;
+    }
+    proc.on("exit", (code, signal) =>
+      reject(
+        new Error(
+          `Backend exited with ${code}${signal ? ` (signal ${signal})` : ""} before becoming ready`,
+        ),
+      ),
+    );
+  });
+
+  const polling = (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(BACKEND_URL);
+        if (res.ok || res.status < 500) return;
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    throw new Error(`Backend at ${BACKEND_URL} did not start within ${timeoutMs}ms`);
+  })();
+
+  await Promise.race([polling, processExited]);
+}
+
+function spawnBackend(workDir: string, workerHome: string): ChildProcess {
+  return spawn(process.env.CYDO_BIN!, [], {
+    detached: true,
+    cwd: workDir,
+    env: {
+      ...process.env,
+      HOME: workerHome,
+      CLAUDE_CONFIG_DIR: `${workerHome}/.claude`,
+      XDG_DATA_HOME: `${workDir}/data`,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+}
+
+async function killBackend(proc: ChildProcess): Promise<void> {
+  try {
+    process.kill(-proc.pid!, "SIGTERM");
+  } catch {}
+  await new Promise<void>((r) => proc.on("exit", () => r()));
+}
+
+function createImportWorkDir(suffix: string): { workDir: string; workerHome: string } {
+  const workDir = `/tmp/cydo-edit-raw-import-${suffix}`;
+  const workerHome = `${workDir}/home`;
+  rmSync(workDir, { recursive: true, force: true });
+  mkdirSync(`${workDir}/data`, { recursive: true });
+  symlinkSync("/tmp/cydo-test-workspace/defs", `${workDir}/defs`);
+  mkdirSync(`${workerHome}/.config/cydo`, { recursive: true });
+  return { workDir, workerHome };
 }
 
 test("edit raw JSON event persists to disk across reload", async ({
@@ -270,4 +356,199 @@ test("invalid raw JSON edit is rejected and leaves the JSONL file unchanged", as
   expect(await dialogPromise).toMatch(/Invalid JSON|JSON objects/);
 
   expect(readHistoryFile(historyPath)).toBe(originalFile);
+});
+
+isolatedTest("editing the second identical raw line rewrites that physical JSONL line", { tag: "@claude-only" }, async ({
+  page,
+}) => {
+  const { workDir, workerHome } = createImportWorkDir(`duplicate-${Date.now()}`);
+  const projectPath = "/tmp/cydo-test-workspace";
+  const mangledPath = projectPath.replace(/\//g, "-");
+  const sessionId = "99999999-aaaa-bbbb-cccc-dddddddddddd";
+  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+  mkdirSync(claudeProjectsDir, { recursive: true });
+
+  const duplicatePrompt = "duplicate imported line";
+  const duplicateRawLine = JSON.stringify({
+    type: "user",
+    message: { content: duplicatePrompt },
+  });
+  const historyPath = `${claudeProjectsDir}/${sessionId}.jsonl`;
+  writeFileSync(
+    historyPath,
+    [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        model: "claude-3-5-sonnet-20241022",
+        cwd: projectPath,
+      }),
+      duplicateRawLine,
+      duplicateRawLine,
+    ].join("\n") + "\n",
+  );
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+  );
+
+  const proc = spawnBackend(workDir, workerHome);
+  try {
+    await waitForBackend(proc);
+    await page.goto(BACKEND_URL + "/");
+
+    const importableLabel = page.locator(
+      ".project-card-sessions .sidebar-item .sidebar-label",
+      { hasText: duplicatePrompt },
+    );
+    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await importableLabel.click();
+
+    await expect(page.locator(".message.user-message", { hasText: duplicatePrompt })).toHaveCount(2, {
+      timeout: 15_000,
+    });
+
+    const duplicateValue = await openRawEditorForUserMessage(page, duplicatePrompt);
+    const rawLinesBefore = readHistoryFile(historyPath)
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    expect(rawLinesBefore.filter((line) => line === duplicateRawLine)).toHaveLength(2);
+
+    const replacement = `duplicate imported line fixed ${Date.now()}`;
+    const rewrittenValue = rewriteVisibleText(duplicateValue, duplicatePrompt, replacement);
+
+    await page.locator(".raw-edit-textarea").fill(rewrittenValue);
+    await page.locator(".edit-actions .btn-primary").click();
+
+    await expect(page.locator(".message.user-message", { hasText: duplicatePrompt })).toHaveCount(1, {
+      timeout: 15_000,
+    });
+    await expect(page.locator(".message.user-message", { hasText: replacement })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const rewrittenLines = readHistoryFile(historyPath)
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    const originalIndex = rewrittenLines.indexOf(duplicateRawLine);
+    const replacementIndex = rewrittenLines.findIndex((line) => line.includes(replacement));
+    expect(rewrittenLines.filter((line) => line === duplicateRawLine)).toHaveLength(1);
+    expect(originalIndex).toBeGreaterThanOrEqual(0);
+    expect(replacementIndex).toBeGreaterThanOrEqual(0);
+    expect(originalIndex).toBeLessThan(replacementIndex);
+  } finally {
+    await killBackend(proc);
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+isolatedTest("editing replayed steering raw JSON rewrites the earlier enqueue line", { tag: "@claude-only" }, async ({
+  page,
+}) => {
+  const { workDir, workerHome } = createImportWorkDir(`steering-${Date.now()}`);
+  const projectPath = "/tmp/cydo-test-workspace";
+  const mangledPath = projectPath.replace(/\//g, "-");
+  const sessionId = "88888888-aaaa-bbbb-cccc-eeeeeeeeeeee";
+  const claudeProjectsDir = `${workerHome}/.claude/projects/${mangledPath}`;
+  mkdirSync(claudeProjectsDir, { recursive: true });
+
+  const steeringPrompt = "queued imported steering";
+  const assistantReply = "assistant after steering";
+  const enqueueRawLine = JSON.stringify({
+    type: "queue-operation",
+    operation: "enqueue",
+    timestamp: "2026-06-23T00:00:00Z",
+    sessionId,
+    content: steeringPrompt,
+  });
+  const dequeueRawLine = JSON.stringify({
+    type: "queue-operation",
+    operation: "dequeue",
+    timestamp: "2026-06-23T00:00:01Z",
+    sessionId,
+  });
+  const assistantRawLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      id: "msg-1",
+      content: [{ type: "text", text: assistantReply }],
+      model: "claude-3-5-sonnet-20241022",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+  const discoverabilityRawLine = JSON.stringify({
+    type: "user",
+    message: { content: "import discovery anchor" },
+  });
+  const historyPath = `${claudeProjectsDir}/${sessionId}.jsonl`;
+  writeFileSync(
+    historyPath,
+    [
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+        model: "claude-3-5-sonnet-20241022",
+        cwd: projectPath,
+      }),
+      enqueueRawLine,
+      dequeueRawLine,
+      assistantRawLine,
+      discoverabilityRawLine,
+    ].join("\n") + "\n",
+  );
+  writeFileSync(
+    `${workerHome}/.config/cydo/config.yaml`,
+    ["workspaces:", "  testws:", `    root: ${projectPath}`].join("\n") + "\n",
+  );
+
+  const proc = spawnBackend(workDir, workerHome);
+  try {
+    await waitForBackend(proc);
+    await page.goto(BACKEND_URL + "/");
+
+    const importableLabel = page.locator(".project-card-sessions .sidebar-item .sidebar-label").first();
+    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await importableLabel.click();
+
+    await expect(page.locator(".message.user-message", { hasText: steeringPrompt })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".message.assistant-message", { hasText: assistantReply })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const currentValue = await openRawEditorForUserMessage(page, steeringPrompt);
+    expect(currentValue).toContain('"operation": "enqueue"');
+
+    const replacement = `queued steering fixed ${Date.now()}`;
+    const rewrittenValue = rewriteVisibleText(currentValue, steeringPrompt, replacement);
+
+    await page.locator(".raw-edit-textarea").fill(rewrittenValue);
+    await page.locator(".edit-actions .btn-primary").click();
+
+    await expect(page.locator(".message.user-message", { hasText: steeringPrompt })).not.toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".message.user-message", { hasText: replacement })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".message.assistant-message", { hasText: assistantReply })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const rewrittenLines = readHistoryFile(historyPath)
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    expect(rewrittenLines).toHaveLength(5);
+    expect(rewrittenLines[1]).toContain(replacement);
+    expect(rewrittenLines[1]).toContain('"operation":"enqueue"');
+    expect(rewrittenLines[2]).toBe(dequeueRawLine);
+    expect(rewrittenLines[3]).toBe(assistantRawLine);
+    expect(rewrittenLines[4]).toBe(discoverabilityRawLine);
+  } finally {
+    await killBackend(proc);
+    rmSync(workDir, { recursive: true, force: true });
+  }
 });

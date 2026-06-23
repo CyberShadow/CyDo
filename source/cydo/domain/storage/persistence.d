@@ -358,10 +358,13 @@ struct Persistence
 }
 
 /// Result from loadTaskHistory: translated events plus parallel raw sources.
+enum noSourceLine = 0;
+
 struct LoadedHistory
 {
 	DataVec history;
 	string[] rawSource;
+	int[] sourceLine;
 }
 
 /// Load task history from a JSONL file.
@@ -399,6 +402,9 @@ LoadedHistory loadTaskHistory(int tid, string jsonlPath,
 				JSONFragment(t.translated)));
 			result.history ~= Data(injected.representation);
 			result.rawSource ~= t.raw;
+			result.sourceLine ~= t.raw is null
+				? noSourceLine
+				: (t.sourceLine != noSourceLine ? t.sourceLine : lineNum);
 		}
 	}
 	return move(result);
@@ -533,24 +539,26 @@ bool editJsonlMessage(string jsonlPath, string targetId,
 	return true;
 }
 
-/// Replace the first JSONL line identified by its exact original content.
-/// Returns true if the line was found and spliced.
-bool spliceJsonlByContent(string jsonlPath, string originalLine, string[] newLines)
+/// Replace the JSONL line at 1-based lineNum with zero, one, or many lines.
+/// Returns true if the target line was found and spliced.
+bool spliceJsonlByLine(string jsonlPath, int lineNum, string[] newLines)
 {
 	import std.file : exists, readText, write;
 	import std.string : lineSplitter;
 
-	if (jsonlPath.length == 0 || !exists(jsonlPath))
+	if (jsonlPath.length == 0 || !exists(jsonlPath) || lineNum == noSourceLine)
 		return false;
 
 	string output;
 	bool found = false;
+	int currentLineNum = 0;
 	foreach (line; readText(jsonlPath).lineSplitter)
 	{
+		currentLineNum++;
 		if (line.length == 0)
 			continue;
 
-		if (!found && line == originalLine)
+		if (!found && currentLineNum == lineNum)
 		{
 			found = true;
 			foreach (newLine; newLines)
@@ -573,19 +581,22 @@ unittest
 	import std.file : mkdirRecurse, rmdirRecurse, write, readText;
 	import std.path : buildPath;
 
-	auto dir = buildPath("/tmp", "cydo-persist-splice-jsonl-by-content");
+	auto dir = buildPath("/tmp", "cydo-persist-splice-jsonl-by-line");
 	mkdirRecurse(dir);
 	scope(exit) rmdirRecurse(dir);
 
 	auto jsonlPath = buildPath(dir, "events.jsonl");
 	write(jsonlPath, [`{"a":1}`, "", `{"b":2}`, `{"c":3}`].join("\n") ~ "\n");
 
-	assert(spliceJsonlByContent(jsonlPath, `{"b":2}`,
+	assert(spliceJsonlByLine(jsonlPath, 3,
 		[`{"x":1}`, `{"y":2}`]));
 	assert(readText(jsonlPath) == [`{"a":1}`, `{"x":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
 
-	assert(spliceJsonlByContent(jsonlPath, `{"x":1}`, []));
+	assert(spliceJsonlByLine(jsonlPath, 0, [`{"ignored":true}`]) == false);
+	assert(spliceJsonlByLine(jsonlPath, 2, []));
 	assert(readText(jsonlPath) == [`{"a":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
+
+	assert(spliceJsonlByLine(jsonlPath, 99, [`{"ignored":true}`]) == false);
 }
 
 bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
@@ -834,9 +845,35 @@ unittest
 	// Null translateLine: each raw line becomes one event.
 	auto partial = loadTaskHistory(1, jsonlPath, null, n);
 	assert(partial.history.length == 2, "expected 2 events for partial read");
+	assert(partial.sourceLine == [1, 2], "expected source lines for partial read");
 
 	auto full = loadTaskHistory(1, jsonlPath, null, ulong.max);
 	assert(full.history.length == 3, "expected 3 events for full read");
+	assert(full.sourceLine == [1, 2, 3], "expected source lines for full read");
+}
+
+unittest
+{
+	import std.file : mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-load-history-null-raw-source-line");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	auto line = `{"type":"assistant","message":{"content":"file-backed line"}}`;
+	write(jsonlPath, line ~ "\n");
+
+	auto loaded = loadTaskHistory(1, jsonlPath, (string rawLine, int lineNum) {
+		return [TranslatedEvent(`{"type":"agent/warning","message":"synthetic from file line"}`, null)];
+	});
+
+	assert(loaded.history.length == 1, "expected one translated event");
+	assert(loaded.rawSource.length == 1 && loaded.rawSource[0] is null,
+		"expected translated event to keep null raw source");
+	assert(loaded.sourceLine == [noSourceLine],
+		"expected null-raw translated event to keep the no-source sentinel");
 }
 
 /// Returns true if this JSONL line is a queue-operation, file-history-snapshot,

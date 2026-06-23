@@ -62,7 +62,7 @@ import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : ForkResult, LoadedHistory, Persistence, countLinesAfterForkId, createForkTask, openDatabase,
-	spliceJsonlByContent, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
+	spliceJsonlByLine, editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl, loadTaskHistory, truncateJsonl, writeJsonlPrefix;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
@@ -2901,7 +2901,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto originalLine = td.history.rawAt(seq);
+		auto sourceLine = td.history.sourceLineAt(seq);
 		auto ta = agentForTask(tid);
 		auto jsonlPath = ta.historyPath(td.agentSessionId, effectiveCwd(td));
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
@@ -2917,7 +2917,7 @@ class App : ToolsBackend
 			return;
 		}
 
-		auto edited = spliceJsonlByContent(jsonlPath, originalLine, compactLines);
+		auto edited = spliceJsonlByLine(jsonlPath, sourceLine, compactLines);
 
 		if (!edited)
 		{

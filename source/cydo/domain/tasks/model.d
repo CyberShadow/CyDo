@@ -10,7 +10,7 @@ import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
-import cydo.domain.storage.persistence : LoadedHistory;
+import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
 
 import cydo.agent.session : AgentSession;
 import cydo.mcp : McpResult;
@@ -160,6 +160,7 @@ struct HistoryStore
 private:
     DataVec  history_;
     string[] rawSource_;
+    int[]    sourceLine_;
     DataVec  pendingEvents_;
     string[] pendingRaw_;
     enum State : ubyte { uninitialized, loaded, deferred }
@@ -226,6 +227,15 @@ public:
         return rawSource_[i];
     }
 
+    /// Returns the 1-based physical JSONL source line at index i, or 0 for synthetic events.
+    int sourceLineAt(size_t i) const
+    {
+        assert(state_ == State.loaded, "HistoryStore.sourceLineAt requires loaded state");
+        if (i >= sourceLine_.length)
+            return noSourceLine;
+        return sourceLine_[i];
+    }
+
     int opApply(scope int delegate(size_t, ref Data) dg)
     {
         assert(state_ == State.loaded, "HistoryStore.opApply requires loaded state");
@@ -270,6 +280,7 @@ public:
         }
         history_ ~= event;
         rawSource_ ~= raw;
+        sourceLine_ ~= noSourceLine;
         return history_.length - 1;
     }
 
@@ -309,6 +320,7 @@ public:
     {
         history_ = DataVec();
         rawSource_ = null;
+        sourceLine_ = null;
         pendingEvents_ = DataVec();
         pendingRaw_ = null;
         watermark_ = wm;
@@ -327,11 +339,13 @@ public:
         {
             history_ ~= ev;
             rawSource_ ~= (i < loaded.rawSource.length ? loaded.rawSource[i] : null);
+            sourceLine_ ~= (i < loaded.sourceLine.length ? loaded.sourceLine[i] : noSourceLine);
         }
         foreach (i, ref ev; pendingEvents_)
         {
             history_ ~= ev;
             rawSource_ ~= (i < pendingRaw_.length ? pendingRaw_[i] : null);
+            sourceLine_ ~= noSourceLine;
         }
         pendingEvents_ = DataVec();
         pendingRaw_ = null;
@@ -344,6 +358,8 @@ public:
     {
         assert(history_.length == rawSource_.length,
                "history/rawSource length mismatch");
+        assert(history_.length == sourceLine_.length,
+               "history/sourceLine length mismatch");
         assert(pendingEvents_.length == pendingRaw_.length,
                "pending events/raw length mismatch");
         final switch (state_)
@@ -1148,6 +1164,8 @@ unittest
         assert(hs.length == 2);
         assert(hs.rawAt(0) == "raw0");
         assert(hs.rawAt(1) == "raw1");
+        assert(hs.sourceLineAt(0) == noSourceLine);
+        assert(hs.sourceLineAt(1) == noSourceLine);
     }
 
     // 3. Watermark.atBytes(N) → deferred; length asserts; appendLive returns cast(size_t)-1.
@@ -1178,10 +1196,13 @@ unittest
             LoadedHistory lh;
             lh.history ~= makeData("loaded0");
             lh.rawSource ~= "lraw0";
+            lh.sourceLine ~= 10;
             lh.history ~= makeData("loaded1");
             lh.rawSource ~= "lraw1";
+            lh.sourceLine ~= 11;
             lh.history ~= makeData("loaded2");
             lh.rawSource ~= "lraw2";
+            lh.sourceLine ~= 12;
             return lh;
         });
         assert(called);
@@ -1195,6 +1216,11 @@ unittest
         assert(hs.rawAt(0) == "lraw0");
         assert(hs.rawAt(3) == "praw0");
         assert(hs.rawAt(4) == "praw1");
+        assert(hs.sourceLineAt(0) == 10);
+        assert(hs.sourceLineAt(1) == 11);
+        assert(hs.sourceLineAt(2) == 12);
+        assert(hs.sourceLineAt(3) == noSourceLine);
+        assert(hs.sourceLineAt(4) == noSourceLine);
     }
 
     // 5. load() keeps collecting deferred live events until the loader returns,
@@ -1213,8 +1239,10 @@ unittest
             LoadedHistory lh;
             lh.history ~= makeData("loaded0");
             lh.rawSource ~= "lraw0";
+            lh.sourceLine ~= 20;
             lh.history ~= makeData("loaded1");
             lh.rawSource ~= "lraw1";
+            lh.sourceLine ~= 21;
             return lh;
         });
 
@@ -1230,6 +1258,11 @@ unittest
         assert(hs.rawAt(2) == "praw-before");
         assert(hs.rawAt(3) == "praw-during0");
         assert(hs.rawAt(4) == "praw-during1");
+        assert(hs.sourceLineAt(0) == 20);
+        assert(hs.sourceLineAt(1) == 21);
+        assert(hs.sourceLineAt(2) == noSourceLine);
+        assert(hs.sourceLineAt(3) == noSourceLine);
+        assert(hs.sourceLineAt(4) == noSourceLine);
     }
 
     // 6. load() with empty result: pending event at seq 0.
@@ -1242,6 +1275,7 @@ unittest
         assert(hs.length == 1);
         assert(cast(string) hs[0].unsafeContents == "ev");
         assert(hs.rawAt(0) == "r");
+        assert(hs.sourceLineAt(0) == noSourceLine);
     }
 
     // 7. replaceLastEvent in both states.
@@ -1293,10 +1327,23 @@ unittest
         HistoryStore hs2;
         hs2.reset(Watermark.none());
         hs2.history_ ~= makeData("ev");
+        hs2.sourceLine_ ~= noSourceLine;
         // rawSource_ intentionally left empty → length mismatch
         assertThrown!AssertError(hs2.isLoaded);
         // Restore before scope exit.
         hs2.history_ = DataVec();
+        hs2.sourceLine_ = null;
+    }
+    {
+        // Violate parallel-array invariant: history length != sourceLine length.
+        HistoryStore hs3;
+        hs3.reset(Watermark.none());
+        hs3.history_ ~= makeData("ev");
+        hs3.rawSource_ ~= null;
+        assertThrown!AssertError(hs3.isLoaded);
+        // Restore before scope exit.
+        hs3.history_ = DataVec();
+        hs3.rawSource_ = null;
     }
 
     // 10. reset() re-snapshots the watermark; next load receives new maxBytes.

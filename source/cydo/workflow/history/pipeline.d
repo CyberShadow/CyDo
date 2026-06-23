@@ -134,8 +134,10 @@ class HistoryEventPipeline
 						{
 							auto synEv = buildSyntheticUserEvent(lastDequeuedText);
 							result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid),
-								lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null);
+								lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null,
+								AbsTime.init, lastDequeuedEnqueueLineNum);
 							lastDequeuedText = null;
+							lastDequeuedEnqueueLineNum = 0;
 							lastDequeuedRawLine = null;
 						}
 						if (steeringStash.length > 0)
@@ -152,7 +154,8 @@ class HistoryEventPipeline
 								auto synEv = buildSyntheticUserEvent(text, true);
 								synEv.uuid = enqueueUuid;
 								result ~= TranslatedEvent(toJsonWithSyntheticUserMeta(text, synEv, tid),
-									enqRaw.length > 0 ? enqRaw : null);
+									enqRaw.length > 0 ? enqRaw : null,
+									AbsTime.init, enqLineNum);
 							}
 							else
 							{
@@ -205,11 +208,13 @@ class HistoryEventPipeline
 						synEv.uuid = enqueueUuid;
 						auto synthetic = toJsonWithSyntheticUserMeta(lastDequeuedText, synEv, tid);
 						auto syntheticRaw = lastDequeuedRawLine.length > 0 ? lastDequeuedRawLine : null;
+						auto syntheticSourceLine = lastDequeuedEnqueueLineNum;
 						lastDequeuedText = null;
 						lastDequeuedEnqueueLineNum = 0;
 						lastDequeuedRawLine = null;
 						auto ts = ta.translateHistoryLine(line, lineNum);
-						return stripTransientStatus([TranslatedEvent(synthetic, syntheticRaw)] ~ ts);
+						return stripTransientStatus([TranslatedEvent(synthetic, syntheticRaw,
+							AbsTime.init, syntheticSourceLine)] ~ ts);
 					}
 					return stripTransientStatus(ta.translateHistoryLine(line, lineNum));
 				}
@@ -819,4 +824,90 @@ unittest
 			sawToolResult = true;
 	}
 	assert(sawToolResult, "tool_result event missing from loaded history");
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import std.array : join;
+	import std.file : exists, getSize, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath, dirName;
+	import std.process : environment;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.domain.tasks.model : Watermark;
+
+	auto dir = buildPath("/tmp", "cydo-history-steering-source-line");
+	if (exists(dir))
+		rmdirRecurse(dir);
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto projectPath = buildPath(dir, "project");
+	mkdirRecurse(projectPath);
+
+	auto oldConfigDir = environment.get("CLAUDE_CONFIG_DIR");
+	environment["CLAUDE_CONFIG_DIR"] = buildPath(dir, "claude");
+	scope(exit)
+	{
+		if (oldConfigDir is null)
+			environment.remove("CLAUDE_CONFIG_DIR");
+		else
+			environment["CLAUDE_CONFIG_DIR"] = oldConfigDir;
+	}
+
+	enum tid = 1;
+	auto td = TaskData(tid, "local", projectPath);
+	td.agentType = "claude";
+	td.agentSessionId = "S";
+	td.worktreeTid = 0;
+
+	Agent agent = new ClaudeCodeAgent();
+	auto jsonlPath = agent.historyPath(td.agentSessionId, projectPath);
+	mkdirRecurse(dirName(jsonlPath));
+
+	auto enqueueLine = `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"queued steering"}`;
+	auto assistantLine =
+		`{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"assistant after steering"}],"model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":1,"output_tokens":1}}}`;
+	auto jsonl = [
+		enqueueLine,
+		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}`,
+		assistantLine,
+	].join("\n") ~ "\n";
+	write(jsonlPath, jsonl);
+
+	td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
+
+	HistoryEventPipelineHost host;
+	host.getTask = (int t) => t == tid ? &td : null;
+	host.tryAgentForTask = (int t) => agent;
+	host.effectiveCwd = (int t) => projectPath;
+	host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
+	host.synthesizeHistoryErrorEventJson = (string subject, string body) => "";
+	host.sendToSubscribed = (int t, Data d) {};
+	host.subscribe = (WebSocketAdapter ws, int t) {};
+	host.sendForkableUuids = (WebSocketAdapter ws, int t) {};
+	host.broadcastForkableUuids = (int t) {};
+	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
+	host.onHistorySubscribed = (int t) {};
+	host.ensureAgentSessionIdFromEvent = (int t, string line) {};
+	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
+	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
+
+	auto pipeline = new HistoryEventPipeline(host);
+	pipeline.ensureHistoryLoaded(tid);
+
+	bool sawQueuedSteering = false;
+	foreach (i, ref ev; td.history)
+	{
+		auto s = cast(string) ev.toGC();
+		if (!s.canFind(`"user_message"`) || !s.canFind("queued steering"))
+			continue;
+		sawQueuedSteering = true;
+		assert(td.history.rawAt(i) == enqueueLine,
+			"queued steering event must keep the enqueue raw line");
+		assert(td.history.sourceLineAt(i) == 1,
+			"queued steering event must keep the enqueue physical line");
+	}
+	assert(sawQueuedSteering, "queued steering replay event missing from loaded history");
 }

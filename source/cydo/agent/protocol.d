@@ -356,12 +356,15 @@ struct TranslatedEvent
 	string translated;  // clean agnostic-protocol JSON (no _raw)
 	string raw;         // original agent output line (null for synthetic events)
 	AbsTime ts;         // AbsTime.init (stdTime == 0) means "not available"
+	int sourceLine;     // 1-based physical JSONL line for raw, 0 when not file-backed
 
-	this(string translated, string raw, AbsTime ts = AbsTime.init) @safe nothrow
+	this(string translated, string raw, AbsTime ts = AbsTime.init,
+		int sourceLine = 0) @safe nothrow
 	{
 		this.translated = translated;
 		this.raw = raw;
 		this.ts = ts;
+		this.sourceLine = sourceLine;
 	}
 }
 
