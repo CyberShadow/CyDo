@@ -126,14 +126,14 @@ static:
 	@(`Simulate task type workflow.`)
 	void simulate()
 	{
-		import cydo.domain.task_types.definition : runSimulator;
+		import cydo.cli.tasktype_tooling : runSimulator;
 		runSimulator(resolveTaskTypesPath(), &isRegisteredAgent);
 	}
 
 	@(`Generate Graphviz dot output for task types.`)
 	void dot()
 	{
-		import cydo.domain.task_types.definition : runDot;
+		import cydo.cli.tasktype_tooling : runDot;
 		runDot(resolveTaskTypesPath(), &isRegisteredAgent);
 	}
 
