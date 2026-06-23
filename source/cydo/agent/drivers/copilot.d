@@ -25,7 +25,7 @@ import cydo.launch.types : ProcessLaunch;
 import cydo.launch.sandbox : cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import cydo.mcp : McpResult;
-import cydo.text.title : truncateTitle;
+import cydo.foundation.text.title : truncateTitle;
 
 // Callback type for dispatching custom tool calls.
 alias ToolDispatchFn = Promise!McpResult delegate(string tool, string tid, JSONFragment args);

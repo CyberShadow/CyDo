@@ -32,7 +32,7 @@ import cydo.launch.types : ProcessLaunch;
 import cydo.launch.sandbox : cleanup, cydoBinaryDir, cydoBinaryPath, effectiveEnvValue,
 	executableMountPaths, resolveExecutablePath;
 import launchSandbox = cydo.launch.sandbox;
-import cydo.text.title : truncateTitle;
+import cydo.foundation.text.title : truncateTitle;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC param/result structs for the Codex app-server protocol.

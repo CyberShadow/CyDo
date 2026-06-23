@@ -7,7 +7,7 @@
 ///   `\k<x>`, `\g<x>`, and `(?P=name)` either throw at compile time or
 ///   silently match literal characters — they do NOT perform backreferences.
 ///   Only numeric backreferences (`\1`, `\2`, …) work correctly.
-module cydo.system.framing;
+module cydo.foundation.system.framing;
 
 import std.array : array;
 import std.algorithm : canFind, endsWith, startsWith;

@@ -12,10 +12,10 @@ import ae.utils.promise.await : async, await;
 import cydo.agent.protocol : AnswerResult, ContentBlock, QuestionResult;
 import cydo.batch.registry : BatchHandle, BatchRegistry;
 import cydo.mcp : McpResult;
-import cydo.system.known_messages : KnownSystemMessageKind, followUpFromParentSubject,
+import cydo.foundation.system.known_messages : KnownSystemMessageKind, followUpFromParentSubject,
 	questionFromTaskSubject, wrapKnownSystemMessage;
 import cydo.tasks.model : TaskData;
-import cydo.text.title : truncateTitle;
+import cydo.foundation.text.title : truncateTitle;
 
 package(cydo):
 

@@ -20,7 +20,7 @@ import cydo.config : AgentDriver, PathMode;
 import cydo.launch.types : ProcessLaunch, ResolvedSandbox;
 import cydo.launch.sandbox : buildCommandPrefix, cleanup, cydoBinaryDir, cydoBinaryPath,
 	effectiveEnvValue, executableMountPaths, resolveExecutablePath;
-import cydo.text.title : truncateTitle;
+import cydo.foundation.text.title : truncateTitle;
 
 /// Agent descriptor for Claude Code CLI.
 class ClaudeCodeAgent : Agent

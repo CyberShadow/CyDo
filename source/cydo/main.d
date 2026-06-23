@@ -63,10 +63,10 @@ import cydo.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
 	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent, isRegisteredAgent;
-import cydo.system.framing : tryParseSystemFraming, tryExtractSubject,
+import cydo.foundation.system.framing : tryParseSystemFraming, tryExtractSubject,
 	stripTaskSystemPromptWrapper, ParsedSystemFraming, CompiledTemplate, compileTemplate,
 	tryMatchTemplate, validateTemplateSource;
-import cydo.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
+import cydo.foundation.system.known_messages : KnownSystemMessageKind, KnownSystemMessageMatch,
 	handoffSubject, modeSwitchSubject, sessionStartSubject,
 	subTaskWaitingForAnswerSubject, systemMessagePrefix, systemMessageSubject,
 	taskPromptSubject, tryKnownSystemMessageMatch, wrapKnownSystemMessage;

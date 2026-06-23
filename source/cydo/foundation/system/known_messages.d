@@ -1,8 +1,8 @@
-module cydo.system.known_messages;
+module cydo.foundation.system.known_messages;
 
 import std.typecons : Nullable;
 
-import cydo.system.framing : wrapSystemMessage;
+import cydo.foundation.system.framing : wrapSystemMessage;
 
 enum KnownSystemMessageKind
 {

@@ -7,7 +7,7 @@ import std.path : baseName, buildPath, dirName;
 import ae.sys.inotify : INotify, iNotify;
 
 import cydo.config : configPath;
-import cydo.platform.inotify : RefCountedINotify;
+import cydo.foundation.platform.inotify : RefCountedINotify;
 
 package(cydo):
 

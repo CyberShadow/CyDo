@@ -1,4 +1,4 @@
-module cydo.text.title;
+module cydo.foundation.text.title;
 
 /// Truncate text to maxLen chars, collapsing whitespace and appending "…" if needed.
 string truncateTitle(string text, size_t maxLen)
