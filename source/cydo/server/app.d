@@ -27,14 +27,10 @@ import ae.utils.statequeue : StateQueue;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
-import cydo.mcp.payloads : TaskResult;
-import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
-import cydo.domain.tasks.model : BatchSignal;
+import cydo.mcp.tools;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
 import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
-import cydo.workflow.batch.router : BatchConsumeKind;
-import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
@@ -46,14 +42,11 @@ import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeli
 	HistoryEventPipelineHost;
 import cydo.workflow.history.abbrev : extractMessageText;
 import cydo.runtime.logging : installRobustLogger;
-import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
 import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost, buildCydoMeta;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
-import cydo.workflow.tasks.subtask_delivery : SubtaskResultDelivery,
-	SubtaskResultDeliveryHost;
-import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
+import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
@@ -67,25 +60,22 @@ import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
 	UnconfirmedUserEventEnvelope, extractContentText;
 import cydo.agent.drivers.registry : isRegisteredAgent;
 import cydo.agent.session : AgentSession;
-import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
-import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
-	renderPrompt, renderContinuationPrompt, substituteVars, loadSystemPrompt,
+import cydo.domain.task_types.definition : TaskTypeDef, OutputType, WorktreeMode, byName, loadTaskTypes,
+	renderPrompt, substituteVars, loadSystemPrompt,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
-	handoffSubject, modeSwitchSubject, sessionStartSubject,
-	subTaskWaitingForAnswerSubject, systemMessagePrefix,
-	taskPromptSubject, wrapKnownSystemMessage;
+	sessionStartSubject, systemMessagePrefix, wrapKnownSystemMessage;
 import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.workflow.history.jsonl_store : findNextUserUuid;
 import cydo.workflow.workspace.worktree;
 
-class App : ToolsBackend
+class App
 {
 	import cydo.workflow.history.jsonl_tracker : JsonlTracker;
 
@@ -101,21 +91,6 @@ class App : ToolsBackend
 	private Agent[string] agentsByName;
 	private TaskTypeCatalog taskTypeCatalog;
 	private string webDistDir;
-	// Pending sub-task promises (childTid → promise fulfilled on task exit)
-	private Promise!(McpResult)[int] pendingSubTasks;
-	// In-memory mirror of task_deps table (childTid → parentTid)
-	private int[int] taskDeps;
-	// Child tids whose result was already delivered to a live Task() batch via
-	// pendingSubTasks, used to suppress duplicate onExit fallback delivery.
-	private bool[int] liveDeliveredSubTasks;
-	// Pending AskUserQuestion promises (tid -> promise fulfilled when user responds)
-	private Promise!(McpResult)[int] pendingAskUserQuestions;
-	// Pending PermissionPrompt promises (tid -> promise fulfilled when user responds)
-	private Promise!(McpResult)[int] pendingPermissionPrompts;
-	// Original input JSON per tid for building Allow response
-	private string[int] pendingPermissionInputs;
-	private BatchRegistry batchRegistry;
-	private QuestionRouter questionRouter;
 	// JSONL file tracking state
 	private JsonlTracker jsonlTracker;
 	// HTTP basic auth credentials (from environment)
@@ -131,15 +106,11 @@ class App : ToolsBackend
 	private TaskSessionRunner taskSessionRunner;
 	private DerivedTextJobs derivedTextJobs;
 	private TaskMutationService taskMutationService;
-	private SubtaskResultDelivery subtaskResultDelivery;
 	private SystemMessageNormalizer systemMessageNormalizer;
+	private WorkflowToolsBackend workflowTools;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
 	private bool shuttingDown;
-
-	// Active TerminalProcess instances (Bash MCP tool calls in flight).
-	// Tracked so shutdown() can SIGKILL them to unblock the event loop.
-	private TerminalProcess[] activeTerminals;
 	void start()
 	{
 		initLogger();
@@ -199,8 +170,12 @@ class App : ToolsBackend
 			McpCallbacks(
 				dispatchTool: &dispatchTool,
 				interruptForPendingContinuation: &interruptForPendingContinuation,
-				onDeliveryFailed: &onMcpDeliveryFailed,
-				onDelivered: &onToolCallDelivered,
+				onDeliveryFailed: (string callerTid) {
+					workflowTools.onMcpDeliveryFailed(callerTid);
+				},
+				onDelivered: (string callerTid) {
+					workflowTools.onToolCallDelivered(callerTid);
+				},
 			),
 		);
 		archiveManager = new ArchiveManager(ArchiveManagerHost(
@@ -267,65 +242,181 @@ class App : ToolsBackend
 				},
 				loadTemplateText: &loadTemplateText,
 			));
-		subtaskResultDelivery = new SubtaskResultDelivery(
-			SubtaskResultDeliveryHost(
-				getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
-				outputPath: &taskPathResolver.outputPath,
-				worktreePath: &taskPathResolver.worktreePath,
-				worktreeForkBaseHead: (int tid) {
-					auto td = tid in tasks;
-					assert(td !is null,
-						format!"Worktree fork base requested for missing task %d"(tid));
-					return getWorktreeForkBaseHead(*td);
-				},
-				taskProducesCommitOutput: (string projectPath, string taskTypeName) {
-					import std.algorithm : canFind;
+		workflowTools = new WorkflowToolsBackend(WorkflowToolsHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			createTask: (string workspace, string projectPath, string agentName) {
+				return createTask(workspace, projectPath, agentName);
+			},
+			persistTaskType: (int tid, string taskType) {
+				persistence.setTaskType(tid, taskType);
+			},
+			persistDescription: (int tid, string description) {
+				persistence.setDescription(tid, description);
+			},
+			persistParentTid: (int tid, int parentTid) {
+				persistence.setParentTid(tid, parentTid);
+			},
+			persistRelationType: (int tid, string relationType) {
+				persistence.setRelationType(tid, relationType);
+			},
+			persistTitle: (int tid, string title) {
+				persistence.setTitle(tid, title);
+			},
+			persistStatus: (int tid, string status) {
+				persistence.setStatus(tid, status);
+			},
+			persistNeedsAttention: (int tid, bool needsAttention) {
+				persistence.setNeedsAttention(tid, needsAttention);
+			},
+			persistLastActive: (int tid, long lastActive) {
+				persistence.setLastActive(tid, lastActive);
+			},
+			persistResultText: (int tid, string resultText) {
+				persistence.setResultText(tid, resultText);
+			},
+			touchTask: &touchTask,
+			taskTypesForProject: (string projectPath) {
+				return taskTypeCatalog.getTaskTypesForProject(projectPath);
+			},
+			entryPointsForProject: (string projectPath) {
+				return taskTypeCatalog.getEntryPointsForProject(projectPath);
+			},
+			promptSearchPath: (string projectPath) {
+				return taskTypeCatalog.promptSearchPath(projectPath);
+			},
+			treeReadOnlyForProject: (string projectPath) {
+				return taskTypeCatalog.treeReadOnlyFor(projectPath);
+			},
+			resolveTaskAgent: (string requestedAgent, string parentAgent) {
+				return resolveAgent(requestedAgent, parentAgent);
+			},
+			isRegisteredAgent: (string agentName) {
+				return isRegisteredAgent(agentName);
+			},
+			agentForTask: &agentForTask,
+			taskSystemPromptForMessage: &taskSystemPromptForMessage,
+			readPromptFile: &readPromptFile,
+			buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
+				string subject, string[string] vars, string bodyVar) {
+				return systemMessageNormalizer.buildKnownSystemMessageMeta(
+					kind, subject, vars, bodyVar);
+			},
+			systemKeyword: () => config.system_keyword,
+			taskDir: &taskPathResolver.taskDir,
+			outputPath: &taskPathResolver.outputPath,
+			worktreePath: &taskPathResolver.worktreePath,
+			worktreeForkBaseHead: (int tid) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"Worktree fork base requested for missing task %d"(tid));
+				return getWorktreeForkBaseHead(*td);
+			},
+			taskProducesCommitOutput: (string projectPath, string taskTypeName) {
+				import std.algorithm : canFind;
 
-					auto typeDef = taskTypeCatalog.getTaskTypesForProject(projectPath)
-						.byName(taskTypeName);
-					return typeDef !is null && typeDef.output_type.canFind(OutputType.commit);
-				},
-				persistStatus: (int tid, string status) {
-					persistence.setStatus(tid, status);
-				},
-				persistResultText: (int tid, string resultText) {
-					persistence.setResultText(tid, resultText);
-				},
-				readPendingSubTask: (int tid, out Promise!(McpResult) pending) {
-					auto entry = tid in pendingSubTasks;
-					if (entry is null)
-						return false;
-					pending = *entry;
-					return true;
-				},
-				clearPendingSubTask: (int tid) {
-					pendingSubTasks.remove(tid);
-				},
-				parentTaskForChild: (int childTid) {
-					auto parentTid = childTid in taskDeps;
-					return parentTid is null ? 0 : *parentTid;
-				},
-				childTaskIds: &childrenOf,
-				wasLiveDelivered: (int childTid) {
-					return (childTid in liveDeliveredSubTasks) !is null;
-				},
-				markLiveDelivered: (int childTid) {
-					liveDeliveredSubTasks[childTid] = true;
-				},
-				ensureProcessQueueAlive: (int tid) {
-					assert((tid in tasks) !is null,
-						format!"Process queue requested for missing task %d"(tid));
-					return tasks[tid].processQueue.setGoal(ProcessState.Alive);
-				},
-				canSendSystemMessage: &canSendSystemMessage,
-				sendKnownSystemMessage: &sendKnownSystemMessage,
-				removeTaskDependency: &removeTaskDependency,
-				broadcastTaskUpdate: &broadcastTaskUpdate,
-				taskAlive: &taskAlive,
-				onNextTick: (void delegate() cb) {
-					onNextTick(socketManager, cb);
-				},
-			));
+				auto typeDef = taskTypeCatalog.getTaskTypesForProject(projectPath)
+					.byName(taskTypeName);
+				return typeDef !is null && typeDef.output_type.canFind(OutputType.commit);
+			},
+			setupWorktreeForEdge: &worktreeAllocator.setupForEdge,
+			ensureProcessQueueAlive: (int tid) {
+				assert((tid in tasks) !is null,
+					format!"Process queue requested for missing task %d"(tid));
+				return tasks[tid].processQueue.setGoal(ProcessState.Alive);
+			},
+			sendTaskMessage: &sendTaskMessage,
+			emitTaskReload: &emitTaskReload,
+			appendSynthesizedHistoryError: (int tid, string subject, string body) {
+				historyPipeline.appendSynthesizedHistoryError(tid, subject, body);
+			},
+			taskAlive: &taskAlive,
+			tasksShareWorkspace: (int aTid, int bTid) {
+				auto aTd = aTid in tasks;
+				auto bTd = bTid in tasks;
+				assert(aTd !is null && bTd !is null,
+					format!"WorkflowTools workspace lookup requires live tasks %d and %d"
+						(aTid, bTid));
+				return tasksShareWorkspace(*aTd, *bTd);
+			},
+			taskWorkspaceLabel: (int tid) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"WorkflowTools workspace label requested for missing task %d"(tid));
+				return taskWorkspaceLabel(*td);
+			},
+			addIdleCallback: (int tid, void delegate() cb) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"WorkflowTools idle callback requested for missing task %d"(tid));
+				td.onIdleCallbacks ~= cb;
+			},
+			reactivateTask: (int tid, void delegate() onReady) {
+				auto td = tid in tasks;
+				assert(td !is null,
+					format!"WorkflowTools reactivation requested for missing task %d"(tid));
+				assert(td.processQueue !is null,
+					format!"WorkflowTools reactivation requested without process queue for task %d"(tid));
+				td.processQueue.setGoal(ProcessState.Alive).then(onReady).ignoreResult();
+			},
+			canSendSystemMessage: &canSendSystemMessage,
+			sendKnownSystemMessage: &sendKnownSystemMessage,
+			persistAddTaskDep: (int parentTid, int childTid) {
+				persistence.addTaskDep(parentTid, childTid);
+			},
+			persistRemoveTaskDep: (int parentTid, int childTid) {
+				persistence.removeTaskDep(parentTid, childTid);
+			},
+			persistRemoveAllChildDeps: (int childTid) {
+				persistence.removeAllChildDeps(childTid);
+			},
+			loadTaskDeps: () => persistence.loadTaskDeps(),
+			broadcastTaskUpdate: &broadcastTaskUpdate,
+			broadcastFocusHint: &broadcastFocusHint,
+			sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
+				string toolUseId) {
+				clientHub.sendToSubscribed(tid, Data(toJson(
+					AskUserQuestionMessage("ask_user_question", tid,
+						toolUseId, questions)).representation));
+			},
+			clearAskUserQuestionPrompt: (int tid) {
+				clientHub.sendToSubscribed(tid, Data(toJson(
+					AskUserQuestionMessage("ask_user_question", tid,
+						"", JSONFragment("[]"))).representation));
+			},
+			sendPermissionPrompt: (int tid, string toolUseId, string toolName,
+				JSONFragment input) {
+				clientHub.sendToSubscribed(tid, Data(toJson(
+					PermissionPromptMessage("permission_prompt", tid,
+						toolUseId, toolName, input)).representation));
+			},
+			clearPermissionPrompt: (int tid) {
+				clientHub.sendToSubscribed(tid, Data(toJson(
+					PermissionPromptMessage("permission_prompt", tid,
+						"", "", JSONFragment("{}"))).representation));
+			},
+			appendTaskSpawnedEvent: (int parentTid, int childTid, int specIndex) {
+				import cydo.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
+				import ae.utils.time.types : AbsTime;
+				import std.datetime : Clock;
+
+				CydoTaskSpawnedEvent spawnEv;
+				spawnEv.child_tid = childTid;
+				spawnEv.spec_index = specIndex;
+				historyPipeline.appendAndBroadcastTaskEvent(parentTid,
+					TranslatedEvent(toJson(spawnEv), null,
+						AbsTime(Clock.currStdTime)));
+			},
+			broadcastTaskCreated: (TaskCreatedMessage message) {
+				clientHub.broadcast(toJson(message));
+			},
+			workspacePermissionPolicy: &findWorkspacePermissionPolicy,
+			onNextTick: (void delegate() cb) {
+				onNextTick(socketManager, cb);
+			},
+			generateTitle: (int tid, string prompt) {
+				derivedTextJobs.generateTitle(tid, prompt);
+			},
+		));
 		historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 			tryAgentForTask: &tryAgentForTask,
@@ -419,18 +510,18 @@ class App : ToolsBackend
 			onTaskTurnCompletedAlive: &onTaskTurnCompletedAlive,
 			drainIdleCallbacksForTurnResult: &drainIdleCallbacksForTurnResult,
 			drainIdleCallbacksOnExit: &drainIdleCallbacksOnExit,
-			hasPendingSubTask: &hasPendingSubTask,
-			hasTaskDependency: &hasTaskDependency,
-			hasPendingChildQuestion: &hasPendingChildQuestion,
-			sendPendingChildAnswerReminder: &sendPendingChildAnswerReminder,
+			hasPendingSubTask: &workflowTools.hasPendingSubTask,
+			hasTaskDependency: &workflowTools.hasTaskDependency,
+			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
+			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
 			checkDeclaredOutputs: &checkDeclaredOutputs,
-			finalizeCompletedSubTask: &subtaskResultDelivery.finalizeCompletedSubTask,
-			deliverFailedPendingSubTaskResult: &subtaskResultDelivery.deliverFailedPendingSubTaskResult,
-			deliverWaitingParentResultsIfReady: &subtaskResultDelivery.deliverWaitingParentResultsIfReady,
-			deliverBatchResults: &subtaskResultDelivery.deliverBatchResults,
-			failPendingAskUserQuestionOnExit: &failPendingAskUserQuestionOnExit,
-			failPendingPermissionPromptOnExit: &failPendingPermissionPromptOnExit,
-			failPendingAskRouteOnExit: &failPendingAskRouteOnExit,
+			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
+			deliverFailedPendingSubTaskResult: &workflowTools.deliverFailedPendingSubTaskResult,
+			deliverWaitingParentResultsIfReady: &workflowTools.deliverWaitingParentResultsIfReady,
+			deliverBatchResults: &workflowTools.deliverBatchResults,
+			failPendingAskUserQuestionOnExit: &workflowTools.failPendingAskUserQuestionOnExit,
+			failPendingPermissionPromptOnExit: &workflowTools.failPendingPermissionPromptOnExit,
+			failPendingAskRouteOnExit: &workflowTools.failPendingAskRouteOnExit,
 			cancelExitBackgroundWork: &cancelExitBackgroundWork,
 			resetHistoryWatermarkOnly: &resetHistoryWatermarkOnly,
 			resetHistoryWatermarkAfterExit: &resetHistoryWatermarkAfterExit,
@@ -447,8 +538,8 @@ class App : ToolsBackend
 				persistence.setResultText(tid, resultText);
 			},
 			requestMissingOutputs: &requestMissingOutputs,
-			spawnContinuation: &spawnContinuation,
-			spawnOnYieldContinuation: &spawnOnYieldContinuation,
+			spawnContinuation: &workflowTools.spawnContinuation,
+			spawnOnYieldContinuation: &workflowTools.spawnOnYieldContinuation,
 			emitTaskReload: (int tid) {
 				emitTaskReload(tid);
 			},
@@ -461,10 +552,10 @@ class App : ToolsBackend
 			broadcastForkableUuidsFromFile: (int tid) {
 				jsonlTracker.broadcastForkableUuidsFromFile(tid);
 			},
-			sendSystemRestartNudge: &subtaskResultDelivery.sendSystemRestartNudge,
-			loadPersistedTaskDeps: &loadPersistedTaskDeps,
+			sendSystemRestartNudge: &workflowTools.sendSystemRestartNudge,
+			loadPersistedTaskDeps: &workflowTools.loadPersistedTaskDeps,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
-			waitingTaskChildrenAllDone: &waitingTaskChildrenAllDone,
+			waitingTaskChildrenAllDone: &workflowTools.waitingTaskChildrenAllDone,
 			shuttingDown: () => shuttingDown,
 			taskTypeCatalog: taskTypeCatalog,
 		));
@@ -529,79 +620,6 @@ class App : ToolsBackend
 			broadcastTaskUpdate: &broadcastTaskUpdate,
 			broadcastFocusHint: &broadcastFocusHint,
 		));
-		questionRouter = new QuestionRouter(QuestionRouterHost(
-			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
-			isTaskAlive: &taskAlive,
-			tasksShareWorkspace: (int aTid, int bTid) {
-				auto aTd = aTid in tasks;
-				auto bTd = bTid in tasks;
-				assert(aTd !is null && bTd !is null,
-					format!"QuestionRouter workspace lookup requires live tasks %d and %d"
-						(aTid, bTid));
-				return tasksShareWorkspace(*aTd, *bTd);
-			},
-			taskWorkspaceLabel: (int tid) {
-				auto td = tid in tasks;
-				assert(td !is null,
-					format!"QuestionRouter workspace label requested for missing task %d"(tid));
-				return taskWorkspaceLabel(*td);
-			},
-			systemKeyword: () => config.system_keyword,
-			readPromptFile: &readPromptFile,
-			buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
-				string subject, string[string] vars, string bodyVar) {
-				return systemMessageNormalizer.buildKnownSystemMessageMeta(
-					kind, subject, vars, bodyVar);
-			},
-			sendTaskMessage: (int tid, const(ContentBlock)[] content,
-				string cydoMeta, string nonce) {
-				sendTaskMessage(tid, content, null, cydoMeta, nonce);
-			},
-			persistStatus: (int tid, string status) {
-				persistence.setStatus(tid, status);
-			},
-			persistResultText: (int tid, string resultText) {
-				persistence.setResultText(tid, resultText);
-			},
-			broadcastTaskUpdate: &broadcastTaskUpdate,
-			broadcastFocusHint: &broadcastFocusHint,
-			addIdleCallback: (int tid, void delegate() cb) {
-				auto td = tid in tasks;
-				assert(td !is null,
-					format!"QuestionRouter idle callback requested for missing task %d"(tid));
-				td.onIdleCallbacks ~= cb;
-			},
-			reactivateTask: (int tid, void delegate() onReady) {
-				auto td = tid in tasks;
-				assert(td !is null,
-					format!"QuestionRouter reactivation requested for missing task %d"(tid));
-				assert(td.processQueue !is null,
-					format!"QuestionRouter reactivation requested without process queue for task %d"(tid));
-				td.processQueue.setGoal(ProcessState.Alive).then(onReady).ignoreResult();
-			},
-			hasPendingSubTask: &hasPendingSubTask,
-			registerFollowUpBatchChild: (int parentTid, int childTid,
-				BatchHandle handle) {
-				auto subTaskPromise = new Promise!McpResult;
-				pendingSubTasks[childTid] = subTaskPromise;
-				taskDeps[childTid] = parentTid;
-				persistence.addTaskDep(parentTid, childTid);
-				subTaskPromise.then((McpResult r) {
-					string error;
-					if (!batchRegistry.enqueueChildDone(handle, 0, childTid, r, error))
-						errorf("batch router error: %s", error);
-				});
-			},
-			cleanupAfterFollowUpAnswerDelivery: (int childTid) {
-				if (childTid in pendingSubTasks)
-					pendingSubTasks.remove(childTid);
-				if (auto parentTidPtr = childTid in taskDeps)
-					removeTaskDependency(*parentTidPtr, childTid);
-			},
-			awaitBatchLoop: &awaitBatchLoop,
-			makeInternalBatchError: &makeInternalBatchError,
-		), &batchRegistry);
-
 		jsonlTracker.getAgent = &agentForTask;
 		jsonlTracker.getTask = (int tid) => tid in tasks ? &tasks[tid] : null;
 		jsonlTracker.getEffectiveCwd = (int tid) {
@@ -836,9 +854,7 @@ class App : ToolsBackend
 		shuttingDown = true;
 		taskSessionRunner.shutdownSessions();
 		derivedTextJobs.cancelAll();
-		// SIGKILL any in-flight Bash MCP tool calls so the event loop can drain.
-		foreach (t; activeTerminals)
-			t.forceKill();
+		workflowTools.killActiveTerminals();
 		jsonlTracker.stopAllWatches();
 		{
 			import cydo.agent.drivers.codex : CodexAgent;
@@ -995,514 +1011,10 @@ class App : ToolsBackend
 		}
 
 		return async({
-			auto impl = new CydoToolsImpl(this, tid);
+			auto impl = new CydoToolsImpl(workflowTools, tid);
 			auto dispatcher = mcpToolDispatcher!CydoTools(impl);
 			return dispatcher.dispatch(tool, args);
 		});
-	}
-
-	/// Handle Task — validates the spec and returns a delegate that, when called,
-	/// creates the child task and returns `{childTid, promise}`.
-	/// On validation failure, returns a ValidatedTask with a null launch delegate.
-	ValidatedTask handleCreateTask(string callerTid, int specIndex,
-		string description, string taskType, string prompt)
-	{
-		import ae.utils.json : toJson;
-		import std.algorithm : canFind, map;
-		import std.array : join;
-		import std.conv : to;
-
-		McpResult structuredTaskError(string message)
-		{
-			auto taskResultJson = toJson(TaskResult(
-				summary: message,
-				error: message,
-				status: "error",
-			));
-			return McpResult.structured(taskResultJson, true);
-		}
-
-		// Look up calling task
-		int parentTid;
-		try
-			parentTid = to!int(callerTid);
-		catch (Exception)
-			return ValidatedTask(structuredTaskError("Invalid calling task ID"));
-
-		auto parentTd = parentTid in tasks;
-		if (parentTd is null)
-			return ValidatedTask(structuredTaskError("Calling task not found"));
-
-		// Validate task_type against parent's creatable_tasks and resolve alias
-		auto parentTypeDef = taskTypeCatalog.getTaskTypesForProject(parentTd.projectPath).byName(parentTd.taskType);
-		string resolvedTaskType = taskType;
-		if (parentTypeDef !is null &&
-			parentTypeDef.creatable_tasks.length > 0)
-		{
-			auto edge = parentTypeDef.creatable_tasks.byName(taskType);
-			if (edge is null)
-			{
-				return ValidatedTask(structuredTaskError(
-					"Task type '" ~ taskType ~ "' is not in creatable_tasks for '" ~
-					parentTd.taskType ~ "'. Allowed: " ~
-					parentTypeDef.creatable_tasks.map!(c => c.name).join(", ")));
-			}
-			resolvedTaskType = edge.resolvedType;
-		}
-
-		// Validate child task type exists
-		auto childTypeDef = taskTypeCatalog.getTaskTypesForProject(parentTd.projectPath).byName(resolvedTaskType);
-		if (childTypeDef is null)
-			return ValidatedTask(structuredTaskError("Unknown task type: " ~ resolvedTaskType));
-
-		// Resolve the child's agent (may differ from parent via agent: field)
-		auto childAgent = resolveAgent(childTypeDef.agent, parentTd.agentType);
-		if (childAgent.length == 0 || !isRegisteredAgent(childAgent))
-			return ValidatedTask(structuredTaskError(format(
-				"task type '%s' resolves agent to '%s' (parent='%s') — not a registered agent",
-				resolvedTaskType, childAgent, parentTd.agentType)));
-
-		// All validation passed — return a delegate that performs the actual creation.
-		// Capture only simple values; re-fetch pointers at launch time to avoid
-		// stale AA pointers if sibling delegates caused reallocation.
-		return ValidatedTask(McpResult.init, () {
-			auto pd = parentTid in tasks;
-			auto ptd = taskTypeCatalog.getTaskTypesForProject(pd.projectPath).byName(pd.taskType);
-			auto ctd = taskTypeCatalog.getTaskTypesForProject(pd.projectPath).byName(resolvedTaskType);
-
-			// Create child task
-			auto childTid = createTask(pd.workspace, pd.projectPath, childAgent);
-			auto childTd = &tasks[childTid];
-			childTd.taskType = resolvedTaskType;
-			childTd.description = prompt;
-			childTd.parentTid = parentTid;
-			childTd.relationType = "subtask";
-			childTd.title = description.length > 0
-				? description
-				: truncateTitle(prompt, 80);
-
-			// Persist metadata
-			persistence.setTaskType(childTid, resolvedTaskType);
-			persistence.setDescription(childTid, prompt);
-			persistence.setParentTid(childTid, parentTid);
-			persistence.setRelationType(childTid, "subtask");
-			persistence.setTitle(childTid, childTd.title);
-
-			// Create promise — fulfilled when child task exits
-			auto promise = new Promise!McpResult;
-			pendingSubTasks[childTid] = promise;
-			persistence.addTaskDep(parentTid, childTid);
-			taskDeps[childTid] = parentTid;
-			pd.status = "waiting";
-			persistence.setStatus(parentTid, "waiting");
-			broadcastTaskUpdate(parentTid);
-
-			// Broadcast to UI
-			clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid,
-				pd.workspace, pd.projectPath, parentTid, "subtask")));
-			broadcastTaskUpdate(childTid);
-			broadcastFocusHint(parentTid, childTid);
-
-			// Inject cydo/task_spawned into parent's event stream so the frontend
-			// can show an "Open task →" link without any side-channel state.
-			{
-				import cydo.protocol : CydoTaskSpawnedEvent, TranslatedEvent;
-				import ae.utils.time.types : AbsTime;
-				import std.datetime : Clock;
-				CydoTaskSpawnedEvent spawnEv;
-				spawnEv.child_tid  = childTid;
-				spawnEv.spec_index = specIndex;
-				historyPipeline.appendAndBroadcastTaskEvent(parentTid,
-					TranslatedEvent(toJson(spawnEv), null, AbsTime(Clock.currStdTime)));
-			}
-
-			// Set up worktree from edge config: create new or inherit from parent
-			string edgeTemplate;
-			if (ptd !is null)
-			{
-				if (auto edge = ptd.creatable_tasks.byName(taskType))
-				{
-					edgeTemplate = edge.prompt_template;
-					childTd.resultNote = substituteVars(edge.result_note,
-						["output_dir": taskPathResolver.taskDir(pd)]);
-					worktreeAllocator.setupForEdge(childTid, parentTid, edge.worktree);
-				}
-			}
-
-			// Configure and spawn child agent
-			auto renderedPrompt = renderPrompt(*ctd, prompt,
-				taskTypeCatalog.promptSearchPath(childTd.projectPath),
-				taskPathResolver.outputPath(childTd), edgeTemplate);
-			renderedPrompt = prependTaskFraming(renderedPrompt,
-				taskSystemPromptForMessage(childTid, ctd),
-				loadProjectMemory(ctd, childTd.repoPath, taskTypeCatalog.promptSearchPath(childTd.projectPath)));
-			// Encode edge identity in subject: "<parentType> -> <edgeName>".
-			// When ptd has no creatable_tasks (degenerate), fall back to no-arrow form.
-			auto parentTypeForSubject = (ptd !is null && ptd.creatable_tasks.length > 0) ? pd.taskType : "";
-			auto taskPromptMsgSubject = taskPromptSubject(parentTypeForSubject, taskType);
-			auto subtaskMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-				KnownSystemMessageKind.taskPrompt,
-				taskPromptMsgSubject,
-				["task_description": prompt], "task_description");
-			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
-					config.system_keyword,
-					KnownSystemMessageKind.taskPrompt, renderedPrompt, taskPromptMsgSubject))], null, subtaskMeta);
-			}).ignoreResult();
-
-			if (description.length == 0)
-			{
-				auto promptForTitle = prompt;
-				tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-					derivedTextJobs.generateTitle(childTid, promptForTitle);
-				}).ignoreResult();
-			}
-			infof("Task: tid=%d type=%s parent=%d", childTid, resolvedTaskType, parentTid);
-
-			return LaunchedTask(childTid, promise);
-		});
-	}
-
-	bool wouldBeWriter(string callerTid, string taskType)
-	{
-		import std.conv : to;
-		int parentTid;
-		try
-			parentTid = to!int(callerTid);
-		catch (Exception)
-			return false;
-
-		auto parentTd = parentTid in tasks;
-		if (parentTd is null)
-			return false;
-
-		auto parentTypeDef = taskTypeCatalog.getTaskTypesForProject(parentTd.projectPath).byName(parentTd.taskType);
-		WorktreeMode edgeMode = WorktreeMode.fork;
-		string resolvedType = taskType;
-		if (parentTypeDef !is null)
-			if (auto edge = parentTypeDef.creatable_tasks.byName(taskType))
-			{
-				edgeMode = edge.worktree;
-				resolvedType = edge.resolvedType;
-			}
-
-		if (edgeMode == WorktreeMode.fork)
-			return false;
-
-		auto treeReadOnly = taskTypeCatalog.treeReadOnlyFor(parentTd.projectPath);
-		auto childRO = resolvedType in treeReadOnly;
-		return childRO is null || !(*childRO);
-	}
-
-	private McpResult makeInternalBatchError(string message)
-	{
-		errorf("batch router error: %s", message);
-		return McpResult("Internal batch routing error: " ~ message, true);
-	}
-
-	/// Set up batch event stream and enter the wait loop.
-	/// Called from createTasks — parent fiber blocks here.
-	Promise!McpResult registerBatchAndAwait(string callerTidStr,
-		LaunchedTask[] launchedTasks)
-	{
-		import std.conv : to;
-		int parentTid;
-		try
-			parentTid = to!int(callerTidStr);
-		catch (Exception)
-			return resolve(makeInternalBatchError("invalid calling task ID for Task batch"));
-
-		int[] childTids = new int[launchedTasks.length];
-		foreach (i, ref launchedTask; launchedTasks)
-		{
-			if (launchedTask.promise is null)
-				return resolve(makeInternalBatchError(format!"missing child promise for slot %s"(i)));
-			childTids[i] = launchedTask.childTid;
-		}
-
-		BatchHandle handle;
-		string batchError;
-		if (!batchRegistry.create(parentTid, childTids, handle, batchError))
-			return resolve(makeInternalBatchError(batchError));
-
-		foreach (i, ref launchedTask; launchedTasks)
-		{
-			(BatchHandle h, size_t slot, int cTid, Promise!McpResult promise) {
-				promise.then((McpResult r) {
-					string error;
-					if (!batchRegistry.enqueueChildDone(h, slot, cTid, r, error))
-						errorf("batch router error: %s", error);
-				});
-			}(handle, i, launchedTask.childTid, launchedTask.promise);
-		}
-
-		return awaitBatchLoop(parentTid, handle.batchId);
-	}
-
-	/// Enter (or re-enter) the batch wait loop for a parent.
-	/// Blocks until all children complete or a child asks a question.
-	private Promise!McpResult awaitBatchLoop(int parentTid, ulong batchId)
-	{
-		import ae.utils.json : JSONFragment, toJson;
-		import ae.utils.promise.await : await;
-		auto handle = BatchHandle(parentTid, batchId);
-		if (!batchRegistry.exists(handle))
-			return resolve(makeInternalBatchError(
-				format!"no active batch for parent tid=%d batch=%s"(parentTid, batchId)));
-
-		while (true)
-		{
-			Promise!BatchSignal event;
-			string batchError;
-			if (!batchRegistry.waitOne(handle, event, batchError))
-			{
-				if (batchError.length > 0)
-					return resolve(makeInternalBatchError(batchError));
-				break;
-			}
-
-			auto sig = event.await();
-			auto consumed = batchRegistry.consume(handle, sig,
-				(int childTid, int qid) => questionRouter.childHasPendingQuestion(childTid, qid),
-				batchError);
-			if (batchError.length > 0)
-				return resolve(makeInternalBatchError(batchError));
-
-			final switch (consumed.kind)
-			{
-				case BatchConsumeKind.ignored:
-					break;
-				case BatchConsumeKind.childDone:
-					break;
-				case BatchConsumeKind.question:
-					// Return question to parent agent — parent answers via Answer,
-					// which re-enters this same batch instance.
-					return resolve(questionRouter.buildQuestionResult(
-						consumed.childTid, consumed.qid, consumed.questionText));
-				case BatchConsumeKind.invalid:
-					errorf("ignoring invalid batch signal for parent=%d batch=%s: %s",
-						parentTid, batchId, consumed.error);
-					break;
-			}
-		}
-
-		McpResult[] results;
-		string batchError;
-		if (!batchRegistry.finalize(handle, results, batchError))
-			return resolve(makeInternalBatchError(batchError));
-
-		bool anyError;
-		JSONFragment[] items;
-		foreach (ref result; results)
-		{
-			if (result.structuredContent)
-				items ~= result.structuredContent;
-			else
-				items ~= JSONFragment(toJson(result.text));
-			if (result.isError)
-				anyError = true;
-		}
-		auto wrappedJson = toJson(BatchResultEnvelope(items));
-		return resolve(McpResult.structured(wrappedJson, anyError));
-	}
-
-	/// Handle SwitchMode tool — validate and store continuation choice (keep_context).
-	/// The actual transition happens in onExit after the session ends.
-	McpResult handleSwitchMode(string callerTid, string continuation)
-	{
-		import std.algorithm : filter, map;
-		import std.array : array, join;
-		import std.conv : to;
-
-		int tid;
-		try
-			tid = to!int(callerTid);
-		catch (Exception)
-			return McpResult("Invalid calling task ID", true);
-
-		auto td = tid in tasks;
-		if (td is null)
-			return McpResult("Calling task not found", true);
-
-		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		if (typeDef is null)
-			return McpResult("Unknown task type: " ~ td.taskType, true);
-
-		auto contDef = continuation in typeDef.continuations;
-		if (contDef is null || !contDef.keep_context)
-		{
-			auto validModes = typeDef.continuations.byKeyValue
-				.filter!(kv => kv.value.keep_context)
-				.map!(kv => "'" ~ kv.key ~ "'")
-				.array.join(", ");
-			return McpResult(
-				"Unknown SwitchMode continuation '" ~ continuation ~ "' for task type '" ~
-				td.taskType ~ "'. Available modes: " ~ (validModes.length > 0 ? validModes : "(none)") ~ ".", true);
-		}
-
-		td.pendingContinuation = new PendingContinuation(PendingContinuation.Kind.switchMode, continuation);
-		infof("SwitchMode: tid=%d continuation=%s (type %s → %s)",
-			tid, continuation, td.taskType, contDef.task_type);
-
-		return McpResult(
-			"Mode switch to '" ~ contDef.task_type ~ "' accepted. "
-			~ "Yield your turn IMMEDIATELY — do not call any more tools or generate output. "
-			~ "You will receive new instructions when your session resumes.");
-	}
-
-	/// Handle Handoff tool — validate continuation, store choice + prompt.
-	/// Creates a new child task on exit with the provided prompt.
-	McpResult handleHandoff(string callerTid, string continuation, string prompt)
-	{
-		import std.conv : to;
-
-		int tid;
-		try
-			tid = to!int(callerTid);
-		catch (Exception)
-			return McpResult("Invalid calling task ID", true);
-
-		auto td = tid in tasks;
-		if (td is null)
-			return McpResult("Calling task not found", true);
-
-		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		if (typeDef is null)
-			return McpResult("Unknown task type: " ~ td.taskType, true);
-
-		auto contDef = continuation in typeDef.continuations;
-		if (contDef is null || contDef.keep_context)
-		{
-			return McpResult(
-				"Unknown Handoff continuation '" ~ continuation ~ "' for task type '" ~
-				td.taskType ~ "'. Check the available handoffs in the tool description.", true);
-		}
-
-		if (prompt.length == 0)
-			return McpResult("Handoff requires a non-empty prompt for the successor task.", true);
-
-		// Reject Handoff while the current task owns unanswered child questions.
-		// A handoff successor does not inherit batch ownership or question-answer
-		// authority; the question would be permanently stranded.
-		int pendingChildTid;
-		string pendingQuestion;
-		int pendingQid;
-		if (findPendingChildQuestion(tid, pendingChildTid, pendingQuestion, pendingQid))
-			return McpResult(
-				"Handoff cannot continue while sub-task question qid="
-				~ to!string(pendingQid)
-				~ " is waiting for your answer. "
-				~ "Use mcp__cydo__Answer(...) first, or mcp__cydo__SwitchMode if you need a different mode before answering.",
-				true);
-
-		td.pendingContinuation = new PendingContinuation(PendingContinuation.Kind.handoff, continuation, prompt);
-		infof("Handoff: tid=%d continuation=%s (type %s → %s)",
-			tid, continuation, td.taskType, contDef.task_type);
-
-		return McpResult(
-			"Handoff to '" ~ contDef.task_type ~ "' accepted. "
-			~ "Yield your turn IMMEDIATELY — do not call any more tools or generate output. "
-			~ "A new task will be created with your prompt. Your session is ending.");
-	}
-
-	/// Handle AskUserQuestion — broadcast questions to frontend, return promise
-	/// that resolves when the user responds.
-	Promise!McpResult handleAskUserQuestion(string callerTid, AskQuestion[] questions)
-	{
-		import ae.utils.json : toJson;
-		import std.conv : to;
-
-		int tid;
-		try
-			tid = to!int(callerTid);
-		catch (Exception)
-			return resolve(McpResult("Invalid calling task ID", true));
-
-		auto tdp = tid in tasks;
-		if (tdp is null)
-			return resolve(McpResult("Task not found", true));
-
-		// Gate: only types in the interactive cluster (reachable from entry points
-		// via keep_context continuations).
-		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(tdp.projectPath);
-		auto typeDef = taskTypes.byName(tdp.taskType);
-		if (typeDef is null || !taskTypes.isInteractive(taskTypeCatalog.getEntryPointsForProject(tdp.projectPath), tdp.taskType))
-			return resolve(McpResult(
-				"AskUserQuestion is only available for interactive tasks. "
-				~ "This task type (" ~ tdp.taskType ~ ") is not interactive.", true));
-
-		// Only one pending AskUserQuestion per task
-		if (tid in pendingAskUserQuestions)
-			return resolve(McpResult("Another AskUserQuestion is already pending for this task", true));
-
-		auto promise = new Promise!McpResult;
-		pendingAskUserQuestions[tid] = promise;
-
-		// Correlation ID (tid is unique since only one pending per task)
-		auto toolUseId = format!"ask_%d"(tid);
-		auto questionsJson = toJson(questions);
-		tdp.pendingAskToolUseId = toolUseId;
-		tdp.pendingAskQuestions = JSONFragment(questionsJson);
-
-		// Broadcast to subscribed clients
-		auto msg = toJson(AskUserQuestionMessage("ask_user_question", tid,
-			toolUseId, JSONFragment(questionsJson)));
-		clientHub.sendToSubscribed(tid, Data(msg.representation));
-
-		// Update task state for sidebar
-		tdp.needsAttention = true;
-		persistence.setNeedsAttention(tid, true);
-		tdp.hasPendingQuestion = true;
-		tdp.notificationBody = "Waiting for your answer";
-		tdp.isProcessing = false;
-		touchTask(tid);
-		persistence.setLastActive(tid, tasks[tid].lastActive);
-		broadcastTaskUpdate(tid);
-
-		return promise;
-	}
-
-	Promise!McpResult handleBash(string callerTid, string command)
-	{
-		import std.conv : to;
-
-		int tid;
-		try
-			tid = to!int(callerTid);
-		catch (Exception)
-			return resolve(McpResult("Invalid calling task ID", true));
-
-		auto td = tid in tasks;
-		if (td is null)
-			return resolve(McpResult("Task not found", true));
-
-		string[] args;
-		if (td.launch.cmdPrefix !is null)
-			args = td.launch.cmdPrefix ~ ["/bin/sh", "-c", command];
-		else
-			args = ["/bin/sh", "-c", command];
-
-		string workDir;
-		if (td.launch.cmdPrefix is null && td.launch.workDir.length > 0)
-			workDir = td.launch.workDir;
-
-		auto terminal = new TerminalProcess(
-			args,
-			null,   // inherit env
-			workDir,
-			1024 * 1024
-		);
-
-		activeTerminals ~= terminal;
-
-		auto promise = new Promise!McpResult;
-		terminal.onExit = () {
-			import std.algorithm : remove;
-			activeTerminals = activeTerminals.remove!(t => t is terminal);
-			auto output = terminal.output();
-			promise.fulfill(McpResult(output, terminal.exitCode() != 0));
-		};
-		return promise;
 	}
 
 	private string taskWorkspaceLabel(ref TaskData td)
@@ -1571,254 +1083,6 @@ class App : ToolsBackend
 		return a.projectPath.length > 0 && a.projectPath == b.projectPath;
 	}
 
-	Promise!McpResult handleAsk(string callerTidStr, string message, int targetTid)
-	{
-		return questionRouter.handleAsk(callerTidStr, message, targetTid);
-	}
-
-	Promise!McpResult handleAnswer(string callerTidStr, int qid, string message)
-	{
-		return questionRouter.handleAnswer(callerTidStr, qid, message);
-	}
-
-	Promise!McpResult handlePermissionPrompt(string callerTidStr, string toolUseId,
-		string toolName, JSONFragment input)
-	{
-		import std.conv : to;
-		int callerTidInt;
-		try callerTidInt = to!int(callerTidStr);
-		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
-
-		auto callerTd = callerTidInt in tasks;
-		if (callerTd is null) return resolve(McpResult("Task not found", true));
-
-		string policy = findWorkspacePermissionPolicy(callerTd.workspace);
-		string resolved = evaluatePermissionPolicy(policy, toolName, input.json);
-
-		if (resolved == "deny")
-			return resolve(McpResult(makePermissionDenyJson("Permission denied by policy"), false));
-		if (resolved == "allow")
-			return resolve(McpResult(makePermissionAllowJson(input.json), false));
-
-		// "ask" mode — prompt the user via WebSocket
-		return promptUserForPermission(callerTidInt, toolUseId, toolName, input);
-	}
-
-	private Promise!McpResult promptUserForPermission(int tid, string toolUseId,
-		string toolName, JSONFragment input)
-	{
-		// Only one pending permission prompt per task
-		if (tid in pendingPermissionPrompts)
-			return resolve(McpResult(makePermissionDenyJson("Another permission prompt is already pending"), false));
-
-		auto promise = new Promise!McpResult;
-		pendingPermissionPrompts[tid] = promise;
-		pendingPermissionInputs[tid] = input.json;
-
-		// Store fields for late-joining clients
-		auto tdp = &tasks[tid];
-		tdp.pendingPermissionToolUseId = toolUseId;
-		tdp.pendingPermissionToolName = toolName;
-		tdp.pendingPermissionInput = input;
-
-		// Broadcast to subscribed clients
-		clientHub.sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
-			tid, toolUseId, toolName, input)).representation));
-
-		// Update task state for sidebar
-		tdp.needsAttention = true;
-		persistence.setNeedsAttention(tid, true);
-		tdp.hasPendingQuestion = true;
-		tdp.notificationBody = "Permission requested";
-		tdp.isProcessing = false;
-		touchTask(tid);
-		persistence.setLastActive(tid, tasks[tid].lastActive);
-		broadcastTaskUpdate(tid);
-
-		return promise;
-	}
-
-	private void removeTaskDependency(int parentTid, int childTid)
-	{
-		persistence.removeTaskDep(parentTid, childTid);
-		taskDeps.remove(childTid);
-		liveDeliveredSubTasks.remove(childTid);
-	}
-
-	/// Called after an MCP tool call result is successfully sent back to the
-	/// agent's MCP proxy. Cleans up sub-task deps (if any) and transitions
-	/// the parent from "waiting" to "active".
-	private void onToolCallDelivered(string callerTidStr)
-	{
-		import std.conv : to;
-		int tid;
-		try tid = to!int(callerTidStr);
-		catch (Exception) return;
-
-		if (tid !in tasks)
-			return;
-
-		// Don't clean up deps if there's any live batch (Answer may re-enter one)
-		bool hasLiveBatches;
-		string batchError;
-		if (!batchRegistry.parentHasLiveBatches(tid, hasLiveBatches, batchError))
-		{
-			errorf("batch router invariant violated: %s", batchError);
-			return;
-		}
-		if (hasLiveBatches)
-			return;
-
-		// Clean up deps for completed children (no-op for non-Task tools)
-		auto children = childrenOf(tid);
-		if (children.length == 0)
-			return;
-
-		foreach (childTid; children)
-		{
-			removeTaskDependency(tid, childTid);
-		}
-
-		// Transition parent from waiting to active
-		if (tasks[tid].status == "waiting")
-		{
-			tasks[tid].status = "active";
-			persistence.setStatus(tid, "active");
-			broadcastTaskUpdate(tid);
-		}
-	}
-
-	/// Called when MCP delivery fails (connection dead). If this was a Task tool
-	/// call and all children are done, triggers fallback delivery via
-	/// deliverBatchResults so the parent receives results as a user message
-	/// without requiring manual resume.
-	private void onMcpDeliveryFailed(string callerTidStr)
-	{
-		import std.conv : to;
-		int tid;
-		try tid = to!int(callerTidStr);
-		catch (Exception) return;
-
-		if (tid !in tasks)
-			return;
-
-		subtaskResultDelivery.deliverBatchFallbackIfReady(tid);
-	}
-
-	private void handleAskUserResponse(WsMessage json)
-	{
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-
-		auto pending = tid in pendingAskUserQuestions;
-		if (pending is null)
-			return;
-
-		auto td = &tasks[tid];
-		td.pendingAskToolUseId = null;
-		td.pendingAskQuestions = JSONFragment.init;
-		td.needsAttention = false;
-		persistence.setNeedsAttention(tid, false);
-		td.hasPendingQuestion = false;
-		td.notificationBody = "";
-		td.isProcessing = true;
-
-		// json.content is the JSON from the frontend:
-		//   {"answers": {"q": "a", ...}} — normal response
-		//   {"error": "..."} — user aborted
-		string rawContent = json.content.json !is null ? jsonParse!string(json.content.json) : "{}";
-		string resultText = rawContent; // fallback: raw JSON
-		bool isError = false;
-		try
-		{
-			import std.json : parseJSON;
-			auto parsed = parseJSON(rawContent);
-			if (auto errorMsg = "error" in parsed)
-			{
-				resultText = errorMsg.str;
-				isError = true;
-			}
-			else if (auto answersObj = "answers" in parsed)
-			{
-				string[] parts;
-				foreach (key, val; answersObj.object)
-					parts ~= `"` ~ key ~ `"="` ~ val.str ~ `"`;
-				import std.array : join;
-				resultText = "User has answered your questions: " ~ parts.join(". ") ~ ".";
-			}
-		}
-		catch (Exception e) { warningf("AskUserQuestion response parse error: %s", e.msg); } // use raw JSON as fallback
-
-		pending.fulfill(McpResult(resultText, isError));
-		pendingAskUserQuestions.remove(tid);
-
-		// Broadcast clear to all subscribed clients (so other tabs/windows dismiss the form)
-		import ae.utils.json : toJson;
-		clientHub.sendToSubscribed(tid, Data(toJson(AskUserQuestionMessage("ask_user_question",
-			tid, "", JSONFragment("[]"))).representation));
-
-		broadcastTaskUpdate(tid);
-	}
-
-	private void handlePermissionPromptResponse(WsMessage json)
-	{
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-
-		auto pending = tid in pendingPermissionPrompts;
-		if (pending is null)
-			return;
-
-		auto td = &tasks[tid];
-		td.pendingPermissionToolUseId = null;
-		td.pendingPermissionToolName = null;
-		td.pendingPermissionInput = JSONFragment.init;
-		td.needsAttention = false;
-		persistence.setNeedsAttention(tid, false);
-		td.hasPendingQuestion = false;
-		td.notificationBody = "";
-		td.isProcessing = true;
-
-		// json.content is JSON from the frontend:
-		//   {"behavior":"allow"} or {"behavior":"deny","message":"..."}
-		string rawContent = json.content.json !is null ? jsonParse!string(json.content.json) : "{}";
-		string resultText;
-		try
-		{
-			import std.json : parseJSON;
-			auto parsed = parseJSON(rawContent);
-			if (auto behavior = "behavior" in parsed)
-			{
-				if (behavior.str == "allow")
-					resultText = makePermissionAllowJson(pendingPermissionInputs[tid]);
-				else
-				{
-					string denyMsg = "User denied permission";
-					if (auto msg = "message" in parsed)
-						if (msg.str.length > 0)
-							denyMsg = msg.str;
-					resultText = makePermissionDenyJson(denyMsg);
-				}
-			}
-			else
-				resultText = makePermissionDenyJson("Invalid response");
-		}
-		catch (Exception)
-			resultText = makePermissionDenyJson("Invalid response");
-
-		pending.fulfill(McpResult(resultText, false));
-		pendingPermissionPrompts.remove(tid);
-		pendingPermissionInputs.remove(tid);
-
-		// Broadcast clear to all subscribed clients (empty tool_use_id signals clear)
-		clientHub.sendToSubscribed(tid, Data(toJson(PermissionPromptMessage("permission_prompt",
-			tid, "", "", JSONFragment("{}"))).representation));
-
-		broadcastTaskUpdate(tid);
-	}
-
 	private void handleWsMessage(WebSocketAdapter ws, string text)
 	{
 		import ae.utils.json : jsonParse;
@@ -1842,8 +1106,8 @@ class App : ToolsBackend
 			case "set_archived":      handleSetArchivedMsg(ws, json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
-			case "ask_user_response": handleAskUserResponse(json); break;
-			case "permission_prompt_response": handlePermissionPromptResponse(json); break;
+			case "ask_user_response": workflowTools.handleAskUserResponse(json); break;
+			case "permission_prompt_response": workflowTools.handlePermissionPromptResponse(json); break;
 			case "refresh_workspaces": handleRefreshWorkspacesMsg(); break;
 			case "promote_task":     handlePromoteTaskMsg(json); break;
 			case "set_task_type":    handleSetTaskTypeMsg(json); break;
@@ -2010,18 +1274,9 @@ class App : ToolsBackend
 			ws.send(Data(toJson(SuggestionsUpdateMessage("suggestions_update", tid,
 				td.lastSuggestions)).representation));
 
-		if (tid in pendingAskUserQuestions && td.pendingAskToolUseId.length > 0)
-		{
-			ws.send(Data(toJson(AskUserQuestionMessage("ask_user_question", tid,
-				td.pendingAskToolUseId, td.pendingAskQuestions)).representation));
-		}
-
-		if (tid in pendingPermissionPrompts && td.pendingPermissionToolUseId.length > 0)
-		{
-			ws.send(Data(toJson(PermissionPromptMessage("permission_prompt", tid,
-				td.pendingPermissionToolUseId, td.pendingPermissionToolName,
-				td.pendingPermissionInput)).representation));
-		}
+		workflowTools.replayPendingClientPrompts(tid, (string payload) {
+			ws.send(Data(payload.representation));
+		});
 	}
 
 	private void onHistorySubscribed(int tid)
@@ -2326,7 +1581,7 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Error generating suggestions: %s", e.msg);
 
-			subtaskResultDelivery.deliverBatchFallbackIfReady(tid);
+			workflowTools.deliverBatchFallbackIfReady(tid);
 
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
@@ -2526,58 +1781,6 @@ class App : ToolsBackend
 		auto td = &tasks[tid];
 		return loadSystemPrompt(*typeDef, taskTypeCatalog.promptSearchPath(td.projectPath),
 			taskPathResolver.outputPath(*td));
-	}
-
-	/// Find the first child of tid that has an unanswered Ask question.
-	/// Returns true if found; sets childTid, question, and qid via out params.
-	private bool findPendingChildQuestion(int tid, out int childTid, out string question, out int qid)
-	{
-		string batchError;
-		if (!batchRegistry.findFirstLiveChild(tid, (int cTid) {
-			return cTid in tasks && tasks[cTid].pendingAskPromise !is null;
-		}, childTid, batchError))
-		{
-			if (batchError.length > 0)
-				errorf("batch router invariant violated: %s", batchError);
-			return false;
-		}
-		question = tasks[childTid].pendingAskQuestion;
-		qid = tasks[childTid].pendingAskQid;
-		return true;
-	}
-
-	/// Send a "Sub-task waiting for answer" reminder for the first pending child
-	/// question owned by tid. Does nothing if no such question exists.
-	private void sendPendingChildAnswerReminder(int tid)
-	{
-		import std.conv : to;
-
-		int childTid;
-		string question;
-		int qid;
-		if (!findPendingChildQuestion(tid, childTid, question, qid))
-			return;
-		auto childTd = &tasks[childTid];
-		auto reminderSubject = subTaskWaitingForAnswerSubject(
-			childTd.title, childTid, qid);
-		// Use tid's projectPath for template lookup (the parent asking the question)
-		auto reminderBody = readPromptFile("prompts/sub_task_waiting_for_answer.md",
-			tasks[tid].projectPath, ["question": question, "qid": to!string(qid)]);
-		if (reminderBody.length == 0)
-			reminderBody = "Question: " ~ question ~ "\n\n"
-				~ "Use mcp__cydo__Answer(" ~ to!string(qid)
-				~ ", \"your answer\") to respond. You must answer before you can complete your turn.";
-		auto reminder = wrapKnownSystemMessage(
-			config.system_keyword,
-			KnownSystemMessageKind.subTaskWaitingForAnswer,
-			reminderBody,
-			reminderSubject);
-		auto reminderBlocks = [ContentBlock("text", reminder)];
-		auto askReminderMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-			KnownSystemMessageKind.subTaskWaitingForAnswer,
-			reminderSubject,
-			["question": question], "question");
-		sendTaskMessage(tid, reminderBlocks, null, askReminderMeta);
 	}
 
 	/// Inject agent_name into session/init events whose translation pipeline
@@ -2982,199 +2185,6 @@ class App : ToolsBackend
 		return taskSessionRunner.processTransition(tid, goal);
 	}
 
-	/// Execute a continuation transition — shared by explicit (SwitchMode/Handoff)
-	/// and implicit (on_yield) paths.
-	/// edgeName is the YAML map key (or "on_yield") that identifies this edge.
-	private void executeContinuation(int tid, ContinuationDef contDef, string handoffPrompt,
-		string edgeName)
-	{
-		import ae.utils.json : toJson;
-
-		auto td = &tasks[tid];
-
-		auto newTypeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(contDef.task_type);
-		if (newTypeDef is null)
-		{
-			errorf("executeContinuation: unknown successor type '%s' for tid=%d", contDef.task_type, tid);
-			td.status = "failed";
-			persistence.setStatus(tid, "failed");
-			broadcastTaskUpdate(tid);
-			return;
-		}
-
-		infof("Continuation: tid=%d %s → %s (keep_context=%s)",
-			tid, td.taskType, contDef.task_type, contDef.keep_context);
-
-		auto resultText = td.resultText;
-
-		if (contDef.keep_context)
-		{
-			// Capture source type before mutating td.taskType
-			auto sourceTaskType = td.taskType;
-
-			// Mutate task type in-place, resume the same session
-			td.taskType = contDef.task_type;
-			persistence.setTaskType(tid, contDef.task_type);
-
-			// Notify frontends to re-request history
-			emitTaskReload(tid, "continuation");
-
-			td.status = "active";
-			persistence.setStatus(tid, "active");
-
-			// Send the continuation's prompt template as first message to successor.
-			auto renderedContinuationPrompt = renderContinuationPrompt(contDef,
-				"Continue from where you left off.", taskTypeCatalog.promptSearchPath(td.projectPath),
-				["result_text": resultText, "output_dir": taskPathResolver.taskDir(*td)]);
-			renderedContinuationPrompt = "`SwitchMode` to `" ~ edgeName
-				~ "` successful.\n\n" ~ renderedContinuationPrompt;
-			renderedContinuationPrompt = prependTaskFraming(
-				renderedContinuationPrompt, taskSystemPromptForMessage(tid, newTypeDef),
-				loadProjectMemory(newTypeDef, td.repoPath, taskTypeCatalog.promptSearchPath(td.projectPath)));
-			auto modeSwitchMsgSubject = modeSwitchSubject(sourceTaskType, edgeName);
-			auto contMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-				KnownSystemMessageKind.modeSwitch, modeSwitchMsgSubject);
-			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(tid,
-					[ContentBlock("text", wrapKnownSystemMessage(
-						config.system_keyword,
-						KnownSystemMessageKind.modeSwitch, renderedContinuationPrompt, modeSwitchMsgSubject))],
-					null, contMeta);
-				// If a child question is still pending (the agent switched modes before
-				// answering), send the reminder now so the resumed mode can answer it.
-				sendPendingChildAnswerReminder(tid);
-			}).ignoreResult();
-		}
-		else
-		{
-			// Resolve successor's agent before committing to the transition.
-			auto contAgent = resolveAgent(newTypeDef.agent, td.agentType);
-			if (contAgent.length == 0 || !isRegisteredAgent(contAgent))
-			{
-				td.status = "failed";
-				td.error = format(
-					"Successor type '%s' resolved agent to '%s' (parent='%s') — not a registered agent",
-					contDef.task_type, contAgent, td.agentType);
-				persistence.setStatus(tid, "failed");
-				historyPipeline.appendSynthesizedHistoryError(tid, "Continuation failed", td.error);
-				broadcastTaskUpdate(tid);
-				return;
-			}
-
-			// Complete the current task normally (preserving its history),
-			// then create a new child task for the successor.
-			td.status = "completed";
-			persistence.setStatus(tid, "completed");
-
-			// Notify frontends to re-request history
-			emitTaskReload(tid, "continuation");
-
-			// Create child task for the successor with the handoff prompt
-			auto successorPrompt = handoffPrompt.length > 0 ? handoffPrompt : td.description;
-			auto childTid = createTask(td.workspace, td.projectPath, contAgent);
-			auto childTd = &tasks[childTid];
-			childTd.taskType = contDef.task_type;
-			childTd.description = successorPrompt;
-			childTd.parentTid = tid;
-			childTd.relationType = "continuation";
-			childTd.title = td.title;
-
-			persistence.setTaskType(childTid, contDef.task_type);
-			persistence.setDescription(childTid, successorPrompt);
-			persistence.setParentTid(childTid, tid);
-			persistence.setRelationType(childTid, "continuation");
-			persistence.setTitle(childTid, childTd.title);
-
-			clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid,
-				td.workspace, td.projectPath, tid, "continuation")));
-			broadcastTaskUpdate(childTid);
-			broadcastFocusHint(tid, childTid);
-
-			// If this task was itself a pending sub-task, move the promise
-			// to the new child so the parent awaits the full chain
-			if (auto pending = tid in pendingSubTasks)
-			{
-				pendingSubTasks[childTid] = *pending;
-				pendingSubTasks.remove(tid);
-				// Transfer dependency: the parent that was waiting on tid now waits on childTid
-				persistence.removeAllChildDeps(tid);
-				persistence.addTaskDep(td.parentTid, childTid);
-				taskDeps.remove(tid);
-				liveDeliveredSubTasks.remove(tid);
-				taskDeps[childTid] = td.parentTid;
-			}
-
-			// Set up worktree from edge config
-			worktreeAllocator.setupForEdge(childTid, tid, contDef.worktree);
-
-			// Spawn the successor agent
-			auto renderedSuccessorPrompt = renderPrompt(*newTypeDef, successorPrompt,
-				taskTypeCatalog.promptSearchPath(childTd.projectPath),
-				taskPathResolver.outputPath(*childTd), contDef.prompt_template,
-				["result_text": resultText]);
-			renderedSuccessorPrompt = prependTaskFraming(renderedSuccessorPrompt,
-				taskSystemPromptForMessage(childTid, newTypeDef),
-				loadProjectMemory(newTypeDef, childTd.repoPath, taskTypeCatalog.promptSearchPath(childTd.projectPath)));
-			auto handoffMsgSubject = handoffSubject(td.taskType, edgeName);
-			auto handoffMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-				KnownSystemMessageKind.handoff,
-				handoffMsgSubject, ["task_description": successorPrompt], "task_description");
-			tasks[childTid].processQueue.setGoal(ProcessState.Alive).then(() {
-				sendTaskMessage(childTid, [ContentBlock("text", wrapKnownSystemMessage(
-					config.system_keyword,
-					KnownSystemMessageKind.handoff, renderedSuccessorPrompt, handoffMsgSubject))], null, handoffMeta);
-			}).ignoreResult();
-
-			broadcastTaskUpdate(tid);
-		}
-	}
-
-	/// Transition a task to its successor via continuation.
-	/// Called from onExit when pendingContinuation is set.
-	private void spawnContinuation(int tid)
-	{
-		auto td = &tasks[tid];
-		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		auto contKey = td.pendingContinuation.key;
-		auto hPrompt = td.pendingContinuation.handoffPrompt;
-		td.pendingContinuation = null;
-
-		if (typeDef is null)
-		{
-			errorf("spawnContinuation: unknown task type '%s' for tid=%d", td.taskType, tid);
-			td.status = "failed";
-			persistence.setStatus(tid, "failed");
-			broadcastTaskUpdate(tid);
-			return;
-		}
-
-		auto contDefP = contKey in typeDef.continuations;
-		if (contDefP is null)
-		{
-			errorf("spawnContinuation: unknown continuation '%s' for type '%s' tid=%d",
-				contKey, td.taskType, tid);
-			td.status = "failed";
-			persistence.setStatus(tid, "failed");
-			broadcastTaskUpdate(tid);
-			return;
-		}
-
-		executeContinuation(tid, *contDefP, hPrompt, contKey);
-	}
-
-	private void spawnOnYieldContinuation(int tid)
-	{
-		auto td = tid in tasks;
-		assert(td !is null, format!"Task %d not found for on_yield continuation"(tid));
-
-		auto onYieldDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath)
-			.byName(td.taskType);
-		assert(onYieldDef !is null && onYieldDef.on_yield.task_type.length > 0,
-			format!"Task %d has no on_yield continuation"(tid));
-
-		executeContinuation(tid, onYieldDef.on_yield, td.resultText, "on_yield");
-	}
-
 	private void sendAgentAck(int tid, string nonce)
 	{
 		if (nonce.length == 0)
@@ -3252,71 +2262,6 @@ class App : ToolsBackend
 		td.onIdleCallbacks = null;
 		foreach (cb; callbacks)
 			cb();
-	}
-
-	private bool hasPendingSubTask(int tid)
-	{
-		return (tid in pendingSubTasks) !is null;
-	}
-
-	private bool hasTaskDependency(int tid)
-	{
-		return (tid in taskDeps) !is null;
-	}
-
-	private bool hasPendingChildQuestion(int tid)
-	{
-		int childTid;
-		string question;
-		int qid;
-		return findPendingChildQuestion(tid, childTid, question, qid);
-	}
-
-	private void failPendingAskUserQuestionOnExit(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		if (auto askPending = tid in pendingAskUserQuestions)
-		{
-			askPending.fulfill(McpResult("Session ended while waiting for user response", true));
-			pendingAskUserQuestions.remove(tid);
-			tasks[tid].pendingAskToolUseId = null;
-			tasks[tid].pendingAskQuestions = JSONFragment.init;
-			tasks[tid].needsAttention = false;
-			persistence.setNeedsAttention(tid, false);
-			tasks[tid].hasPendingQuestion = false;
-			tasks[tid].notificationBody = "";
-		}
-	}
-
-	private void failPendingPermissionPromptOnExit(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		if (auto permPending = tid in pendingPermissionPrompts)
-		{
-			permPending.fulfill(McpResult(makePermissionDenyJson("Task exited"), false));
-			pendingPermissionPrompts.remove(tid);
-			pendingPermissionInputs.remove(tid);
-			tasks[tid].pendingPermissionToolUseId = null;
-			tasks[tid].pendingPermissionToolName = null;
-			tasks[tid].pendingPermissionInput = JSONFragment.init;
-		}
-	}
-
-	private void failPendingAskRouteOnExit(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		if (tasks[tid].wasKilledByUser
-			|| (tasks[tid].pendingContinuation is null && !hasPendingChildQuestion(tid)))
-		{
-			questionRouter.failQuestionRoutesForAnswerer(tid,
-				"Session ended while waiting for Ask response");
-		}
-		if (tasks[tid].pendingAskPromise !is null && tasks[tid].pendingAskQid > 0)
-			questionRouter.failQuestionRoute(tasks[tid].pendingAskQid,
-				"Session ended while waiting for Ask response");
 	}
 
 	private void cancelExitBackgroundWork(int tid)
@@ -3397,35 +2342,12 @@ class App : ToolsBackend
 		sendTaskMessage(tid, [ContentBlock("text", msg)], null, meta);
 	}
 
-	private void loadPersistedTaskDeps()
-	{
-		foreach (parentTid, children; persistence.loadTaskDeps())
-			foreach (childTid; children)
-				taskDeps[childTid] = parentTid;
-	}
-
 	private int[] snapshotTaskIdsForResume()
 	{
 		int[] tids;
 		foreach (tid, ref td; tasks)
 			tids ~= tid;
 		return tids;
-	}
-
-	private bool waitingTaskChildrenAllDone(int tid)
-	{
-		foreach (childTid, parentTid; taskDeps)
-			if (parentTid == tid && childTid in tasks
-				&& tasks[childTid].status != "completed"
-				&& tasks[childTid].status != "failed"
-				&& tasks[childTid].status != "importable")
-			{
-				tracef("resumeInFlightTasks: tid=%d waiting, child tid=%d still %s",
-					tid, childTid, tasks[childTid].status);
-				return false;
-			}
-
-		return true;
 	}
 
 	private string defaultAgentName(string workspaceName)
@@ -3610,16 +2532,6 @@ class App : ToolsBackend
 	private Promise!void resumeTask(int tid)
 	{
 		return taskSessionRunner.resumeTask(tid);
-	}
-
-	/// Collect child tids for a given parent from the in-memory taskDeps map.
-	private int[] childrenOf(int parentTid)
-	{
-		int[] children;
-		foreach (childTid, depParent; taskDeps)
-			if (depParent == parentTid)
-				children ~= childTid;
-		return children;
 	}
 
 	private int findRootTid(int tid)
