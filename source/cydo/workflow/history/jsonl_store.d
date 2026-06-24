@@ -206,6 +206,30 @@ bool spliceJsonlByLine(string jsonlPath, int lineNum, string[] newLines)
 	return true;
 }
 
+unittest
+{
+	import std.array : join;
+	import std.file : mkdirRecurse, rmdirRecurse, write, readText;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-splice-jsonl-by-line");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	write(jsonlPath, [`{"a":1}`, "", `{"b":2}`, `{"c":3}`].join("\n") ~ "\n");
+
+	assert(spliceJsonlByLine(jsonlPath, 3,
+		[`{"x":1}`, `{"y":2}`]));
+	assert(readText(jsonlPath) == [`{"a":1}`, `{"x":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
+
+	assert(spliceJsonlByLine(jsonlPath, 0, [`{"ignored":true}`]) == false);
+	assert(spliceJsonlByLine(jsonlPath, 2, []));
+	assert(readText(jsonlPath) == [`{"a":1}`, `{"y":2}`, `{"c":3}`, ""].join("\n"));
+
+	assert(spliceJsonlByLine(jsonlPath, 99, [`{"ignored":true}`]) == false);
+}
+
 bool writeJsonlPrefix(string sourcePath, string destPath, string afterForkId,
 	bool delegate(string line, int lineNum, string forkId) matchFn)
 {
