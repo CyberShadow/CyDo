@@ -45,12 +45,12 @@ import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
 	HistoryEventPipelineHost;
 import cydo.workflow.history.abbrev : extractMessageText;
-import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
 import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
 import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost, buildCydoMeta;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
+import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
@@ -67,7 +67,7 @@ import cydo.agent.drivers.registry : isRegisteredAgent;
 import cydo.agent.session : AgentSession;
 import cydo.agent.terminal : TerminalProcess;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
-import cydo.domain.storage.persistence : Persistence, createForkTask, openDatabase;
+import cydo.domain.storage.persistence : Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, ContinuationDef, OutputType, WorktreeMode, byName, isInteractive, loadTaskTypes,
@@ -80,9 +80,7 @@ import cydo.foundation.system.known_messages : KnownSystemMessageKind,
 	taskPromptSubject, wrapKnownSystemMessage;
 import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
-import cydo.workflow.history.jsonl_store : ForkResult, countLinesAfterForkId,
-	editJsonlMessage, findNextUserUuid, forkTask, lastForkIdInJsonl,
-	spliceJsonlByLine, truncateJsonl, writeJsonlPrefix;
+import cydo.workflow.history.jsonl_store : findNextUserUuid;
 import cydo.workflow.workspace.worktree;
 
 class App : ToolsBackend
@@ -130,6 +128,7 @@ class App : ToolsBackend
 	private HistoryEventPipeline historyPipeline;
 	private TaskSessionRunner taskSessionRunner;
 	private DerivedTextJobs derivedTextJobs;
+	private TaskMutationService taskMutationService;
 	private SystemMessageNormalizer systemMessageNormalizer;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
@@ -406,6 +405,67 @@ class App : ToolsBackend
 			waitingTaskChildrenAllDone: &waitingTaskChildrenAllDone,
 			shuttingDown: () => shuttingDown,
 			taskTypeCatalog: taskTypeCatalog,
+		));
+		taskMutationService = new TaskMutationService(TaskMutationServiceHost(
+			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			putTask: (int tid, TaskData td) {
+				tasks[tid] = move(td);
+			},
+			removeTask: (int tid) {
+				tasks.remove(tid);
+			},
+			agentForTask: &agentForTask,
+			sessionForTask: &sessionForTask,
+			taskAlive: &taskAlive,
+			stopTask: (int tid) {
+				taskSessionRunner.stopTask(tid);
+			},
+			effectiveCwd: &taskPathResolver.effectiveCwd,
+			prepareTaskSessionLaunch: &prepareTaskSessionLaunch,
+			taskTypeForProject: (string projectPath, string taskTypeName) {
+				return taskTypeCatalog.getTaskTypesForProject(projectPath).byName(taskTypeName);
+			},
+			makeProcessQueueSF: &makeProcessQueueSF,
+			makeArchiveQueueSF: &makeArchiveQueueSF,
+			persistence: () => &persistence,
+			deleteTask: (int tid) {
+				persistence.deleteTask(tid);
+			},
+			setAgentSessionId: (int tid, string agentSessionId) {
+				persistence.setAgentSessionId(tid, agentSessionId);
+			},
+			setRelationType: (int tid, string relationType) {
+				persistence.setRelationType(tid, relationType);
+			},
+			setTitle: (int tid, string title) {
+				persistence.setTitle(tid, title);
+			},
+			persistStatus: (int tid, string status) {
+				persistence.setStatus(tid, status);
+			},
+			ensureHistoryLoaded: (int tid) {
+				historyPipeline.ensureHistoryLoaded(tid);
+			},
+			getUndoJsonl: (int tid) => jsonlTracker.getUndoJsonl(tid),
+			clearUndoJsonl: (int tid) {
+				jsonlTracker.clearUndoJsonl(tid);
+			},
+			stopJsonlWatch: (int tid) {
+				jsonlTracker.stopJsonlWatch(tid);
+			},
+			generateSuggestions: (int tid) {
+				derivedTextJobs.generateSuggestions(tid);
+			},
+			unsubscribeTaskHistorySubscribers: (int tid) {
+				clientHub.unsubscribeAll(tid);
+			},
+			emitTaskReload: &emitTaskReload,
+			broadcastTaskCreated: (TaskCreatedMessage message) {
+				import ae.utils.json : toJson;
+				clientHub.broadcast(toJson(message));
+			},
+			broadcastTaskUpdate: &broadcastTaskUpdate,
+			broadcastFocusHint: &broadcastFocusHint,
 		));
 		questionRouter = new QuestionRouter(QuestionRouterHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
@@ -2340,752 +2400,22 @@ class App : ToolsBackend
 
 	private void handleForkTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		import ae.utils.json : toJson;
-		import cydo.agent.drivers.codex : CodexAgent, ThreadForkOutcome;
-
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-			return;
-		}
-
-		auto ta = agentForTask(tid);
-		if (auto ca = cast(CodexAgent) ta)
-		{
-			auto sourcePath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
-			if (sourcePath.length == 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: task history file not found", tid)).representation));
-				return;
-			}
-
-			auto childTid = createForkTask(persistence, tid, "", td.projectPath, td.workspace,
-				td.title, td.description, td.taskType, td.agentType);
-
-			auto newTd = TaskData(childTid, td.workspace, td.projectPath);
-			newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
-			newTd.parentTid = tid;
-			newTd.relationType = "fork";
-			newTd.status = "completed";
-			newTd.agentType = td.agentType;
-			newTd.description = td.description;
-			newTd.taskType = td.taskType;
-			import std.datetime : Clock;
-			newTd.createdAt = Clock.currStdTime;
-			newTd.lastActive = newTd.createdAt;
-			tasks[childTid] = move(newTd);
-			tasks[childTid].history.reset(Watermark.none()); // No JSONL yet; updated in .then() after fork
-
-			auto childAgent = agentForTask(childTid);
-			auto childTypeDef = taskTypeCatalog.getTaskTypesForProject(tasks[childTid].projectPath).byName(tasks[childTid].taskType);
-			auto launch = prepareTaskSessionLaunch(childTid, childAgent, childTypeDef);
-
-			import std.file : exists, remove;
-			import std.path : baseName, buildPath, dirName;
-			import std.uuid : randomUUID;
-			auto forkSourcePath = buildPath(dirName(sourcePath),
-				"fork-source-" ~ randomUUID().toString() ~ "-" ~ baseName(sourcePath));
-			if (!writeJsonlPrefix(sourcePath, forkSourcePath, json.after_uuid, &ta.forkIdMatchesLine))
-			{
-				tasks.remove(childTid);
-				persistence.deleteTask(childTid);
-				ws.send(Data(toJson(ErrorMessage("error",
-					"Fork failed: message UUID not found in task history", tid)).representation));
-				return;
-			}
-
-			ca.forkSession(childTid, td.agentSessionId, launch.processLaunch, launch.sessionConfig,
-				forkSourcePath)
-				.then((ThreadForkOutcome outcome) {
-					try
-					{
-						if (exists(forkSourcePath))
-							remove(forkSourcePath);
-					}
-					catch (Exception)
-					{
-					}
-					if (!outcome.ok)
-					{
-						tasks.remove(childTid);
-						persistence.deleteTask(childTid);
-						ws.send(Data(toJson(ErrorMessage("error",
-							"Fork failed: " ~ outcome.error, tid)).representation));
-						return;
-					}
-
-					tasks[childTid].agentSessionId = outcome.threadId;
-					persistence.setAgentSessionId(childTid, outcome.threadId);
-					tasks[childTid].processQueue = new StateQueue!ProcessState(
-						makeProcessQueueSF(childTid),
-						ProcessState.Dead,
-					);
-					tasks[childTid].archiveQueue = new StateQueue!ArchiveState(
-						makeArchiveQueueSF(childTid),
-						ArchiveState.Unarchived,
-					);
-					// Fork JSONL now exists: update the watermark so ensureHistoryLoaded
-					// reads the correct post-fork byte range.
-					{
-						auto jp = childAgent.historyPath(outcome.threadId,
-							taskPathResolver.effectiveCwd(&tasks[childTid]));
-						tasks[childTid].history.reset(watermarkFromPath(jp));
-					}
-
-					clientHub.broadcast(toJson(TaskCreatedMessage("task_created", childTid, td.workspace,
-						td.projectPath, tid, "fork")));
-					broadcastTaskUpdate(childTid);
-					broadcastFocusHint(tid, childTid);
-				});
-			return;
-		}
-
-		auto result = forkTask(persistence, tid, td.agentSessionId, json.after_uuid,
-			td.projectPath, td.workspace, td.title,
-			// Source JSONL lives under the worktree path (effectiveCwd);
-			// destination should live under the real project path so the
-			// fork task (which has projectPath, not a worktree) can find it.
-			(string sid) => ta.historyPath(sid,
-				sid == td.agentSessionId ? taskPathResolver.effectiveCwd(td) : td.projectPath),
-			&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-			td.description, td.taskType, td.agentType);
-		if (result.tid < 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error",
-				"Fork failed: message UUID not found in task history", tid)).representation));
-			return;
-		}
-
-		auto newTd = TaskData(result.tid, td.workspace, td.projectPath);
-		newTd.title = td.title.length > 0 ? td.title ~ " (fork)" : "(fork)";
-		newTd.agentSessionId = result.agentSessionId;
-		newTd.parentTid = tid;
-		newTd.relationType = "fork";
-		newTd.status = "completed";
-		newTd.agentType = td.agentType;
-		newTd.description = td.description;
-		newTd.taskType = td.taskType;
-		import std.datetime : Clock;
-		newTd.createdAt = Clock.currStdTime;
-		newTd.lastActive = newTd.createdAt;
-		tasks[result.tid] = move(newTd);
-		tasks[result.tid].processQueue = new StateQueue!ProcessState(
-			makeProcessQueueSF(result.tid),
-			ProcessState.Dead,
-		);
-		tasks[result.tid].archiveQueue = new StateQueue!ArchiveState(
-			makeArchiveQueueSF(result.tid),
-			ArchiveState.Unarchived,
-		);
-		{
-			auto jp = ta.historyPath(result.agentSessionId,
-				taskPathResolver.effectiveCwd(&tasks[result.tid]));
-			tasks[result.tid].history.reset(watermarkFromPath(jp));
-		}
-
-		clientHub.broadcast(toJson(TaskCreatedMessage("task_created", result.tid, td.workspace, td.projectPath, tid, "fork")));
-		broadcastTaskUpdate(result.tid);
-		broadcastFocusHint(tid, result.tid);
+		taskMutationService.handleForkTaskMsg(ws, json);
 	}
 
 	private void handleUndoTaskMsg(WebSocketAdapter ws, WsMessage json)
 	{
-		import ae.utils.json : toJson;
-		import cydo.agent.drivers.codex : CodexAgent;
-
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-			return;
-		}
-
-		auto ta = agentForTask(tid);
-		if (json.dry_run)
-		{
-			if (cast(CodexAgent) ta !is null)
-			{
-				import std.file : exists, readText;
-				import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, countActiveUserTurnsAfterForkId;
-
-				auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
-				if (jsonlPath.length == 0 || !exists(jsonlPath))
-				{
-					ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-					return;
-				}
-
-				auto result = countActiveUserTurnsAfterForkId(readText(jsonlPath), json.after_uuid);
-				final switch (result.status)
-				{
-					case CodexActiveUserTurnsAfterStatus.targetMissing:
-						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-						return;
-					case CodexActiveUserTurnsAfterStatus.targetNotUser:
-						ws.send(Data(toJson(ErrorMessage("error", "Undo target is not a user message", tid)).representation));
-						return;
-					case CodexActiveUserTurnsAfterStatus.ok:
-						break;
-				}
-				// +1 to include the target user message itself
-				ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, result.visibleCount + 1)).representation));
-				return;
-			}
-
-			auto count = countLinesAfterForkId(
-				ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td)),
-				json.after_uuid,
-				&ta.forkIdMatchesLine,
-				&ta.isForkableLine);
-			if (count < 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-				return;
-			}
-			// +1 to include the target user message itself
-			ws.send(Data(toJson(UndoPreviewMessage("undo_preview", tid, count + 1)).representation));
-		}
-		else
-		{
-			if (taskAlive(tid))
-			{
-				// Codex alive path: use thread/rollback RPC instead of killing
-				import cydo.agent.drivers.codex : ThreadRollbackOutcome;
-				if (auto ca = cast(CodexAgent) ta)
-				{
-					import std.file : exists, readText;
-					import cydo.agent.drivers.codex : CodexActiveUserTurnsAfterStatus, CodexSession,
-						countActiveUserTurnsAfterForkId;
-
-					auto codexSession = cast(CodexSession) sessionForTask(tid);
-					if (codexSession is null || !codexSession.canRollbackThread)
-					{
-						fallbackUndoKillAndTruncate(ws, tid, json);
-						return;
-					}
-
-					auto jsonlPath = ta.historyPath(td.agentSessionId,
-						taskPathResolver.effectiveCwd(td));
-					if (jsonlPath.length == 0 || !exists(jsonlPath))
-					{
-						ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-						return;
-					}
-
-					auto result = countActiveUserTurnsAfterForkId(readText(jsonlPath), json.after_uuid);
-					final switch (result.status)
-					{
-						case CodexActiveUserTurnsAfterStatus.targetMissing:
-							ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
-							return;
-						case CodexActiveUserTurnsAfterStatus.targetNotUser:
-							warningf("tid=%d: thread/rollback invariant: after_uuid=%s is not a user-message line — falling back to kill+truncate",
-								tid, json.after_uuid);
-							fallbackUndoKillAndTruncate(ws, tid, json);
-							return;
-						case CodexActiveUserTurnsAfterStatus.ok:
-							break;
-					}
-
-					// +1: include the target turn itself
-					auto numTurns = cast(uint)(result.count + 1);
-
-					ca.rollbackThread(td.agentSessionId, numTurns, td.launch, td.workspace)
-						.then((r) {
-							if (!r.ok)
-							{
-								warningf("thread/rollback failed (tid=%d): %s — falling back to kill+truncate",
-									tid, r.error);
-								fallbackUndoKillAndTruncate(ws, tid, json);
-								return;
-							}
-							// Rollback succeeded — Codex appended a ThreadRolledBack marker.
-							// Clear the undo snapshot (no longer needed for this undo).
-							jsonlTracker.clearUndoJsonl(tid);
-							// Reload history (marker-aware reading skips rolled-back turns).
-							auto td2 = &tasks[tid];
-							{
-								auto jp = ta.historyPath(td2.agentSessionId,
-									taskPathResolver.effectiveCwd(td2));
-								td2.history.reset(watermarkFromPath(jp));
-							}
-							clientHub.unsubscribeAll(tid);
-
-							// Reset JSONL tracker so it re-reads fork IDs
-							jsonlTracker.stopJsonlWatch(tid);
-
-							// Clip pendingSteeringTexts to match remaining user messages
-							if (td2.pendingSteeringTexts.length > 0)
-							{
-								import std.file : readText, exists;
-								auto histPath = ta.historyPath(td2.agentSessionId,
-									taskPathResolver.effectiveCwd(td2));
-								if (histPath.length > 0 && histPath.exists)
-								{
-									auto forkIds = ta.extractForkableIdsWithInfo(readText(histPath));
-									int remaining = 0;
-									foreach (ref f; forkIds)
-										if (f.isUser) remaining++;
-									if (remaining < cast(int)td2.pendingSteeringTexts.length)
-										td2.pendingSteeringTexts = td2.pendingSteeringTexts[0 .. remaining].dup;
-								}
-							}
-
-							ws.send(Data(toJson(UndoResultMessage("undo_result", tid, "")).representation));
-							emitTaskReload(tid);
-							broadcastTaskUpdate(tid);
-						}).ignoreResult();
-					return;
-				}
-
-				// Non-Codex alive session: kill + JSONL truncation
-				fallbackUndoKillAndTruncate(ws, tid, json);
-				return;
-			}
-
-			performUndoExecution(ws, tid, json);
-		}
-	}
-
-	/// Kill the alive session and then perform JSONL-based undo.
-	/// Used as fallback when thread/rollback is unavailable or fails.
-	private void fallbackUndoKillAndTruncate(WebSocketAdapter ws, int tid, WsMessage json)
-	{
-		import ae.utils.json : toJson;
-
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		auto ta = agentForTask(tid);
-
-		// Use the pre-compaction JSONL snapshot saved by JsonlTracker.
-		// Agents like Codex compact the JSONL file ~270ms after a new
-		// turn starts (triggered by response.created), well before the
-		// undo click arrives.  The snapshot was taken on the last
-		// forkId-producing event, preserving line-based fork IDs that
-		// would otherwise be invalidated by compaction.
-		auto jsonlPathSnap = ta.historyPath(td.agentSessionId,
-			taskPathResolver.effectiveCwd(td));
-		auto jsonlSnap = jsonlTracker.getUndoJsonl(tid);
-		jsonlTracker.clearUndoJsonl(tid);
-
-		bool snapshotContainsUndoAnchor(string snapshot, string forkId)
-		{
-			import std.string : lineSplitter;
-
-			if (snapshot.length == 0 || forkId.length == 0)
-				return false;
-
-			int lnum = 0;
-			foreach (rawLine; snapshot.lineSplitter)
-			{
-				lnum++;
-				if (rawLine.length == 0)
-					continue;
-				if (ta.forkIdMatchesLine(rawLine, lnum, forkId))
-					return true;
-			}
-			return false;
-		}
-
-		td.undoStopInProgress = true;
-		td.processQueue.setGoal(ProcessState.Dead).then(() {
-			if (jsonlSnap.length > 0 && jsonlPathSnap.length > 0 &&
-				snapshotContainsUndoAnchor(jsonlSnap, json.after_uuid))
-			{
-				import std.file : write;
-				write(jsonlPathSnap, jsonlSnap);
-			}
-			performUndoExecution(ws, tid, json);
-		}).ignoreResult();
-		taskSessionRunner.stopTask(tid);
-	}
-
-	private void performUndoExecution(WebSocketAdapter ws, int tid, WsMessage json)
-	{
-		import ae.utils.json : toJson;
-
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-
-		auto ta = agentForTask(tid);
-
-		// 1. Revert file changes via one-shot --rewind-files invocation
-		// (done first so that on failure we haven't modified anything yet)
-		import std.algorithm : canFind, startsWith;
-		string rewindOutput;
-		if (json.revert_files && ta.supportsFileRevert())
-		{
-			// Synthetic enqueue-N anchors need explicit resolution to the
-			// corresponding raw user UUID before file rewind.
-			string rewindUuid = json.after_uuid;
-			if (rewindUuid.startsWith("enqueue-"))
-			{
-				historyPipeline.ensureHistoryLoaded(tid);
-				rewindUuid = td.checkpointUuidForAnchor(json.after_uuid);
-			}
-
-			if (rewindUuid.length > 0 && !rewindUuid.startsWith("enqueue-"))
-			{
-				auto rewindResult = ta.rewindFiles(td.agentSessionId, rewindUuid,
-					taskPathResolver.effectiveCwd(td), td.launch);
-				if (rewindResult.success)
-					rewindOutput = rewindResult.output;
-				else if (!rewindResult.output.canFind("No file checkpoint found"))
-				{
-					ws.send(Data(toJson(ErrorMessage("error", "File revert failed: " ~ rewindResult.output, tid)).representation));
-					return;
-				}
-				// "No file checkpoint found" → no checkpoint for this message, skip silently
-			}
-		}
-
-		// 2. Back up pre-undo state as a child task
-		if (json.revert_conversation)
-		{
-			auto lastForkId = lastForkIdInJsonl(
-				ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td)),
-				&ta.extractForkableIds);
-			if (lastForkId.length > 0)
-			{
-				auto backup = forkTask(persistence, tid, td.agentSessionId, lastForkId,
-					td.projectPath, td.workspace, td.title,
-					(string sid) => ta.historyPath(sid,
-						sid == td.agentSessionId ? taskPathResolver.effectiveCwd(td) : td.projectPath),
-					&ta.rewriteSessionId, &ta.forkIdMatchesLine,
-					td.description, td.taskType, td.agentType);
-				if (backup.tid >= 0)
-				{
-					auto bTd = TaskData(backup.tid, td.workspace, td.projectPath);
-					bTd.title = td.title.length > 0 ? td.title ~ " (pre-undo)" : "(pre-undo)";
-					bTd.agentSessionId = backup.agentSessionId;
-					bTd.parentTid = tid;
-					bTd.relationType = "undo-backup";
-					bTd.status = "completed";
-					bTd.agentType = td.agentType;
-					bTd.description = td.description;
-					bTd.taskType = td.taskType;
-					import std.datetime : Clock;
-					bTd.createdAt = Clock.currStdTime;
-					bTd.lastActive = bTd.createdAt;
-					persistence.setRelationType(backup.tid, "undo-backup");
-					persistence.setTitle(backup.tid, bTd.title);
-					tasks[backup.tid] = move(bTd);
-					tasks[backup.tid].processQueue = new StateQueue!ProcessState(
-						makeProcessQueueSF(backup.tid),
-						ProcessState.Dead,
-					);
-					tasks[backup.tid].archiveQueue = new StateQueue!ArchiveState(
-						makeArchiveQueueSF(backup.tid),
-						ArchiveState.Unarchived,
-					);
-					{
-							auto jp = ta.historyPath(backup.agentSessionId,
-								taskPathResolver.effectiveCwd(&tasks[backup.tid]));
-							tasks[backup.tid].history.reset(watermarkFromPath(jp));
-						}
-					clientHub.broadcast(toJson(TaskCreatedMessage("task_created", backup.tid, td.workspace, td.projectPath, tid, "undo-backup")));
-					broadcastTaskUpdate(backup.tid);
-				}
-			}
-		}
-
-		// 3. Truncate conversation history
-		if (json.revert_conversation)
-		{
-			auto histJsonlPath = ta.historyPath(td.agentSessionId,
-				taskPathResolver.effectiveCwd(td));
-			auto removed = truncateJsonl(histJsonlPath, json.after_uuid, &ta.forkIdMatchesLine, true);
-			if (removed < 0)
-			{
-				ws.send(Data(toJson(ErrorMessage("error", "UUID not found for truncation", tid)).representation));
-				return;
-			}
-			td.history.reset(watermarkFromPath(histJsonlPath));
-			clientHub.unsubscribeAll(tid);
-			// Clip pendingSteeringTexts to match remaining user messages in the
-			// truncated JSONL. Without this, ensureHistoryLoaded would re-emit
-			// synthetics for messages that were intentionally undone.
-			if (td.pendingSteeringTexts.length > 0)
-			{
-				import std.file : readText, exists;
-				import std.string : splitLines;
-				auto histPath = ta.historyPath(td.agentSessionId,
-					taskPathResolver.effectiveCwd(td));
-				if (histPath.length > 0 && histPath.exists)
-				{
-					int remaining = 0;
-					foreach (line; readText(histPath).splitLines())
-						if (ta.isUserMessageLine(line))
-							remaining++;
-					if (remaining < cast(int)td.pendingSteeringTexts.length)
-						td.pendingSteeringTexts = td.pendingSteeringTexts[0 .. remaining].dup;
-				}
-			}
-		}
-
-		// Send undo result to the requesting client
-		ws.send(Data(toJson(UndoResultMessage("undo_result", tid, rewindOutput)).representation));
-
-		emitTaskReload(tid);
-
-		// 4. Auto-resume so the input box shows immediately
-		// (the user's undone message text is recovered via preReloadDrafts)
-		if (json.revert_conversation && td.agentSessionId.length > 0)
-		{
-			td.processQueue.setGoal(ProcessState.Alive).then(() {
-				auto td = &tasks[tid];
-				td.status = "active";
-				persistence.setStatus(tid, "active");
-				try
-					derivedTextJobs.generateSuggestions(tid);
-				catch (Exception e)
-					warningf("Error generating suggestions: %s", e.msg);
-				broadcastTaskUpdate(tid);
-			}).ignoreResult();
-		}
-
-		broadcastTaskUpdate(tid);
+		taskMutationService.handleUndoTaskMsg(ws, json);
 	}
 
 	private void handleEditMessage(WebSocketAdapter ws, WsMessage json)
 	{
-		import ae.utils.json : toJson;
-		import std.algorithm : startsWith;
-
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-			return;
-		}
-
-		if (taskAlive(tid))
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing messages", tid)).representation));
-			return;
-		}
-
-		auto ta = agentForTask(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
-		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
-		auto targetUuid = json.after_uuid;
-		string fallbackUuid;
-		if (targetUuid.startsWith("enqueue-"))
-		{
-			historyPipeline.ensureHistoryLoaded(tid);
-			fallbackUuid = td.checkpointUuidForAnchor(targetUuid);
-		}
-		if (targetUuid.length == 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Message UUID not found in history", tid)).representation));
-			return;
-		}
-
-		auto edited = editJsonlMessage(jsonlPath, targetUuid,
-			&ta.forkIdMatchesLine,
-			(string line) => replaceUserMessageContent(line, newContent));
-		if (!edited && fallbackUuid.length > 0)
-		{
-			edited = editJsonlMessage(jsonlPath, fallbackUuid,
-				&ta.forkIdMatchesLine,
-				(string line) => replaceUserMessageContent(line, newContent));
-		}
-
-		if (!edited)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Message UUID not found in history", tid)).representation));
-			return;
-		}
-
-		td.history.reset(watermarkFromPath(jsonlPath));
-		clientHub.unsubscribeAll(tid);
-
-		emitTaskReload(tid, "edit");
-		broadcastTaskUpdate(tid);
+		taskMutationService.handleEditMessage(ws, json);
 	}
 
 	private void handleEditRawEvent(WebSocketAdapter ws, WsMessage json)
 	{
-		import ae.utils.json : toJson;
-
-		auto tid = json.tid;
-		if (tid < 0 || tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.agentSessionId.length == 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Task has no agent session ID", tid)).representation));
-			return;
-		}
-
-		if (taskAlive(tid))
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Stop the session before editing events", tid)).representation));
-			return;
-		}
-
-		auto seq = json.seq;
-		if (seq < 0)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Invalid seq number", tid)).representation));
-			return;
-		}
-
-		historyPipeline.ensureHistoryLoaded(tid);
-
-		if (seq >= td.history.length || td.history.rawAt(seq) is null)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Seq out of range or no raw source", tid)).representation));
-			return;
-		}
-
-		auto sourceLine = td.history.sourceLineAt(seq);
-		auto ta = agentForTask(tid);
-		auto jsonlPath = ta.historyPath(td.agentSessionId, taskPathResolver.effectiveCwd(td));
-		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
-
-		string[] compactLines;
-		try
-		{
-			compactLines = compactRawEventObjectSequence(newContent);
-		}
-		catch (Exception e)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", e.msg, tid)).representation));
-			return;
-		}
-
-		auto edited = spliceJsonlByLine(jsonlPath, sourceLine, compactLines);
-
-		if (!edited)
-		{
-			ws.send(Data(toJson(ErrorMessage("error", "Raw event not found in JSONL file", tid)).representation));
-			return;
-		}
-
-		td.history.reset(watermarkFromPath(jsonlPath));
-		clientHub.unsubscribeAll(tid);
-
-		emitTaskReload(tid, "edit");
-		broadcastTaskUpdate(tid);
-	}
-
-	private static size_t findJsonObjectEnd(string input, size_t start)
-	{
-		assert(start < input.length && input[start] == '{');
-
-		int depth = 0;
-		bool inString = false;
-		bool escaping = false;
-
-		foreach (i, ch; input[start .. $])
-		{
-			if (inString)
-			{
-				if (escaping)
-				{
-					escaping = false;
-					continue;
-				}
-				if (ch == '\\')
-				{
-					escaping = true;
-					continue;
-				}
-				if (ch == '"')
-					inString = false;
-				continue;
-			}
-
-			switch (ch)
-			{
-				case '"':
-					inString = true;
-					break;
-				case '{':
-					depth++;
-					break;
-				case '}':
-					depth--;
-					if (depth == 0)
-						return start + i + 1;
-					break;
-				default:
-					break;
-			}
-		}
-
-		throw new Exception("Invalid JSON in edited event");
-	}
-
-	private static string[] compactRawEventObjectSequence(string input)
-	{
-		import std.ascii : isWhite;
-		import std.json : JSONType, parseJSON;
-
-		string[] compactLines;
-		size_t pos = 0;
-		while (true)
-		{
-			while (pos < input.length && input[pos].isWhite)
-				pos++;
-			if (pos >= input.length)
-				return compactLines;
-			if (input[pos] != '{')
-				throw new Exception("Edited event must contain only JSON objects");
-
-			auto end = findJsonObjectEnd(input, pos);
-			try
-			{
-				auto parsed = parseJSON(input[pos .. end]);
-				if (parsed.type != JSONType.object)
-					throw new Exception("Edited event must contain only JSON objects");
-				compactLines ~= parsed.toString();
-			}
-			catch (Exception e)
-			{
-				if (e.msg == "Edited event must contain only JSON objects")
-					throw e;
-				throw new Exception("Invalid JSON in edited event");
-			}
-			pos = end;
-		}
-	}
-
-	unittest
-	{
-		import std.exception : assertThrown;
-		import std.json : parseJSON;
-
-		assert(compactRawEventObjectSequence(" \n\t ").length == 0);
-
-		auto compact = compactRawEventObjectSequence(
-			"{\n"
-			~ "  \"message\": \"brace: } and quote: \\\\\\\"\",\n"
-			~ "  \"nested\": {\"value\": 1}\n"
-			~ "}\n"
-			~ "{\"message\":\"two\"}{\"message\":\"three\"}");
-		assert(compact.length == 3);
-		assert(parseJSON(compact[0])["message"].str == `brace: } and quote: \"`);
-		assert(parseJSON(compact[1])["message"].str == "two");
-		assert(parseJSON(compact[2])["message"].str == "three");
-
-		assertThrown!Exception(compactRawEventObjectSequence("null"));
-		assertThrown!Exception(compactRawEventObjectSequence("{\"message\":1} trailing"));
-		assertThrown!Exception(compactRawEventObjectSequence("{\"message\":"));
+		taskMutationService.handleEditRawEvent(ws, json);
 	}
 
 	/// Send a user message to a task's agent session.
