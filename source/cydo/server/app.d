@@ -12,7 +12,7 @@ import std.string : representation;
 import ae.utils.funopt : funopt, funoptDispatch, funoptDispatchUsage, FunOptConfig, Option, Parameter;
 import ae.utils.main : main;
 
-import ae.net.asockets : socketManager, DisconnectType;
+import ae.net.asockets : socketManager, DisconnectType, onNextTick;
 import ae.net.http.websocket : WebSocketAdapter;
 import ae.net.ssl.openssl;
 import ae.sys.data : Data;
@@ -51,6 +51,8 @@ import cydo.workflow.system_message_normalizer : SystemMessageNormalizer,
 	SystemMessageNormalizerHost, buildCydoMeta;
 import cydo.workflow.tasks.derived_text : DerivedTextJobs, DerivedTextJobsHost;
 import cydo.workflow.tasks.mutations : TaskMutationService, TaskMutationServiceHost;
+import cydo.workflow.tasks.subtask_delivery : SubtaskResultDelivery,
+	SubtaskResultDeliveryHost;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
@@ -129,6 +131,7 @@ class App : ToolsBackend
 	private TaskSessionRunner taskSessionRunner;
 	private DerivedTextJobs derivedTextJobs;
 	private TaskMutationService taskMutationService;
+	private SubtaskResultDelivery subtaskResultDelivery;
 	private SystemMessageNormalizer systemMessageNormalizer;
 	// Set during SIGTERM shutdown — suppress onExit status updates so tasks
 	// stay "alive" in the DB and can be resumed after restart.
@@ -264,6 +267,65 @@ class App : ToolsBackend
 				},
 				loadTemplateText: &loadTemplateText,
 			));
+		subtaskResultDelivery = new SubtaskResultDelivery(
+			SubtaskResultDeliveryHost(
+				getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+				outputPath: &taskPathResolver.outputPath,
+				worktreePath: &taskPathResolver.worktreePath,
+				worktreeForkBaseHead: (int tid) {
+					auto td = tid in tasks;
+					assert(td !is null,
+						format!"Worktree fork base requested for missing task %d"(tid));
+					return getWorktreeForkBaseHead(*td);
+				},
+				taskProducesCommitOutput: (string projectPath, string taskTypeName) {
+					import std.algorithm : canFind;
+
+					auto typeDef = taskTypeCatalog.getTaskTypesForProject(projectPath)
+						.byName(taskTypeName);
+					return typeDef !is null && typeDef.output_type.canFind(OutputType.commit);
+				},
+				persistStatus: (int tid, string status) {
+					persistence.setStatus(tid, status);
+				},
+				persistResultText: (int tid, string resultText) {
+					persistence.setResultText(tid, resultText);
+				},
+				readPendingSubTask: (int tid, out Promise!(McpResult) pending) {
+					auto entry = tid in pendingSubTasks;
+					if (entry is null)
+						return false;
+					pending = *entry;
+					return true;
+				},
+				clearPendingSubTask: (int tid) {
+					pendingSubTasks.remove(tid);
+				},
+				parentTaskForChild: (int childTid) {
+					auto parentTid = childTid in taskDeps;
+					return parentTid is null ? 0 : *parentTid;
+				},
+				childTaskIds: &childrenOf,
+				wasLiveDelivered: (int childTid) {
+					return (childTid in liveDeliveredSubTasks) !is null;
+				},
+				markLiveDelivered: (int childTid) {
+					liveDeliveredSubTasks[childTid] = true;
+				},
+				ensureProcessQueueAlive: (int tid) {
+					assert((tid in tasks) !is null,
+						format!"Process queue requested for missing task %d"(tid));
+					return tasks[tid].processQueue.setGoal(ProcessState.Alive);
+				},
+				canSendSystemMessage: &canSendSystemMessage,
+				sendKnownSystemMessage: &sendKnownSystemMessage,
+				removeTaskDependency: &removeTaskDependency,
+				broadcastTaskUpdate: &broadcastTaskUpdate,
+				taskAlive: &taskAlive,
+				onNextTick: (void delegate() cb) {
+					onNextTick(socketManager, cb);
+				},
+			));
 		historyPipeline = new HistoryEventPipeline(HistoryEventPipelineHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 			tryAgentForTask: &tryAgentForTask,
@@ -362,10 +424,10 @@ class App : ToolsBackend
 			hasPendingChildQuestion: &hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &sendPendingChildAnswerReminder,
 			checkDeclaredOutputs: &checkDeclaredOutputs,
-			finalizeCompletedSubTask: &finalizeCompletedSubTask,
-			deliverFailedPendingSubTaskResult: &deliverFailedPendingSubTaskResult,
-			deliverWaitingParentResultsIfReady: &deliverWaitingParentResultsIfReady,
-			deliverBatchResults: &deliverBatchResults,
+			finalizeCompletedSubTask: &subtaskResultDelivery.finalizeCompletedSubTask,
+			deliverFailedPendingSubTaskResult: &subtaskResultDelivery.deliverFailedPendingSubTaskResult,
+			deliverWaitingParentResultsIfReady: &subtaskResultDelivery.deliverWaitingParentResultsIfReady,
+			deliverBatchResults: &subtaskResultDelivery.deliverBatchResults,
 			failPendingAskUserQuestionOnExit: &failPendingAskUserQuestionOnExit,
 			failPendingPermissionPromptOnExit: &failPendingPermissionPromptOnExit,
 			failPendingAskRouteOnExit: &failPendingAskRouteOnExit,
@@ -399,7 +461,7 @@ class App : ToolsBackend
 			broadcastForkableUuidsFromFile: (int tid) {
 				jsonlTracker.broadcastForkableUuidsFromFile(tid);
 			},
-			sendSystemRestartNudge: &sendSystemNudge,
+			sendSystemRestartNudge: &subtaskResultDelivery.sendSystemRestartNudge,
 			loadPersistedTaskDeps: &loadPersistedTaskDeps,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
 			waitingTaskChildrenAllDone: &waitingTaskChildrenAllDone,
@@ -1640,21 +1702,7 @@ class App : ToolsBackend
 		if (tid !in tasks)
 			return;
 
-		// No-op for non-Task tools (no children to deliver)
-		if (childrenOf(tid).length == 0)
-			return;
-
-		// Only deliver when ALL children are done — partial delivery
-		// would lose the remaining results.
-		foreach (childTid, depParent; taskDeps)
-		{
-			if (depParent == tid && childTid in tasks
-				&& tasks[childTid].status != "completed"
-				&& tasks[childTid].status != "failed")
-				return; // Remaining children will trigger this check on their exit
-		}
-
-		deliverBatchResults(tid);
+		subtaskResultDelivery.deliverBatchFallbackIfReady(tid);
 	}
 
 	private void handleAskUserResponse(WsMessage json)
@@ -2278,19 +2326,7 @@ class App : ToolsBackend
 			catch (Exception e)
 				warningf("Error generating suggestions: %s", e.msg);
 
-			// Deliver pending batch results if all children are done
-			auto children = childrenOf(tid);
-			if (children.length > 0)
-			{
-				bool allDone = true;
-				foreach (childTid; children)
-					if (childTid in tasks
-						&& tasks[childTid].status != "completed"
-						&& tasks[childTid].status != "failed")
-					{ allDone = false; break; }
-				if (allDone)
-					deliverBatchResults(tid);
-			}
+			subtaskResultDelivery.deliverBatchFallbackIfReady(tid);
 
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
@@ -3335,60 +3371,30 @@ class App : ToolsBackend
 		}).ignoreResult();
 	}
 
-	private bool deliverFailedPendingSubTaskResult(int tid)
+	private bool canSendSystemMessage(int tid, out string sessionState)
 	{
-		import ae.utils.json : toJson;
-
-		auto pending = tid in pendingSubTasks;
-		if (pending is null)
+		auto session = sessionForTask(tid);
+		if (session is null)
+		{
+			sessionState = "is null";
 			return false;
+		}
+		if (!session.alive)
+		{
+			sessionState = "not alive";
+			return false;
+		}
 
-		auto taskResult = buildTaskResult(tid);
-		auto resultJson = toJson(taskResult);
-		pending.fulfill(McpResult.structured(resultJson, true));
-		pendingSubTasks.remove(tid);
-		// Deps left intact — cleaned by onToolCallDelivered() on success,
-		// or used by deliverBatchResults() as fallback if MCP delivery fails.
+		sessionState = "";
 		return true;
 	}
 
-	private void deliverWaitingParentResultsIfReady(int tid)
+	private void sendKnownSystemMessage(int tid, KnownSystemMessageKind kind,
+		string body)
 	{
-		if (auto parentTidPtr = tid in taskDeps)
-		{
-			if (tid in liveDeliveredSubTasks)
-			{
-				tracef("onExit Branch B: child tid=%d already delivered to live batch, skipping fallback",
-					tid);
-			}
-			else
-			{
-				auto parentTid = *parentTidPtr;
-				tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
-					tid, tasks[tid].status, parentTid);
-				if (parentTid in tasks)
-				{
-					bool allDone = true;
-					foreach (childTid, depParent; taskDeps)
-					{
-						if (depParent == parentTid && childTid in tasks
-							&& tasks[childTid].status != "completed"
-							&& tasks[childTid].status != "failed")
-						{
-							tracef("onExit Branch B: sibling tid=%d still %s, deferring batch delivery",
-								childTid, tasks[childTid].status);
-							allDone = false;
-							break;
-						}
-					}
-
-					if (allDone)
-						deliverBatchResults(parentTid);
-				}
-				else
-					tracef("onExit Branch B: parent tid=%d not in tasks", parentTid);
-			}
-		}
+		auto msg = wrapKnownSystemMessage(config.system_keyword, kind, body);
+		auto meta = systemMessageNormalizer.buildKnownSystemMessageMeta(kind);
+		sendTaskMessage(tid, [ContentBlock("text", msg)], null, meta);
 	}
 
 	private void loadPersistedTaskDeps()
@@ -3596,172 +3602,6 @@ class App : ToolsBackend
 		return "Missing declared outputs: " ~ missing.join(", ");
 	}
 
-	private TaskResult buildTaskResult(int tid)
-	{
-		import std.algorithm : canFind;
-		import std.array : join;
-		import std.conv : to;
-		import std.file : exists;
-		import std.process : execute;
-		import std.range : retro;
-		import std.string : splitLines, strip;
-		auto td = &tasks[tid];
-		auto tdOut = taskPathResolver.outputPath(*td);
-		bool hasOutput = tdOut.length > 0 && exists(tdOut);
-		bool hasWorktree = td.hasWorktree;
-		bool isFailed = td.status == "failed";
-		auto summary = td.resultText;
-		auto talkNote = " Use mcp__cydo__Ask(question, " ~ to!string(tid) ~ ") to ask follow-up questions.";
-		string note;
-		if (hasOutput && hasWorktree)
-			note = "Read the output file for full findings. The worktree path is included for adopting changes." ~ talkNote;
-		else if (hasOutput)
-			note = "Read the output file for full findings." ~ talkNote;
-		else if (hasWorktree)
-			note = "The worktree contains the implementation." ~ talkNote;
-		auto result = TaskResult(
-			summary: summary,
-			output_file: hasOutput ? tdOut : null,
-			worktree: hasWorktree ? taskPathResolver.worktreePath(td) : null,
-			note: note.length > 0 ? note : td.resultNote,
-			error: isFailed ? summary : null,
-			status: isFailed ? "error" : "success",
-		);
-		result.tid = tid;
-
-		// For commit output types, extract commit SHAs from the worktree.
-		auto typeDef = taskTypeCatalog.getTaskTypesForProject(td.projectPath).byName(td.taskType);
-		if (typeDef !is null && typeDef.output_type.canFind(OutputType.commit) && td.hasWorktree)
-		{
-			auto parentHead = getWorktreeForkBaseHead(*td);
-			if (parentHead.length > 0)
-			{
-				auto logResult = execute(["git", "-C", taskPathResolver.worktreePath(td),
-					"log", "--format=%H", parentHead ~ "..HEAD"]);
-				if (logResult.status == 0 && logResult.output.strip.length > 0)
-					result.commits = logResult.output.strip.splitLines;
-			}
-			if (result.commits.length > 0)
-				note = "Cherry-pick commits from the worktree: git cherry-pick "
-					~ result.commits.retro.join(" ") ~ talkNote;
-			result.note = note.length > 0 ? note : td.resultNote;
-		}
-
-		return result;
-	}
-
-	/// Finalize a successful sub-task completion when a pending Task() call exists.
-	/// Returns true when the pending sub-task promise was fulfilled.
-	private bool finalizeCompletedSubTask(int childTid, bool eagerDepCleanup = false)
-	{
-		import ae.utils.json : toJson;
-		if (childTid !in tasks)
-			return false;
-
-		auto td = &tasks[childTid];
-		td.status = "completed";
-		persistence.setStatus(childTid, "completed");
-		persistence.setResultText(childTid, td.resultText);
-
-		auto pending = childTid in pendingSubTasks;
-		if (pending is null)
-			return false;
-
-		auto taskResult = buildTaskResult(childTid);
-		auto resultJson = toJson(taskResult);
-		pending.fulfill(McpResult.structured(resultJson));
-		pendingSubTasks.remove(childTid);
-
-		// Early result delivery can race onExit for agents with synchronous stdin
-		// close. Record this child so onExit does not trigger duplicate fallback.
-		if (eagerDepCleanup)
-			liveDeliveredSubTasks[childTid] = true;
-
-		return true;
-	}
-
-	private void deliverBatchResults(int parentTid)
-	{
-		if (parentTid !in tasks)
-			return;
-		tasks[parentTid].processQueue.setGoal(ProcessState.Alive).then(() {
-			actuallyDeliverBatchResults(parentTid);
-		}).except((Exception e) {
-			errorf("deliverBatchResults: failed for parent %d: %s", parentTid, e.msg);
-		});
-	}
-
-	private void actuallyDeliverBatchResults(int parentTid)
-	{
-		import ae.utils.json : toJson;
-		import std.array : join;
-
-		if (parentTid !in tasks)
-		{
-			tracef("deliverBatchResults: parent tid=%d not in tasks, skipping", parentTid);
-			return;
-		}
-
-		auto td = &tasks[parentTid];
-		auto session = sessionForTask(parentTid);
-		if (session is null || !session.alive)
-		{
-			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, retrying via deliverBatchResults",
-				parentTid, session is null ? "is null" : "not alive");
-			deliverBatchResults(parentTid);
-			return;
-		}
-
-		auto children = childrenOf(parentTid);
-		if (children.length == 0)
-		{
-			tracef("deliverBatchResults: parent tid=%d has no children in taskDeps", parentTid);
-			return;
-		}
-
-		string[] resultJsons;
-		foreach (childTid; children)
-		{
-			if (childTid !in tasks)
-				continue;
-			resultJsons ~= toJson(buildTaskResult(childTid));
-		}
-
-		if (resultJsons.length == 0)
-			return;
-
-		infof("deliverBatchResults: delivering %d result(s) to parent tid=%d",
-			resultJsons.length, parentTid);
-
-		// Deliver single batch message
-		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto msg = wrapKnownSystemMessage(config.system_keyword,
-			KnownSystemMessageKind.subTaskResults,
-			"The following sub-task(s) completed while your session was interrupted. "
-				~ "Their results are provided below exactly as they would have been "
-				~ "returned by the Task tool.\n\n"
-				~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
-				~ "Continue from where you left off. Process these results as if they "
-				~ "were returned normally by the Task tool.");
-		auto resultsMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-			KnownSystemMessageKind.subTaskResults);
-		sendTaskMessage(parentTid, [ContentBlock("text", msg)], null, resultsMeta);
-
-		// Clean up all deps
-		foreach (childTid; children)
-		{
-			removeTaskDependency(parentTid, childTid);
-		}
-
-		// Transition parent
-		if (td.status == "waiting")
-		{
-			td.status = "alive";
-			persistence.setStatus(parentTid, "alive");
-			broadcastTaskUpdate(parentTid);
-		}
-	}
-
 	private void resumeInFlightTasks()
 	{
 		taskSessionRunner.resumeInFlightTasks();
@@ -3770,29 +3610,6 @@ class App : ToolsBackend
 	private Promise!void resumeTask(int tid)
 	{
 		return taskSessionRunner.resumeTask(tid);
-	}
-
-	private void sendSystemNudge(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		// Defer to event loop — resumeInFlightTasks runs before
-		// socketManager.loop() so stdin writes would stall otherwise.
-		import ae.net.asockets : onNextTick;
-		socketManager.onNextTick(() {
-			if (tid !in tasks)
-				return;
-			if (!taskAlive(tid))
-				return;
-			enum nudgeBody = "Your session was interrupted by a backend restart. "
-				~ "Continue from where you left off. If you had a tool call in progress "
-				~ "(Task, Handoff, SwitchMode, or any other tool), retry it.";
-			auto nudgeText = wrapKnownSystemMessage(config.system_keyword,
-				KnownSystemMessageKind.restartNudge, nudgeBody);
-			auto nudgeMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-				KnownSystemMessageKind.restartNudge);
-			sendTaskMessage(tid, [ContentBlock("text", nudgeText)], null, nudgeMeta);
-		});
 	}
 
 	/// Collect child tids for a given parent from the in-memory taskDeps map.
