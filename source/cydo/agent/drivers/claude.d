@@ -586,6 +586,42 @@ class ClaudeCodeAgent : Agent
 		return RewindResult(true, result.output);
 	}
 
+	private static string[] buildOneShotArgs(string claudeBin, string prompt,
+		string model, ProcessLaunch launch)
+	{
+		string[] args = [
+			claudeBin,
+			"-p", prompt,
+			"--output-format", "text",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		];
+		// an empty alias means no explicit model; omit the flag so claude
+		// falls back to its own configured default, matching the session
+		// spawn path's `config.model.length > 0` guard
+		if (model.length > 0)
+			args ~= ["--model", model];
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ args;
+		return args;
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind, countUntil;
+
+		ProcessLaunch launch; // .init: no cmdPrefix
+
+		// an empty alias must omit --model entirely; the bug emitted `--model ""`
+		assert(!buildOneShotArgs("claude", "hi", "", launch).canFind("--model"));
+
+		// a resolved model is passed through as `--model <x>`
+		auto withModel = buildOneShotArgs("claude", "hi", "opus", launch);
+		auto i = withModel.countUntil("--model");
+		assert(i >= 0 && withModel[i + 1] == "opus");
+	}
+
 	OneShotHandle completeOneShot(string prompt, string modelClass,
 		ProcessLaunch launch = ProcessLaunch.init)
 	{
@@ -605,21 +641,7 @@ class ClaudeCodeAgent : Agent
 		];
 
 		auto model = resolveModelAlias(modelClass);
-		string[] args = [
-			claudeBin,
-			"-p", prompt,
-			"--output-format", "text",
-			"--max-turns", "1",
-			"--tools", "",
-			"--no-session-persistence",
-		];
-		// an empty alias means no explicit model; omit the flag so claude
-		// falls back to its own configured default, matching the session
-		// spawn path's `config.model.length > 0` guard
-		if (model.length > 0)
-			args ~= ["--model", model];
-		if (launch.cmdPrefix !is null)
-			args = launch.cmdPrefix ~ args;
+		auto args = buildOneShotArgs(claudeBin, prompt, model, launch);
 
 		auto procEnv = launch.cmdPrefix is null ? env : null;
 
