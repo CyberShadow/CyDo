@@ -46,10 +46,12 @@
 #
 # 9. Prompt for the behavior you want.
 #    Models default to doing work inline rather than delegating or switching
-#    modes. Every prompt, tool description, and agent_description must include
-#    explicit guidance: when to use each tool/mode, with concrete examples,
-#    and what the agent must NOT do itself (forcing delegation). Without this,
-#    transitions will not happen. The simulator's --context-dump mode should
+#    modes. Every prompt and agent_description must include explicit guidance:
+#    when to use each tool or mode, with concrete examples, and what the agent
+#    must NOT do itself (forcing delegation). MCP tool descriptions must stay
+#    short because Claude Code truncates long top-level descriptions before the
+#    Anthropic API boundary, so detailed task/mode/handoff guidance belongs in
+#    system prompt material instead. The simulator's --context-dump mode should
 #    be used to verify that at every decision point the agent sees the right
 #    guidance in its context.
 #

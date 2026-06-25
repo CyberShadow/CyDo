@@ -19,8 +19,9 @@ import cydo.runtime.launch.types : AgentSandboxConfig, ProcessLaunch;
 import launchSandbox = cydo.runtime.launch.sandbox;
 import cydo.domain.tasks.model : ProcessState, TaskData;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
-import cydo.domain.task_types.definition : TaskTypeDef, formatCreatableTaskTypes, formatHandoffs,
-	isInteractive, formatSwitchModes, loadSystemPrompt, byName;
+import cydo.domain.task_types.definition : TaskTypeDef,
+	formatCompactCreatableTaskTypeToolSummary, formatCompactHandoffToolSummary,
+	isInteractive, formatCompactSwitchModeToolSummary, loadTaskTypeSystemPrompt, byName;
 
 package(cydo):
 
@@ -166,18 +167,20 @@ class TaskSessionRunner
 			"Task must exist before preparing session launch");
 
 		SessionConfig sessionConfig;
+		auto taskTypes = host_.taskTypeCatalog.getTaskTypesForProject(td.projectPath);
+		sessionConfig.creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(taskTypes,
+			td.taskType);
+		sessionConfig.switchModes = formatCompactSwitchModeToolSummary(taskTypes, td.taskType);
+		sessionConfig.handoffs = formatCompactHandoffToolSummary(taskTypes, td.taskType);
 		if (typeDef !is null)
 		{
 			sessionConfig.model = taskAgent.resolveModelAlias(typeDef.model_class);
 			if (taskAgent.supportsDeveloperPrompt)
-				sessionConfig.appendSystemPrompt = loadSystemPrompt(*typeDef,
+				sessionConfig.appendSystemPrompt = loadTaskTypeSystemPrompt(*typeDef, taskTypes,
+					td.taskType,
 					host_.taskTypeCatalog.promptSearchPath(td.projectPath),
 					host_.outputPath(td));
 		}
-		auto taskTypes = host_.taskTypeCatalog.getTaskTypesForProject(td.projectPath);
-		sessionConfig.creatableTaskTypes = formatCreatableTaskTypes(taskTypes, td.taskType);
-		sessionConfig.switchModes = formatSwitchModes(taskTypes, td.taskType);
-		sessionConfig.handoffs = formatHandoffs(taskTypes, td.taskType);
 		sessionConfig.mcpSocketPath = host_.mcpSocketPath();
 
 		auto workDir = td.repoPath.length > 0 ? td.repoPath : null;

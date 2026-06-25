@@ -65,7 +65,7 @@ import cydo.domain.storage.persistence : Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir;
 import cydo.domain.task_types.definition : TaskTypeDef, OutputType, WorktreeMode, byName, loadTaskTypes,
-	renderPrompt, substituteVars, loadSystemPrompt,
+	loadTaskTypeSystemPrompt, renderPrompt, substituteVars,
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
@@ -1779,8 +1779,9 @@ class App
 			return null;
 
 		auto td = &tasks[tid];
-		return loadSystemPrompt(*typeDef, taskTypeCatalog.promptSearchPath(td.projectPath),
-			taskPathResolver.outputPath(*td));
+		auto taskTypes = taskTypeCatalog.getTaskTypesForProject(td.projectPath);
+		return loadTaskTypeSystemPrompt(*typeDef, taskTypes, td.taskType,
+			taskTypeCatalog.promptSearchPath(td.projectPath), taskPathResolver.outputPath(*td));
 	}
 
 	/// Inject agent_name into session/init events whose translation pipeline

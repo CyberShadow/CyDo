@@ -893,8 +893,9 @@ string renderPrompt(ref TaskTypeDef def, string description, string[] typesDirs,
 }
 
 /// Load and render a system prompt template from disk. Returns null if the
-/// type has no system_prompt_template or the file does not exist.
-/// Substitutes {{output_file}}, {{output_dir}}, and {{knowledge_base}}.
+/// type has no system_prompt_template or the role prompt file does not exist.
+/// Wraps the role prompt in system_prompts/master.md and substitutes
+/// {{output_file}}, {{output_dir}}, {{knowledge_base}}, and extraVars.
 string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	string outputFile = "", string[string] extraVars = null)
 {
@@ -915,6 +916,10 @@ string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	}
 	if (path.length == 0)
 		return null;
+	if ("generated_guidance" !in extraVars)
+		throw new Exception(format(
+			"Task type '%s' requires generated_guidance when loading a system prompt.",
+			def.name));
 	string[string] vars;
 	if (def.knowledge_base.length > 0)
 		vars["knowledge_base"] = def.knowledge_base;
@@ -925,8 +930,32 @@ string loadSystemPrompt(ref TaskTypeDef def, string[] typesDirs,
 	}
 	foreach (k, v; extraVars)
 		vars[k] = v;
-	auto text = readText(path);
-	return vars.length > 0 ? substituteVars(text, vars) : text;
+	auto rolePromptText = readText(path);
+	auto rolePrompt = vars.length > 0 ? substituteVars(rolePromptText, vars) : rolePromptText;
+
+	string masterPath;
+	string[] searchedPaths;
+	foreach (dir; typesDirs)
+	{
+		auto candidate = buildPath(dir, "system_prompts", "master.md");
+		searchedPaths ~= candidate;
+		if (exists(candidate))
+		{
+			masterPath = candidate;
+			break;
+		}
+	}
+	if (masterPath.length == 0)
+	{
+		throw new Exception(format(
+			"Task type '%s' could not resolve system prompt master template. Searched: %s",
+			def.name,
+			searchedPaths.join(", ")));
+	}
+
+	vars["role_prompt"] = rolePrompt;
+	auto masterText = readText(masterPath);
+	return substituteVars(masterText, vars);
 }
 
 /// Read the project's MEMORY.md and wrap it in a preamble block.
@@ -1238,15 +1267,6 @@ string renderContinuationPrompt(ref ContinuationDef contDef, string fallback, st
 	return text;
 }
 
-/// Indent every line of a multi-line string with the given prefix.
-string indentLines(string text, string prefix)
-{
-	string result;
-	foreach (line; text.lineSplitter)
-		result ~= prefix ~ line ~ "\n";
-	return result;
-}
-
 /// Get description for an edge: edge description, then first line of target's
 /// agent_description, then target's name.
 private string edgeDesc(string contDesc, TaskTypeDef* targetDef)
@@ -1257,73 +1277,300 @@ private string edgeDesc(string contDesc, TaskTypeDef* targetDef)
 	return targetDef !is null ? targetDef.name : "";
 }
 
-/// Format a description of keep_context continuations for a given task type.
-/// Used to fill the {{switchmodes}} placeholder in the SwitchMode tool description.
-string formatSwitchModes(TaskTypeDef[] allTypes, string typeName)
+private enum compactToolGuidanceNote = "Refer to the session instructions for when to use each.";
+
+private string formatCompactIdToolSummary(string[] ids)
 {
-	auto def = allTypes.byName(typeName);
-	if (def is null || def.continuations.length == 0)
+	if (ids.length == 0)
 		return null;
 
 	string result;
-	foreach (cname, ref cont; def.continuations)
-	{
-		if (!cont.keep_context)
-			continue;
-		auto targetDef = allTypes.byName(cont.task_type);
-		auto desc = edgeDesc(cont.description, targetDef);
-		result ~= format("- %s: switches to '%s' — %s\n", cname, cont.task_type, desc);
-		if (targetDef !is null && targetDef.agent_description.length > 0)
-			result ~= indentLines(targetDef.agent_description.strip, "  ");
-		if (targetDef !is null && targetDef.tool_guidance.length > 0)
-			result ~= indentLines(targetDef.tool_guidance.strip, "  ");
-		result ~= "\n";
-	}
-	return result.length > 0 ? result : null;
+	foreach (id; ids)
+		result ~= format("- %s\n", id);
+	result ~= "\n" ~ compactToolGuidanceNote;
+	return result;
 }
 
-/// Format a description of !keep_context continuations for a given task type.
-/// Used to fill the {{handoffs}} placeholder in the Handoff tool description.
-string formatHandoffs(TaskTypeDef[] allTypes, string typeName)
+private void appendDetailedGuidanceEntry(ref string result, string heading,
+	string id, string targetType, string description, TaskTypeDef* targetDef)
+{
+	result ~= format("### %s `%s`\n", heading, id);
+	if (targetType.length > 0)
+		result ~= format("Target task type: `%s`\n", targetType);
+	if (description.length > 0)
+		result ~= "When to use it: " ~ description ~ "\n";
+	if (targetDef !is null && targetDef.agent_description.length > 0)
+		result ~= "\n" ~ targetDef.agent_description.strip ~ "\n";
+	if (targetDef !is null && targetDef.tool_guidance.length > 0)
+		result ~= "\nTool guidance:\n" ~ targetDef.tool_guidance.strip ~ "\n";
+	result ~= "\n";
+}
+
+/// Format an IDs-only summary of keep_context continuations for a task type.
+/// Used to fill the {{switchmodes}} placeholder in the SwitchMode tool description.
+string formatCompactSwitchModeToolSummary(TaskTypeDef[] allTypes, string typeName)
 {
 	auto def = allTypes.byName(typeName);
 	if (def is null || def.continuations.length == 0)
 		return null;
 
-	string result;
+	string[] ids;
 	foreach (cname, ref cont; def.continuations)
 	{
 		if (cont.keep_context)
-			continue;
-		auto targetDef = allTypes.byName(cont.task_type);
-		auto desc = edgeDesc(cont.description, targetDef);
-		result ~= format("- %s: hands off to '%s' — %s\n", cname, cont.task_type, desc);
-		result ~= "\n";
+			ids ~= cname;
 	}
-	return result.length > 0 ? result : null;
+	return formatCompactIdToolSummary(ids);
 }
 
-/// Format a description of available task types for a given parent type.
+/// Format an IDs-only summary of !keep_context continuations for a task type.
+/// Used to fill the {{handoffs}} placeholder in the Handoff tool description.
+string formatCompactHandoffToolSummary(TaskTypeDef[] allTypes, string typeName)
+{
+	auto def = allTypes.byName(typeName);
+	if (def is null || def.continuations.length == 0)
+		return null;
+
+	string[] ids;
+	foreach (cname, ref cont; def.continuations)
+	{
+		if (!cont.keep_context)
+			ids ~= cname;
+	}
+	return formatCompactIdToolSummary(ids);
+}
+
+/// Format an IDs-only summary of available child task edges for a parent type.
 /// Used to fill the {{creatable_task_types}} placeholder in MCP tool descriptions.
-string formatCreatableTaskTypes(TaskTypeDef[] allTypes, string parentTypeName)
+string formatCompactCreatableTaskTypeToolSummary(TaskTypeDef[] allTypes,
+	string parentTypeName)
 {
 	auto parentDef = allTypes.byName(parentTypeName);
 	if (parentDef is null || parentDef.creatable_tasks.length == 0)
 		return null;
 
-	string result;
+	string[] ids;
 	foreach (ref edge; parentDef.creatable_tasks)
+		ids ~= edge.name;
+	return formatCompactIdToolSummary(ids);
+}
+
+/// Build the full task/mode/handoff guidance injected into session instructions.
+string formatGeneratedTaskGuidance(TaskTypeDef[] allTypes, string typeName)
+{
+	auto def = allTypes.byName(typeName);
+	if (def is null)
+		return "";
+
+	string result;
+	if (def.creatable_tasks.length > 0)
 	{
-		auto def = allTypes.byName(edge.resolvedType);
-		if (def is null)
-			continue;
-		auto desc = edgeDesc(edge.description, def);
-		result ~= format("- %s: %s\n", edge.name, desc);
-		if (def.agent_description.length > 0)
-			result ~= indentLines(def.agent_description.strip, "  ");
-		if (def.tool_guidance.length > 0)
-			result ~= indentLines(def.tool_guidance.strip, "  ");
-		result ~= "\n";
+		result ~= "## Create Sub-Tasks\n\n";
+		foreach (ref edge; def.creatable_tasks)
+		{
+			auto targetDef = allTypes.byName(edge.resolvedType);
+			if (targetDef is null)
+				continue;
+			appendDetailedGuidanceEntry(result, "Task", edge.name,
+				edge.resolvedType, edgeDesc(edge.description, targetDef), targetDef);
+		}
 	}
-	return result.length > 0 ? result : null;
+
+	if (def.continuations.length > 0)
+	{
+		string switchModes;
+		string handoffs;
+		foreach (cname, ref cont; def.continuations)
+		{
+			auto targetDef = allTypes.byName(cont.task_type);
+			auto desc = edgeDesc(cont.description, targetDef);
+			if (cont.keep_context)
+				appendDetailedGuidanceEntry(switchModes, "Mode", cname,
+					cont.task_type, desc, targetDef);
+			else
+				appendDetailedGuidanceEntry(handoffs, "Handoff", cname,
+					cont.task_type, desc, targetDef);
+		}
+		if (switchModes.length > 0)
+			result ~= "## Switch Modes\n\n" ~ switchModes;
+		if (handoffs.length > 0)
+			result ~= "## Handoffs\n\n" ~ handoffs;
+	}
+
+	return result.strip.length > 0 ? result.strip ~ "\n" : "";
+}
+
+/// Build the generated vars required by loadSystemPrompt() for task guidance.
+string[string] buildTaskGuidancePromptVars(TaskTypeDef[] allTypes, string typeName)
+{
+	return ["generated_guidance": formatGeneratedTaskGuidance(allTypes, typeName)];
+}
+
+/// Load a task type system prompt with generated task/mode/handoff guidance.
+string loadTaskTypeSystemPrompt(ref TaskTypeDef def, TaskTypeDef[] allTypes,
+	string typeName, string[] typesDirs, string outputFile = "",
+	string[string] extraVars = null)
+{
+	auto vars = buildTaskGuidancePromptVars(allTypes, typeName);
+	foreach (k, v; extraVars)
+		vars[k] = v;
+	return loadSystemPrompt(def, typesDirs, outputFile, vars);
+}
+
+unittest
+{
+	TaskTypeDef parent;
+	parent.name = "parent";
+	parent.creatable_tasks = [
+		CreatableTaskDef("execute", "implement", WorktreeMode.inherit, "", "",
+			"Implement the requested change."),
+	];
+	parent.continuations = [
+		"switch": ContinuationDef("review", false, true, WorktreeMode.inherit, "",
+			"Continue in the same session."),
+		"handoff": ContinuationDef("verify", false, false, WorktreeMode.inherit, "",
+			"Start verification in a fresh session."),
+	];
+
+	TaskTypeDef implement;
+	implement.name = "implement";
+	implement.agent_description = "Write the code change.";
+	implement.tool_guidance = "Edit files and return a clean diff.";
+
+	TaskTypeDef review;
+	review.name = "review";
+	review.agent_description = "Review the implementation carefully.";
+	review.tool_guidance = "Focus on defects first.";
+
+	TaskTypeDef verify;
+	verify.name = "verify";
+	verify.agent_description = "Run the verification steps.";
+	verify.tool_guidance = "Report failures precisely.";
+
+	auto types = [parent, implement, review, verify];
+
+	auto creatable = formatCompactCreatableTaskTypeToolSummary(types, "parent");
+	assert(creatable == "- execute\n\n" ~ compactToolGuidanceNote, creatable);
+	assert(!creatable.canFind("Write the code change."), creatable);
+	assert(!creatable.canFind("Edit files and return a clean diff."), creatable);
+
+	auto switchModes = formatCompactSwitchModeToolSummary(types, "parent");
+	assert(switchModes == "- switch\n\n" ~ compactToolGuidanceNote, switchModes);
+	assert(!switchModes.canFind("Review the implementation carefully."), switchModes);
+	assert(!switchModes.canFind("Focus on defects first."), switchModes);
+
+	auto handoffs = formatCompactHandoffToolSummary(types, "parent");
+	assert(handoffs == "- handoff\n\n" ~ compactToolGuidanceNote, handoffs);
+	assert(!handoffs.canFind("Run the verification steps."), handoffs);
+	assert(!handoffs.canFind("Report failures precisely."), handoffs);
+}
+
+unittest
+{
+	TaskTypeDef parent;
+	parent.name = "parent";
+	parent.creatable_tasks = [
+		CreatableTaskDef("execute", "implement", WorktreeMode.inherit, "", "",
+			"Implement the requested change."),
+	];
+	parent.continuations = [
+		"switch": ContinuationDef("review", false, true, WorktreeMode.inherit, "",
+			"Continue in the same session."),
+		"handoff": ContinuationDef("verify", false, false, WorktreeMode.inherit, "",
+			"Start verification in a fresh session."),
+	];
+
+	TaskTypeDef implement;
+	implement.name = "implement";
+	implement.agent_description = "Write the code change.";
+	implement.tool_guidance = "Edit files and return a clean diff.";
+
+	TaskTypeDef review;
+	review.name = "review";
+	review.agent_description = "Review the implementation carefully.";
+	review.tool_guidance = "Focus on defects first.";
+
+	TaskTypeDef verify;
+	verify.name = "verify";
+	verify.agent_description = "Run the verification steps.";
+	verify.tool_guidance = "Report failures precisely.";
+
+	auto guidance = formatGeneratedTaskGuidance([parent, implement, review, verify], "parent");
+	assert(guidance.canFind("## Create Sub-Tasks"), guidance);
+	assert(guidance.canFind("### Task `execute`"), guidance);
+	assert(guidance.canFind("Target task type: `implement`"), guidance);
+	assert(guidance.canFind("Write the code change."), guidance);
+	assert(guidance.canFind("Edit files and return a clean diff."), guidance);
+	assert(guidance.canFind("## Switch Modes"), guidance);
+	assert(guidance.canFind("### Mode `switch`"), guidance);
+	assert(guidance.canFind("Review the implementation carefully."), guidance);
+	assert(guidance.canFind("Focus on defects first."), guidance);
+	assert(guidance.canFind("## Handoffs"), guidance);
+	assert(guidance.canFind("### Handoff `handoff`"), guidance);
+	assert(guidance.canFind("Run the verification steps."), guidance);
+	assert(guidance.canFind("Report failures precisely."), guidance);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto tmp = "/tmp/cydo-test-loadsystemprompt-master";
+	scope (exit) { if (exists(tmp)) rmdirRecurse(tmp); }
+	mkdirRecurse(buildPath(tmp, "system_prompts"));
+
+	write(buildPath(tmp, "system_prompts", "role.md"),
+		"Role prompt {{custom}} {{knowledge_base}} {{output_file}}");
+	write(buildPath(tmp, "system_prompts", "master.md"),
+		"MASTER\n{{role_prompt}}\nGUIDE\n{{generated_guidance}}\nDIR {{output_dir}}");
+
+	TaskTypeDef def;
+	def.name = "implement";
+	def.system_prompt_template = "system_prompts/role.md";
+	def.knowledge_base = "kb/path";
+
+	TaskTypeDef parent;
+	parent.name = "parent";
+	parent.creatable_tasks = [
+		CreatableTaskDef("execute", "implement", WorktreeMode.inherit, "", "",
+			"Implement the requested change."),
+	];
+
+	auto rendered = loadTaskTypeSystemPrompt(def, [parent, def], "parent", [tmp],
+		buildPath(tmp, "out", "result.md"), ["custom": "value"]);
+	assert(rendered.canFind("MASTER"), rendered);
+	assert(rendered.canFind("Role prompt value kb/path"), rendered);
+	assert(rendered.canFind("### Task `execute`"), rendered);
+	assert(rendered.canFind("Target task type: `implement`"), rendered);
+	assert(rendered.canFind(buildPath(tmp, "out")), rendered);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto tmp = "/tmp/cydo-test-loadsystemprompt-missing-master";
+	scope (exit) { if (exists(tmp)) rmdirRecurse(tmp); }
+	mkdirRecurse(buildPath(tmp, "system_prompts"));
+
+	write(buildPath(tmp, "system_prompts", "role.md"), "Role prompt");
+
+	TaskTypeDef def;
+	def.name = "implement";
+	def.system_prompt_template = "system_prompts/role.md";
+
+	bool threw;
+	try
+	{
+		loadSystemPrompt(def, [tmp], "", ["generated_guidance": "Detailed guidance"]);
+	}
+	catch (Exception e)
+	{
+		threw = true;
+		assert(e.msg.canFind("system prompt master template"), e.msg);
+		assert(e.msg.canFind(buildPath(tmp, "system_prompts", "master.md")), e.msg);
+	}
+	assert(threw);
 }

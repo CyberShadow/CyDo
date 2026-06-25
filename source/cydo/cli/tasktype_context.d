@@ -14,8 +14,9 @@ import cydo.mcp.binding : ToolsList, buildToolsListJson;
 import cydo.mcp.tools : CydoTools;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, computeReachesWorktree,
-	computeTreeReadOnly, formatCreatableTaskTypes, formatHandoffs,
-	formatSwitchModes, isInteractive, loadTaskTypes, renderPrompt,
+	computeTreeReadOnly, formatCompactCreatableTaskTypeToolSummary,
+	formatCompactHandoffToolSummary, formatCompactSwitchModeToolSummary,
+	isInteractive, loadTaskTypes, renderPrompt,
 	validateTaskTypes;
 
 private ToolsList buildDumpContextToolsList(
@@ -24,9 +25,9 @@ private ToolsList buildDumpContextToolsList(
 	string typeName,
 )
 {
-	auto creatableTaskTypes = formatCreatableTaskTypes(types, typeName);
-	auto switchModes = formatSwitchModes(types, typeName);
-	auto handoffs = formatHandoffs(types, typeName);
+	auto creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(types, typeName);
+	auto switchModes = formatCompactSwitchModeToolSummary(types, typeName);
+	auto handoffs = formatCompactHandoffToolSummary(types, typeName);
 
 	string[] includeTools;
 	includeTools ~= "Bash";
@@ -203,9 +204,9 @@ unittest
 	auto entryPoints = [UserEntryPointDef("review", "review", "Start a review task.", "", WorktreeMode.inherit)];
 
 	auto expected = jsonParse!ToolsList(buildToolsListJson!CydoTools([
-		"creatable_task_types": formatCreatableTaskTypes(types, "review"),
-		"switchmodes": formatSwitchModes(types, "review"),
-		"handoffs": formatHandoffs(types, "review"),
+		"creatable_task_types": formatCompactCreatableTaskTypeToolSummary(types, "review"),
+		"switchmodes": formatCompactSwitchModeToolSummary(types, "review"),
+		"handoffs": formatCompactHandoffToolSummary(types, "review"),
 	], ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion"]));
 	auto actual = buildDumpContextToolsList(types, entryPoints, "review");
 
