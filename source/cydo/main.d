@@ -49,6 +49,8 @@ import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
 	TransportAdapter, WebSocketCallbacks;
 import cydo.domain.usage.tracker : AgentUsageTracker;
+import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
+	checkRenderedCydoToolDescriptionViolations, mcpToolDescriptionMaxChars;
 
 import cydo.agent.contract : Agent;
 import cydo.protocol : AgentAckEnvelope, BatchResultEnvelope, ContentBlock,
@@ -143,6 +145,61 @@ static:
 	{
 		import cydo.cli.tasktype_context : runDumpContext;
 		runDumpContext(resolveTaskTypesPath(), typeName, &isRegisteredAgent);
+	}
+
+	@(`Check rendered MCP tool descriptions against the shared length policy.`)
+	void checkToolDescriptions(
+		Option!(size_t, "Maximum top-level tool description length in characters.") maxDescriptionChars = mcpToolDescriptionMaxChars,
+	)
+	{
+		import core.stdc.stdlib : exit;
+		import std.stdio : stderr, writeln;
+
+		import cydo.domain.task_types.definition : TaskTypeConfig, loadTaskTypes;
+
+		if (maxDescriptionChars > mcpToolDescriptionMaxChars)
+		{
+			stderr.writefln("Error: --max-description-chars may not exceed %s",
+				mcpToolDescriptionMaxChars);
+			exit(1);
+		}
+
+		auto taskTypesPath = resolveTaskTypesPath();
+		TaskTypeConfig config;
+		try
+			config = loadTaskTypes(taskTypesPath);
+		catch (Exception e)
+		{
+			stderr.writefln("Error loading %s: %s", taskTypesPath, e.msg);
+			exit(1);
+		}
+
+		RenderedCydoToolsOptions options;
+		options.includePermissionPrompt = true;
+
+		bool hasViolations;
+		foreach (ref typeDef; config.types)
+		{
+			auto violations = checkRenderedCydoToolDescriptionViolations(
+				config.types,
+				config.entryPoints,
+				typeDef.name,
+				maxDescriptionChars,
+				options,
+			);
+			foreach (ref violation; violations)
+			{
+				hasViolations = true;
+				stderr.writefln("%s: %s description is %s chars (max %s)",
+					violation.taskType, violation.toolName, violation.actualChars,
+					violation.maxChars);
+			}
+		}
+
+		if (hasViolations)
+			exit(1);
+
+		writeln("All rendered CyDo tool descriptions are within the limit.");
 	}
 
 	/// Discover projects in a workspace.

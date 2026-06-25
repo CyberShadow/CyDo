@@ -8,44 +8,10 @@ import std.path : dirName;
 import std.stdio : stderr, write, writefln, writeln;
 import std.string : lineSplitter, strip;
 
-import ae.utils.json : jsonParse, toJson;
-
-import cydo.mcp.binding : ToolsList, buildToolsListJson;
-import cydo.mcp.tools : CydoTools;
 import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, TaskTypeConfig, TaskTypeDef,
 	UserEntryPointDef, WorktreeMode, byName, computeReachesWorktree,
-	computeTreeReadOnly, formatCompactCreatableTaskTypeToolSummary,
-	formatCompactHandoffToolSummary, formatCompactSwitchModeToolSummary,
-	isInteractive, loadTaskTypes, renderPrompt,
-	validateTaskTypes;
-
-private ToolsList buildDumpContextToolsList(
-	TaskTypeDef[] types,
-	UserEntryPointDef[] entryPoints,
-	string typeName,
-)
-{
-	auto creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(types, typeName);
-	auto switchModes = formatCompactSwitchModeToolSummary(types, typeName);
-	auto handoffs = formatCompactHandoffToolSummary(types, typeName);
-
-	string[] includeTools;
-	includeTools ~= "Bash";
-	if (creatableTaskTypes.length > 0)
-		includeTools ~= "Task";
-	if (switchModes.length > 0)
-		includeTools ~= "SwitchMode";
-	if (handoffs.length > 0)
-		includeTools ~= "Handoff";
-	if (isInteractive(types, entryPoints, typeName))
-		includeTools ~= "AskUserQuestion";
-
-	return jsonParse!ToolsList(buildToolsListJson!CydoTools([
-		"creatable_task_types": creatableTaskTypes,
-		"switchmodes": switchModes,
-		"handoffs": handoffs,
-	], includeTools));
-}
+	computeTreeReadOnly, loadTaskTypes, renderPrompt, validateTaskTypes;
+import cydo.mcp.tool_descriptions : buildRenderedCydoToolsList;
 
 private string renderDumpContextToolsSection(
 	TaskTypeDef[] types,
@@ -54,7 +20,7 @@ private string renderDumpContextToolsSection(
 )
 {
 	string rendered = "─── MCP Tools ───\n\n";
-	auto toolsList = buildDumpContextToolsList(types, entryPoints, typeName);
+	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, typeName);
 	foreach (ref tool; toolsList.tools)
 	{
 		rendered ~= format("### %s\n\n", tool.name);
@@ -203,18 +169,11 @@ unittest
 	auto types = [review, implement, finish, followup];
 	auto entryPoints = [UserEntryPointDef("review", "review", "Start a review task.", "", WorktreeMode.inherit)];
 
-	auto expected = jsonParse!ToolsList(buildToolsListJson!CydoTools([
-		"creatable_task_types": formatCompactCreatableTaskTypeToolSummary(types, "review"),
-		"switchmodes": formatCompactSwitchModeToolSummary(types, "review"),
-		"handoffs": formatCompactHandoffToolSummary(types, "review"),
-	], ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion"]));
-	auto actual = buildDumpContextToolsList(types, entryPoints, "review");
-
-	assert(toJson(actual) == toJson(expected));
+	auto actual = buildRenderedCydoToolsList(types, entryPoints, "review");
 
 	auto rendered = renderDumpContextToolsSection(types, entryPoints, "review");
 	assert(rendered.canFind("─── MCP Tools ───"));
-	foreach (ref tool; expected.tools)
+	foreach (ref tool; actual.tools)
 	{
 		assert(rendered.canFind("### " ~ tool.name));
 		if (tool.description.length > 0)

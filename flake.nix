@@ -822,6 +822,21 @@ EOF
               runHook postInstall
             '';
           };
+          tool-descriptions = pkgs.stdenv.mkDerivation {
+            pname = "cydo-tool-descriptions";
+            version = "0.1.0";
+            dontUnpack = true;
+
+            buildPhase = ''
+              runHook preBuild
+              ${cydo}/bin/cydo check-tool-descriptions
+              runHook postBuild
+            '';
+
+            installPhase = ''
+              touch $out
+            '';
+          };
           typecheck = pkgs.buildNpmPackage {
             pname = "cydo-typecheck";
             version = "0.1.0";
