@@ -7,6 +7,7 @@ import std.format : format;
 import std.path : dirName, expandTilde;
 import std.logger : errorf, tracef, warningf;
 import std.math : isNaN;
+import std.typecons : Nullable;
 
 import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPartial, jsonParse, toJson;
 import ae.utils.promise : Promise;
@@ -2280,7 +2281,7 @@ private string translateApiRetry(string rawLine)
 	{
 		int attempt;
 		int max_retries;
-		int error_status;
+		@JSONOptional Nullable!int error_status;
 		string error;
 	}
 	try
@@ -2288,8 +2289,12 @@ private string translateApiRetry(string rawLine)
 		import cydo.protocol : AgentErrorEvent;
 		auto raw = jsonParse!RawApiRetry(rawLine);
 		AgentErrorEvent ev;
-		ev.message = format("API error: %d %s (attempt %d/%d)",
-			raw.error_status, raw.error, raw.attempt, raw.max_retries);
+		if (raw.error_status.isNull)
+			ev.message = format("API error: %s (attempt %d/%d)",
+				raw.error, raw.attempt, raw.max_retries);
+		else
+			ev.message = format("API error: %d %s (attempt %d/%d)",
+				raw.error_status.get, raw.error, raw.attempt, raw.max_retries);
 		ev.willRetry = true;
 		return toJson(ev);
 	}
@@ -2299,8 +2304,6 @@ private string translateApiRetry(string rawLine)
 
 unittest
 {
-	import std.algorithm : canFind;
-
 	@JSONPartial static struct ErrorProbe
 	{
 		string type;
@@ -2314,10 +2317,23 @@ unittest
 	auto ev = jsonParse!ErrorProbe(translated);
 	assert(ev.type == "agent/error");
 	assert(ev.willRetry == true);
-	assert(ev.message.canFind("529"));
-	assert(ev.message.canFind("rate_limit"));
-	assert(ev.message.canFind("8"));
-	assert(ev.message.canFind("10"));
+	assert(ev.message == "API error: 529 rate_limit (attempt 8/10)");
+
+	translated = translateClaudeEventInner(
+		`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":538.56,"error_status":null,"error":"unknown","session_id":"abc","uuid":"def"}`,
+		"claude");
+	ev = jsonParse!ErrorProbe(translated);
+	assert(ev.type == "agent/error");
+	assert(ev.willRetry == true);
+	assert(ev.message == "API error: unknown (attempt 1/10)");
+
+	translated = translateClaudeEventInner(
+		`{"type":"system","subtype":"api_retry","attempt":2,"max_retries":3,"retry_delay_ms":1000,"error":"timeout","session_id":"abc","uuid":"def"}`,
+		"claude");
+	ev = jsonParse!ErrorProbe(translated);
+	assert(ev.type == "agent/error");
+	assert(ev.willRetry == true);
+	assert(ev.message == "API error: timeout (attempt 2/3)");
 }
 
 /// Translate "system/compact_boundary" event to session/compacted.
