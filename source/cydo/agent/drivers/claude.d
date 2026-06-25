@@ -586,6 +586,41 @@ class ClaudeCodeAgent : Agent
 		return RewindResult(true, result.output);
 	}
 
+	private static string[] buildOneShotArgs(string claudeBin, string prompt,
+		string model, ProcessLaunch launch)
+	{
+		string[] args = [
+			claudeBin,
+			"-p", prompt,
+			"--output-format", "text",
+			"--max-turns", "1",
+			"--tools", "",
+			"--no-session-persistence",
+		];
+		// an empty alias means no explicit model; omit the flag so claude
+		// uses its own configured default
+		if (model.length > 0)
+			args ~= ["--model", model];
+		if (launch.cmdPrefix !is null)
+			args = launch.cmdPrefix ~ args;
+		return args;
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind, countUntil;
+
+		ProcessLaunch launch; // .init: no cmdPrefix
+
+		// an empty alias omits --model entirely
+		assert(!buildOneShotArgs("claude", "hi", "", launch).canFind("--model"));
+
+		// a resolved model is passed through as `--model <x>`
+		auto withModel = buildOneShotArgs("claude", "hi", "opus", launch);
+		auto i = withModel.countUntil("--model");
+		assert(i >= 0 && withModel[i + 1] == "opus");
+	}
+
 	OneShotHandle completeOneShot(string prompt, string modelClass,
 		ProcessLaunch launch = ProcessLaunch.init)
 	{
@@ -604,27 +639,8 @@ class ClaudeCodeAgent : Agent
 			"HOME": environment.get("HOME", ""),
 		];
 
-		string[] args;
-		if (launch.cmdPrefix !is null)
-			args = launch.cmdPrefix ~ [
-				claudeBin,
-				"-p", prompt,
-				"--output-format", "text",
-				"--model", resolveModelAlias(modelClass),
-				"--max-turns", "1",
-				"--tools", "",
-				"--no-session-persistence",
-			];
-		else
-			args = [
-				claudeBin,
-				"-p", prompt,
-				"--output-format", "text",
-				"--model", resolveModelAlias(modelClass),
-				"--max-turns", "1",
-				"--tools", "",
-				"--no-session-persistence",
-			];
+		auto model = resolveModelAlias(modelClass);
+		auto args = buildOneShotArgs(claudeBin, prompt, model, launch);
 
 		auto procEnv = launch.cmdPrefix is null ? env : null;
 
