@@ -2992,3 +2992,193 @@ package(cydo) void applyConfiguredLogLevel(string level)
 			break;
 	}
 }
+
+version (unittest)
+{
+	import configy.attributes : SetInfo;
+	import std.algorithm : canFind;
+	import std.file : exists, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath;
+	import std.process : environment;
+
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.agent.drivers.codex : CodexAgent;
+	import cydo.agent.drivers.copilot : CopilotAgent;
+}
+
+version (unittest) private final class TestClaudePromptAgent : ClaudeCodeAgent
+{
+	override string executableName(string[string] env)
+	{
+		return "/bin/sh";
+	}
+}
+
+version (unittest) private final class TestCopilotPromptAgent : CopilotAgent
+{
+	override string executableName(string[string] env)
+	{
+		return "/bin/sh";
+	}
+}
+
+version (unittest) private final class TestCodexPromptAgent : CodexAgent
+{
+	override string executableName(string[string] env)
+	{
+		return "/bin/sh";
+	}
+}
+
+version (unittest) private bool isKnownPromptParityAgent(string name)
+{
+	return ["claude", "codex", "copilot"].canFind(name);
+}
+
+version (unittest) private void writePromptParityFixture(string root)
+{
+	auto defsDir = buildPath(root, "defs");
+	mkdirRecurse(buildPath(defsDir, "prompts"));
+	mkdirRecurse(buildPath(defsDir, "system_prompts"));
+
+	write(buildPath(defsDir, "prompts", "blank.md"), "Blank prompt\n");
+	write(buildPath(defsDir, "prompts", "create.md"), "Create prompt\n");
+	write(buildPath(defsDir, "prompts", "review.md"), "Review prompt\n");
+	write(buildPath(defsDir, "prompts", "verify.md"), "Verify prompt\n");
+	write(buildPath(defsDir, "system_prompts", "role.md"),
+		"ROLE MARKER {{output_file}}");
+	write(buildPath(defsDir, "system_prompts", "master.md"),
+		"MASTER\n{{role_prompt}}\nGUIDE\n{{generated_guidance}}\n");
+	write(buildPath(defsDir, "task-types.yaml"),
+		"task_types:\n"
+		~ "  parent:\n"
+		~ "    model_class: large\n"
+		~ "    system_prompt_template: system_prompts/role.md\n"
+		~ "    creatable_tasks:\n"
+		~ "      execute:\n"
+		~ "        task_type: implement\n"
+		~ "        prompt_template: prompts/create.md\n"
+		~ "    continuations:\n"
+		~ "      review:\n"
+		~ "        task_type: review\n"
+		~ "        keep_context: true\n"
+		~ "        prompt_template: prompts/review.md\n"
+		~ "      verify:\n"
+		~ "        task_type: verify\n"
+		~ "        keep_context: false\n"
+		~ "        prompt_template: prompts/verify.md\n"
+		~ "  implement:\n"
+		~ "    model_class: large\n"
+		~ "    agent_description: GUIDANCE TASK MARKER\n"
+		~ "    tool_guidance: GUIDANCE TASK TOOL MARKER\n"
+		~ "  review:\n"
+		~ "    model_class: large\n"
+		~ "    agent_description: GUIDANCE SWITCH MARKER\n"
+		~ "    tool_guidance: GUIDANCE SWITCH TOOL MARKER\n"
+		~ "  verify:\n"
+		~ "    model_class: large\n"
+		~ "    agent_description: GUIDANCE HANDOFF MARKER\n"
+		~ "    tool_guidance: GUIDANCE HANDOFF TOOL MARKER\n");
+}
+
+unittest
+{
+	auto tmp = buildPath("/tmp", "cydo-app-task-prompt-parity");
+	scope (exit)
+	{
+		if (exists(tmp))
+			rmdirRecurse(tmp);
+	}
+	writePromptParityFixture(tmp);
+
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+	}
+	auto home = buildPath(tmp, "home");
+	mkdirRecurse(home);
+	mkdirRecurse(buildPath(home, ".claude"));
+	mkdirRecurse(buildPath(home, ".local", "share", "claude"));
+	mkdirRecurse(buildPath(home, ".copilot"));
+	write(buildPath(home, ".claude.json"), "{}\n");
+	environment["HOME"] = home;
+
+	auto workspaceRoot = buildPath(tmp, "workspace");
+	auto projectPath = buildPath(workspaceRoot, "project");
+	mkdirRecurse(projectPath);
+
+	App app = new App();
+	app.taskDirTemplate = "{{ workspace_root }}/.cydo/tasks/{{ tid }}";
+	app.taskTypeCatalog = new TaskTypeCatalog(buildPath(tmp, "defs"),
+		buildPath(tmp, "defs", "task-types.yaml"),
+		&isKnownPromptParityAgent);
+	app.tasks[41] = TaskData(41, "local", projectPath);
+	app.tasks[41].taskType = "parent";
+	app.tasks[41].agentType = "codex";
+	app.taskPathResolver = new TaskPathResolver(TaskPathResolverHost(
+		getTask: (int tid) {
+			auto td = tid in app.tasks;
+			return td is null ? null : &app.tasks[tid];
+		},
+		workspaces: () => [WorkspaceConfig(name: "local", root: workspaceRoot)],
+		taskDirTemplate: () => app.taskDirTemplate,
+	));
+	app.agentsByName["codex"] = new TestCodexPromptAgent();
+
+	TaskTypeDef* currentTypeDef()
+	{
+		return app.taskTypeCatalog.getTaskTypesForProject(projectPath).byName("parent");
+	}
+
+	auto codexPrompt = app.taskSystemPromptForMessage(41, currentTypeDef());
+	assert(codexPrompt.canFind("ROLE MARKER"), codexPrompt);
+	assert(codexPrompt.canFind("GUIDANCE TASK MARKER"), codexPrompt);
+	assert(codexPrompt.canFind("GUIDANCE SWITCH MARKER"), codexPrompt);
+	assert(codexPrompt.canFind("GUIDANCE HANDOFF MARKER"), codexPrompt);
+
+	auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+		getTask: (int tid) {
+			auto td = tid in app.tasks;
+			return td is null ? null : &app.tasks[tid];
+		},
+		taskDir: (const TaskData* td) => app.taskPathResolver.taskDir(td),
+		outputPath: (const TaskData* td) => app.taskPathResolver.outputPath(td),
+		effectiveCwd: (const TaskData* td) => app.taskPathResolver.effectiveCwd(td),
+		worktreePath: (const TaskData* td) => app.taskPathResolver.worktreePath(td),
+		globalSandbox: () => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		findWorkspaceSandbox: (string workspaceName) => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		findWorkspaceRoot: (string workspaceName) => workspaceRoot,
+		findWorkspacePermissionPolicy: (string workspaceName) => "",
+		findAgentSandbox: (string agentName) => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		resolveSharedTmpPath: (int tid) => buildPath(tmp, "shared-tmp"),
+		mcpSocketPath: () => "",
+		taskTypeCatalog: app.taskTypeCatalog,
+	));
+
+	app.tasks[41].agentType = "claude";
+	auto claudeLaunch = runner.prepareTaskSessionLaunch(41, new TestClaudePromptAgent(),
+		currentTypeDef());
+	assert(claudeLaunch.sessionConfig.appendSystemPrompt == codexPrompt);
+
+	app.tasks[41].agentType = "copilot";
+	auto copilotLaunch = runner.prepareTaskSessionLaunch(41, new TestCopilotPromptAgent(),
+		currentTypeDef());
+	assert(copilotLaunch.sessionConfig.appendSystemPrompt == codexPrompt);
+}
