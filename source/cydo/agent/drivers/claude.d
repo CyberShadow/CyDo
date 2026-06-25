@@ -1082,6 +1082,97 @@ class ClaudeCodeSession : AgentSession
 		}
 	}
 
+	@JSONPartial static struct ClaudeBlock
+	{
+		string type;
+		@JSONOptional string id;
+		@JSONOptional string name;
+		@JSONOptional JSONFragment input;
+		@JSONOptional string text;
+		@JSONOptional string thinking;
+		@JSONOptional string signature;
+		JSONExtras _extras;
+	}
+
+	/// Promote a complete assistant message's content blocks straight to
+	/// item/started + item/completed events. This is the live fallback for when
+	/// no stream events arrived (after an api_retry the CLI stops emitting
+	/// partials, so content_block_start never fires and the turn would otherwise
+	/// render as nothing). blockSeq hands out ids for non-tool blocks.
+	private static TranslatedEvent[] promoteContentBlocks(
+		ClaudeBlock[] blocks, string rawLine, ref size_t blockSeq)
+	{
+		import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, decomposeToolName;
+
+		TranslatedEvent[] events;
+		foreach (ref b; blocks)
+		{
+			// tool_use ids are globally unique already; generated ids use a
+			// session-wide counter because per-block assistant events carry no
+			// stream index ("cc-block-<idx>" would collide across blocks)
+			auto itemId = b.type == "tool_use" && b.id.length > 0
+				? b.id : "cc-promoted-" ~ to!string(blockSeq++);
+
+			ItemStartedEvent startEv;
+			startEv.item_id   = itemId;
+			startEv.item_type = b.type;
+			if (b.type == "tool_use")
+			{
+				decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
+				startEv.input = b.input;
+			}
+			else
+			{
+				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+				startEv.text = text;
+			}
+			events ~= TranslatedEvent(toJson(startEv), rawLine);
+
+			ItemCompletedEvent compEv;
+			compEv.item_id = itemId;
+			if (b.type == "tool_use")
+				compEv.input = b.input;
+			else
+			{
+				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+				compEv.text = text;
+			}
+			compEv.extras = extrasToFragment(b._extras);
+			events ~= TranslatedEvent(toJson(compEv), rawLine);
+		}
+		return events;
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind;
+
+		// a complete assistant text block with no stream events must promote to
+		// item/started + item/completed carrying its text; before the fix the
+		// turn rendered as nothing
+		ClaudeBlock textBlock;
+		textBlock.type = "text";
+		textBlock.text = "promoted hello";
+
+		size_t seq;
+		auto evs = promoteContentBlocks([textBlock], "raw", seq);
+		assert(evs.canFind!(e => e.translated.canFind(`"item/started"`)),
+			"text content must promote to item/started");
+		assert(evs.canFind!(e => e.translated.canFind(`"item/completed"`)),
+			"text content must promote to item/completed");
+		assert(evs.canFind!(e => e.translated.canFind("promoted hello")),
+			"the promoted item must carry the assistant text");
+
+		// a tool_use block keeps its own globally-unique id, not a counter id
+		ClaudeBlock toolBlock;
+		toolBlock.type = "tool_use";
+		toolBlock.id = "toolu_42";
+		toolBlock.name = "Bash";
+		assert(promoteContentBlocks([toolBlock], "raw", seq)
+			.canFind!(e => e.translated.canFind("toolu_42")),
+			"tool_use block must keep its own id");
+	}
+
 	/// Translate an assistant NDJSON event to a turn/delta metadata event.
 	/// Content promotion is handled by content_block_stop → item/completed.
 	/// Exception: sub-agent messages (parent_tool_use_id set) arrive as complete
@@ -1090,17 +1181,6 @@ class ClaudeCodeSession : AgentSession
 	{
 		import cydo.protocol : TurnDeltaEvent, UsageInfo;
 
-		@JSONPartial static struct ClaudeBlock
-		{
-			string type;
-			@JSONOptional string id;
-			@JSONOptional string name;
-			@JSONOptional JSONFragment input;
-			@JSONOptional string text;
-			@JSONOptional string thinking;
-			@JSONOptional string signature;
-			JSONExtras _extras;
-		}
 		@JSONPartial static struct ClaudeMessage
 		{
 			@JSONOptional string model;
@@ -1239,44 +1319,8 @@ class ClaudeCodeSession : AgentSession
 			// content_block_start never fires). Without a fallback the whole
 			// turn would render as nothing. Promote the blocks directly, like
 			// the sub-agent path above.
-			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent,
-				decomposeToolName;
-
-			foreach (ref b; raw.message.content)
-			{
-				// tool_use ids are globally unique already; generated ids use a
-				// session-wide counter because per-block assistant events carry
-				// no stream index ("cc-block-<idx>" would collide across blocks)
-				auto itemId = b.type == "tool_use" && b.id.length > 0
-					? b.id : "cc-promoted-" ~ to!string(promotedBlockSeq_++);
-
-				ItemStartedEvent startEv;
-				startEv.item_id   = itemId;
-				startEv.item_type = b.type;
-				if (b.type == "tool_use")
-				{
-					decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
-					startEv.input = b.input;
-				}
-				else
-				{
-					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
-					startEv.text = text;
-				}
-				emitEvent(TranslatedEvent(toJson(startEv), rawLine));
-
-				ItemCompletedEvent compEv;
-				compEv.item_id = itemId;
-				if (b.type == "tool_use")
-					compEv.input = b.input;
-				else
-				{
-					auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
-					compEv.text = text;
-				}
-				compEv.extras = extrasToFragment(b._extras);
-				emitEvent(TranslatedEvent(toJson(compEv), rawLine));
-			}
+			foreach (ev; promoteContentBlocks(raw.message.content, rawLine, promotedBlockSeq_))
+				emitEvent(ev);
 		}
 		else
 		{
