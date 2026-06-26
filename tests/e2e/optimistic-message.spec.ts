@@ -92,8 +92,34 @@ test("backend deduplicates message sent twice with same nonce", { tag: "@claude-
 
   await enterSession(page);
 
-  // Start sending the message but capture the outbox entry (which exists
-  // synchronously before the network round-trip) to recover the nonce.
+  // Capture the first non-empty outbox write before the send path runs so a
+  // fast backend ack cannot race the test's snapshot read.
+  await page.evaluate(() => {
+    const storage = Storage.prototype as Storage & {
+      __cydoTestSetItemWrapped?: boolean;
+      __cydoTestOriginalSetItem?: Storage["setItem"];
+    };
+    const testWindow = window as Window & {
+      __cydoTestOutboxSnapshot?: unknown[];
+    };
+
+    testWindow.__cydoTestOutboxSnapshot = undefined;
+    if (storage.__cydoTestSetItemWrapped) return;
+
+    storage.__cydoTestOriginalSetItem = storage.setItem;
+    storage.setItem = function (key: string, value: string) {
+      if (key === "cydo.outbox.v1" && testWindow.__cydoTestOutboxSnapshot === undefined) {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          testWindow.__cydoTestOutboxSnapshot = parsed;
+        }
+      }
+      storage.__cydoTestOriginalSetItem!.call(this, key, value);
+    };
+    storage.__cydoTestSetItemWrapped = true;
+  });
+
+  // Start sending the message and recover the nonce from the captured write.
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
   await input.fill('Please reply with "dedupe-test"');
@@ -101,11 +127,12 @@ test("backend deduplicates message sent twice with same nonce", { tag: "@claude-
   await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
   await sendBtn.click();
 
-  // Capture the outbox entry immediately — it's added synchronously before
-  // the WS send, so it's available before the backend ack clears it.
-  const outboxSnapshot = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("cydo.outbox.v1") ?? "[]"),
-  );
+  const outboxSnapshot = await page.evaluate(() => {
+    const testWindow = window as Window & {
+      __cydoTestOutboxSnapshot?: unknown[];
+    };
+    return testWindow.__cydoTestOutboxSnapshot ?? [];
+  });
   expect(outboxSnapshot.length).toBeGreaterThan(0);
   const { nonce, tid, content } = outboxSnapshot[0] as {
     nonce: string;

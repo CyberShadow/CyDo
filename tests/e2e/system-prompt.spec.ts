@@ -6,38 +6,43 @@ import {
   responseTimeout,
 } from "./fixtures";
 
-test("system_prompt_template is sent to the LLM API", async ({
+test("system_prompt_template is sent to the LLM API", { tag: "@no-codex" }, async ({
   page,
   agentType,
 }) => {
   await enterSession(page);
+  const timeout = responseTimeout(agentType);
+  const passedResults = page.locator(
+    ".tool-result-container .text-content:visible",
+    {
+      hasText: "context-check-passed",
+    },
+  );
 
-  // Base64-encode the unique marker from defs/prompts/test_system_prompt.md.
-  // The mock API will decode this and check if it appears anywhere in the
-  // serialized API request (which includes system prompts, messages, etc.).
-  const marker = Buffer.from("CYDO_TEST_SYSTEM_PROMPT_MARKER").toString(
+  const rolePromptMarker = Buffer.from("CYDO_TEST_SYSTEM_PROMPT_MARKER").toString(
     "base64",
   );
+  const generatedGuidanceMarker = Buffer.from(
+    "CYDO_TEST_GENERATED_GUIDANCE_MARKER",
+  ).toString("base64");
 
-  // Create a sub-task of type test_system_prompt. The sub-task's user message
-  // triggers the mock API's "check context contains" pattern, which searches
-  // the full API request for the decoded marker string.
+  let passCount = await passedResults.count();
   await sendMessage(
     page,
-    `call task test_system_prompt check context contains ${marker}`,
+    `call task test_system_prompt check context contains ${rolePromptMarker}`,
+  );
+  await expect.poll(() => passedResults.count(), { timeout }).toBeGreaterThan(
+    passCount,
   );
 
-  // The sub-task result should contain "context-check-passed" if the system
-  // prompt template was correctly sent to the LLM API.
-  // Use .first() because the result text may also appear in nested sub-agent
-  // messages (loaded asynchronously), causing a strict mode violation.
-  await expect(
-    page
-      .locator(".tool-result-container .text-content:visible", {
-        hasText: "context-check-passed",
-      })
-      .first(),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  passCount = await passedResults.count();
+  await sendMessage(
+    page,
+    `call task test_system_prompt check context contains ${generatedGuidanceMarker}`,
+  );
+  await expect.poll(() => passedResults.count(), { timeout }).toBeGreaterThan(
+    passCount,
+  );
 });
 
 test("codex sends task system prompt through user input text", { tag: "@codex-only" }, async ({
@@ -47,18 +52,35 @@ test("codex sends task system prompt through user input text", { tag: "@codex-on
 
   await enterSession(page);
 
-  const marker = Buffer.from("CYDO_TEST_SYSTEM_PROMPT_MARKER").toString("base64");
+  const rolePromptMarker = Buffer.from("CYDO_TEST_SYSTEM_PROMPT_MARKER").toString(
+    "base64",
+  );
+  const generatedGuidanceMarker = Buffer.from(
+    "CYDO_TEST_GENERATED_GUIDANCE_MARKER",
+  ).toString("base64");
+  const passedResults = page.locator(
+    ".tool-result-container .text-content:visible",
+    {
+      hasText: "context-check-passed",
+    },
+  );
+  const timeout = responseTimeout(agentType);
 
+  let passCount = await passedResults.count();
   await sendMessage(
     page,
-    `call task test_system_prompt check user text contains ${marker}`,
+    `call task test_system_prompt check user text contains ${rolePromptMarker}`,
+  );
+  await expect.poll(() => passedResults.count(), { timeout }).toBeGreaterThan(
+    passCount,
   );
 
-  await expect(
-    page
-      .locator(".tool-result-container .text-content:visible", {
-        hasText: "context-check-passed",
-      })
-      .first(),
-  ).toBeVisible({ timeout: responseTimeout(agentType) });
+  passCount = await passedResults.count();
+  await sendMessage(
+    page,
+    `call task test_system_prompt check user text contains ${generatedGuidanceMarker}`,
+  );
+  await expect.poll(() => passedResults.count(), { timeout }).toBeGreaterThan(
+    passCount,
+  );
 });

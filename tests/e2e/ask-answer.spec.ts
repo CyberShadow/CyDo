@@ -10,6 +10,10 @@ type TaskCreatedEventLike = {
   parent_tid?: number;
   relation_type?: string;
 };
+type TaskReloadEventLike = {
+  tid: number;
+  reason?: string;
+};
 type ItemResultEventLike = {
   type?: string;
   tool_result?: unknown;
@@ -141,6 +145,27 @@ function observeTaskCreatedEvents(page: Page): TaskCreatedEventLike[] {
     });
   });
   return createdEvents;
+}
+
+function observeTaskReloadEvents(page: Page): TaskReloadEventLike[] {
+  const reloadEvents: TaskReloadEventLike[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      try {
+        const data = JSON.parse(frame.payload.toString()) as {
+          type?: string;
+          tid?: number;
+          reason?: string;
+        };
+        if (data.type === "task_reload" && typeof data.tid === "number") {
+          reloadEvents.push({ tid: data.tid, reason: data.reason });
+        }
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return reloadEvents;
 }
 
 async function waitForTaskResultEventAfter(
@@ -283,6 +308,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
 }) => {
   test.setTimeout(TALK_TIMEOUT);
   const taskCreatedEvents = observeTaskCreatedEvents(page);
+  const reloadEvents = observeTaskReloadEvents(page);
 
   await enterSession(page);
 
@@ -330,6 +356,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   const doneCountBeforeFollowUpAsk = await currentMessageList(page)
     .getByText("Done.", { exact: true })
     .count();
+  const reloadCountBeforeFollowUpAsk = reloadEvents.length;
 
   // Parent calls Ask on the completed child with a follow-up question.
   await sendMessage(page, `call ask ${childTid} any follow-up?`);
@@ -355,17 +382,29 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
 
   await openTask(page, childTid!);
   await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
-      hasText: "Follow-up from parent",
-    }),
+    page.locator(
+      '[style*="display: contents"] .message-list .message.user-message.system-user-message',
+      { hasText: "Follow-up from parent" },
+    ),
   ).toBeVisible({ timeout: 30_000 });
+
+  await expect
+    .poll(
+      () =>
+        reloadEvents
+          .slice(reloadCountBeforeFollowUpAsk)
+          .some((event) => event.tid === childTid),
+      { timeout: 90_000 },
+    )
+    .toBe(true);
 
   await page.reload();
   await openTask(page, childTid!);
   await expect(
-    page.locator('[style*="display: contents"] .system-user-message', {
-      hasText: "Follow-up from parent",
-    }),
+    page.locator(
+      '[style*="display: contents"] .message-list .message.user-message.system-user-message',
+      { hasText: "Follow-up from parent" },
+    ),
   ).toBeVisible({ timeout: 30_000 });
 });
 
@@ -707,11 +746,25 @@ test("Ask/Answer: same-workspace top-level peer Ask succeeds", async ({
   await openTask(page, askerTid);
   await sendMessage(page, `call ask ${targetTid} peer question`);
 
-  await expect(
-    page.locator(`.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`),
-  ).toBeVisible({ timeout: 60_000 });
-
   await openTask(page, targetTid);
+  const askerWaitingIcon = page.locator(
+    `.sidebar-item[data-tid="${askerTid}"] .task-type-icon.waiting`,
+  );
+  const peerQuestion = page
+    .locator(".system-user-message")
+    .filter({ hasText: /Question from task.*qid=/ })
+    .last();
+  await expect
+    .poll(
+      async () => {
+        if (await askerWaitingIcon.isVisible()) return "waiting";
+        if (await peerQuestion.isVisible()) return "questioned";
+        return "pending";
+      },
+      { timeout: 60_000 },
+    )
+    .not.toBe("pending");
+
   const qid = await extractLatestQuestionQid(page);
   await openTask(page, targetTid);
   await sendMessage(page, `call answer ${qid} peer-answer`);

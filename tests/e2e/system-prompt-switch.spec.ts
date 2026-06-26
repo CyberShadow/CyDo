@@ -12,10 +12,11 @@ test("new system prompt is present after keep_context mode switch", async ({
 }) => {
   await enterSession(page);
 
-  // Create a sub-task of type test_sysprompt_mode_a. Its system prompt contains
-  // MARKER_A. The prompt tells it to switch to mode_b via the "check_new" continuation.
+  // Create a sub-task of type test_sysprompt_mode_a. Its generated guidance contains
+  // the mode A marker. The prompt tells it to switch to mode_b via the "check_new"
+  // continuation.
   // After the switch, the continuation prompt (test_sysprompt_check_b.md) checks
-  // that MARKER_B (mode_b's system prompt) is present in the API context.
+  // that the mode B generated-guidance marker is present in the API context.
   await sendMessage(
     page,
     "call task test_sysprompt_mode_a call switchmode check_new",
@@ -39,8 +40,8 @@ test("old system prompt is absent after keep_context mode switch", { tag: "@no-c
   await enterSession(page);
 
   // Same setup but using "check_old_absent" continuation, whose prompt checks
-  // for MARKER_A (mode_a's system prompt). After switching to mode_b, MARKER_A
-  // should no longer be in the system prompt.
+  // for the mode A generated-guidance marker. After switching to mode_b, the
+  // old mode A guidance should no longer be in the system prompt.
   await sendMessage(
     page,
     "call task test_sysprompt_mode_a call switchmode check_old_absent",

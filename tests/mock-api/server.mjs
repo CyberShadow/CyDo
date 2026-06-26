@@ -4,6 +4,7 @@
 //   POST /v1/responses      — OpenAI Responses API  (Codex CLI)
 
 import { createServer } from "node:http";
+import { appendFileSync } from "node:fs";
 import { matchPattern } from "./patterns.mjs";
 
 const PORT = parseInt(process.env.MOCK_API_PORT || "9000", 10);
@@ -902,6 +903,24 @@ function handleMessages(req, res) {
     }
 
     const messages = parsed.messages || [];
+    if (process.env.MOCK_ANTHROPIC_CAPTURE) {
+      appendFileSync(
+        process.env.MOCK_ANTHROPIC_CAPTURE,
+        JSON.stringify({
+          path: req.url || "/v1/messages",
+          model: parsed.model || "unknown",
+          userText: extractLastUserText(messages),
+          isToolResult: hasToolResult(messages),
+          tools: Array.isArray(parsed.tools)
+            ? parsed.tools.map((tool) => ({
+                name: tool?.name ?? null,
+                description:
+                  typeof tool?.description === "string" ? tool.description : null,
+              }))
+            : [],
+        }) + "\n",
+      );
+    }
     const requestedModel = parsed.model || "unknown";
     const userText = extractLastUserText(messages);
     const isToolResult = hasToolResult(messages);

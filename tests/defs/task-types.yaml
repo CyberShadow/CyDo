@@ -181,6 +181,15 @@ task_types:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt.md
+    creatable_tasks:
+      guidance_target:
+        task_type: test_system_prompt_guidance_target
+        prompt_template: prompts/blank.md
+
+  test_system_prompt_guidance_target:
+    model_class: small
+    output_type: []
+    agent_description: "CYDO_TEST_GENERATED_GUIDANCE_MARKER"
 
   test_memory_check:
     model_class: small
@@ -209,6 +218,10 @@ task_types:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt_a.md
+    creatable_tasks:
+      guidance_target:
+        task_type: test_sysprompt_mode_a_guidance_target
+        prompt_template: prompts/blank.md
     continuations:
       check_new:
         task_type: test_sysprompt_mode_b
@@ -227,10 +240,24 @@ task_types:
         keep_context: true
         prompt_template: prompts/test_sysprompt_check_user_a.md
 
+  test_sysprompt_mode_a_guidance_target:
+    model_class: small
+    output_type: []
+    agent_description: "CYDO_TEST_MODE_A_GUIDANCE_MARKER"
+
   test_sysprompt_mode_b:
     model_class: small
     output_type: []
     system_prompt_template: prompts/test_system_prompt_b.md
+    creatable_tasks:
+      guidance_target:
+        task_type: test_sysprompt_mode_b_guidance_target
+        prompt_template: prompts/blank.md
+
+  test_sysprompt_mode_b_guidance_target:
+    model_class: small
+    output_type: []
+    agent_description: "CYDO_TEST_MODE_B_GUIDANCE_MARKER"
 
   test_handoff_with_children:
     model_class: small

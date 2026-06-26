@@ -608,6 +608,8 @@ EOF
               echo "test" > README.md
               ${pkgs.git}/bin/git add . && ${pkgs.git}/bin/git commit -qm "init"
 
+              export MOCK_ANTHROPIC_CAPTURE=/tmp/mock-anthropic-requests.ndjson
+              rm -f "$MOCK_ANTHROPIC_CAPTURE"
               ${pkgs.nodejs_22}/bin/node $src/mock-api/server.mjs &
               MOCK_PID=$!
               for i in $(seq 1 15); do
