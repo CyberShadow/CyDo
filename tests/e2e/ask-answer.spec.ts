@@ -282,6 +282,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT);
+  const taskCreatedEvents = observeTaskCreatedEvents(page);
 
   await enterSession(page);
 
@@ -316,12 +317,22 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible({ timeout: 90_000 });
 
+  let childTid: number | null = null;
+  await expect(async () => {
+    childTid =
+      taskCreatedEvents.find(
+        (event) =>
+          event.relation_type === "subtask" && event.parent_tid === 1,
+      )?.tid ?? null;
+    expect(childTid).not.toBeNull();
+  }).toPass({ timeout: 30_000 });
+
   const doneCountBeforeFollowUpAsk = await currentMessageList(page)
     .getByText("Done.", { exact: true })
     .count();
 
-  // Parent calls Ask on the completed child (tid=2) with a follow-up question.
-  await sendMessage(page, "call ask 2 any follow-up?");
+  // Parent calls Ask on the completed child with a follow-up question.
+  await sendMessage(page, `call ask ${childTid} any follow-up?`);
 
   // The child is resumed, receives "[Follow-up question from parent task (qid=1)]",
   // and responds with Answer(1, "follow-up-answered"). That answer is returned as the Ask result.
@@ -342,10 +353,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       .toBeGreaterThan(doneCountBeforeFollowUpAsk);
   }
 
-  await page.locator('.sidebar-item[data-tid="2"]').click();
-  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
-    timeout: 10_000,
-  });
+  await openTask(page, childTid!);
   await expect(
     page.locator('[style*="display: contents"] .system-user-message', {
       hasText: "Follow-up from parent",
@@ -353,10 +361,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   ).toBeVisible({ timeout: 30_000 });
 
   await page.reload();
-  await page.locator('.sidebar-item[data-tid="2"]').click();
-  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
-    timeout: 10_000,
-  });
+  await openTask(page, childTid!);
   await expect(
     page.locator('[style*="display: contents"] .system-user-message', {
       hasText: "Follow-up from parent",

@@ -132,12 +132,22 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
   });
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
-    page.locator(".system-user-message", { hasText: "Task prompt: research" }),
+    page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.locator('[style*="display: contents"] .message-list .system-user-message', {
+      hasText: "Task prompt: research",
+    }),
   ).toBeVisible({ timeout: 30_000 });
 
   await page.reload();
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
-    page.locator(".system-user-message", { hasText: "Task prompt: research" }),
+    page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.locator('[style*="display: contents"] .message-list .system-user-message', {
+      hasText: "Task prompt: research",
+    }),
   ).toBeVisible({ timeout: 30_000 });
 });

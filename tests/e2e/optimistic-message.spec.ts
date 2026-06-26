@@ -286,6 +286,13 @@ test("claude skips ack-2 (no agent-ack signal)", { tag: "@claude-only" }, async 
 
   await enterSession(page);
 
+  // Establish a real session first so the stalling follow-up uses the normal
+  // nonce-based send path rather than the initial create_task handshake.
+  await sendMessage(page, 'Please reply with "claude-ack3-ready"');
+  await expect(assistantText(page, "claude-ack3-ready")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
   await input.fill("stall session");

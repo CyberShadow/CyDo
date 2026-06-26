@@ -99,18 +99,23 @@ test("no remount during draft creation", async ({ page, agentType }) => {
   const input = page.locator(".input-textarea:visible").first();
   await input.click();
 
-  // Type character by character
-  await input.pressSequentially("hello world", { delay: 100 });
+  // Trigger draft creation with the first keystroke, then wait for the
+  // promotion boundary to settle before continuing to type through it.
+  await input.press("h");
 
-  // The draft should have been created mid-typing without losing focus
-  await expect(input).toBeFocused();
-  await expect(input).toHaveValue("hello world");
-
-  // Draft should be in sidebar
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
   ).toBeVisible({ timeout: 5_000 });
+
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("h");
+
+  await input.pressSequentially("ello world", { delay: 100 });
+
+  // The draft should continue accepting input without losing focus or text.
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("hello world");
 
   // Send and verify all characters came through
   await page.locator(".btn-send:visible").first().click();
