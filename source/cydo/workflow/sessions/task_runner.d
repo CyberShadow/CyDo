@@ -13,6 +13,8 @@ import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
 import cydo.agent.session : AgentSession;
+import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
+	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations;
 import cydo.protocol : ProcessExitEvent, ProcessStderrEvent, TranslatedEvent;
 import cydo.runtime.config : AgentDriver, PathMode, SandboxConfig;
 import cydo.runtime.launch.types : AgentSandboxConfig, ProcessLaunch;
@@ -43,6 +45,8 @@ struct TaskSessionRunnerHost
 	string delegate(string workspaceName) findWorkspaceRoot;
 	string delegate(string workspaceName) findWorkspacePermissionPolicy;
 	SandboxConfig delegate(string agentName) findAgentSandbox;
+	void delegate(string projectPath, string taskType,
+		ToolDescriptionViolation[] violations) reportMcpToolDescriptionLimit;
 	string delegate(int tid) resolveSharedTmpPath;
 	string delegate() mcpSocketPath;
 	Agent delegate(int tid) agentForTask;
@@ -168,6 +172,7 @@ class TaskSessionRunner
 
 		SessionConfig sessionConfig;
 		auto taskTypes = host_.taskTypeCatalog.getTaskTypesForProject(td.projectPath);
+		auto entryPoints = host_.taskTypeCatalog.getEntryPointsForProject(td.projectPath);
 		sessionConfig.creatableTaskTypes = formatCompactCreatableTaskTypeToolSummary(taskTypes,
 			td.taskType);
 		sessionConfig.switchModes = formatCompactSwitchModeToolSummary(taskTypes, td.taskType);
@@ -279,6 +284,16 @@ class TaskSessionRunner
 			sessionConfig.allowNativeSubagents = true;
 
 		sessionConfig.permissionPolicy = host_.findWorkspacePermissionPolicy(td.workspace);
+		if (sessionConfig.permissionPolicy.length > 0)
+			sessionConfig.includeTools ~= "PermissionPrompt";
+
+		RenderedCydoToolsOptions renderedToolOptions;
+		renderedToolOptions.includeBash = taskAgent.needsBash();
+		renderedToolOptions.includePermissionPrompt =
+			sessionConfig.permissionPolicy.length > 0;
+		host_.reportMcpToolDescriptionLimit(td.projectPath, td.taskType,
+			checkRenderedCydoToolDescriptionViolations(taskTypes, entryPoints,
+				td.taskType, options: renderedToolOptions));
 		sessionConfig.agentName = td.agentType;
 
 		return TaskSessionLaunch(td.launch, sessionConfig);

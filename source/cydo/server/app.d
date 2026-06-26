@@ -3,6 +3,8 @@ module cydo.server.app;
 import core.lifetime : move;
 import core.time : seconds;
 
+import std.algorithm : sort;
+import std.array : appender;
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
 import std.logger : tracef, infof, warningf, errorf, fatalf;
@@ -27,6 +29,9 @@ import ae.utils.statequeue : StateQueue;
 mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
+import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
+	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations,
+	mcpToolDescriptionMaxChars;
 import cydo.mcp.tools;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
@@ -74,6 +79,49 @@ import cydo.domain.tasks.model;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.workflow.history.jsonl_store : findNextUserUuid;
 import cydo.workflow.workspace.worktree;
+
+private enum maxToolDescriptionNoticeViolations = 3;
+
+private string mcpToolDescriptionLimitNoticeId(string projectPath, string taskType)
+{
+	auto encodedPath = appender!string();
+	foreach (immutable ubyte b; cast(const(ubyte)[]) projectPath)
+		encodedPath.put(format!"%02x"(b));
+	return "mcp-tool-description-limit:" ~ encodedPath.data ~ ":" ~ taskType;
+}
+
+private Notice buildMcpToolDescriptionLimitNotice(
+	ToolDescriptionViolation[] violations)
+{
+	auto sortedViolations = violations.dup;
+	sortedViolations.sort!((a, b) {
+		if (a.actualChars != b.actualChars)
+			return a.actualChars > b.actualChars;
+		if (a.taskType != b.taskType)
+			return a.taskType < b.taskType;
+		return a.toolName < b.toolName;
+	});
+
+	string impact = "Largest violations: ";
+	foreach (i, ref violation; sortedViolations[0 .. maxToolDescriptionNoticeViolations <
+			sortedViolations.length ? maxToolDescriptionNoticeViolations :
+			sortedViolations.length])
+	{
+		if (i > 0)
+			impact ~= "; ";
+		impact ~= format("%s/%s %s > %s", violation.taskType, violation.toolName,
+			violation.actualChars, violation.maxChars);
+	}
+
+	return Notice(
+		NoticeLevel.warning,
+		format("Current task-type configuration renders oversized MCP tool descriptions over the %s-character limit.",
+			mcpToolDescriptionMaxChars),
+		impact,
+		"Shorten user/project task-type guidance or move verbose guidance into system prompts.",
+		"",
+	);
+}
 
 class App
 {
@@ -491,6 +539,7 @@ class App
 			findWorkspaceRoot: &taskPathResolver.findWorkspaceRoot,
 			findWorkspacePermissionPolicy: &findWorkspacePermissionPolicy,
 			findAgentSandbox: &findAgentSandbox,
+			reportMcpToolDescriptionLimit: &reportMcpToolDescriptionLimit,
 			resolveSharedTmpPath: &resolveSharedTmpPath,
 			mcpSocketPath: () => transport.mcpSocketPath,
 			agentForTask: &agentForTask,
@@ -2946,6 +2995,20 @@ class App
 		}
 	}
 
+	private void reportMcpToolDescriptionLimit(string projectPath, string taskType,
+		ToolDescriptionViolation[] violations)
+	{
+		auto id = mcpToolDescriptionLimitNoticeId(projectPath, taskType);
+		if (violations.length == 0)
+		{
+			setNotice(id, Nullable!Notice.init);
+			return;
+		}
+
+		setNotice(id, Nullable!Notice(buildMcpToolDescriptionLimitNotice(
+			violations)));
+	}
+
 	/// Extract the last assistant text from a task's history, truncated.
 	/// Used for notification body when a task needs attention.
 	private string extractLastAssistantText(int tid)
@@ -3167,6 +3230,8 @@ unittest
 			isolate_processes: SetInfo!bool(false),
 			isolate_environment: SetInfo!bool(false),
 		),
+		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
+			ToolDescriptionViolation[] violations) {},
 		resolveSharedTmpPath: (int tid) => buildPath(tmp, "shared-tmp"),
 		mcpSocketPath: () => "",
 		taskTypeCatalog: app.taskTypeCatalog,
@@ -3181,4 +3246,223 @@ unittest
 	auto copilotLaunch = runner.prepareTaskSessionLaunch(41, new TestCopilotPromptAgent(),
 		currentTypeDef());
 	assert(copilotLaunch.sessionConfig.appendSystemPrompt == codexPrompt);
+}
+
+version (unittest) private void writeToolDescriptionLimitFixture(string root,
+	string yaml)
+{
+	auto defsDir = buildPath(root, "defs");
+	mkdirRecurse(buildPath(defsDir, "prompts"));
+	mkdirRecurse(buildPath(defsDir, "system_prompts"));
+	write(buildPath(defsDir, "prompts", "blank.md"), "Blank prompt\n");
+	write(buildPath(defsDir, "system_prompts", "role.md"), "Role prompt\n");
+	write(buildPath(defsDir, "system_prompts", "master.md"),
+		"{{role_prompt}}\n\n{{generated_guidance}}\n");
+	write(buildPath(defsDir, "task-types.yaml"), yaml);
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+	import std.conv : to;
+
+	string buildTaskTypesYaml(size_t idLength)
+	{
+		string repeated(char ch)
+		{
+			string result;
+			foreach (_; 0 .. idLength)
+				result ~= ch;
+			return result;
+		}
+
+		string yaml = "task_types:\n"
+			~ "  parent:\n"
+			~ "    model_class: large\n"
+			~ "    creatable_tasks:\n";
+
+		foreach (i; 0 .. 8)
+		{
+			auto createId = "create-" ~ to!string(i) ~ "-" ~ repeated('a');
+			yaml ~= "      " ~ createId ~ ":\n"
+				~ "        task_type: child\n"
+				~ "        prompt_template: prompts/blank.md\n";
+		}
+
+		yaml ~= "    continuations:\n";
+		foreach (i; 0 .. 8)
+		{
+			auto switchId = "switch-" ~ to!string(i) ~ "-" ~ repeated('b');
+			yaml ~= "      " ~ switchId ~ ":\n"
+				~ "        task_type: mode\n"
+				~ "        keep_context: true\n"
+				~ "        prompt_template: prompts/blank.md\n";
+		}
+		foreach (i; 0 .. 8)
+		{
+			auto handoffId = "handoff-" ~ to!string(i) ~ "-" ~ repeated('c');
+			yaml ~= "      " ~ handoffId ~ ":\n"
+				~ "        task_type: followup\n"
+				~ "        keep_context: false\n"
+				~ "        prompt_template: prompts/blank.md\n";
+		}
+
+		yaml ~= "  child:\n"
+			~ "    model_class: large\n"
+			~ "  mode:\n"
+			~ "    model_class: large\n"
+			~ "  followup:\n"
+			~ "    model_class: large\n";
+		return yaml;
+	}
+
+	auto tmp = buildPath("/tmp", "cydo-app-mcp-tool-description-limit");
+	scope (exit)
+	{
+		if (exists(tmp))
+			rmdirRecurse(tmp);
+	}
+	writeToolDescriptionLimitFixture(tmp, buildTaskTypesYaml(220));
+
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+	}
+	auto home = buildPath(tmp, "home");
+	mkdirRecurse(home);
+	mkdirRecurse(buildPath(home, ".claude"));
+	mkdirRecurse(buildPath(home, ".local", "share", "claude"));
+	write(buildPath(home, ".claude.json"), "{}\n");
+	environment["HOME"] = home;
+
+	auto workspaceRoot = buildPath(tmp, "workspace");
+	auto projectPath = buildPath(workspaceRoot, "project");
+	mkdirRecurse(projectPath);
+
+	TaskTypeCatalog catalog = new TaskTypeCatalog(buildPath(tmp, "defs"),
+		buildPath(tmp, "defs", "task-types.yaml"),
+		&isKnownPromptParityAgent);
+
+	TaskData[int] tasks;
+	tasks[7] = TaskData(7, "local", projectPath);
+	tasks[7].taskType = "parent";
+	tasks[7].agentType = "claude";
+
+	auto taskPathResolver = new TaskPathResolver(TaskPathResolverHost(
+		getTask: (int tid) {
+			auto td = tid in tasks;
+			return td is null ? null : &tasks[tid];
+		},
+		workspaces: () => [WorkspaceConfig(name: "local", root: workspaceRoot)],
+		taskDirTemplate: () => "{{ workspace_root }}/.cydo/tasks/{{ tid }}",
+	));
+
+	ToolDescriptionViolation[][] reportedViolations;
+	string[] reportedProjects;
+	string[] reportedTaskTypes;
+
+	auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+		getTask: (int tid) {
+			auto td = tid in tasks;
+			return td is null ? null : &tasks[tid];
+		},
+		taskDir: (const TaskData* td) => taskPathResolver.taskDir(td),
+		outputPath: (const TaskData* td) => taskPathResolver.outputPath(td),
+		effectiveCwd: (const TaskData* td) => taskPathResolver.effectiveCwd(td),
+		worktreePath: (const TaskData* td) => taskPathResolver.worktreePath(td),
+		globalSandbox: () => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		findWorkspaceSandbox: (string workspaceName) => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		findWorkspaceRoot: (string workspaceName) => workspaceRoot,
+		findWorkspacePermissionPolicy: (string workspaceName) => "allow all",
+		findAgentSandbox: (string agentName) => SandboxConfig(
+			isolate_filesystem: SetInfo!bool(false),
+			isolate_processes: SetInfo!bool(false),
+			isolate_environment: SetInfo!bool(false),
+		),
+		reportMcpToolDescriptionLimit: (string projectPathValue,
+			string taskTypeValue, ToolDescriptionViolation[] violations) {
+			reportedProjects ~= projectPathValue;
+			reportedTaskTypes ~= taskTypeValue;
+			reportedViolations ~= violations.dup;
+		},
+		resolveSharedTmpPath: (int tid) => buildPath(tmp, "shared-tmp"),
+		mcpSocketPath: () => "",
+		taskTypeCatalog: catalog,
+	));
+
+	auto agent = new TestClaudePromptAgent();
+	auto typeDef = catalog.getTaskTypesForProject(projectPath).byName("parent");
+	auto launch = runner.prepareTaskSessionLaunch(7, agent, typeDef);
+	assert(launch.sessionConfig.includeTools.canFind("PermissionPrompt"));
+	assert(reportedViolations.length == 1);
+	assert(reportedProjects == [projectPath]);
+	assert(reportedTaskTypes == ["parent"]);
+
+	RenderedCydoToolsOptions options;
+	options.includeBash = agent.needsBash();
+	options.includePermissionPrompt = true;
+	auto expectedViolations = checkRenderedCydoToolDescriptionViolations(
+		catalog.getTaskTypesForProject(projectPath),
+		catalog.getEntryPointsForProject(projectPath),
+		"parent",
+		options: options,
+	);
+	assert(reportedViolations[0] == expectedViolations);
+	assert(expectedViolations.length > 0);
+
+	writeToolDescriptionLimitFixture(tmp, buildTaskTypesYaml(8));
+	typeDef = catalog.getTaskTypesForProject(projectPath).byName("parent");
+	runner.prepareTaskSessionLaunch(7, agent, typeDef);
+	assert(reportedViolations.length == 2);
+	assert(reportedViolations[1].length == 0);
+}
+
+unittest
+{
+	App app = new App();
+
+	auto projectPath = "/tmp/project";
+	auto taskType = "review";
+	auto noticeId = mcpToolDescriptionLimitNoticeId(projectPath, taskType);
+	auto expectedId = "mcp-tool-description-limit:2f746d702f70726f6a656374:review";
+	assert(noticeId == expectedId);
+
+	auto violations = [
+		ToolDescriptionViolation("review", "Task", 2205, mcpToolDescriptionMaxChars),
+		ToolDescriptionViolation("review", "SwitchMode", 2104,
+			mcpToolDescriptionMaxChars),
+		ToolDescriptionViolation("review", "Handoff", 2055,
+			mcpToolDescriptionMaxChars),
+		ToolDescriptionViolation("review", "PermissionPrompt", 2001,
+			mcpToolDescriptionMaxChars),
+	];
+
+	app.reportMcpToolDescriptionLimit(projectPath, taskType, violations);
+	auto stored = noticeId in app.activeNotices;
+	assert(stored !is null);
+	assert(stored.level == NoticeLevel.warning);
+	assert(stored.description.canFind("oversized MCP tool descriptions"));
+	assert(stored.description.canFind("2000-character limit"));
+	assert(stored.impact
+		== "Largest violations: review/Task 2205 > 2000; review/SwitchMode 2104 > 2000; review/Handoff 2055 > 2000");
+	assert(!stored.impact.canFind("PermissionPrompt"));
+	assert(stored.action
+		== "Shorten user/project task-type guidance or move verbose guidance into system prompts.");
+	assert(stored.action_kind == "");
+
+	app.reportMcpToolDescriptionLimit(projectPath, taskType, []);
+	assert((noticeId in app.activeNotices) is null);
 }
