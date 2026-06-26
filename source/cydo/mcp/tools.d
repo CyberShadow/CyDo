@@ -299,7 +299,7 @@ class CydoToolsImpl : CydoTools
 				writerCount++;
 		if (writerCount > 1)
 			return McpResult(
-				"Cannot run multiple non-read-only tasks in parallel: they would share the same worktree. Run them sequentially, or use fork worktrees.",
+				"Cannot run multiple non-read-only tasks in parallel: they would share the same worktree. Run them sequentially, or use task types which work in their own worktrees.",
 				true);
 
 		// Phase 1: validate all specs without executing any.

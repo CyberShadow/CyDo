@@ -13,6 +13,7 @@ import bugIcon from "../icons/bug.svg?raw";
 import reproduceIcon from "../icons/reproduce.svg?raw";
 import spikeIcon from "../icons/spike.svg?raw";
 import testIcon from "../icons/test.svg?raw";
+import workIcon from "../icons/work.svg?raw";
 import triageIcon from "../icons/triage.svg?raw";
 import decomposeIcon from "../icons/decompose.svg?raw";
 import overseeIcon from "../icons/oversee.svg?raw";
@@ -48,6 +49,7 @@ const rawIcons: Record<string, string> = {
   reproduce: reproduceIcon,
   spike: spikeIcon,
   test: testIcon,
+  work: workIcon,
   triage: triageIcon,
   decompose: decomposeIcon,
   oversee: overseeIcon,

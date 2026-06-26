@@ -133,6 +133,10 @@ task_types:
         worktree: require
         prompt_template: prompts/triage.md
         result_note: "Read the output file for results. If a worktree is included, present changes to the user before pulling in."
+      work:
+        worktree: require
+        prompt_template: prompts/work.md
+        result_note: "The worktree contains the changes. Review them before presenting to the user."
     continuations:
       plan:
         task_type: plan_mode
@@ -295,6 +299,9 @@ task_types:
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
+      work:
+        prompt_template: prompts/work.md
+        result_note: "The changes are in the main checkout; review them before continuing."
     continuations:
       back:
         task_type: conversation
@@ -323,6 +330,9 @@ task_types:
       bug:
         prompt_template: prompts/bug.md
         result_note: "Read the output file for the full investigation report."
+      work:
+        prompt_template: prompts/work.md
+        result_note: "The changes are in your working tree; review them."
 
   # =========================================================================
   # Helper types — sub-task only, no continuations
@@ -495,6 +505,45 @@ task_types:
       tree as the parent implementation task.
     model_class: medium
     output_type: []
+
+  work:
+    icon: work
+    system_prompt_template: system_prompts/work.md
+    agent_description: >
+      Use to hand off a single, self-contained unit of work that you've already
+      scoped — a task with a clear goal and a clear-enough approach that you'll
+      just check the result. It runs in your tree (or its own worktree) with the
+      same access you have, does the work, confirms it worked, and reports back.
+      Reach for it for any concrete chunk you'd rather not spend your own context
+      on, of whatever kind: a focused edit, a chore, a rebase or cleanup, some
+      troubleshooting or data wrangling. It is not a planning, decomposition, or
+      review step — when the work needs a design decision, splits into several
+      pieces, or carries enough risk that it should be independently reviewed and
+      verified before you trust it, route it through the heavier plan → implement
+      → review/verify flow instead.
+    tool_guidance: >
+      Spell out exactly what to do and what "done" looks like — the sub-agent
+      sees only your prompt, not this conversation. Best when you can describe
+      the work in a sentence or two and you'll review the result.
+    model_class: medium
+    output_type: []
+    creatable_tasks:
+      quick_research:
+        prompt_template: prompts/quick_research.md
+        result_note: "Read the output file for findings."
+      deep_research:
+        prompt_template: prompts/deep_research.md
+        result_note: "Read the output file for full findings."
+      bug:
+        prompt_template: prompts/bug.md
+        result_note: "Read the output file for the full investigation report."
+      spike:
+        worktree: fork
+        prompt_template: prompts/spike.md
+        result_note: "Read the output file for findings. If changes should be adopted, the worktree path is included."
+      test:
+        prompt_template: prompts/test.md
+        result_note: "Read the output file for test results."
 
   # =========================================================================
   # Autonomous pipeline — state machine with recursive decomposition
