@@ -26,6 +26,7 @@ test("diff result: toggle reveals raw git log output and headers", { tag: "@no-c
   const resultHeader = toolCall.locator(".tool-result-header");
   const resultContainer = toolCall.locator(".tool-result-container");
   const diff = toolCall.locator('[data-testid="semantic-shell-diff"]');
+  const diffView = diff.locator(".diff-view").first();
   await expect(async () => {
     if (
       (await resultHeader.isVisible()) &&
@@ -33,9 +34,10 @@ test("diff result: toggle reveals raw git log output and headers", { tag: "@no-c
     ) {
       await resultHeader.click();
     }
+    await expect(resultContainer).toBeVisible();
     await expect(diff).toBeVisible();
+    await expect(diffView).toBeVisible();
   }).toPass({ timeout });
-  await expect(diff.locator(".diff-view").first()).toBeVisible({ timeout });
 
   const toggle = diff.locator(".markdown-toggle-btn");
   await expect(toggle).toBeVisible();

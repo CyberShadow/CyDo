@@ -18,15 +18,20 @@ export async function enterSession(page: Page) {
 /** Send a message from whichever input is currently visible. */
 export async function sendMessage(page: Page, text: string) {
   const input = page.locator(".input-textarea:visible").first();
+  const inputBox = input.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' input-box ')]",
+  );
   await expect(input).toBeEnabled({ timeout: 15_000 });
   await input.click();
   await input.fill(text);
-  const sendBtn = page.locator(".btn-send:visible").first();
+  const sendBtn = inputBox.locator(".btn-send");
   try {
+    await expect(sendBtn).toBeVisible({ timeout: 2_000 });
     await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
   } catch {
     await input.clear();
     await input.pressSequentially(text);
+    await expect(sendBtn).toBeVisible({ timeout: 2_000 });
     await expect(sendBtn).toBeEnabled({ timeout: 2_000 });
   }
   await sendBtn.click();
@@ -274,5 +279,5 @@ export async function killBackend(proc: ChildProcess): Promise<void> {
 }
 
 export { expect } from "@playwright/test";
-export type { Page } from "@playwright/test";
+export type { Locator, Page } from "@playwright/test";
 export type { AgentType };

@@ -5,6 +5,11 @@ import type { Locator, Page } from "@playwright/test";
 const TALK_TIMEOUT = 120_000;
 
 type TaskResultItem = Record<string, unknown>;
+type TaskCreatedEventLike = {
+  tid: number;
+  parent_tid?: number;
+  relation_type?: string;
+};
 type ItemResultEventLike = {
   type?: string;
   tool_result?: unknown;
@@ -110,6 +115,32 @@ function observeTaskResultEvents(page: Page, tid = 1): ItemResultEventLike[] {
     });
   });
   return taskEvents;
+}
+
+function observeTaskCreatedEvents(page: Page): TaskCreatedEventLike[] {
+  const createdEvents: TaskCreatedEventLike[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      try {
+        const data = JSON.parse(frame.payload.toString()) as {
+          type?: string;
+          tid?: number;
+          parent_tid?: number;
+          relation_type?: string;
+        };
+        if (data.type === "task_created" && typeof data.tid === "number") {
+          createdEvents.push({
+            tid: data.tid,
+            parent_tid: data.parent_tid,
+            relation_type: data.relation_type,
+          });
+        }
+      } catch {
+        // Ignore non-JSON frames and unrelated events.
+      }
+    });
+  });
+  return createdEvents;
 }
 
 async function waitForTaskResultEventAfter(
@@ -452,6 +483,11 @@ test("Ask/Answer: parent can answer child question after another Task call", asy
       { sinceIndex: beforeInterveningTaskResultIndex },
     ),
   ).resolves.toBeTruthy();
+
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 10_000,
+  });
 
   const beforeAnswerTaskResultIndex = observedTaskResults.length;
   const beforeAnswerEventCount = observedTaskEvents.length;
@@ -876,7 +912,17 @@ test("Ask/Answer: tid field present in Task results", async ({
   // Create a sub-task that completes with a known result.
   await sendMessage(page, 'call task research reply with "check-tid"');
 
-  // Wait for the result to appear.
+  await page.locator('.sidebar-item[data-tid="2"]').waitFor({
+    state: "visible",
+    timeout: 30_000,
+  });
+
+  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // Wait for the result to appear in the parent transcript.
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')
@@ -1151,6 +1197,7 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   agentType,
 }) => {
   test.setTimeout(TALK_TIMEOUT * 2);
+  const taskCreatedEvents = observeTaskCreatedEvents(page);
 
   await enterSession(page);
 
@@ -1164,21 +1211,34 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
     "call task research call task research call ask what approach?",
   );
 
-  // Wait for tid=3 to appear in the sidebar, confirming that the auto-focus
-  // chain (1→2→3) has settled. Without this wait the test would click tid=2
-  // while tid=2 is still creating tid=3, causing auto-focus to jump to tid=3
-  // immediately after and leaving `[style*="display: contents"]` matching
-  // tid=3's container instead of tid=2's.
-  await page.locator('.sidebar-item[data-tid="3"]').waitFor({
+  let parentTid: number | null = null;
+  let childTid: number | null = null;
+  await expect(async () => {
+    parentTid =
+      taskCreatedEvents.find(
+        (event) =>
+          event.relation_type === "subtask" && event.parent_tid === 1,
+      )?.tid ?? null;
+    childTid =
+      taskCreatedEvents.find(
+        (event) =>
+          event.relation_type === "subtask" && event.parent_tid === parentTid,
+      )?.tid ?? null;
+    expect(parentTid).not.toBeNull();
+    expect(childTid).not.toBeNull();
+  }).toPass({ timeout: 30_000 });
+
+  // Wait for the child sidebar item to settle before switching focus back to
+  // the parent; otherwise the auto-focus chain can still move from parent→child
+  // after the click and leave the shared visible transcript selector on the
+  // wrong task.
+  await page.locator(`.sidebar-item[data-tid="${childTid}"]`).waitFor({
     state: "visible",
     timeout: 30_000,
   });
 
-  // Navigate to the parent task (tid=2) to see its message list.
-  await page.locator('.sidebar-item[data-tid="2"]').click();
-  await expect(page.locator('.sidebar-item[data-tid="2"].active')).toBeVisible({
-    timeout: 10_000,
-  });
+  // Navigate to the parent task to see its message list.
+  await openTask(page, parentTid!);
 
   // Yield enforcement sends a system message with label "Sub-task waiting for answer"
   await expect(
@@ -1189,7 +1249,7 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   ).toBeVisible({ timeout: 90_000 });
 
   await page.reload();
-  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await openTask(page, parentTid!);
   await expect(
     page
       .locator('[style*="display: contents"] .message-list')

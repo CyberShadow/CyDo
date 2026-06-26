@@ -6,6 +6,7 @@ import {
   responseTimeout,
   type Page,
   type AgentType,
+  type Locator,
 } from "./fixtures";
 
 async function lastShellToolCall(
@@ -20,6 +21,46 @@ async function lastShellToolCall(
     .last();
   await expect(toolCall).toBeVisible({ timeout });
   return toolCall;
+}
+
+async function expectExpandedResultContent(
+  toolCall: Locator,
+  selector: string,
+  timeout: number,
+) {
+  const resultHeader = toolCall.locator(".tool-result-header");
+  const resultContainer = toolCall.locator(".tool-result-container");
+  const semanticContent = toolCall.locator(selector);
+  await expect(async () => {
+    if (
+      (await resultHeader.isVisible()) &&
+      !(await resultContainer.isVisible())
+    ) {
+      await resultHeader.click();
+    }
+    await expect(resultContainer).toBeVisible();
+    await expect(semanticContent).toBeVisible();
+  }).toPass({ timeout });
+}
+
+async function expectExpandedRawResultText(
+  toolCall: Locator,
+  expected: string | RegExp,
+  timeout: number,
+) {
+  const resultHeader = toolCall.locator(".tool-result-header");
+  const resultContainer = toolCall.locator(".tool-result-container");
+  const rawResult = toolCall.locator(".tool-result").first();
+  await expect(async () => {
+    if (
+      (await resultHeader.isVisible()) &&
+      !(await resultContainer.isVisible())
+    ) {
+      await resultHeader.click();
+    }
+    await expect(resultContainer).toBeVisible();
+    await expect(rawResult).toContainText(expected);
+  }).toPass({ timeout });
 }
 
 /**
@@ -47,19 +88,11 @@ test("semantic shell: cat read renders through file content preview", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Result is collapsed by default for reads (local source, re-derivable).
-  // Expand the result section to verify the semantic renderer is present.
-  const resultHeader = toolCall.locator(".tool-result-header");
-  if (await resultHeader.isVisible()) {
-    const resultContainer = toolCall.locator(".tool-result-container");
-    const resultVisible = await resultContainer.isVisible();
-    if (!resultVisible) {
-      await resultHeader.click();
-    }
-  }
-  // cat now has an outputPlan and renders via SemanticShellOutput.
-  const semanticOutput = toolCall.locator('[data-testid="semantic-shell-output"]');
-  await expect(semanticOutput).toBeVisible({ timeout });
+  await expectExpandedResultContent(
+    toolCall,
+    '[data-testid="semantic-shell-output"]',
+    timeout,
+  );
 });
 
 /**
@@ -127,18 +160,11 @@ test("semantic shell: pipe read renders through file content preview", async ({
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Result is collapsed by default for reads. Expand before asserting.
-  const resultHeader2 = toolCall.locator(".tool-result-header");
-  if (await resultHeader2.isVisible()) {
-    const resultContainer2 = toolCall.locator(".tool-result-container");
-    const resultVisible2 = await resultContainer2.isVisible();
-    if (!resultVisible2) {
-      await resultHeader2.click();
-    }
-  }
-  // cat/head now have an outputPlan and render via SemanticShellOutput.
-  const semanticOutput = toolCall.locator('[data-testid="semantic-shell-output"]');
-  await expect(semanticOutput).toBeVisible({ timeout });
+  await expectExpandedResultContent(
+    toolCall,
+    '[data-testid="semantic-shell-output"]',
+    timeout,
+  );
 });
 
 /**
@@ -164,24 +190,12 @@ test("semantic shell: unrecognized pipe stage falls back to normal rendering", a
     .last();
   await expect(toolCall).toBeVisible({ timeout });
 
-  // Expand the result section if needed
-  const resultHeader = toolCall.locator(".tool-result-header");
-  if (await resultHeader.isVisible()) {
-    const resultContainer = toolCall.locator(".tool-result-container");
-    const resultVisible = await resultContainer.isVisible();
-    if (!resultVisible) {
-      await resultHeader.click();
-    }
-  }
-
   // No semantic-shell-read container should appear
   await expect(
     toolCall.locator('[data-testid="semantic-shell-read"]'),
   ).not.toBeVisible();
 
-  // Normal tool-result rendering is present
-  const normalResult = toolCall.locator(".tool-result");
-  await expect(normalResult).toBeVisible({ timeout });
+  await expectExpandedRawResultText(toolCall, /[\s\S]/, timeout);
 });
 
 /**
@@ -486,15 +500,7 @@ test("semantic shell: wrapped markdown heredoc with directory listing keeps stdo
     toolCall.locator('[data-testid="semantic-shell-output-search"]'),
   ).not.toBeVisible();
 
-  const result = toolCall.locator(".tool-result");
-  if (!(await result.first().isVisible())) {
-    const resultHeader = toolCall.locator(".tool-result-header");
-    if ((await resultHeader.count()) > 0) {
-      await resultHeader.click();
-    }
-  }
-  await expect(result.first()).toBeVisible({ timeout });
-  await expect(result).toContainText("output.md");
+  await expectExpandedRawResultText(toolCall, "output.md", timeout);
   await expect(toolCall.locator(".tool-result .markdown")).toHaveCount(0);
 });
 
@@ -557,15 +563,10 @@ test("semantic shell: unsupported rg fallback stays raw", async ({
   await expect(
     toolCall.locator('[data-testid="semantic-shell-output-search"]'),
   ).not.toBeVisible();
-  const rawResult = toolCall.locator(".tool-result").first();
-  if (!(await rawResult.isVisible())) {
-    const resultHeader = toolCall.locator(".tool-result-header");
-    if ((await resultHeader.count()) > 0) {
-      await resultHeader.click();
-    }
-  }
-  await expect(toolCall.locator(".tool-result")).toContainText(
+  await expectExpandedRawResultText(
+    toolCall,
     /semantic shell|rg: command not found|rg: not found/,
+    timeout,
   );
 });
 
@@ -623,12 +624,5 @@ test("semantic shell: duplicated section delimiters fall back without guessed ma
   await expect(
     toolCall.locator('[data-testid="semantic-shell-output"]'),
   ).not.toBeVisible();
-  const rawResult = toolCall.locator(".tool-result").first();
-  if (!(await rawResult.isVisible())) {
-    const resultHeader = toolCall.locator(".tool-result-header");
-    if ((await resultHeader.count()) > 0) {
-      await resultHeader.click();
-    }
-  }
-  await expect(toolCall.locator(".tool-result")).toContainText("section");
+  await expectExpandedRawResultText(toolCall, "section", timeout);
 });

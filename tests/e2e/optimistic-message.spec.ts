@@ -299,8 +299,9 @@ test("claude skips ack-2 (no agent-ack signal)", { tag: "@claude-only" }, async 
     })
     .first();
 
-  // ack-4 then ack-3: normal optimistic+backend flow
-  await expect(bubble).toHaveClass(/ack-4/, { timeout: 3_000 });
+  // By the time the DOM paints, the optimistic placeholder may still be
+  // ack-4 or may already have been upgraded to ack-3 by the backend echo.
+  await expect(bubble).toHaveClass(/ack-(3|4)/, { timeout: 3_000 });
   await expect(bubble).toHaveClass(/ack-3/, { timeout: 15_000 });
 
   // Claude has no agent-ack signal — ack-2 must never appear.

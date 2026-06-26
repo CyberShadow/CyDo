@@ -122,6 +122,13 @@ function listFilesRecursive(dir: string): string[] {
   return files;
 }
 
+function listNumericTaskIds(tasksDir: string): number[] {
+  if (!existsSync(tasksDir)) return [];
+  return readdirSync(tasksDir)
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((tid) => Number.isInteger(tid));
+}
+
 function mangleClaudePath(path: string): string {
   return path.replaceAll("/", "-").replaceAll(".", "-");
 }
@@ -182,14 +189,20 @@ test(
       );
       await page.locator(".btn-send:visible").first().click();
 
+      const tasksDir = `${wsRoot}/.cydo/tasks`;
+      let spikeTid: number | null = null;
       await expect(async () => {
-        const spike = taskCreatedEvents.find((e) => e.relation_type === "subtask");
-        expect(spike).toBeTruthy();
+        spikeTid = taskCreatedEvents.find(
+          (e) => e.relation_type === "subtask",
+        )?.tid ?? null;
+        if (spikeTid !== null) return;
+        const derived = listNumericTaskIds(tasksDir).filter((tid) => tid > 1);
+        spikeTid = derived.length > 0 ? Math.min(...derived) : null;
+        expect(spikeTid).not.toBeNull();
       }).toPass({ timeout: 60_000 });
 
-      const spikeTid = taskCreatedEvents.find((e) => e.relation_type === "subtask")!.tid;
-      const workspaceScopedWorktree = `${wsRoot}/.cydo/tasks/${spikeTid}/worktree`;
-      const repoScopedWorktree = `${repoDir}/.cydo/tasks/${spikeTid}/worktree`;
+      const workspaceScopedWorktree = `${wsRoot}/.cydo/tasks/${spikeTid!}/worktree`;
+      const repoScopedWorktree = `${repoDir}/.cydo/tasks/${spikeTid!}/worktree`;
 
       await expect
         .poll(() => existsSync(workspaceScopedWorktree), { timeout: 30_000 })

@@ -369,6 +369,10 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
   mkdirSync(claudeProjectsDir, { recursive: true });
 
   const duplicatePrompt = "duplicate imported line";
+  const duplicatePromptText = (page: Page) =>
+    page.locator(".message.user-message .user-text").getByText(duplicatePrompt, {
+      exact: true,
+    });
   const duplicateRawLine = JSON.stringify({
     type: "user",
     message: { content: duplicatePrompt },
@@ -405,7 +409,7 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
     await expect(importableLabel).toBeVisible({ timeout: 15_000 });
     await importableLabel.click();
 
-    await expect(page.locator(".message.user-message", { hasText: duplicatePrompt })).toHaveCount(2, {
+    await expect(duplicatePromptText(page)).toHaveCount(2, {
       timeout: 15_000,
     });
 
@@ -421,10 +425,14 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
     await page.locator(".raw-edit-textarea").fill(rewrittenValue);
     await page.locator(".edit-actions .btn-primary").click();
 
-    await expect(page.locator(".message.user-message", { hasText: duplicatePrompt })).toHaveCount(1, {
+    await expect(duplicatePromptText(page)).toHaveCount(1, {
       timeout: 15_000,
     });
-    await expect(page.locator(".message.user-message", { hasText: replacement })).toBeVisible({
+    await expect(
+      page.locator(".message.user-message .user-text").getByText(replacement, {
+        exact: true,
+      }),
+    ).toBeVisible({
       timeout: 15_000,
     });
 

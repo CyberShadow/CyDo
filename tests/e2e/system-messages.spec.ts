@@ -98,21 +98,49 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
   page,
   agentType,
 }) => {
+  const taskCreatedEvents: Array<{
+    tid: number;
+    relation_type?: string;
+  }> = [];
+
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (event) => {
+      try {
+        const data = JSON.parse(event.payload.toString());
+        if (data.type === "task_created") {
+          taskCreatedEvents.push({
+            tid: data.tid,
+            relation_type: data.relation_type,
+          });
+        }
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+  });
 
   await enterSession(page);
   await sendMessage(page, 'call task research reply with "task-prompt-replay"');
 
-  await page.locator('.sidebar-item[data-tid="2"]').waitFor({
+  let childTid: number | null = null;
+  await expect(async () => {
+    childTid =
+      taskCreatedEvents.find((event) => event.relation_type === "subtask")?.tid ??
+      null;
+    expect(childTid).not.toBeNull();
+  }).toPass({ timeout: 30_000 });
+
+  await page.locator(`.sidebar-item[data-tid="${childTid}"]`).waitFor({
     state: "visible",
     timeout: 30_000,
   });
-  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
     page.locator(".system-user-message", { hasText: "Task prompt: research" }),
   ).toBeVisible({ timeout: 30_000 });
 
   await page.reload();
-  await page.locator('.sidebar-item[data-tid="2"]').click();
+  await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
     page.locator(".system-user-message", { hasText: "Task prompt: research" }),
   ).toBeVisible({ timeout: 30_000 });

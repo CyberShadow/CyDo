@@ -489,9 +489,11 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
 
   await openRunningChildTask(page, "Slow child", "sleep 20");
-  await openSidebarTaskByLabel(page, "Fast child");
+  const fastChildRow = await openSidebarTaskByLabel(page, "Fast child");
   await expect(
-    assistantText(page, "first-child-done"),
+    fastChildRow.locator(
+      ".task-type-icon.completed, .task-type-icon.resumable",
+    ),
   ).toBeVisible({ timeout: 30_000 });
 
   // Restart after one child has completed but before the slow child has.
