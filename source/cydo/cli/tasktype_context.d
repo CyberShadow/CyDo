@@ -181,5 +181,6 @@ unittest
 	}
 
 	auto toolNames = actual.tools.map!(tool => tool.name).array;
-	assert(toolNames == ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion"]);
+	assert(toolNames == ["Bash", "Task", "SwitchMode", "Handoff",
+		"AskUserQuestion", "Ask", "Answer"]);
 }

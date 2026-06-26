@@ -19,6 +19,8 @@ enum size_t mcpToolDescriptionMaxChars = 2000;
 struct RenderedCydoToolsOptions
 {
 	bool includeBash = true;
+	bool includeAsk = true;
+	bool includeAnswer = true;
 	bool includePermissionPrompt;
 }
 
@@ -52,6 +54,10 @@ ToolsList buildRenderedCydoToolsList(
 		includeTools ~= "Handoff";
 	if (isInteractive(types, entryPoints, typeName))
 		includeTools ~= "AskUserQuestion";
+	if (options.includeAsk)
+		includeTools ~= "Ask";
+	if (options.includeAnswer)
+		includeTools ~= "Answer";
 	if (options.includePermissionPrompt)
 		includeTools ~= "PermissionPrompt";
 
@@ -175,7 +181,8 @@ unittest
 			"review"),
 		"switchmodes": formatCompactSwitchModeToolSummary(types, "review"),
 		"handoffs": formatCompactHandoffToolSummary(types, "review"),
-	], ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion"]));
+	], ["Bash", "Task", "SwitchMode", "Handoff", "AskUserQuestion", "Ask",
+		"Answer"]));
 	auto toolsList = buildRenderedCydoToolsList(types, entryPoints, "review");
 	auto directViolations = checkToolDescriptionViolations("review", toolsList);
 	auto renderedViolations = checkRenderedCydoToolDescriptionViolations(types,
@@ -186,6 +193,8 @@ unittest
 	assert(renderedViolations.length == 0);
 	assert(checkRenderedCydoToolDescriptionViolations(types, entryPoints, "review",
 		mcpToolDescriptionMaxChars).length == 0);
+	assert(toolsList.tools[$ - 2].name == "Ask");
+	assert(toolsList.tools[$ - 1].name == "Answer");
 }
 
 unittest
