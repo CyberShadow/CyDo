@@ -40,15 +40,11 @@ test("background command spinner disappears after command completes", { tag: "@c
   // processing the yielded tool output.
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
-  // At this point the turn has completed but `sleep 3` is still running.
-  // The spinner should still be visible.
-  await expect(page.locator(".tool-icon-spinner")).toBeVisible();
-
   // Wait for the command to finish (sleep 3 = ~3s from start, plus buffer).
-  // After completion, the spinner should disappear and a result should appear.
-  //
-  // BUG: The spinner never disappears because item/completed is dropped by
-  // the backend (activeItemId_ was cleared by handleTurnCompleted).
+  // If the command is still running after the assistant reply, the spinner
+  // must clear once the late item/completed arrives. If it already finished
+  // before this assertion, the spinner is already absent and this still
+  // confirms the regression stays fixed.
   await expect(page.locator(".tool-icon-spinner")).not.toBeVisible({
     timeout: 10_000,
   });

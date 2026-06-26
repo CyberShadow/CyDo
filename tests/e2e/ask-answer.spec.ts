@@ -947,6 +947,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   test.setTimeout(TALK_TIMEOUT);
 
   const observedTaskResults = observeTaskResultItems(page);
+  const taskCreatedEvents = observeTaskCreatedEvents(page);
 
   await enterSession(page);
 
@@ -955,9 +956,23 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // The second question is queued and delivered after the first is answered.
   await sendMessage(page, "call 2 tasks research call ask what approach?");
 
+  let secondChildTid: number | null = null;
+  await expect(async () => {
+    const subtaskTids = taskCreatedEvents
+      .filter(
+        (event) =>
+          event.relation_type === "subtask" && event.parent_tid === 1,
+      )
+      .map((event) => event.tid)
+      .sort((a, b) => a - b);
+    expect(subtaskTids.length).toBeGreaterThanOrEqual(2);
+    secondChildTid = subtaskTids[1] ?? null;
+    expect(secondChildTid).not.toBeNull();
+  }).toPass({ timeout: 30_000 });
+
   // Wait for both children to appear in the sidebar (confirms auto-focus to tid=2
   // has settled), then navigate back to the parent (tid=1) to see the Task result.
-  await page.locator('.sidebar-item[data-tid="3"]').waitFor({
+  await page.locator(`.sidebar-item[data-tid="${secondChildTid}"]`).waitFor({
     state: "visible",
     timeout: 30_000,
   });
