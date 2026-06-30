@@ -692,6 +692,97 @@ class ClaudeCodeAgent : Agent
 	}
 }
 
+/// Path to the Claude Code config file the spawned `claude` child reads
+/// (honors CLAUDE_CONFIG_DIR, else ~/.claude.json).
+private string claudeJsonPath()
+{
+	import std.path : buildPath, expandTilde;
+	import std.process : environment;
+	auto dir = environment.get("CLAUDE_CONFIG_DIR", "");
+	return dir.length > 0 ? buildPath(dir, ".claude.json") : buildPath(expandTilde("~"), ".claude.json");
+}
+
+/// Mark `projectPath` as a trusted project in Claude Code's config
+/// (projects[projectPath].hasTrustDialogAccepted = true). Run non-interactively
+/// (cydo's `-p` mode), Claude leaves a directory untrusted and silently ignores
+/// its settings.local.json `permissions.allow` entries and project hooks; trust
+/// is keyed per-directory, so each project a task runs in needs its own flag.
+/// Idempotent and atomic: merges into the existing config, writes (temp + rename)
+/// only when the flag is missing, and never throws into session launch.
+private void ensureProjectTrusted(string projectPath, string claudeConfigPath)
+{
+	import std.file : exists, read, rename, write;
+	import std.json : JSONValue, JSONType, parseJSON;
+	import std.logger : warningf;
+
+	if (projectPath.length == 0)
+		return;
+	try
+	{
+		JSONValue root = exists(claudeConfigPath)
+			? parseJSON(cast(string) read(claudeConfigPath))
+			: parseJSON("{}");
+		if (root.type != JSONType.object)
+			return;
+
+		JSONValue[string] projects;
+		if (auto p = "projects" in root.object)
+			if (p.type == JSONType.object)
+				projects = p.object.dup;
+
+		JSONValue proj = parseJSON("{}");
+		if (auto existing = projectPath in projects)
+			if (existing.type == JSONType.object)
+				proj = *existing;
+		if (auto t = "hasTrustDialogAccepted" in proj.object)
+			if (t.type == JSONType.true_)
+				return; // already trusted
+
+		proj.object["hasTrustDialogAccepted"] = JSONValue(true);
+		projects[projectPath] = proj;
+		root.object["projects"] = JSONValue(projects);
+
+		// atomic: write a sibling temp file, then rename over the original
+		auto tmp = claudeConfigPath ~ ".cydo-trust-tmp";
+		write(tmp, root.toString());
+		rename(tmp, claudeConfigPath);
+	}
+	catch (Exception e)
+		warningf("ensureProjectTrusted: could not update %s: %s", claudeConfigPath, e.msg);
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, rmdirRecurse, read, write, tempDir;
+	import std.path : buildPath;
+	import std.json : JSONType, parseJSON;
+
+	auto dir = buildPath(tempDir(), "cydo-project-trust-unittest");
+	if (exists(dir))
+		rmdirRecurse(dir);
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto cfg = buildPath(dir, "claude.json");
+	// pre-existing config: an unrelated key plus a sibling project already
+	// trusted, to prove the merge preserves rather than clobbers
+	write(cfg, `{"oauthAccount":{"id":1},"projects":{"/other/proj":{"hasTrustDialogAccepted":true}}}`);
+
+	ensureProjectTrusted("/ws/project", cfg);
+
+	auto root = parseJSON(cast(string) read(cfg));
+	// the target project is now trusted
+	assert(root["projects"]["/ws/project"]["hasTrustDialogAccepted"].type == JSONType.true_);
+	// pre-existing content survives the merge
+	assert(root["oauthAccount"]["id"].integer == 1);
+	assert(root["projects"]["/other/proj"]["hasTrustDialogAccepted"].type == JSONType.true_);
+
+	// idempotent: a second run neither errors nor regresses the flag
+	ensureProjectTrusted("/ws/project", cfg);
+	auto again = parseJSON(cast(string) read(cfg));
+	assert(again["projects"]["/ws/project"]["hasTrustDialogAccepted"].type == JSONType.true_);
+}
+
 /// Claude Code session using stream-json protocol.
 class ClaudeCodeSession : AgentSession
 {
@@ -758,6 +849,12 @@ class ClaudeCodeSession : AgentSession
 			args = cmdPrefix ~ claudeArgs;
 		else
 			args = claudeArgs;
+
+		// a workspace set to auto-allow every tool call is already trusted; tell
+		// Claude so, since in -p mode it otherwise treats the dir as untrusted and
+		// drops its settings.local.json allow-list and hooks. keyed per-directory.
+		if (config.permissionPolicy == "allow" && config.workDir.length > 0)
+			ensureProjectTrusted(config.workDir, claudeJsonPath());
 
 		process = new AgentProcess(args, logName: "claude");
 
