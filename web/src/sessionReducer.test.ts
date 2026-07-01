@@ -574,3 +574,83 @@ describe("cydo/task_spawned reducer", () => {
     expect(s.pendingCydoTaskItemIds).toEqual([]);
   });
 });
+
+describe("result text visibility", () => {
+  const resultEvent = (result?: string) =>
+    asEvent({
+      type: "turn/result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      duration_ms: 1,
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      result,
+    });
+
+  function streamAssistantText(s: TaskState, text: string): TaskState {
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "item/started",
+        item_type: "text",
+        item_id: "cc-block-0",
+      }),
+    );
+    s = reduceMessage(
+      s,
+      asEvent({
+        type: "item/delta",
+        item_id: "cc-block-0",
+        delta_type: "text_delta",
+        content: text,
+      }),
+    );
+    s = reduceMessage(
+      s,
+      asEvent({ type: "item/completed", item_id: "cc-block-0" }),
+    );
+    return reduceMessage(s, asEvent({ type: "turn/stop" }));
+  }
+
+  it("marks result as redundant when its text was streamed", () => {
+    let s: TaskState = makeState();
+    s = streamAssistantText(s, "Hello there friend.");
+    s = reduceMessage(s, resultEvent("Hello there friend."));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(false);
+  });
+
+  it("marks result as unseen when no assistant message exists", () => {
+    let s: TaskState = makeState();
+    s = reduceMessage(s, resultEvent("Reply that never streamed."));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(true);
+  });
+
+  it("marks result as unseen when the streamed text differs", () => {
+    let s: TaskState = makeState();
+    s = streamAssistantText(s, "Some earlier partial output.");
+    s = reduceMessage(s, resultEvent("Reply that never streamed."));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(true);
+  });
+
+  it("does not mark resultless events as unseen", () => {
+    let s: TaskState = makeState();
+    s = reduceMessage(s, resultEvent(undefined));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(false);
+  });
+
+  it("marks result as unseen when only a thinking block rendered", () => {
+    // Partial stream: the thinking block streamed and rendered, but the text
+    // block's stream events never arrived, so the final reply survived only in
+    // the result. A rendered thinking block is not a text block, so it must not
+    // count the result text as seen.
+    let s: TaskState = makeState();
+    s = reduceMessage(
+      s,
+      asEvent({ type: "item/started", item_id: "think-1", item_type: "thinking" }),
+    );
+    s = reduceMessage(s, asEvent({ type: "turn/stop" }));
+    s = reduceMessage(s, resultEvent("Both done, committed."));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(true);
+  });
+});

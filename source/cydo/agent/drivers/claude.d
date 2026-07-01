@@ -704,6 +704,7 @@ class ClaudeCodeSession : AgentSession
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
+	private size_t promotedBlockSeq_;  // unique ids for blocks promoted from assistant events
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	private string executablePath_;
 	private string agentName_;
@@ -908,6 +909,16 @@ class ClaudeCodeSession : AgentSession
 				normalizeUserLive(rawLine);
 				return;
 			default:
+				// An api retry means the in-flight attempt died; any blocks it
+				// opened will never complete, and the retried response may arrive
+				// with no stream events at all (the CLI stops emitting partials
+				// for the rest of the run), so reset stream tracking to let the
+				// assistant-event promotion fallback take over.
+				if (probe.type == "system" && probe.subtype == "api_retry")
+				{
+					activeItemIds_ = null;
+					activeItemTypes_ = null;
+				}
 				// Stateless translation for system, result, summary, control, etc.
 				auto t = translateClaudeEvent(rawLine, agentName_);
 				if (t.translated !is null)
@@ -1071,6 +1082,97 @@ class ClaudeCodeSession : AgentSession
 		}
 	}
 
+	@JSONPartial static struct ClaudeBlock
+	{
+		string type;
+		@JSONOptional string id;
+		@JSONOptional string name;
+		@JSONOptional JSONFragment input;
+		@JSONOptional string text;
+		@JSONOptional string thinking;
+		@JSONOptional string signature;
+		JSONExtras _extras;
+	}
+
+	/// Promote a complete assistant message's content blocks straight to
+	/// item/started + item/completed events. This is the live fallback for when
+	/// no stream events arrived (after an api_retry the CLI stops emitting
+	/// partials, so content_block_start never fires and the turn would otherwise
+	/// render as nothing). blockSeq hands out ids for non-tool blocks.
+	private static TranslatedEvent[] promoteContentBlocks(
+		ClaudeBlock[] blocks, string rawLine, ref size_t blockSeq)
+	{
+		import cydo.protocol : ItemStartedEvent, ItemCompletedEvent, decomposeToolName;
+
+		TranslatedEvent[] events;
+		foreach (ref b; blocks)
+		{
+			// tool_use ids are globally unique already; generated ids use a
+			// session-wide counter because per-block assistant events carry no
+			// stream index ("cc-block-<idx>" would collide across blocks)
+			auto itemId = b.type == "tool_use" && b.id.length > 0
+				? b.id : "cc-promoted-" ~ to!string(blockSeq++);
+
+			ItemStartedEvent startEv;
+			startEv.item_id   = itemId;
+			startEv.item_type = b.type;
+			if (b.type == "tool_use")
+			{
+				decomposeToolName(b.name, startEv.name, startEv.tool_server, startEv.tool_source);
+				startEv.input = b.input;
+			}
+			else
+			{
+				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+				startEv.text = text;
+			}
+			events ~= TranslatedEvent(toJson(startEv), rawLine);
+
+			ItemCompletedEvent compEv;
+			compEv.item_id = itemId;
+			if (b.type == "tool_use")
+				compEv.input = b.input;
+			else
+			{
+				auto text = b.type == "thinking" && b.thinking.length > 0 ? b.thinking : b.text;
+				compEv.text = text;
+			}
+			compEv.extras = extrasToFragment(b._extras);
+			events ~= TranslatedEvent(toJson(compEv), rawLine);
+		}
+		return events;
+	}
+
+	unittest
+	{
+		import std.algorithm : canFind;
+
+		// a complete assistant text block with no stream events must promote to
+		// item/started + item/completed carrying its text; before the fix the
+		// turn rendered as nothing
+		ClaudeBlock textBlock;
+		textBlock.type = "text";
+		textBlock.text = "promoted hello";
+
+		size_t seq;
+		auto evs = promoteContentBlocks([textBlock], "raw", seq);
+		assert(evs.canFind!(e => e.translated.canFind(`"item/started"`)),
+			"text content must promote to item/started");
+		assert(evs.canFind!(e => e.translated.canFind(`"item/completed"`)),
+			"text content must promote to item/completed");
+		assert(evs.canFind!(e => e.translated.canFind("promoted hello")),
+			"the promoted item must carry the assistant text");
+
+		// a tool_use block keeps its own globally-unique id, not a counter id
+		ClaudeBlock toolBlock;
+		toolBlock.type = "tool_use";
+		toolBlock.id = "toolu_42";
+		toolBlock.name = "Bash";
+		assert(promoteContentBlocks([toolBlock], "raw", seq)
+			.canFind!(e => e.translated.canFind("toolu_42")),
+			"tool_use block must keep its own id");
+	}
+
 	/// Translate an assistant NDJSON event to a turn/delta metadata event.
 	/// Content promotion is handled by content_block_stop → item/completed.
 	/// Exception: sub-agent messages (parent_tool_use_id set) arrive as complete
@@ -1079,17 +1181,6 @@ class ClaudeCodeSession : AgentSession
 	{
 		import cydo.protocol : TurnDeltaEvent, UsageInfo;
 
-		@JSONPartial static struct ClaudeBlock
-		{
-			string type;
-			@JSONOptional string id;
-			@JSONOptional string name;
-			@JSONOptional JSONFragment input;
-			@JSONOptional string text;
-			@JSONOptional string thinking;
-			@JSONOptional string signature;
-			JSONExtras _extras;
-		}
 		@JSONPartial static struct ClaudeMessage
 		{
 			@JSONOptional string model;
@@ -1221,20 +1312,33 @@ class ClaudeCodeSession : AgentSession
 			catch (Exception) {}
 		}
 
-		// Cache per-block extras so content_block_stop can attach them.
-		foreach (idx, ref b; raw.message.content)
+		if (activeItemIds_.length == 0 && raw.message.content.length > 0)
 		{
-			auto frag = extrasToFragment(b._extras);
-			if (frag.json !is null && frag.json.length > 0)
+			// No stream events delivered this message's content (after an api
+			// retry the CLI stops emitting partials for the rest of the run, so
+			// content_block_start never fires). Without a fallback the whole
+			// turn would render as nothing. Promote the blocks directly, like
+			// the sub-agent path above.
+			foreach (ev; promoteContentBlocks(raw.message.content, rawLine, promotedBlockSeq_))
+				emitEvent(ev);
+		}
+		else
+		{
+			// Cache per-block extras so content_block_stop can attach them.
+			foreach (idx, ref b; raw.message.content)
 			{
-				string itemId;
-				if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
-					itemId = activeItemIds_[idx];
-				else if (b.type == "tool_use" && b.id.length > 0)
-					itemId = b.id;
-				else
-					itemId = "cc-block-" ~ to!string(idx);
-				blockExtras_[itemId] = frag;
+				auto frag = extrasToFragment(b._extras);
+				if (frag.json !is null && frag.json.length > 0)
+				{
+					string itemId;
+					if (idx < activeItemIds_.length && activeItemIds_[idx].length > 0)
+						itemId = activeItemIds_[idx];
+					else if (b.type == "tool_use" && b.id.length > 0)
+						itemId = b.id;
+					else
+						itemId = "cc-block-" ~ to!string(idx);
+					blockExtras_[itemId] = frag;
+				}
 			}
 		}
 
