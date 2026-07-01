@@ -638,4 +638,19 @@ describe("result text visibility", () => {
     s = reduceMessage(s, resultEvent(undefined));
     expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(false);
   });
+
+  it("marks result as unseen when only a thinking block rendered", () => {
+    // Partial stream: the thinking block streamed and rendered, but the text
+    // block's stream events never arrived, so the final reply survived only in
+    // the result. A rendered thinking block is not a text block, so it must not
+    // count the result text as seen.
+    let s: TaskState = makeState();
+    s = reduceMessage(
+      s,
+      asEvent({ type: "item/started", item_id: "think-1", item_type: "thinking" }),
+    );
+    s = reduceMessage(s, asEvent({ type: "turn/stop" }));
+    s = reduceMessage(s, resultEvent("Both done, committed."));
+    expect(s.messages.at(-1)?.resultData?.resultUnseen).toBe(true);
+  });
 });
