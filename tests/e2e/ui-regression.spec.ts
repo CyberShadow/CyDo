@@ -26,14 +26,14 @@ test("sidebar status dot reflects session state", async ({
     timeout: responseTimeout(agentType),
   });
 
-  const dotAliveTimeout = agentType === "codex" ? 10_000 : 5_000;
+  const dotAliveTimeout = responseTimeout(agentType);
   await expect(sidebarItem.locator(".task-type-icon.alive")).toBeVisible({
     timeout: dotAliveTimeout,
   });
 
   await killSession(page, agentType);
 
-  const dotFailedTimeout = agentType === "codex" ? 10_000 : 5_000;
+  const dotFailedTimeout = responseTimeout(agentType);
   await expect(sidebarItem.locator(".task-type-icon.failed")).toBeVisible({
     timeout: dotFailedTimeout,
   });
@@ -54,7 +54,7 @@ test("multi-client navigation isolation", { tag: "@no-codex" }, async ({
 
   await expect(
     pageA.locator(".message.user-message", { hasText: "isolation-a" }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   await expect(
     pageB.locator(".message.user-message", { hasText: "isolation-a" }),
@@ -62,7 +62,7 @@ test("multi-client navigation isolation", { tag: "@no-codex" }, async ({
 
   await expect(
     pageB.locator(".sidebar-item .sidebar-label", { hasText: "isolation-a" }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   await pageB.close();
 });
@@ -98,13 +98,13 @@ test("tool result with Bash output renders correctly", async ({
 
   await expect(
     page.locator(".tool-result", { hasText: "tool-result-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType) + 15_000 });
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   // Tool subtitle only present for Claude (description field)
   if (agentType === "claude") {
     await expect(
       page.locator(".tool-subtitle", { hasText: "Running command" }),
-    ).toBeVisible({ timeout: 5_000 });
+    ).toBeVisible();
   }
 });
 
@@ -130,24 +130,23 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   });
   await userMsg.hover();
   const forkBtn = userMsg.locator(".fork-btn");
-  await expect(forkBtn).toBeVisible({ timeout: 15_000 });
+  await expect(forkBtn).toBeVisible();
 
   await forkBtn.click();
 
   const forkEntry = page.locator(".sidebar-item .sidebar-label", {
     hasText: "(fork)",
   });
-  await expect(forkEntry).toBeVisible({ timeout: 10_000 });
+  await expect(forkEntry).toBeVisible();
 
   const forkSidebarItem = page.locator(".sidebar-item.active", {
     hasText: "(fork)",
   });
-  await expect(forkSidebarItem).toBeVisible({ timeout: 5_000 });
+  await expect(forkSidebarItem).toBeVisible();
 
   // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
   await expect(page.locator(".btn-banner-resume:visible").first()).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 });
 
 test("assistant messages do not render literal undefined", async ({

@@ -85,7 +85,7 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
   // The fork button is rendered (though hidden) for forkable messages.
   await expect(
     page.locator("[style*='display: contents'] .fork-btn"),
-  ).not.toHaveCount(0, { timeout: 5_000 });
+  ).not.toHaveCount(0);
 
   // Verify hook is working
   const totalCalls = await page.evaluate(

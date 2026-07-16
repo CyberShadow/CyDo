@@ -26,7 +26,7 @@ async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
   return newTid!;
 }
 
@@ -46,14 +46,14 @@ test("sidebar icon updates when entry point changed on draft", async ({
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Default icon should be "conversation" (agentic is the first entry point in test env)
   await expect(
     page.locator(
       `.sidebar-item[data-tid="${draftTid}"] .task-type-icon-conversation`,
     ),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Change entry point to "blank" via the picker
   await page.locator(".task-type-row", { hasText: "blank" }).click();
@@ -65,7 +65,7 @@ test("sidebar icon updates when entry point changed on draft", async ({
   // because the selected entry point was not being persisted on the draft task
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .task-type-icon-blank`),
-  ).toBeVisible({ timeout: 3_000 });
+  ).toBeVisible();
 });
 
 test("entry point persists across page reload on draft", async ({ page }) => {
@@ -82,7 +82,7 @@ test("entry point persists across page reload on draft", async ({ page }) => {
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Change entry point to "blank"
   await page.locator(".task-type-row", { hasText: "blank" }).click();
@@ -99,13 +99,12 @@ test("entry point persists across page reload on draft", async ({ page }) => {
   // Navigate to the draft task
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).toBeAttached({ timeout: 15_000 });
+  ).toBeAttached();
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
 
   // Wait for the entry-point picker to be visible
   await expect(page.locator(".task-type-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // BUG: entry point should still be "blank" but reverts to default "agentic"
   await expect(
@@ -156,7 +155,7 @@ test("agent type persists across page reload on draft", async ({
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Change the agent type
   await page.locator(".agent-picker").selectOption(targetAgent);
@@ -171,13 +170,12 @@ test("agent type persists across page reload on draft", async ({
   // Navigate to the draft task
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).toBeAttached({ timeout: 15_000 });
+  ).toBeAttached();
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
 
   // Wait for the agent picker to be visible
   await expect(page.locator(".agent-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // BUG: agent type should still be the changed value but reverts to default
   await expect(page.locator(".agent-picker")).toHaveValue(targetAgent);

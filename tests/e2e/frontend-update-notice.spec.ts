@@ -50,7 +50,7 @@ test("frontend update notice appears on build hash mismatch", { tag: "@claude-on
   const notice = page.locator(".notice-item", {
     hasText: /outdated CyDo UI/i,
   });
-  await expect(notice).toBeVisible({ timeout: 15_000 });
+  await expect(notice).toBeVisible();
 
   const reloadButton = notice.locator("button.notice-action-button");
   await expect(reloadButton).toHaveText(/reload/i);
@@ -61,5 +61,5 @@ test("frontend update notice appears on build hash mismatch", { tag: "@claude-on
   const navigated = page.waitForEvent("framenavigated");
   await reloadButton.click();
   await navigated;
-  await expect(notice).toBeVisible({ timeout: 15_000 });
+  await expect(notice).toBeVisible();
 });

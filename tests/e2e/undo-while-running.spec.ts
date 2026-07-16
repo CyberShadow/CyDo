@@ -14,13 +14,11 @@ test("undo while session is running stops session and removes message", async ({
 
   await sendMessage(page, 'Please reply with "first-reply"');
   await expect(assistantText(page, "first-reply")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   await sendMessage(page, 'Please reply with "second-reply"');
   await expect(assistantText(page, "second-reply")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   // Send "stall session" — mock API starts a response but never completes it,
   // keeping the session alive indefinitely.
@@ -28,8 +26,7 @@ test("undo while session is running stops session and removes message", async ({
 
   // Confirm the session is still running (stop button visible means it's processing).
   await expect(page.locator(".btn-banner-stop")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   // Hover over the second user message to reveal the undo button.
   const secondUserMsg = page
@@ -40,11 +37,10 @@ test("undo while session is running stops session and removes message", async ({
   await secondUserMsg.hover();
 
   await expect(secondUserMsg.locator(".undo-btn")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
   await secondUserMsg.locator(".undo-btn").click();
 
-  await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".undo-dialog")).toBeVisible();
   await page.locator(".btn-undo").click();
 
   // The undo is async: backend stops the session first (setGoal Dead), then
@@ -55,15 +51,13 @@ test("undo while session is running stops session and removes message", async ({
     page.locator(".message.user-message:not(.pending)", {
       hasText: "second-reply",
     }),
-  ).not.toBeVisible({ timeout: 30_000 });
+  ).not.toBeVisible();
 
   // The first reply should still be visible.
   await expect(assistantText(page, "first-reply").first()).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   // Verify the session auto-resumed (input box visible).
   await expect(page.locator(".input-textarea:visible").first()).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 });

@@ -23,7 +23,7 @@ test("first message renders as collapsed system-user-message with entry point la
   const userMsg = page
     .locator(".message.user-message.system-user-message")
     .first();
-  await expect(userMsg).toBeVisible({ timeout: 15_000 });
+  await expect(userMsg).toBeVisible();
 
   const headerText = await userMsg.locator(".system-user-header").innerText();
   expect(headerText.trim().length).toBeGreaterThan(0);
@@ -87,7 +87,7 @@ test("session-start system message stays collapsed after reload", { tag: "@no-co
   await page.reload();
   await expect(
     page.locator(".system-user-message", { hasText: "Session start:" }).first(),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 });
 
 test("task prompt system message keeps task type label after reload", { tag: "@no-codex" }, async ({
@@ -124,30 +124,29 @@ test("task prompt system message keeps task type label after reload", { tag: "@n
       taskCreatedEvents.find((event) => event.relation_type === "subtask")?.tid ??
       null;
     expect(childTid).not.toBeNull();
-  }).toPass({ timeout: 30_000 });
+  }).toPass();
 
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).waitFor({
     state: "visible",
-    timeout: 30_000,
-  });
+      });
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
     page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
-  ).toBeVisible({ timeout: 10_000 });
+  ).toBeVisible();
   await expect(
     page.locator('[style*="display: contents"] .message-list .system-user-message', {
       hasText: "Task prompt: research",
     }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 
   await page.reload();
   await page.locator(`.sidebar-item[data-tid="${childTid}"]`).click();
   await expect(
     page.locator(`.sidebar-item[data-tid="${childTid}"].active`),
-  ).toBeVisible({ timeout: 10_000 });
+  ).toBeVisible();
   await expect(
     page.locator('[style*="display: contents"] .message-list .system-user-message', {
       hasText: "Task prompt: research",
     }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 });

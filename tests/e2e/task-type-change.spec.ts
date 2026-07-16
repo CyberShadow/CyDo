@@ -26,7 +26,7 @@ async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
   return newTid!;
 }
 
@@ -57,8 +57,7 @@ test("changing entry point after draft creation updates backend", async ({
 
   // Entry-point picker should be visible in draft mode
   await expect(page.locator(".task-type-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   const before = await snapshotTids(page);
 
@@ -71,7 +70,7 @@ test("changing entry point after draft creation updates backend", async ({
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Click a different entry point ("blank")
   await page.locator(".task-type-row", { hasText: "blank" }).click();

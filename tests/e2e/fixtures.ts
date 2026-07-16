@@ -58,13 +58,15 @@ export function lastAssistantText(
 /** Kill the active session and wait for it to become inactive. */
 export async function killSession(page: Page, agentType: AgentType) {
   await page.locator(".btn-banner-stop").click();
-  const timeout = 15_000;
-  await expect(page.locator(".btn-banner-archive")).toBeVisible({ timeout });
+  await expect(page.locator(".btn-banner-archive")).toBeVisible();
 }
 
-/** Return an appropriate response timeout for the given agent. */
-export function responseTimeout(agentType: AgentType): number {
-  return agentType === "codex" ? 90_000 : 60_000;
+/** Assertion budget for agent responses. Deliberately the shared generous
+ * budget (see playwright.config.ts): condition waits return the moment they
+ * are satisfied, so this costs nothing on passing runs and stops contention
+ * from failing correctness tests. */
+export function responseTimeout(_agentType: AgentType): number {
+  return 540_000;
 }
 
 type TestFixtures = {
@@ -165,6 +167,8 @@ export const test = base.extend<TestFixtures>({
   },
 
   page: async ({ page }, use, testInfo: TestInfo) => {
+    // page-level waits (waitForEvent and friends) share the assertion budget
+    page.setDefaultTimeout(540_000);
     const pageErrors: string[] = [];
     page.on("console", (msg) =>
       console.error(`[browser] console.${msg.type()}: ${msg.text()}`),

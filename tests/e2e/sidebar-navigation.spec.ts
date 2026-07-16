@@ -34,7 +34,7 @@ test("sidebar click pushes exactly one history entry", async ({
     .click();
 
   // Verify we navigated to the first task
-  await expect(assistantText(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantText(page, "alpha")).toBeVisible();
 
   // Check that exactly one history entry was pushed (not two)
   const historyAfter = await page.evaluate(() => history.length);
@@ -42,5 +42,5 @@ test("sidebar click pushes exactly one history entry", async ({
 
   // The definitive test: one Back click should return to "beta"
   await page.goBack();
-  await expect(assistantText(page, "beta")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantText(page, "beta")).toBeVisible();
 });

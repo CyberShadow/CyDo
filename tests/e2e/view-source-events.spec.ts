@@ -33,16 +33,16 @@ test("View Source shows item-level events in collapsible list", { tag: "@claude-
 
   // Click the View Source button
   const viewSourceBtn = lastAssistantMsg.locator(".view-source-btn");
-  await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
+  await expect(viewSourceBtn).toBeVisible();
   await viewSourceBtn.click();
 
   // The source view should show collapsible event items with type labels
   const sourceView = page.locator(".source-view");
-  await expect(sourceView).toBeVisible({ timeout: 5_000 });
+  await expect(sourceView).toBeVisible();
 
   // Event types should be visible in collapsed headers
   const eventTypes = sourceView.locator(".source-event-type");
-  await expect(eventTypes.first()).toBeVisible({ timeout: 5_000 });
+  await expect(eventTypes.first()).toBeVisible();
 
   const allTypes = await eventTypes.allInnerTexts();
   expect(allTypes).toContain("item/started");

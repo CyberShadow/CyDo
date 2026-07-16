@@ -68,8 +68,7 @@ async function openNewTask(page: Page): Promise<void> {
   await page.goto(`${BACKEND_URL}/`);
   await page.locator('button[title="New task"]').first().click();
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 }
 
 async function createSpikeAndWaitForComplete(
@@ -87,7 +86,7 @@ async function createSpikeAndWaitForComplete(
   await expect(async () => {
     const subtasks = taskCreatedEvents.filter((e) => e.relation_type === "subtask");
     expect(subtasks.length).toBeGreaterThan(priorSubtaskCount);
-  }).toPass({ timeout: 60_000 });
+  }).toPass();
 
   const subtasks = taskCreatedEvents.filter((e) => e.relation_type === "subtask");
   const spikeTid = subtasks[subtasks.length - 1]!.tid;
@@ -104,11 +103,9 @@ async function createSpikeAndWaitForComplete(
       }
     }
     expect(completed).toBeTruthy();
-  }).toPass({ timeout: 60_000 });
+  }).toPass();
 
-  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`), {
-    timeout: 10_000,
-  });
+  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`));
 
   return spikeTid;
 }
@@ -177,9 +174,8 @@ test(
         await page.goto(`${BACKEND_URL}/task/${spikeTidA}`);
         await expect(page.locator(".btn-banner-archive:visible")).toHaveText(
           "Archive",
-          { timeout: 3_000 },
         );
-      }).toPass({ timeout: 30_000 });
+      }).toPass();
 
       await page.locator(".btn-banner-archive:visible").click();
       await expect(page.locator(".btn-banner-archive:visible")).toHaveText(

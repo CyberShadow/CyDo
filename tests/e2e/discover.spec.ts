@@ -179,7 +179,7 @@ test(
       // project-alpha should appear (not masked)
       await expect(
         page.locator(".project-card-title", { hasText: "project-alpha" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
 
       // project-beta must NOT appear (masked by empty_dir overlay)
       await expect(
@@ -228,7 +228,7 @@ test(
         page.locator(".project-card-title", {
           hasText: "cydo-test-workspace",
         }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
 
       // Update config to add a second workspace.
       // The backend watches config.yaml via inotify (closeWrite event) and
@@ -247,7 +247,7 @@ test(
       // The new workspace's project appears after the reload-triggered broadcast.
       await expect(
         page.locator(".project-card-title", { hasText: "new-project" }),
-      ).toBeVisible({ timeout: 20_000 });
+      ).toBeVisible();
 
       // Original workspace still present.
       await expect(
@@ -294,7 +294,6 @@ test(
 
       // Page loads: the backend is alive after the failed discovery.
       await expect(page.locator(".welcome-page-header .logo-banner")).toBeVisible(
-        { timeout: 10_000 },
       );
 
       // The good workspace still shows its project.
@@ -302,7 +301,7 @@ test(
         page.locator(".project-card-title", {
           hasText: "cydo-test-workspace",
         }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
 
       // The failing workspace is NOT rendered: zero projects → no workspace
       // group element in the DOM (WelcomePage returns null when projects=[]).
@@ -361,13 +360,13 @@ test(
 
       await expect(
         page.locator(".project-card-title", { hasText: "project-git" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title", { hasText: "project-claude" }),
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title", { hasText: "project-both" }),
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title", { hasText: "plain-dir" }),
       ).not.toBeVisible();
@@ -416,10 +415,10 @@ test(
       // Both the outer and inner repos must appear
       await expect(
         page.locator(".project-card-title[title='mono']"),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title[title='mono/sub']"),
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible();
     } finally {
       await killBackend(proc);
       rmSync(workDir, { recursive: true, force: true });
@@ -464,10 +463,10 @@ test(
 
       await expect(
         page.locator(".project-card-title", { hasText: "alpha" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title", { hasText: "gamma" }),
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".project-card-title", { hasText: "beta" }),
       ).not.toBeVisible();
@@ -518,7 +517,7 @@ test(
       // d is too deep — must not appear
       await expect(
         page.locator(".project-card-title", { hasText: "d" }),
-      ).not.toBeVisible({ timeout: 10_000 });
+      ).not.toBeVisible();
 
       // Increase depth limit to 4: d IS reachable now
       writeFileSync(
@@ -535,7 +534,7 @@ test(
 
       await expect(
         page.locator(".project-card-title", { hasText: "d" }),
-      ).toBeVisible({ timeout: 20_000 });
+      ).toBeVisible();
     } finally {
       await killBackend(proc);
       rmSync(workDir, { recursive: true, force: true });

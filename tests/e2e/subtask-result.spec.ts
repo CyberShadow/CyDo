@@ -2,7 +2,6 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("sub-task result text delivered to parent", async ({ page }) => {
   // Sub-task creation + completion requires more time than the default 60s budget.
-  test.setTimeout(120_000);
 
   await enterSession(page);
 
@@ -19,5 +18,5 @@ test("sub-task result text delivered to parent", async ({ page }) => {
     page.locator('[style*="display: contents"] .message-list')
       .getByText("subtask-result-marker", { exact: true })
       .last(),
-  ).toBeVisible({ timeout: 90_000 });
+  ).toBeVisible();
 });

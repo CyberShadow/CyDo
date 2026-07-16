@@ -44,29 +44,27 @@ test("codex stderr view source keeps tabs and shows abstract stderr payload", { 
     .last();
   await stderrWrapper.hover();
   const viewSourceBtn = stderrWrapper.locator(".view-source-btn");
-  await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
+  await expect(viewSourceBtn).toBeVisible();
   await viewSourceBtn.click();
 
   const sourceView = page.locator(".source-view").last();
-  await expect(sourceView).toBeVisible({ timeout: 5_000 });
+  await expect(sourceView).toBeVisible();
 
   // Expand the first (and likely only) event in the list
   const firstEvent = sourceView.locator(".source-event-header").first();
-  await expect(firstEvent).toBeVisible({ timeout: 5_000 });
+  await expect(firstEvent).toBeVisible();
   await firstEvent.click();
 
   // Both tabs should be visible inside the expanded event
   await expect(
     sourceView.locator(".source-tab", { hasText: "Raw" }),
-  ).toBeVisible({ timeout: 5_000 });
+  ).toBeVisible();
   const abstractTab = sourceView.locator(".source-tab", {
     hasText: "Abstract",
   });
-  await expect(abstractTab).toBeVisible({ timeout: 5_000 });
+  await expect(abstractTab).toBeVisible();
   await abstractTab.click();
 
-  await expect(sourceView).toContainText('"type": "process/stderr"', {
-    timeout: 5_000,
-  });
-  await expect(sourceView).toContainText('"text":', { timeout: 5_000 });
+  await expect(sourceView).toContainText('"type": "process/stderr"');
+  await expect(sourceView).toContainText('"text":');
 });

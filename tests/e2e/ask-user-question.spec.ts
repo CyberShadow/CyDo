@@ -46,7 +46,6 @@ test("ask_user_question clears on all connected clients when one answers", async
   agentType,
 }) => {
   // Copilot spawns a fresh cydo --mcp-server for each MCP tool call which adds latency
-  if (agentType === "copilot") test.setTimeout(120_000);
 
   // Page 1: create session and trigger AskUserQuestion
   await enterSession(page);
@@ -54,7 +53,7 @@ test("ask_user_question clears on all connected clients when one answers", async
 
   // Wait for the AskUserForm to appear on page 1
   const form1 = page.locator(".ask-user-form");
-  await expect(form1).toBeVisible({ timeout: agentType === "copilot" ? 60_000 : responseTimeout(agentType) });
+  await expect(form1).toBeVisible({ timeout: responseTimeout(agentType) });
 
   // Extract the task ID from the URL so page 2 can navigate to the same task
   const url = page.url();
@@ -74,17 +73,17 @@ test("ask_user_question clears on all connected clients when one answers", async
 
   // Wait for the AskUserForm to appear on page 2
   const form2 = page2.locator(".ask-user-form");
-  await expect(form2).toBeVisible({ timeout: 15_000 });
+  await expect(form2).toBeVisible();
 
   // Page 1: answer the question by clicking "Yes"
   await page.locator(".ask-option-btn", { hasText: "Yes" }).click();
   await page.locator(".ask-submit-btn").click();
 
   // Page 1: form should be cleared (replaced by input box)
-  await expect(form1).not.toBeVisible({ timeout: 5_000 });
+  await expect(form1).not.toBeVisible();
 
   // Page 2: form should also be cleared
-  await expect(form2).not.toBeVisible({ timeout: 5_000 });
+  await expect(form2).not.toBeVisible();
 
   await context2.close();
 });
@@ -102,7 +101,7 @@ test("sidebar shows asking status while AskUserQuestion is pending", async ({
 
   // The active sidebar item should have the .asking class
   const sidebarItem = page.locator(".sidebar-item.active");
-  await expect(sidebarItem).toHaveClass(/asking/, { timeout: 5_000 });
+  await expect(sidebarItem).toHaveClass(/asking/);
 
   // The question icon should be visible
   const questionIcon = sidebarItem.locator(".task-type-icon-question");
@@ -113,13 +112,13 @@ test("sidebar shows asking status while AskUserQuestion is pending", async ({
   await page.locator(".ask-submit-btn").click();
 
   // Form should disappear
-  await expect(form).not.toBeVisible({ timeout: 5_000 });
+  await expect(form).not.toBeVisible();
 
   // The .asking class should be removed from the sidebar item
-  await expect(sidebarItem).not.toHaveClass(/asking/, { timeout: 5_000 });
+  await expect(sidebarItem).not.toHaveClass(/asking/);
 
   // The question icon should no longer be visible
-  await expect(questionIcon).not.toBeVisible({ timeout: 5_000 });
+  await expect(questionIcon).not.toBeVisible();
 });
 
 test("codex AskUserQuestion with delimiter text shows selected answer", { tag: "@codex-only" }, async ({
@@ -135,7 +134,7 @@ test("codex AskUserQuestion with delimiter text shows selected answer", { tag: "
 
   await page.locator(".ask-option-btn", { hasText: "Yes" }).click();
   await page.locator(".ask-submit-btn").click();
-  await expect(form).not.toBeVisible({ timeout: 5_000 });
+  await expect(form).not.toBeVisible();
 
   await expect(
     page.locator(".tool-call .ask-answer", { hasText: "Yes" }),

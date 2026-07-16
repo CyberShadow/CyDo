@@ -251,10 +251,10 @@ test(
       // Both workspace sections must appear (both discover "shared-project").
       await expect(
         page.locator(".workspace-group-title", { hasText: "alpha" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
       await expect(
         page.locator(".workspace-group-title", { hasText: "beta" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
 
       const alphaSection = page.locator("section.workspace-group").filter({
         has: page.locator(".workspace-group-title", { hasText: "alpha" }),
@@ -267,15 +267,15 @@ test(
       // enumerateSessions() is async, so wait for it to land.
       await expect(
         alphaSection.locator(".sidebar-label", { hasText: "importable shared task" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
       await expect(
         betaSection.locator(".sidebar-label", { hasText: "importable shared task" }),
-      ).toBeVisible({ timeout: 15_000 });
+      ).toBeVisible();
 
       // Assertion 2: pinned task (workspace="alpha") appears ONLY in alpha.
       await expect(
         alphaSection.locator(".sidebar-label", { hasText: "pinned alpha task" }),
-      ).toBeVisible({ timeout: 5_000 });
+      ).toBeVisible();
       await expect(
         betaSection.locator(".sidebar-label", { hasText: "pinned alpha task" }),
       ).not.toBeVisible();

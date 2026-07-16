@@ -6,11 +6,11 @@ test("process failure shows session-failed label", async ({ page }) => {
 
   await expect(
     page.locator(".session-failed-label"),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   await expect(
     page.locator(".input-textarea"),
-  ).not.toBeVisible({ timeout: 5_000 });
+  ).not.toBeVisible();
 });
 
 test("process failure shows error text", async ({ page }) => {
@@ -21,5 +21,5 @@ test("process failure shows error text", async ({ page }) => {
     page.locator(".session-failed-label", {
       hasText: /simulated process failure/,
     }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 });

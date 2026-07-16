@@ -14,7 +14,7 @@ test("blank-mode entry point preserves first user message after SwitchMode", { t
   await sendMessage(page, FIRST);
 
   // Wait for an assistant text response so the message is fully processed and persisted in JSONL.
-  await expect(assistantText(page, /./).first()).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, /./).first()).toBeVisible();
 
   // Now trigger SwitchMode keep_context. This kills the codex agent, resets td.history, and the
   // continuation emits a task_reload that forces the frontend to re-request the JSONL.
@@ -23,7 +23,7 @@ test("blank-mode entry point preserves first user message after SwitchMode", { t
   // Wait for the switch to surface — the mode-switch system message divider appears post-replay.
   await expect(
     page.locator(".result-divider.system-user-message", { hasText: "Mode switch: plan" }),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible();
 
   // ── Assertions that fail with the bug ───────────────────────────────────────
   // 1) The first message must not have leaked into the input box.
@@ -37,5 +37,5 @@ test("blank-mode entry point preserves first user message after SwitchMode", { t
   //    `.result-divider.system-user-message` with the label, no body.
   await expect(
     page.locator(".message.user-message.system-user-message", { hasText: FIRST }),
-  ).toBeVisible({ timeout: 10_000 });
+  ).toBeVisible();
 });

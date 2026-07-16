@@ -18,7 +18,6 @@ test(
   "commit output enforcement fires when subtask exits without committing",
   { tag: "@claude-only" },
   async ({ page }) => {
-    test.setTimeout(120_000);
 
     let childTid: number | null = null;
 
@@ -48,8 +47,7 @@ test(
     await expect
       .poll(() => childTid, {
         message: "expected subtask to be created",
-        timeout: 30_000,
-      })
+              })
       .not.toBeNull();
 
     const parentItem = page.locator('.sidebar-item[data-tid="1"]');
@@ -67,7 +65,7 @@ test(
         .locator('[style*="display: contents"] .message-list')
         .getByText("Done.", { exact: true })
         .last(),
-    ).toBeVisible({ timeout: 90_000 });
+    ).toBeVisible();
 
     await subtaskItem.click();
     await expect(
@@ -79,13 +77,13 @@ test(
         .locator('[style*="display: contents"] .message-list')
         .getByText("Missing required outputs")
         .last(),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible();
 
     await expect(
       subtaskItem.locator(
         ".task-type-icon.completed, .task-type-icon.resumable",
       ),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
     await expect(
       subtaskItem.locator(".task-type-icon.processing"),
     ).not.toBeVisible();
@@ -99,7 +97,6 @@ test(
   "commit output happy path: subtask commits and parent receives commits in result",
   { tag: "@claude-only" },
   async ({ page }) => {
-    test.setTimeout(120_000);
 
     let childTid: number | null = null;
 
@@ -130,8 +127,7 @@ test(
     await expect
       .poll(() => childTid, {
         message: "expected subtask to be created",
-        timeout: 30_000,
-      })
+              })
       .not.toBeNull();
 
     const parentItem = page.locator('.sidebar-item[data-tid="1"]');
@@ -148,7 +144,7 @@ test(
         .locator('[style*="display: contents"] .message-list')
         .getByText("Done.", { exact: true })
         .last(),
-    ).toBeVisible({ timeout: 90_000 });
+    ).toBeVisible();
   },
 );
 
@@ -156,7 +152,6 @@ test(
   "second required-worktree child returns only its own commit",
   { tag: "@claude-only" },
   async ({ page }) => {
-    test.setTimeout(120_000);
     const childTids: number[] = [];
     const taskResults: Record<string, unknown>[] = [];
     page.on("websocket", (ws) =>
@@ -178,7 +173,7 @@ test(
     await enterSession(page);
     await page.locator(".task-type-row", { hasText: "isolated" }).click();
     await sendMessage(page, "sequential required commit children");
-    await expect.poll(() => childTids.length, { timeout: 90_000 }).toBe(2);
+    await expect.poll(() => childTids.length).toBe(2);
     await page.locator('.sidebar-item[data-tid="1"]').click();
     await expect(
       page
@@ -186,8 +181,7 @@ test(
         .getByText("Done.", { exact: true })
         .last(),
     ).toBeVisible({
-      timeout: 90_000,
-    });
+          });
 
     const rows = execFileSync(
       "sqlite3",
@@ -204,7 +198,7 @@ test(
     expect(rows[0][1]).toBe(rows[1][1]);
     expect(Number(rows[0][1])).toBeGreaterThan(0);
     await expect
-      .poll(() => taskResults.length, { timeout: 30_000 })
+      .poll(() => taskResults.length)
       .toBeGreaterThan(1);
     const secondResult = taskResults.at(-1)!;
     const firstResult = taskResults.at(-2)!;
@@ -228,7 +222,6 @@ test(
     // worktree (or the project path) and compare against that. This test
     // commits in the shared worktree and asserts the missing-outputs prompt
     // does not fire.
-    test.setTimeout(120_000);
 
     let childTid: number | null = null;
 
@@ -259,8 +252,7 @@ test(
     await expect
       .poll(() => childTid, {
         message: "expected subtask to be created",
-        timeout: 30_000,
-      })
+              })
       .not.toBeNull();
 
     const parentItem = page.locator('.sidebar-item[data-tid="1"]');
@@ -275,7 +267,7 @@ test(
         .locator('[style*="display: contents"] .message-list')
         .getByText("Done.", { exact: true })
         .last(),
-    ).toBeVisible({ timeout: 90_000 });
+    ).toBeVisible();
 
     // Sub-task must complete cleanly without the enforcement prompt firing.
     await subtaskItem.click();

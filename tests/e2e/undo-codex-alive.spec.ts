@@ -19,11 +19,10 @@ async function openUndoDialogForUserMessage(
     })
     .last();
   await userMsg.hover();
-  await expect(userMsg.locator(".undo-btn")).toBeVisible({ timeout: 5_000 });
+  await expect(userMsg.locator(".undo-btn")).toBeVisible();
   await userMsg.locator(".undo-btn").click();
   await expect(page.locator(".undo-dialog:visible")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 }
 
 async function undoUserMessage(
@@ -42,33 +41,27 @@ test("codex alive-path undo: session stays alive after undo", { tag: "@codex-onl
 
   await sendMessage(page, 'Please reply with "alive-one"');
   await expect(assistantText(page, "alive-one")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   await sendMessage(page, 'Please reply with "alive-two"');
   await expect(assistantText(page, "alive-two")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   await sendMessage(page, 'Please reply with "alive-three"');
   await expect(assistantText(page, "alive-three")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   await sendMessage(page, 'Please reply with "alive-four"');
   await expect(assistantText(page, "alive-four")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   await sendMessage(page, 'Please reply with "alive-five"');
   await expect(assistantText(page, "alive-five")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   // Session is idle but alive — do NOT kill it before undoing.
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 
   await undoUserMessage(page, 'Please reply with "alive-three"');
 
@@ -77,14 +70,13 @@ test("codex alive-path undo: session stays alive after undo", { tag: "@codex-onl
     page.locator(
       ".message.user-message:not(.pending):not(.meta-message):visible",
     ),
-  ).toHaveCount(2, { timeout: 15_000 });
+  ).toHaveCount(2);
 
   // After undo: exactly 2 assistant messages remain.
   await expect(page.locator(".message.assistant-message:visible")).toHaveCount(
     2,
     {
-      timeout: 15_000,
-    },
+          },
   );
 
   // alive-one/alive-two remain.
@@ -111,14 +103,12 @@ test("codex alive-path undo: session stays alive after undo", { tag: "@codex-onl
 
   // Session is still alive: input box is visible and enabled.
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 
   // Send a follow-up message to confirm the session is fully functional.
   await sendMessage(page, 'Please reply with "alive-six"');
   await expect(assistantText(page, "alive-six")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 });
 
 test("codex alive-path undo counts only active turns after prior rollback", { tag: "@codex-only" }, async ({
@@ -134,8 +124,7 @@ test("codex alive-path undo counts only active turns after prior rollback", { ta
   ]) {
     await sendMessage(page, `Please reply with "${marker}"`);
     await expect(assistantText(page, marker)).toBeVisible({
-      timeout: 90_000,
-    });
+          });
   }
 
   await undoUserMessage(page, 'Please reply with "rolled-count-three"');
@@ -143,12 +132,11 @@ test("codex alive-path undo counts only active turns after prior rollback", { ta
     page.locator(
       ".message.user-message:visible:not(.pending):not(.meta-message)",
     ),
-  ).toHaveCount(2, { timeout: 15_000 });
+  ).toHaveCount(2);
 
   await sendMessage(page, 'Please reply with "rolled-count-four"');
   await expect(assistantText(page, "rolled-count-four")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   await openUndoDialogForUserMessage(page, 'Please reply with "rolled-count-two"');
   await expect(page.locator(".undo-dialog-count:visible")).toContainText(
@@ -160,10 +148,9 @@ test("codex alive-path undo counts only active turns after prior rollback", { ta
     page.locator(
       ".message.user-message:visible:not(.pending):not(.meta-message)",
     ),
-  ).toHaveCount(1, { timeout: 15_000 });
+  ).toHaveCount(1);
   await expect(page.locator(".message.assistant-message:visible")).toHaveCount(
     1,
-    { timeout: 15_000 },
   );
 
   await expect(

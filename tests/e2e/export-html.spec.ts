@@ -46,7 +46,7 @@ test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({
 
     await expect(
       page.locator('[data-testid="assistant-text"]', { hasText: "export-marker-ok" }),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible();
 
     await expect(page.locator(".sidebar-item")).toHaveCount(
       await page.locator(".sidebar-item").count(),

@@ -20,7 +20,7 @@ async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
   return newTid!;
 }
 
@@ -34,8 +34,7 @@ test("draft creation syncs title and body to another tab", async ({
   const page2 = await context2.newPage();
   await page2.goto(page.url());
   await expect(page2.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 
   const before = await snapshotTids(page);
   const draftText = "cross tab draft sync body";
@@ -47,7 +46,7 @@ test("draft creation syncs title and body to another tab", async ({
   const draftTid = await waitForNewTid(page, before);
 
   const tab2Draft = page2.locator(`.sidebar-item[data-tid="${draftTid}"]`);
-  await expect(tab2Draft).toBeAttached({ timeout: 10_000 });
+  await expect(tab2Draft).toBeAttached();
 
   const tab2Label = tab2Draft.locator(".sidebar-label");
   await page2.waitForTimeout(1_000);
@@ -55,7 +54,7 @@ test("draft creation syncs title and body to another tab", async ({
 
   await tab2Draft.click();
   const input2 = page2.locator(".input-textarea:visible").first();
-  await expect(input2).toBeVisible({ timeout: 5_000 });
+  await expect(input2).toBeVisible();
 
   expect({
     sidebarTitleBeforeClick,

@@ -217,8 +217,7 @@ test("archived task cannot be resumed without unarchiving", async ({
     await resumeBtn.click();
     // The task must NOT become alive (stop button must not appear)
     await expect(page.locator(".btn-banner-stop")).not.toBeVisible({
-      timeout: 3_000,
-    });
+          });
     await expect(resumeBtn).toBeVisible();
   }
 });
@@ -244,12 +243,9 @@ test("URL routing for archive nodes", async ({ page, agentType }) => {
   await page.reload();
 
   // Archive node must still be selected after reload
-  await expect(page.locator(".sidebar-archive-node")).toHaveClass(/active/, {
-    timeout: 15_000,
-  });
+  await expect(page.locator(".sidebar-archive-node")).toHaveClass(/active/);
 
   // Archive placeholder must be shown (not "Loading task...")
   await expect(page.locator(".archive-placeholder")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 });

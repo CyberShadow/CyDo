@@ -1,7 +1,6 @@
 import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("subtask with orphaned background command exits cleanly", { tag: "@claude-only" }, async ({ page }) => {
-  test.setTimeout(90_000);
 
   await enterSession(page);
 
@@ -18,13 +17,12 @@ test("subtask with orphaned background command exits cleanly", { tag: "@claude-o
   // delivered and the browser switched back to the parent.
   await expect(
     page.locator('[style*="display: contents"] .message-list .cydo-task-spec').last(),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible();
 });
 
 test("subtask result is completed (not failed) when process is killed after result event", { tag: "@claude-only" }, async ({
   page,
 }) => {
-  test.setTimeout(90_000);
 
   await enterSession(page);
 
@@ -38,7 +36,7 @@ test("subtask result is completed (not failed) when process is killed after resu
   // .cydo-task-spec renders only for Task tool result items in the parent view.
   await expect(
     page.locator('[style*="display: contents"] .message-list .cydo-task-spec').last(),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible();
 
   // After result delivery, the subtask process is killed (SIGTERM after 5s).
   // Wait for the child sidebar item to leave the "processing" state.
@@ -46,8 +44,7 @@ test("subtask result is completed (not failed) when process is killed after resu
     .locator(".sidebar-item:not(.active):not(.sidebar-new-task)")
     .first();
   await expect(childItem.locator(".task-type-icon.processing")).not.toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   // The subtask must end up as "completed", not "failed".
   await expect(childItem.locator(".task-type-icon.failed")).not.toBeVisible();

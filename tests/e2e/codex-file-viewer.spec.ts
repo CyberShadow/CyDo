@@ -54,7 +54,7 @@ test("file viewer shows diff content for codex update without prior create", { t
   );
   await tool.locator(".tool-view-file").dispatchEvent("click");
 
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
   await expect(page.locator(".file-viewer")).toContainText(
     "codex-fileviewer-create.txt",
   );
@@ -109,7 +109,7 @@ test("cumulative diff shows net change after codex create and update", { tag: "@
   await expect(tools).toHaveCount(2, { timeout });
   await tools.last().locator(".tool-view-file").dispatchEvent("click");
 
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
 
   const contentViewer = page.locator(".file-viewer .content-viewer");
 
@@ -154,7 +154,7 @@ test("rendered markdown view includes all collected partial hunks", { tag: "@cod
   await tools.last().locator(".tool-view-file").dispatchEvent("click");
 
   const contentViewer = page.locator(".file-viewer .content-viewer");
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
   await expect(
     contentViewer.getByRole("button", { name: "Rendered" }),
   ).toHaveClass(/active/);
@@ -191,7 +191,7 @@ test("live codex fileChange markdown add renders inline preview and rendered vie
   );
 
   await tool.locator(".tool-view-file").dispatchEvent("click");
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
 
   const contentViewer = page.locator(".file-viewer .content-viewer");
   await expect(
@@ -241,7 +241,7 @@ test("replayed apply_patch markdown sections render per-file previews and fallba
   }
   await expect(
     updateTool.locator(".markdown-diff-wrap .markdown-toggle-btn"),
-  ).toBeVisible({ timeout: 5_000 });
+  ).toBeVisible();
   await expect(updateTool).toContainText(
     "*** Update File: tmp/codex-inline-preview.md",
   );
