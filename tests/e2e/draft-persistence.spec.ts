@@ -29,11 +29,11 @@ test("draft persists across page reload", async ({ page, agentType }) => {
   await page.reload();
   await page
     .locator(".sidebar-item .sidebar-label", { hasText: "draft-reload-test" })
-    .click({ timeout: 15_000 });
+    .click();
 
   // Wait for the input to appear and check the draft was restored
   const restoredInput = page.locator(".input-textarea:visible").first();
-  await expect(restoredInput).toBeVisible({ timeout: 15_000 });
+  await expect(restoredInput).toBeVisible();
   await expect(restoredInput).toHaveValue("my unsent draft");
 });
 
@@ -53,11 +53,11 @@ test("draft clears after sending message", async ({ page, agentType }) => {
   await page.reload();
   await page
     .locator(".sidebar-item .sidebar-label", { hasText: "draft-clear-test" })
-    .click({ timeout: 15_000 });
+    .click();
 
   // Input should be empty (draft was cleared on send)
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeVisible({ timeout: 15_000 });
+  await expect(input).toBeVisible();
   await expect(input).toHaveValue("");
 });
 
@@ -90,12 +90,12 @@ test("draft syncs to second client via tasks_list", async ({
   // Page 2 selects the task via sidebar
   await page2
     .locator(".sidebar-item .sidebar-label", { hasText: "draft-sync-test" })
-    .click({ timeout: 15_000 });
+    .click();
 
   // Page 2 should see the draft hydrated from tasks_list
   const input2 = page2.locator(".input-textarea:visible").first();
-  await expect(input2).toBeVisible({ timeout: 15_000 });
-  await expect(input2).toHaveValue("synced draft text", { timeout: 5_000 });
+  await expect(input2).toBeVisible();
+  await expect(input2).toHaveValue("synced draft text");
 
   await context2.close();
 });
@@ -122,9 +122,9 @@ test("draft broadcasts live to subscribed clients", async ({
   // Page 2 selects the task and waits for InputBox
   await page2
     .locator(".sidebar-item .sidebar-label", { hasText: "draft-live-test" })
-    .click({ timeout: 15_000 });
+    .click();
   const input2 = page2.locator(".input-textarea:visible").first();
-  await expect(input2).toBeVisible({ timeout: 15_000 });
+  await expect(input2).toBeVisible();
 
   // Page 2 input should be empty initially
   await expect(input2).toHaveValue("");
@@ -138,7 +138,7 @@ test("draft broadcasts live to subscribed clients", async ({
   await page.waitForTimeout(1500);
 
   // Page 2 should receive the draft via draft_updated broadcast
-  await expect(input2).toHaveValue("live broadcast draft", { timeout: 5_000 });
+  await expect(input2).toHaveValue("live broadcast draft");
 
   await context2.close();
 });
@@ -165,9 +165,9 @@ test("draft broadcast does not overwrite local typing", async ({
   // Page 2 selects the task
   await page2
     .locator(".sidebar-item .sidebar-label", { hasText: "draft-nooverwrite" })
-    .click({ timeout: 15_000 });
+    .click();
   const input2 = page2.locator(".input-textarea:visible").first();
-  await expect(input2).toBeVisible({ timeout: 15_000 });
+  await expect(input2).toBeVisible();
 
   // Page 2 types something first
   await input2.click();

@@ -4,7 +4,6 @@ test("parallel Task results keep request order and never render null", async ({
   page,
 }) => {
   // Sub-task creation + completion for 2 children requires extra time.
-  test.setTimeout(120_000);
 
   await enterSession(page);
 
@@ -17,12 +16,11 @@ test("parallel Task results keep request order and never render null", async ({
   // to the parent to see the Task result with batch results.
   await page.locator('.sidebar-item[data-tid="3"]').waitFor({
     state: "visible",
-    timeout: 30_000,
-  });
+      });
   await page.locator('.sidebar-item[data-tid="1"]').click();
   await expect(
     page.locator('.sidebar-item[data-tid="1"].active'),
-  ).toBeVisible({ timeout: 10_000 });
+  ).toBeVisible();
 
   const msgList = page.locator('[style*="display: contents"] .message-list');
 
@@ -33,7 +31,7 @@ test("parallel Task results keep request order and never render null", async ({
   const firstSpec = msgList.locator('.tool-result-container .cydo-task-spec').first();
   await expect(
     msgList.getByText("Done.", { exact: true }).or(firstSpec).first(),
-  ).toBeVisible({ timeout: 90_000 });
+  ).toBeVisible();
 
   // Scope to the tool result container inside the Task tool call.
   // The .tool-result-container holds result items, while .cydo-task-spec also
@@ -41,7 +39,7 @@ test("parallel Task results keep request order and never render null", async ({
   const resultSpecs = msgList.locator(
     '.tool-result-container .cydo-task-spec',
   );
-  await expect(resultSpecs).toHaveCount(2, { timeout: 10_000 });
+  await expect(resultSpecs).toHaveCount(2);
 
   // The UI should preserve request order (tid 2, then tid 3) and each item
   // should contain the child output instead of fallback null text.
@@ -54,8 +52,7 @@ test("parallel Task results keep request order and never render null", async ({
   for (let i = 0; i < 2; i++) {
     const spec = resultSpecs.nth(i);
     await expect(spec.getByText("parallel-ok")).toBeVisible({
-      timeout: 5_000,
-    });
+          });
   }
   await expect(
     msgList.locator('.tool-result-container').last().getByText("result: null"),

@@ -39,7 +39,7 @@ workspaces:
   await page.locator(".permission-allow-btn").click();
 
   // Form disappears after response.
-  await expect(form).not.toBeVisible({ timeout: 10_000 });
+  await expect(form).not.toBeVisible();
 
   // Session completes with "Done." from the mock LLM.
   await expect(assistantText(page, "Done.")).toBeVisible({
@@ -80,7 +80,7 @@ workspaces:
   await page.locator(".permission-deny-btn").click();
 
   // Form disappears after response.
-  await expect(form).not.toBeVisible({ timeout: 10_000 });
+  await expect(form).not.toBeVisible();
 
   // Session completes with "Done." from the mock LLM after the denied tool_result.
   await expect(assistantText(page, "Done.")).toBeVisible({

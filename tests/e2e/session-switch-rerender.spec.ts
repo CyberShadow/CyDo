@@ -95,8 +95,7 @@ test("switching sessions does not re-render every mounted SessionView", { tag: "
     .locator(".sidebar-item .sidebar-label", { hasText: labels[0]! })
     .click();
   await expect(assistantText(page, labels[0]!)).toBeVisible({
-    timeout: 10_000,
-  });
+      });
 
   const probeCount = await page.evaluate(() => {
     const t = (window as any).__renderTracker;
@@ -128,7 +127,7 @@ test("switching sessions does not re-render every mounted SessionView", { tag: "
     await page
       .locator(".sidebar-item .sidebar-label", { hasText: label })
       .click();
-    await expect(assistantText(page, label)).toBeVisible({ timeout: 10_000 });
+    await expect(assistantText(page, label)).toBeVisible();
     // Brief flush so render counts settle before the next click.
     await page.waitForTimeout(50);
   }

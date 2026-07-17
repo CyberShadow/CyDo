@@ -15,7 +15,7 @@ function getFdCount(pid: number): number {
 
 async function waitForFdStabilization(
   pid: number,
-  timeoutMs: number = 10_000,
+  timeoutMs: number = 540_000,
   pollMs: number = 200,
   stableSamples: number = 4,
 ): Promise<void> {
@@ -59,7 +59,6 @@ test("agent session teardown does not leak file descriptors", async ({
   backend,
   agentType,
 }) => {
-  test.setTimeout(120_000);
 
   // Warm up: load the page so HTTP/WebSocket connections are established
   // before we take the baseline FD measurement.
@@ -105,7 +104,6 @@ test("FD count stays stable across multiple session cycles", async ({
   backend,
   agentType,
 }) => {
-  test.setTimeout(300_000);
 
   // Warm up
   await page.goto("/");

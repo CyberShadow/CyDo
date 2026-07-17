@@ -43,7 +43,7 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
   await expect(async () => {
     const spike = taskCreatedEvents.find((e) => e.relation_type === "subtask");
     expect(spike).toBeTruthy();
-  }).toPass({ timeout: 60_000 });
+  }).toPass();
 
   const spikeTid = taskCreatedEvents.find(
     (e) => e.relation_type === "subtask",
@@ -68,15 +68,13 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
       }
     }
     expect(completed).toBeTruthy();
-  }).toPass({ timeout: 60_000 });
+  }).toPass();
 
   // 3b. Wait for auto-navigation away from spike (process/exit handler).
   //     This fires ~100ms after the spike exits. If we don't wait, our
   //     subsequent hover+fork-click may land on the conversation task
   //     instead of the spike (race with the auto-navigation).
-  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`), {
-    timeout: 10_000,
-  });
+  await page.waitForURL((url) => !url.pathname.endsWith(`/task/${spikeTid}`));
 
   // 4+5. Navigate to the spike task and wait for its history to load.
   //    The process/exit event is sent before task_updated, so React may process
@@ -88,7 +86,7 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
     // Confirm spike is the active task (not navigated away by process/exit).
     await expect(
       page.locator(`.sidebar-item[data-tid="${spikeTid}"].active`),
-    ).toBeVisible({ timeout: 3_000 });
+    ).toBeVisible();
     // Confirm spike's history loaded (scoped to active session to avoid
     // matching the conversation task's tool-call result, which also
     // contains "worktree-fork-content" in its text-content block).
@@ -97,8 +95,8 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
         "[style*='display: contents'] [data-testid='assistant-text']",
         { hasText: "worktree-fork-content" },
       ),
-    ).toBeVisible({ timeout: 10_000 });
-  }).toPass({ timeout: 30_000 });
+    ).toBeVisible();
+  }).toPass();
 
   // 6. Hover over the assistant message to reveal the fork button.
   //    Scope to the active session to avoid matching the conversation task's
@@ -115,9 +113,8 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
       .last();
     await assistantWrapper.hover();
     await expect(assistantWrapper.locator(".fork-btn")).toBeVisible({
-      timeout: 5_000,
-    });
-  }).toPass({ timeout: 15_000 });
+          });
+  }).toPass();
 
   // 7. Fork the spike task (re-resolve the locator fresh after the hover).
   await page
@@ -134,7 +131,7 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
   await expect(async () => {
     const fork = taskCreatedEvents.find((e) => e.relation_type === "fork");
     expect(fork).toBeTruthy();
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
   const forkTid = taskCreatedEvents.find(
     (e) => e.relation_type === "fork",
@@ -153,9 +150,7 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
       }
     }
     // Wait for the fork's URL.
-    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
-      timeout: 5_000,
-    });
+    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`));
     // Wait for the fork's content to be visible in the active session.
     await expect(
       page.locator(
@@ -164,6 +159,6 @@ test("forked worktree spike task appears in sidebar", { tag: "@no-codex" }, asyn
           hasText: "worktree-fork-content",
         },
       ),
-    ).toBeVisible({ timeout: 5_000 });
-  }).toPass({ timeout: 30_000 });
+    ).toBeVisible();
+  }).toPass();
 });

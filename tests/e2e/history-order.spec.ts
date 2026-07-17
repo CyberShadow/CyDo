@@ -42,7 +42,6 @@ test("user message appears above assistant response during live session", async 
 
   // Wait for the confirmed (non-pending) user message
   await expect(page.locator(".message.user-message:not(.pending)")).toBeVisible(
-    { timeout: 15_000 },
   );
 
   // Check DOM order: user message must come BEFORE assistant in the same

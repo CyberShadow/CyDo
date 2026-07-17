@@ -42,17 +42,16 @@ test("codex tool turn produces separate assistant messages for tool call and res
   // one for "Done."). The intermediate turn/stop from thread/tokenUsage/updated
   // seals the first message before the second inference pass starts.
   const assistantMessages = page.locator(".message.assistant-message");
-  await expect(assistantMessages).toHaveCount(2, { timeout: 5_000 });
+  await expect(assistantMessages).toHaveCount(2);
 
   // First message should contain the tool call block (commandExecution)
   await expect(assistantMessages.first().locator(".tool-call")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // Second message should contain the "Done." text
   await expect(
     assistantMessages.nth(1).locator('[data-testid="assistant-text"]', {
       hasText: "Done.",
     }),
-  ).toBeVisible({ timeout: 5_000 });
+  ).toBeVisible();
 });

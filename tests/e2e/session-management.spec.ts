@@ -19,7 +19,7 @@ test("session creation shows sidebar entry", async ({ page, agentType }) => {
     page.locator(".message.user-message", {
       hasText: 'Please reply with "hello-claude"',
     }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 });
 
 test("session switching preserves messages", async ({ page, agentType }) => {
@@ -42,7 +42,7 @@ test("session switching preserves messages", async ({ page, agentType }) => {
     .locator(".sidebar-item .sidebar-label", { hasText: "first" })
     .click();
 
-  await expect(assistantText(page, "first")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantText(page, "first")).toBeVisible();
 
   await expect(assistantText(page, "second")).not.toBeVisible();
 });

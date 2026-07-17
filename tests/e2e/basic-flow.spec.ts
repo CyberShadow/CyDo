@@ -12,8 +12,7 @@ import {
 test("page loads and shows CyDo branding", { tag: "@no-codex" }, async ({ page, agentType }) => {
   await page.goto("/");
   await expect(page.locator(".welcome-page-header .logo-banner")).toBeVisible({
-    timeout: 10_000,
-  });
+      });
 });
 
 test(
@@ -23,21 +22,19 @@ test(
     await page.goto("/");
 
     const filterInput = page.locator(".welcome-filter-input");
-    await expect(filterInput).toBeVisible({ timeout: 15_000 });
+    await expect(filterInput).toBeVisible();
 
     await filterInput.fill("cydo-test-workspace");
     await filterInput.press("Enter");
 
-    await expect(page).toHaveURL(/\/local\/cydo-test-workspace$/, {
-      timeout: 15_000,
-    });
+    await expect(page).toHaveURL(/\/local\/cydo-test-workspace$/);
     await expect(
       page.locator(".sidebar-title", { hasText: "cydo-test-workspace" }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     await page.goBack();
 
-    await expect(filterInput).toBeVisible({ timeout: 15_000 });
+    await expect(filterInput).toBeVisible();
     await expect(filterInput).toHaveValue("cydo-test-workspace");
   },
 );
@@ -46,13 +43,12 @@ test("basic message and response", async ({ page, agentType }) => {
   await enterSession(page);
 
   const input = page.locator(".input-textarea");
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('Please reply with "OK"');
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.locator(".message.user-message")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   await expect(lastAssistantText(page, "OK")).toBeVisible({
     timeout: responseTimeout(agentType),
@@ -65,7 +61,7 @@ test("tool call flow", async ({ page, agentType }) => {
   // Use base64 so the output ("aGVsbG8tZnJvbS10ZXN0Cg==") is distinct from
   // the input command — this lets us assert input and output independently.
   const input = page.locator(".input-textarea");
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill("Please run command echo hello-from-test | base64");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -120,7 +116,7 @@ workspaces:
   await page.selectOption(".agent-picker", "codex");
 
   const input = page.locator(".input-textarea");
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('reply with "hello"');
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -128,7 +124,7 @@ workspaces:
     timeout: responseTimeout(agentType),
   });
   // codex is not the default agent (claude is), so the banner should show "codex".
-  await expect(page.locator(".banner-agent")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".banner-agent")).toBeVisible();
   await expect(page.locator(".banner-agent")).toContainText("codex", {
     ignoreCase: true,
   });
@@ -166,9 +162,9 @@ test("codex file fixture shows view-file action", { tag: "@codex-only" }, async 
 
   await tool.locator(".tool-header").hover();
   const viewBtn = tool.locator(".tool-view-file");
-  await expect(viewBtn).toBeVisible({ timeout: 5_000 });
+  await expect(viewBtn).toBeVisible();
   await viewBtn.click();
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
   await expect(page.locator(".file-viewer")).toContainText(
     "codex-fileviewer-create.txt",
   );
@@ -210,7 +206,7 @@ test("codex update fixture shows patch preview", { tag: "@codex-only" }, async (
 
   // dispatchEvent bypasses CSS display:none on the hover-reveal button
   await tool.locator(".tool-view-file").dispatchEvent("click");
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
   await expect(page.locator(".file-viewer")).toContainText(
     "codex-fileviewer-create.txt",
   );
@@ -269,7 +265,7 @@ test("codex delete fixture shows deleted state", { tag: "@codex-only" }, async (
 
   // dispatchEvent bypasses CSS display:none on the hover-reveal button
   await tool.locator(".tool-view-file").dispatchEvent("click");
-  await expect(page.locator(".file-viewer")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".file-viewer")).toBeVisible();
   await expect(page.locator(".file-viewer")).toContainText(
     "codex-fileviewer-create.txt",
   );

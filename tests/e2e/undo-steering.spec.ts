@@ -9,7 +9,7 @@ test("undo removes preceding queue-operation lines from steering message", { tag
   await sendMessage(page, "run command sleep 5");
   await expect(
     page.locator(".tool-call", { hasText: "sleep 5" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 
   // 2. While the agent is busy, send a steering message.
   //    This creates queue-operation enqueue/dequeue in the JSONL.
@@ -20,7 +20,7 @@ test("undo removes preceding queue-operation lines from steering message", { tag
   //    dequeued the steering message into the JSONL as a confirmed type:"user" line.
   await expect(
     page.locator(".message.user-message:not(.pending)", { hasText: "steered-reply" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 
   // 4. Kill the session so we can undo.
   await killSession(page, agentType);
@@ -30,7 +30,7 @@ test("undo removes preceding queue-operation lines from steering message", { tag
   //     we need request_history to complete before hovering for the undo button.
   await expect(
     page.locator(".message.user-message:not(.pending)", { hasText: "steered-reply" }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   // 5. Find the confirmed user message for the steering message and undo it.
   const steerUserMsg = page
@@ -39,25 +39,25 @@ test("undo removes preceding queue-operation lines from steering message", { tag
     })
     .last();
   await steerUserMsg.hover();
-  await expect(steerUserMsg.locator(".undo-btn")).toBeVisible({ timeout: 5_000 });
+  await expect(steerUserMsg.locator(".undo-btn")).toBeVisible();
   await steerUserMsg.locator(".undo-btn").click();
 
   // 6. Confirm undo.
-  await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".undo-dialog")).toBeVisible();
   await page.locator(".btn-undo").click();
 
   // 7. Wait for reload to complete — the input box should appear.
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeVisible({ timeout: 15_000 });
+  await expect(input).toBeVisible();
 
   // 8. BUG ASSERTION: After undo, there should be NO pending user message
   //    from the steering. The queue-operation enqueue should have been removed.
   await expect(
     page.locator(".message.user-message.pending"),
-  ).not.toBeVisible({ timeout: 10_000 });
+  ).not.toBeVisible();
 
   // The steered message's confirmed echo should also be gone.
   await expect(
     page.locator(".message.user-message:not(.pending)", { hasText: "steered-reply" }),
-  ).not.toBeVisible({ timeout: 5_000 });
+  ).not.toBeVisible();
 });

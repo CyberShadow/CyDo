@@ -26,7 +26,7 @@ async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
   return newTid!;
 }
 
@@ -48,7 +48,7 @@ test("task created on first keystroke, deleted on blanking", async ({
   // Assert the new sidebar item has draft styling
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Clear the text to trigger draft deletion
   await input.fill("");
@@ -57,8 +57,7 @@ test("task created on first keystroke, deleted on blanking", async ({
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 });
 
 test("draft task becomes active on send", async ({ page, agentType }) => {
@@ -78,7 +77,7 @@ test("draft task becomes active on send", async ({ page, agentType }) => {
   await page.locator(".btn-send:visible").first().click();
 
   // Assert URL changed to /task/:tid pattern
-  await expect(page).toHaveURL(/\/task\/\d+/, { timeout: 5_000 });
+  await expect(page).toHaveURL(/\/task\/\d+/);
 
   // Assert agent response arrives
   await expect(assistantText(page, "draft-active-test")).toBeVisible({
@@ -88,7 +87,7 @@ test("draft task becomes active on send", async ({ page, agentType }) => {
   // Assert sidebar item no longer has draft styling
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).not.toBeAttached({ timeout: 5_000 });
+  ).not.toBeAttached();
 });
 
 test("no remount during draft creation", async ({ page, agentType }) => {
@@ -106,7 +105,7 @@ test("no remount during draft creation", async ({ page, agentType }) => {
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 5_000 });
+  ).toBeVisible();
 
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("h");
@@ -140,8 +139,7 @@ test("multiple draft create-delete cycles", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${tid1}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 
   // Cycle 2: type new text → new draft created (different tid)
   const before2 = await snapshotTids(page);
@@ -157,8 +155,7 @@ test("multiple draft create-delete cycles", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${tid2}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 });
 
 test("fast type and send before task_created", async ({ page, agentType }) => {
@@ -185,7 +182,7 @@ test("fast type and send before task_created", async ({ page, agentType }) => {
   for (const tid of newTids) {
     await expect(
       page.locator(`.sidebar-item[data-tid="${tid}"] .draft-label`),
-    ).not.toBeAttached({ timeout: 2_000 });
+    ).not.toBeAttached();
   }
 });
 
@@ -211,8 +208,7 @@ test("draft task visible to second client", async ({ page, browser }) => {
   await expect(
     page2.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).toBeAttached({
-    timeout: 10_000,
-  });
+      });
 
   // Client 1: clear text (deletes draft)
   await input1.fill("");
@@ -221,8 +217,7 @@ test("draft task visible to second client", async ({ page, browser }) => {
   await expect(
     page2.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 
   await context2.close();
 });
@@ -241,41 +236,37 @@ test("new task after draft clears form correctly", async ({ page }) => {
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Step 3: Click 'New Task' in the sidebar
   await page.locator(".sidebar-new-task").click();
 
   // Bug 1: Should show welcome prompt, not 'Loading task…'
   await expect(page.locator(".session-loading")).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
   await expect(page.locator(".welcome-prompt:visible")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // Bug 1: Input should be empty in the new task form
   const newInput = page.locator(".input-textarea:visible").first();
-  await expect(newInput).toHaveValue("", { timeout: 5_000 });
+  await expect(newInput).toHaveValue("");
 
   // Step 4: Click the draft task in sidebar to go back to it
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
 
   // Bug 2: Should show the task type picker (SessionConfig) on return
   await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // Bug 3: Clear input text — draft should be deleted from sidebar
   const draftInput = page.locator(".input-textarea:visible").first();
-  await expect(draftInput).toBeVisible({ timeout: 5_000 });
+  await expect(draftInput).toBeVisible();
   await draftInput.fill("");
 
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 });
 
 test("draft persists across page reload", async ({ page }) => {
@@ -299,16 +290,13 @@ test("draft persists across page reload", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).toBeAttached({
-    timeout: 15_000,
-  });
+      });
 
   // Click it to navigate to the draft task
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
   const restoredInput = page.locator(".input-textarea:visible").first();
-  await expect(restoredInput).toBeVisible({ timeout: 5_000 });
-  await expect(restoredInput).toHaveValue("reload test draft", {
-    timeout: 5_000,
-  });
+  await expect(restoredInput).toBeVisible();
+  await expect(restoredInput).toHaveValue("reload test draft");
 });
 
 test("draft sidebar title survives page reload", async ({ page }) => {
@@ -328,9 +316,7 @@ test("draft sidebar title survives page reload", async ({ page }) => {
   const sidebarLabel = page.locator(
     `.sidebar-item[data-tid="${draftTid}"] .sidebar-label`,
   );
-  await expect(sidebarLabel).toHaveText("my important draft title", {
-    timeout: 5_000,
-  });
+  await expect(sidebarLabel).toHaveText("my important draft title");
 
   // Wait for debounce to persist draft to backend
   await page.waitForTimeout(1000);
@@ -338,8 +324,7 @@ test("draft sidebar title survives page reload", async ({ page }) => {
   // Navigate away so InputBox for this task is NOT mounted after reload
   await page.locator(".sidebar-new-task").click();
   await expect(page.locator(".welcome-prompt:visible")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // Reload the page
   await page.reload();
@@ -348,16 +333,13 @@ test("draft sidebar title survives page reload", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).toBeAttached({
-    timeout: 15_000,
-  });
+      });
 
   // Sidebar title should still show the draft text, not "Task NNN"
   const reloadedLabel = page.locator(
     `.sidebar-item[data-tid="${draftTid}"] .sidebar-label`,
   );
-  await expect(reloadedLabel).toHaveText("my important draft title", {
-    timeout: 5_000,
-  });
+  await expect(reloadedLabel).toHaveText("my important draft title");
 });
 
 test("draft deletable after page reload", async ({ page }) => {
@@ -381,21 +363,17 @@ test("draft deletable after page reload", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).toBeAttached({
-    timeout: 15_000,
-  });
+      });
 
   // Click the draft task in the sidebar to navigate to it
   await page.locator(`.sidebar-item[data-tid="${draftTid}"]`).click();
   const restoredInput = page.locator(".input-textarea:visible").first();
-  await expect(restoredInput).toBeVisible({ timeout: 5_000 });
-  await expect(restoredInput).toHaveValue("delete after reload", {
-    timeout: 5_000,
-  });
+  await expect(restoredInput).toBeVisible();
+  await expect(restoredInput).toHaveValue("delete after reload");
 
   // Wait for re-adopt to complete (task type picker visible = onContentEnd wired)
   await expect(page.locator(".welcome-prompt .task-type-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   // Clear the text — this should trigger draft deletion
   await restoredInput.fill("");
@@ -404,6 +382,5 @@ test("draft deletable after page reload", async ({ page }) => {
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
   ).not.toBeAttached({
-    timeout: 5_000,
-  });
+      });
 });

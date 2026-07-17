@@ -137,7 +137,7 @@ test("request_history replays before later live task updates on the same socket"
   await expect(assistantText(page, seedReply)).toBeVisible({
     timeout: timeoutMs,
   });
-  await expect.poll(() => tid ?? -1, { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => tid ?? -1).toBeGreaterThan(0);
   const taskId = tid!;
 
   const observer = new WebSocket(`${backend.baseURL.replace(/^http/, "ws")}/ws`);
@@ -173,7 +173,6 @@ test("request_history replays before later live task updates on the same socket"
             msg?.type === "task_history_end" &&
             msg?.tid === taskId,
         ),
-      { timeout: 15_000 },
     )
     .not.toBe(-1);
 
@@ -196,7 +195,6 @@ test("request_history replays before later live task updates on the same socket"
               msg?.event !== undefined) &&
             containsLiveTurnText(msg, livePrompt, liveReply),
         ),
-      { timeout: 15_000 },
     )
     .not.toBe(-1);
 

@@ -195,13 +195,12 @@ async function seedTaskAndLocateRollout(
   await page.locator('button[title="New task"]').first().click();
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('reply with "seed-history"');
   await page.locator(".btn-send:visible").first().click();
 
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
@@ -223,13 +222,12 @@ async function replayAndFindTaskTool(
   await page.goto(taskUrl);
 
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(taskTool).toBeVisible({ timeout: 15_000 });
+  await expect(taskTool).toBeVisible();
   return taskTool;
 }
 
@@ -241,7 +239,7 @@ test("live invalid child task_type returns structured task error payload", { tag
   await page.locator('button[title="New task"]').first().click();
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
 
   await input.fill("call task invalid_type reproduce the bug");
   await page.locator(".btn-send:visible").first().click();
@@ -250,7 +248,7 @@ test("live invalid child task_type returns structured task error payload", { tag
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(taskTool).toContainText(toolError, { timeout: 90_000 });
+  await expect(taskTool).toContainText(toolError);
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 
@@ -312,7 +310,7 @@ test("codex history replay renders primitive task error as one message", { tag: 
     restartableBackend,
     taskUrl,
   );
-  await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
+  await expect(taskTool).toContainText(toolError);
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 });
@@ -364,7 +362,7 @@ test("codex history replay renders structured task error object cleanly", { tag:
     restartableBackend,
     taskUrl,
   );
-  await expect(taskTool).toContainText(toolError, { timeout: 15_000 });
+  await expect(taskTool).toContainText(toolError);
   const taskText = await taskTool.innerText();
   expect(taskText).not.toContain("0: T");
 });
@@ -419,11 +417,9 @@ test("codex history replay keeps successful structured task rendering", { tag: "
     restartableBackend,
     taskUrl,
   );
-  await expect(taskTool).toContainText("Task finished successfully", {
-    timeout: 15_000,
-  });
-  await expect(taskTool).toContainText("output_file:", { timeout: 15_000 });
-  await expect(taskTool).toContainText("/tmp/out.md", { timeout: 15_000 });
+  await expect(taskTool).toContainText("Task finished successfully");
+  await expect(taskTool).toContainText("output_file:");
+  await expect(taskTool).toContainText("/tmp/out.md");
 });
 
 test("codex history replay renders custom exec output as one expanded tool", { tag: "@codex-only" }, async ({
@@ -437,8 +433,7 @@ test("codex history replay renders custom exec output as one expanded tool", { t
   await restartableBackend.restart();
   await page.goto(taskUrl);
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   const diagnostics = page
     .locator(".message.system-message")
     .filter({ hasText: "Unrecognized agent data" });
@@ -479,8 +474,7 @@ test("codex history replay renders custom exec output as one expanded tool", { t
   await restartableBackend.restart();
   await page.goto(taskUrl);
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const execTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "exec" }),
@@ -489,8 +483,7 @@ test("codex history replay renders custom exec output as one expanded tool", { t
   await expect(execTool.locator(".write-content")).toHaveText(script);
   await expect(execTool.locator(".field-label", { hasText: "input:" })).toHaveCount(0);
   await expect(execTool.locator(".write-content span").first()).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   const scriptCopy = execTool
     .locator(".code-pre-wrap")
     .first()
@@ -518,8 +511,7 @@ test("codex history replay renders wait output", { tag: "@codex-only" }, async (
   await restartableBackend.restart();
   await page.goto(taskUrl);
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   const diagnostics = page
     .locator(".message.system-message")
     .filter({ hasText: "Unrecognized agent data" });
@@ -569,8 +561,7 @@ test("codex history replay renders wait output", { tag: "@codex-only" }, async (
   await restartableBackend.restart();
   await page.goto(taskUrl);
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const waitTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "wait" }),
@@ -623,7 +614,7 @@ test("codex history replay exposes unknown response-item payloads in dev mode", 
   const diagnostic = page
     .locator(".message.system-message")
     .filter({ hasText: "future_codex_payload" });
-  await expect(diagnostic).toBeVisible({ timeout: 15_000 });
+  await expect(diagnostic).toBeVisible();
   await expect(diagnostic).toContainText("Unrecognized agent data");
 });
 
@@ -631,13 +622,12 @@ test("codex history replay renders live task output from organic rollout", { tag
   page,
   restartableBackend,
 }) => {
-  test.setTimeout(180_000);
 
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
 
   const markdownItem = "Organic rollout markdown item";
   await input.fill(`call task research reply with "1. ${markdownItem}"`);
@@ -646,13 +636,13 @@ test("codex history replay renders live task output from organic rollout", { tag
   const taskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(taskTool).toContainText("Open task", { timeout: 90_000 });
-  await expect(taskTool).toContainText(markdownItem, { timeout: 90_000 });
+  await expect(taskTool).toContainText("Open task");
+  await expect(taskTool).toContainText(markdownItem);
   await expect(
     taskTool.locator(".text-content ol li", {
       hasText: markdownItem,
     }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
@@ -672,14 +662,12 @@ test("codex history replay renders live task output from organic rollout", { tag
   const replayedTaskTool = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "Task" }),
   });
-  await expect(replayedTaskTool).toContainText("Open task", { timeout: 15_000 });
-  await expect(replayedTaskTool).toContainText(markdownItem, {
-    timeout: 15_000,
-  });
+  await expect(replayedTaskTool).toContainText("Open task");
+  await expect(replayedTaskTool).toContainText(markdownItem);
   await expect(
     replayedTaskTool.locator(".text-content ol li", {
       hasText: markdownItem,
     }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
   await expect(replayedTaskTool).not.toContainText("Wall time:");
 });

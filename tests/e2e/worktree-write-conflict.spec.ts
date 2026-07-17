@@ -45,7 +45,7 @@ test("Task tool rejects batch with multiple non-read-only siblings on shared wor
 
   // Wait for the parent task to respond (mock returns "Done." after tool_result),
   // confirming the Task call error was processed.
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible();
 
   // The entire batch must have been rejected: no children created.
   const children = taskCreatedEvents.filter(

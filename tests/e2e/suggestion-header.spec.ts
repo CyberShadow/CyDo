@@ -24,7 +24,7 @@ test("suggestion header reports correct user message count", async ({
 
   // Wait for suggestions to appear (the mock echoes the session header as second suggestion)
   const suggestions = page.locator(".btn-suggestion");
-  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+  await expect(suggestions.first()).toBeVisible();
 
   // Collect all suggestion texts
   const count = await suggestions.count();
@@ -73,7 +73,7 @@ test("suggestion history includes assistant text entries", async ({
 
   // Wait for suggestions to appear (the mock echoes the conversation body as third suggestion)
   const suggestions = page.locator(".btn-suggestion");
-  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+  await expect(suggestions.first()).toBeVisible();
 
   // Collect all suggestion texts
   const count = await suggestions.count();

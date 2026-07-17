@@ -63,7 +63,7 @@ test("isolated Copilot Bash runs inside its task worktree", { tag: "@copilot-onl
       (e) => e.entry_point === "isolated" || e.task_type === "isolated",
     );
     expect(isolatedTask).toBeTruthy();
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
   const tid = taskUpdatedEvents.find(
     (e) => e.entry_point === "isolated" || e.task_type === "isolated",
@@ -76,9 +76,7 @@ test("isolated Copilot Bash runs inside its task worktree", { tag: "@copilot-onl
   });
 
   await expect
-    .poll(() => existsSync(worktreeDir), {
-      timeout: 30_000,
-    })
+    .poll(() => existsSync(worktreeDir))
     .toBe(true);
 
   const bashResultHeader = bashToolCall.locator(".tool-result-header");

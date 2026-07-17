@@ -39,5 +39,5 @@ test("markdown diff toggle button visible for .md file edit with structuredPatch
   const toggleBtn = toolCall.locator(
     ".markdown-diff-wrap .markdown-toggle-btn",
   );
-  await expect(toggleBtn).toBeVisible({ timeout: 5_000 });
+  await expect(toggleBtn).toBeVisible();
 });

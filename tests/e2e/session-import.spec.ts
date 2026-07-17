@@ -143,13 +143,13 @@ test("Import group node in sidebar expands on click and navigates correctly", { 
     await page.goto(BACKEND_URL + "/testws/cydo-test-workspace");
 
     // Sidebar should appear.
-    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".sidebar")).toBeVisible();
 
     // Wait for the Import group node to appear (enumerateSessions is async).
     const importGroupNode = page.locator(".sidebar-item.sidebar-archive-node", {
       hasText: /Import \(\d+\)/,
     });
-    await expect(importGroupNode).toBeVisible({ timeout: 15_000 });
+    await expect(importGroupNode).toBeVisible();
 
     // Before clicking the group, its children should NOT be visible.
     const importableEntry = page.locator(".sidebar-item .sidebar-label", {
@@ -161,34 +161,34 @@ test("Import group node in sidebar expands on click and navigates correctly", { 
     await importGroupNode.click();
 
     // URL must contain /import (not navigate to /).
-    await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+    await expect(page).toHaveURL(/\/import/);
 
     // Group is now expanded: child importable session is visible.
-    await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+    await expect(importableEntry).toBeVisible();
 
     // Click the importable session to load its history.
     await importableEntry.click();
 
     // URL must preserve workspace/project context (not just /task/<tid>).
-    await expect(page).toHaveURL(/\/testws\/cydo-test-workspace\/task\//, { timeout: 5_000 });
+    await expect(page).toHaveURL(/\/testws\/cydo-test-workspace\/task\//);
 
     // History loads.
     await expect(
       page.locator(".message.user-message", {
         hasText: "sidebar import group test",
       }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     // Group remains expanded because a descendant is active.
     await expect(importableEntry).toBeVisible();
 
     // Click the Import group node again — must stay on /import (not navigate to /).
     await importGroupNode.click();
-    await expect(page).toHaveURL(/\/import/, { timeout: 5_000 });
+    await expect(page).toHaveURL(/\/import/);
 
     // Group is still visible and expanded.
     await expect(importGroupNode).toBeVisible();
-    await expect(importableEntry).toBeVisible({ timeout: 5_000 });
+    await expect(importableEntry).toBeVisible();
   } finally {
     await killBackend(proc);
     rmSync(workDir, { recursive: true, force: true });
@@ -243,7 +243,7 @@ test("importable session appears on startup, history loads, Import Session promo
       page.locator(".project-card-title", {
         hasText: "cydo-test-workspace",
       }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     // The importable session should appear in the project card task list.
     // enumerateSessions() runs asynchronously in a background thread, so
@@ -252,14 +252,14 @@ test("importable session appears on startup, history loads, Import Session promo
       ".project-card-sessions .sidebar-item .sidebar-label",
       { hasText: "hello imported session" },
     );
-    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await expect(importableLabel).toBeVisible();
 
     // Click the importable session to navigate to it.  This triggers
     // setActiveTaskId(String(tid)) which routes to /:ws/:proj/task/:tid.
     await importableLabel.click();
 
     // Session view with sidebar should now be visible.
-    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".sidebar")).toBeVisible();
 
     // The Import group must be visible and expanded (the active task is a
     // descendant, so flattenTree renders the group's children).
@@ -267,45 +267,45 @@ test("importable session appears on startup, history loads, Import Session promo
       page.locator(".sidebar-item.sidebar-archive-node", {
         hasText: /Import \(1\)/,
       }),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible();
 
     // The importable session entry is visible inside the expanded group.
     await expect(
       page.locator(".sidebar-item .sidebar-label", {
         hasText: "hello imported session",
       }),
-    ).toBeVisible({ timeout: 5_000 });
+    ).toBeVisible();
 
     // History loads: the user message from the JSONL file is rendered.
     await expect(
       page.locator(".message.user-message", {
         hasText: "hello imported session",
       }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     // The "Import Session" button is shown for importable tasks.
     const importBtn = page.locator(".btn-resume", {
       hasText: "Import Session",
     });
-    await expect(importBtn).toBeVisible({ timeout: 5_000 });
+    await expect(importBtn).toBeVisible();
 
     // Click "Import Session" to promote the task to a regular session.
     await importBtn.click();
 
     // After promotion the "Import Session" button disappears.
-    await expect(importBtn).not.toBeVisible({ timeout: 10_000 });
+    await expect(importBtn).not.toBeVisible();
 
     // The Import group disappears because there are no more importable sessions.
     await expect(
       page.locator(".sidebar-item.sidebar-archive-node", {
         hasText: /Import/,
       }),
-    ).not.toBeVisible({ timeout: 10_000 });
+    ).not.toBeVisible();
 
     // The promoted session is now a regular resumable task in the sidebar.
     await expect(
       page.locator(".btn-banner-resume"),
-    ).toBeVisible({ timeout: 5_000 });
+    ).toBeVisible();
   } finally {
     await killBackend(proc);
     rmSync(workDir, { recursive: true, force: true });
@@ -382,23 +382,22 @@ test("import replay drops durable session/status rows but keeps compact boundary
       ".project-card-sessions .sidebar-item .sidebar-label",
       { hasText: "import replay status fixture" },
     );
-    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await expect(importableLabel).toBeVisible();
     await importableLabel.click();
 
-    await expect(page).toHaveURL(/\/task\//, { timeout: 5_000 });
+    await expect(page).toHaveURL(/\/task\//);
     await expect(
       page.locator(".message.user-message", {
         hasText: "import replay status fixture",
       }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     // session/status is transient and must not appear in transcript replay.
     await expect(page.locator(".system-status-message")).toHaveCount(0);
 
     // compact_boundary is durable and must remain visible in replay.
     await expect(page.locator(".compact-boundary-message")).toBeVisible({
-      timeout: 10_000,
-    });
+          });
 
     // Completed imported sessions should not resurrect transient banners.
     await expect(page.locator(".banner-processing")).not.toBeVisible();

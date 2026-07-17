@@ -115,30 +115,30 @@ async function openRawEditorForMessageWrapper(page: Page, messageWrapper: Locato
   await messageWrapper.hover();
 
   const viewSourceBtn = messageWrapper.locator(".view-source-btn");
-  await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
+  await expect(viewSourceBtn).toBeVisible();
   await viewSourceBtn.click();
 
   const sourceView = page.locator(".source-view");
-  await expect(sourceView).toBeVisible({ timeout: 5_000 });
+  await expect(sourceView).toBeVisible();
 
   const firstEventHeader = sourceView.locator(".source-event-header").first();
-  await expect(firstEventHeader).toBeVisible({ timeout: 5_000 });
+  await expect(firstEventHeader).toBeVisible();
   await firstEventHeader.click();
 
   const rawTab = sourceView.locator(".source-tab", { hasText: "Raw" });
-  await expect(rawTab).toBeVisible({ timeout: 5_000 });
+  await expect(rawTab).toBeVisible();
   await rawTab.click();
 
   const rawBlock = sourceView.locator(".code-pre-wrap").first();
-  await expect(rawBlock).toBeVisible({ timeout: 10_000 });
+  await expect(rawBlock).toBeVisible();
   await rawBlock.hover();
 
   const editBtn = rawBlock.locator(".edit-btn");
-  await expect(editBtn).toBeVisible({ timeout: 5_000 });
+  await expect(editBtn).toBeVisible();
   await editBtn.click();
 
   const textarea = page.locator(".raw-edit-textarea");
-  await expect(textarea).toBeVisible({ timeout: 5_000 });
+  await expect(textarea).toBeVisible();
   return textarea.inputValue();
 }
 
@@ -189,7 +189,7 @@ async function createEditableStoppedSession(page: Page, agentType: AgentType) {
   ).toBeVisible({ timeout });
   await expect(lastAssistantText(page, "Done.")).toBeVisible({ timeout });
   await expect
-    .poll(() => page.url(), { timeout: 15_000 })
+    .poll(() => page.url())
     .toMatch(/\/task\/\d+(?:$|[/?#])/);
 
   const historyPath = historyPathForTask(currentTaskTid(page));
@@ -276,8 +276,7 @@ test("edit raw JSON event persists to disk across reload", async ({
   await page.locator(".edit-actions .btn-primary").click();
 
   await expect(lastAssistantText(page, "Done.")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const currentFile = readHistoryFile(historyPath);
   expect(currentFile).toContain(marker);
@@ -298,8 +297,7 @@ test("clearing raw JSON deletes the source line instead of writing null", async 
   await page.locator(".edit-actions .btn-primary").click();
 
   await expect(lastAssistantText(page, "Done.")).not.toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const rewrittenFile = readHistoryFile(historyPath);
   expect(rewrittenFile).not.toContain("\nnull\n");
@@ -325,11 +323,9 @@ test("editing raw JSON to two top-level objects expands into two history lines",
   await page.locator(".edit-actions .btn-primary").click();
 
   await expect(lastAssistantText(page, firstText)).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   await expect(lastAssistantText(page, secondText)).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   const rawLines = readHistoryFile(historyPath)
     .split("\n")
@@ -406,12 +402,10 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
       ".project-card-sessions .sidebar-item .sidebar-label",
       { hasText: duplicatePrompt },
     );
-    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await expect(importableLabel).toBeVisible();
     await importableLabel.click();
 
-    await expect(duplicatePromptText(page)).toHaveCount(2, {
-      timeout: 15_000,
-    });
+    await expect(duplicatePromptText(page)).toHaveCount(2);
 
     const duplicateValue = await openRawEditorForUserMessage(page, duplicatePrompt);
     const rawLinesBefore = readHistoryFile(historyPath)
@@ -425,16 +419,13 @@ isolatedTest("editing the second identical raw line rewrites that physical JSONL
     await page.locator(".raw-edit-textarea").fill(rewrittenValue);
     await page.locator(".edit-actions .btn-primary").click();
 
-    await expect(duplicatePromptText(page)).toHaveCount(1, {
-      timeout: 15_000,
-    });
+    await expect(duplicatePromptText(page)).toHaveCount(1);
     await expect(
       page.locator(".message.user-message .user-text").getByText(replacement, {
         exact: true,
       }),
     ).toBeVisible({
-      timeout: 15_000,
-    });
+          });
 
     const rewrittenLines = readHistoryFile(historyPath)
       .split("\n")
@@ -517,15 +508,13 @@ isolatedTest("editing replayed steering raw JSON rewrites the earlier enqueue li
     await page.goto(BACKEND_URL + "/");
 
     const importableLabel = page.locator(".project-card-sessions .sidebar-item .sidebar-label").first();
-    await expect(importableLabel).toBeVisible({ timeout: 15_000 });
+    await expect(importableLabel).toBeVisible();
     await importableLabel.click();
 
     await expect(page.locator(".message.user-message", { hasText: steeringPrompt })).toBeVisible({
-      timeout: 15_000,
-    });
+          });
     await expect(page.locator(".message.assistant-message", { hasText: assistantReply })).toBeVisible({
-      timeout: 15_000,
-    });
+          });
 
     const currentValue = await openRawEditorForUserMessage(page, steeringPrompt);
     expect(currentValue).toContain('"operation": "enqueue"');
@@ -537,14 +526,11 @@ isolatedTest("editing replayed steering raw JSON rewrites the earlier enqueue li
     await page.locator(".edit-actions .btn-primary").click();
 
     await expect(page.locator(".message.user-message", { hasText: steeringPrompt })).not.toBeVisible({
-      timeout: 15_000,
-    });
+          });
     await expect(page.locator(".message.user-message", { hasText: replacement })).toBeVisible({
-      timeout: 15_000,
-    });
+          });
     await expect(page.locator(".message.assistant-message", { hasText: assistantReply })).toBeVisible({
-      timeout: 15_000,
-    });
+          });
 
     const rewrittenLines = readHistoryFile(historyPath)
       .split("\n")

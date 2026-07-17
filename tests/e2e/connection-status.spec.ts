@@ -42,8 +42,7 @@ test("should show connection overlay on welcome page while connecting", { tag: "
   // The overlay is rendered when !connected. With the stub in place the
   // connection never completes so connected stays false indefinitely.
   await expect(page.locator(".connection-overlay")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 });
 
 test("should use the selected light theme while connecting", { tag: "@claude-only" }, async ({
@@ -54,7 +53,7 @@ test("should use the selected light theme while connecting", { tag: "@claude-onl
   await page.goto("/");
 
   const overlay = page.locator(".connection-overlay");
-  await expect(overlay).toBeVisible({ timeout: 5_000 });
+  await expect(overlay).toBeVisible();
 
   await expect
     .poll(async () =>

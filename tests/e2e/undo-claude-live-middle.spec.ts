@@ -21,9 +21,9 @@ async function openUndoDialogForTurn(page: Page, turnText: string) {
     })
     .last();
   await userMsg.hover();
-  await expect(userMsg.locator(".undo-btn")).toBeVisible({ timeout: 5_000 });
+  await expect(userMsg.locator(".undo-btn")).toBeVisible();
   await userMsg.locator(".undo-btn").click();
-  await expect(page.locator(".undo-dialog")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".undo-dialog")).toBeVisible();
 }
 
 async function readUndoRemovalCount(page: Page): Promise<number> {
@@ -125,19 +125,17 @@ test("claude live idle undo latest turn avoids UUID truncation alert", { tag: "@
   await page.locator(".btn-undo").click();
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await expect(async () => {
     await assertTurnPresence(page, ["alert-one"], true);
     await assertTurnPresence(page, ["alert-two"], false);
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
   expect(
     dialogs.filter((message) => message.includes("UUID not found for truncation")),
   ).toEqual([]);
 
-  await expect(input).toHaveValue('Please reply with "alert-two"', {
-    timeout: 15_000,
-  });
+  await expect(input).toHaveValue('Please reply with "alert-two"');
 });
 
 test("claude live idle undo restores user message text into the textarea", { tag: "@claude-only" }, async ({
@@ -153,7 +151,7 @@ test("claude live idle undo restores user message text into the textarea", { tag
   await expect(assistantText(page, "reply-one")).toBeVisible({ timeout });
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
 
   page.on("dialog", (d) => {
     d.dismiss().catch(() => {});
@@ -162,12 +160,12 @@ test("claude live idle undo restores user message text into the textarea", { tag
   await openUndoDialogForTurn(page, "reply-one");
   await page.locator(".btn-undo").click();
 
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await expect(async () => {
     await assertTurnPresence(page, ["reply-one"], false);
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
-  await expect(input).toHaveValue(prompt, { timeout: 15_000 });
+  await expect(input).toHaveValue(prompt);
 });
 
 test("claude live idle undo on turn three removes only turns three through five", { tag: "@claude-only" }, async ({
@@ -191,11 +189,11 @@ test("claude live idle undo on turn three removes only turns three through five"
   }
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
 
   await openUndoDialogForTurn(page, "live-three");
   await page.locator(".btn-undo").click();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await expect(async () => {
     const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
     const survivingUserTurns = turns.filter((turn) =>
@@ -214,11 +212,10 @@ test("claude live idle undo on turn three removes only turns three through five"
       ["live-three", "live-four", "live-five"],
       false,
     );
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
   await expect(input).toHaveValue(
     'Please reply with "live-three"\n\nPlease reply with "live-four"\n\nPlease reply with "live-five"',
-    { timeout: 15_000 },
   );
 
   await sendMessage(page, 'Please reply with "live-six"');
@@ -246,30 +243,26 @@ test("claude undo preview targets the same turn before and after reload", { tag:
   }
 
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 
   await openUndoDialogForTurn(page, "reload-three");
   await page.locator(".undo-dialog .btn", { hasText: "Cancel" }).click();
   await expect(page.locator(".undo-dialog")).not.toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   await killSession(page, agentType);
   await expect(
     page.locator(".message.user-message:not(.pending):not(.meta-message)", {
       hasText: "reload-three",
     }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   await openUndoDialogForTurn(page, "reload-three");
   await page.locator(".btn-undo").click();
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
   await expect(page.locator(".input-textarea:visible").first()).toHaveValue(
     /Please reply with "reload-three"/,
-    { timeout: 15_000 },
   );
   await expect(async () => {
     const { userTexts, assistantTexts } = await readVisibleTurnTexts(page);
@@ -289,7 +282,7 @@ test("claude undo preview targets the same turn before and after reload", { tag:
       ["reload-three", "reload-four", "reload-five"],
       false,
     );
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 });
 
 test("claude undo protocol keeps reload barrier and stable seq assignments", { tag: "@claude-only" }, async ({
@@ -328,8 +321,7 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", { t
   const expectedRemoved = await readUndoRemovalCount(page);
   await page.locator(".btn-undo").click();
   await expect(page.locator(".input-textarea:visible").first()).toBeEnabled({
-    timeout: 15_000,
-  });
+      });
 
   await expect(async () => {
     const undoIdx = frames.findIndex(
@@ -357,7 +349,7 @@ test("claude undo protocol keeps reload barrier and stable seq assignments", { t
       (msg, idx) => idx > reloadIdx && msg?.type === "task_history_end",
     );
     expect(historyEndIdx).toBeGreaterThan(reloadIdx);
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
 
   const seqToUuid = new Map<number, string>();
   const conflicts: string[] = [];

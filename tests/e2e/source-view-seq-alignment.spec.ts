@@ -46,15 +46,15 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
 
   // Open source view
   const viewSourceBtn = lastAssistantMsg.locator(".view-source-btn");
-  await expect(viewSourceBtn).toBeVisible({ timeout: 5_000 });
+  await expect(viewSourceBtn).toBeVisible();
   await viewSourceBtn.click();
 
   const sourceView = page.locator(".source-view");
-  await expect(sourceView).toBeVisible({ timeout: 5_000 });
+  await expect(sourceView).toBeVisible();
 
   // Collect all event headers
   const eventHeaders = sourceView.locator(".source-event-header");
-  await expect(eventHeaders.first()).toBeVisible({ timeout: 5_000 });
+  await expect(eventHeaders.first()).toBeVisible();
   const eventCount = await eventHeaders.count();
   expect(eventCount).toBeGreaterThan(0);
 
@@ -70,7 +70,7 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
     // The event body should now be visible
     const eventItem = sourceView.locator(".source-event").nth(i);
     const eventBody = eventItem.locator(".source-event-body");
-    await expect(eventBody).toBeVisible({ timeout: 5_000 });
+    await expect(eventBody).toBeVisible();
 
     // Check if a Raw tab exists (it may not if no raw data)
     const rawTab = eventBody.locator(".source-tab", { hasText: "Raw" });
@@ -81,7 +81,7 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
 
       // Wait for raw JSON to load
       const rawBlock = eventBody.locator(".code-pre-wrap").first();
-      await expect(rawBlock).toBeVisible({ timeout: 10_000 });
+      await expect(rawBlock).toBeVisible();
 
       const rawText = await rawBlock.locator("pre").innerText();
 
@@ -102,7 +102,7 @@ test("source view abstract/raw events stay aligned across multi-turn streaming",
 
     // Collapse the event before moving to the next one
     await header.click();
-    await expect(eventBody).not.toBeVisible({ timeout: 2_000 });
+    await expect(eventBody).not.toBeVisible();
   }
 });
 

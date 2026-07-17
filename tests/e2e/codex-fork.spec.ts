@@ -31,14 +31,14 @@ async function waitForNewTid(
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 15_000 });
+  }).toPass();
   return newTid!;
 }
 
 async function resumeIfNeeded(page: Parameters<typeof sendMessage>[0]) {
   const resumeBtn = page.locator(".btn-banner-resume:visible").first();
   const visible = await resumeBtn
-    .isVisible({ timeout: 5_000 })
+    .isVisible()
     .catch(() => false);
   if (visible) {
     await resumeBtn.click();
@@ -118,9 +118,8 @@ test("codex fork from older turn truncates later history and isolates branches",
       .last();
     await turnOneAssistant.hover();
     await expect(turnOneAssistant.locator(".fork-btn")).toBeVisible({
-      timeout: 5_000,
-    });
-  }).toPass({ timeout: 20_000 });
+          });
+  }).toPass();
 
   await page
     .locator("[style*='display: contents'] .message-wrapper", {
@@ -136,7 +135,7 @@ test("codex fork from older turn truncates later history and isolates branches",
         event.relation_type === "fork" && event.parent_tid === parentTid,
     );
     expect(fork).toBeTruthy();
-  }).toPass({ timeout: 20_000 });
+  }).toPass();
 
   const forkTid = taskCreatedEvents.find(
     (event) => event.relation_type === "fork" && event.parent_tid === parentTid,
@@ -146,14 +145,11 @@ test("codex fork from older turn truncates later history and isolates branches",
     if (!page.url().endsWith(`/task/${forkTid}`)) {
       await page.locator(`.sidebar-item[data-tid="${forkTid}"]`).click();
     }
-    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
-      timeout: 5_000,
-    });
-  }).toPass({ timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`));
+  }).toPass();
 
   await expect(activeAssistantText(page, turnOne)).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   await expect(
     page.locator(
       "[style*='display: contents'] [data-testid='assistant-text']",
@@ -170,9 +166,7 @@ test("codex fork from older turn truncates later history and isolates branches",
   });
 
   await page.locator(`.sidebar-item[data-tid="${parentTid}"]`).click();
-  await expect(page).toHaveURL(new RegExp(`/task/${parentTid}$`), {
-    timeout: 15_000,
-  });
+  await expect(page).toHaveURL(new RegExp(`/task/${parentTid}$`));
 
   await resumeIfNeeded(page);
   await sendMessage(page, `Reply exactly with ${parentOnly}`);
@@ -189,12 +183,9 @@ test("codex fork from older turn truncates later history and isolates branches",
   ).toHaveCount(0);
 
   await page.locator(`.sidebar-item[data-tid="${forkTid}"]`).click();
-  await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`), {
-    timeout: 15_000,
-  });
+  await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`));
   await expect(activeAssistantText(page, forkOnly)).toBeVisible({
-    timeout: 15_000,
-  });
+      });
   await expect(
     page.locator(
       "[style*='display: contents'] [data-testid='assistant-text']",

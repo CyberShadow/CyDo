@@ -18,7 +18,7 @@ test("suggestions appear after agent responds", async ({ page, agentType }) => {
 
   // Suggestions should appear asynchronously (from suggestion subprocess)
   const suggestions = page.locator(".btn-suggestion");
-  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+  await expect(suggestions.first()).toBeVisible();
 
   // Should have 1-3 suggestions
   const count = await suggestions.count();
@@ -36,7 +36,7 @@ test("suggestions disappear when user types", async ({ page, agentType }) => {
 
   // Wait for suggestions
   const suggestions = page.locator(".btn-suggestion");
-  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+  await expect(suggestions.first()).toBeVisible();
 
   // Type in input — suggestions should hide
   const input = page.locator(".input-textarea:visible").first();
@@ -45,7 +45,7 @@ test("suggestions disappear when user types", async ({ page, agentType }) => {
 
   // Clear input — suggestions reappear
   await input.fill("");
-  await expect(suggestions.first()).toBeVisible({ timeout: 5_000 });
+  await expect(suggestions.first()).toBeVisible();
 });
 
 test("clicking suggestion sends it immediately", async ({
@@ -61,7 +61,7 @@ test("clicking suggestion sends it immediately", async ({
 
   // Wait for suggestions and get first button text
   const suggBtn = page.locator(".btn-suggestion").first();
-  await expect(suggBtn).toBeVisible({ timeout: 30_000 });
+  await expect(suggBtn).toBeVisible();
   const suggText = await suggBtn.innerText();
 
   // Click sends immediately
@@ -74,7 +74,7 @@ test("clicking suggestion sends it immediately", async ({
   // Should appear as a user message
   await expect(
     page.locator(".message.user-message", { hasText: suggText }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
 
   // Input should be empty
   const input = page.locator(".input-textarea:visible").first();
@@ -93,7 +93,7 @@ test("shift+click suggestion pre-fills input without sending", async ({
   });
 
   const suggBtn = page.locator(".btn-suggestion").first();
-  await expect(suggBtn).toBeVisible({ timeout: 30_000 });
+  await expect(suggBtn).toBeVisible();
   const suggText = await suggBtn.innerText();
 
   // Shift+click to pre-fill
@@ -101,7 +101,7 @@ test("shift+click suggestion pre-fills input without sending", async ({
 
   // Should fill input with suggestion text, not send
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toHaveValue(suggText, { timeout: 5_000 });
+  await expect(input).toHaveValue(suggText);
 
   // Only the original user message should exist (no new one sent)
   const userMsgCount = await page.locator(".message.user-message").count();

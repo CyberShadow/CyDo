@@ -88,7 +88,7 @@ test("codex reconnect during active turn does not replay stale compacting status
   await page.reload();
   await page
     .locator('.sidebar-item[data-tid="1"]')
-    .click({ timeout: 15_000 });
+    .click();
 
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
@@ -119,7 +119,7 @@ test("codex reconnect during active turn does not replay stale compacting status
   await page.reload();
   await page
     .locator('.sidebar-item[data-tid="1"]')
-    .click({ timeout: 15_000 });
+    .click();
   await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
 
   const completedReplayFrames = frames.slice(beforeCompletedReloadIdx);

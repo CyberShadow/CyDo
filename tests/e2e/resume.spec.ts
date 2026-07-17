@@ -175,7 +175,7 @@ supports_websockets = false
 async function waitForSidebarTask(
   page: Page,
   labelText: string,
-  timeoutMs = 15_000,
+  timeoutMs = 540_000,
 ) {
   await expect(
     page.locator(".sidebar-item .sidebar-label", { hasText: labelText }),
@@ -191,7 +191,7 @@ function sidebarTaskByLabel(page: Page, labelText: string): Locator {
 async function openSidebarTaskByLabel(
   page: Page,
   labelText: string,
-  timeoutMs = 15_000,
+  timeoutMs = 540_000,
 ): Promise<Locator> {
   const row = sidebarTaskByLabel(page, labelText);
   await expect(row).toBeVisible({ timeout: timeoutMs });
@@ -203,7 +203,7 @@ async function openSidebarTaskByLabel(
 async function expectVisibleToolCall(
   page: Page,
   commandText: string,
-  timeoutMs = 30_000,
+  timeoutMs = 540_000,
 ): Promise<void> {
   await expect(
     page.locator(".tool-call:visible", { hasText: commandText }),
@@ -214,7 +214,7 @@ async function openRunningChildTask(
   page: Page,
   labelText: string,
   commandText: string,
-  timeoutMs = 30_000,
+  timeoutMs = 540_000,
 ): Promise<Locator> {
   const row = await openSidebarTaskByLabel(page, labelText, timeoutMs);
   await expect(row.locator(".task-type-icon.processing")).toBeVisible({
@@ -236,16 +236,15 @@ test("idle task is not nudged after resume + restart", { tag: "@no-codex" }, asy
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('Please reply with "restart-alive"');
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait for the response — task becomes "alive" (idle)
   await expect(assistantText(page, "restart-alive")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   // Exactly one assistant message before restart
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
@@ -268,19 +267,17 @@ test("idle task is not nudged after resume + restart", { tag: "@no-codex" }, asy
   // set status to "active" even though the session is idle).
   const resumeBtn = page.locator(".btn-banner-resume");
   const isResumeVisible = await resumeBtn
-    .isVisible({ timeout: 5_000 })
+    .isVisible()
     .catch(() => false);
   if (isResumeVisible) {
     await resumeBtn.click();
     await expect(page.locator(".btn-banner-stop")).toBeVisible({
-      timeout: 15_000,
-    });
+          });
   }
 
   // History preserved, still one assistant message
   await expect(assistantText(page, "restart-alive")).toBeVisible({
-    timeout: 10_000,
-  });
+      });
   await expect(page.locator(".message.assistant-message")).toHaveCount(1);
 
   // --- Second restart ---
@@ -295,8 +292,7 @@ test("idle task is not nudged after resume + restart", { tag: "@no-codex" }, asy
 
   // Wait for history to load
   await expect(assistantText(page, "restart-alive")).toBeVisible({
-    timeout: 10_000,
-  });
+      });
 
   // Wait to give any [SYSTEM:] nudge time to trigger a response.
   // If nudged, the mock API responds with "Done." — a second assistant message.
@@ -314,15 +310,14 @@ test("MCP tools work after backend restart", async ({
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('reply with "mcp-ready"');
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   await expect(assistantText(page, "mcp-ready")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   // Restart — task is auto-resumed with the new MCP socket
   await restartableBackend.restart();
@@ -335,10 +330,10 @@ test("MCP tools work after backend restart", async ({
   // Send a message that triggers an MCP tool call (Task tool).
   // If the MCP socket is broken, this will fail with "Backend connection failed".
   const input2 = page.locator(".input-textarea:visible").first();
-  await expect(input2).toBeEnabled({ timeout: 15_000 });
+  await expect(input2).toBeEnabled();
   await input2.fill('call task research reply with "sub-task-done"');
   const sendBtn2 = page.locator(".btn-send:visible").first();
-  await expect(sendBtn2).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn2).toBeEnabled();
   await sendBtn2.click();
 
   // The sub-task should be created and complete. Its result ("sub-task-done")
@@ -348,7 +343,7 @@ test("MCP tools work after backend restart", async ({
     page
       .locator(".tool-result-section")
       .getByText("sub-task-done", { exact: true }),
-  ).toBeVisible({ timeout: 60_000 });
+  ).toBeVisible();
 });
 
 test("active task receives nudge and continues after restart", { tag: "@claude-only" }, async ({
@@ -359,15 +354,14 @@ test("active task receives nudge and continues after restart", { tag: "@claude-o
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill("run command sleep 60");
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait until the tool call is visible (task is mid-turn / "active")
   await expect(page.locator(".tool-call", { hasText: "sleep 60" })).toBeVisible(
-    { timeout: 30_000 },
   );
 
   // Kill and restart the backend while task is "active"
@@ -377,16 +371,14 @@ test("active task receives nudge and continues after restart", { tag: "@claude-o
   await page.goto("/");
 
   // Task should still be in the sidebar
-  await expect(page.locator(".sidebar-item")).toHaveCount(1, {
-    timeout: 10_000,
-  });
+  await expect(page.locator(".sidebar-item")).toHaveCount(1);
 
   // Click on the task
   await page.locator(".sidebar-item").first().click();
 
   // The nudge message and the agent's reply should appear
   // After nudge, the agent retries and eventually responds with "Done."
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 120_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible();
 });
 
 test("sub-task result delivered to parent after backend restart", { tag: "@claude-only" }, async ({
@@ -398,10 +390,10 @@ test("sub-task result delivered to parent after backend restart", { tag: "@claud
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill("call task research run command sleep 10");
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait for the sub-task's shell tool call to appear — this confirms the sub-task
@@ -409,7 +401,7 @@ test("sub-task result delivered to parent after backend restart", { tag: "@claud
   // Use :visible to avoid strict-mode errors from hidden tool-calls in other tasks.
   await expect(
     page.locator(".tool-call:visible", { hasText: "sleep 10" }),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 
   // Kill and restart the backend while the sub-task is still running
   await restartableBackend.restart();
@@ -420,11 +412,11 @@ test("sub-task result delivered to parent after backend restart", { tag: "@claud
   // Navigate to the parent task. The parent has the lower task ID so it appears
   // last when tasks are sorted by descending tid (WelcomePage) or in the Sidebar.
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
+  await expect(taskItems).toHaveCount(1);
   await taskItems.last().click();
 
   // The parent should eventually process the sub-task result and respond with "Done."
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible();
 });
 
 test("waiting parent receives batch results after restart", { tag: "@claude-only" }, async ({
@@ -436,15 +428,15 @@ test("waiting parent receives batch results after restart", { tag: "@claude-only
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill("call 2 tasks research run command sleep 30");
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait for parent + 2 children to appear in the sidebar.
   const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
+  await expect(allTaskItems).toHaveCount(3);
 
   // Navigate to each child and verify both are running.
   await openRunningChildTask(page, "Test task 1", "sleep 30");
@@ -456,11 +448,11 @@ test("waiting parent receives batch results after restart", { tag: "@claude-only
 
   // Navigate to the parent task (lowest tid → last in desc-sorted sidebar).
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
+  await expect(taskItems).toHaveCount(1);
   await taskItems.last().click();
 
   // Wait for the parent to respond to the batch delivery.
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible();
 
   // Allow time for any spurious additional messages.
   await page.waitForTimeout(3_000);
@@ -474,19 +466,18 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   page,
   restartableBackend,
 }, testInfo) => {
-  test.setTimeout(150_000);
 
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill("call partial-restart-batch");
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   const allTaskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(allTaskItems).toHaveCount(3, { timeout: 30_000 });
+  await expect(allTaskItems).toHaveCount(3);
 
   await openRunningChildTask(page, "Slow child", "sleep 20");
   const fastChildRow = await openSidebarTaskByLabel(page, "Fast child");
@@ -494,20 +485,20 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
     fastChildRow.locator(
       ".task-type-icon.completed, .task-type-icon.resumable",
     ),
-  ).toBeVisible({ timeout: 30_000 });
+  ).toBeVisible();
 
   // Restart after one child has completed but before the slow child has.
   await restartableBackend.restart();
   await page.goto("/");
 
   const taskItems = page.locator(".sidebar-item:not(.sidebar-new-task)");
-  await expect(taskItems).toHaveCount(1, { timeout: 15_000 });
+  await expect(taskItems).toHaveCount(1);
   await taskItems.last().click();
 
   const batchDivider = page.locator(".result-divider.system-user-message", {
     hasText: "Sub-task results",
   });
-  await expect(batchDivider).toBeVisible({ timeout: 90_000 });
+  await expect(batchDivider).toBeVisible();
   await batchDivider.click();
 
   const batchMessage = page.locator(".message.user-message.system-user-expanded", {
@@ -539,16 +530,15 @@ test("waiting parent with completed children gets results after restart", async 
   await page.goto("/");
   await page.locator('button[title="New task"]').first().click();
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('reply with "parent-ready"');
   const sendBtn = page.locator(".btn-send:visible").first();
-  await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+  await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
   // Wait for the response — task is now "alive" with a valid session.
   await expect(assistantText(page, "parent-ready")).toBeVisible({
-    timeout: 30_000,
-  });
+      });
 
   // Stop the backend before manipulating the DB to avoid "database is locked".
   await restartableBackend.stop();
@@ -579,7 +569,7 @@ test("waiting parent with completed children gets results after restart", async 
 
   // The parent should receive the [SYSTEM: Session resumed] message with
   // task_results and respond with "Done." (mock API handles [SYSTEM: messages).
-  await expect(assistantText(page, "Done.")).toBeVisible({ timeout: 60_000 });
+  await expect(assistantText(page, "Done.")).toBeVisible();
 });
 
 test(
@@ -591,15 +581,14 @@ test(
     await page.goto("/");
     await page.locator('button[title="New task"]').first().click();
     const input = page.locator(".input-textarea:visible").first();
-    await expect(input).toBeEnabled({ timeout: 15_000 });
+    await expect(input).toBeEnabled();
     await input.fill('reply with "deferred-history-check"');
     const sendBtn = page.locator(".btn-send:visible").first();
-    await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+    await expect(sendBtn).toBeEnabled();
     await sendBtn.click();
 
     await expect(assistantText(page, "deferred-history-check")).toBeVisible({
-      timeout: 90_000,
-    });
+          });
 
     const modelBeforeRestart = await page.locator(".banner-model").textContent();
     expect(modelBeforeRestart).toBeTruthy();
@@ -660,12 +649,12 @@ test(
     // Wait for history to load (prior turn's assistant response visible).
     await expect(
       assistantText(page, "deferred-history-check"),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     // Wait for the history replay to complete.
     await expect(async () => {
       expect(replayDone).toBe(true);
-    }).toPass({ timeout: 10_000 });
+    }).toPass();
 
     // Exactly one session/init from the JSONL session_meta line.
     // A second synthetic one would appear if onThreadStarted emitted

@@ -123,8 +123,7 @@ test("active sessions sort attention-needing tasks first with attention styling"
   await page.goto("/local/cydo-test-workspace");
   await page.goto("/");
   await expect(page.locator(".active-sessions-table")).toBeVisible({
-    timeout: 10_000,
-  });
+      });
 
   // The first row in active sessions should be the attention-needing task.
   // Attention rows are sorted first by the welcome page reducer.

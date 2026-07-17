@@ -18,7 +18,6 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 test("codex sub-task result should not be delivered twice", { tag: "@codex-only" }, async ({
   page,
 }) => {
-  test.setTimeout(120_000);
 
   await enterSession(page);
 
@@ -30,7 +29,7 @@ test("codex sub-task result should not be delivered twice", { tag: "@codex-only"
   const messageList = page.locator('[style*="display: contents"] .message-list');
   await expect(
     messageList.getByText("unique-subtask-marker").last(),
-  ).toBeVisible({ timeout: 90_000 });
+  ).toBeVisible();
 
   // Now check for the spurious duplicate: the batch delivery path sends a
   // message containing "session was interrupted". This should NOT appear.

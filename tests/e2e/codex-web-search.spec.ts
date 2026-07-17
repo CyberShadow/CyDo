@@ -172,13 +172,12 @@ async function seedTaskAndLocateRollout(
   await page.locator('button[title="New task"]').first().click();
 
   const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled({ timeout: 15_000 });
+  await expect(input).toBeEnabled();
   await input.fill('reply with "seed-history"');
   await page.locator(".btn-send:visible").first().click();
 
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 90_000,
-  });
+      });
 
   const taskUrl = page.url();
   await page.waitForTimeout(1_000);
@@ -228,7 +227,7 @@ test("codex web search renders query subtitle and formatted results", { tag: "@c
   const replayedToolCall = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "webSearch" }),
   });
-  await expect(replayedToolCall).toBeVisible({ timeout: 15_000 });
+  await expect(replayedToolCall).toBeVisible();
   await expect(replayedToolCall.locator(".tool-subtitle")).toContainText(
     "dagster incremental pipelines",
   );
@@ -273,14 +272,13 @@ test("codex history replay renders web_search_call from rollout JSONL", { tag: "
 
   // Verify seed message replays
   await expect(assistantText(page, "seed-history")).toBeVisible({
-    timeout: 15_000,
-  });
+      });
 
   // Verify web search tool call renders from history
   const wsToolCall = page.locator(".tool-call").filter({
     has: page.locator(".tool-name", { hasText: "webSearch" }),
   });
-  await expect(wsToolCall).toBeVisible({ timeout: 15_000 });
+  await expect(wsToolCall).toBeVisible();
 
   // Verify subtitle has main query
   await expect(wsToolCall.locator(".tool-subtitle")).toContainText(

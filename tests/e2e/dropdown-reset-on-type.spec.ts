@@ -20,7 +20,7 @@ async function waitForNewTid(page: Page, before: Set<string>): Promise<string> {
       );
     newTid = tids.find((tid: string) => !before.has(tid));
     expect(newTid).toBeTruthy();
-  }).toPass({ timeout: 5_000 });
+  }).toPass();
   return newTid!;
 }
 
@@ -34,7 +34,7 @@ test("agent type dropdown not reset when typing first character", async ({
   await enterSession(page);
 
   // Agent picker should be visible in draft mode
-  await expect(page.locator(".agent-picker")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".agent-picker")).toBeVisible();
 
   const before = await snapshotTids(page);
 
@@ -65,7 +65,7 @@ test("agent type dropdown not reset when typing then deleting", async ({
 
   await enterSession(page);
 
-  await expect(page.locator(".agent-picker")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".agent-picker")).toBeVisible();
 
   const before = await snapshotTids(page);
 
@@ -82,7 +82,7 @@ test("agent type dropdown not reset when typing then deleting", async ({
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Delete the character — triggers deleteDraftTask
   await input.fill("");
@@ -90,7 +90,7 @@ test("agent type dropdown not reset when typing then deleting", async ({
   // Draft should be removed from sidebar
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).not.toBeAttached({ timeout: 5_000 });
+  ).not.toBeAttached();
 
   // Agent picker should still show the selected value, not reset to default
   await expect(page.locator(".agent-picker")).toHaveValue(targetAgent);
@@ -103,8 +103,7 @@ test("task type dropdown not reset when typing then deleting", async ({
 
   // Task type picker should be visible in draft mode
   await expect(page.locator(".task-type-picker")).toBeVisible({
-    timeout: 5_000,
-  });
+      });
 
   const before = await snapshotTids(page);
 
@@ -123,7 +122,7 @@ test("task type dropdown not reset when typing then deleting", async ({
   const draftTid = await waitForNewTid(page, before);
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"] .draft-label`),
-  ).toBeVisible({ timeout: 2_000 });
+  ).toBeVisible();
 
   // Delete the character — triggers deleteDraftTask
   await input.fill("");
@@ -131,7 +130,7 @@ test("task type dropdown not reset when typing then deleting", async ({
   // Draft should be removed from sidebar
   await expect(
     page.locator(`.sidebar-item[data-tid="${draftTid}"]`),
-  ).not.toBeAttached({ timeout: 5_000 });
+  ).not.toBeAttached();
 
   // Task type picker should still show "blank", not the default
   await expect(

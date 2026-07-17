@@ -25,7 +25,7 @@ test("copilot text before tool produces separate assistant messages without dupl
       .first(),
   ).toBeVisible({ timeout });
 
-  await expect(assistantMessages).toHaveCount(2, { timeout: 5_000 });
+  await expect(assistantMessages).toHaveCount(2);
   await expect(
     assistantMessages.first().locator('[data-testid="assistant-text"]', {
       hasText: "pre-tool-visible-text",

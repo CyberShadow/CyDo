@@ -25,7 +25,7 @@ async function getSuggestionTexts(
   page: Parameters<typeof sendMessage>[0],
 ): Promise<string[]> {
   const suggestions = page.locator(".btn-suggestion");
-  await expect(suggestions.first()).toBeVisible({ timeout: 30_000 });
+  await expect(suggestions.first()).toBeVisible();
   const count = await suggestions.count();
   const texts: string[] = [];
   for (let i = 0; i < count; i++) {
