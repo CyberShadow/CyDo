@@ -296,18 +296,17 @@ describe("history boundary replacement", () => {
     expect(next.replacementEvents.get(4)).toEqual(replacement);
   });
 
-  it("rejects invalid replacement targets", () => {
+  it("skips replacements whose target seq is absent", () => {
     const state = makeState();
-    expect(() =>
-      replaceHistoryBoundary(
-        state,
-        {
-          type: "turn/stop",
-          history_boundary: { anchor: "a", kind: "agent_turn" },
-        },
-        4,
-      ),
-    ).toThrow("matched 0");
+    const next = replaceHistoryBoundary(
+      state,
+      {
+        type: "turn/stop",
+        history_boundary: { anchor: "a", kind: "agent_turn" },
+      },
+      4,
+    );
+    expect(next).toBe(state);
   });
 
   it("rejects mismatched canonical identity", () => {

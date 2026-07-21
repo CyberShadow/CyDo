@@ -858,6 +858,16 @@ export function replaceHistoryBoundary(
         (message.seq === seq ||
           (Array.isArray(message.seq) && message.seq.includes(seq))),
     );
+  if (matches.length === 0) {
+    // A replacement can reference a message this client doesn't have: a live
+    // boundary racing a still-streaming history load, or a boundary persisted
+    // under an older seq numbering. Dropping it degrades one message's
+    // replacement; throwing would wedge the whole session view on every load.
+    console.error(
+      `History replacement matched 0 messages at seq ${seq}; skipping`,
+    );
+    return s;
+  }
   if (matches.length !== 1)
     throw new Error(
       `History replacement matched ${matches.length} messages at seq ${seq}`,
