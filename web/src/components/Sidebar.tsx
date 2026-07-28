@@ -175,6 +175,8 @@ export interface SidebarTask {
   taskType?: string;
   hasPendingQuestion?: boolean;
   hasMessages?: boolean;
+  /// activity timestamp used by the recency ordering; falls back to creation
+  lastActive?: number;
 }
 
 interface TreeNode {
@@ -184,7 +186,10 @@ interface TreeNode {
   knownChildCount: number;
 }
 
-export function flatTaskOrder(tasks: SidebarTask[]): string[] {
+export function flatTaskOrder(
+  tasks: SidebarTask[],
+  sortByRecency = false,
+): string[] {
   const ids: string[] = [];
   function walk(nodes: TreeNode[]) {
     for (const n of nodes) {
@@ -192,13 +197,39 @@ export function flatTaskOrder(tasks: SidebarTask[]): string[] {
       walk(n.children);
     }
   }
-  walk(buildTree(tasks));
+  walk(buildTree(tasks, sortByRecency));
   return ids;
 }
 
-function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
+/**
+ * Recency of a node: its own activity, or its most recently active descendant,
+ * whichever is later. A parent therefore rises when work happens anywhere
+ * beneath it, at any depth, without the hierarchy itself changing.
+ */
+function subtreeRecency(node: TreeNode): number {
+  let newest = node.task.lastActive ?? 0;
+  for (const child of node.children)
+    newest = Math.max(newest, subtreeRecency(child));
+  return newest;
+}
+
+/**
+ * Order every level by recency, newest first. Siblings re-sort among
+ * themselves; nothing is reparented. Group nodes (Archive, Import) carry no
+ * activity of their own, so they are left to the caller to place.
+ */
+function sortNodesByRecency(nodes: TreeNode[]): TreeNode[] {
+  return nodes
+    .map((node) => ({ ...node, children: sortNodesByRecency(node.children) }))
+    .sort((a, b) => subtreeRecency(b) - subtreeRecency(a));
+}
+
+function insertArchiveNodes(
+  nodes: TreeNode[],
+  archiveLast: boolean,
+): TreeNode[] {
   return nodes.map((node) => {
-    const processed = insertArchiveNodes(node.children);
+    const processed = insertArchiveNodes(node.children, archiveLast);
     const archived = processed.filter((c) => c.task.archived);
     const active = processed.filter((c) => !c.task.archived);
     if (archived.length === 0) {
@@ -220,11 +251,19 @@ function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
       children: archived,
       knownChildCount: 0,
     };
-    return { ...node, children: [archiveNode, ...active] };
+    return {
+      ...node,
+      children: archiveLast
+        ? [...active, archiveNode]
+        : [archiveNode, ...active],
+    };
   });
 }
 
-export function buildTree(tasks: SidebarTask[]): TreeNode[] {
+export function buildTree(
+  tasks: SidebarTask[],
+  sortByRecency = false,
+): TreeNode[] {
   const tidSet = new Set(tasks.map((t) => t.tid));
   const childMap = new Map<number, SidebarTask[]>();
   const roots: SidebarTask[] = [];
@@ -252,7 +291,10 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
   }
 
   let tree = toNodes(roots);
-  tree = insertArchiveNodes(tree);
+  // Recency ordering happens before the group nodes are inserted, so Archive
+  // and Import (which have no activity of their own) keep their fixed places.
+  if (sortByRecency) tree = sortNodesByRecency(tree);
+  tree = insertArchiveNodes(tree, sortByRecency);
 
   // Handle archived roots
   const archivedRoots = tree.filter((n) => n.task.archived);
@@ -274,7 +316,9 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
       children: archivedRoots,
       knownChildCount: 0,
     };
-    tree = [archiveRoot, ...activeRoots];
+    tree = sortByRecency
+      ? [...activeRoots, archiveRoot]
+      : [archiveRoot, ...activeRoots];
   }
 
   // Handle importable roots — group under "Import" node
@@ -301,10 +345,11 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
       children: importableRoots,
       knownChildCount: 0,
     };
-    // Array order (sidebar renders reversed):
-    //   [groupNodes..., importRoot, regularNonImportable...]
-    // After .reverse(): regularNonImportable (top), importRoot (middle), groupNodes (bottom)
-    tree = [...groupNodes, importRoot, ...regularNonImportable];
+    // The list's two reversals (.reverse() in the JSX and the column-reverse on
+    // .sidebar-list) cancel, so array order is display order, top to bottom.
+    tree = sortByRecency
+      ? [...regularNonImportable, ...groupNodes, importRoot]
+      : [...groupNodes, importRoot, ...regularNonImportable];
   }
 
   return tree;
@@ -678,6 +723,7 @@ interface Props {
   onOpenSearch?: () => void;
   onArchive?: (tid: number) => void;
   hasGlobalAttention?: boolean;
+  sortByRecency?: boolean;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -699,8 +745,12 @@ export const Sidebar = memo(function Sidebar({
   onOpenSearch,
   onArchive,
   hasGlobalAttention,
+  sortByRecency = false,
 }: Props) {
-  const tree = useMemo(() => buildTree(tasks), [tasks]);
+  const tree = useMemo(
+    () => buildTree(tasks, sortByRecency),
+    [tasks, sortByRecency],
+  );
   const flatItems = useMemo(
     () => flattenTree(tree, activeTaskId, taskTypes, tasksLoading),
     [tree, activeTaskId, taskTypes, tasksLoading],
@@ -838,6 +888,23 @@ export const Sidebar = memo(function Sidebar({
     };
   }, [flatItems, attention]);
 
+  const newTaskRow = onNewTask && (
+    <a
+      href={newTaskHref}
+      class={`sidebar-item sidebar-new-task${
+        activeTaskId === null ? " active" : ""
+      }`}
+      title="New Task (Ctrl+Shift+O)"
+      onClick={(e: MouseEvent) => {
+        if (!isPlainLeftClick(e)) return;
+        onNewTask();
+      }}
+    >
+      <span class="task-type-icon task-type-icon-plus" />
+      <span class="sidebar-label">New Task</span>
+    </a>
+  );
+
   return (
     <div class="sidebar">
       <div class="sidebar-header">
@@ -938,22 +1005,10 @@ export const Sidebar = memo(function Sidebar({
         data-glow-below={glowBelow === "none" ? undefined : glowBelow}
       >
         <div class="sidebar-list" ref={listRef}>
-          {onNewTask && (
-            <a
-              href={newTaskHref}
-              class={`sidebar-item sidebar-new-task${
-                activeTaskId === null ? " active" : ""
-              }`}
-              title="New Task (Ctrl+Shift+O)"
-              onClick={(e: MouseEvent) => {
-                if (!isPlainLeftClick(e)) return;
-                onNewTask();
-              }}
-            >
-              <span class="task-type-icon task-type-icon-plus" />
-              <span class="sidebar-label">New Task</span>
-            </a>
-          )}
+          {/* .sidebar-list is column-reverse, so the first child renders last:
+              New Task sits at the bottom by default, and above everything in
+              recency mode where the newest things belong at the top. */}
+          {!sortByRecency && newTaskRow}
           {flatItems
             .map((item) => {
               if (item.kind === "loading") {
@@ -991,6 +1046,7 @@ export const Sidebar = memo(function Sidebar({
               );
             })
             .reverse()}
+          {sortByRecency && newTaskRow}
         </div>
       </div>
     </div>

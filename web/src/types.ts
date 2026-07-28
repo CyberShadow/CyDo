@@ -312,6 +312,8 @@ export interface TaskState {
   agentName?: string;
   /** Runtime driver identity, from session/init or the task listing snapshot (e.g. "claude", "codex"). */
   driver?: string;
+  /** When the task was last actually worked on (unix ms), for recency order. */
+  lastTurnAt?: number;
   archived?: boolean;
   archiving?: boolean;
   /** Last stderr text from non-zero exit; cleared on restart. */

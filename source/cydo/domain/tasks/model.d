@@ -557,6 +557,10 @@ struct TaskData
 	bool archived;
 	long createdAt;    // StdTime; 0 = not set
 	long lastActive;   // StdTime; 0 = not set
+	/// When this task was last actually worked on (StdTime), for recency
+	/// ordering. Unlike lastActive it is never cleared by session lifecycle,
+	/// and is recomputed from the transcript tail at startup.
+	long lastTurnAt;
 
 	/// Git repository root for the selected project.
 	/// Falls back to projectPath if git resolution fails.
@@ -1086,6 +1090,7 @@ struct TaskListEntry
 	string entry_point;
 	string agent_name;
 	string driver;  // resolved runtime driver ("claude"/"codex"/"copilot"); empty for orphaned agents
+	long last_turn_at;
 	bool archived;
 	bool archiving;  // true while an archive/unarchive transition is in progress
 	string draft;
@@ -1170,6 +1175,7 @@ struct ServerStatusMessage
 	bool auth_enabled;
 	bool dev_mode;
 	string build_id;
+	bool sidebar_sort_by_recency;
 }
 
 struct ScanStatusMessage

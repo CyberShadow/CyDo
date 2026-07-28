@@ -23,7 +23,8 @@ TaskListEntry buildTaskEntry(ref TaskData td, size_t childCount, bool alive,
 		td.agentSessionId.length > 0 && !alive && td.status != "importable",
 		td.isProcessing, td.stdinClosed, canStop, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 		td.title, td.workspace, td.projectPath, td.parentTid, childCount, td.relationType, cast(string) td.status,
-		td.taskType, td.entryPoint, td.agentName, driver, td.archived, td.archiving, td.draft, td.error,
+		td.taskType, td.entryPoint, td.agentName, driver,
+		stdTimeToUnixMillis(td.lastTurnAt), td.archived, td.archiving, td.draft, td.error,
 		stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 }
 
@@ -202,13 +203,15 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir,
+	bool sidebarSortByRecency = false)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
 		authEnabled,
 		devMode,
 		readBuildId(webDistDir),
+		sidebarSortByRecency,
 	));
 }
 
@@ -299,7 +302,7 @@ unittest
 	}
 
 	auto exact = buildTasksList([entry(1, 0, false, false, "completed", 2)], true);
-	assert(exact == `{"type":"tasks_list","complete":true,"tasks":[{"tid":1,"alive":false,"resumable":false,"isProcessing":false,"stdinClosed":false,"canStop":false,"needsAttention":false,"hasPendingQuestion":false,"notificationBody":null,"title":null,"workspace":null,"project_path":null,"parent_tid":0,"child_count":2,"relation_type":null,"status":"completed","task_type":null,"entry_point":null,"agent_name":null,"driver":null,"archived":false,"archiving":false,"draft":null,"error":null,"created_at":0,"last_active":0}]}`,
+	assert(exact == `{"type":"tasks_list","complete":true,"tasks":[{"tid":1,"alive":false,"resumable":false,"isProcessing":false,"stdinClosed":false,"canStop":false,"needsAttention":false,"hasPendingQuestion":false,"notificationBody":null,"title":null,"workspace":null,"project_path":null,"parent_tid":0,"child_count":2,"relation_type":null,"status":"completed","task_type":null,"entry_point":null,"agent_name":null,"driver":null,"last_turn_at":0,"archived":false,"archiving":false,"draft":null,"error":null,"created_at":0,"last_active":0}]}`,
 		exact);
 	assert(!exact.canFind(`"stage"`), exact);
 	assert(buildTasksList([], false).canFind(`"complete":false`));

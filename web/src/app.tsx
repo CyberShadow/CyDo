@@ -63,6 +63,7 @@ function AppContent() {
     editRawEvent,
     draftView,
     sidebarTasks,
+    sidebarSortByRecency,
     workspaces,
     entryPoints,
     typeInfo,
@@ -329,7 +330,7 @@ function AppContent() {
         return;
       }
       if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      const order = flatTaskOrder(sidebarTasks);
+      const order = flatTaskOrder(sidebarTasks, sidebarSortByRecency);
       if (e.shiftKey) {
         // Jump to next/prev task with attention, wrapping around
         if (order.length === 0) return;
@@ -377,6 +378,7 @@ function AppContent() {
     };
   }, [
     sidebarTasks,
+    sidebarSortByRecency,
     activeTaskId,
     setActiveTaskId,
     attention,
@@ -460,6 +462,7 @@ function AppContent() {
             onOpenSearch={handleOpenSearch}
             onArchive={handleSidebarArchive}
             hasGlobalAttention={hasOtherProjectAttention}
+            sortByRecency={sidebarSortByRecency}
           />
           {draftView && (
             <div key={draftView.viewKey} style={{ display: "contents" }}>
