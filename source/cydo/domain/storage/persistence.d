@@ -122,6 +122,11 @@ struct Persistence
 			"ALTER TABLE tasks ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0;",
 			// Migration 20: immutable task-local commit collection boundary
 			"ALTER TABLE tasks ADD COLUMN task_start_head TEXT NOT NULL DEFAULT '';",
+			// Migration: when the task was last actually worked on, as StdTime.
+			// Distinct from last_active, which is cleared on session start for
+			// crash recovery and so cannot survive a restart. Treated as a
+			// cache: recomputed from each transcript's tail at startup.
+			"ALTER TABLE tasks ADD COLUMN last_turn_at INTEGER NOT NULL DEFAULT 0;",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -274,6 +279,7 @@ struct Persistence
 		long lastActive;
 		string entryPoint;
 		bool needsAttention;
+		long lastTurnAt;
 	}
 
 	TaskRow[] loadTasks()
@@ -282,11 +288,11 @@ struct Persistence
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string taskStartHead, string title, string status, string agentName, int archived, string draft,
-			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0) FROM tasks".iterate())
+			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention, long lastTurnAt;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0), COALESCE(last_turn_at,0) FROM tasks".iterate())
 		{
 			// tasks.agent_type stores the configured agent name from config.agents.
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0, lastTurnAt);
 		}
 		return result;
 	}
@@ -343,6 +349,11 @@ struct Persistence
 	void setResultText(int tid, string resultText)
 	{
 		db.stmt!"UPDATE tasks SET result_text = ? WHERE tid = ?".exec(resultText, tid);
+	}
+
+	void setLastTurnAt(int tid, long lastTurnAt)
+	{
+		db.stmt!"UPDATE tasks SET last_turn_at = ? WHERE tid = ?".exec(lastTurnAt, tid);
 	}
 
 	void setLastActive(int tid, long lastActive)

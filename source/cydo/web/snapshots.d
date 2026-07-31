@@ -19,7 +19,8 @@ TaskListEntry buildTaskEntry(ref TaskData td, bool alive, bool canStop)
 		td.agentSessionId.length > 0 && !alive && td.status != "importable",
 		td.isProcessing, td.stdinClosed, canStop, td.needsAttention, td.hasPendingQuestion, td.notificationBody,
 		td.title, td.workspace, td.projectPath, td.parentTid, td.relationType, cast(string) td.status,
-		td.taskType, td.entryPoint, td.agentName, td.archived, td.archiving, td.draft, td.error,
+		td.taskType, td.entryPoint, td.agentName,
+		stdTimeToUnixMillis(td.lastTurnAt), td.archived, td.archiving, td.draft, td.error,
 		stdTimeToUnixMillis(td.createdAt), stdTimeToUnixMillis(td.lastActive));
 }
 
@@ -83,13 +84,15 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir,
+	bool sidebarSortByRecency = false)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
 		authEnabled,
 		devMode,
 		readBuildId(webDistDir),
+		sidebarSortByRecency,
 	));
 }
 

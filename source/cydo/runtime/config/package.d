@@ -62,6 +62,11 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	/// Order the sidebar by activity rather than creation: the most recently
+	/// worked-on task sits at the top and the order updates as tasks are used,
+	/// a parent rising with its most recent descendant. Archive and Import move
+	/// below the live tasks. Off keeps the creation-ordered list.
+	@Optional bool sidebar_sort_by_recency;
 }
 
 string configPath()

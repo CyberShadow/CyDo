@@ -205,6 +205,7 @@ export interface TaskManager {
     taskType?: string;
     hasPendingQuestion?: boolean;
     hasMessages?: boolean;
+    lastActive?: number;
   }>;
   workspaces: WorkspaceInfo[];
   entryPoints: EntryPointInfo[];
@@ -220,6 +221,7 @@ export interface TaskManager {
   serverError: { message: string; tid?: number } | null;
   dismissServerError: () => void;
   devMode: boolean;
+  sidebarSortByRecency: boolean;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -341,6 +343,7 @@ export function useTaskManager(
     tid?: number;
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
+  const [sidebarSortByRecency, setSidebarSortByRecency] = useState(false);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -959,6 +962,7 @@ export function useTaskManager(
                 uuid: existingUuid ?? base.uuid,
                 serverDraft: entry.draft || undefined,
                 error: entry.error || undefined,
+                lastTurnAt: entry.last_turn_at || undefined,
               };
               liveStates.set(t.uuid, t);
               tidToUuid.set(entry.tid, t.uuid);
@@ -990,6 +994,7 @@ export function useTaskManager(
                 taskType: entry.task_type || existing.taskType,
                 entryPoint: entry.entry_point || existing.entryPoint,
                 agentName: entry.agent_name || existing.agentName,
+                lastTurnAt: entry.last_turn_at || existing.lastTurnAt,
                 suggestions:
                   entry.isProcessing && !existing.isProcessing
                     ? undefined
@@ -1054,6 +1059,7 @@ export function useTaskManager(
               uuid: existingUuid ?? base.uuid,
               serverDraft: entry.draft || undefined,
               error: entry.error || undefined,
+              lastTurnAt: entry.last_turn_at || undefined,
             };
             liveStates.set(taskUpdated.uuid, taskUpdated);
             tidToUuid.set(entry.tid, taskUpdated.uuid);
@@ -1081,6 +1087,7 @@ export function useTaskManager(
               taskType: entry.task_type || existing.taskType,
               entryPoint: entry.entry_point || existing.entryPoint,
               agentName: entry.agent_name || existing.agentName,
+              lastTurnAt: entry.last_turn_at || existing.lastTurnAt,
               suggestions:
                 entry.isProcessing && !existing.isProcessing
                   ? undefined
@@ -1386,6 +1393,7 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          setSidebarSortByRecency(msg.sidebar_sort_by_recency ?? false);
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -2232,6 +2240,12 @@ export function useTaskManager(
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
         hasMessages: t.messages.length > 0,
+        // recency ordering key: when the task was last actually worked on.
+        // lastActive is deliberately not used, being cleared on session start
+        // and recovered from a transcript mtime that every restart rewrites.
+        // A task that never ran falls back to its creation time, so a fresh
+        // draft sorts near the top rather than the floor.
+        lastActive: t.lastTurnAt || t.createdAt || 0,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -2254,7 +2268,8 @@ export function useTaskManager(
           t.archiving === p.archiving &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
-          t.hasMessages === p.hasMessages
+          t.hasMessages === p.hasMessages &&
+          t.lastActive === p.lastActive
         );
       })
     ) {
@@ -2311,6 +2326,7 @@ export function useTaskManager(
       setServerError(null);
     },
     devMode,
+    sidebarSortByRecency,
     exportLoadError: null,
     navigateHome,
     navigateToProject,

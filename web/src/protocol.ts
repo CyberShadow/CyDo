@@ -205,6 +205,7 @@ export interface TasksListMessage {
     task_type?: string;
     entry_point?: string;
     agent_name?: string;
+    last_turn_at?: number;
     archived?: boolean;
     archiving?: boolean;
     draft?: string;
@@ -234,6 +235,7 @@ export interface TaskUpdatedMessage {
     task_type?: string;
     entry_point?: string;
     agent_name?: string;
+    last_turn_at?: number;
     archived?: boolean;
     archiving?: boolean;
     draft?: string;
@@ -391,6 +393,7 @@ export interface ServerStatusMessage {
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  sidebar_sort_by_recency?: boolean;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";
