@@ -455,6 +455,45 @@ describe("MessageList task diagnostics", () => {
     expect(html).toContain("The latest turn could not be loaded.");
   });
 
+  it("renders attachments inside a session-start framed message", () => {
+    const framed: DisplayMessage = {
+      id: "cydo-start-1",
+      uuid: "start-uuid-1",
+      type: "user",
+      isMeta: true,
+      content: [
+        { type: "text", text: "SYSTEM rendered prompt body" },
+        { type: "image", data: "aGVsbG8=", media_type: "image/png" },
+      ],
+      cydoMeta: {
+        label: "Session start: blank",
+        vars: { task_description: "what is in this picture?" },
+        bodyVar: "task_description",
+      },
+    };
+
+    const html = renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[framed]}
+        blocks={new Map()}
+        replacementEvents={new Map()}
+        isProcessing={false}
+        bandStatus=""
+      />,
+    );
+
+    // the framed view must keep the attachment visible, not just the text:
+    // losing it on replay made a briefly-shown image vanish from the task
+    expect(html).toContain("user-image");
+    expect(html).toContain("data:image/png;base64,aGVsbG8=");
+    expect(html).toContain("what is in this picture?");
+    // attachment above the prompt, matching plain user messages
+    expect(html.indexOf("data:image/png")).toBeLessThan(
+      html.indexOf("what is in this picture?"),
+    );
+  });
+
   it("keeps a metadata-bearing CyDo nudge editable", () => {
     const nudge: DisplayMessage = {
       id: "cydo-nudge-1",

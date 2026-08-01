@@ -218,6 +218,28 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
     .map((b) => b.text)
     .join("\n");
 
+  // Attachments survive the session-start framing (the backend keeps image
+  // blocks beside the rendered prompt), so they must survive its rendering
+  // too; the optimistic plain user message showed them, and losing them on
+  // replay looked like the attachment vanished.
+  const imageBlocks = message.content.filter(
+    (b): b is { type: "image"; data: string; media_type: string } =>
+      b.type === "image" &&
+      typeof (b as Record<string, unknown>).data === "string",
+  );
+  const images = imageBlocks.length > 0 && (
+    <div class="user-images">
+      {imageBlocks.map((img, i) => (
+        <img
+          key={i}
+          src={`data:${img.media_type};base64,${img.data}`}
+          alt="User attached image"
+          class="user-image"
+        />
+      ))}
+    </div>
+  );
+
   const hasVars = meta.vars && Object.keys(meta.vars).length > 0;
 
   if (!hasVars) {
@@ -262,6 +284,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
         }}
       >
         <div class="system-user-header">{meta.label}</div>
+        {images}
         <pre class="system-user-pre">{text}</pre>
       </div>
     );
@@ -297,6 +320,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
         </svg>
         {meta.label}
       </div>
+      {images}
       {bodyValue !== undefined && (
         <div class="system-user-body">
           {meta.bodyMarkdown ? (
