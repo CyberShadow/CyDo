@@ -16,6 +16,8 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.time.types : AbsTime;
 
 import cydo.agent.contract : Agent, PersistedHistoryBoundaryKind;
+import cydo.agent.drivers.claude : queuedCommandAttachmentPrompt,
+	queuedCommandAttachmentUuid;
 import cydo.protocol : ContentBlock, ItemStartedEvent, TaskEventEnvelope,
 	TaskHistoryBoundaryReplacedEnvelope, TaskEventSeqEnvelope, TranslatedEvent,
 	UnconfirmedUserEventEnvelope, UserMessageConsumedEvent, HistoryBoundary,
@@ -130,8 +132,67 @@ class HistoryEventPipeline
 		// and replaced by a user_message/consumed confirmation carrying the
 		// CLI's own steering classification. Entries still queued at EOF stay
 		// pending — a killed session's unconsumed steer remains visible.
-		string[] queuedUuids;
-		string[] awaitingEchoUuids;
+		//
+		// Mid-turn absorption (recent Claude CLIs) takes a third path: the entry
+		// is removed from the queue and delivered inside the running turn, with
+		// a queued_command attachment as the only record of the delivery. The
+		// attachment resolves the entry the same way an echo does; a remove
+		// with no attachment is a genuine drop and is settled at EOF.
+		struct QueueEntry
+		{
+			string uuid;
+			string content;
+			bool delivered;
+			bool removed;
+			// a queued_command attachment seen while the entry was still
+			// queued: only a following remove proves it was the absorbed
+			// delivery (a dequeue means the echo carries the message and the
+			// attachment is presentation-only)
+			TranslatedEvent[] heldDelivery;
+			string heldNativeUuid;
+		}
+		QueueEntry[] queueEntries;
+		static struct AwaitingEcho { string uuid; string content; }
+		AwaitingEcho[] awaitingEchoes;
+		/// Entry a remove settles, or -1. Content identifies the entry when it
+		/// matches, but content is an unreliable key: the CLI omits it for
+		/// array-valued messages, and texts can repeat. So the search prefers
+		/// an exact text match, then empty-to-empty (an empty search names an
+		/// array message, whose entry is also stored empty), then the oldest
+		/// entry not yet removed: the queue really did remove one, and leaving
+		/// an entry permanently unsettled shifts every later pairing behind by
+		/// one.
+		ptrdiff_t findEntryForRemove(string content)
+		{
+			if (content.length > 0)
+				foreach (i, ref entry; queueEntries)
+					if (!entry.removed && !entry.delivered && entry.content == content)
+						return i;
+			foreach (i, ref entry; queueEntries)
+				if (!entry.removed && !entry.delivered && entry.content.length == 0)
+					return i;
+			foreach (i, ref entry; queueEntries)
+				if (!entry.removed && !entry.delivered)
+					return i;
+			return -1;
+		}
+
+		/// Entry a delivery record resolves, or -1. Same keying rules as the
+		/// remove search, but removed entries stay eligible (the remove lands
+		/// on either side of the attachment) and there is no oldest-entry
+		/// fallback: an attachment that matches nothing belongs to a message
+		/// the echo carries.
+		ptrdiff_t findEntryForDelivery(string content)
+		{
+			if (content.length > 0)
+				foreach (i, ref entry; queueEntries)
+					if (!entry.delivered && entry.content == content)
+						return i;
+			foreach (i, ref entry; queueEntries)
+				if (!entry.delivered && entry.content.length == 0)
+					return i;
+			return -1;
+		}
 		auto stripTransientStatus = (TranslatedEvent[] events) {
 			foreach (ref e; events)
 				e.translated = host_.injectAgentNameIntoSessionInit(e.translated, td.agentName);
@@ -167,7 +228,7 @@ class HistoryEventPipeline
 					{
 						hasQueueOps = true;
 						auto enqueueUuid = format!"enqueue-%d"(lineNum);
-						queuedUuids ~= enqueueUuid;
+						queueEntries ~= QueueEntry(enqueueUuid, op.content);
 						auto synEv = buildSyntheticUserEvent(op.content, false, true);
 						synEv.uuid = enqueueUuid;
 						return stripTransientStatus([TranslatedEvent(
@@ -176,28 +237,80 @@ class HistoryEventPipeline
 					}
 					else if (op.operation == "dequeue")
 					{
-						if (queuedUuids.length > 0)
+						// the echo will carry this message; a held attachment
+						// was presentation-only, not the delivery
+						foreach (i, ref entry; queueEntries)
 						{
-							awaitingEchoUuids ~= queuedUuids[0];
-							queuedUuids = queuedUuids[1 .. $];
+							if (entry.removed || entry.delivered)
+								continue;
+							awaitingEchoes ~= AwaitingEcho(entry.uuid, entry.content);
+							queueEntries = queueEntries[0 .. i]
+								~ queueEntries[i + 1 .. $];
+							break;
 						}
 						return [];
 					}
 					else if (op.operation == "remove")
 					{
-						TranslatedEvent[] result;
-						if (queuedUuids.length > 0)
+						// A remove is ambiguous on its own: mid-turn absorption
+						// removes an entry *after* delivering it, while a queue
+						// clear removes one that was never delivered. Only the
+						// queued_command attachment tells them apart, and it can
+						// land on either side of the remove, so the pair settles
+						// whenever it completes (or EOF settles a lone remove).
+						auto idx = findEntryForRemove(op.content);
+						if (idx < 0)
+							return [];
+						if (queueEntries[idx].heldDelivery.length > 0)
 						{
-							result ~= TranslatedEvent(toJson(UserMessageConsumedEvent(
-								uuid: queuedUuids[0], consumed_as: "removed")),
-								null, AbsTime.init, lineNum);
-							queuedUuids = queuedUuids[1 .. $];
+							auto entry = queueEntries[idx];
+							queueEntries = queueEntries[0 .. idx]
+								~ queueEntries[idx + 1 .. $];
+							auto consumed = UserMessageConsumedEvent(
+								uuid: entry.uuid,
+								consumed_as: "steering",
+								native_uuid: entry.heldNativeUuid);
+							return stripTransientStatus(
+								[TranslatedEvent(toJson(consumed),
+									null, AbsTime.init, lineNum)]
+								~ entry.heldDelivery);
 						}
-						return stripTransientStatus(result);
+						queueEntries[idx].removed = true;
+						return [];
 					}
 					return [];
 				}
-				if (awaitingEchoUuids.length > 0)
+				if (auto prompt = queuedCommandAttachmentPrompt(line))
+				{
+					// A queued_command attachment is the delivery record only
+					// for a message the queue *removed* (mid-turn absorption);
+					// in the dequeue flow the echo carries the message and the
+					// attachment is presentation-only. The remove lands on
+					// either side of the attachment, so an attachment against a
+					// still-queued entry is held until the entry's fate is
+					// known; one that matches nothing (its message went out via
+					// dequeue, or it belongs to no tracked send) renders
+					// nothing.
+					auto idx = findEntryForDelivery(prompt);
+					if (idx < 0)
+						return [];
+					auto ts = ta.translateHistoryLine(line, lineNum);
+					if (!queueEntries[idx].removed)
+					{
+						queueEntries[idx].heldDelivery = ts;
+						queueEntries[idx].heldNativeUuid =
+							queuedCommandAttachmentUuid(line);
+						return [];
+					}
+					auto consumed = UserMessageConsumedEvent(
+						uuid: queueEntries[idx].uuid,
+						consumed_as: "steering",
+						native_uuid: queuedCommandAttachmentUuid(line));
+					queueEntries = queueEntries[0 .. idx] ~ queueEntries[idx + 1 .. $];
+					return stripTransientStatus([TranslatedEvent(toJson(consumed),
+						null, AbsTime.init, lineNum)] ~ ts);
+				}
+				if (awaitingEchoes.length > 0)
 				{
 					if (ta.isUserMessageLine(line))
 					{
@@ -222,9 +335,48 @@ class HistoryEventPipeline
 							// (anchors, checkpoints and truncation semantics attach
 							// to it), preceded by the confirmation that tells the
 							// UI to drop the provisional enqueue-emitted bubble.
-							auto enqueueUuid = awaitingEchoUuids[0];
-							awaitingEchoUuids = awaitingEchoUuids[1 .. $];
 							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+							// Prefer the awaiting entry whose text this echo carries:
+							// dequeue records do not map enqueues one to one (the CLI
+							// can drain several entries under one dequeue, joining
+							// their texts into one echo), so blind FIFO popping can
+							// pair the echo with a stale entry and shift every later
+							// pairing behind by one.
+							auto echoText = extractContentText(ev.content);
+							size_t pick = 0;
+							foreach (pi, ref waiting; awaitingEchoes)
+								if (waiting.content.length > 0
+									&& echoText.canFind(waiting.content))
+								{
+									pick = pi;
+									break;
+								}
+							auto enqueueUuid = awaitingEchoes[pick].uuid;
+							awaitingEchoes = awaitingEchoes[0 .. pick]
+								~ awaitingEchoes[pick + 1 .. $];
+							TranslatedEvent[] joined;
+							// a joined echo consumed queued entries the dequeue records
+							// never covered; settle every entry whose text it carries so
+							// none linger as zombies shifting later pairings
+							for (size_t qi = 0; qi < queueEntries.length;)
+							{
+								if (!queueEntries[qi].removed && !queueEntries[qi].delivered
+									&& queueEntries[qi].content.length > 0
+									&& queueEntries[qi].content != echoText
+									&& echoText.canFind(queueEntries[qi].content))
+								{
+									joined ~= TranslatedEvent(toJson(
+										UserMessageConsumedEvent(
+											uuid: queueEntries[qi].uuid,
+											consumed_as: "turn_start",
+											native_uuid: ev.uuid)),
+										null, AbsTime.init, lineNum);
+									queueEntries = queueEntries[0 .. qi]
+										~ queueEntries[qi + 1 .. $];
+									continue;
+								}
+								qi++;
+							}
 							// Persisted echo lines carry no steering flag (it is a
 							// live-stdout-only field); mid-turn consumption is
 							// classified via the assistant-fallback branch below.
@@ -233,8 +385,9 @@ class HistoryEventPipeline
 								consumed_as: "turn_start",
 								native_uuid: ev.uuid.length > 0 ? ev.uuid : enqueueUuid);
 							return stripTransientStatus([
-								TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum),
-								TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
+								TranslatedEvent(toJson(consumed), null, AbsTime.init, lineNum)]
+								~ joined
+								~ [TranslatedEvent(toJson(ev), ts[0].raw)] ~ ts[1 .. $]);
 						}
 						// not the echo (tool_result, or empty translation): pass
 						// through unchanged and stay awaiting the real echo
@@ -246,8 +399,8 @@ class HistoryEventPipeline
 						// dequeued message was consumed; turn openers always echo
 						// before assistant output, so classify as steering.
 						auto consumed = UserMessageConsumedEvent(
-							uuid: awaitingEchoUuids[0], consumed_as: "steering");
-						awaitingEchoUuids = awaitingEchoUuids[1 .. $];
+							uuid: awaitingEchoes[0].uuid, consumed_as: "steering");
+						awaitingEchoes = awaitingEchoes[1 .. $];
 						auto ts = ta.translateHistoryLine(line, lineNum);
 						return stripTransientStatus([TranslatedEvent(toJson(consumed),
 							null, AbsTime.init, lineNum)] ~ ts);
@@ -263,6 +416,21 @@ class HistoryEventPipeline
 		if (td.history.isLoaded)
 			infof("Loaded history for task %d (%d events, %d ms)",
 				tid, td.history.length, sw.peek.total!"msecs");
+
+		// Removes whose delivery record never arrived: the message left the
+		// queue without being consumed (a queue clear), so its bubble keeps the
+		// not-delivered presentation. Settled here because a delivery may
+		// follow its remove by several lines, so no earlier point can tell.
+		foreach (ref entry; queueEntries)
+		{
+			if (!entry.removed || entry.delivered)
+				continue;
+			import std.datetime : Clock;
+			td.history.appendLive(Data(
+				toJson(TaskEventEnvelope(tid, Clock.currStdTime,
+					JSONFragment(toJson(UserMessageConsumedEvent(
+						uuid: entry.uuid, consumed_as: "removed"))))).representation), null);
+		}
 
 		if (orphan)
 			appendTaskDiagnostic(tid, "Failed to load session history",
@@ -630,6 +798,7 @@ private:
 				@JSONOptional bool is_steering;
 				@JSONOptional bool pending;
 				@JSONOptional string uuid;
+				@JSONOptional string item_id;
 			}
 
 			UserAnchorProbe probe;
@@ -645,8 +814,12 @@ private:
 
 			auto uuid = probe.uuid;
 			auto isEnqueue = uuid.length > "enqueue-".length && uuid.startsWith("enqueue-");
+			// a mid-turn absorption's delivery record is an attachment, not a
+			// user message, so the CLI has no file checkpoint at it; the
+			// boundary stays undoable, conversation-only
+			auto isAbsorbedDelivery = probe.item_id == "cc-queued-command";
 			string checkpointUuid;
-			if (!isEnqueue && uuid.length > 0)
+			if (!isEnqueue && !isAbsorbedDelivery && uuid.length > 0)
 				checkpointUuid = uuid;
 			else if (rawLine.length > 0)
 			{
@@ -1363,6 +1536,168 @@ unittest
 	assert(replayedDiagnostic.type == "cydo/task_diagnostic");
 	assert(replayedDiagnostic.subject == subject && replayedDiagnostic.body == body);
 	assert(replayedDiagnostic.severity == "error");
+}
+
+// Mid-turn absorption (recent Claude CLIs): queued messages are delivered inside
+// the running turn and recorded as queued_command attachments, with the queue
+// remove following as a receipt. The delivery must resolve the provisional
+// bubble rather than mark it undelivered, and the attachment order relative to
+// its remove varies, so both orders are exercised. A remove with no delivery
+// keeps the not-delivered outcome.
+unittest
+{
+	import std.algorithm : canFind;
+	import std.array : join;
+	import std.file : exists, getSize, mkdirRecurse, rmdirRecurse, write;
+	import std.path : buildPath, dirName;
+	import std.process : environment;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.domain.tasks.model : Watermark;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+	import cydo.workflow.history.native_history : HistoryAccess;
+
+	auto dir = buildPath("/tmp", "cydo-history-midturn-absorption");
+	if (exists(dir))
+		rmdirRecurse(dir);
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto projectPath = buildPath(dir, "project");
+	mkdirRecurse(projectPath);
+
+	auto oldConfigDir = environment.get("CLAUDE_CONFIG_DIR");
+	environment["CLAUDE_CONFIG_DIR"] = buildPath(dir, "claude");
+	scope(exit)
+	{
+		if (oldConfigDir is null)
+			environment.remove("CLAUDE_CONFIG_DIR");
+		else
+			environment["CLAUDE_CONFIG_DIR"] = oldConfigDir;
+	}
+
+	enum tid = 1;
+	auto td = TaskData(tid, "local", projectPath);
+	td.agentName = "claude";
+	td.agentSessionId = "S";
+	td.worktreeTid = 0;
+
+	Agent agent = new ClaudeCodeAgent();
+	auto profile = NativeHistoryProfile(agent.driver, buildPath(dir, "claude"));
+	auto jsonlPath = agent.historyPath(td.agentSessionId, projectPath, profile);
+	mkdirRecurse(dirName(jsonlPath));
+	// first message: the delivery follows its remove; second: it precedes;
+	// third is removed by a queue clear and never delivered
+	auto jsonl = [
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:00Z","sessionId":"S","content":"first"}`,
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-05T06:00:01Z","sessionId":"S","content":"first"}`,
+		`{"type":"attachment","uuid":"native-first","timestamp":"2026-08-05T06:00:01Z","attachment":{"type":"queued_command","prompt":"first","commandMode":"prompt"}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:02Z","sessionId":"S","content":"second"}`,
+		`{"type":"attachment","uuid":"native-second","timestamp":"2026-08-05T06:00:03Z","attachment":{"type":"queued_command","prompt":"second","commandMode":"prompt"}}`,
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-05T06:00:03Z","sessionId":"S","content":"second"}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:04Z","sessionId":"S","content":"dropped"}`,
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-05T06:00:05Z","sessionId":"S","content":"dropped"}`,
+		// dequeue flow: the CLI writes the attachment too, but the echo is the
+		// message; the attachment must render nothing
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:06Z","sessionId":"S","content":"echoed"}`,
+		`{"type":"attachment","uuid":"native-echoed","timestamp":"2026-08-05T06:00:06Z","attachment":{"type":"queued_command","prompt":"echoed","commandMode":"prompt"}}`,
+		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-08-05T06:00:07Z","sessionId":"S"}`,
+		`{"type":"user","uuid":"echo-user-1","message":{"role":"user","content":"echoed"}}`,
+		// an array-valued message: the CLI omits the enqueue and remove
+		// content, and only the attachment carries the text; the empty-to-empty
+		// pairing must deliver it rather than strand the entry, and the strand
+		// must not shift the following turn opener's pairing
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:08Z","sessionId":"S"}`,
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-08-05T06:00:09Z","sessionId":"S"}`,
+		`{"type":"attachment","uuid":"native-array","timestamp":"2026-08-05T06:00:09Z","attachment":{"type":"queued_command","prompt":[{"type":"text","text":"array message text"}],"commandMode":"prompt"}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-05T06:00:10Z","sessionId":"S","content":"after the array"}`,
+		`{"type":"queue-operation","operation":"dequeue","timestamp":"2026-08-05T06:00:11Z","sessionId":"S"}`,
+		`{"type":"user","uuid":"echo-user-2","message":{"role":"user","content":"after the array"}}`,
+	].join("\n") ~ "\n";
+	write(jsonlPath, jsonl);
+
+	td.history.reset(Watermark.atBytes(getSize(jsonlPath)));
+
+	HistoryEventPipelineHost host;
+	host.getTask = (int t) => t == tid ? &td : null;
+	host.resolveTaskHistory = (int t) => TaskHistoryResolution.access(
+		HistoryAccess(agent, profile, td.agentSessionId, projectPath, jsonlPath));
+	host.injectAgentNameIntoSessionInit = (string translated, string agentName) => translated;
+	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
+	host.makeTaskDiagnosticEventJson = (string subject, string body) => "";
+	host.sendToSubscribed = (int t, Data d) {};
+	host.subscribe = (WebSocketAdapter ws, int t) {};
+	host.sendHistoryOperations = (WebSocketAdapter ws, int t) {};
+	host.broadcastHistoryOperations = (int t) {};
+	host.sendReplaySupplementalState = (WebSocketAdapter ws, int t) {};
+	host.onHistorySubscribed = (int t) {};
+	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
+	host.planBroadcast = (int t, TranslatedEvent ev) => HistoryBroadcastPlan.init;
+	host.noteLiveBoundaryCandidate = (int t, size_t seq, string ev, string raw,
+		int sourceLine, bool isContextBootstrap) {};
+	host.configuredAgentNames = () => cast(string[]) null;
+
+	auto pipeline = new HistoryEventPipeline(host);
+	pipeline.ensureHistoryLoaded(tid);
+	assert(td.history.isLoaded);
+
+	string[] events;
+	foreach (i, ref ev; td.history)
+		events ~= cast(string) ev.toGC();
+
+	size_t deliveredConfirmations = 0, removedConfirmations = 0, canonicalMessages = 0;
+	foreach (ev; events)
+	{
+		if (ev.canFind(`"user_message/consumed"`))
+		{
+			if (ev.canFind(`"consumed_as":"steering"`))
+				deliveredConfirmations++;
+			if (ev.canFind(`"consumed_as":"removed"`))
+				removedConfirmations++;
+		}
+		if (ev.canFind(`"cc-queued-command"`))
+			canonicalMessages++;
+	}
+
+	// both absorbed messages are confirmed as consumed, each pointing at the
+	// canonical message that carries the delivery
+	assert(deliveredConfirmations == 3, "absorbed messages must be confirmed");
+	assert(canonicalMessages == 3, "each absorbed delivery becomes one canonical message");
+	// only the queue-cleared one keeps the not-delivered outcome
+	assert(removedConfirmations == 1, "an undelivered remove stays undelivered");
+	// the dequeue-flow attachment renders nothing: the echo is the message
+	size_t echoedMessages = 0;
+	foreach (ev; events)
+		if (ev.canFind(`"echoed"`) && ev.canFind(`"item/started"`))
+			echoedMessages++;
+	foreach (ev; events)
+		assert(!ev.canFind("native-echoed"),
+			"a dequeue-flow attachment must not surface");
+	assert(echoedMessages == 2,
+		"the echoed message appears as its provisional and its echo only");
+	// the array message is delivered via empty-to-empty pairing
+	bool sawArrayDelivery, sawAfterArrayPairing;
+	foreach (ev; events)
+	{
+		if (ev.canFind(`"consumed_as":"steering"`) && ev.canFind("native-array"))
+			sawArrayDelivery = true;
+		// the turn opener after the array message pairs with its own entry,
+		// not a stranded one
+		if (ev.canFind(`"user_message/consumed"`) && ev.canFind(`"turn_start"`)
+			&& ev.canFind(`"echo-user-2"`))
+			sawAfterArrayPairing = true;
+	}
+	assert(sawArrayDelivery,
+		"an array-valued absorbed message must still deliver");
+	assert(sawAfterArrayPairing,
+		"the pairing after an array message must not shift");
+
+	foreach (ev; events)
+		if (ev.canFind(`"consumed_as":"steering"`) && ev.canFind(`"first"`))
+			assert(ev.canFind(`"native_uuid":"native-first"`));
+	// no delivered message may be marked undelivered
+	foreach (ev; events)
+		if (ev.canFind(`"consumed_as":"removed"`))
+			assert(!ev.canFind("native-"), "a settled removal names no delivery");
 }
 
 unittest

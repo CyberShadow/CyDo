@@ -1264,3 +1264,77 @@ describe("cydo/task_spawned reducer", () => {
     expect(s.pendingCydoTaskItemIds).toEqual([]);
   });
 });
+
+describe("mid-turn absorption", () => {
+  const consumed = (event: {
+    uuid: string;
+    consumed_as: string;
+    native_uuid?: string;
+  }) => asEvent({ type: "user_message/consumed", ...event });
+
+  it("hands a queued provisional over to the mid-turn delivery", () => {
+    // the enqueue-emitted provisional sits in the agent's queue; the mid-turn
+    // delivery confirms it and hands over to the canonical message
+    let state = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "synthetic-user",
+        item_type: "user_message",
+        uuid: "enqueue-3",
+        pending: true,
+        content: [{ type: "text", text: "sent while busy" }],
+      }),
+    );
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]?.removed).toBeUndefined();
+
+    state = reduceMessage(
+      state,
+      consumed({
+        uuid: "enqueue-3",
+        native_uuid: "native-9",
+        consumed_as: "steering",
+      }),
+    );
+    // the canonical message follows, so the provisional is gone entirely
+    expect(state.messages.filter((m) => m.type === "user")).toHaveLength(0);
+
+    state = reduceMessage(
+      state,
+      asEvent({
+        type: "item/started",
+        item_id: "cc-queued-command",
+        item_type: "user_message",
+        uuid: "native-9",
+        content: [{ type: "text", text: "sent while busy" }],
+      }),
+    );
+    const users = state.messages.filter((m) => m.type === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]?.uuid).toBe("native-9");
+    expect(users[0]?.removed).toBeUndefined();
+  });
+
+  it("keeps the not-delivered badge for a queue clear", () => {
+    let state = reduceMessage(
+      makeState(),
+      asEvent({
+        type: "item/started",
+        item_id: "synthetic-user",
+        item_type: "user_message",
+        uuid: "enqueue-5",
+        pending: true,
+        content: [{ type: "text", text: "never sent" }],
+      }),
+    );
+    // no delivery record: the confirmation carries no native uuid
+    state = reduceMessage(
+      state,
+      consumed({ uuid: "enqueue-5", consumed_as: "removed" }),
+    );
+    const users = state.messages.filter((m) => m.type === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]?.removed).toBe(true);
+  });
+});

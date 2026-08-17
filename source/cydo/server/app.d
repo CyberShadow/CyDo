@@ -2641,7 +2641,9 @@ class App
 	/// message was withdrawn without ever being consumed.
 	private void onTailedJsonlLine(int tid, string line, int lineNum)
 	{
-		import std.algorithm : startsWith;
+		import std.algorithm : remove, startsWith;
+		import cydo.agent.drivers.claude : queuedCommandAttachmentPrompt,
+			queuedCommandAttachmentUuid;
 
 		auto td = tid in tasks;
 		if (td is null)
@@ -2671,27 +2673,74 @@ class App
 				}
 				td.queueTailQueuedUuids ~= format!"enqueue-%d"(lineNum);
 				td.queueTailQueuedNonces ~= nonce;
+				td.queueTailQueuedContents ~= op.content;
+				td.queueTailQueuedHeldUuids ~= null;
 			}
 			else if (op.operation == "dequeue")
 			{
+				// the echo carries this message; a held attachment was
+				// presentation-only, not the delivery
 				if (td.queueTailQueuedUuids.length > 0)
 				{
 					td.queueTailAwaitingUuids ~= td.queueTailQueuedUuids[0];
 					td.queueTailAwaitingNonces ~= td.queueTailQueuedNonces[0];
-					td.queueTailQueuedUuids = td.queueTailQueuedUuids[1 .. $];
-					td.queueTailQueuedNonces = td.queueTailQueuedNonces[1 .. $];
+					dropQueueTailEntry(td, 0);
 				}
 			}
 			else if (op.operation == "remove")
 			{
-				if (td.queueTailQueuedUuids.length > 0)
+				// Mid-turn absorption removes an entry after delivering it,
+				// while a queue clear removes one that was never delivered.
+				// Only the queued_command attachment tells them apart, and it
+				// can arrive on either side of this record, so hold the entry
+				// until the delivery resolves it.
+				auto idx = queueTailIndexOfContent(td, op.content);
+				if (idx >= 0)
 				{
-					emitUserMessageConsumed(tid, td.queueTailQueuedUuids[0],
-						"removed", td.queueTailQueuedNonces[0]);
-					td.queueTailQueuedUuids = td.queueTailQueuedUuids[1 .. $];
-					td.queueTailQueuedNonces = td.queueTailQueuedNonces[1 .. $];
+					if (td.queueTailQueuedHeldUuids[idx].length > 0)
+					{
+						// the attachment arrived first; the remove completes
+						// the absorption pair
+						emitUserMessageConsumed(tid, td.queueTailQueuedUuids[idx],
+							"steering", td.queueTailQueuedNonces[idx],
+							td.queueTailQueuedHeldUuids[idx]);
+						dropQueueTailEntry(td, idx);
+					}
+					else
+					{
+						td.queueTailRemovedUuids ~= td.queueTailQueuedUuids[idx];
+						td.queueTailRemovedNonces ~= td.queueTailQueuedNonces[idx];
+						td.queueTailRemovedContents ~= td.queueTailQueuedContents[idx];
+						dropQueueTailEntry(td, idx);
+					}
 				}
 			}
+			return;
+		}
+
+		if (auto prompt = queuedCommandAttachmentPrompt(line))
+		{
+			// The delivery record: the message reached the model inside the
+			// running turn. Confirm the provisional bubble and point at the
+			// canonical message, which the CLI replays on stdout live and which
+			// this record itself becomes on reload.
+			auto nativeUuid = queuedCommandAttachmentUuid(line);
+			foreach (i, content; td.queueTailRemovedContents)
+				if (content == prompt)
+				{
+					emitUserMessageConsumed(tid, td.queueTailRemovedUuids[i],
+						"steering", td.queueTailRemovedNonces[i], nativeUuid);
+					td.queueTailRemovedUuids = td.queueTailRemovedUuids.remove(i);
+					td.queueTailRemovedNonces = td.queueTailRemovedNonces.remove(i);
+					td.queueTailRemovedContents = td.queueTailRemovedContents.remove(i);
+					return;
+				}
+			auto idx = queueTailIndexOfContent(td, prompt);
+			if (idx >= 0)
+				// still queued: only a following remove proves this attachment
+				// was the absorbed delivery (a dequeue means the echo carries
+				// the message), so hold it until the entry's fate is known
+				td.queueTailQueuedHeldUuids[idx] = nativeUuid;
 			return;
 		}
 
@@ -2728,6 +2777,33 @@ class App
 			return;
 		td.queueTailAwaitingUuids = td.queueTailAwaitingUuids[1 .. $];
 		td.queueTailAwaitingNonces = td.queueTailAwaitingNonces[1 .. $];
+	}
+
+	/// Index of the queued entry a record names, or -1. Content is an
+	/// unreliable key (omitted for array-valued messages, repeatable), so the
+	/// search prefers an exact match, then empty-to-empty (an empty search
+	/// names an array message, stored empty too), then the oldest entry, so a
+	/// mismatch can never leave an entry permanently unsettled.
+	private static ptrdiff_t queueTailIndexOfContent(TaskData* td, string content)
+	{
+		if (content.length > 0)
+			foreach (i, queued; td.queueTailQueuedContents)
+				if (queued == content)
+					return i;
+		foreach (i, queued; td.queueTailQueuedContents)
+			if (queued.length == 0)
+				return i;
+		return td.queueTailQueuedUuids.length > 0 ? 0 : -1;
+	}
+
+	/// Drop one entry from the parallel queue-tail arrays.
+	private static void dropQueueTailEntry(TaskData* td, ptrdiff_t idx)
+	{
+		import std.algorithm : remove;
+		td.queueTailQueuedUuids = td.queueTailQueuedUuids.remove(idx);
+		td.queueTailQueuedNonces = td.queueTailQueuedNonces.remove(idx);
+		td.queueTailQueuedContents = td.queueTailQueuedContents.remove(idx);
+		td.queueTailQueuedHeldUuids = td.queueTailQueuedHeldUuids.remove(idx);
 	}
 
 	/// Append a user_message/consumed confirmation to task history and

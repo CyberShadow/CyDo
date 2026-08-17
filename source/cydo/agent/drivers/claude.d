@@ -446,6 +446,12 @@ class ClaudeCodeAgent : Agent
 				continue;
 			}
 			bool isUser = line.canFind(`"type":"user"`);
+			// A mid-turn absorption records its delivery as a queued_command
+			// attachment rather than a user line, and that record is the
+			// visible message, so it anchors checkpoints like any other one.
+			if (!isUser && line.canFind(`"type":"attachment"`)
+				&& line.canFind(`"queued_command"`))
+				isUser = true;
 			if (!isUser && !line.canFind(`"type":"assistant"`))
 				continue;
 			enum prefix = `"uuid":"`;
@@ -2174,6 +2180,9 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 		case "user":
 			result = normalizeUserHistory(rawLine);
 			break;
+		case "attachment":
+			result = translateQueuedCommandAttachment(rawLine);
+			break;
 		case "stream_event":
 			return []; // not stored in JSONL history
 		default:
@@ -2482,6 +2491,163 @@ private TranslatedEvent[] normalizeUserHistory(string rawLine)
 	}
 
 	return events;
+}
+
+/// Translate a queued_command attachment record to a user message.
+///
+/// Recent Claude CLIs absorb queued messages into the running turn at a tool
+/// boundary instead of holding them for the next turn: it removes each entry
+/// from the queue and records the delivery as an attachment rather than as a
+/// user line, so this record is the only canonical fact for a message the
+/// model demonstrably received. Its uuid is the one the CLI replays on stdout
+/// for the same delivery, so live and replayed histories agree on identity.
+///
+/// Older versions dequeued the whole queue at the turn boundary and wrote one
+/// joined user line; those histories carry no attachment records and are
+/// unaffected.
+private TranslatedEvent[] translateQueuedCommandAttachment(string rawLine)
+{
+	import cydo.protocol : ContentBlock, ItemStartedEvent;
+
+	@JSONPartial static struct Attachment
+	{
+		string type;
+		@JSONOptional JSONFragment prompt;
+		@JSONOptional string commandMode;
+	}
+	@JSONPartial static struct Record
+	{
+		Attachment attachment;
+		@JSONOptional string uuid;
+		@JSONOptional string parent_tool_use_id;
+		@JSONOptional bool isSidechain;
+	}
+
+	Record raw;
+	try
+		raw = jsonParse!Record(rawLine);
+	catch (Exception e)
+	{ tracef("translateQueuedCommandAttachment: parse error: %s", e.msg); return []; }
+
+	if (raw.attachment.type != "queued_command")
+		return [];
+
+	auto promptJson = raw.attachment.prompt.json;
+	if (promptJson is null || promptJson.length == 0)
+		return [];
+
+	ContentBlock[] blocks;
+	if (promptJson[0] == '"')
+	{
+		string text;
+		try text = jsonParse!string(promptJson);
+		catch (Exception) { return []; }
+		ContentBlock cb;
+		cb.type = "text";
+		cb.text = text;
+		blocks ~= cb;
+	}
+	else if (promptJson[0] == '[')
+	{
+		@JSONPartial static struct ImageSource
+		{
+			@JSONOptional string data;
+			@JSONOptional string media_type;
+		}
+		@JSONPartial static struct PromptBlock
+		{
+			string type;
+			@JSONOptional string text;
+			@JSONOptional ImageSource source;
+		}
+		PromptBlock[] items;
+		try items = jsonParse!(PromptBlock[])(promptJson);
+		catch (Exception e)
+		{ tracef("translateQueuedCommandAttachment: prompt parse error: %s", e.msg); return []; }
+		foreach (ref item; items)
+		{
+			ContentBlock cb;
+			if (item.type == "text")
+			{
+				cb.type = "text";
+				cb.text = item.text;
+			}
+			else if (item.type == "image")
+			{
+				cb.type       = "image";
+				cb.data       = item.source.data;
+				cb.media_type = item.source.media_type;
+			}
+			else
+				continue;
+			blocks ~= cb;
+		}
+	}
+	if (blocks.length == 0)
+		return [];
+
+	ItemStartedEvent ev;
+	ev.item_id     = "cc-queued-command";
+	ev.item_type   = "user_message";
+	ev.content     = blocks;
+	ev.uuid        = raw.uuid;
+	ev.parent_tool_use_id = raw.parent_tool_use_id;
+	ev.is_sidechain       = raw.isSidechain;
+	return [TranslatedEvent(toJson(ev), rawLine)];
+}
+
+/// Prompt text carried by a queued_command attachment record, or null when the
+/// line is not one. Used to pair a delivery with the queue entry it consumed.
+package(cydo) string queuedCommandAttachmentPrompt(string rawLine)
+{
+	import std.algorithm : canFind;
+
+	if (!rawLine.canFind(`"queued_command"`))
+		return null;
+	auto events = translateQueuedCommandAttachment(rawLine);
+	if (events.length == 0)
+		return null;
+
+	@JSONPartial static struct ContentBlockProbe
+	{
+		@JSONOptional string type;
+		@JSONOptional string text;
+	}
+	@JSONPartial static struct Probe
+	{
+		@JSONOptional ContentBlockProbe[] content;
+		@JSONOptional string uuid;
+	}
+	Probe probe;
+	try
+		probe = jsonParse!Probe(events[0].translated);
+	catch (Exception)
+		return null;
+	foreach (ref block; probe.content)
+		if (block.type == "text")
+			return block.text;
+	return null;
+}
+
+/// Uuid of a queued_command attachment record, or null when the line is not
+/// one. This is the identity the delivered message carries.
+package(cydo) string queuedCommandAttachmentUuid(string rawLine)
+{
+	import std.algorithm : canFind;
+
+	if (!rawLine.canFind(`"queued_command"`))
+		return null;
+	@JSONPartial static struct Probe
+	{
+		@JSONOptional string type;
+		@JSONOptional string uuid;
+	}
+	Probe probe;
+	try
+		probe = jsonParse!Probe(rawLine);
+	catch (Exception)
+		return null;
+	return probe.type == "attachment" ? probe.uuid : null;
 }
 
 /// Translate a Claude stream-json event to the agent-agnostic protocol.

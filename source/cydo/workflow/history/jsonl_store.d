@@ -8,6 +8,7 @@ import std.string : representation;
 import ae.sys.data : Data;
 import ae.utils.json : JSONFragment, toJson;
 
+import cydo.agent.drivers.claude : queuedCommandAttachmentPrompt;
 import cydo.protocol : TaskEventEnvelope, TranslatedEvent;
 import cydo.agent.contract : InterruptedToolCallRepair;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, createForkTask, noSourceLine;
@@ -452,6 +453,25 @@ int truncateJsonl(string jsonlPath, string afterForkId,
 					kept = kept[0 .. $ - 1];
 					removedCount++;
 				}
+				// A mid-turn absorption's enqueue does not sit next to its
+				// delivery: the turn's assistant and tool_result lines run
+				// between them. Drop that entry's queue records wherever they
+				// are, keyed by the text they carry, or the undone message
+				// comes back as a queued one.
+				if (auto prompt = queuedCommandAttachmentPrompt(line))
+				{
+					size_t write_ = 0;
+					foreach (keptLine; kept)
+					{
+						if (isQueueOperationForContent(keptLine, prompt))
+						{
+							removedCount++;
+							continue;
+						}
+						kept[write_++] = keptLine;
+					}
+					kept = kept[0 .. write_];
+				}
 				continue;
 			}
 		}
@@ -589,6 +609,48 @@ unittest
 	assert(countLinesAfterForkId(jsonlPath, "enqueue-1", matchEnqueue, countForkable) == 2);
 }
 
+// Undoing a mid-turn absorption must take its queue records with it. The
+// enqueue sits far from the delivery (the turn's own output runs between
+// them), so the adjacent-run-up sweep cannot reach it, and a survivor would
+// resurrect the undone message as a still-queued one on the next load.
+unittest
+{
+	import std.array : join;
+	import std.algorithm : canFind;
+	import std.file : mkdirRecurse, readText, rmdirRecurse, write;
+	import std.path : buildPath;
+
+	auto dir = buildPath("/tmp", "cydo-persist-truncate-absorbed");
+	mkdirRecurse(dir);
+	scope(exit) rmdirRecurse(dir);
+
+	auto jsonlPath = buildPath(dir, "events.jsonl");
+	write(jsonlPath, [
+		`{"type":"user","uuid":"u1","message":{"role":"user","content":"start the turn"}}`,
+		`{"type":"queue-operation","operation":"enqueue","content":"absorbed text"}`,
+		`{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"working"}]}}`,
+		`{"type":"user","uuid":"tr1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+		`{"type":"queue-operation","operation":"remove","content":"absorbed text"}`,
+		`{"type":"attachment","uuid":"native-1","attachment":{"type":"queued_command","prompt":"absorbed text","commandMode":"prompt"}}`,
+		`{"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"answered"}]}}`,
+	].join("\n") ~ "\n");
+
+	auto removed = truncateJsonl(jsonlPath, "native-1",
+		(string line, int lineNum, string forkId) => line.canFind(`"uuid":"` ~ forkId ~ `"`),
+		true);
+	assert(removed > 0, "the delivery must be found");
+
+	auto text = readText(jsonlPath);
+	assert(!text.canFind("absorbed text"),
+		"no trace of the undone message may remain, queue records included");
+	assert(!text.canFind("native-1"), "the delivery record itself is gone");
+	// everything before the message is untouched
+	assert(text.canFind(`"uuid":"u1"`) && text.canFind(`"uuid":"a1"`)
+		&& text.canFind(`"uuid":"tr1"`), "prior turn content must survive");
+	// and everything after it is truncated, as undo means "from here on"
+	assert(!text.canFind(`"uuid":"a2"`), "content after the message is truncated");
+}
+
 unittest
 {
 	import std.array : join;
@@ -653,6 +715,23 @@ private bool isNeutralOrQueueOp(string line)
 	return line.canFind(`"queue-operation"`)
 		|| line.canFind(`"file-history-snapshot"`)
 		|| line.canFind(`"progress"`);
+}
+
+/// Whether the line is a queue-operation record for this exact message text.
+/// Queue records identify their entry by the text it carries, which is what
+/// links an absorbed message's enqueue and remove back to its delivery.
+private bool isQueueOperationForContent(string line, string content)
+{
+	import std.algorithm : canFind;
+	import ae.utils.json : jsonParse, JSONOptional, JSONPartial;
+
+	if (content.length == 0 || !line.canFind(`"queue-operation"`))
+		return false;
+	@JSONPartial static struct Probe { @JSONOptional string content; }
+	try
+		return jsonParse!Probe(line).content == content;
+	catch (Exception)
+		return false;
 }
 
 /// Extract a string field value from a JSON line by prefix scanning.
