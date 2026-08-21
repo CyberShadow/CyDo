@@ -61,6 +61,30 @@ import {
   taskPath,
 } from "./routing";
 
+// Only the class travels: the server holds the window sizes, because the first
+// history request goes out before server_status has taught this side what they
+// are, and guessing zero there means replaying the whole task.
+//
+// Three signals rather than one, since a pointer query alone is not enough:
+// some mobile browsers report a fine pointer despite being a phone. A
+// touchscreen laptop reads as mobile here, which only costs it a smaller
+// starting window.
+function deviceClass(): "mobile" | "desktop" {
+  if (typeof window === "undefined") return "desktop";
+  const media = (query: string) =>
+    typeof window.matchMedia === "function" && window.matchMedia(query).matches;
+  const touch = window.navigator.maxTouchPoints > 0;
+  const mobileAgent = /Mobi|Android|iPhone|iPad|iPod/i.test(
+    window.navigator.userAgent,
+  );
+  return touch ||
+    mobileAgent ||
+    media("(pointer: coarse)") ||
+    media("(hover: none)")
+    ? "mobile"
+    : "desktop";
+}
+
 export interface ImageAttachment {
   id: string;
   dataURL: string;
@@ -1158,7 +1182,7 @@ export function useTaskManager(
     const task = findByTid(tid);
     if (!task) throw new Error(`History request requires task ${tid}`);
     if (requestedHistoryRef.current.has(task.uuid)) return;
-    if (!connRef.current?.requestHistory(tid)) {
+    if (!connRef.current?.requestHistory(tid, 0, deviceClass())) {
       throw new Error(`History request failed for ${tid}`);
     }
     requestedHistoryRef.current.add(task.uuid);
@@ -1603,7 +1627,7 @@ export function useTaskManager(
           // won't re-fire because activeTaskId hasn't changed.
           let final = reset;
           if (String(tid) === activeTaskIdRef.current) {
-            if (connRef.current?.requestHistory(tid)) {
+            if (connRef.current?.requestHistory(tid, 0, deviceClass())) {
               requestedHistoryRef.current.add(t.uuid);
               final = {
                 ...reset,
@@ -1625,7 +1649,13 @@ export function useTaskManager(
           const { tid, total } = msg;
           const t0 = findByTid(tid);
           if (!t0) break;
-          const t = beginTaskHistoryReplay(t0, total);
+          const windowStart = msg.window_start ?? 0;
+          // historyTotal drives the progress bar, so count only what will
+          // actually be sent
+          const t = {
+            ...beginTaskHistoryReplay(t0, total - windowStart),
+            historyWindowed: (msg.window_limit ?? 0) > 0,
+          };
           liveStates.set(t0.uuid, t);
           setTasks((prev) => {
             if (!prev.has(t0.uuid)) return prev;
@@ -2267,7 +2297,7 @@ export function useTaskManager(
     if (!t) return;
     if (requestedHistoryRef.current.has(t.uuid)) return;
     if (t.historyLoaded) return;
-    if (connRef.current?.requestHistory(tid)) {
+    if (connRef.current?.requestHistory(tid, 0, deviceClass())) {
       requestedHistoryRef.current.add(t.uuid);
     }
   }, [connected, activeTaskId, tasks]);

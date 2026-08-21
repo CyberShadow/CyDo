@@ -277,6 +277,10 @@ export interface TaskState {
   title?: string;
   /** Whether the task's JSONL history has been loaded from the backend. */
   historyLoaded: boolean;
+  /** Whether the server windowed this replay at all. Drives the browser's own
+   *  lazy rendering: with a window the DOM is small and `content-visibility`
+   *  only makes the scroll height jitter, but an unwindowed replay needs it. */
+  historyWindowed?: boolean;
   /** Latched true once history has loaded at least once; never resets.
    *  Used to keep tasks the user has visited rendered in the DOM across
    *  task_reload cycles, so InputBox doesn't unmount mid-interaction. */

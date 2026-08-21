@@ -268,6 +268,8 @@ export interface TaskHistoryStartMessage {
   type: "task_history_start";
   tid: number;
   total: number;
+  window_start?: number;
+  window_limit?: number;
 }
 export interface TaskHistoryEndMessage {
   type: "task_history_end";
@@ -402,6 +404,8 @@ export interface ServerStatusMessage {
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  history_window_desktop?: number;
+  history_window_mobile?: number;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";

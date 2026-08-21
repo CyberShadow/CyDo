@@ -415,6 +415,7 @@ function SessionViewInner({
         </div>
       ) : (
         <MessageList
+          historyWindowed={task.historyWindowed}
           taskTid={tid}
           messages={task.messages}
           replacementEvents={task.replacementEvents}

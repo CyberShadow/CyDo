@@ -256,8 +256,15 @@ export class Connection {
     );
   }
 
-  requestHistory(tid: number): boolean {
-    return this.send(JSON.stringify({ type: "request_history", tid }));
+  requestHistory(tid: number, limit = 0, deviceClass = ""): boolean {
+    return this.send(
+      JSON.stringify({
+        type: "request_history",
+        tid,
+        limit,
+        device_class: deviceClass,
+      }),
+    );
   }
 
   forkTask(tid: number, afterUuid: string) {

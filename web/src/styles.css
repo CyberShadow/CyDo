@@ -942,6 +942,13 @@ body,
   margin-bottom: 16px;
   padding: 12px 16px;
   max-width: 100%;
+}
+
+/* Skipping offscreen messages is worth it only when the whole transcript is in
+   the DOM: the reserved 100px is a guess, so heights change as messages scroll
+   into view and the scroll region grows under a dragged scrollbar handle. A
+   windowed replay keeps the DOM small enough not to need it. */
+.message-list:not(.history-windowed) .message {
   contain: layout paint style;
   content-visibility: auto;
   contain-intrinsic-size: auto 100px;

@@ -1099,6 +1099,8 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.history_window.desktop,
+			config.history_window.mobile,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -1460,7 +1462,24 @@ class App
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
 	{
-		historyPipeline.handleRequestHistory(ws, json.tid);
+		historyPipeline.handleRequestHistory(ws, json.tid,
+			resolveHistoryLimit(json.limit, json.device_class));
+	}
+
+	/// Turn a client's request into an actual window size.
+	///
+	/// The server owns the numbers because it is the only side that always
+	/// knows them: a client that has not yet processed server_status would
+	/// otherwise ask for everything, which on a long task means replaying tens
+	/// of thousands of events.
+	private int resolveHistoryLimit(int requested, string deviceClass)
+	{
+		if (requested != 0)
+			return requested < 0 ? 0 : requested; // negative asks for it all
+		auto window = deviceClass == "mobile"
+			? config.history_window.mobile
+			: config.history_window.desktop;
+		return window > 0 ? window : 0;
 	}
 
 	private void sendHistoryReplaySupplementalState(WebSocketAdapter ws, int tid)
@@ -3395,6 +3414,8 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.history_window.desktop,
+			config.history_window.mobile,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();

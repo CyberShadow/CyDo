@@ -42,6 +42,9 @@ interface Props {
   onViewFile?: (filePath: string) => void;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
   getTaskHref?: (id: string) => string;
+  /** whether the server windowed this replay; when it did, the DOM is small
+   *  enough that the browser's own lazy rendering only costs scroll stability */
+  historyWindowed?: boolean;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -851,6 +854,7 @@ export function MessageList({
   onViewFile,
   spawnedTidsByItemId,
   getTaskHref,
+  historyWindowed,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1029,7 +1033,10 @@ export function MessageList({
 
   return (
     <ReplacementEventsContext.Provider value={replacementEvents}>
-      <div class="message-list" ref={containerRef}>
+      <div
+        class={`message-list${historyWindowed ? " history-windowed" : ""}`}
+        ref={containerRef}
+      >
         <StatusBand status={bandStatus} />
         <div class="message-list-inner">
           {topLevelMessages.map((msg) => {
