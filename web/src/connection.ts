@@ -110,6 +110,8 @@ export class Connection {
           raw.type === "task_reload" ||
           raw.type === "title_update" ||
           raw.type === "task_history_start" ||
+          raw.type === "task_history_prepend_start" ||
+          raw.type === "task_history_prepend_end" ||
           raw.type === "task_history_end" ||
           raw.type === "workspaces_list" ||
           raw.type === "task_types_list" ||
@@ -256,8 +258,33 @@ export class Connection {
     );
   }
 
-  requestHistory(tid: number): boolean {
-    return this.send(JSON.stringify({ type: "request_history", tid }));
+  requestHistory(tid: number, limit = 0, deviceClass = ""): boolean {
+    return this.send(
+      JSON.stringify({
+        type: "request_history",
+        tid,
+        limit,
+        device_class: deviceClass,
+      }),
+    );
+  }
+
+  /** ask for the messages older than `beforeSeq`, to prepend to what is held */
+  requestHistoryBefore(
+    tid: number,
+    beforeSeq: number,
+    limit: number,
+    deviceClass: string,
+  ): boolean {
+    return this.send(
+      JSON.stringify({
+        type: "request_history_before",
+        tid,
+        before_seq: beforeSeq,
+        limit,
+        device_class: deviceClass,
+      }),
+    );
   }
 
   forkTask(tid: number, afterUuid: string) {

@@ -255,6 +255,8 @@ export function useExportedTaskManager(): TaskManager {
     agentUsage: {},
     serverError: null,
     dismissServerError: noop,
+    historyWindowStep: 0,
+    loadMoreHistory: () => {},
     devMode: false,
     exportLoadError,
     navigateHome: noop,

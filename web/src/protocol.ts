@@ -268,6 +268,19 @@ export interface TaskHistoryStartMessage {
   type: "task_history_start";
   tid: number;
   total: number;
+  window_start?: number;
+  window_limit?: number;
+}
+export interface TaskHistoryPrependStartMessage {
+  type: "task_history_prepend_start";
+  tid: number;
+  window_start: number;
+  before_seq: number;
+}
+export interface TaskHistoryPrependEndMessage {
+  type: "task_history_prepend_end";
+  tid: number;
+  window_start: number;
 }
 export interface TaskHistoryEndMessage {
   type: "task_history_end";
@@ -402,6 +415,8 @@ export interface ServerStatusMessage {
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  history_window_desktop?: number;
+  history_window_mobile?: number;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";
@@ -441,6 +456,8 @@ export type ControlMessage =
   | FocusHintMessage
   | TitleUpdateMessage
   | TaskHistoryStartMessage
+  | TaskHistoryPrependStartMessage
+  | TaskHistoryPrependEndMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage

@@ -529,7 +529,11 @@ describe("submission acknowledgement routing", () => {
       true,
     );
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(61);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      61,
+      0,
+      "desktop",
+    );
   });
 
   it("does not route a submission acknowledgement after attachment changes", async () => {
@@ -545,7 +549,11 @@ describe("submission acknowledgement routing", () => {
 
     expect(testState.navigate).not.toHaveBeenCalled();
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(62);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      62,
+      0,
+      "desktop",
+    );
   });
 
   it("does not route a held submission acknowledgement across a pre-effect route switch", async () => {
@@ -2114,7 +2122,11 @@ describe("submission acknowledgement routing", () => {
     });
 
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(71);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      71,
+      0,
+      "desktop",
+    );
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],
@@ -2149,7 +2161,11 @@ describe("submission acknowledgement routing", () => {
     });
 
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(71);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      71,
+      0,
+      "desktop",
+    );
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],

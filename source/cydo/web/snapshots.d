@@ -90,13 +90,16 @@ string readBuildId(string webDistDir)
 	return m[1].idup;
 }
 
-string buildServerStatus(bool authEnabled, bool devMode, string webDistDir)
+string buildServerStatus(bool authEnabled, bool devMode, string webDistDir,
+	int historyWindowDesktop = 0, int historyWindowMobile = 0)
 {
 	return toJson(ServerStatusMessage(
 		"server_status",
 		authEnabled,
 		devMode,
 		readBuildId(webDistDir),
+		historyWindowDesktop,
+		historyWindowMobile,
 	));
 }
 
