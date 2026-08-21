@@ -103,6 +103,11 @@ body,
   font-family: var(--font-sans);
   font-size: 15px;
   overscroll-behavior: none;
+  /* nothing here scrolls sideways at the document level: the panes that need
+     it scroll inside themselves, so any horizontal give is an overflowing
+     child dragging the whole page with it */
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 .app {
@@ -638,6 +643,9 @@ body,
   gap: 12px;
   font-size: 12px;
   margin-left: auto;
+  /* a flex item defaults to min-width:auto, so this cluster refuses to shrink
+     below its contents and widens the document past the viewport */
+  min-width: 0;
 }
 
 .banner-usage {
@@ -795,6 +803,11 @@ body,
 .banner-status {
   padding: 2px 8px;
   font-size: 12px;
+  /* the longest thing in the banner, and the one that can safely be clipped */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .banner-status.connected {
