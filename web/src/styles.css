@@ -3747,6 +3747,25 @@ pre.extra-field-value {
 
 /* Responsive: narrow screens */
 @media (max-width: 768px) {
+  /* the composer eats a lot of a phone screen, so halve its spacing and give
+     the buttons equal padding on all four sides */
+  .input-box {
+    gap: 4px;
+    padding: 6px 8px;
+  }
+
+  .input-textarea {
+    padding: 5px 7px;
+    /* the 40px floor is one line's worth at the full padding; at half the
+       padding it would leave dead space under a single line until wrapping
+       outgrew it */
+    min-height: 30px;
+  }
+
+  .input-box .btn {
+    padding: 5px;
+  }
+
   .banner-usage {
     width: 132px;
     flex-basis: 132px;
