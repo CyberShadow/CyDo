@@ -817,6 +817,51 @@ body,
   overflow-anchor: none;
 }
 
+/* Attach button: visually hidden input, since display:none is not reliably
+   clickable from script across engines */
+.input-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* the glyph is the control: no chrome, no inner spacing, sized against the
+   send button beside it. .btn.btn-attach rather than .btn-attach, since the
+   generic .btn rule is declared later in this file and would otherwise win on
+   order alone */
+.btn.btn-attach {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  line-height: 0;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+.btn.btn-attach:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.btn.btn-attach:disabled {
+  opacity: 0.3;
+}
+
+/* an svg has no side bearings, so the box is exactly the icon */
+.btn.btn-attach svg {
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+
+.attach-error {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
 /* Message wrapper (action buttons) */
 .message-wrapper {
   position: relative;
