@@ -132,6 +132,16 @@ function publishImages(entry: ControlledImageEntry, images: ImageAttachment[]) {
   }
 }
 
+// what the agent APIs actually accept; an iPhone photo arrives as JPEG because
+// the picker transcodes it, but a file picked out of Files can still be HEIC,
+// and attaching one silently produces a send the API rejects
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
 function useImageAttachments(
   enabled = true,
   resetToken?: number,
@@ -151,6 +161,7 @@ function useImageAttachments(
     () => imageEntry?.generation ?? 0,
   );
   const [isDragging, setIsDragging] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const enabledRef = useRef(enabled);
   const resetTokenRef = useRef(resetToken);
   const generationRef = useRef(imageEntry?.generation ?? 0);
@@ -217,6 +228,13 @@ function useImageAttachments(
 
   const processFile = (file: File) => {
     if (!enabledRef.current || !file.type.startsWith("image/")) return;
+    if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
+      setAttachError(
+        `${file.type} images can't be attached; JPEG, PNG, GIF and WebP work`,
+      );
+      return;
+    }
+    setAttachError(null);
     const generation = generationRef.current;
     const entry = imageEntry;
     const reader = new FileReader();
@@ -243,6 +261,11 @@ function useImageAttachments(
       setImagesGeneration(generation);
     };
     reader.readAsDataURL(file);
+  };
+
+  const addFiles = (files: FileList | File[] | null) => {
+    if (!files) return;
+    for (const file of Array.from(files)) processFile(file);
   };
 
   const onPaste = (event: ClipboardEvent) => {
@@ -297,11 +320,92 @@ function useImageAttachments(
     images: enabled && imagesGeneration === generationRef.current ? images : [],
     setImages,
     isDragging: enabled && isDragging,
+    attachError,
+    dismissAttachError: () => {
+      setAttachError(null);
+    },
+    addFiles,
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
   };
+}
+
+/** Attach button plus the hidden input it drives.
+ *
+ * Paste and drag-and-drop were the only ways to attach an image, and a phone
+ * has neither: iOS has no file drag source, and gecko-for-iOS does not put
+ * pasted photos on the DOM clipboard. A plain file input is what reaches the
+ * system photo picker there.
+ *
+ * The input is visually hidden rather than display:none, since only the former
+ * is reliably clickable programmatically across engines.
+ */
+function AttachButton({
+  disabled,
+  onFiles,
+}: {
+  disabled: boolean;
+  onFiles: (files: FileList | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        class="input-file"
+        type="file"
+        accept="image/*"
+        multiple
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const input = event.target as HTMLInputElement;
+          onFiles(input.files);
+          // clearing lets the same photo be picked again right after removing it
+          input.value = "";
+        }}
+      />
+      <button
+        key="attach"
+        class="btn btn-attach"
+        title="Attach images"
+        aria-label="Attach images"
+        disabled={disabled}
+        onClick={() => inputRef.current?.click()}
+      >
+        {/* drawn rather than typed: an emoji is a font glyph, so its artwork
+            changes per platform and its advance width adds side bearings that
+            no padding rule can reclaim */}
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+        </svg>
+      </button>
+    </>
+  );
+}
+
+function AttachError({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div class="attach-error" role="status" onClick={onDismiss}>
+      {message}
+    </div>
+  );
 }
 
 function ImagePreviews({
@@ -388,6 +492,9 @@ function OrdinaryInputBox({
     onDragOver,
     onDragLeave,
     onDrop,
+    attachError,
+    dismissAttachError,
+    addFiles,
   } = useImageAttachments();
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
@@ -568,6 +675,9 @@ function OrdinaryInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <AttachError message={attachError} onDismiss={dismissAttachError} />
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}
@@ -585,6 +695,7 @@ function OrdinaryInputBox({
         disabled={disabled}
         rows={1}
       />
+      <AttachButton disabled={disabled || !!stdinClosed} onFiles={addFiles} />
       {isProcessing && (
         <button key="stop" class="btn btn-stop" onClick={onInterrupt}>
           Stop
@@ -630,6 +741,9 @@ function ControlledInputBox({
     onDragOver,
     onDragLeave,
     onDrop,
+    attachError,
+    dismissAttachError,
+    addFiles,
   } = useImageAttachments(!disabled, composerResetToken, imageStore, imageKey);
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? internalRef;
@@ -729,6 +843,9 @@ function ControlledInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <AttachError message={attachError} onDismiss={dismissAttachError} />
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}
@@ -744,6 +861,7 @@ function ControlledInputBox({
         disabled={disabled}
         rows={1}
       />
+      <AttachButton disabled={disabled || !!stdinClosed} onFiles={addFiles} />
       {isProcessing && (
         <button key="stop" class="btn btn-stop" onClick={onInterrupt}>
           Stop
