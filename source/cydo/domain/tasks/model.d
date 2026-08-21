@@ -979,6 +979,23 @@ struct TaskHistoryStartMessage
 	int window_limit; // window applied, in messages; 0 = the whole history
 }
 
+/// Frames a replay of the messages *older* than what the client already holds,
+/// so it can prepend them instead of rebuilding its list.
+struct TaskHistoryPrependStartMessage
+{
+	string type = "task_history_prepend_start";
+	int tid;
+	int window_start; // first seq in this batch; 0 means the task's beginning
+	int before_seq;   // where the batch stops, i.e. the client's current start
+}
+
+struct TaskHistoryPrependEndMessage
+{
+	string type = "task_history_prepend_end";
+	int tid;
+	int window_start;
+}
+
 struct TaskHistoryEndMessage
 {
 	string type = "task_history_end";
@@ -1040,6 +1057,7 @@ struct WsMessage
 	// history request
 	@JSONOptional int limit;
 	@JSONOptional string device_class; // "mobile" or "desktop"
+	@JSONOptional int before_seq; // request_history_before: older than this
 }
 
 struct TaskCreatedMessage

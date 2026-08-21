@@ -279,6 +279,10 @@ export interface TaskManager {
   serverError: { message: string; tid?: number } | null;
   dismissServerError: () => void;
   devMode: boolean;
+  /** configured history window in messages for this device class; 0 = off */
+  historyWindowStep: number;
+  /** load `step` more messages of older history (0 = all) */
+  loadMoreHistory: (tid: number, step: number) => void;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -589,6 +593,9 @@ export function useTaskManager(
     tid?: number;
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
+  // the configured window for this device class, used to label the load-more
+  // buttons; the server still decides what a request actually returns
+  const [historyWindowStep, setHistoryWindowStep] = useState(0);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -724,6 +731,15 @@ export function useTaskManager(
   const connRef = useRef<Connection | null>(null);
   // Track which tasks have had history requested (avoid duplicate requests), keyed by uuid
   const requestedHistoryRef = useRef(new Set<string>());
+  // an in-flight prepend: older messages are reduced into a state of their own
+  // and merged at the end, so nothing already on screen is rebuilt
+  const prependRef = useRef(
+    new Map<string, { beforeSeq: number; state: TaskState }>(),
+  );
+  // message ids come from a per-state counter, so a staged state would hand out
+  // ids the live one already used; starting well past any real count keeps
+  // preact's keys unique without rewriting anything afterwards
+  const prependIdBaseRef = useRef(1_000_000);
   const outboxReplayedEpochRef = useRef<number | null>(null);
   const outboxAttemptedNoncesRef = useRef(new Set<string>());
   const tasksListEpochRef = useRef<number | null>(null);
@@ -1178,6 +1194,36 @@ export function useTaskManager(
     [entryPointFor],
   );
 
+  // ask for the slice older than what is held and prepend it; growing the
+  // window instead would replay everything already on screen
+  const loadMoreHistory = useCallback((tid: number, step: number) => {
+    const task = findByTid(tid);
+    if (!task) throw new Error(`Loading more history requires task ${tid}`);
+    const beforeSeq = task.historyWindowStart ?? 0;
+    if (beforeSeq <= 0) return; // nothing older is being held back
+    if (prependRef.current.has(task.uuid)) return; // one batch at a time
+
+    prependIdBaseRef.current += 1_000_000;
+    const staged: TaskState = {
+      ...makeTaskState(tid, true),
+      uuid: task.uuid,
+      msgIdCounter: prependIdBaseRef.current,
+    };
+    prependRef.current.set(task.uuid, { beforeSeq, state: staged });
+
+    // step 0 is "load all", i.e. everything before the current start
+    const sent = connRef.current?.requestHistoryBefore(
+      tid,
+      beforeSeq,
+      step === 0 ? -1 : step,
+      deviceClass(),
+    );
+    if (!sent) {
+      prependRef.current.delete(task.uuid);
+      throw new Error(`History request failed for ${tid}`);
+    }
+  }, []);
+
   const requestTaskHistory = useCallback((tid: number) => {
     const task = findByTid(tid);
     if (!task) throw new Error(`History request requires task ${tid}`);
@@ -1311,6 +1357,20 @@ export function useTaskManager(
         executeDraftEffectsRef.current(effects);
         return;
       }
+      const prepend = prependRef.current.get(uuid);
+      if (
+        prepend !== undefined &&
+        seq !== undefined &&
+        seq < prepend.beforeSeq
+      ) {
+        // belongs to the older batch being staged, not to what is on screen
+        let staged = reduceMessage(prepend.state, msg, seq, ts);
+        if (hasHistoryBoundary(msg))
+          staged = replaceHistoryBoundary(staged, msg, seq);
+        prependRef.current.set(uuid, { ...prepend, state: staged });
+        return;
+      }
+
       const prev = liveStates.get(uuid) ?? {
         ...makeTaskState(tid, true),
         uuid,
@@ -1655,6 +1715,46 @@ export function useTaskManager(
           const t = {
             ...beginTaskHistoryReplay(t0, total - windowStart),
             historyWindowed: (msg.window_limit ?? 0) > 0,
+            historyWindowStart: windowStart,
+          };
+          liveStates.set(t0.uuid, t);
+          setTasks((prev) => {
+            if (!prev.has(t0.uuid)) return prev;
+            const next = new Map(prev);
+            next.set(t0.uuid, t);
+            return next;
+          });
+          break;
+        }
+        case "task_history_prepend_start": {
+          // the staging state was created when the request went out; nothing to
+          // do but let the batch flow into it
+          break;
+        }
+        case "task_history_prepend_end": {
+          const { tid, window_start: windowStart } = msg;
+          const t0 = findByTid(tid);
+          if (!t0) break;
+          const staged = prependRef.current.get(t0.uuid);
+          prependRef.current.delete(t0.uuid);
+          if (!staged) break;
+
+          const older = staged.state;
+          const t: TaskState = {
+            ...t0,
+            // older messages sort before everything held, by construction:
+            // every staged seq is below the batch's stopping point
+            messages: [...older.messages, ...t0.messages],
+            blocks: new Map([...older.blocks, ...t0.blocks]),
+            replacementEvents: new Map([
+              ...older.replacementEvents,
+              ...t0.replacementEvents,
+            ]),
+            spawnedTidsByItemId: new Map([
+              ...older.spawnedTidsByItemId,
+              ...t0.spawnedTidsByItemId,
+            ]),
+            historyWindowStart: windowStart,
           };
           liveStates.set(t0.uuid, t);
           setTasks((prev) => {
@@ -1906,6 +2006,11 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          setHistoryWindowStep(
+            deviceClass() === "mobile"
+              ? (msg.history_window_mobile ?? 0)
+              : (msg.history_window_desktop ?? 0),
+          );
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -3271,6 +3376,8 @@ export function useTaskManager(
       setServerError(null);
     },
     devMode,
+    historyWindowStep,
+    loadMoreHistory,
     exportLoadError: null,
     navigateHome,
     navigateToProject,

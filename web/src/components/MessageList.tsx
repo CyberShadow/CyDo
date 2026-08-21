@@ -45,6 +45,12 @@ interface Props {
   /** whether the server windowed this replay; when it did, the DOM is small
    *  enough that the browser's own lazy rendering only costs scroll stability */
   historyWindowed?: boolean;
+  /** first replayed seq; > 0 shows the load-more row at the top */
+  historyWindowStart?: number;
+  /** configured window size in messages, used for the button labels */
+  historyWindowStep?: number;
+  /** load `step` more messages of older history; 0 = all */
+  onLoadMoreHistory?: (step: number) => void;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -855,8 +861,47 @@ export function MessageList({
   spawnedTidsByItemId,
   getTaskHref,
   historyWindowed,
+  historyWindowStart,
+  historyWindowStep,
+  onLoadMoreHistory,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Loading older messages must leave the reader where they are, with the new
+  // content arriving above them. The list is column-reverse, so scrollTop is a
+  // distance from the bottom and is exactly the quantity to hold constant;
+  // left alone the browser anchors to the load-more row instead, which sits
+  // above everything and drags the viewport up to the new top.
+  const heldScrollRef = useRef<number | null>(null);
+  const previousWindowStartRef = useRef(historyWindowStart);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    const previous = previousWindowStartRef.current;
+    previousWindowStartRef.current = historyWindowStart;
+    if (
+      el === null ||
+      heldScrollRef.current === null ||
+      previous === undefined ||
+      historyWindowStart === undefined ||
+      historyWindowStart >= previous
+    )
+      return;
+    // older messages just landed in front
+    el.scrollTop = heldScrollRef.current;
+    heldScrollRef.current = null;
+  }, [historyWindowStart]);
+
+  // remember where the reader is before the batch lands, and stop the browser
+  // from anchoring in the meantime
+  const loadMore = (step: number) => {
+    const el = containerRef.current;
+    if (el) {
+      heldScrollRef.current = el.scrollTop;
+      el.style.overflowAnchor = "none";
+    }
+    onLoadMoreHistory?.(step);
+  };
 
   // Subscribe to outbox so the component re-renders when entries are added/removed.
   const [outboxTick, setOutboxTick] = useState(0);
@@ -1039,6 +1084,38 @@ export function MessageList({
       >
         <StatusBand status={bandStatus} />
         <div class="message-list-inner">
+          {historyWindowStart != null &&
+            historyWindowStart > 0 &&
+            historyWindowStep != null &&
+            historyWindowStep > 0 &&
+            onLoadMoreHistory && (
+              <div class="load-more-row">
+                <button
+                  class="btn"
+                  onClick={() => {
+                    loadMore(historyWindowStep);
+                  }}
+                >
+                  Load {historyWindowStep} more
+                </button>
+                <button
+                  class="btn"
+                  onClick={() => {
+                    loadMore(historyWindowStep * 5);
+                  }}
+                >
+                  Load {historyWindowStep * 5} more
+                </button>
+                <button
+                  class="btn"
+                  onClick={() => {
+                    loadMore(0);
+                  }}
+                >
+                  Load all
+                </button>
+              </div>
+            )}
           {topLevelMessages.map((msg) => {
             const resolvedBlocks =
               msg.type === "assistant"

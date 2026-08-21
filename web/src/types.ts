@@ -281,6 +281,9 @@ export interface TaskState {
    *  lazy rendering: with a window the DOM is small and `content-visibility`
    *  only makes the scroll height jitter, but an unwindowed replay needs it. */
   historyWindowed?: boolean;
+  /** First replayed seq of the current window; > 0 means older history exists
+   *  on the server, unsent. */
+  historyWindowStart?: number;
   /** Latched true once history has loaded at least once; never resets.
    *  Used to keep tasks the user has visited rendered in the DOM across
    *  task_reload cycles, so InputBox doesn't unmount mid-interaction. */

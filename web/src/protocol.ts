@@ -271,6 +271,17 @@ export interface TaskHistoryStartMessage {
   window_start?: number;
   window_limit?: number;
 }
+export interface TaskHistoryPrependStartMessage {
+  type: "task_history_prepend_start";
+  tid: number;
+  window_start: number;
+  before_seq: number;
+}
+export interface TaskHistoryPrependEndMessage {
+  type: "task_history_prepend_end";
+  tid: number;
+  window_start: number;
+}
 export interface TaskHistoryEndMessage {
   type: "task_history_end";
   tid: number;
@@ -445,6 +456,8 @@ export type ControlMessage =
   | FocusHintMessage
   | TitleUpdateMessage
   | TaskHistoryStartMessage
+  | TaskHistoryPrependStartMessage
+  | TaskHistoryPrependEndMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage

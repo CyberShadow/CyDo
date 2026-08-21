@@ -937,6 +937,26 @@ body,
   word-break: break-word;
 }
 
+/* Windowed history: centered load-more row at the top of the list */
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 0 20px;
+}
+
+.load-more-row .btn {
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  border-radius: 6px;
+  font-size: 13px;
+  padding: 6px 14px;
+}
+
+.load-more-row .btn:hover {
+  color: var(--text);
+}
+
 /* Messages */
 .message {
   margin-bottom: 16px;
