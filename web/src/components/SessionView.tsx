@@ -96,6 +96,23 @@ function SessionViewInner({
   agentUsage,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // a phone pins the composer above the keyboard, and iOS lets the two drift
+  // apart once the page scrolls, leaving the box floating over a gap that only
+  // a drag starting inside it puts right. Scrolling up to read is also the
+  // moment neither is wanted, so leaving the bottom dismisses both and
+  // returning restores the composer.
+  const [composerHidden, setComposerHidden] = useState(false);
+  const handleAtBottomChange = useCallback((atBottom: boolean) => {
+    const narrow =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 768px)").matches;
+    if (!narrow) return;
+    setComposerHidden(!atBottom);
+    // blurring is what dismisses the keyboard; iOS will not raise it again
+    // without a tap, so returning to the bottom restores only the box
+    if (!atBottom) inputRef.current?.blur();
+  }, []);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
   const pasteTextRef = useRef<((text: string) => void) | null>(null);
   const resumeRef = useRef<HTMLButtonElement>(null);
@@ -415,6 +432,7 @@ function SessionViewInner({
         </div>
       ) : (
         <MessageList
+          onAtBottomChange={handleAtBottomChange}
           taskTid={tid}
           messages={task.messages}
           replacementEvents={task.replacementEvents}
@@ -494,6 +512,7 @@ function SessionViewInner({
             }}
             isProcessing={task.isProcessing}
             stdinClosed={task.stdinClosed}
+            hidden={composerHidden}
             disabled={!connected}
             sessionId={task.uuid}
             inputDraft={task.inputDraft}

@@ -42,6 +42,8 @@ interface Props {
   onViewFile?: (filePath: string) => void;
   spawnedTidsByItemId?: Map<string, Map<number, number>>;
   getTaskHref?: (id: string) => string;
+  /** fires when the list settles at, or leaves, the bottom */
+  onAtBottomChange?: (atBottom: boolean) => void;
 }
 
 function ResultMessageView({ message }: { message: DisplayMessage }) {
@@ -851,8 +853,12 @@ export function MessageList({
   onViewFile,
   spawnedTidsByItemId,
   getTaskHref,
+  onAtBottomChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // through a ref so the scroll listener never has to be torn down and rebound
+  const onAtBottomChangeRef = useRef(onAtBottomChange);
+  onAtBottomChangeRef.current = onAtBottomChange;
 
   // Subscribe to outbox so the component re-renders when entries are added/removed.
   const [outboxTick, setOutboxTick] = useState(0);
@@ -931,8 +937,17 @@ export function MessageList({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // a little tolerance: momentum scrolling lands a pixel or two off zero
+    const atBottom = () => el.scrollTop >= -24;
+    let wasAtBottom = atBottom();
+    onAtBottomChangeRef.current?.(wasAtBottom);
     const onScroll = () => {
       el.style.overflowAnchor = el.scrollTop >= -1 ? "none" : "auto";
+      const now = atBottom();
+      if (now !== wasAtBottom) {
+        wasAtBottom = now;
+        onAtBottomChangeRef.current?.(now);
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {

@@ -3747,6 +3747,13 @@ pre.extra-field-value {
 
 /* Responsive: narrow screens */
 @media (max-width: 768px) {
+  /* scrolled up to read: the composer and its keyboard are only in the way,
+     and iOS drifts them apart anyway once the page scrolls. wider screens keep
+     the composer, where there is room for it and no keyboard to dismiss */
+  .input-box.input-box-hidden {
+    display: none;
+  }
+
   .banner-usage {
     width: 132px;
     flex-basis: 132px;
