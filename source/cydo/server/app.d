@@ -1278,6 +1278,7 @@ class App
 			case "edit_raw_event":    handleEditRawEvent(ws, json); break;
 			case "set_archived":      handleSetArchivedMsg(ws, json); break;
 			case "set_draft":         handleSetDraftMsg(ws, json); break;
+			case "rename_task":       handleRenameTaskMsg(json); break;
 			case "delete_task":       handleDeleteTaskMsg(json); break;
 			case "ask_user_response": workflowTools.handleAskUserResponse(json); break;
 			case "permission_prompt_response": workflowTools.handlePermissionPromptResponse(json); break;
@@ -1848,6 +1849,21 @@ class App
 	{
 		bool archived = json.content.json == `"true"`;
 		archiveManager.handleSetArchived(ws, json.tid, archived);
+	}
+
+	private void handleRenameTaskMsg(WsMessage json)
+	{
+		auto tid = json.tid;
+		if (tid < 0 || tid !in tasks)
+			return;
+		import std.string : strip;
+		string title = json.content.json !is null ? jsonParse!string(json.content.json) : "";
+		title = title.strip;
+		if (title.length == 0)
+			return; // an empty name would just look broken in the sidebar; ignore
+		tasks[tid].title = title;
+		persistence.setTitle(tid, title);
+		broadcastTitleUpdate(tid, title);
 	}
 
 	private void handleSetDraftMsg(WebSocketAdapter senderWs, WsMessage json)

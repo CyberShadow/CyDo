@@ -743,6 +743,42 @@ body,
   color: var(--accent);
 }
 
+.btn-banner-rename,
+.btn-banner-apply {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.btn-banner-rename:hover,
+.btn-banner-apply:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.banner-rename-input {
+  /* width tracks the typed string via the size attribute; allow shrinking
+     when the banner is crowded */
+  min-width: 0;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+@supports (field-sizing: content) {
+  .banner-rename-input {
+    /* pixel-exact content tracking where implemented (the size attribute is
+       then ignored for sizing and serves only as the fallback elsewhere) */
+    field-sizing: content;
+    min-width: 20ch; /* match the size-attribute fallback's floor */
+  }
+}
+
 .sidebar-archive-node {
   color: var(--text-dim);
   font-style: italic;

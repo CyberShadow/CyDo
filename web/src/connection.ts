@@ -303,6 +303,10 @@ export class Connection {
     this.send(JSON.stringify({ type: "set_draft", tid, content: draft }));
   }
 
+  renameTask(tid: number, title: string) {
+    this.send(JSON.stringify({ type: "rename_task", tid, content: title }));
+  }
+
   deleteTask(tid: number) {
     this.send(JSON.stringify({ type: "delete_task", tid }));
   }

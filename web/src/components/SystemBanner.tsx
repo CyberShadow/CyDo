@@ -30,6 +30,8 @@ interface Props {
   onResume?: () => void;
   exportMode?: boolean;
   claudeUsage?: AgentUsageMessage;
+  taskTitle?: string;
+  onRename?: (title: string) => void;
 }
 
 export function normalizeSessionStatus(status?: string | null): string | null {
@@ -142,8 +144,17 @@ export function SystemBanner({
   onResume,
   exportMode,
   claudeUsage,
+  taskTitle,
+  onRename,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const applyRename = () => {
+    const trimmed = renameValue.trim();
+    if (trimmed.length > 0 && onRename) onRename(trimmed);
+    setRenaming(false);
+  };
   const liveStatus = normalizeSessionStatus(sessionStatus);
   let processingText: string | null = null;
   if (alive && stdinClosed) {
@@ -311,6 +322,50 @@ export function SystemBanner({
                 : "Archive"}
           </button>
         )}
+        {onRename &&
+          (renaming ? (
+            <>
+              <input
+                class="banner-rename-input"
+                value={renameValue}
+                size={Math.max(20, renameValue.length + 1)}
+                ref={(el) => {
+                  // focus + select once per mount (inline refs re-run every
+                  // render; reselecting would clobber in-progress typing)
+                  if (el && !el.dataset.autoSelected) {
+                    el.dataset.autoSelected = "1";
+                    el.focus();
+                    el.select();
+                  }
+                }}
+                onInput={(e) => {
+                  setRenameValue(e.currentTarget.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") applyRename();
+                  else if (e.key === "Escape") setRenaming(false);
+                }}
+              />
+              <button
+                class="btn-banner-apply"
+                onClick={applyRename}
+                title="Apply new task name (Enter)"
+              >
+                Apply
+              </button>
+            </>
+          ) : (
+            <button
+              class="btn-banner-rename"
+              onClick={() => {
+                setRenameValue(taskTitle ?? "");
+                setRenaming(true);
+              }}
+              title="Rename task"
+            >
+              Rename
+            </button>
+          ))}
         {totalCost > 0 && (
           <span class="banner-cost">${totalCost.toFixed(4)}</span>
         )}
