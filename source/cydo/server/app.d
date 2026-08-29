@@ -582,6 +582,7 @@ class App
 		));
 		derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			suggestionsEnabled: () => !config.suggestions.set || config.suggestions.value,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
 			agentForTask: &agentForTask,
 			hasSubscribers: (int tid) => clientHub.hasSubscribers(tid),

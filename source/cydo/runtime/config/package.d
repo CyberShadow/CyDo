@@ -112,6 +112,10 @@ struct CydoConfig
 	@Optional string default_agent;
 	@Optional string default_task_type;
 	@Optional AgentConfig[string] agents;
+	/// Generate next-message suggestions (a small-model one-shot at each turn
+	/// end and on opening a live task). Set false to stop the backend from
+	/// creating them at all; title generation is separate and unaffected.
+	@Optional SetInfo!bool suggestions;
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
