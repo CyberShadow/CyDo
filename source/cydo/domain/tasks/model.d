@@ -636,21 +636,48 @@ struct TaskData
 	// nonces awaiting their enqueue record for identity linking. ---
 	string[] queueTailQueuedUuids;
 	string[] queueTailQueuedNonces;
+	// Enqueued text, kept so a mid-turn delivery can be matched back to the
+	// entry it consumed: the queued_command attachment that records the
+	// delivery carries the text, not the queue position.
+	string[] queueTailQueuedContents;
+	// Native uuid of a queued_command attachment seen while its entry was
+	// still queued; only a following remove proves it was the absorbed
+	// delivery (a dequeue means the echo carries the message).
+	string[] queueTailQueuedHeldUuids;
 	string[] queueTailAwaitingUuids;
 	string[] queueTailAwaitingNonces;
 	string[] sentNonceFifo;
+	// Entries removed from the queue whose delivery record has not arrived yet.
+	// A mid-turn absorption writes the remove and the delivery in either order,
+	// so a removal is only conclusive once the surrounding lines are seen.
+	string[] queueTailRemovedUuids;
+	string[] queueTailRemovedNonces;
+	string[] queueTailRemovedContents;
 
 	invariant (queueTailQueuedUuids.length == queueTailQueuedNonces.length,
 		"queue tail queued arrays length mismatch");
+	invariant (queueTailQueuedUuids.length == queueTailQueuedContents.length,
+		"queue tail queued content array length mismatch");
+	invariant (queueTailQueuedUuids.length == queueTailQueuedHeldUuids.length,
+		"queue tail held uuid array length mismatch");
 	invariant (queueTailAwaitingUuids.length == queueTailAwaitingNonces.length,
 		"queue tail awaiting arrays length mismatch");
+	invariant (queueTailRemovedUuids.length == queueTailRemovedNonces.length,
+		"queue tail removed arrays length mismatch");
+	invariant (queueTailRemovedUuids.length == queueTailRemovedContents.length,
+		"queue tail removed content array length mismatch");
 
 	void clearQueueTailState()
 	{
 		queueTailQueuedUuids = null;
 		queueTailQueuedNonces = null;
+		queueTailQueuedContents = null;
+		queueTailQueuedHeldUuids = null;
 		queueTailAwaitingUuids = null;
 		queueTailAwaitingNonces = null;
+		queueTailRemovedUuids = null;
+		queueTailRemovedNonces = null;
+		queueTailRemovedContents = null;
 		sentNonceFifo = null;
 	}
 
