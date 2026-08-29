@@ -15,6 +15,8 @@ const supportsFieldSizing = CSS.supports("field-sizing", "content");
 
 interface CommonProps {
   onInterrupt: () => void;
+  /** narrow screens hide the composer while the reader is scrolled up */
+  hidden?: boolean;
   isProcessing: boolean;
   stdinClosed?: boolean;
   disabled: boolean;
@@ -361,6 +363,7 @@ export function InputBox(props: InputBoxProps) {
 function OrdinaryInputBox({
   onSend,
   onInterrupt,
+  hidden = false,
   isProcessing,
   stdinClosed,
   disabled,
@@ -527,7 +530,9 @@ function OrdinaryInputBox({
 
   return (
     <div
-      class={`input-box${isDragging ? " input-box-dragging" : ""}`}
+      class={`input-box${isDragging ? " input-box-dragging" : ""}${
+        hidden ? " input-box-hidden" : ""
+      }`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
