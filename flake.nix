@@ -963,7 +963,10 @@ EOF
 
             dubLock = ./dub-lock.json;
 
-            nativeBuildInputs = [ pkgs.git pkgs.pkg-config ];
+            # imagemagick (with HEIC support in nixpkgs) lets the HEIC
+            # transcoding unit test run for real; it skips itself where
+            # `magick` cannot produce HEIC
+            nativeBuildInputs = [ pkgs.git pkgs.pkg-config pkgs.imagemagick ];
             buildInputs = [ pkgs.sqlite pkgs.openssl pkgs.zlib ];
 
             CI = "1";

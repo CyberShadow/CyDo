@@ -132,6 +132,45 @@ function publishImages(entry: ControlledImageEntry, images: ImageAttachment[]) {
   }
 }
 
+// what the agent APIs accept as-is, plus what the server transcodes for them:
+// an iPhone camera photo is HEIC, and a mobile browser hands over the original
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+// formats the browser itself cannot decode, so the preview shows a label
+// instead of a broken <img>; the server turns them into JPEG before sending
+const PREVIEW_UNDECODABLE = new Set(["image/heic", "image/heif"]);
+
+/** The real format from the file's leading bytes.
+ *
+ * `File.type` comes from the browser's extension table, and a dragged or
+ * pasted file can arrive with no usable extension or one the browser has no
+ * entry for (Gecko has none for .heic), which leaves `type` empty. The bytes
+ * do not lie.
+ */
+async function sniffImageType(file: File): Promise<string> {
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const ascii = (from: number, to: number) =>
+    String.fromCharCode(...head.subarray(from, to));
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
+    return "image/jpeg";
+  if (head[0] === 0x89 && ascii(1, 4) === "PNG") return "image/png";
+  if (ascii(0, 4) === "GIF8") return "image/gif";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
+  if (ascii(4, 8) === "ftyp") {
+    const brand = ascii(8, 12);
+    if (["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand))
+      return "image/heic";
+  }
+  return file.type;
+}
+
 function useImageAttachments(
   enabled = true,
   resetToken?: number,
@@ -151,6 +190,7 @@ function useImageAttachments(
     () => imageEntry?.generation ?? 0,
   );
   const [isDragging, setIsDragging] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const enabledRef = useRef(enabled);
   const resetTokenRef = useRef(resetToken);
   const generationRef = useRef(imageEntry?.generation ?? 0);
@@ -216,7 +256,30 @@ function useImageAttachments(
   };
 
   const processFile = (file: File) => {
-    if (!enabledRef.current || !file.type.startsWith("image/")) return;
+    if (!enabledRef.current) return;
+    // a type the browser resolved from a known extension is trustworthy and
+    // keeps the synchronous path; sniffing is for the files it could not type
+    if (SUPPORTED_IMAGE_TYPES.has(file.type)) {
+      attachTyped(file, file.type);
+      return;
+    }
+    void sniffImageType(file).then((mediaType) => {
+      attachTyped(file, mediaType);
+    });
+  };
+
+  // nothing here may drop a file silently: a picked photo that vanishes with no
+  // trace is indistinguishable from a broken attach control
+  const attachTyped = (file: File, mediaType: string) => {
+    if (!enabledRef.current) return;
+    if (!SUPPORTED_IMAGE_TYPES.has(mediaType)) {
+      const label = mediaType || `"${file.name}" (unrecognized format)`;
+      setAttachError(
+        `${label} can't be attached; JPEG, PNG, GIF, WebP and HEIC work`,
+      );
+      return;
+    }
+    setAttachError(null);
     const generation = generationRef.current;
     const entry = imageEntry;
     const reader = new FileReader();
@@ -227,7 +290,7 @@ function useImageAttachments(
         id: crypto.randomUUID(),
         dataURL,
         base64,
-        mediaType: file.type,
+        mediaType,
       };
       if (entry) {
         if (
@@ -297,11 +360,29 @@ function useImageAttachments(
     images: enabled && imagesGeneration === generationRef.current ? images : [],
     setImages,
     isDragging: enabled && isDragging,
+    attachError,
+    dismissAttachError: () => {
+      setAttachError(null);
+    },
     onPaste,
     onDragOver,
     onDragLeave,
     onDrop,
   };
+}
+
+function AttachError({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div class="attach-error" role="status" onClick={onDismiss}>
+      {message}
+    </div>
+  );
 }
 
 function ImagePreviews({
@@ -318,7 +399,13 @@ function ImagePreviews({
     <div key="image-previews" class="image-previews">
       {images.map((image) => (
         <div key={image.id} class="image-preview">
-          <img src={image.dataURL} alt="Attached" />
+          {PREVIEW_UNDECODABLE.has(image.mediaType) ? (
+            <div class="image-preview-label" title={image.mediaType}>
+              {image.mediaType.replace("image/", "").toUpperCase()} photo
+            </div>
+          ) : (
+            <img src={image.dataURL} alt="Attached" />
+          )}
           <button
             class="image-preview-remove"
             onClick={() => {
@@ -384,6 +471,8 @@ function OrdinaryInputBox({
     images,
     setImages,
     isDragging,
+    attachError,
+    dismissAttachError,
     onPaste,
     onDragOver,
     onDragLeave,
@@ -568,6 +657,9 @@ function OrdinaryInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <AttachError message={attachError} onDismiss={dismissAttachError} />
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}
@@ -626,6 +718,8 @@ function ControlledInputBox({
     images,
     setImages,
     isDragging,
+    attachError,
+    dismissAttachError,
     onPaste,
     onDragOver,
     onDragLeave,
@@ -729,6 +823,9 @@ function ControlledInputBox({
           setImages((previous) => previous.filter((image) => image.id !== id));
         }}
       />
+      {attachError && (
+        <AttachError message={attachError} onDismiss={dismissAttachError} />
+      )}
       <textarea
         key="textarea"
         ref={textareaRef}

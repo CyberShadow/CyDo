@@ -38,6 +38,7 @@ import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerH
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
 import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
 import cydo.web.client_hub : ClientHub;
+import cydo.web.images : ImageNormalization, normalizeImageBlocks;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
 import cydo.workflow.discovery.service : DiscoveryService, DiscoveryServiceHost,
 	DiscoveryTaskSnapshot, ImportableReconciliationCommit, ImportableScanRecord,
@@ -1300,9 +1301,9 @@ class App
 
 		switch (json.type)
 		{
-			case "create_task":       handleCreateTaskMsg(ws, json); break;
+			case "create_task":       withNormalizedImages(ws, json, (WsMessage m) { handleCreateTaskMsg(ws, m); }); break;
 			case "request_history":   handleRequestHistory(ws, json); break;
-			case "message":           handleUserMessage(json); break;
+			case "message":           withNormalizedImages(ws, json, (WsMessage m) { handleUserMessage(m); }); break;
 			case "resume":            handleResumeMsg(json); break;
 			case "interrupt":         handleInterruptMsg(json); break;
 			case "sigint":            handleSigintMsg(json); break;
@@ -1493,6 +1494,35 @@ class App
 				broadcastTaskUpdate(tid);
 			}).ignoreResult();
 		}
+	}
+
+	/// Run a content-carrying handler with its image blocks made acceptable to
+	/// the agent APIs first. Synchronous when nothing needs converting, so the
+	/// common path keeps its ordering; a message whose photos need transcoding
+	/// is dispatched once the conversions finish, and is refused with a visible
+	/// error rather than forwarded if one of them cannot be converted.
+	private void withNormalizedImages(WebSocketAdapter ws, WsMessage json,
+		void delegate(WsMessage) handler)
+	{
+		import ae.utils.json : jsonParse, toJson, JSONFragment;
+
+		if (json.content.json is null)
+		{
+			handler(json);
+			return;
+		}
+		auto blocks = jsonParse!(ContentBlock[])(json.content.json);
+		normalizeImageBlocks(blocks, (ImageNormalization normalized) {
+			if (normalized.error.length > 0)
+			{
+				import std.logger : warningf;
+				warningf("image attachment rejected for tid=%d: %s", json.tid, normalized.error);
+				ws.send(Data(toJson(ErrorMessage("error", normalized.error, json.tid)).representation));
+				return;
+			}
+			json.content = JSONFragment(toJson(normalized.blocks));
+			handler(json);
+		});
 	}
 
 	private void handleRequestHistory(WebSocketAdapter ws, WsMessage json)
