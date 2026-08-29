@@ -109,6 +109,8 @@ vi.mock("./useSessionManager", () => ({
       getTaskHref: vi.fn(),
       getByTid: state.getByTid,
       refreshWorkspaces: vi.fn(),
+      historyWindowStep: 0,
+      loadMoreHistory: vi.fn(),
       scanState: "idle",
     }) satisfies TaskManager,
 }));
