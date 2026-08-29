@@ -115,6 +115,7 @@ public:
 		if (prompt.length == 0)
 			return;
 
+		auto titleAtStart = td.title;
 		auto titleHandle = host_.agentForTask(tid).completeOneShot(prompt, "small", td.launch);
 		td.titleGenHandle = titleHandle.promise;
 		td.titleGenKill = titleHandle.cancel;
@@ -125,6 +126,9 @@ public:
 			task.titleGenHandle = null;
 			task.titleGenKill = null;
 			task.titleGenDone = true;
+			// a manual rename during generation wins over the stale auto-title
+			if (task.title != titleAtStart)
+				return;
 			if (title.length > 0 && title.length < 200)
 			{
 				task.title = title;
