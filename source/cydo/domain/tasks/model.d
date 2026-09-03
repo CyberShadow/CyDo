@@ -557,6 +557,9 @@ struct TaskData
 	bool archived;
 	long createdAt;    // StdTime; 0 = not set
 	long lastActive;   // StdTime; 0 = not set
+	/// the transcript ends inside an open turn; persisted, so a restart or
+	/// crash landing mid-turn is visible to resume regardless of status
+	bool turnOpen;
 
 	/// Git repository root for the selected project.
 	/// Falls back to projectPath if git resolution fails.

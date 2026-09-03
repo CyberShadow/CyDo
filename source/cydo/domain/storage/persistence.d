@@ -134,6 +134,12 @@ struct Persistence
 			"    has_messages INTEGER NOT NULL DEFAULT 1," ~
 			"    PRIMARY KEY (driver, profile_root, session_id)" ~
 			");",
+			// Migration 23: whether the transcript ends inside an open turn.
+			// Maintained on every translated event (set on turn activity,
+			// cleared on turn/result and process/exit), so a restart or crash
+			// landing mid-turn is visible at resume time regardless of what
+			// the status field recorded; such tasks get the restart nudge.
+			"ALTER TABLE tasks ADD COLUMN turn_open INTEGER NOT NULL DEFAULT 0;",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -219,6 +225,11 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET status = ? WHERE tid = ?".exec(status, tid);
 	}
 
+	void setTurnOpen(int tid, bool open)
+	{
+		db.stmt!"UPDATE tasks SET turn_open = ? WHERE tid = ?".exec(open ? 1 : 0, tid);
+	}
+
 	void promoteImportableTask(int tid, string workspace)
 	{
 		db.stmt!"UPDATE tasks SET workspace = ?, status = 'completed' WHERE tid = ? AND status = 'importable'"
@@ -292,6 +303,7 @@ struct Persistence
 		long lastActive;
 		string entryPoint;
 		bool needsAttention;
+		bool turnOpen;
 	}
 
 	TaskRow[] loadTasks()
@@ -300,11 +312,11 @@ struct Persistence
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string taskStartHead, string title, string status, string agentName, int archived, string draft,
-			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0) FROM tasks".iterate())
+			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention, int turnOpen;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0), COALESCE(turn_open,0) FROM tasks".iterate())
 		{
 			// tasks.agent_type stores the configured agent name from config.agents.
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0, turnOpen != 0);
 		}
 		return result;
 	}
@@ -610,7 +622,7 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 22);
+	assert(userVersion == 23);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
@@ -630,6 +642,7 @@ unittest
 		"worktree_path", "has_worktree", "agent_type", "archived", "draft",
 		"result_text", "created_at", "last_active", "worktree_tid", "entry_point",
 		"needs_attention", "task_start_head",
+		"turn_open",
 	]);
 
 	persistence.upsertSessionMetaCache("claude", "/profiles/one", "same-id", 1,

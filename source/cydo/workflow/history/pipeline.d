@@ -58,6 +58,7 @@ struct HistoryEventPipelineHost
 	void delegate(int tid) onHistorySubscribed;
 	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
 	HistoryBroadcastPlan delegate(int tid, TranslatedEvent ev) planBroadcast;
+	void delegate(int tid, bool open) persistTurnOpen;
 }
 
 class HistoryEventPipeline
@@ -505,6 +506,24 @@ class HistoryEventPipeline
 		td = host_.getTask(tid);
 		if (td is null)
 			return 0;
+		// witness the turn lifecycle for restart recovery: a turn-scoped
+		// event (item/*, turn/*) marks the transcript mid-turn until a
+		// turn/result or process exit closes it, and session bootstrap or
+		// other non-turn events leave it unchanged, so a restart's own
+		// resume traffic cannot re-open an idle task. persisted on change,
+		// so a kill at any moment leaves the truth on disk
+		auto closesTurn = isTurnResultEvent(ev.translated)
+			|| isProcessExitEvent(ev.translated);
+		auto opensTurn = !closesTurn && (ev.translated.canFind(`"type":"item/`)
+			|| ev.translated.canFind(`"type":"item\/`)
+			|| ev.translated.canFind(`"type":"turn/`)
+			|| ev.translated.canFind(`"type":"turn\/`));
+		if ((closesTurn || opensTurn) && td.turnOpen != opensTurn)
+		{
+			td.turnOpen = opensTurn;
+			if (host_.persistTurnOpen !is null)
+				host_.persistTurnOpen(tid, opensTurn);
+		}
 		if (merged)
 			seq = td.history.isLoaded ? td.history.length - 1 : cast(size_t) -1;
 		else
@@ -1540,4 +1559,73 @@ unittest
 	assert(sawTurnStart, "turn_start confirmation missing");
 	assert(sawSteering, "steering confirmation missing");
 	assert(sawRemoved, "removed confirmation missing");
+}
+
+unittest
+{
+	// the turn witness: a turn-scoped event (item/*, turn/*) opens the turn,
+	// a turn result or process exit closes it, session events change nothing,
+	// and only changes hit disk, so a kill at any moment leaves the truth
+	// persisted for resume
+	import cydo.domain.tasks.model : Watermark;
+
+	enum tid = 7;
+	auto td = TaskData(tid, "local", "/tmp/cydo-turn-witness-project");
+	td.history.reset(Watermark.init);
+
+	bool[] persisted;
+	HistoryEventPipelineHost host;
+	host.getTask = (int t) => t == tid ? &td : null;
+	host.normalizeKnownSystemMessageMeta = (string translated, int t) => translated;
+	host.sendToSubscribed = (int t, Data data) {};
+	host.updateClaudeUsageFromEvent = (int t, string translated) => false;
+	host.planBroadcast = (int t, TranslatedEvent ev) {
+		HistoryBroadcastPlan plan;
+		plan.currentEvent = ev;
+		return plan;
+	};
+	host.persistTurnOpen = (int t, bool open) { persisted ~= open; };
+	auto pipeline = new HistoryEventPipeline(host);
+
+	TranslatedEvent make(string translated)
+	{
+		TranslatedEvent ev;
+		ev.translated = translated;
+		return ev;
+	}
+
+	assert(!td.turnOpen, "a fresh task starts with no open turn");
+
+	// activity opens the turn and persists the change once
+	pipeline.broadcastTask(tid, make(`{"type":"item/started","item_type":"text","item_id":"a1","text":"hi"}`));
+	assert(td.turnOpen, "turn activity must open the turn");
+	assert(persisted == [true], "the open must be persisted exactly once");
+
+	// further activity changes nothing on disk
+	pipeline.broadcastTask(tid, make(`{"type":"item/started","item_type":"user_message","item_id":"u1","text":"echo"}`));
+	assert(persisted == [true], "an already-open turn must not rewrite the flag");
+
+	// the turn result closes it
+	pipeline.broadcastTask(tid, make(`{"type":"turn/result","cost_usd":0}`));
+	assert(!td.turnOpen, "a turn result must close the turn");
+	assert(persisted == [true, false]);
+
+	// a process exit while already closed writes nothing further
+	pipeline.broadcastTask(tid, make(`{"type":"process/exit","code":0}`));
+	assert(persisted == [true, false], "closing an already-closed turn must not write");
+
+	// session bootstrap events are not turn activity in either direction:
+	// a restart's resume traffic must not re-open an idle task
+	pipeline.broadcastTask(tid, make(`{"type":"session/metadata","model":"m"}`));
+	assert(!td.turnOpen && persisted == [true, false],
+		"a session event must not open a closed turn");
+
+	// an exit that lands mid-turn also closes it, and a session event in
+	// between changes nothing
+	pipeline.broadcastTask(tid, make(`{"type":"item/started","item_type":"text","item_id":"a2","text":"more"}`));
+	pipeline.broadcastTask(tid, make(`{"type":"session/metadata","model":"m"}`));
+	assert(td.turnOpen, "a session event must not close an open turn");
+	pipeline.broadcastTask(tid, make(`{"type":"process/exit","code":1}`));
+	assert(!td.turnOpen, "a process exit must close an open turn");
+	assert(persisted == [true, false, true, false]);
 }
