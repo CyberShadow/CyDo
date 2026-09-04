@@ -834,6 +834,60 @@ body,
   overflow-anchor: none;
 }
 
+/* Attach button: visually hidden input, since display:none is not reliably
+   clickable from script across engines */
+.input-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* the glyph is the control: no chrome, no inner spacing, sized against the
+   send button beside it. .btn.btn-attach rather than .btn-attach, since the
+   generic .btn rule is declared later in this file and would otherwise win on
+   order alone */
+.btn.btn-attach {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  line-height: 0;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+.btn.btn-attach:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.btn.btn-attach:disabled {
+  opacity: 0.3;
+}
+
+/* an svg has no side bearings, so the box is exactly the icon: the same
+   height as the send button beside it, width from the viewBox ratio */
+.btn.btn-attach svg {
+  width: auto;
+  height: var(--composer-btn-h);
+  display: block;
+}
+
+.input-box .btn-send,
+.input-box .btn-stop {
+  height: var(--composer-btn-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attach-error {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
 /* Message wrapper (action buttons) */
 .message-wrapper {
   position: relative;
@@ -1637,6 +1691,9 @@ body,
 
 /* Input box */
 .input-box {
+  /* one height for the send button and the attach icon, so they always match
+     exactly; 36px is the send button's natural height at this padding */
+  --composer-btn-h: 36px;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -1678,7 +1735,11 @@ body,
 
 .input-textarea {
   flex: 1;
-  padding: 10px 14px;
+  /* 9 + 16 + 9 + 2px border = exactly --composer-btn-h (36px), so a
+     single-line box matches the buttons beside it with the text centered;
+     the explicit line-height keeps that true across font metrics */
+  padding: 9px 14px;
+  line-height: 16px;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -1687,7 +1748,7 @@ body,
   resize: none;
   outline: none;
   overflow-y: auto;
-  min-height: 40px;
+  min-height: var(--composer-btn-h);
   max-height: 200px;
   field-sizing: content;
 }
