@@ -6,7 +6,7 @@ import type { DisplayMessage } from "../types";
 import type { AgnosticEvent } from "../protocol";
 
 describe("MessageList parse-error rendering", () => {
-  it("derives user actions from one matching replacement boundary", () => {
+  it("puts user undo before the message and fork after it", () => {
     const user: DisplayMessage = { id: "u", type: "user", content: [], seq: 7 };
     const replacementEvents: Map<number, AgnosticEvent> = new Map([
       [
@@ -28,11 +28,21 @@ describe("MessageList parse-error rendering", () => {
         blocks={new Map()}
         isProcessing={false}
         bandStatus=""
+        onFork={() => {}}
         onUndo={() => {}}
       />,
     );
-    expect(html).toContain("undo-btn");
-    expect(html).toContain('aria-label="Undo to this point"');
+    const bottomRow = html.indexOf("message-actions-bottom");
+    expect(bottomRow).toBeGreaterThan(0);
+    expect(html.slice(0, bottomRow)).toContain("undo-btn");
+    expect(html.slice(bottomRow)).toContain("fork-btn");
+    expect(html.slice(bottomRow)).not.toContain("undo-btn");
+    expect(html).toContain(
+      'title="Undo this message and later history, restoring its prompt to the composer"',
+    );
+    expect(html).toContain(
+      'aria-label="Undo this message and later history, restoring its prompt to the composer"',
+    );
     expect(html).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
     const noIdentity = renderToString(
       <MessageList
@@ -48,48 +58,67 @@ describe("MessageList parse-error rendering", () => {
     expect(noIdentity).not.toContain("undo-btn");
   });
 
-  it("derives assistant actions from a turn-stop boundary", () => {
+  it("puts assistant undo before the response and fork after it", () => {
     const assistant: DisplayMessage = {
       id: "a",
       type: "assistant",
       content: [],
       seq: 9,
     };
-    const html = renderToString(
-      <MessageList
-        taskTid={1}
-        messages={[assistant]}
-        replacementEvents={
-          new Map([
-            [
-              9,
-              {
-                type: "turn/stop",
-                history_boundary: { anchor: "line:9", kind: "agent_turn" },
-              },
-            ],
-          ])
-        }
-        historyOperations={{
-          fork: { agent_turn: "jsonl" },
-          undo: { agent_turn: "jsonl" },
-        }}
-        blocks={new Map()}
-        isProcessing={false}
-        bandStatus=""
-        onFork={() => {}}
-        onUndo={() => {}}
-      />,
-    );
-    expect(html).toContain("fork-btn");
-    expect(html).toContain("undo-btn");
+    const render = (checkpointUuid?: string) =>
+      renderToString(
+        <MessageList
+          taskTid={1}
+          messages={[assistant]}
+          replacementEvents={
+            new Map([
+              [
+                9,
+                {
+                  type: "turn/stop",
+                  history_boundary: {
+                    anchor: "line:9",
+                    kind: "agent_turn",
+                    checkpoint_uuid: checkpointUuid,
+                  },
+                },
+              ],
+            ])
+          }
+          historyOperations={{
+            fork: { agent_turn: "jsonl" },
+            undo: { agent_turn: "jsonl" },
+          }}
+          blocks={new Map()}
+          isProcessing={false}
+          bandStatus=""
+          onFork={() => {}}
+          onUndo={() => {}}
+        />,
+      );
+    const html = render();
+    const bottomRow = html.indexOf("message-actions-bottom");
+    expect(bottomRow).toBeGreaterThan(0);
+    expect(html.slice(0, bottomRow)).toContain("undo-btn");
+    expect(html.slice(bottomRow)).toContain("fork-btn");
+    expect(html.slice(bottomRow)).not.toContain("undo-btn");
     expect(html).toContain('title="Fork session after this point"');
+    expect(html).toContain(
+      'title="Undo this response and later history, retaining its prompt"',
+    );
     expect(html).toContain(
       'aria-label="Undo this response and later history, retaining its prompt"',
     );
+    const checkpoint = render("checkpoint");
+    expect(checkpoint).toContain(
+      'title="Undo this response and later history, retaining its prompt (file checkpoint available)"',
+    );
+    expect(checkpoint).toContain(
+      'aria-label="Undo this response and later history, retaining its prompt (file checkpoint available)"',
+    );
   });
 
-  it("uses the file-revert undo icon only for a checkpoint boundary", () => {
+  it("uses checkpoint-specific user undo labels and icon only at checkpoints", () => {
     const message: DisplayMessage = {
       id: "u",
       type: "user",
@@ -126,12 +155,22 @@ describe("MessageList parse-error rendering", () => {
         />,
       );
 
-    expect(render()).toContain('aria-label="Undo to this point"');
-    expect(render()).not.toContain('d="M11 3h3v3"');
-    expect(render("checkpoint")).toContain(
-      'aria-label="Undo to this point (file checkpoint available)"',
+    const regular = render();
+    expect(regular).toContain(
+      'title="Undo this message and later history, restoring its prompt to the composer"',
     );
-    expect(render("checkpoint")).toContain('d="M11 3h3v3"');
+    expect(regular).toContain(
+      'aria-label="Undo this message and later history, restoring its prompt to the composer"',
+    );
+    expect(regular).not.toContain('d="M11 3h3v3"');
+    const checkpoint = render("checkpoint");
+    expect(checkpoint).toContain(
+      'title="Undo this message and later history, restoring its prompt to the composer (file checkpoint available)"',
+    );
+    expect(checkpoint).toContain(
+      'aria-label="Undo this message and later history, restoring its prompt to the composer (file checkpoint available)"',
+    );
+    expect(checkpoint).toContain('d="M11 3h3v3"');
   });
 
   it("keeps fork and undo policy entries independent", () => {

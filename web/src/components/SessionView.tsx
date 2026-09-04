@@ -445,6 +445,7 @@ function SessionViewInner({
       {undoPreview && undoPreview.messagesRemoved >= 0 && (
         <UndoConfirmDialog
           messagesRemoved={undoPreview.messagesRemoved}
+          countUnit={undoPreview.kind}
           canRevertFiles={undoPreview.canRevertFiles}
           retainsPrompt={undoPreview.retainsPrompt}
           supportsFileRevert={undoPreview.supportsFileRevert ?? true}
@@ -787,6 +788,7 @@ function QuoteSelectionButton({
 
 export function UndoConfirmDialog({
   messagesRemoved,
+  countUnit,
   canRevertFiles,
   retainsPrompt,
   supportsFileRevert,
@@ -794,6 +796,7 @@ export function UndoConfirmDialog({
   onDismiss,
 }: {
   messagesRemoved: number;
+  countUnit: "history_entries" | "codex_turns";
   canRevertFiles: boolean;
   retainsPrompt: boolean;
   supportsFileRevert: boolean;
@@ -812,16 +815,29 @@ export function UndoConfirmDialog({
           e.stopPropagation();
         }}
       >
-        <div class="undo-dialog-header">Undo to this point?</div>
-        {retainsPrompt && (
-          <div class="undo-dialog-prompt-retention">
-            The preceding prompt will be retained.
-          </div>
-        )}
+        <div class="undo-dialog-header">
+          {retainsPrompt
+            ? "Remove this response and later history?"
+            : "Remove this message and later history?"}
+        </div>
+        <div class="undo-dialog-prompt-retention">
+          {retainsPrompt ? (
+            <>
+              This response and later history will be removed. The preceding
+              prompt will remain.
+            </>
+          ) : (
+            <>
+              This message and later history will be removed. Its prompt will
+              return to the composer.
+            </>
+          )}
+        </div>
         {messagesRemoved > 0 && (
           <div class="undo-dialog-count">
-            {messagesRemoved} message{messagesRemoved !== 1 ? "s" : ""} will be
-            removed.
+            {messagesRemoved}{" "}
+            {countUnit === "codex_turns" ? "whole turn" : "message"}
+            {messagesRemoved !== 1 ? "s" : ""} will be removed.
           </div>
         )}
         <div class="undo-dialog-options">

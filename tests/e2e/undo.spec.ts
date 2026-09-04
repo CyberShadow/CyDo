@@ -206,7 +206,7 @@ test(
       page.locator('.undo-dialog input[type="checkbox"]').nth(1),
     ).toBeDisabled();
     await expect(page.locator(".undo-dialog-prompt-retention")).toHaveText(
-      "The preceding prompt will be retained.",
+      "This response and later history will be removed. The preceding prompt will remain.",
     );
     await page.locator(".btn-undo").click();
 

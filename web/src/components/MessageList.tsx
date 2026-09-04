@@ -570,6 +570,11 @@ const MessageView = memo(
             .map((b) => b.text)
             .join("\n")
         : "";
+    const undoLabel = `${
+      actionBoundary?.kind === "agent_turn"
+        ? "Undo this response and later history, retaining its prompt"
+        : "Undo this message and later history, restoring its prompt to the composer"
+    }${actionBoundary?.checkpointUuid ? " (file checkpoint available)" : ""}`;
 
     if (msg.subtype === "metadata" && !devMode) return null;
 
@@ -733,6 +738,25 @@ const MessageView = memo(
               />
             </button>
           )}
+          {uuid && onUndo && (
+            <button
+              class="msg-action-btn undo-btn"
+              onClick={() => {
+                onUndo(uuid);
+              }}
+              aria-label={undoLabel}
+              title={undoLabel}
+            >
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{
+                  __html: actionBoundary?.checkpointUuid
+                    ? undoFileRevertIcon
+                    : undoIcon,
+                }}
+              />
+            </button>
+          )}
         </div>
         {editing ? (
           <div class="message user-message editing">
@@ -771,60 +795,23 @@ const MessageView = memo(
         ) : (
           inner
         )}
-        {uuid && (onFork || onUndo) && (
+        {uuid && onFork && (
           <div class="message-actions message-actions-bottom">
-            {onFork && (
-              <button
-                class="msg-action-btn fork-btn"
-                data-fork-tid={tid}
-                data-fork-anchor={uuid}
-                onClick={() => {
-                  onFork(uuid);
-                }}
-                title="Fork session after this point"
-                aria-label="Fork session after this point"
-              >
-                <span
-                  class="action-icon"
-                  dangerouslySetInnerHTML={{ __html: forkIcon }}
-                />
-              </button>
-            )}
-            {onUndo && (
-              <button
-                class="msg-action-btn undo-btn"
-                onClick={() => {
-                  onUndo(uuid);
-                }}
-                aria-label={
-                  actionBoundary?.kind === "agent_turn"
-                    ? actionBoundary.checkpointUuid
-                      ? "Undo this response and later history, retaining its prompt (file checkpoint available)"
-                      : "Undo this response and later history, retaining its prompt"
-                    : actionBoundary?.checkpointUuid
-                      ? "Undo to this point (file checkpoint available)"
-                      : "Undo to this point"
-                }
-                title={
-                  actionBoundary?.kind === "agent_turn"
-                    ? actionBoundary.checkpointUuid
-                      ? "Undo this response and later history, retaining its prompt (file checkpoint available)"
-                      : "Undo this response and later history, retaining its prompt"
-                    : actionBoundary?.checkpointUuid
-                      ? "Undo to this point (file checkpoint available)"
-                      : "Undo to this point"
-                }
-              >
-                <span
-                  class="action-icon"
-                  dangerouslySetInnerHTML={{
-                    __html: actionBoundary?.checkpointUuid
-                      ? undoFileRevertIcon
-                      : undoIcon,
-                  }}
-                />
-              </button>
-            )}
+            <button
+              class="msg-action-btn fork-btn"
+              data-fork-tid={tid}
+              data-fork-anchor={uuid}
+              onClick={() => {
+                onFork(uuid);
+              }}
+              title="Fork session after this point"
+              aria-label="Fork session after this point"
+            >
+              <span
+                class="action-icon"
+                dangerouslySetInnerHTML={{ __html: forkIcon }}
+              />
+            </button>
           </div>
         )}
       </div>

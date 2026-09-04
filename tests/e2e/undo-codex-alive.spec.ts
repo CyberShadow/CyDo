@@ -159,7 +159,7 @@ test(
 
     await openUndoDialogForUserMessage(page, 'Please reply with "alive-three"');
     await expect(page.locator(".undo-dialog-count:visible")).toContainText(
-      "3 messages will be removed.",
+      "3 whole turns will be removed.",
     );
     const rollbackFrameStart = frames.length;
     await page.locator(".btn-undo:visible").click();
@@ -285,7 +285,7 @@ test(
       'Please reply with "rolled-count-two"',
     );
     await expect(page.locator(".undo-dialog-count:visible")).toContainText(
-      "2 messages will be removed.",
+      "2 whole turns will be removed.",
     );
     await page.locator(".btn-undo:visible").click();
 
@@ -353,7 +353,9 @@ test(
     await assistant.locator(".undo-btn").click();
     await expect(
       page.locator(".undo-dialog-prompt-retention:visible"),
-    ).toHaveText("The preceding prompt will be retained.");
+    ).toHaveText(
+      "This response and later history will be removed. The preceding prompt will remain.",
+    );
     await expect(page.locator(".undo-dialog-count:visible")).toContainText(
       "3 messages will be removed.",
     );
@@ -563,7 +565,7 @@ test(
       'Please reply with "interrupt-undo-three"',
     );
     await expect(page.locator(".undo-dialog-count:visible")).toContainText(
-      "1 message will be removed.",
+      "1 whole turn will be removed.",
     );
     await page.locator(".btn-undo:visible").click();
 
@@ -618,7 +620,7 @@ test(
     // Only interrupt-undo-two, the probe, and the interrupted prompt are
     // active user turns, so the correct rollback count is three.
     const secondUndoCount = page.locator(".undo-dialog-count:visible");
-    await expect(secondUndoCount).toContainText("messages will be removed.");
+    await expect(secondUndoCount).toContainText("whole turns will be removed.");
     const secondUndoPreview = await secondUndoCount.innerText();
     await page.locator(".btn-undo:visible").click();
 
@@ -643,7 +645,7 @@ test(
       secondUndoPreview,
       retainedContext: await contextProbe.innerText(),
     }).toEqual({
-      secondUndoPreview: "3 messages will be removed.",
+      secondUndoPreview: "3 whole turns will be removed.",
       retainedContext: "context-check-passed",
     });
 
@@ -701,7 +703,7 @@ test(
 
     await openUndoDialogForUserMessage(page, 'Please reply with "dup-marker"');
     await expect(page.locator(".undo-dialog-count:visible")).toContainText(
-      "1 message will be removed.",
+      "1 whole turn will be removed.",
     );
     await page.locator(".btn-undo:visible").click();
 
