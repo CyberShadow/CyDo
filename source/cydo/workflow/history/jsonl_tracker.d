@@ -28,13 +28,26 @@ struct JsonlTracker
 	{
 		return driver == AgentDriver.claude && kind == PersistedHistoryBoundaryKind.user;
 	}
-	struct LiveBoundaryCandidate { size_t seq; PersistedHistoryBoundaryKind kind; string identity; ulong generation; }
-	struct PersistedBoundaryCandidate { PersistedHistoryBoundary boundary; size_t sourceLine; bool requiresIdentity; ulong generation; }
+	struct LiveBoundaryCandidate {
+		size_t seq;
+		PersistedHistoryBoundaryKind kind;
+		string identity;
+		ulong generation;
+		bool requiresExactIdentity;
+	}
+	struct PersistedBoundaryCandidate {
+		PersistedHistoryBoundary boundary;
+		size_t sourceLine;
+		bool requiresExactIdentity;
+		ulong generation;
+	}
 	struct BoundaryReconcileState {
 		size_t readPos;
 		size_t lineCount;
 		LiveBoundaryCandidate[][PersistedHistoryBoundaryKind] liveByKind;
 		PersistedBoundaryCandidate[][PersistedHistoryBoundaryKind] persistedByKind;
+		bool[string] queueCanonicalIdentities;
+		bool[string] absorbedLocalIdentities;
 		ubyte[] partialLine;
 	}
 	TaskData* delegate(int tid) getTask;
@@ -96,7 +109,8 @@ struct JsonlTracker
 	}
 
 	void noteLiveBoundaryCandidate(int tid, size_t seq, string event,
-		string raw = null, int sourceLine = 0, bool isContextBootstrap = false)
+		string raw = null, int sourceLine = 0, bool isContextBootstrap = false,
+		bool registeredLocal = false)
 	{
 		import ae.utils.json : JSONOptional, JSONPartial, jsonParse;
 		@JSONPartial static struct Probe { string type; @JSONOptional string item_type;
@@ -118,9 +132,53 @@ struct JsonlTracker
 			&& kind == PersistedHistoryBoundaryKind.user)
 			return;
 		auto identity = p.uuid.length > 0 ? p.uuid : p.item_id;
+		if (kind == PersistedHistoryBoundaryKind.user
+			&& identity in boundaryState[tid].absorbedLocalIdentities)
+			return;
 		boundaryState[tid].liveByKind[kind] ~= LiveBoundaryCandidate(seq, kind,
-			identity, historyGeneration(tid));
+			identity, historyGeneration(tid), registeredLocal);
 		drainLiveBoundaries(tid, kind);
+	}
+
+	void noteAbsorbedLocalUser(int tid, string uuid, ulong generation)
+	{
+		assert(uuid.length > 0, "absorbed Claude user requires a native identity");
+		assert(historyGeneration(tid) == generation,
+			"absorbed Claude user belongs to a stale history lineage");
+		if (tid !in boundaryState)
+			boundaryState[tid] = BoundaryReconcileState.init;
+		auto state = &boundaryState[tid];
+		assert(uuid !in state.queueCanonicalIdentities,
+			"Claude user cannot be both canonical and absorbed");
+		state.absorbedLocalIdentities[uuid] = true;
+		if (auto lives = PersistedHistoryBoundaryKind.user in state.liveByKind)
+		{
+			LiveBoundaryCandidate[] remaining;
+			foreach (live; *lives)
+				if (live.identity != uuid)
+					remaining ~= live;
+			*lives = remaining;
+		}
+	}
+
+	void noteQueueCanonicalIdentity(int tid, string canonicalIdentity,
+		ulong generation)
+	{
+		assert(canonicalIdentity.length > 0,
+			"canonical Claude queue echo requires a native identity");
+		assert(historyGeneration(tid) == generation,
+			"canonical Claude user belongs to a stale history lineage");
+		if (tid !in boundaryState)
+			boundaryState[tid] = BoundaryReconcileState.init;
+		auto state = &boundaryState[tid];
+		assert(canonicalIdentity !in state.absorbedLocalIdentities,
+			"Claude user cannot be both canonical and absorbed");
+		state.queueCanonicalIdentities[canonicalIdentity] = true;
+		if (auto persisted = PersistedHistoryBoundaryKind.user in state.persistedByKind)
+			foreach (ref candidate; *persisted)
+				if (candidate.boundary.anchor == canonicalIdentity)
+					candidate.requiresExactIdentity = true;
+		drainLiveBoundaries(tid, PersistedHistoryBoundaryKind.user);
 	}
 
 	private void drainLiveBoundaries(int tid, PersistedHistoryBoundaryKind kind)
@@ -149,6 +207,7 @@ struct JsonlTracker
 				if (persisted.generation < current)
 					continue;
 				foreach (j, live; liveCandidates)
+				{
 					if (live.generation == current && live.identity.length > 0
 						&& persisted.boundary.anchor == live.identity)
 					{
@@ -156,32 +215,39 @@ struct JsonlTracker
 						persistedIndex = cast(ptrdiff_t) i;
 						break;
 					}
+				}
 				if (persistedIndex >= 0)
 					break;
 			}
 			if (persistedIndex < 0)
 			{
-				auto live = liveCandidates[0];
-				if (live.generation < current)
+				if (liveCandidates[0].generation < current)
 				{
 					(*state).liveByKind[kind] = liveCandidates[1 .. $];
 					continue;
 				}
-				foreach (i, persisted; candidates)
+				foreach (j, live; liveCandidates)
 				{
-					if (persisted.generation < current)
+					if (live.generation != current || live.requiresExactIdentity)
 						continue;
-					auto nativeRecord = !persisted.boundary.anchor.startsWith("enqueue-");
-					if ((nativeRecord && persisted.boundary.anchor.startsWith("line:"))
-						|| (nativeRecord && requireLiveContext(tid).agent.driver == AgentDriver.claude
-							&& kind == PersistedHistoryBoundaryKind.user)
-						|| (kind == PersistedHistoryBoundaryKind.agent_turn
-							&& live.identity.length == 0))
+					foreach (i, persisted; candidates)
 					{
-						liveIndex = 0;
-						persistedIndex = cast(ptrdiff_t) i;
-						break;
+						if (persisted.generation < current || persisted.requiresExactIdentity)
+							continue;
+						auto nativeRecord = !persisted.boundary.anchor.startsWith("enqueue-");
+						if ((nativeRecord && persisted.boundary.anchor.startsWith("line:"))
+							|| (nativeRecord && requireLiveContext(tid).agent.driver == AgentDriver.claude
+								&& kind == PersistedHistoryBoundaryKind.user)
+							|| (kind == PersistedHistoryBoundaryKind.agent_turn
+								&& live.identity.length == 0))
+						{
+							liveIndex = cast(ptrdiff_t) j;
+							persistedIndex = cast(ptrdiff_t) i;
+							break;
+						}
 					}
+					if (persistedIndex >= 0)
+						break;
 				}
 			}
 			if (persistedIndex < 0) return;
@@ -439,13 +505,18 @@ struct JsonlTracker
 		}
 		foreach (boundary; boundaries)
 		{
+			if (context.agent.driver == AgentDriver.claude
+				&& boundary.kind == PersistedHistoryBoundaryKind.provisional_user)
+				continue;
 			if (tid !in boundaryState)
 				boundaryState[tid] = BoundaryReconcileState.init;
 			auto task = getTask(tid);
 			if (boundaryHasCheckpoint(context.agent.driver, boundary.kind))
 				boundary.checkpointUuid = task.checkpointUuidForAnchor(boundary.anchor);
 			boundaryState[tid].persistedByKind[boundary.kind] ~= PersistedBoundaryCandidate(boundary,
-				cast(size_t) boundary.sourceLine, true, historyGeneration(tid));
+				cast(size_t) boundary.sourceLine,
+				(boundary.anchor in boundaryState[tid].queueCanonicalIdentities) !is null,
+				historyGeneration(tid));
 			drainLiveBoundaries(tid, boundary.kind);
 		}
 	}
@@ -521,7 +592,9 @@ struct JsonlTracker
 			return;
 		onBoundaryResolved(tid, seq, HistoryBoundary(boundary.anchor,
 			boundary.kind == PersistedHistoryBoundaryKind.user
-				? HistoryBoundaryKind.user : HistoryBoundaryKind.agent_turn,
+				? HistoryBoundaryKind.user
+				: boundary.kind == PersistedHistoryBoundaryKind.provisional_user
+					? HistoryBoundaryKind.provisional_user : HistoryBoundaryKind.agent_turn,
 			boundary.checkpointUuid), publish, generation);
 	}
 }
@@ -562,8 +635,8 @@ unittest
 		JsonlTracker.LiveBoundaryCandidate(17, PersistedHistoryBoundaryKind.user, "third", 0),
 	];
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] = [
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("second", PersistedHistoryBoundaryKind.user, null), 2, true, 0),
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("third", PersistedHistoryBoundaryKind.user, null), 3, true, 0),
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("second", PersistedHistoryBoundaryKind.user, null), 2, false, 0),
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("third", PersistedHistoryBoundaryKind.user, null), 3, false, 0),
 	];
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
 	assert(resolved == ["second:10", "third:17"]);
@@ -587,7 +660,7 @@ unittest
 		null, 0, true);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
-			PersistedHistoryBoundaryKind.user, null), 18, true, 0);
+			PersistedHistoryBoundaryKind.user, null), 18, false, 0);
 	tracker.noteLiveBoundaryCandidate(1, 11,
 		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-1"}`);
 	assert(resolved == ["line:18:11"]);
@@ -611,7 +684,7 @@ unittest
 		`{"type":"item/started","item_type":"user_message","item_id":"codex-user-1"}`);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("line:18",
-			PersistedHistoryBoundaryKind.user, null), 18, true, 0);
+			PersistedHistoryBoundaryKind.user, null), 18, false, 0);
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
 	assert(resolved == ["line:18:11"]);
 }
@@ -909,8 +982,8 @@ unittest
 	tracker.boundaryState[1] = JsonlTracker.BoundaryReconcileState.init;
 	auto staleLive = JsonlTracker.LiveBoundaryCandidate(1, PersistedHistoryBoundaryKind.user, "old", 1);
 	auto currentLive = JsonlTracker.LiveBoundaryCandidate(2, PersistedHistoryBoundaryKind.user, "new", 2);
-	auto stalePersisted = JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("old", PersistedHistoryBoundaryKind.user, null), 1, true, 1);
-	auto currentPersisted = JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("new", PersistedHistoryBoundaryKind.user, null), 2, true, 2);
+	auto stalePersisted = JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("old", PersistedHistoryBoundaryKind.user, null), 1, false, 1);
+	auto currentPersisted = JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("new", PersistedHistoryBoundaryKind.user, null), 2, false, 2);
 	tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user] ~= [staleLive, currentLive];
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~= [stalePersisted, currentPersisted];
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
@@ -949,7 +1022,7 @@ unittest
 		JsonlTracker.LiveBoundaryCandidate(12, PersistedHistoryBoundaryKind.user, "stale", stale);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("stale",
-			PersistedHistoryBoundaryKind.user, null), 1, true, stale);
+			PersistedHistoryBoundaryKind.user, null), 1, false, stale);
 	task.history.reset(Watermark.none());
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
 	assert(resolved.length == 0);
@@ -959,7 +1032,7 @@ unittest
 		JsonlTracker.LiveBoundaryCandidate(1, PersistedHistoryBoundaryKind.user, "current", current);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("current",
-			PersistedHistoryBoundaryKind.user, null), 2, true, current);
+			PersistedHistoryBoundaryKind.user, null), 2, false, current);
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
 	assert(resolved == ["current:1"]);
 }
@@ -993,7 +1066,7 @@ unittest
 	tracker.noteLiveBoundaryCandidate(1, 7,
 		`{"type":"item/started","item_type":"user_message","uuid":"u"}`);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("u", PersistedHistoryBoundaryKind.user, null), 1, true, 0);
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("u", PersistedHistoryBoundaryKind.user, null), 1, false, 0);
 	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
 	assert(resolved == ["u:7"]);
 	assert(tracker.boundaryState[1].liveByKind[PersistedHistoryBoundaryKind.user].length == 0);
@@ -1003,7 +1076,7 @@ unittest
 	setTestLiveContext(tracker, 2, new ClaudeCodeAgent());
 	tracker.boundaryState[2] = JsonlTracker.BoundaryReconcileState.init;
 	tracker.boundaryState[2].persistedByKind[PersistedHistoryBoundaryKind.agent_turn] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("turn", PersistedHistoryBoundaryKind.agent_turn, null), 1, true, 0);
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("turn", PersistedHistoryBoundaryKind.agent_turn, null), 1, false, 0);
 	tracker.noteLiveBoundaryCandidate(2, 8, `{"type":"turn/stop","uuid":"turn"}`);
 	assert(resolved == ["u:7", "turn:8"]);
 	assert(tracker.boundaryState[2].liveByKind[PersistedHistoryBoundaryKind.agent_turn].length == 0);
@@ -1034,9 +1107,103 @@ unittest
 	tracker.boundaryState[5].liveByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.LiveBoundaryCandidate(11, PersistedHistoryBoundaryKind.user, "user-a", 0);
 	tracker.boundaryState[5].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
-		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("user-b", PersistedHistoryBoundaryKind.user, null), 1, true, 0);
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("user-b", PersistedHistoryBoundaryKind.user, null), 1, false, 0);
 	tracker.drainLiveBoundaries(5, PersistedHistoryBoundaryKind.user);
 	assert(resolved[$ - 1] == "user-b:11");
+}
+
+unittest
+{
+	import core.exception : AssertError;
+	import std.conv : to;
+	import std.exception : assertThrown;
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	JsonlTracker tracker;
+	setTestLiveContext(tracker, 1, new ClaudeCodeAgent());
+	tracker.historyGeneration = (int) => 0;
+	string[] resolved;
+	tracker.onBoundaryResolved = (int, size_t seq, HistoryBoundary boundary, bool, ulong) {
+		resolved ~= boundary.anchor ~ ":" ~ to!string(seq);
+	};
+
+	// A registered local candidate cannot consume an unrelated ordinary user;
+	// that ordinary pair remains eligible for Claude's existing FIFO path.
+	tracker.noteLiveBoundaryCandidate(1, 7,
+		`{"type":"item/started","item_type":"user_message","uuid":"echo-native"}`,
+		null, 0, false, true);
+	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("ordinary",
+			PersistedHistoryBoundaryKind.user, null), 1, false, 0);
+	tracker.noteLiveBoundaryCandidate(1, 8,
+		`{"type":"item/started","item_type":"user_message","uuid":"other"}`);
+	assert(resolved == ["ordinary:8"]);
+
+	// Live-first and tail-first association require the canonical UUID and
+	// each candidate resolves exactly once.
+	tracker.noteQueueCanonicalIdentity(1, "echo-native", 0);
+	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("echo-native",
+			PersistedHistoryBoundaryKind.user, null), 2, true, 0);
+	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
+	assert(resolved == ["ordinary:8", "echo-native:7"]);
+	tracker.drainLiveBoundaries(1, PersistedHistoryBoundaryKind.user);
+	assert(resolved == ["ordinary:8", "echo-native:7"]);
+
+	setTestLiveContext(tracker, 2, new ClaudeCodeAgent());
+	tracker.noteQueueCanonicalIdentity(2, "echo-native-2", 0);
+	tracker.boundaryState[2].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("echo-native-2",
+			PersistedHistoryBoundaryKind.user, null), 1, true, 0);
+	tracker.noteLiveBoundaryCandidate(2, 9,
+		`{"type":"item/started","item_type":"user_message","uuid":"echo-native-2"}`,
+		null, 0, false, true);
+	assert(resolved == ["ordinary:8", "echo-native:7", "echo-native-2:9"]);
+
+	// A protected queue-derived persisted identity cannot fall back to FIFO.
+	setTestLiveContext(tracker, 3, new ClaudeCodeAgent());
+	tracker.noteQueueCanonicalIdentity(3, "echo-empty", 0);
+	tracker.boundaryState[3].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("echo-empty",
+			PersistedHistoryBoundaryKind.user, null), 1, true, 0);
+	tracker.noteLiveBoundaryCandidate(3, 10,
+		`{"type":"item/started","item_type":"user_message","uuid":"display-empty"}`,
+		null, 0, false, true);
+	assert(resolved.length == 3);
+
+	// Steering is presentation metadata: an ordinary event retains FIFO.
+	setTestLiveContext(tracker, 4, new ClaudeCodeAgent());
+	tracker.boundaryState[4] = JsonlTracker.BoundaryReconcileState.init;
+	tracker.boundaryState[4].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("ordinary-steering",
+			PersistedHistoryBoundaryKind.user, null), 1, false, 0);
+	tracker.noteLiveBoundaryCandidate(4, 11,
+		`{"type":"item/started","item_type":"user_message","is_steering":true}`);
+	assert(resolved[$ - 1] == "ordinary-steering:11");
+
+	tracker.noteAbsorbedLocalUser(1, "different-native", 0);
+	assertThrown!AssertError(tracker.noteQueueCanonicalIdentity(1,
+		"different-native", 0));
+
+	// Absorption is exact: it removes an already-live local candidate and its
+	// tombstone suppresses a late echo without disturbing ordinary FIFO users.
+	setTestLiveContext(tracker, 6, new ClaudeCodeAgent());
+	tracker.noteLiveBoundaryCandidate(6, 12,
+		`{"type":"item/started","item_type":"user_message","uuid":"absorbed-live"}`,
+		null, 0, false, true);
+	tracker.noteAbsorbedLocalUser(6, "absorbed-live", 0);
+	assert(tracker.boundaryState[6].liveByKind[PersistedHistoryBoundaryKind.user].length == 0);
+	tracker.noteAbsorbedLocalUser(6, "absorbed-live", 0);
+	tracker.noteLiveBoundaryCandidate(6, 13,
+		`{"type":"item/started","item_type":"user_message","uuid":"absorbed-live"}`,
+		null, 0, false, true);
+	assert(tracker.boundaryState[6].liveByKind[PersistedHistoryBoundaryKind.user].length == 0);
+	tracker.boundaryState[6].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
+		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("ordinary-peer",
+			PersistedHistoryBoundaryKind.user, null), 1, false, 0);
+	tracker.noteLiveBoundaryCandidate(6, 14,
+		`{"type":"item/started","item_type":"user_message","uuid":"ordinary-peer"}`);
+	assert(resolved[$ - 1] == "ordinary-peer:14");
 }
 
 unittest
@@ -1048,7 +1215,7 @@ unittest
 		JsonlTracker.LiveBoundaryCandidate(4, PersistedHistoryBoundaryKind.user, "user", 0);
 	tracker.boundaryState[1].persistedByKind[PersistedHistoryBoundaryKind.user] ~=
 		JsonlTracker.PersistedBoundaryCandidate(PersistedHistoryBoundary("user",
-			PersistedHistoryBoundaryKind.user, null), 1, true, 0);
+			PersistedHistoryBoundaryKind.user, null), 1, false, 0);
 	tracker.jsonlReadPos[1] = 42;
 	tracker.jsonlLineCount[1] = 3;
 

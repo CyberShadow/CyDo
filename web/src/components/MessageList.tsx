@@ -529,7 +529,10 @@ const MessageView = memo(
     onEdit?: (uuid: string, content: string) => void;
     onEditRaw?: (seq: number, content: string) => void;
     actionUuid?: string;
-    actionBoundary?: { kind: "user" | "agent_turn"; checkpointUuid?: string };
+    actionBoundary?: {
+      kind: "user" | "provisional_user" | "agent_turn";
+      checkpointUuid?: string;
+    };
     spawnedTidsByItemId?: Map<string, Map<number, number>>;
     getTaskHref?: (id: string) => string;
   }) {
@@ -1070,7 +1073,7 @@ export function MessageList({
                     boundaries[0] as {
                       history_boundary: {
                         anchor: string;
-                        kind: "user" | "agent_turn";
+                        kind: "user" | "provisional_user" | "agent_turn";
                         checkpoint_uuid?: string;
                       };
                     }

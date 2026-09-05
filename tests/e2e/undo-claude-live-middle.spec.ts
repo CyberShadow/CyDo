@@ -9,6 +9,16 @@ import {
   assistantText,
 } from "./fixtures";
 
+const userEventText = (event: any): string =>
+  typeof event?.text === "string"
+    ? event.text
+    : Array.isArray(event?.content)
+      ? event.content
+          .filter((block: any) => block?.type === "text")
+          .map((block: any) => block.text)
+          .join("")
+      : "";
+
 async function openUndoDialogForTurn(page: Page, turnText: string) {
   const userMsg = page
     .locator(".message-wrapper", {
@@ -200,7 +210,8 @@ test("all agents publish canonical boundary replacements without duplicate trans
     expect(
       replacements.filter(
         (frame) =>
-          frame.seq === targetSeq && frame.event.history_boundary.kind === "user",
+          frame.seq === targetSeq &&
+          frame.event.history_boundary.kind === "user",
       ),
     ).toHaveLength(1);
     for (const replacement of replacements) {
@@ -231,9 +242,12 @@ test("all agents publish canonical boundary replacements without duplicate trans
   });
   await expect(assistantText(page, turn)).toHaveCount(1);
   await expect(
-    page.locator(".message.user-message:not(.pending):not(.meta-message):visible", {
-      hasText: targetPrompt,
-    }),
+    page.locator(
+      ".message.user-message:not(.pending):not(.meta-message):visible",
+      {
+        hasText: targetPrompt,
+      },
+    ),
   ).toHaveCount(1);
   await expect(() =>
     expect(
@@ -246,12 +260,50 @@ test(
   "claude live idle undo restores user message text into the textarea",
   { tag: "@claude-only" },
   async ({ page, agentType }) => {
-    const prompt = "please reply with reply-one";
+    const prompt = 'Please reply with "reply-one"';
     const timeout = responseTimeout(agentType);
-
+    const frames: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", (event) => {
+        try {
+          frames.push(JSON.parse(event.payload.toString()));
+        } catch {}
+      });
+    });
     await enterSession(page);
     await sendMessage(page, prompt);
     await expect(assistantText(page, "reply-one")).toBeVisible({ timeout });
+
+    await expect(() => {
+      const originals = frames.filter(
+        (frame) =>
+          frame?.type !== "task_history_boundary_replaced" &&
+          frame?.event?.type === "item/started" &&
+          frame?.event?.item_type === "user_message" &&
+          !frame?.event?.pending &&
+          !frame?.event?.is_meta &&
+          userEventText(frame.event).includes(prompt),
+      );
+      expect(originals).toHaveLength(1);
+      const seq = originals[0].seq;
+      expect(typeof seq).toBe("number");
+      const canonicalUserFrames = frames.filter(
+        (frame) =>
+          frame?.type === "task_history_boundary_replaced" &&
+          frame?.seq === seq &&
+          frame?.event?.history_boundary?.kind === "user" &&
+          typeof frame.event.history_boundary.anchor === "string" &&
+          frame.event.history_boundary.anchor.length > 0,
+      );
+      expect(canonicalUserFrames).toHaveLength(1);
+      expect(
+        frames.some(
+          (frame) =>
+            frame?.type === "history_operations" &&
+            frame?.history_operations?.undo?.user === "jsonl",
+        ),
+      ).toBe(true);
+    }).toPass({ timeout });
 
     const input = page.locator(".input-textarea:visible").first();
     await expect(input).toBeEnabled();
@@ -272,15 +324,15 @@ test(
   "claude live idle undo on turn three removes only turns three through five",
   { tag: "@claude-only" },
   async ({ page, agentType }) => {
-  const turns = [
+    const turns = [
       "live-one",
       "live-two",
       "live-three",
       "live-four",
       "live-five",
-  ];
-  const timeout = responseTimeout(agentType);
-  await enterSession(page);
+    ];
+    const timeout = responseTimeout(agentType);
+    await enterSession(page);
     for (const turn of turns) {
       await sendMessage(page, `Please reply with "${turn}"`);
       await expect(assistantText(page, turn)).toBeVisible({ timeout });
@@ -467,7 +519,8 @@ test(
       expect(
         frames.some(
           (frame) =>
-            frame?.type !== "task_history_boundary_replaced" && frame?.seq === seq,
+            frame?.type !== "task_history_boundary_replaced" &&
+            frame?.seq === seq,
         ),
       ).toBe(true);
     }

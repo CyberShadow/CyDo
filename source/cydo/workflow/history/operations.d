@@ -11,6 +11,7 @@ enum CodexForkSourceState { dead, liveReady, liveBusy }
 struct HistoryOperationKinds
 {
 	@JSONOptional HistoryOperationMechanism user;
+	@JSONOptional HistoryOperationMechanism provisional_user;
 	@JSONOptional HistoryOperationMechanism agent_turn;
 }
 
@@ -30,6 +31,8 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 		result.fork.agent_turn = HistoryOperationMechanism.jsonl;
 		result.undo.user = HistoryOperationMechanism.jsonl;
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
+		if (driver == AgentDriver.claude)
+			result.undo.provisional_user = HistoryOperationMechanism.jsonl;
 		return result;
 	}
 
@@ -57,15 +60,25 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 bool allowsOperation(const HistoryBoundary boundary, const HistoryOperations operations,
 	HistoryOperation operation)
 {
-	auto kinds = operation == HistoryOperation.fork ? operations.fork : operations.undo;
-	return boundary.anchor.length > 0 && (boundary.kind == HistoryBoundaryKind.user
-		? kinds.user != HistoryOperationMechanism.none
-		: kinds.agent_turn != HistoryOperationMechanism.none);
+	return boundary.anchor.length > 0
+		&& operationMechanism(boundary, operations, operation) != HistoryOperationMechanism.none;
 }
 
 bool allowsFileRevert(const HistoryBoundary boundary)
 {
-	return boundary.checkpoint_uuid.length > 0;
+	return boundary.kind != HistoryBoundaryKind.provisional_user
+		&& boundary.checkpoint_uuid.length > 0;
+}
+
+HistoryOperationMechanism operationMechanism(const HistoryBoundary boundary,
+	const HistoryOperations operations, HistoryOperation operation)
+{
+	auto kinds = operation == HistoryOperation.fork ? operations.fork : operations.undo;
+	if (boundary.kind == HistoryBoundaryKind.user)
+		return kinds.user;
+	if (boundary.kind == HistoryBoundaryKind.provisional_user)
+		return kinds.provisional_user;
+	return kinds.agent_turn;
 }
 
 unittest
@@ -93,6 +106,12 @@ unittest
 		CodexForkSourceState.dead);
 	assert(claude.fork.user == HistoryOperationMechanism.jsonl);
 	assert(claude.undo.agent_turn == HistoryOperationMechanism.jsonl);
+	auto provisional = HistoryBoundary("enqueue-4",
+		HistoryBoundaryKind.provisional_user, "");
+	assert(!allowsOperation(provisional, claude, HistoryOperation.fork),
+		"provisional queue boundaries must not be forkable");
+	assert(allowsOperation(provisional, claude, HistoryOperation.undo),
+		"provisional queue boundaries must remain undoable");
 	auto boundary = HistoryBoundary("a", HistoryBoundaryKind.agent_turn, "");
 	assert(allowsOperation(boundary, offline, HistoryOperation.undo));
 	assert(!allowsOperation(boundary, native, HistoryOperation.undo));

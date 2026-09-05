@@ -2974,11 +2974,13 @@ export function useTaskManager(
         | {
             history_boundary?: {
               checkpoint_uuid?: string;
-              kind: "user" | "agent_turn";
+              kind: "user" | "provisional_user" | "agent_turn";
             };
           }
         | undefined;
-      const canRevertFiles = !!boundary?.history_boundary?.checkpoint_uuid;
+      const canRevertFiles =
+        boundary?.history_boundary?.kind !== "provisional_user" &&
+        !!boundary?.history_boundary?.checkpoint_uuid;
       const undoPending: UndoPending = {
         afterUuid,
         kind: "requesting",

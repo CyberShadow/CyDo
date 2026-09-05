@@ -88,6 +88,23 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
     timeout,
   });
   await expect(async () => {
+    const canonicalFrames = frames.filter(
+      (frame) =>
+        frame?.type === "task_history_boundary_replaced" &&
+        frame?.event?.type === "item/started" &&
+        frame?.event?.item_type === "user_message" &&
+        frame?.event?.history_boundary?.kind === "user" &&
+        JSON.stringify(frame.event).includes("rerender-test"),
+    );
+    expect(canonicalFrames).toHaveLength(1);
+  }).toPass({ timeout });
+
+  const canonicalPrompt = page.locator(
+    ".message.user-message",
+    { hasText: "run command echo rerender-test" },
+  );
+  await expect(canonicalPrompt).toHaveCount(1, { timeout });
+  await expect(async () => {
     const kinds = new Set(
       frames
         .filter((frame) => frame?.type === "task_history_boundary_replaced")
@@ -107,7 +124,11 @@ test("completed messages are not recreated when new messages arrive", { tag: "@c
       expect(policies).not.toHaveLength(0);
       expect(policies.at(-1)?.history_operations).toEqual({
         fork: { user: "jsonl", agent_turn: "jsonl" },
-        undo: { user: "jsonl", agent_turn: "jsonl" },
+        undo: {
+          user: "jsonl",
+          provisional_user: "jsonl",
+          agent_turn: "jsonl",
+        },
       });
     },
   ).toPass({ timeout });

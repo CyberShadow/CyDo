@@ -54,6 +54,7 @@ struct SessionMeta
 enum PersistedHistoryBoundaryKind
 {
 	user,
+	provisional_user,
 	agent_turn,
 }
 

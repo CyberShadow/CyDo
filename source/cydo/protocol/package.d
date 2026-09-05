@@ -233,6 +233,7 @@ struct TaskDiagnosticEvent
 enum HistoryBoundaryKind
 {
 	user,
+	provisional_user,
 	agent_turn,
 }
 

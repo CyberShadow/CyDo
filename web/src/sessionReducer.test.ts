@@ -765,6 +765,59 @@ describe("live user echo reconciliation", () => {
   });
 });
 
+describe("queue history reducer", () => {
+  it("replaces a provisional enqueue bubble with its canonical text and image echo", () => {
+    const image = {
+      type: "image" as const,
+      data: "base64-image-data",
+      media_type: "image/png",
+    };
+    const provisional = {
+      ...makeState(),
+      messages: [
+        {
+          id: "queued-user",
+          type: "user" as const,
+          content: [
+            { type: "text" as const, text: "describe this image" },
+            image,
+          ],
+          uuid: "enqueue-42",
+          ackState: 3 as const,
+          pending: true,
+          isProvisional: true,
+        },
+      ],
+      msgIdCounter: 1,
+    };
+    const canonicalEcho = {
+      type: "item/started" as const,
+      item_type: "user_message",
+      item_id: "native-item",
+      uuid: "native-user",
+      content: [{ type: "text" as const, text: "describe this image" }, image],
+    };
+
+    const confirmed = reduceMessage(provisional, {
+      type: "user_message/consumed",
+      uuid: "enqueue-42",
+      native_uuid: "native-user",
+      consumed_as: "turn_start",
+    });
+    const next = reduceMessage(confirmed, canonicalEcho, 43);
+
+    expect(next.messages).toEqual([
+      expect.objectContaining({
+        uuid: "native-user",
+        content: canonicalEcho.content,
+        seq: 43,
+      }),
+    ]);
+    expect(next.messages[0]).not.toHaveProperty("isProvisional");
+    expect(next.messages[0]).not.toHaveProperty("pending");
+  });
+});
+
 describe("system event suppression", () => {
   it("ignores thinking_tokens system events without adding parse errors", () => {
     const s = makeState();

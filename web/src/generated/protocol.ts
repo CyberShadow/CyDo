@@ -48,7 +48,7 @@ export interface ControlResponse {
 
 export interface HistoryBoundary {
   anchor: string;
-  kind: "user" | "agent_turn";
+  kind: "user" | "provisional_user" | "agent_turn";
   checkpoint_uuid?: string;
 }
 

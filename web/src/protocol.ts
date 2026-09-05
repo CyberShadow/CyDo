@@ -311,6 +311,7 @@ export interface AgentsListMessage {
 export type HistoryOperationMechanism = "jsonl" | "codex_native";
 export interface HistoryOperationKinds {
   user?: HistoryOperationMechanism;
+  provisional_user?: HistoryOperationMechanism;
   agent_turn?: HistoryOperationMechanism;
 }
 export interface HistoryOperations {

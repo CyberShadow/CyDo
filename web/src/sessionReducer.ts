@@ -843,11 +843,12 @@ export function replaceHistoryBoundary(
 ): SessionState {
   const boundary = event.history_boundary;
   if (!boundary) throw new Error("Replacement event has no history boundary");
-  const expectedType = boundary.kind === "user" ? "user" : "assistant";
-  const eventMatchesBoundary =
-    boundary.kind === "user"
-      ? event.type === "item/started" && event.item_type === "user_message"
-      : event.type === "turn/stop";
+  const isUserBoundary =
+    boundary.kind === "user" || boundary.kind === "provisional_user";
+  const expectedType = isUserBoundary ? "user" : "assistant";
+  const eventMatchesBoundary = isUserBoundary
+    ? event.type === "item/started" && event.item_type === "user_message"
+    : event.type === "turn/stop";
   if (!eventMatchesBoundary)
     throw new Error(
       "Replacement event identity does not match history boundary",
@@ -883,17 +884,15 @@ export function replaceHistoryBoundary(
     item_id?: string;
     uuid?: string;
   };
-  const existingMatchesBoundary =
-    boundary.kind === "user"
-      ? existing.type === "item/started" &&
-        existing.item_type === "user_message"
-      : existing.type === "turn/stop";
+  const existingMatchesBoundary = isUserBoundary
+    ? existing.type === "item/started" && existing.item_type === "user_message"
+    : existing.type === "turn/stop";
   if (!existingMatchesBoundary)
     throw new Error(
       "Replacement target identity does not match history boundary",
     );
   if (
-    boundary.kind === "user" &&
+    isUserBoundary &&
     !boundary.anchor.startsWith("line:") &&
     existing.item_id !== (event as { item_id?: string }).item_id
   )

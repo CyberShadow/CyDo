@@ -28,7 +28,7 @@ import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.protocol : HistoryBoundary, HistoryBoundaryKind;
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.workflow.history.operations : CodexForkSourceState, HistoryOperation,
-	HistoryOperationMechanism, allowsFileRevert, allowsOperation,
+	HistoryOperationMechanism, allowsFileRevert, allowsOperation, operationMechanism,
 	selectHistoryOperations;
 import cydo.workflow.history.jsonl_store : countLinesAfterForkId,
 	editJsonlMessage, forkTask, HistoryForkDestination, spliceJsonlByLine,
@@ -251,8 +251,7 @@ public:
 				"Fork failed: message UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto mechanism = boundary.kind == HistoryBoundaryKind.user
-			? operations.fork.user : operations.fork.agent_turn;
+		auto mechanism = operationMechanism(boundary, operations, HistoryOperation.fork);
 		if (mechanism == HistoryOperationMechanism.codex_native)
 		{
 			auto ca = cast(CodexAgent) ta;
@@ -371,8 +370,7 @@ public:
 			ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 			return;
 		}
-		auto mechanism = boundary.kind == HistoryBoundaryKind.user
-			? operations.undo.user : operations.undo.agent_turn;
+		auto mechanism = operationMechanism(boundary, operations, HistoryOperation.undo);
 		auto codexSession = cast(CodexSession) host_.sessionForTask(tid);
 		if (json.revert_files && !allowsFileRevert(boundary))
 		{

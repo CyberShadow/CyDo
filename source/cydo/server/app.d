@@ -46,7 +46,7 @@ import cydo.web.snapshots : buildAgentsList, buildNoticesList,
 	buildServerStatus, buildTaskEntry, buildTasksListPackets, buildTaskTypesList,
 	buildTaskTypesListForProject, buildWorkspacesList;
 import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeline,
-	HistoryEventPipelineHost;
+	HistoryEventPipelineHost, LocalUserProvenance;
 import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	HistoryAccess, LiveHistoryWatchResolution, LiveHistoryWatchResolutionKind,
 	LiveHistoryWatchTarget, ResolvedNativeHistoryContext,
@@ -574,9 +574,10 @@ class App
 				clientHub.sendToSubscribed(tid, Data(toJson(message).representation));
 			},
 			noteLiveBoundaryCandidate: (int tid, size_t seq, string event, string raw, int sourceLine,
-				bool isContextBootstrap) {
+				bool isContextBootstrap, LocalUserProvenance localUserProvenance) {
 				jsonlTracker.noteLiveBoundaryCandidate(tid, seq, event, raw, sourceLine,
-					isContextBootstrap);
+					isContextBootstrap,
+					localUserProvenance == LocalUserProvenance.registeredLocal);
 			},
 			sendReplaySupplementalState: &sendHistoryReplaySupplementalState,
 			onHistorySubscribed: &onHistorySubscribed,
@@ -1573,6 +1574,7 @@ class App
 				@JSONOptional bool is_meta;
 				@JSONOptional bool pending;
 				@JSONOptional string correlation_id;
+				@JSONOptional string uuid;
 			}
 			UserMsgTagProbe probe;
 			try
@@ -1581,39 +1583,19 @@ class App
 				return plan;
 			if (probe.type == "item/started"
 				&& probe.item_type == "user_message"
-				&& !probe.is_replay && !probe.is_meta && !probe.pending)
+				&& !probe.is_meta && !probe.pending)
 			{
-				if (probe.correlation_id.length > 0)
-				{
-					bool found;
-					size_t foundIndex;
-					foreach (index, ref acceptedEcho; td.acceptedNativeEchoes)
+					auto local = td.observeNativeStdout(probe.uuid, td.history.generation);
+					if (local.found)
 					{
-						if (acceptedEcho.receipt != AgentSubmissionReceipt.appServerAccepted
-							|| acceptedEcho.generation != td.history.generation
-							|| acceptedEcho.nonce != probe.correlation_id)
-							continue;
-						assert(!found,
-							"Agent user echo correlation matches multiple accepted submissions");
-						found = true;
-						foundIndex = index;
+						plan.localUserProvenance = LocalUserProvenance.registeredLocal;
+						if (local.browserNonce.length > 0)
+							plan.currentEvent.translated = plan.currentEvent.translated[0 .. $ - 1]
+								~ `,"correlation_id":` ~ toJson(local.browserNonce) ~ `}`;
 					}
-					assert(found,
-						"Agent user echo correlation does not match an accepted submission");
-					td.acceptedNativeEchoes = td.acceptedNativeEchoes[0 .. foundIndex]
-						~ td.acceptedNativeEchoes[foundIndex + 1 .. $];
-				}
-				else if (td.acceptedNativeEchoes.length > 0
-					&& td.acceptedNativeEchoes[0].receipt == AgentSubmissionReceipt.localEnqueued)
-				{
-					auto acceptedEcho = td.acceptedNativeEchoes[0];
-					assert(acceptedEcho.generation == td.history.generation,
-						"Local agent echo belongs to a stale history lineage");
-					td.acceptedNativeEchoes = td.acceptedNativeEchoes[1 .. $];
-					if (acceptedEcho.nonce.length > 0)
-						plan.currentEvent.translated = plan.currentEvent.translated[0 .. $ - 1]
-							~ `,"correlation_id":` ~ toJson(acceptedEcho.nonce) ~ `}`;
-				}
+				if (!probe.is_replay && probe.correlation_id.length > 0)
+					td.consumeAppServerAcceptedNonce(probe.correlation_id,
+						td.history.generation);
 			}
 		}
 
@@ -1637,6 +1619,12 @@ class App
 			case CodexNativeUndoState.unverified:
 				return "Codex may already have changed or lost history; sends are blocked only in this running CyDo process and this message was not sent";
 		}
+	}
+
+	private void removeUnobservedNativeSubmissionReservation(TaskData* td,
+		string nativeUuid, ulong generation)
+	{
+		td.cancelUnobservedNativeSubmission(nativeUuid, generation);
 	}
 
 	private void handleUserMessage(WsMessage json)
@@ -2002,11 +1990,22 @@ class App
 			? content
 			: content.filter!(b => b.type != "image").array;
 		auto submissionGeneration = td.history.generation;
+		import std.uuid : randomUUID;
+		auto nativeSubmissionUuid = agentForTask(tid).driver == AgentDriver.claude
+			? randomUUID().toString() : null;
+		if (nativeSubmissionUuid.length > 0)
+			td.reserveNativeSubmission(nativeSubmissionUuid,
+				nonce is null ? "" : nonce, submissionGeneration);
 		Promise!AgentSubmissionReceipt submission;
 		try
-			submission = session.sendMessage(toSend, nonce, isContextBootstrap);
+			submission = session.sendMessage(toSend, nonce, isContextBootstrap,
+				nativeSubmissionUuid);
 		catch (Exception e)
+		{
+			removeUnobservedNativeSubmissionReservation(td, nativeSubmissionUuid,
+				submissionGeneration);
 			return reject!void(e);
+		}
 
 		return submission.then((AgentSubmissionReceipt receipt) {
 			auto accepted = tid in tasks;
@@ -2020,13 +2019,10 @@ class App
 			final switch (receipt)
 			{
 			case AgentSubmissionReceipt.localEnqueued:
-				accepted.acceptedNativeEchoes ~= AcceptedNativeEcho(receipt,
-					nonce is null ? "" : nonce, submissionGeneration);
 				break;
 			case AgentSubmissionReceipt.appServerAccepted:
 				if (nonce.length > 0)
-					accepted.acceptedNativeEchoes ~= AcceptedNativeEcho(receipt, nonce,
-						submissionGeneration);
+					accepted.reserveAppServerAcceptedNonce(nonce, submissionGeneration);
 				break;
 			}
 
@@ -2041,8 +2037,6 @@ class App
 					if (*leasedGeneration == submissionGeneration)
 						accepted.inFlightUiNonceGeneration.remove(nonce);
 			}
-			if (receipt == AgentSubmissionReceipt.localEnqueued)
-				accepted.sentNonceFifo ~= nonce is null ? "" : nonce;
 			accepted.isProcessing = true;
 			touchTask(tid);
 			accepted.needsAttention = false;
@@ -2053,6 +2047,11 @@ class App
 			broadcastTaskUpdate(tid);
 			if (receipt == AgentSubmissionReceipt.appServerAccepted)
 				sendAgentAck(tid, nonce);
+		}).except((Exception e) {
+			if (auto current = tid in tasks)
+				removeUnobservedNativeSubmissionReservation(current, nativeSubmissionUuid,
+					submissionGeneration);
+			throw e;
 		});
 	}
 
@@ -2700,39 +2699,48 @@ class App
 					config.system_keyword,
 					KnownSystemMessageKind.postCompactionTaskModeReminder)))
 					td.compactionReminderInFlight = true;
-				string nonce;
-				if (td.sentNonceFifo.length > 0)
-				{
-					nonce = td.sentNonceFifo[0];
-					td.sentNonceFifo = td.sentNonceFifo[1 .. $];
-				}
-				td.queueTailQueuedUuids ~= format!"enqueue-%d"(lineNum);
-				td.queueTailQueuedNonces ~= nonce;
+				td.queueTail.enqueue(format!"enqueue-%d"(lineNum));
 			}
 			else if (op.operation == "dequeue")
 			{
-				if (td.queueTailQueuedUuids.length > 0)
-				{
-					td.queueTailAwaitingUuids ~= td.queueTailQueuedUuids[0];
-					td.queueTailAwaitingNonces ~= td.queueTailQueuedNonces[0];
-					td.queueTailQueuedUuids = td.queueTailQueuedUuids[1 .. $];
-					td.queueTailQueuedNonces = td.queueTailQueuedNonces[1 .. $];
-				}
+				td.queueTail.dequeueToAwaiting();
 			}
 			else if (op.operation == "remove")
 			{
-				if (td.queueTailQueuedUuids.length > 0)
+				auto entry = td.queueTail.removeQueued();
+				if (entry.syntheticUuid.length > 0)
 				{
-					emitUserMessageConsumed(tid, td.queueTailQueuedUuids[0],
-						"removed", td.queueTailQueuedNonces[0]);
-					td.queueTailQueuedUuids = td.queueTailQueuedUuids[1 .. $];
-					td.queueTailQueuedNonces = td.queueTailQueuedNonces[1 .. $];
+					emitUserMessageConsumed(tid, entry.syntheticUuid,
+						"removed", null);
 				}
 			}
 			return;
 		}
 
-		if (td.queueTailAwaitingUuids.length == 0)
+		@JSONPartial static struct AttachmentProbe
+		{
+			string type;
+			@JSONOptional static struct Attachment { string type; @JSONOptional string source_uuid; }
+			@JSONOptional Attachment attachment;
+		}
+		AttachmentProbe attachment;
+		try
+			attachment = jsonParse!AttachmentProbe(line);
+		catch (Exception)
+			attachment = AttachmentProbe.init;
+		if (attachment.type == "attachment"
+			&& attachment.attachment.type == "queued_command"
+			&& attachment.attachment.source_uuid.length > 0)
+		{
+			auto absorbed = td.observeNativeTail(attachment.attachment.source_uuid,
+				SubmissionTailState.absorbed, td.history.generation);
+			if (absorbed.found)
+				jsonlTracker.noteAbsorbedLocalUser(tid,
+					attachment.attachment.source_uuid, td.history.generation);
+			return;
+		}
+
+		if (!td.queueTail.hasAwaiting)
 			return;
 		auto ta = tryAgentForTask(tid);
 		if (ta is null)
@@ -2746,25 +2754,25 @@ class App
 			@JSONPartial static struct TypeProbe { string type; }
 			if (jsonParse!TypeProbe(ts[0].translated).type != "item/started")
 				return; // tool_result etc. — keep awaiting the echo
-			auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
-			// Prefer the echo's native uuid — it matches the bubble the live
-			// stdout echo created; the enqueue anchor is the fallback.
-			auto uuid = ev.uuid.length > 0 ? ev.uuid : td.queueTailAwaitingUuids[0];
-			emitUserMessageConsumed(tid, uuid,
+				auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
+				auto enqueueUuid = td.queueTail.consumeAwaiting().syntheticUuid;
+				auto local = td.observeNativeTail(ev.uuid,
+					SubmissionTailState.canonical, td.history.generation);
+				jsonlTracker.noteQueueCanonicalIdentity(tid, ev.uuid,
+					td.history.generation);
+				emitUserMessageConsumed(tid, enqueueUuid,
 				ev.is_steering ? "steering" : "turn_start",
-				td.queueTailAwaitingNonces[0], uuid);
+					local.found ? local.browserNonce : null, ev.uuid);
 		}
 		else if (ta.isAssistantMessageLine(line))
 		{
 			// No echo before assistant output: the output proves consumption;
 			// turn openers always echo first, so classify as steering.
-			emitUserMessageConsumed(tid, td.queueTailAwaitingUuids[0],
-				"steering", td.queueTailAwaitingNonces[0]);
+			emitUserMessageConsumed(tid, td.queueTail.consumeAwaiting().syntheticUuid,
+				"steering", null);
 		}
 		else
 			return;
-		td.queueTailAwaitingUuids = td.queueTailAwaitingUuids[1 .. $];
-		td.queueTailAwaitingNonces = td.queueTailAwaitingNonces[1 .. $];
 	}
 
 	/// Append a user_message/consumed confirmation to task history and
@@ -3974,6 +3982,7 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 {
 	Promise!AgentSubmissionReceipt[] gates;
 	string[] correlations;
+	string[] nativeSubmissionUuids;
 	ContentBlock[][] contents;
 	size_t sendCalls;
 	private void delegate(TranslatedEvent) outputHandler_;
@@ -3983,10 +3992,12 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 	private bool alive_ = true;
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content,
-		string correlationId = null, bool isContextBootstrap = false)
+		string correlationId = null, bool isContextBootstrap = false,
+		string nativeSubmissionUuid = null)
 	{
 		sendCalls++;
 		correlations ~= correlationId;
+		nativeSubmissionUuids ~= nativeSubmissionUuid;
 		contents ~= content.dup;
 		auto gate = new Promise!AgentSubmissionReceipt;
 		gates ~= gate;
@@ -4012,19 +4023,22 @@ version (unittest) private final class GatedSubmissionSession : AgentSession
 			cb(status);
 	}
 
-	TranslatedEvent nativeUserEcho(string text, string correlationId = null)
+	TranslatedEvent nativeUserEcho(string text, string correlationId = null,
+		string nativeSubmissionUuid = null)
 	{
 		ItemStartedEvent event;
 		event.item_id = "gated-user";
+		event.uuid = nativeSubmissionUuid;
 		event.item_type = "user_message";
 		event.content = [ContentBlock("text", text)];
 		event.correlation_id = correlationId;
 		return TranslatedEvent(toJson(event), null);
 	}
 
-	void emitNativeUserEcho(string text, string correlationId = null)
+	void emitNativeUserEcho(string text, string correlationId = null,
+		string nativeSubmissionUuid = null)
 	{
-		auto event = nativeUserEcho(text, correlationId);
+		auto event = nativeUserEcho(text, correlationId, nativeSubmissionUuid);
 		auto output = outputHandler_;
 		onNextTick(socketManager, {
 			if (output)
@@ -4295,6 +4309,14 @@ version (unittest) private final class GatedSubmissionFixture
 		app.tasks[tid].title = "existing title";
 		app.tasks[tid].status = TaskStatus.active;
 		app.tasks[tid].history.reset(Watermark.none());
+		AgentConfig testConfig;
+		testConfig.driver = typeof(testConfig.driver)(AgentDriver.codex, true);
+		app.config.agents["test"] = testConfig;
+		app.agentsByName["test"] = new TestCodexPromptAgent;
+		AgentConfig claudeConfig;
+		claudeConfig.driver = typeof(claudeConfig.driver)(AgentDriver.claude, true);
+		app.config.agents["claude"] = claudeConfig;
+		app.agentsByName["claude"] = new TestClaudePromptAgent;
 		app.taskTypeCatalog = new TaskTypeCatalog("", "", (string name) => true);
 		socket = new SubmissionCaptureWebSocket((string payload) {
 			if (payload.canFind(`"type":"task_updated"`))
@@ -4318,8 +4340,21 @@ version (unittest) private final class GatedSubmissionFixture
 				auto task = lookupTid in app.tasks;
 				return task is null ? null : task;
 			};
-			app.jsonlTracker.resolveTaskHistory = (int lookupTid) =>
-				TaskHistoryResolution.noSession();
+		app.jsonlTracker.resolveTaskHistory = (int lookupTid) =>
+			TaskHistoryResolution.noSession();
+		app.jsonlTracker.historyGeneration = (int lookupTid) {
+			auto task = lookupTid in app.tasks;
+			assert(task !is null,
+				"history generation requested for missing task");
+			return task.history.generation;
+		};
+		app.jsonlTracker.onBoundaryResolved = (int resolvedTid, size_t seq,
+			HistoryBoundary boundary, bool publish, ulong generation) {
+			auto task = resolvedTid in app.tasks;
+			if (task is null || task.history.generation != generation)
+				return;
+			app.historyPipeline.backfillHistoryBoundary(resolvedTid, seq, boundary, publish);
+		};
 		app.archiveManager = new ArchiveManager(ArchiveManagerHost(
 			tryGetTask: (int lookupTid, out ArchiveTaskSnapshot snapshot) {
 				auto task = lookupTid in app.tasks;
@@ -4347,6 +4382,19 @@ version (unittest) private final class GatedSubmissionFixture
 				submissionMessages ~= cast(string) data.toGC().as!string;
 				publicationOrder ~= "unconfirmed";
 			},
+			normalizeKnownSystemMessageMeta: (string translated, int) => translated,
+			updateClaudeUsageFromEvent: (int, string) => false,
+			noteLiveBoundaryCandidate: (int broadcastTid, size_t seq, string event,
+				string raw, int sourceLine, bool isContextBootstrap,
+				LocalUserProvenance localUserProvenance) {
+				app.jsonlTracker.noteLiveBoundaryCandidate(broadcastTid, seq, event, raw,
+					sourceLine, isContextBootstrap,
+					localUserProvenance == LocalUserProvenance.registeredLocal);
+			},
+			planBroadcast: (int broadcastTid, TranslatedEvent event) {
+				return app.planHistoryBroadcast(broadcastTid, event);
+			},
+			broadcastHistoryOperations: (int) {},
 		));
 		app.derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
 			getTask: (int lookupTid) {
@@ -4397,6 +4445,36 @@ version (unittest) private void drainSubmissionNextTicks()
 
 unittest
 {
+	auto dbPath = buildPath(tempDir(), "cydo-app-claude-alias-native-uuid.sqlite");
+	if (exists(dbPath)) remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	AgentConfig config;
+	config.driver = typeof(config.driver)(AgentDriver.claude, true);
+	fixture.app.config.agents["work-claude"] = config;
+	fixture.app.agentsByName["work-claude"] = new TestClaudePromptAgent;
+	auto aliasTid = fixture.app.persistence.createTask();
+	fixture.app.tasks[aliasTid] = TaskData(aliasTid, "local", "/tmp/alias");
+	auto task = &fixture.app.tasks[aliasTid];
+	task.taskType = "test";
+	task.agentName = "work-claude";
+	task.status = TaskStatus.active;
+	task.history.reset(Watermark.none());
+	task.processQueue = new StateQueue!ProcessState(
+		(ProcessState state) { return resolve(state); }, ProcessState.Alive);
+	fixture.app.clientHub.subscribe(fixture.socket, aliasTid);
+
+	fixture.app.sendTaskMessage(aliasTid, [ContentBlock("text", "alias prompt")])
+		.ignoreResult();
+	assert(fixture.session.gates.length == 1);
+	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
+	drainSubmissionNextTicks();
+	assert(task.nativeSubmissionCount == 1);
+}
+
+unittest
+{
 	auto dbPath = buildPath(tempDir(), "cydo-app-submission-transaction.sqlite");
 	if (exists(dbPath))
 		remove(dbPath);
@@ -4406,9 +4484,14 @@ unittest
 	app.persistence = Persistence(dbPath);
 	auto tid = app.persistence.createTask();
 	app.tasks[tid] = TaskData(tid, "local", "/tmp/cydo-app-submission");
+	app.tasks[tid].agentName = "test";
 	app.tasks[tid].taskType = "test";
 	app.tasks[tid].status = TaskStatus.active;
 	app.tasks[tid].history.reset(Watermark.none());
+	AgentConfig testConfig;
+	testConfig.driver = typeof(testConfig.driver)(AgentDriver.codex, true);
+	app.config.agents["test"] = testConfig;
+	app.agentsByName["test"] = new TestCodexPromptAgent;
 	app.jsonlTracker.getTask = (int lookupTid) {
 		auto task = lookupTid in app.tasks;
 		return task is null ? null : task;
@@ -4463,8 +4546,7 @@ unittest
 	assert(!app.tasks[tid].isProcessing);
 	assert(app.tasks[tid].history.length == 0);
 	assert(("submission-nonce" in app.tasks[tid].recentNonces) is null);
-	assert(app.tasks[tid].acceptedNativeEchoes.length == 0);
-	assert(app.tasks[tid].sentNonceFifo.length == 0);
+	assert(app.tasks[tid].nativeSubmissionCount == 0);
 	assert(app.tasks[tid].pendingSteeringTexts.length == 0);
 	assert(userEventBroadcasts == 0);
 
@@ -4478,7 +4560,7 @@ unittest
 	assert(userEventBroadcasts == 1);
 	assert(userEchoes.length == 1);
 	assertSingleCorrelation(userEchoes[0], "submission-nonce");
-	assert(app.tasks[tid].acceptedNativeEchoes.length == 0);
+	assert(app.tasks[tid].nativeSubmissionCount == 0);
 
 	bool secondFulfilled;
 	app.sendTaskMessage(tid, [ContentBlock("text", "following submission")], null,
@@ -4495,7 +4577,7 @@ unittest
 	assert(userEventBroadcasts == 2);
 	assert(userEchoes.length == 2);
 	assertSingleCorrelation(userEchoes[1], "following-nonce");
-	assert(app.tasks[tid].acceptedNativeEchoes.length == 0);
+	assert(app.tasks[tid].nativeSubmissionCount == 0);
 }
 
 unittest
@@ -4506,6 +4588,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].agentName = "claude";
 	auto message = testBrowserSubmission(fixture.tid, "browser submission",
 		"browser-nonce");
 	fixture.app.handleUserMessage(message);
@@ -4515,6 +4598,9 @@ unittest
 		.inFlightUiNonceGeneration) !is null);
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 1 && fixture.session.gates.length == 1);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1
+		&& !fixture.app.tasks[fixture.tid].nativeSubmission(
+			fixture.session.nativeSubmissionUuids[0]).stdoutSeen);
 
 	fixture.session.reject(0, "submission rejected");
 	drainSubmissionNextTicks();
@@ -4522,6 +4608,7 @@ unittest
 		.inFlightUiNonceGeneration) is null);
 	assert(("browser-nonce" in fixture.app.tasks[fixture.tid].recentNonces)
 		is null);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 
 	fixture.app.handleUserMessage(message);
 	drainSubmissionNextTicks();
@@ -4539,6 +4626,7 @@ unittest
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
 	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentName = "test";
 	auto draftSender = new SubmissionCaptureWebSocket;
 	fixture.app.clientHub.add(draftSender);
 	assert(td.draft == "");
@@ -4580,7 +4668,7 @@ unittest
 		&& td.draft == "saved retry draft");
 	assert(td.history.length == 0 && !td.isProcessing);
 	assert(("first-browser-nonce" in td.recentNonces) is null);
-	assert(td.acceptedNativeEchoes.length == 0 && td.sentNonceFifo.length == 0
+	assert(td.nativeSubmissionCount == 0
 		&& td.pendingSteeringTexts.length == 0);
 	assert(fixture.submissionMessages.length == 0 && fixture.socket.sent.length == 0
 		&& fixture.titlePromptReads == 0);
@@ -4603,6 +4691,7 @@ unittest
 		&& td.history.lastEventContents().canFind(`"body":"first submission rejected"`));
 	assert(("first-browser-nonce" in td.recentNonces) is null
 		&& ("first-browser-nonce" in td.inFlightUiNonceGeneration) is null);
+	assert(td.nativeSubmissionCount == 0);
 	assert(fixture.titlePromptReads == 0);
 	assert(td.lastSuggestions == ["pending suggestion"]
 		&& td.suggestGenHandle is suggestionHandle && td.suggestGeneration == 41);
@@ -4638,8 +4727,7 @@ unittest
 	assert(td.title == truncateTitle("first browser message", 80));
 	assert(td.draft.length == 0 && td.history.length == 2 && td.isProcessing);
 	assert(("first-browser-nonce" in td.recentNonces) !is null);
-	assert(td.acceptedNativeEchoes.length == 1
-		&& td.acceptedNativeEchoes[0].nonce == "first-browser-nonce");
+	assert(td.nativeSubmissionCount == 0);
 	assert(fixture.titlePromptReads == 1);
 	assert(td.lastSuggestions.length == 0 && td.suggestGenHandle is null
 		&& td.suggestGeneration == 42);
@@ -4861,9 +4949,8 @@ unittest
 	drainSubmissionNextTicks();
 	assert(launchSawAssignedWorktree && fixture.session.sendCalls == 1);
 	assert(rejected.status == TaskStatus.active && rejected.history.length == 0
-		&& rejected.acceptedNativeEchoes.length == 0 && rejected.sentNonceFifo.length == 0
-		&& rejected.queueTailQueuedUuids.length == 0 && rejected.queueTailQueuedNonces.length == 0
-		&& rejected.queueTailAwaitingUuids.length == 0 && rejected.queueTailAwaitingNonces.length == 0
+		&& rejected.nativeSubmissionCount == 1
+		&& rejected.queueTail.queuedCount == 0 && rejected.queueTail.awaitingCount == 0
 		&& rejected.pendingSteeringTexts.length == 0 && rejected.recentNonces.length == 0
 		&& !rejected.isProcessing && rejected.lastSuggestions.length == 0
 		&& fixture.titlePromptReads == 0 && fixture.socket.sent.length == 0
@@ -4873,6 +4960,7 @@ unittest
 	drainSubmissionNextTicks();
 	auto afterRejectedReceipt = rowFor(rejectedTid);
 	assert(rejected.status == TaskStatus.failed && rejected.history.length == 1
+		&& rejected.nativeSubmissionCount == 0
 		&& rejected.description.length == 0 && rejected.title.length == 0
 		&& afterRejectedReceipt.description.length == 0
 		&& afterRejectedReceipt.title.length == 0
@@ -4905,10 +4993,9 @@ unittest
 	fixture.socket.sent = null;
 	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 2 && accepted.status == TaskStatus.active);
-	assert(accepted.history.length == 0 && accepted.acceptedNativeEchoes.length == 0
-		&& accepted.recentNonces.length == 0 && accepted.sentNonceFifo.length == 0
-		&& accepted.queueTailQueuedUuids.length == 0 && accepted.queueTailQueuedNonces.length == 0
-		&& accepted.queueTailAwaitingUuids.length == 0 && accepted.queueTailAwaitingNonces.length == 0
+	assert(accepted.history.length == 0 && accepted.nativeSubmissionCount == 1
+		&& accepted.recentNonces.length == 0
+		&& accepted.queueTail.queuedCount == 0 && accepted.queueTail.awaitingCount == 0
 		&& accepted.pendingSteeringTexts.length == 0 && !accepted.isProcessing
 		&& accepted.lastSuggestions.length == 0 && fixture.titlePromptReads == 0
 		&& fixture.socket.sent.length == 0 && fixture.submissionMessages.length == 0
@@ -4920,8 +5007,8 @@ unittest
 		&& accepted.title == truncateTitle("accepted direct first message", 80)
 		&& afterAcceptedReceipt.description == accepted.description
 		&& afterAcceptedReceipt.title == accepted.title);
-	assert(accepted.history.length == 1 && accepted.acceptedNativeEchoes.length == 0
-		&& accepted.sentNonceFifo.length == 0 && accepted.pendingSteeringTexts.length == 1);
+	assert(accepted.history.length == 1 && accepted.nativeSubmissionCount == 1
+		&& accepted.pendingSteeringTexts.length == 1);
 	assert(fixture.titlePromptReads == 1 && fixture.titlePromptTids == [acceptedTid]);
 	assert(fixture.submissionTids == [acceptedTid]);
 	assert(fixture.publicationOrder == ["title_update", "unconfirmed", "task_update"]);
@@ -5143,6 +5230,7 @@ unittest
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
 	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentName = "claude";
 
 	foreach (index, nonce; ["queue-one-nonce", "queue-two-nonce",
 		"queue-three-nonce"])
@@ -5153,9 +5241,7 @@ unittest
 		fixture.session.accept(index, AgentSubmissionReceipt.localEnqueued);
 		drainSubmissionNextTicks();
 	}
-	assert(td.sentNonceFifo == ["queue-one-nonce", "queue-two-nonce",
-		"queue-three-nonce"]);
-	assert(td.acceptedNativeEchoes.length == 3 && td.pendingSteeringTexts == [
+	assert(td.nativeSubmissionCount == 3 && td.pendingSteeringTexts == [
 		"accepted queue message queue-one-nonce",
 		"accepted queue message queue-two-nonce",
 		"accepted queue message queue-three-nonce",
@@ -5167,18 +5253,12 @@ unittest
 		`{"type":"queue-operation","operation":"enqueue","content":"queue two"}`, 102);
 	fixture.app.onTailedJsonlLine(fixture.tid,
 		`{"type":"queue-operation","operation":"dequeue"}`, 103);
-	assert(td.sentNonceFifo.length > 0 && td.queueTailQueuedUuids.length > 0
-		&& td.queueTailQueuedNonces.length > 0
-		&& td.queueTailAwaitingUuids.length > 0
-		&& td.queueTailAwaitingNonces.length > 0);
+	assert(td.queueTail.queuedCount == 1 && td.queueTail.awaitingCount == 1);
 
-	auto sentNonceFifo = td.sentNonceFifo.dup;
-	auto queuedUuids = td.queueTailQueuedUuids.dup;
-	auto queuedNonces = td.queueTailQueuedNonces.dup;
-	auto awaitingUuids = td.queueTailAwaitingUuids.dup;
-	auto awaitingNonces = td.queueTailAwaitingNonces.dup;
+	auto queuedCount = td.queueTail.queuedCount;
+	auto awaitingCount = td.queueTail.awaitingCount;
 	auto pendingSteeringTexts = td.pendingSteeringTexts.dup;
-	auto acceptedEchoes = td.acceptedNativeEchoes.dup;
+	auto nativeSubmissionCount = td.nativeSubmissionCount;
 	auto historyGeneration = td.history.generation;
 	string[] historyPrefix;
 	foreach (index; 0 .. td.history.length)
@@ -5195,13 +5275,10 @@ unittest
 
 	fixture.session.reject(3, "newer submission rejected");
 	drainSubmissionNextTicks();
-	assert(td.sentNonceFifo == sentNonceFifo);
-	assert(td.queueTailQueuedUuids == queuedUuids
-		&& td.queueTailQueuedNonces == queuedNonces
-		&& td.queueTailAwaitingUuids == awaitingUuids
-		&& td.queueTailAwaitingNonces == awaitingNonces);
+	assert(td.queueTail.queuedCount == queuedCount
+		&& td.queueTail.awaitingCount == awaitingCount);
 	assert(td.pendingSteeringTexts == pendingSteeringTexts);
-	assert(td.acceptedNativeEchoes == acceptedEchoes);
+	assert(td.nativeSubmissionCount == nativeSubmissionCount + 1);
 	assert(td.history.generation == historyGeneration
 		&& td.history.length == historyPrefix.length + 1);
 	foreach (index; 0 .. historyPrefix.length)
@@ -5227,6 +5304,7 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].agentName = "claude";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "first local prompt")], null, null,
 		"first-local-nonce").ignoreResult();
@@ -5242,22 +5320,26 @@ unittest
 		fixture.session.accept(index, AgentSubmissionReceipt.localEnqueued);
 		drainSubmissionNextTicks();
 	}
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 3);
-	assert(fixture.app.tasks[fixture.tid].sentNonceFifo == [
-		"first-local-nonce", "", "second-local-nonce"]);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 3);
+	assert(fixture.session.nativeSubmissionUuids.length == 3);
 	foreach (payload; fixture.socket.sent)
 		assert(!payload.canFind(`"agentAck"`));
 
 	auto first = fixture.app.planHistoryBroadcast(fixture.tid,
-		fixture.session.nativeUserEcho("first local prompt"));
+		fixture.session.nativeUserEcho("first local prompt", null,
+			fixture.session.nativeSubmissionUuids[0]));
 	assert(testUserCorrelation(first.currentEvent) == "first-local-nonce");
 	auto system = fixture.app.planHistoryBroadcast(fixture.tid,
-		fixture.session.nativeUserEcho("[SYSTEM: internal reminder]"));
+		fixture.session.nativeUserEcho("[SYSTEM: internal reminder]", null,
+			fixture.session.nativeSubmissionUuids[1]));
 	assert(testUserCorrelation(system.currentEvent).length == 0);
 	auto second = fixture.app.planHistoryBroadcast(fixture.tid,
-		fixture.session.nativeUserEcho("second local prompt"));
+		fixture.session.nativeUserEcho("second local prompt", null,
+			fixture.session.nativeSubmissionUuids[2]));
 	assert(testUserCorrelation(second.currentEvent) == "second-local-nonce");
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 0);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 3);
+	foreach (uuid; fixture.session.nativeSubmissionUuids)
+		assert(fixture.app.tasks[fixture.tid].nativeSubmission(uuid).stdoutSeen);
 }
 
 unittest
@@ -5268,22 +5350,24 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].agentName = "test";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "first app-server prompt")], null, null,
 		"first-app-server-nonce").ignoreResult();
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "second app-server prompt")], null, null,
 		"second-app-server-nonce").ignoreResult();
+	drainSubmissionNextTicks();
 	assert(fixture.session.sendCalls == 2);
 
 	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
 	drainSubmissionNextTicks();
 	fixture.session.accept(1, AgentSubmissionReceipt.appServerAccepted);
 	drainSubmissionNextTicks();
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 2);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 	assertThrown!AssertError(fixture.app.planHistoryBroadcast(fixture.tid,
 		fixture.session.nativeUserEcho("unknown app-server prompt", "unknown-nonce")));
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 2);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 
 	auto second = fixture.app.planHistoryBroadcast(fixture.tid,
 		fixture.session.nativeUserEcho("second app-server prompt",
@@ -5293,10 +5377,235 @@ unittest
 		fixture.session.nativeUserEcho("first app-server prompt",
 			"first-app-server-nonce"));
 	assert(testUserCorrelation(first.currentEvent) == "first-app-server-nonce");
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 0);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 	assertThrown!AssertError(fixture.app.planHistoryBroadcast(fixture.tid,
 		fixture.session.nativeUserEcho("second app-server prompt",
 			"second-app-server-nonce")));
+}
+
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-app-replay-app-server-receipt.sqlite");
+	if (exists(dbPath))
+		remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].agentName = "test";
+	fixture.app.sendTaskMessage(fixture.tid,
+		[ContentBlock("text", "receipt prompt")], null, null,
+		"replay-receipt-nonce").ignoreResult();
+	drainSubmissionNextTicks();
+	fixture.session.accept(0, AgentSubmissionReceipt.appServerAccepted);
+	drainSubmissionNextTicks();
+
+	ItemStartedEvent replay;
+	replay.item_id = "replay-user";
+	replay.item_type = "user_message";
+	replay.content = [ContentBlock("text", "receipt prompt")];
+	replay.correlation_id = "replay-receipt-nonce";
+	replay.is_replay = true;
+	fixture.app.planHistoryBroadcast(fixture.tid,
+		TranslatedEvent(toJson(replay), null));
+
+	// Replay can retain public correlation metadata, but it cannot consume the
+	// one-shot app-server receipt belonging to a live echo.
+	auto live = fixture.app.planHistoryBroadcast(fixture.tid,
+		fixture.session.nativeUserEcho("receipt prompt", "replay-receipt-nonce"));
+	assert(testUserCorrelation(live.currentEvent) == "replay-receipt-nonce");
+}
+
+unittest
+{
+	auto dbPath = buildPath(tempDir(), "cydo-app-attachment-absorption.sqlite");
+	if (exists(dbPath)) remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto td = &fixture.app.tasks[fixture.tid];
+	td.agentName = "claude";
+	td.reserveNativeSubmission("local-one", "one", td.history.generation);
+	td.reserveNativeSubmission("local-two", "two", td.history.generation);
+
+	// Attachments carry the only native identity for absorption. Their order is
+	// independent from queue presentation, so each retires only its exact UUID.
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"local-two"}}`, 1);
+	assert(td.nativeSubmissionCount == 2
+		&& td.nativeSubmission("local-two").tailState == SubmissionTailState.absorbed
+		&& td.nativeSubmission("local-one").tailState == SubmissionTailState.pending);
+	fixture.app.planHistoryBroadcast(fixture.tid,
+		fixture.session.nativeUserEcho("two", null, "local-two"));
+	assert(td.nativeSubmissionCount == 1 && td.nativeSubmission("local-one").tailState
+		== SubmissionTailState.pending);
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"local-one"}}`, 2);
+	assert(td.nativeSubmissionCount == 1
+		&& td.nativeSubmission("local-one").tailState == SubmissionTailState.absorbed);
+	fixture.app.planHistoryBroadcast(fixture.tid,
+		fixture.session.nativeUserEcho("one", null, "local-one"));
+	assert(td.nativeSubmissionCount == 0);
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"unknown"}}`, 3);
+	assert(td.nativeSubmissionCount == 0);
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"attachment","attachment":{"type":"queued_command"}}`, 4);
+	assert(td.nativeSubmissionCount == 0);
+
+	td.queueTail.enqueue("enqueue-5");
+	fixture.app.onTailedJsonlLine(fixture.tid,
+		`{"type":"queue-operation","operation":"remove"}`, 5);
+	auto consumed = td.history.lastEventContents();
+	assert(consumed.canFind(`"uuid":"enqueue-5"`)
+		&& !consumed.canFind(`"native_uuid"`) && !consumed.canFind(`"nonce"`));
+}
+
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+	import cydo.workflow.history.native_history : LiveHistoryContext;
+	import cydo.runtime.launch.types : NativeHistoryProfile;
+	import std.file : write;
+
+	auto dbPath = buildPath(tempDir(), "cydo-app-attachment-chunk-equivalence.sqlite");
+	if (exists(dbPath)) remove(dbPath);
+	scope(exit) if (exists(dbPath)) remove(dbPath);
+	auto fixture = new GatedSubmissionFixture(dbPath);
+	auto splitTid = fixture.app.persistence.createTask();
+	fixture.app.tasks[splitTid] = TaskData(splitTid, "local", "/tmp/cydo-app-submission");
+	fixture.app.tasks[splitTid].taskType = "test";
+	fixture.app.tasks[splitTid].status = TaskStatus.active;
+	fixture.app.tasks[splitTid].history.reset(Watermark.none());
+
+	string[] run(int tid, bool split)
+	{
+		auto td = &fixture.app.tasks[tid];
+		td.agentName = "claude";
+		td.reserveNativeSubmission("native-one", "one", td.history.generation);
+		td.reserveNativeSubmission("native-two", "two", td.history.generation);
+		auto path = buildPath(tempDir(), split
+			? "cydo-app-attachment-split.jsonl"
+			: "cydo-app-attachment-complete.jsonl");
+		write(path, "");
+		scope(exit) if (exists(path)) remove(path);
+		auto agent = new ClaudeCodeAgent;
+		auto target = LiveHistoryWatchTarget(LiveHistoryContext(agent,
+			NativeHistoryProfile(agent.driver, "/tmp/cydo-app-attachment-profile"),
+			"attachment-session"), path);
+		fixture.app.jsonlTracker.onJsonlLine = &fixture.app.onTailedJsonlLine;
+		fixture.app.jsonlTracker.resolveLiveHistoryWatch = (int lookupTid) {
+			assert(lookupTid == tid);
+			return LiveHistoryWatchResolution.target(target);
+		};
+		fixture.app.jsonlTracker.startJsonlWatch(tid);
+		scope(exit) fixture.app.jsonlTracker.stopJsonlWatch(tid);
+		td.reserveNativeSubmission("native-user", "turn opener", td.history.generation);
+		auto publicationStart = fixture.submissionMessages.length;
+		fixture.app.historyPipeline.broadcastTask(tid,
+			fixture.session.nativeUserEcho("turn opener", null, "native-user"));
+		string canonical = `{"type":"queue-operation","operation":"enqueue","timestamp":"2026-06-11T06:00:00Z","sessionId":"S","content":"turn opener"}` ~ "\n"
+			~ `{"type":"queue-operation","operation":"dequeue","timestamp":"2026-06-11T06:00:01Z","sessionId":"S"}` ~ "\n"
+			~ `{"parentUuid":"p","isSidechain":false,"type":"user","toolUseResult":{"stdout":"ok"},"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]}}` ~ "\n"
+			~ `{"type":"atis-latch","atis":"","sessionId":"S"}` ~ "\n"
+			~ `{"type":"user","uuid":"native-user","message":{"role":"user","content":"turn opener"}}` ~ "\n"
+			~ `{"type":"assistant","uuid":"asst-1","message":{"id":"asst-1","content":[{"type":"text","text":"after steer"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1}}}` ~ "\n";
+		string enqueues = `{"type":"queue-operation","operation":"enqueue","content":"one"}` ~ "\n"
+			~ `{"type":"queue-operation","operation":"enqueue","content":"two"}` ~ "\n";
+		string attachments = `{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"native-two"}}` ~ "\n"
+			~ `{"type":"attachment","attachment":{"type":"queued_command","source_uuid":"native-one"}}` ~ "\n";
+		string removes = `{"type":"queue-operation","operation":"remove"}` ~ "\n"
+			~ `{"type":"queue-operation","operation":"remove"}` ~ "\n";
+		string data = canonical ~ enqueues ~ attachments ~ removes;
+		if (split)
+		{
+			auto canonicalCut = canonical.length / 2;
+			write(path, canonical[0 .. canonicalCut]);
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+			assert(td.queueTail.awaitingCount == 1);
+			auto f = File(path, "a");
+			f.write(canonical[canonicalCut .. $] ~ enqueues);
+			f.close();
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+			assert(td.queueTail.queuedCount == 2);
+			auto cut = attachments.length / 2;
+			f = File(path, "a");
+			f.write(attachments[0 .. cut]);
+			f.close();
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+			assert(td.queueTail.queuedCount == 2);
+			f = File(path, "a");
+			f.write(attachments[cut .. $]);
+			f.close();
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+			assert(td.queueTail.queuedCount == 2 && td.queueTail.awaitingCount == 0);
+			f = File(path, "a");
+			f.write(removes);
+			f.close();
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+		}
+		else
+		{
+			write(path, data);
+			fixture.app.jsonlTracker.processNewJsonlContent(tid, path);
+		}
+		assert(td.nativeSubmission("native-one").tailState == SubmissionTailState.absorbed
+			&& td.nativeSubmission("native-two").tailState == SubmissionTailState.absorbed);
+		assert(td.queueTail.queuedCount == 0 && td.queueTail.awaitingCount == 0);
+		assert(td.history.lastEventContents().canFind(`"consumed_as":"removed"`));
+		size_t canonicalBoundaries;
+		foreach (index; 0 .. td.history.length)
+		{
+			auto event = cast(string) td.history.opIndex(index).unsafeContents;
+			if (event.canFind(`"history_boundary"`))
+			{
+				assert(!event.canFind(`native-one`) && !event.canFind(`native-two`), event);
+				if (event.canFind(`"type":"item/started"`)
+					&& event.canFind(`"item_type":"user_message"`)
+					&& event.canFind(`"uuid":"native-user"`)
+					&& event.canFind(`"kind":"user"`)
+					&& event.canFind(`"anchor":"native-user"`))
+					++canonicalBoundaries;
+			}
+		}
+		assert(canonicalBoundaries == 1);
+		size_t canonicalReplacements;
+		foreach (message; fixture.submissionMessages[publicationStart .. $])
+		{
+			if (!message.canFind(`"type":"task_history_boundary_replaced"`))
+				continue;
+			assert(!message.canFind(`native-one`) && !message.canFind(`native-two`), message);
+			assert(message.canFind(`"uuid":"native-user"`)
+				&& message.canFind(`"kind":"user"`)
+				&& message.canFind(`"anchor":"native-user"`), message);
+			++canonicalReplacements;
+		}
+		assert(canonicalReplacements == 1);
+		string[] removed;
+		foreach (index; 0 .. td.history.length)
+		{
+			auto event = cast(string) td.history.opIndex(index).unsafeContents;
+			if (event.canFind(`"type":"user_message/consumed"`))
+			{
+				if (event.canFind(`"consumed_as":"turn_start"`))
+					assert(event.canFind(`"uuid":"enqueue-`)
+						&& event.canFind(`"native_uuid":"native-user"`));
+				else
+				{
+					assert(event.canFind(`"consumed_as":"removed"`)
+						&& !event.canFind(`"native_uuid"`)
+						&& !event.canFind(`"correlation_id"`));
+					removed ~= event;
+				}
+			}
+		}
+		assert(removed.length == 2);
+		return removed;
+	}
+
+	auto complete = run(fixture.tid, false);
+	auto split = run(splitTid, true);
+	assert(complete.length == split.length);
+	foreach (event; complete ~ split)
+		assert(event.canFind(`"uuid":"enqueue-`), event);
 }
 
 unittest
@@ -5307,13 +5616,14 @@ unittest
 	scope(exit) if (exists(dbPath)) remove(dbPath);
 
 	auto fixture = new GatedSubmissionFixture(dbPath);
+	fixture.app.tasks[fixture.tid].agentName = "claude";
 	fixture.app.sendTaskMessage(fixture.tid,
 		[ContentBlock("text", "old echoed prompt")], null, null,
 		"old-echo-nonce").ignoreResult();
 	fixture.session.accept(0, AgentSubmissionReceipt.localEnqueued);
 	drainSubmissionNextTicks();
 	assert(fixture.app.tasks[fixture.tid].history.length == 1);
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 1);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1);
 
 	bool oldReceiptRejected;
 	fixture.app.sendTaskMessage(fixture.tid,
@@ -5336,7 +5646,7 @@ unittest
 	assert(fixture.app.tasks[fixture.tid].history.length == 0);
 	// The old local echo record must not label the first native echo of the
 	// replacement lineage.
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 0);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 0);
 	assert(fixture.app.tasks[fixture.tid].inFlightUiNonceGeneration.length == 0);
 
 	fixture.app.handleUserMessage(testBrowserSubmission(fixture.tid,
@@ -5365,12 +5675,15 @@ unittest
 		!is null);
 	assert(("old-rejection-nonce" in fixture.app.tasks[fixture.tid]
 		.inFlightUiNonceGeneration) is null);
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 1);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1);
 
 	auto newEcho = fixture.app.planHistoryBroadcast(fixture.tid,
-		fixture.session.nativeUserEcho("new generation prompt"));
+		fixture.session.nativeUserEcho("new generation prompt", null,
+			fixture.session.nativeSubmissionUuids[3]));
 	assert(testUserCorrelation(newEcho.currentEvent) == "old-rejection-nonce");
-	assert(fixture.app.tasks[fixture.tid].acceptedNativeEchoes.length == 0);
+	assert(fixture.app.tasks[fixture.tid].nativeSubmissionCount == 1
+		&& fixture.app.tasks[fixture.tid].nativeSubmission(
+			fixture.session.nativeSubmissionUuids[3]).stdoutSeen);
 }
 
 version (unittest) private bool isKnownPromptParityAgent(string name)

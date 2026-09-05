@@ -523,11 +523,63 @@ struct PendingContinuation
 	string repairedInterruptionUuid;
 }
 
-struct AcceptedNativeEcho
+enum SubmissionTailState { pending, canonical, absorbed }
+
+struct NativeSubmissionObservation
 {
-	AgentSubmissionReceipt receipt;
-	string nonce;
+	bool found;
+	string browserNonce;
+	bool stdoutSeen;
+	SubmissionTailState tailState;
+}
+
+private struct NativeSubmission
+{
+	string browserNonce;
 	ulong generation;
+	bool stdoutSeen;
+	SubmissionTailState tailState;
+}
+
+struct QueueTailEntry { string syntheticUuid; }
+
+struct ClaudeQueueTailState
+{
+private:
+	QueueTailEntry[] queued_;
+	QueueTailEntry[] awaiting_;
+
+public:
+	void enqueue(string syntheticUuid)
+	{
+		assert(syntheticUuid.length > 0, "queue entry requires a synthetic UUID");
+		queued_ ~= QueueTailEntry(syntheticUuid);
+	}
+	bool dequeueToAwaiting()
+	{
+		if (queued_.length == 0) return false;
+		awaiting_ ~= queued_[0];
+		queued_ = queued_[1 .. $];
+		return true;
+	}
+	QueueTailEntry removeQueued()
+	{
+		if (queued_.length == 0) return QueueTailEntry.init;
+		auto entry = queued_[0];
+		queued_ = queued_[1 .. $];
+		return entry;
+	}
+	QueueTailEntry consumeAwaiting()
+	{
+		assert(awaiting_.length > 0, "no awaiting queue entry to consume");
+		auto entry = awaiting_[0];
+		awaiting_ = awaiting_[1 .. $];
+		return entry;
+	}
+	@property bool hasAwaiting() const { return awaiting_.length > 0; }
+	@property size_t queuedCount() const { return queued_.length; }
+	@property size_t awaitingCount() const { return awaiting_.length; }
+	void clear() { queued_ = null; awaiting_ = null; }
 }
 
 struct TaskData
@@ -592,8 +644,10 @@ struct TaskData
 	// Runtime state (not persisted)
 	/// Nonces of messages accepted in this session lifetime; cleared on exit.
 	bool[string] recentNonces;
-	/// Native user echoes belonging to accepted submissions in this history lineage.
-	AcceptedNativeEcho[] acceptedNativeEchoes;
+	/// Exact caller UUID registrations for this history lineage. Browser nonces
+	/// are correlation metadata only; UUID ownership is never FIFO-derived.
+	private NativeSubmission[string] nativeSubmissions;
+	private ulong[string] appServerAcceptedNonceGeneration;
 	/// Browser nonce delivery leases held until the matching submission settles.
 	ulong[string] inFlightUiNonceGeneration;
 	ProcessLaunch launch;
@@ -630,35 +684,98 @@ struct TaskData
 	VisibleTurnAnchor[] visibleTurnAnchors;
 	bool compactionReminderInFlight;
 
-	// --- Live queue-tail state: parallel arrays, mutate only via the tail
-	// handler (onTailedJsonlLine). Tracks the agent's message queue as
-	// reconstructed from tailed JSONL queue-operation records, plus the send
-	// nonces awaiting their enqueue record for identity linking. ---
-	string[] queueTailQueuedUuids;
-	string[] queueTailQueuedNonces;
-	string[] queueTailAwaitingUuids;
-	string[] queueTailAwaitingNonces;
-	string[] sentNonceFifo;
-
-	invariant (queueTailQueuedUuids.length == queueTailQueuedNonces.length,
-		"queue tail queued arrays length mismatch");
-	invariant (queueTailAwaitingUuids.length == queueTailAwaitingNonces.length,
-		"queue tail awaiting arrays length mismatch");
+	ClaudeQueueTailState queueTail;
 
 	void clearQueueTailState()
 	{
-		queueTailQueuedUuids = null;
-		queueTailQueuedNonces = null;
-		queueTailAwaitingUuids = null;
-		queueTailAwaitingNonces = null;
-		sentNonceFifo = null;
+		queueTail.clear();
 	}
 
 	void clearSubmissionCorrelationState()
 	{
-		acceptedNativeEchoes = null;
+		nativeSubmissions = null;
+		appServerAcceptedNonceGeneration = null;
 		inFlightUiNonceGeneration = null;
 		clearQueueTailState();
+	}
+
+	void reserveNativeSubmission(string uuid, string nonce, ulong generation)
+	{
+		assert(uuid.length > 0, "native submission UUID must not be empty");
+		assert(uuid !in nativeSubmissions, "duplicate native submission UUID");
+		nativeSubmissions[uuid] = NativeSubmission(nonce, generation, false,
+			SubmissionTailState.pending);
+	}
+
+	NativeSubmissionObservation observeNativeStdout(string uuid, ulong generation)
+	{
+		auto submission = uuid in nativeSubmissions;
+		if (submission is null) return NativeSubmissionObservation.init;
+		assert((*submission).generation == generation,
+			"native submission belongs to a stale history lineage");
+		(*submission).stdoutSeen = true;
+		auto result = NativeSubmissionObservation(true, (*submission).browserNonce,
+			true, (*submission).tailState);
+		if ((*submission).tailState != SubmissionTailState.pending)
+			nativeSubmissions.remove(uuid);
+		return result;
+	}
+
+	NativeSubmissionObservation observeNativeTail(string uuid,
+		SubmissionTailState terminal, ulong generation)
+	{
+		assert(terminal != SubmissionTailState.pending,
+			"tail observation must be terminal");
+		auto submission = uuid in nativeSubmissions;
+		if (submission is null) return NativeSubmissionObservation.init;
+		assert((*submission).generation == generation,
+			"native submission belongs to a stale history lineage");
+		assert((*submission).tailState == SubmissionTailState.pending
+			|| (*submission).tailState == terminal,
+			"native submission has conflicting terminal observations");
+		(*submission).tailState = terminal;
+		auto result = NativeSubmissionObservation(true, (*submission).browserNonce,
+			(*submission).stdoutSeen, terminal);
+		if ((*submission).stdoutSeen)
+			nativeSubmissions.remove(uuid);
+		return result;
+	}
+
+	void cancelUnobservedNativeSubmission(string uuid, ulong generation)
+	{
+		if (uuid.length == 0) return;
+		auto submission = uuid in nativeSubmissions;
+		if (submission is null) return;
+		assert((*submission).generation == generation,
+			"native submission belongs to a stale history lineage");
+		assert(!(*submission).stdoutSeen && (*submission).tailState == SubmissionTailState.pending,
+			"cannot cancel an observed native submission");
+		nativeSubmissions.remove(uuid);
+	}
+
+	@property size_t nativeSubmissionCount() const { return nativeSubmissions.length; }
+	NativeSubmissionObservation nativeSubmission(string uuid) const
+	{
+		auto submission = uuid in nativeSubmissions;
+		return submission is null ? NativeSubmissionObservation.init
+			: NativeSubmissionObservation(true, (*submission).browserNonce,
+				(*submission).stdoutSeen, (*submission).tailState);
+	}
+
+	void reserveAppServerAcceptedNonce(string nonce, ulong generation)
+	{
+		assert(nonce.length > 0, "app-server receipt requires a browser nonce");
+		assert(nonce !in appServerAcceptedNonceGeneration,
+			"duplicate app-server accepted browser nonce");
+		appServerAcceptedNonceGeneration[nonce] = generation;
+	}
+
+	void consumeAppServerAcceptedNonce(string nonce, ulong generation)
+	{
+		auto accepted = nonce in appServerAcceptedNonceGeneration;
+		assert(accepted !is null && *accepted == generation,
+			"Agent user echo correlation does not match an accepted submission");
+		appServerAcceptedNonceGeneration.remove(nonce);
 	}
 
 	@property bool codexNativeUndoBlocksDelivery() const
@@ -834,6 +951,22 @@ unittest
 	import std.exception : assertThrown;
 
 	auto task = TaskData(1, "local", "/tmp");
+	task.reserveNativeSubmission("u-one", "", 4);
+	assert(task.nativeSubmissionCount == 1
+		&& task.nativeSubmission("u-one").found);
+	auto canonical = task.observeNativeTail("u-one", SubmissionTailState.canonical, 4);
+	assert(canonical.found && !canonical.stdoutSeen);
+	auto stdout = task.observeNativeStdout("u-one", 4);
+	assert(stdout.found && stdout.tailState == SubmissionTailState.canonical
+		&& task.nativeSubmissionCount == 0);
+	task.reserveNativeSubmission("u-two", "browser", 4);
+	auto absorbed = task.observeNativeStdout("u-two", 4);
+	assert(absorbed.browserNonce == "browser");
+	task.observeNativeTail("u-two", SubmissionTailState.absorbed, 4);
+	assert(task.nativeSubmissionCount == 0);
+	task.reserveNativeSubmission("u-three", "", 4);
+	task.cancelUnobservedNativeSubmission("u-three", 4);
+	assert(task.nativeSubmissionCount == 0);
 	assert(task.codexNativeUndoState == CodexNativeUndoState.idle
 		&& !task.codexNativeUndoBlocksDelivery);
 	assertThrown!AssertError(task.clearNativeUndoRefusalBeforeDispatch());

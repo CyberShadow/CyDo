@@ -29,7 +29,7 @@ interface AgentSession
 	/// completion. Rejects when the session lifecycle is lost before that boundary.
 	/// correlationId is the nonce from the originating UI send (may be null).
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false);
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null);
 
 	/// Discard submitted messages buffered locally across a history-lineage reset.
 	void invalidatePendingSubmittedMessages();

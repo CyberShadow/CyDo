@@ -3414,7 +3414,7 @@ class CodexSession : AgentSession
 	// ----- AgentSession interface -----
 
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false)
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null)
 	{
 		// Extract text (only text blocks supported; throw on others).
 		string text;

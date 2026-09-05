@@ -36,7 +36,10 @@ struct HistoryBroadcastPlan
 	TranslatedEvent[] prependedEvents;
 	TranslatedEvent currentEvent;
 	bool consumeCurrent;
+	LocalUserProvenance localUserProvenance;
 }
+
+enum LocalUserProvenance { ordinary, registeredLocal }
 
 struct HistoryEventPipelineHost
 {
@@ -53,7 +56,8 @@ struct HistoryEventPipelineHost
 	void delegate(WebSocketAdapter ws, int tid) sendHistoryOperations;
 	void delegate(int tid) broadcastHistoryOperations;
 	void delegate(int tid, size_t seq, string event, string raw, int sourceLine,
-		bool isContextBootstrap) noteLiveBoundaryCandidate;
+		bool isContextBootstrap, LocalUserProvenance localUserProvenance)
+		noteLiveBoundaryCandidate;
 	void delegate(WebSocketAdapter ws, int tid) sendReplaySupplementalState;
 	void delegate(int tid) onHistorySubscribed;
 	bool delegate(int tid, string translated) updateClaudeUsageFromEvent;
@@ -132,6 +136,7 @@ class HistoryEventPipeline
 		// pending — a killed session's unconsumed steer remains visible.
 		string[] queuedUuids;
 		string[] awaitingEchoUuids;
+		bool[string] consumedQueueEnqueues;
 		auto stripTransientStatus = (TranslatedEvent[] events) {
 			foreach (ref e; events)
 				e.translated = host_.injectAgentNameIntoSessionInit(e.translated, td.agentName);
@@ -224,6 +229,7 @@ class HistoryEventPipeline
 							// UI to drop the provisional enqueue-emitted bubble.
 							auto enqueueUuid = awaitingEchoUuids[0];
 							awaitingEchoUuids = awaitingEchoUuids[1 .. $];
+							consumedQueueEnqueues[enqueueUuid] = true;
 							auto ev = jsonParse!ItemStartedEvent(ts[0].translated);
 							// Persisted echo lines carry no steering flag (it is a
 							// live-stdout-only field); mid-turn consumption is
@@ -312,16 +318,25 @@ class HistoryEventPipeline
 				auto event = extractEventFromEnvelope(bytes.as!(char[]));
 				probe = jsonParse!Probe(event);
 			});
-			// pending user messages are queue-emitted records anchored at
-			// their enqueue line — boundary-worthy so removed/unconsumed
-			// messages stay undoable; consumed ones are dropped by the UI in
-			// favor of the canonical echo (which anchors at the echo line).
+			if (boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user
+				&& boundaries[0].anchor in consumedQueueEnqueues)
+			{
+				tracef("queue replay: suppressing boundary %s", boundaries[0].anchor);
+				continue;
+			}
 			auto isUser = probe.type == "item/started" && probe.item_type == "user_message"
 				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
-				&& probe.parent_tool_use_id.length == 0;
+				&& !probe.pending && probe.parent_tool_use_id.length == 0;
+			auto isProvisionalUser = probe.type == "item/started"
+				&& probe.item_type == "user_message" && probe.pending
+				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
+				&& probe.parent_tool_use_id.length == 0
+				&& boundaries[0].anchor.startsWith("enqueue-");
 			auto isTurn = probe.type == "turn/stop" && !probe.is_sidechain
 				&& probe.parent_tool_use_id.length == 0;
 			if ((boundaries[0].kind == PersistedHistoryBoundaryKind.user && !isUser)
+				|| (boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user
+					&& !isProvisionalUser)
 				|| (boundaries[0].kind == PersistedHistoryBoundaryKind.agent_turn && !isTurn))
 				continue;
 			assertReplayNativeIdentity(ta.driver,
@@ -331,7 +346,9 @@ class HistoryEventPipeline
 				boundaries[0].checkpointUuid = td.checkpointUuidForAnchor(boundaries[0].anchor);
 			backfillHistoryBoundary(tid, i, HistoryBoundary(boundaries[0].anchor,
 				boundaries[0].kind == PersistedHistoryBoundaryKind.user
-					? HistoryBoundaryKind.user : HistoryBoundaryKind.agent_turn,
+					? HistoryBoundaryKind.user
+					: boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user
+						? HistoryBoundaryKind.provisional_user : HistoryBoundaryKind.agent_turn,
 				boundaries[0].checkpointUuid), false);
 		}
 		if (ta !is null)
@@ -480,7 +497,8 @@ class HistoryEventPipeline
 		return translated;
 	}
 
-	size_t appendAndBroadcastTaskEvent(int tid, TranslatedEvent ev)
+	size_t appendAndBroadcastTaskEvent(int tid, TranslatedEvent ev,
+		LocalUserProvenance localUserProvenance = LocalUserProvenance.ordinary)
 	{
 		auto td = host_.getTask(tid);
 		if (td is null)
@@ -522,7 +540,7 @@ class HistoryEventPipeline
 				JSONFragment(ev.translated))).representation));
 		if (!merged && host_.noteLiveBoundaryCandidate !is null)
 			host_.noteLiveBoundaryCandidate(tid, seq, ev.translated, ev.raw, ev.sourceLine,
-				ev.isContextBootstrap);
+				ev.isContextBootstrap, localUserProvenance);
 		return seq;
 	}
 
@@ -542,7 +560,8 @@ class HistoryEventPipeline
 		if (plan.consumeCurrent)
 			return;
 
-		appendAndBroadcastTaskEvent(tid, plan.currentEvent);
+		appendAndBroadcastTaskEvent(tid, plan.currentEvent,
+			plan.localUserProvenance);
 	}
 
 	void backfillHistoryBoundary(int tid, size_t seq, HistoryBoundary boundary,
@@ -569,12 +588,18 @@ class HistoryEventPipeline
 				@JSONOptional HistoryBoundary history_boundary;
 			}
 			auto probe = jsonParse!Probe(event);
-			assert((boundary.kind == HistoryBoundaryKind.user
+			bool isUser = boundary.kind == HistoryBoundaryKind.user
 				&& probe.type == "item/started" && probe.item_type == "user_message"
 				&& !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
-				&& probe.parent_tool_use_id.length == 0)
-				|| (boundary.kind == HistoryBoundaryKind.agent_turn && probe.type == "turn/stop"
-				&& !probe.is_sidechain && probe.parent_tool_use_id.length == 0),
+				&& !probe.pending && probe.parent_tool_use_id.length == 0;
+			bool isProvisionalUser = boundary.kind == HistoryBoundaryKind.provisional_user
+				&& boundary.anchor.startsWith("enqueue-")
+				&& probe.type == "item/started" && probe.item_type == "user_message"
+				&& probe.pending && !probe.is_meta && !probe.is_synthetic && !probe.is_sidechain
+				&& probe.parent_tool_use_id.length == 0;
+			bool isTurn = boundary.kind == HistoryBoundaryKind.agent_turn && probe.type == "turn/stop"
+				&& !probe.is_sidechain && probe.parent_tool_use_id.length == 0;
+			assert(isUser || isProvisionalUser || isTurn,
 				"history boundary target is ineligible");
 			if (probe.history_boundary.anchor.length > 0)
 			{
@@ -1120,7 +1145,11 @@ unittest
 	{
 		auto s = cast(string) ev.toGC();
 		if (s.canFind(`"item/result"`) && s.canFind("tool_result"))
+		{
 			sawToolResult = true;
+			assert(!s.canFind(`"history_boundary"`),
+				"a tool-result-only outer user record must not open a user boundary");
+		}
 	}
 	assert(sawToolResult, "tool_result event missing from loaded history");
 }
@@ -1375,12 +1404,12 @@ unittest
 	auto agent = new ClaudeCodeAgent();
 	auto boundaries = agent.extractPersistedHistoryBoundaries(
 		`{"type":"queue-operation","operation":"enqueue"}` ~ "\n" ~
-		`{"type":"user","uuid":"user-checkpoint"}` ~ "\n" ~
+		`{"type":"user","uuid":"user-checkpoint","message":{"role":"user","content":"canonical prompt"}}` ~ "\n" ~
 		`{"type":"assistant","uuid":"agent-checkpoint"}`);
 
 	assert(boundaries.length == 3);
 	assert(boundaries[0].anchor == "enqueue-1");
-	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.user);
+	assert(boundaries[0].kind == PersistedHistoryBoundaryKind.provisional_user);
 	assert(boundaries[0].checkpointUuid.length == 0);
 	assert(boundaries[1].anchor == "user-checkpoint");
 	assert(boundaries[1].kind == PersistedHistoryBoundaryKind.user);
@@ -1388,6 +1417,27 @@ unittest
 	assert(boundaries[2].anchor == "agent-checkpoint");
 	assert(boundaries[2].kind == PersistedHistoryBoundaryKind.agent_turn);
 	assert(boundaries[2].checkpointUuid.length == 0);
+}
+
+unittest
+{
+	import cydo.agent.drivers.claude : ClaudeCodeAgent;
+
+	auto agent = new ClaudeCodeAgent();
+	auto boundaries = agent.extractPersistedHistoryBoundaries(
+		`{"type":"user","uuid":"string","message":{"role":"user","content":"prompt"}}` ~ "\n" ~
+		`{"type":"user","uuid":"tool-only","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool","content":"result"}]}}` ~ "\n" ~
+		`{"type":"user","uuid":"text","message":{"role":"user","content":[{"type":"text","text":"prompt"}]}}` ~ "\n" ~
+		`{"type":"user","uuid":"image","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}}` ~ "\n" ~
+		`{"type":"user","uuid":"mixed","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool","content":"result"},{"type":"text","text":"prompt"}]}}`);
+
+	assert(boundaries.length == 4);
+	assert(boundaries[0].anchor == "string");
+	assert(boundaries[1].anchor == "text");
+	assert(boundaries[2].anchor == "image");
+	assert(boundaries[3].anchor == "mixed");
+	foreach (boundary; boundaries)
+		assert(boundary.kind == PersistedHistoryBoundaryKind.user);
 }
 
 unittest
@@ -1496,30 +1546,35 @@ unittest
 	foreach (i, ref ev; td.history)
 		events ~= cast(string) ev.toGC();
 
-	// All four messages are present, each emitted from its enqueue record
-	// with the pending presentation and the enqueue anchor as identity.
-	foreach (needle; ["turn opener", "steer text", "withdrawn text", "still queued"])
+	// Echo-less queue messages retain their provisional enqueue boundaries.
+	foreach (needle; ["steer text", "withdrawn text", "still queued"])
 	{
 		bool found;
 		foreach (s; events)
 			if (s.canFind(`"user_message"`) && s.canFind(needle)
-				&& s.canFind(`"pending":true`) && s.canFind(`"uuid":"enqueue-`))
+				&& s.canFind(`"pending":true`) && s.canFind(`"uuid":"enqueue-`)
+				&& s.canFind(`"history_boundary":{"anchor":"enqueue-`)
+				&& s.canFind(`"kind":"provisional_user"`))
 				found = true;
-		assert(found, "missing pending user message: " ~ needle);
+		assert(found, "missing provisional queue user boundary: " ~ needle);
 	}
 
 	// The canonical echo message is re-emitted after its confirmation, under
 	// its native identity, and the confirmation carries that identity so the
 	// UI can drop the provisional bubble and anchors resolve either name.
-	bool sawCanonicalEcho, sawNative;
+	bool sawCanonicalEcho, sawCanonicalBoundary, sawNative;
 	foreach (s; events)
 	{
 		if (s.canFind(`"user_message"`) && s.canFind(`"uuid":"echo-1"`))
 			sawCanonicalEcho = true;
+		if (s.canFind(`"uuid":"echo-1"`)
+			&& s.canFind(`"history_boundary":{"anchor":"echo-1","kind":"user"`))
+			sawCanonicalBoundary = true;
 		if (s.canFind(`"user_message/consumed"`) && s.canFind(`"native_uuid":"echo-1"`))
 			sawNative = true;
 	}
 	assert(sawCanonicalEcho, "canonical echo message missing");
+	assert(sawCanonicalBoundary, "canonical echo must replace the provisional boundary");
 	assert(sawNative, "confirmation must carry the echo native uuid");
 
 	// Confirmations: turn_start for the opener, steering for the steer,

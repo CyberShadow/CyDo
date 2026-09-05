@@ -218,6 +218,48 @@ describe("MessageList parse-error rendering", () => {
     );
   });
 
+  it("renders undo without fork or checkpoint for a provisional user boundary", () => {
+    const message: DisplayMessage = {
+      id: "queued",
+      type: "user",
+      content: [],
+      seq: 12,
+      pending: true,
+    };
+    const html = renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[message]}
+        replacementEvents={
+          new Map([
+            [
+              12,
+              {
+                type: "item/started",
+                item_type: "user_message",
+                item_id: "enqueue-12",
+                pending: true,
+                history_boundary: {
+                  anchor: "enqueue-12",
+                  kind: "provisional_user",
+                },
+              },
+            ],
+          ])
+        }
+        historyOperations={{ fork: {}, undo: { provisional_user: "jsonl" } }}
+        blocks={new Map()}
+        isProcessing={false}
+        bandStatus=""
+        onFork={() => {}}
+        onUndo={() => {}}
+      />,
+    );
+    expect(html).toContain("undo-btn");
+    expect(html).not.toContain("fork-btn");
+    expect(html).not.toContain('d="M11 3h3v3"');
+  });
+
   it("does not render actions for a nested boundary-looking message", () => {
     const nested: DisplayMessage = {
       id: "nested",

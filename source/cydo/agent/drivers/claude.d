@@ -687,13 +687,15 @@ class ClaudeCodeAgent : Agent
 				{
 					auto qop = jsonParse!QueueOpProbe(line);
 					if (qop.operation == "enqueue")
-						ids ~= PersistedHistoryBoundary(format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.user, null, lineNum);
+						ids ~= PersistedHistoryBoundary(format!"enqueue-%d"(lineNum), PersistedHistoryBoundaryKind.provisional_user, null, lineNum);
 				}
 				catch (Exception e) { tracef("history scan: queue op parse error: %s", e.msg); }
 				continue;
 			}
 			bool isUser = line.canFind(`"type":"user"`);
 			if (!isUser && !line.canFind(`"type":"assistant"`))
+				continue;
+			if (isUser && !hasCanonicalUserContent(line))
 				continue;
 			enum prefix = `"uuid":"`;
 			auto idx = line.indexOf(prefix);
@@ -717,6 +719,36 @@ class ClaudeCodeAgent : Agent
 					null, lineNum);
 		}
 		return ids;
+	}
+
+	private static bool hasCanonicalUserContent(string line)
+	{
+		@JSONPartial static struct UserMessage { JSONFragment content; }
+		@JSONPartial static struct UserRecord { UserMessage message; }
+		UserRecord record;
+		try
+			record = jsonParse!UserRecord(line);
+		catch (Exception)
+			return false;
+
+		auto content = record.message.content.json;
+		if (content is null || content.length == 0)
+			return false;
+		if (content[0] == '"')
+			return true;
+		if (content[0] != '[')
+			return false;
+
+		@JSONPartial static struct ContentItem { string type; }
+		ContentItem[] items;
+		try
+			items = jsonParse!(ContentItem[])(content);
+		catch (Exception)
+			return false;
+		foreach (item; items)
+			if (item.type == "text" || item.type == "image")
+				return true;
+		return false;
 	}
 
 	InterruptedToolCallRepair repairInterruptedToolCall(string[] lines, string toolName,
@@ -1448,29 +1480,33 @@ class ClaudeCodeSession : AgentSession
 	/// correlationId is accepted for interface compatibility but not used:
 	/// Claude has no separable app-server acknowledgment beyond local enqueue.
 	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content, string correlationId = null,
-		bool isContextBootstrap = false)
+		bool isContextBootstrap = false, string nativeSubmissionUuid = null)
 	{
 		try
 		{
-			// Use plain string content when possible (single text block) for backward
-			// compatibility with Claude CLI's JSONL format.  Array content is only
-			// needed when images or multiple blocks are present.
-			JSONFragment claudeContent;
-			if (content.length == 1 && content[0].type == "text")
-				claudeContent = JSONFragment(toJson(content[0].text));
-			else
-				claudeContent = buildClaudeContentBlocks(content);
-			auto input = ClaudeInput(
-				"user",
-				ClaudeInputMessage("user", claudeContent),
-				"default",
-				null,
-			);
-			process.sendMessage(toJson(input));
+			process.sendMessage(serializeClaudeInput(content, nativeSubmissionUuid));
 		}
 		catch (Exception e)
 			return reject!AgentSubmissionReceipt(e);
 		return resolve(AgentSubmissionReceipt.localEnqueued);
+	}
+
+	private static string serializeClaudeInput(const(ContentBlock)[] content,
+		string nativeSubmissionUuid)
+	{
+		import std.uuid : UUID, randomUUID;
+		JSONFragment claudeContent;
+		if (content.length == 1 && content[0].type == "text")
+			claudeContent = JSONFragment(toJson(content[0].text));
+		else
+			claudeContent = buildClaudeContentBlocks(content);
+		auto inputUuid = nativeSubmissionUuid.length > 0
+			? nativeSubmissionUuid : randomUUID().toString();
+		if (nativeSubmissionUuid.length > 0)
+			enforce(!UUID(nativeSubmissionUuid).empty,
+				"Claude submission UUID must not be nil");
+		return toJson(ClaudeInput("user", inputUuid,
+			ClaudeInputMessage("user", claudeContent), "default", null));
 	}
 
 	void invalidatePendingSubmittedMessages() {}
@@ -2234,6 +2270,28 @@ unittest
 		assert(fulfilled);
 	}
 
+	{
+		enum supplied = "A32A27AF-7CC1-429D-888D-637C6CFCF9DD";
+		auto input = jsonParse!ClaudeInput(ClaudeCodeSession.serializeClaudeInput(
+			[ContentBlock("text", "uuid transport")], supplied));
+		assert(input.uuid == supplied);
+	}
+
+	{
+		auto input = jsonParse!ClaudeInput(ClaudeCodeSession.serializeClaudeInput(
+			[ContentBlock("text", "uuid transport")], null));
+		import std.uuid : UUID;
+		assert(!UUID(input.uuid).empty);
+	}
+
+	foreach (invalid; ["not-a-uuid", "00000000-0000-0000-0000-000000000000"])
+	{
+		bool rejected;
+		try ClaudeCodeSession.serializeClaudeInput([ContentBlock("text", "invalid uuid")], invalid);
+		catch (Exception) rejected = true;
+		assert(rejected);
+	}
+
 	// A disconnected local transport rejects through the returned promise.
 	{
 		auto session = new ClaudeCodeSession("true");
@@ -2286,6 +2344,7 @@ struct ClaudeImageBlock { string type = "image"; ClaudeImageSource source; }
 struct ClaudeInput
 {
 	string type;
+	string uuid;
 	ClaudeInputMessage message;
 	string session_id;
 	string parent_tool_use_id;

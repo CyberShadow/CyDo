@@ -791,6 +791,7 @@ EOF
               ln -sf ${fail-claude} /tmp/fake-bin/fail-claude
               export PATH="/tmp/fake-bin:$PATH"
               ${if claudeBin != null then "export CYDO_CLAUDE_BIN=\"${claudeBin}\"" else ""}
+              export CYDO_CAPTURE_DIR=""
 
               ${lib.optionalString (agentType == "copilot") ''
               ln -sf ${copilot}/bin/copilot /tmp/fake-bin/copilot
@@ -827,6 +828,7 @@ EOF
               cp -r $src /tmp/tests
               chmod -R u+w /tmp/tests
               chmod +x /tmp/tests/extra-fields-wrapper.sh
+              chmod +x /tmp/tests/claude-capture-wrapper.sh
               chmod +x /tmp/tests/suggestion-one-shot-fail-wrapper.sh
               chmod +x /tmp/tests/title-one-shot-env-wrapper.sh
               cd /tmp/tests
