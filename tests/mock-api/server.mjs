@@ -82,6 +82,17 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
+// Honor an intent's delay (e.g. ANSWER_DELAY_MS on Answer patterns) before
+// streaming its response. Cleared if the client disconnects first.
+function respondAfterIntentDelay(res, intent, respond) {
+  if (intent?.delay) {
+    const timer = setTimeout(respond, intent.delay);
+    res.on("close", () => clearTimeout(timer));
+  } else {
+    respond();
+  }
+}
+
 function streamToolUseResponse(
   res,
   toolName,
@@ -938,7 +949,9 @@ function handleResponses(req, res) {
       // Codex doesn't support MCP + shell calls in parallel, and the
       // deferral mechanism is exercised even with a single Answer call.
       const first = intent.tool_calls[0];
-      oaiStreamFunctionCallResponse(res, first.name, first.input);
+      respondAfterIntentDelay(res, intent, () =>
+        oaiStreamFunctionCallResponse(res, first.name, first.input),
+      );
     } else if (intent.type === "autonomous_compaction_switchmode") {
       oaiStreamFunctionCallResponse(
         res,
@@ -952,7 +965,9 @@ function handleResponses(req, res) {
       oaiStreamWebSearchCallResponse(res, intent.query, [intent.query]);
     } else {
       // tool_call — names are already correct for the OpenAI/Codex protocol
-      oaiStreamFunctionCallResponse(res, intent.name, intent.input);
+      respondAfterIntentDelay(res, intent, () =>
+        oaiStreamFunctionCallResponse(res, intent.name, intent.input),
+      );
     }
   });
 }
@@ -1347,7 +1362,9 @@ function handleMessages(req, res) {
     } else if (intent.type === "multi_tool_call") {
       const toolNames = intent.tool_calls.map((tc) => tc.name);
       const inputs = intent.tool_calls.map((tc) => tc.input);
-      streamMultiToolUseResponse(res, toolNames, inputs, model);
+      respondAfterIntentDelay(res, intent, () =>
+        streamMultiToolUseResponse(res, toolNames, inputs, model),
+      );
     } else if (intent.type === "eager_ask") {
       streamEagerAskThenSlowToolResponse(
         res,
@@ -1375,19 +1392,14 @@ function handleMessages(req, res) {
         model,
       );
     } else if (intent.type === "shell" || intent.type === "background_shell") {
-      const respond = () =>
+      respondAfterIntentDelay(res, intent, () =>
         streamToolUseResponse(
           res,
           "Bash",
           { command: intent.command, description: "Running command" },
           model,
-        );
-      if (intent.delay) {
-        const timer = setTimeout(respond, intent.delay);
-        res.on("close", () => clearTimeout(timer));
-      } else {
-        respond();
-      }
+        ),
+      );
     } else {
       // tool_call — map generic names to Anthropic tool names
       let toolName = intent.name;
@@ -1399,7 +1411,9 @@ function handleMessages(req, res) {
         toolName = "Read";
         input = { file_path: intent.input.path };
       }
-      streamToolUseResponse(res, toolName, input, model);
+      respondAfterIntentDelay(res, intent, () =>
+        streamToolUseResponse(res, toolName, input, model),
+      );
     }
   });
 }

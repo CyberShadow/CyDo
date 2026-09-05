@@ -252,7 +252,7 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(first.input) } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
-    ]);
+    ], intent.delay ?? 0);
   } else {
     // tool_call — translate mcp__cydo__Foo → cydo-Foo for copilot's MCP tool registry
     let toolName = intent.name;
@@ -265,8 +265,9 @@ function handleChatCompletions(socket, body) {
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(intent.input) } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
-    // Let the real client deliver Answer before its canonical idle event.
-    ], toolName === "cydo-Answer" ? 500 : 0);
+    // Let the real client deliver Answer before its canonical idle event,
+    // and honor an intent delay (ANSWER_DELAY_MS) whenever it is larger.
+    ], Math.max(intent.delay ?? 0, toolName === "cydo-Answer" ? 500 : 0));
   }
 }
 

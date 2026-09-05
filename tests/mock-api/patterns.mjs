@@ -1,6 +1,13 @@
 // Shared pattern matching module for mock API servers.
 // Imported by server.mjs (Claude/Codex) and copilot-proxy.mjs (Copilot).
 
+// An instant Answer collapses the answerer-focused UI state to ~75ms on an
+// idle machine (faster than Playwright's visibility polling can observe), so
+// specs asserting the intermediate focus time out on a page that already moved
+// on correctly. Every Answer response carries this delay so the transient
+// state lasts long enough to be testable.
+export const ANSWER_DELAY_MS = 400;
+
 // Match a user text against known patterns and return a structured intent.
 // Returns one of:
 //   { type: "text", text: string }
@@ -76,6 +83,7 @@ export function matchPattern(userText) {
     if (m)
       return {
         type: "multi_tool_call",
+        delay: ANSWER_DELAY_MS,
         tool_calls: [
           {
             name: "mcp__cydo__Answer",
@@ -96,6 +104,7 @@ export function matchPattern(userText) {
     if (m)
       return {
         type: "tool_call",
+        delay: ANSWER_DELAY_MS,
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "follow-up-answered" },
       };
@@ -105,6 +114,7 @@ export function matchPattern(userText) {
     if (m)
       return {
         type: "tool_call",
+        delay: ANSWER_DELAY_MS,
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "non-direct-answer" },
       };
@@ -142,6 +152,7 @@ export function matchPattern(userText) {
     if (m)
       return {
         type: "tool_call",
+        delay: ANSWER_DELAY_MS,
         name: "mcp__cydo__Answer",
         input: { qid: parseInt(m[1]), message: "switch-mode-answer" },
       };
@@ -348,6 +359,7 @@ export function matchPattern(userText) {
   if (match)
     return {
       type: "tool_call",
+      delay: ANSWER_DELAY_MS,
       name: "mcp__cydo__Answer",
       input: { qid: parseInt(match[1]), message: match[2].trim() },
     };
