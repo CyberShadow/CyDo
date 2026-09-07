@@ -2,9 +2,28 @@ import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import path from "path";
+import type { Plugin } from "vite";
+import { generateRuntimeManifest } from "./scripts/export-cdn-manifest.mjs";
+
+const exportCdnModule = "virtual:cydo-export-cdn";
+const resolvedExportCdnModule = `\0${exportCdnModule}`;
+
+function exportCdnManifestPlugin(): Plugin {
+  return {
+    name: "cydo-export-cdn-manifest",
+    resolveId(id) {
+      return id === exportCdnModule ? resolvedExportCdnModule : undefined;
+    },
+    load(id) {
+      if (id !== resolvedExportCdnModule) return undefined;
+      const manifest = generateRuntimeManifest({ projectRoot: __dirname });
+      return `export const treeSitterRuntime = ${JSON.stringify(manifest.treeSitterRuntime)};\nexport const treeSitterBash = ${JSON.stringify(manifest.treeSitterBash)};\n`;
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [preact(), viteSingleFile()],
+  plugins: [preact(), exportCdnManifestPlugin(), viteSingleFile()],
   resolve: {
     alias: {
       shiki: path.resolve(__dirname, "src/shiki-cdn.ts"),

@@ -73,6 +73,7 @@
         root = ./web;
         fileset = lib.fileset.unions [
           ./web/src
+          ./web/scripts
           ./web/index.html
           ./web/export.html
           ./web/package.json
@@ -194,7 +195,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
@@ -208,6 +209,26 @@ EOF
               mkdir -p $out/dist $out/dist-export
               cp -r dist/. $out/dist/
               cp -r dist-export/. $out/dist-export/
+              runHook postInstall
+            '';
+          };
+
+          exportCdnFixtures = pkgs.buildNpmPackage {
+            pname = "cydo-export-cdn-fixtures";
+            version = "0.1.0";
+            src = frontendSrc;
+            inherit nodejs;
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            dontNpmBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+              fixtureRoot="$TMPDIR/export-cdn-fixtures"
+              mkdir -p "$fixtureRoot"
+              node scripts/export-cdn-manifest.mjs --fixture-root "$fixtureRoot"
+              node scripts/export-cdn-manifest.mjs --validate-fixture "$fixtureRoot"
+              mkdir -p "$out"
+              cp -a "$fixtureRoot/." "$out/"
               runHook postInstall
             '';
           };
@@ -588,7 +609,7 @@ EOF
           };
         in
         {
-          inherit frontend backend backendDebug protocol-codegen codex-cli copilot-cli cydo cydoDebug cydoTest fake-bwrap screenshots;
+          inherit frontend exportCdnFixtures backend backendDebug protocol-codegen codex-cli copilot-cli cydo cydoDebug cydoTest fake-bwrap screenshots;
           default = cydo;
         });
 
@@ -599,6 +620,7 @@ EOF
           cydoDebug = self.packages.${system}.cydoTest;
           codex = self.packages.${system}.codex-cli;
           copilot = self.packages.${system}.copilot-cli;
+          exportCdnFixtures = self.packages.${system}.exportCdnFixtures;
 
           # Fake bwrap that strips sandbox flags and exec's the inner command.
           # Keep the browser tests independent of agent sandbox setup.
@@ -690,6 +712,7 @@ EOF
               fontDirectories = with pkgs; [ roboto jetbrains-mono liberation_ttf ];
             };
             HOME = "/tmp/playwright-home";
+            CYDO_EXPORT_CDN_FIXTURES = "${exportCdnFixtures}";
 
             CI = "1";
 
@@ -1024,7 +1047,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
@@ -1041,7 +1064,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
@@ -1058,7 +1081,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
@@ -1075,7 +1098,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
@@ -1114,7 +1137,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-dCdAKJQgNFcZcvsaRVv+BRLXWjCS9Tgo2b4iNuOoJa8=";
+            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
 
             buildPhase = ''
               runHook preBuild
