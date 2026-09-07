@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import { h } from "preact";
+// @vitest-environment jsdom
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { h, render } from "preact";
+import { act } from "preact/test-utils";
 import renderToString from "preact-render-to-string";
 import type { ShellSemanticResult } from "../lib/shellSemantic";
+import * as shellParser from "../lib/shellParser";
+import type { ParseResult } from "../lib/shellParser";
+import { configureShellParserAssets } from "../lib/shellParser";
+import { loadParsedShellDocument } from "../lib/shellParser";
 import type { ToolResult } from "../types";
 import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
@@ -9,6 +15,81 @@ import {
   formatCydoTaskResultItem,
   getCydoTaskResultItems,
 } from "./ToolCall";
+
+type FsPromisesLike = {
+  readFile(path: URL): Promise<Uint8Array>;
+};
+
+const processLike = (
+  globalThis as typeof globalThis & {
+    process: {
+      getBuiltinModule(name: string): unknown;
+      cwd(): string;
+    };
+  }
+).process;
+
+beforeAll(async () => {
+  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
+  const [runtime, bashLanguage] = await Promise.all([
+    fs.readFile(
+      new URL(
+        `file://${processLike.cwd()}/node_modules/web-tree-sitter/web-tree-sitter.wasm`,
+      ),
+    ),
+    fs.readFile(
+      new URL(
+        `file://${processLike.cwd()}/node_modules/tree-sitter-bash/tree-sitter-bash.wasm`,
+      ),
+    ),
+  ]);
+  configureShellParserAssets({
+    kind: "bytes",
+    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
+    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: resolvePromise,
+    reject: rejectPromise,
+  };
+}
+
+function successfulParse(source: string): ParseResult {
+  return {
+    ok: true,
+    document: {
+      source,
+      program: {
+        kind: "program",
+        span: { start: 0, end: source.length },
+        children: [],
+        boundaries: [],
+      },
+      commands: [],
+      redirects: [],
+      embeddedInvocations: [],
+      diagnostics: [],
+    },
+  };
+}
 
 vi.mock("../lib/shellSemantic", async () => {
   const actual = await vi.importActual<typeof import("../lib/shellSemantic")>(
@@ -427,7 +508,8 @@ describe("codex/fileChange path copy buttons", () => {
   });
 });
 
-function renderShellInput(command: string): string {
+async function renderShellInput(command: string): Promise<string> {
+  await loadParsedShellDocument(command);
   return renderToString(
     h(ToolCall, {
       name: "commandExecution",
@@ -685,26 +767,26 @@ describe("cydo:AskUserQuestion result rendering", () => {
 });
 
 describe("ToolCall shell source tree rendering", () => {
-  it("keeps semantic-shell-write selector while rendering heredoc write via source tree view", () => {
-    const html = renderShellInput("cat > README.md <<EOF\n# Title\nEOF");
+  it("keeps semantic-shell-write selector while rendering heredoc write via source tree view", async () => {
+    const html = await renderShellInput("cat > README.md <<EOF\n# Title\nEOF");
     expect(html).toContain('data-testid="semantic-shell-write"');
     expect(html).toContain('data-testid="source-tree-input"');
   });
 
-  it("keeps semantic-shell-script selector while rendering heredoc script via source tree view", () => {
-    const html = renderShellInput("python - <<'PY'\nprint(\"hi\")\nPY");
+  it("keeps semantic-shell-script selector while rendering heredoc script via source tree view", async () => {
+    const html = await renderShellInput("python - <<'PY'\nprint(\"hi\")\nPY");
     expect(html).toContain('data-testid="semantic-shell-script"');
     expect(html).toContain('data-testid="source-tree-input"');
   });
 
-  it("preserves wrapper selector for wrapper source tree rendering", () => {
-    const html = renderShellInput("zsh -lc 'cat README.md'");
+  it("preserves wrapper selector for wrapper source tree rendering", async () => {
+    const html = await renderShellInput("zsh -lc 'cat README.md'");
     expect(html).toContain('data-testid="semantic-shell-wrapper-input"');
     expect(html).toContain('data-testid="source-tree-input"');
   });
 
-  it("renders svg heredoc source tree blocks without spacer rows", () => {
-    const html = renderShellInput(
+  it("renders svg heredoc source tree blocks without spacer rows", async () => {
+    const html = await renderShellInput(
       "cat > /tmp/a/output.svg <<'EOF'\n<svg></svg>\nEOF",
     );
     expect(html).toContain("source-tree-blocks");
@@ -754,6 +836,236 @@ describe("ToolCall shell source tree rendering", () => {
     expect(html).toContain('data-testid="semantic-shell-diff"');
     expect(html).toContain("diff-view");
     expect(html).toContain('title="Show source"');
+  });
+});
+
+function mountedShellInput(root: HTMLElement, command: string): void {
+  render(
+    h(ToolCall, {
+      name: "Bash",
+      driver: "claude",
+      toolUseId: "tool-mounted-shell",
+      input: { command },
+      result: undefined,
+    }),
+    root,
+  );
+}
+
+describe("ToolCall asynchronous shell source tree", () => {
+  it("keeps uncached commands raw and highlighted while parsing", async () => {
+    const command = "printf pending-shell-source-tree";
+    const pending = deferred<ParseResult>();
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockReturnValue(pending.promise);
+    const root = document.createElement("div");
+
+    await act(() => {
+      mountedShellInput(root, command);
+    });
+    expect(load).toHaveBeenCalledWith(command);
+    expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
+    expect(root.querySelector(".write-content")?.textContent).toContain(
+      command,
+    );
+
+    pending.resolve(successfulParse(command));
+    await act(async () => {
+      await pending.promise;
+    });
+    load.mockRestore();
+  });
+
+  it("switches from raw fallback to a structured tree after parsing", async () => {
+    const command = "python3 -c 'print(ready)'";
+    const root = document.createElement("div");
+
+    await act(() => {
+      mountedShellInput(root, command);
+    });
+    expect(root.querySelector(".write-content")).not.toBeNull();
+    expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
+
+    await act(async () => {
+      await loadParsedShellDocument(command);
+    });
+    expect(
+      root.querySelector('[data-testid="source-tree-input"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps typed parser failures usable as raw command text", async () => {
+    const command = "cat <<EOF\nunclosed";
+    const root = document.createElement("div");
+
+    await act(async () => {
+      mountedShellInput(root, command);
+      await loadParsedShellDocument(command);
+    });
+    expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
+    expect(root.querySelector(".write-content")?.textContent).toContain(
+      command,
+    );
+  });
+
+  it("renders a settled-cache remount as structured on its first render", async () => {
+    const command = "python3 -c 'print(cache-hit)'";
+    const originalLoad = shellParser.loadParsedShellDocument;
+    let firstLoad: Promise<ParseResult> | undefined;
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockImplementation((source) => {
+        const result = originalLoad(source);
+        firstLoad = result;
+        return result;
+      });
+
+    const root = document.createElement("div");
+    await act(() => {
+      mountedShellInput(root, command);
+    });
+    expect(firstLoad).toBeDefined();
+    if (!firstLoad) return;
+    await act(async () => {
+      await firstLoad;
+    });
+    expect(
+      root.querySelector('[data-testid="source-tree-input"]'),
+    ).not.toBeNull();
+
+    render(null, root);
+    mountedShellInput(root, command);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(
+      root.querySelector('[data-testid="source-tree-input"]'),
+    ).not.toBeNull();
+  });
+
+  it("ignores a stale completion when the command changes", async () => {
+    const first = "printf stale-command";
+    const second = "printf current-command";
+    const firstPending = deferred<ParseResult>();
+    const secondPending = deferred<ParseResult>();
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockImplementation((command) =>
+        command === first ? firstPending.promise : secondPending.promise,
+      );
+    const root = document.createElement("div");
+
+    await act(() => {
+      mountedShellInput(root, first);
+    });
+    await act(() => {
+      mountedShellInput(root, second);
+    });
+
+    firstPending.resolve(successfulParse(first));
+    await act(async () => {
+      await firstPending.promise;
+    });
+    expect(root.querySelector('[data-testid="source-tree-input"]')).toBeNull();
+    expect(root.querySelector(".write-content")?.textContent).toContain(second);
+
+    secondPending.resolve(successfulParse(second));
+    await act(async () => {
+      await secondPending.promise;
+    });
+    expect(
+      root.querySelector('[data-testid="source-tree-input"]'),
+    ).not.toBeNull();
+    expect(root.textContent).toContain(second);
+    expect(root.textContent).not.toContain(first);
+    load.mockRestore();
+  });
+
+  it("preserves semantic write, script, and wrapper selectors when ready", async () => {
+    const cases = [
+      ["cat > README.md <<EOF\n# Title\nEOF", "semantic-shell-write"],
+      ["python - <<'PY'\nprint(\"hi\")\nPY", "semantic-shell-script"],
+      ["zsh -lc 'cat README.md'", "semantic-shell-wrapper-input"],
+    ] as const;
+
+    for (const [command, selector] of cases) {
+      await loadParsedShellDocument(command);
+      const root = document.createElement("div");
+      mountedShellInput(root, command);
+      expect(root.querySelector(`[data-testid="${selector}"]`)).not.toBeNull();
+    }
+  });
+
+  it("renders CRLF heredoc prefix, rich body, and suffix as separate blocks", async () => {
+    const command = "python3 - <<EOF\r\nprint(1)\r\nEOF";
+    const raw = renderToString(
+      h(ToolCall, {
+        name: "Bash",
+        driver: "claude",
+        toolUseId: "tool-crlf-raw",
+        input: { command },
+        result: undefined,
+      }),
+    );
+    expect(raw).toContain("print(1)\r\nEOF");
+
+    const root = document.createElement("div");
+    await act(async () => {
+      await loadParsedShellDocument(command);
+      render(
+        h(ToolCall, {
+          name: "Bash",
+          driver: "claude",
+          toolUseId: "tool-crlf-ready",
+          input: { command },
+          result: undefined,
+        }),
+        root,
+      );
+    });
+    const blocks = root.querySelectorAll("pre.write-content.source-tree-block");
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]?.textContent).toContain("python3 - <<EOF");
+    expect(blocks[1]?.textContent).toBe("print(1)");
+    expect(blocks[2]?.textContent).toBe("\r\nEOF");
+  });
+
+  it("keeps nested adapter failures raw without leaking valid siblings", async () => {
+    const commands = [
+      "bash -c 'zsh -lc \"cat $HOME/README.md\"'",
+      "bash -c 'zsh -lc \"cat $HOME/README.md\"' && python3 -c 'print(1)'",
+    ];
+    for (const command of commands) {
+      const root = document.createElement("div");
+      const load = vi.spyOn(shellParser, "loadParsedShellDocument");
+      await act(async () => {
+        mountedShellInput(root, command);
+        await loadParsedShellDocument(command);
+      });
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).toBeNull();
+      expect(
+        root.querySelector('[data-testid="source-projected-inline"]'),
+      ).toBeNull();
+      expect(root.querySelector(".write-content")?.textContent).toContain(
+        command,
+      );
+
+      render(null, root);
+      mountedShellInput(root, command);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(
+        root.querySelector('[data-testid="source-tree-input"]'),
+      ).toBeNull();
+      expect(
+        root.querySelector('[data-testid="source-projected-inline"]'),
+      ).toBeNull();
+      expect(root.querySelector(".write-content")?.textContent).toContain(
+        command,
+      );
+      load.mockRestore();
+    }
   });
 });
 

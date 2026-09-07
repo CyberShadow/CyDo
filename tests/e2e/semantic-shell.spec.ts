@@ -23,6 +23,16 @@ async function lastShellToolCall(
   return toolCall;
 }
 
+async function expandResultIfHidden(resultHeader: Locator) {
+  await resultHeader.evaluate((header) => {
+    const container = header
+      .closest(".tool-result-section")
+      ?.querySelector(".tool-result-container");
+    if (container instanceof HTMLElement) return;
+    (header as HTMLElement).click();
+  });
+}
+
 // Semantic classification is asynchronous and collapses read/diff results
 // once it lands, possibly after a check saw them expanded. The predicates
 // below therefore only sample the DOM: a waiting assertion inherits the
@@ -36,12 +46,7 @@ async function expectExpandedResultContent(
   const resultContainer = toolCall.locator(".tool-result-container");
   const semanticContent = toolCall.locator(selector);
   await expect(async () => {
-    if (
-      (await resultHeader.isVisible()) &&
-      !(await resultContainer.isVisible())
-    ) {
-      await resultHeader.click();
-    }
+    await expandResultIfHidden(resultHeader);
     expect(await resultContainer.isVisible()).toBe(true);
     expect(await semanticContent.isVisible()).toBe(true);
   }).toPass({ timeout });
@@ -56,16 +61,91 @@ async function expectExpandedRawResultText(
   const resultContainer = toolCall.locator(".tool-result-container");
   const rawResult = toolCall.locator(".tool-result").first();
   await expect(async () => {
-    if (
-      (await resultHeader.isVisible()) &&
-      !(await resultContainer.isVisible())
-    ) {
-      await resultHeader.click();
-    }
+    await expandResultIfHidden(resultHeader);
     expect(await resultContainer.isVisible()).toBe(true);
     expect((await rawResult.allTextContents()).join("")).toMatch(expected);
   }).toPass({ timeout });
 }
+
+async function expectStructuredCommandInput(
+  toolCall: Locator,
+  expected: string | RegExp,
+  timeout: number,
+) {
+  const sourceTree = toolCall.locator('[data-testid="source-tree-input"]');
+  await expect(async () => {
+    await expect(sourceTree).toBeVisible();
+    await expect(sourceTree).toContainText(expected);
+  }).toPass({ timeout });
+  return sourceTree;
+}
+
+async function expectSourceTreeBlocks(
+  sourceTree: Locator,
+  expected: readonly string[],
+  timeout: number,
+) {
+  await expect
+    .poll(
+      () =>
+        sourceTree
+          .locator(".source-tree-block")
+          .evaluateAll((blocks) =>
+            blocks.map((block) => block.textContent ?? ""),
+          ),
+      { timeout },
+    )
+    .toEqual(expected);
+}
+
+test(
+  "semantic shell: result expansion checks presence atomically",
+  { tag: "@claude-only" },
+  async ({ page }) => {
+    await page.setContent(`
+    <div class="tool-result-section">
+      <button class="tool-result-header" type="button">result</button>
+    </div>
+  `);
+    await page.evaluate(() => {
+      const section = document.querySelector(".tool-result-section");
+      const header = section?.querySelector(".tool-result-header");
+      if (
+        !(section instanceof HTMLElement) ||
+        !(header instanceof HTMLElement)
+      ) {
+        throw new Error("static result fixture did not mount");
+      }
+      header.addEventListener("click", () => {
+        section.dataset.clicks = String(
+          Number(section.dataset.clicks ?? "0") + 1,
+        );
+        section.insertAdjacentHTML(
+          "beforeend",
+          '<div class="tool-result-container">expanded</div>',
+        );
+      });
+    });
+
+    const resultHeader = page.locator(".tool-result-header");
+    await expandResultIfHidden(resultHeader);
+    await expect(page.locator(".tool-result-container")).toHaveCount(1);
+    await expect
+      .poll(() =>
+        page.locator(".tool-result-section").getAttribute("data-clicks"),
+      )
+      .toBe("1");
+
+    await expandResultIfHidden(resultHeader);
+    await expandResultIfHidden(resultHeader);
+    await expect(page.locator(".tool-result-container")).toHaveCount(1);
+    await expect
+      .poll(() =>
+        page.locator(".tool-result-section").getAttribute("data-clicks"),
+      )
+      .toBe("1");
+  },
+);
 
 /**
  * Test 1: cat file read
@@ -239,6 +319,153 @@ test("semantic shell: heredoc script renders with syntax-highlighted body", asyn
 
   // The terminator should be visible as the footer
   await expect(semanticScript).toContainText("PY");
+});
+
+test("semantic shell: compound heredoc preserves header and trailing pipeline", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell compound heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+  const sourceTree = await expectStructuredCommandInput(
+    toolCall,
+    "cd /tmp",
+    timeout,
+  );
+
+  await expect(sourceTree).toContainText("python3 - <<'EOF'");
+  await expect(sourceTree).toContainText("print(1)");
+  await expect(sourceTree).toContainText("EOF");
+  await expect(sourceTree).toContainText("git diff | cat");
+
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-script"]'),
+  ).toBeVisible({ timeout });
+  await expectSourceTreeBlocks(
+    sourceTree,
+    ["cd /tmp && python3 - <<'EOF'\n", "print(1)", "\nEOF\ngit diff | cat"],
+    timeout,
+  );
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-diff"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output-search"]'),
+  ).not.toBeVisible();
+  await expectExpandedRawResultText(toolCall, "1", timeout);
+});
+
+test("semantic shell: env-prefixed heredoc keeps its prefix and Python body", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell env heredoc");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+  const sourceTree = await expectStructuredCommandInput(
+    toolCall,
+    "env FOO=1 python3",
+    timeout,
+  );
+
+  await expect(sourceTree).toContainText("env FOO=1 python3 - <<EOF");
+  await expect(sourceTree).toContainText("print(1)");
+  await expect(sourceTree).toContainText("EOF");
+});
+
+test("semantic shell: inline interpreter preserves projected payload and raw output", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell inline interpreter");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+  const command = `node -e 'console.log("inline-semantic")'`;
+  const sourceTree = await expectStructuredCommandInput(
+    toolCall,
+    command,
+    timeout,
+  );
+  const inline = sourceTree.locator('[data-testid="source-projected-inline"]');
+
+  await expectSourceTreeBlocks(sourceTree, [command], timeout);
+  await expect(async () => {
+    await expect(inline).toHaveCount(1);
+    await expect(inline).toBeVisible();
+    await expect(inline).toHaveAttribute("data-language", "javascript");
+    await expect(inline).toHaveText('console.log("inline-semantic")');
+  }).toPass({ timeout });
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-diff"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output"]'),
+  ).not.toBeVisible();
+  await expect(
+    toolCall.locator('[data-testid="semantic-shell-output-search"]'),
+  ).not.toBeVisible();
+  await expectExpandedRawResultText(toolCall, "inline-semantic", timeout);
+});
+
+test("semantic shell: multi-level wrapper keeps nested source projections raw", async ({
+  page,
+  agentType,
+}) => {
+  await enterSession(page);
+  const timeout = responseTimeout(agentType);
+
+  await sendMessage(page, "semantic shell multi-level wrapper");
+  const toolCall = await lastShellToolCall(page, agentType, timeout);
+  const command = `bash -lc "bash -lc 'cat README.md'"`;
+  const sourceTree = await expectStructuredCommandInput(
+    toolCall,
+    command,
+    timeout,
+  );
+  const wrapperInput = toolCall.locator(
+    '[data-testid="semantic-shell-wrapper-input"]',
+  );
+  const nested = sourceTree.locator('[data-testid="source-projected-inline"]');
+
+  await expect(wrapperInput).toBeVisible({ timeout });
+  await expectSourceTreeBlocks(sourceTree, [command], timeout);
+  await expect(async () => {
+    const texts = await nested.evaluateAll((spans) =>
+      spans.map((span) => span.textContent ?? ""),
+    );
+
+    expect(texts).toEqual(["bash -lc '", "cat README.md", "'"]);
+    expect(texts.join("")).toBe("bash -lc 'cat README.md'");
+    await expect(nested).toHaveCount(3);
+    await expect(nested.nth(0)).toBeVisible();
+    await expect(nested.nth(0)).toHaveAttribute("data-language", "bash");
+    await expect(nested.nth(1)).toBeVisible();
+    await expect(nested.nth(1)).toHaveAttribute("data-language", "bash");
+    await expect(nested.nth(1)).toHaveText("cat README.md");
+    await expect(nested.nth(2)).toBeVisible();
+    await expect(nested.nth(2)).toHaveAttribute("data-language", "bash");
+  }).toPass({ timeout });
+  for (const selector of [
+    '[data-testid="semantic-shell-write"]',
+    '[data-testid="semantic-shell-script"]',
+    '[data-testid="semantic-shell-read"]',
+    '[data-testid="semantic-shell-diff"]',
+    '[data-testid="semantic-shell-output"]',
+    '[data-testid="semantic-shell-output-search"]',
+  ]) {
+    await expect(toolCall.locator(selector)).not.toBeVisible();
+  }
+  await expectExpandedRawResultText(toolCall, "test", timeout);
 });
 
 /**
@@ -580,11 +807,9 @@ test("semantic shell: sed/printf sections keep delimiter anchors", async ({
     .count();
   expect(pieceCount).toBeGreaterThanOrEqual(2);
 
-  await page
-    .context()
-    .grantPermissions(["clipboard-read", "clipboard-write"], {
-      origin: "http://localhost:3940",
-    });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: "http://localhost:3940",
+  });
   await page.bringToFront();
   const copyButton = root.locator(".semantic-shell-output-toolbar .btn-copy");
   await expect(copyButton).toBeVisible({ timeout });

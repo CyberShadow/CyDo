@@ -3,20 +3,12 @@ import {
   type ThemedToken,
   type BundledLanguage,
 } from "shiki";
-import type { Highlighter, ThemedTokenExplanation } from "shiki";
+import type { Highlighter } from "shiki";
 import { h, Fragment } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import { useCurrentTheme } from "./useTheme";
 
-export type { ThemedToken, ThemedTokenExplanation };
-
-/**
- * A ThemedToken with the explanation field guaranteed to be populated.
- * Returned by tokenizeWithScopes() when includeExplanation: "scopeName" is used.
- */
-export type TokenWithScopes = ThemedToken & {
-  explanation: ThemedTokenExplanation[];
-};
+export type { ThemedToken };
 
 let highlighterPromise: Promise<Highlighter> | null = null;
 
@@ -139,31 +131,6 @@ export async function tokenize(
     theme,
   });
   return result.tokens;
-}
-
-export async function tokenizeWithScopes(
-  code: string,
-  theme: ShikiTheme = "github-dark",
-): Promise<TokenWithScopes[][] | null> {
-  const hl = await getHighlighter();
-  if (!loadedLangs.has("bash")) {
-    try {
-      await hl.loadLanguage(
-        "bash" as Parameters<Highlighter["loadLanguage"]>[0],
-      );
-      loadedLangs.add("bash");
-    } catch (e) {
-      console.warn("Shiki: failed to load bash language", e);
-      return null;
-    }
-  }
-  const lines = hl.codeToTokensBase(code, {
-    lang: "bash" as BundledLanguage,
-    theme,
-    includeExplanation: "scopeName",
-  });
-  // Every token returned with includeExplanation has explanation populated.
-  return lines as TokenWithScopes[][];
 }
 
 export function useHighlight(

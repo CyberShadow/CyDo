@@ -50,7 +50,9 @@ export function isLineBoundaryEmbed(text: string, span: SourceSpan): boolean {
   const startsOnLineBoundary =
     span.start === 0 || text[span.start - 1] === "\n";
   const endsOnLineBoundary =
-    span.end === text.length || text[span.end] === "\n";
+    span.end === text.length ||
+    text[span.end] === "\n" ||
+    (text[span.end] === "\r" && text[span.end + 1] === "\n");
   return startsOnLineBoundary && endsOnLineBoundary;
 }
 

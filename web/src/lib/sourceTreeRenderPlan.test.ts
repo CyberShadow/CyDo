@@ -1,6 +1,10 @@
-import { describe, it, expect } from "vitest";
-import type { SourceNode } from "./sourceTree";
-import { parseShellCommandSourceTree } from "./shellSourceTree";
+import { beforeAll, describe, it, expect } from "vitest";
+import { projectDescendantSpan, type SourceNode } from "./sourceTree";
+import {
+  configureShellParserAssets,
+  loadParsedShellDocument,
+} from "./shellParser";
+import { buildShellSourceTree } from "./shellSourceTree";
 import {
   buildSourceRenderPieces,
   classifyEmbedRenderMode,
@@ -12,11 +16,53 @@ function sourceTextOfPiece(piece: SourceRenderPiece): string {
   return piece.kind === "rich" ? piece.sourceText : piece.text;
 }
 
+type FsPromisesLike = {
+  readFile(path: URL): Promise<Uint8Array>;
+};
+
+const processLike = (
+  globalThis as typeof globalThis & {
+    process: {
+      getBuiltinModule(name: string): unknown;
+    };
+  }
+).process;
+
+beforeAll(async () => {
+  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
+  const [runtime, bashLanguage] = await Promise.all([
+    fs.readFile(
+      new URL(
+        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
+        import.meta.url,
+      ),
+    ),
+    fs.readFile(
+      new URL(
+        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
+        import.meta.url,
+      ),
+    ),
+  ]);
+  configureShellParserAssets({
+    kind: "bytes",
+    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
+    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
+  });
+});
+
+async function buildLoadedShellSourceTree(source: string) {
+  const parsed = await loadParsedShellDocument(source);
+  expect(parsed.ok, source).toBe(true);
+  if (!parsed.ok) throw new Error(`shell parser rejected: ${parsed.reason}`);
+  return buildShellSourceTree(parsed.document);
+}
+
 describe("source tree render plan", () => {
-  it("isLineBoundaryEmbed returns false for quoted wrapper payload", () => {
+  it("isLineBoundaryEmbed returns false for quoted wrapper payload", async () => {
     const command =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find(
@@ -29,9 +75,9 @@ describe("source tree render plan", () => {
     expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
   });
 
-  it("isLineBoundaryEmbed returns true for heredoc body spans", () => {
+  it("isLineBoundaryEmbed returns true for heredoc body spans", async () => {
     const command = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const heredoc = parsed.value.segments.find(
@@ -43,9 +89,9 @@ describe("source tree render plan", () => {
     expect(isLineBoundaryEmbed(parsed.value.text, heredoc.span)).toBe(true);
   });
 
-  it("classifies heredoc body as rich markdown in safe heredoc context", () => {
+  it("classifies heredoc body as rich markdown in safe heredoc context", async () => {
     const command = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const heredoc = parsed.value.segments.find(
@@ -59,9 +105,9 @@ describe("source tree render plan", () => {
     );
   });
 
-  it("does not promote non-heredoc embeds to rich", () => {
+  it("does not promote non-heredoc embeds to rich", async () => {
     const command = "/run/current-system/sw/bin/zsh -lc 'cat README.md'";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find(
@@ -73,9 +119,9 @@ describe("source tree render plan", () => {
     expect(classifyEmbedRenderMode(parsed.value, wrapper)).toBe("inline");
   });
 
-  it("renders deeply nested wrappers as recursive inline pieces", () => {
+  it("renders deeply nested wrappers as recursive inline pieces", async () => {
     const command = 'zsh -lc "bash -lc \'sh -c \\"cat README.md\\"\'"';
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -88,9 +134,9 @@ describe("source tree render plan", () => {
     expect(parsed.value.text).toBe(command);
   });
 
-  it("keeps escaped wrapper source while exposing decoded highlight text", () => {
+  it("keeps escaped wrapper source while exposing decoded highlight text", async () => {
     const command = 'zsh -lc "echo \\"CYDO_SKIP_LOAD_TASKS\\""';
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -105,9 +151,9 @@ describe("source tree render plan", () => {
     expect(escaped.projection).toBeTruthy();
   });
 
-  it("keeps single-quote close/reopen raw text with decoded apostrophe highlight", () => {
+  it("keeps single-quote close/reopen raw text with decoded apostrophe highlight", async () => {
     const command = "zsh -lc 'printf '\\''hi'\\'''";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -120,10 +166,10 @@ describe("source tree render plan", () => {
     expect(escaped.projection).toBeTruthy();
   });
 
-  it("renders markdown heredoc body as rich markdown and keeps shell suffix inline", () => {
+  it("renders markdown heredoc body as rich markdown and keeps shell suffix inline", async () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\necho done\"";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -144,10 +190,10 @@ describe("source tree render plan", () => {
     expect(joined).toBe(command);
   });
 
-  it("renders svg heredoc body as rich code and keeps wrapper/footer shell inline", () => {
+  it("renders svg heredoc body as rich code and keeps wrapper/footer shell inline", async () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.svg <<'EOF'\n<svg></svg>\nEOF\necho done\"";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -171,10 +217,10 @@ describe("source tree render plan", () => {
     expect(joined).toBe(command);
   });
 
-  it("keeps escaped rich heredoc source text while rendering decoded body text", () => {
+  it("keeps escaped rich heredoc source text while rendering decoded body text", async () => {
     const command =
       'zsh -lc "cat > /tmp/a/output.svg <<\'EOF\'\n<svg a=\\"b\\"></svg>\nEOF"';
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -192,10 +238,10 @@ describe("source tree render plan", () => {
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
   });
 
-  it("renders mixed-quoted wrapper heredoc with decoded rich text and projected raw source", () => {
+  it("renders mixed-quoted wrapper heredoc with decoded rich text and projected raw source", async () => {
     const command =
       "zsh -lc \"cat > /tmp/a/output.md <<'EOF'\nheredoc body with \\\"quotes\\\" and \"'$literal\nEOF'";
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -215,9 +261,68 @@ describe("source tree render plan", () => {
     expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
   });
 
-  it("renders python -c wrapper as projected inline pieces with python language", () => {
+  it("renders mixed-quoted svg wrapper heredoc with a dense projection", async () => {
+    const command = [
+      `/run/current-system/sw/bin/zsh -lc "cat > /tmp/cydo-heredoc-render.svg <<'EOF'`,
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><text y="20">"\'$literal</text></svg>',
+      "EOF'",
+    ].join("\n");
+    const parsed = await buildLoadedShellSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const wrapperIndex = parsed.value.segments.findIndex(
+      (segment) => segment.kind === "embed",
+    );
+    expect(wrapperIndex).toBeGreaterThanOrEqual(0);
+    if (wrapperIndex < 0) return;
+    const wrapper = parsed.value.segments[wrapperIndex];
+    expect(wrapper?.kind).toBe("embed");
+    if (!wrapper || wrapper.kind !== "embed") return;
+
+    const heredocIndex = wrapper.content.segments.findIndex(
+      (segment) => segment.kind === "embed",
+    );
+    expect(heredocIndex).toBeGreaterThanOrEqual(0);
+    if (heredocIndex < 0) return;
+    const heredoc = wrapper.content.segments[heredocIndex];
+    expect(heredoc?.kind).toBe("embed");
+    if (!heredoc || heredoc.kind !== "embed") return;
+
+    const projected = projectDescendantSpan(
+      parsed.value,
+      [wrapperIndex, heredocIndex],
+      { start: 0, end: heredoc.content.text.length },
+    );
+    expect(projected).toEqual({
+      start: command.indexOf("<svg"),
+      end: command.indexOf("\nEOF'"),
+    });
+    expect(command.slice(projected!.start, projected!.end)).toBe(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><text y="20">"\'$literal</text></svg>',
+    );
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    const rich = pieces.find(
+      (piece) =>
+        piece.kind === "rich" &&
+        piece.mode === "rich-code" &&
+        piece.language === "xml",
+    );
+    expect(rich?.kind).toBe("rich");
+    if (!rich || rich.kind !== "rich") return;
+    expect(rich.text).toBe(
+      "<svg xmlns=http://www.w3.org/2000/svg width=32 height=32><text y=20>$literal</text></svg>",
+    );
+    expect(rich.sourceText).toBe(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><text y="20">"\'$literal</text></svg>',
+    );
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+  });
+
+  it("renders python -c wrapper as projected inline pieces with python language", async () => {
     const command = 'python -c "import json,sys"';
-    const parsed = parseShellCommandSourceTree(command);
+    const parsed = await buildLoadedShellSourceTree(command);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
@@ -234,6 +339,81 @@ describe("source tree render plan", () => {
 
     // No rich blocks — inline command, not at line boundary
     expect(pieces.some((p) => p.kind === "rich")).toBe(false);
+  });
+
+  it("keeps compound heredoc source order around the trailing pipeline", async () => {
+    const command =
+      "cd /tmp && python3 - <<'EOF'\nprint(1)\nEOF\ngit diff | cat";
+    const parsed = await buildLoadedShellSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+
+    const rich = pieces.find(
+      (piece) =>
+        piece.kind === "rich" &&
+        piece.language === "python" &&
+        piece.text === "print(1)",
+    );
+    expect(rich?.kind).toBe("rich");
+    if (!rich || rich.kind !== "rich") return;
+    expect(rich.text).toBe("print(1)");
+
+    expect(pieces.map((piece) => piece.sourceSpan)).toEqual([
+      { start: 0, end: 29 },
+      { start: 29, end: 37 },
+      { start: 37, end: 56 },
+    ]);
+  });
+
+  it("renders a CRLF heredoc body at a rich line boundary", async () => {
+    const command = "python3 - <<EOF\r\nprint(1)\r\nEOF";
+    const parsed = await buildLoadedShellSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const documentResult = await loadParsedShellDocument(command);
+    expect(documentResult.ok).toBe(true);
+    if (!documentResult.ok) return;
+    const redirect = documentResult.document.redirects.find(
+      (candidate) => candidate.kind === "heredoc",
+    );
+    expect(redirect?.kind).toBe("heredoc");
+    if (!redirect) return;
+    expect(redirect.headerLineBreakSpan).toEqual({ start: 15, end: 17 });
+    expect(redirect.rawBodySpan).toEqual({ start: 17, end: 27 });
+    expect(redirect.contentSpan).toEqual({ start: 17, end: 25 });
+    expect(redirect.terminatorSpan).toEqual({ start: 27, end: 30 });
+
+    const embed = parsed.value.segments.find(
+      (segment) => segment.kind === "embed",
+    );
+    expect(embed?.kind).toBe("embed");
+    if (!embed) return;
+    expect(embed.span).toEqual({ start: 17, end: 25 });
+    expect(embed.content.language).toBe("python");
+    expect(embed.content.text).toBe("print(1)");
+    expect(classifyEmbedRenderMode(parsed.value, embed)).toBe("rich-code");
+    expect(isLineBoundaryEmbed(parsed.value.text, embed.span)).toBe(true);
+
+    const pieces = buildSourceRenderPieces(parsed.value);
+    expect(pieces.map(sourceTextOfPiece).join("")).toBe(command);
+    const rich = pieces.find((piece) => piece.kind === "rich");
+    expect(rich?.kind).toBe("rich");
+    if (!rich) return;
+    expect(rich.text).toBe("print(1)");
+    expect(rich.sourceText).toBe("print(1)");
+    expect(pieces.map((piece) => piece.sourceSpan)).toEqual([
+      { start: 0, end: 17 },
+      { start: 17, end: 25 },
+      { start: 25, end: 30 },
+    ]);
+    expect(command.slice(25)).toBe("\r\nEOF");
+  });
+
+  it("does not treat a bare CR as a line boundary", () => {
+    expect(isLineBoundaryEmbed("\nbody\r", { start: 1, end: 5 })).toBe(false);
   });
 
   it("treats projected inline embeds generically and preserves parent-owned source text", () => {

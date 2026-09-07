@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { parseShellSemantic, mapShikiTokens } from "./shellSemantic";
+import { describe, it, expect, beforeAll, vi } from "vitest";
+import { parseShellSemantic } from "./shellSemantic";
+import * as shellParser from "./shellParser";
+import {
+  configureShellParserAssets,
+  loadParsedShellDocument,
+  type ParsedShellDocument,
+} from "./shellParser";
 import { derivePlan } from "./commandStep";
-import { parseShellCommandSourceTree } from "./shellSourceTree";
-import { tokenizeWithScopes } from "../highlight";
+import { buildShellSourceTree } from "./shellSourceTree";
 import type {
   ShellReadSemantic,
   ShellHeredocWriteSemantic,
@@ -13,76 +18,127 @@ import type {
 const plan = (v: { steps?: Parameters<typeof derivePlan>[0] }) =>
   v.steps ? derivePlan(v.steps) : undefined;
 
+type FsPromisesLike = {
+  readFile(path: URL): Promise<Uint8Array>;
+};
+
+const processLike = (
+  globalThis as typeof globalThis & {
+    process: {
+      getBuiltinModule(name: string): unknown;
+    };
+  }
+).process;
+
+beforeAll(async () => {
+  const fs = processLike.getBuiltinModule("node:fs/promises") as FsPromisesLike;
+  const [runtime, bashLanguage] = await Promise.all([
+    fs.readFile(
+      new URL(
+        "../../node_modules/web-tree-sitter/web-tree-sitter.wasm",
+        import.meta.url,
+      ),
+    ),
+    fs.readFile(
+      new URL(
+        "../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm",
+        import.meta.url,
+      ),
+    ),
+  ]);
+  configureShellParserAssets({
+    kind: "bytes",
+    loadRuntime: () => Promise.resolve(new Uint8Array(runtime)),
+    loadBashLanguage: () => Promise.resolve(new Uint8Array(bashLanguage)),
+  });
+});
+
+async function buildLoadedShellSourceTree(source: string) {
+  const parsed = await loadParsedShellDocument(source);
+  expect(parsed.ok, source).toBe(true);
+  if (!parsed.ok) throw new Error(`shell parser rejected: ${parsed.reason}`);
+  return buildShellSourceTree(parsed.document);
+}
+
 function normalizeSemanticForComparison(value: unknown): unknown {
   const normalized: unknown = JSON.parse(JSON.stringify(value));
   if (normalized && typeof normalized === "object") {
     delete (normalized as { command?: string }).command;
-    delete (normalized as { source?: unknown }).source;
-    delete (normalized as { sourceTree?: unknown }).sourceTree;
   }
   return normalized;
 }
 
-// ---------------------------------------------------------------------------
-// Scope-pinning tests (verify tokenizer layer produces correct roles)
-// ---------------------------------------------------------------------------
-
-describe("scope pinning: mapShikiTokens role assignment", () => {
-  let cachedTokenize: (
-    cmd: string,
-  ) => Promise<import("../highlight").TokenWithScopes[][] | null>;
-
-  beforeAll(() => {
-    cachedTokenize = tokenizeWithScopes;
-  });
-
-  it("pipe | in 'cat file | head' gets role pipe", async () => {
-    const lines = await cachedTokenize("cat file | head");
-    expect(lines).not.toBeNull();
-    const tokens = mapShikiTokens(lines!);
-    const pipeToken = tokens.find((t) => t.text === "|");
-    expect(pipeToken?.role).toBe("pipe");
-  });
-
-  it("pipe | inside double-quoted string does NOT get role pipe", async () => {
-    const lines = await cachedTokenize('echo "a | b"');
-    expect(lines).not.toBeNull();
-    const tokens = mapShikiTokens(lines!);
-    // No token should have role pipe
-    expect(tokens.filter((t) => t.role === "pipe")).toHaveLength(0);
-  });
-
-  it("&& in 'cd foo && cat bar' gets role and", async () => {
-    const lines = await cachedTokenize("cd foo && cat bar");
-    expect(lines).not.toBeNull();
-    const tokens = mapShikiTokens(lines!);
-    const andToken = tokens.find((t) => t.role === "and");
-    expect(andToken).toBeDefined();
-    expect(andToken?.text).toBe("&&");
-  });
-
-  it("cat gets role command", async () => {
-    const lines = await cachedTokenize("cat README.md");
-    expect(lines).not.toBeNull();
-    const tokens = mapShikiTokens(lines!);
-    const cmdToken = tokens.find((t) => t.role === "command");
-    expect(cmdToken?.text).toBe("cat");
-  });
-
-  it("-n flag gets role flag", async () => {
-    const lines = await cachedTokenize("head -n 50 file.txt");
-    expect(lines).not.toBeNull();
-    const tokens = mapShikiTokens(lines!);
-    const flagToken = tokens.find((t) => t.role === "flag");
-    expect(flagToken?.text).toBe("-n");
+it("returns an unsupported command result for a 4,000-command && chain", async () => {
+  const source = Array(4_000).fill("true").join(" && ");
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: false,
+    code: "unsupported_command",
   });
 });
+
+it("returns an unsupported command result for a long && chain with redirects", async () => {
+  const source = Array(4_000).fill("true >out").join(" && ");
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: false,
+    code: "unsupported_command",
+  });
+}, 30_000);
+
+it("returns a typed rejection for a 4,000-stage read pipeline", async () => {
+  const source = ["cat file", ...Array<string>(3_999).fill("head -n 1")].join(
+    " | ",
+  );
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: false,
+    code: "unsafe_shell_syntax",
+    reason: "pipeline has multiple read stages",
+  });
+}, 30_000);
+
+it("classifies a diff source in a 4,000-stage formatting pipeline", async () => {
+  const source = ["git diff", ...Array<string>(3_999).fill("head -n 1")].join(
+    " | ",
+  );
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: true,
+    value: { kind: "diff", command: source },
+  });
+}, 30_000);
+
+it("returns an unsupported command result for a 4,000-command Python wrapper chain", async () => {
+  const source = Array(4_000).fill("python -c 'pass'").join(" && ");
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: false,
+    code: "unsupported_command",
+  });
+}, 30_000);
+
+it("classifies a Python wrapper after 3,999 literal cd commands", async () => {
+  const source = [
+    ...Array<string>(3_999).fill("cd /tmp"),
+    "python -c 'pass'",
+  ].join(" && ");
+  await expect(parseShellSemantic(source)).resolves.toMatchObject({
+    ok: true,
+    value: { kind: "script-exec", language: "python", command: source },
+  });
+}, 30_000);
 
 // ---------------------------------------------------------------------------
 // Accepted read forms
 // ---------------------------------------------------------------------------
 
 describe("cat reads", () => {
+  it.each(["café.md", "漢字.md", "🧪.md"])(
+    "classifies a read from the bare Unicode path %s",
+    async (path) => {
+      await expect(parseShellSemantic(`cat ${path}`)).resolves.toMatchObject({
+        ok: true,
+        value: { kind: "read", filePath: path },
+      });
+    },
+  );
+
   it("cat README.md → read with filePath", async () => {
     const r = await parseShellSemantic("cat README.md");
     expect(r.ok).toBe(true);
@@ -100,6 +156,14 @@ describe("cat reads", () => {
     if (!r.ok) return;
     expect(r.value.kind).toBe("read");
     expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+  });
+
+  it("keeps a terminal semicolon structurally visible and conservative", async () => {
+    await expect(parseShellSemantic("cat README.md;")).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "malformed program boundaries",
+    });
   });
 });
 
@@ -544,6 +608,17 @@ describe("echo in lists (R6: unified classifier)", () => {
 // ---------------------------------------------------------------------------
 
 describe("heredoc writes", () => {
+  it.each(["café.md", "漢字.md", "🧪.md"])(
+    "classifies a heredoc write to the bare Unicode path %s",
+    async (path) => {
+      const source = `cat >${path} <<EOF\nbody\nEOF`;
+      await expect(parseShellSemantic(source)).resolves.toMatchObject({
+        ok: true,
+        value: { kind: "write", filePath: path, heredoc: { content: "body" } },
+      });
+    },
+  );
+
   it("cat > README.md <<EOF\\n# Title\\nEOF → write", async () => {
     const cmd = "cat > README.md <<EOF\n# Title\nEOF";
     const r = await parseShellSemantic(cmd);
@@ -586,6 +661,20 @@ describe("heredoc writes", () => {
     const reconstructed = v.segments.map((s) => s.text).join("");
     expect(reconstructed).toBe(cmd);
   });
+
+  it.each([
+    ["sed", "sed -n '1,2p' README.md <<EOF\nignored\nEOF"],
+    ["git diff", "git diff --no-index - README.md <<EOF\nold contents\nEOF"],
+  ] as const)(
+    "rejects a heredoc on %s before read or diff lowering",
+    async (_commandName, command) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason: "unsupported heredoc command",
+      });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -615,6 +704,16 @@ describe("shell -c/-lc wrapper unwrapping", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect((r.value as ShellReadSemantic).filePath).toBe("README.md");
+  });
+
+  it("keeps a terminal Bash-wrapper semicolon as unsupported wrapper structure", async () => {
+    await expect(
+      parseShellSemantic("bash -c 'cat README.md';"),
+    ).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "unsupported shell wrapper structure",
+    });
   });
 
   it("zsh -c 'cat README.md' → read", async () => {
@@ -668,6 +767,55 @@ describe("shell -c/-lc wrapper unwrapping", () => {
     expect(v.filePath).toBe("file.ts");
     expect(v.range).toEqual({ type: "head", count: 5 });
   });
+});
+
+describe("wrapped inline script execution", () => {
+  it.each([
+    [`bash -lc 'python3 -c "print(1)"'`, "python3", "python", "-c", "print(1)"],
+    [
+      `zsh -lc 'node -e "console.log(1)"'`,
+      "node",
+      "javascript",
+      "-e",
+      "console.log(1)",
+    ],
+    [
+      `bash -lc 'python3 -c "print(1)"' >/tmp/outer.log`,
+      "python3",
+      "python",
+      "-c",
+      "print(1)",
+    ],
+    [
+      `zsh -lc 'node -e "console.log(1)"' >/tmp/outer.log`,
+      "node",
+      "javascript",
+      "-e",
+      "console.log(1)",
+    ],
+  ] as const)(
+    "preserves exact outer command metadata for one shell wrapper: %s",
+    async (command, commandName, language, flag, content) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("script-exec");
+      if (result.value.kind !== "script-exec") return;
+
+      expect(result.value).toMatchObject({
+        command,
+        commandName,
+        language,
+        scriptSource: {
+          type: "inline",
+          flag,
+          content,
+        },
+      });
+      expect(result.value).not.toHaveProperty("source");
+      expect(result.value).not.toHaveProperty("sourceTree");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1059,10 +1207,211 @@ describe("script-exec: rejections", () => {
 });
 
 describe("source tree parsing and invariants", () => {
-  it("quoted wrapper command parses to a root shell node with payload embed", () => {
+  it("does not classify wrappers with bare atomic-close suffix arguments", async () => {
+    for (const source of ["cat >&- x", "cat <&- x", "bash -c 'echo x' >&- x"]) {
+      const result = await parseShellSemantic(source);
+      expect(result.ok, source).toBe(false);
+    }
+  });
+
+  it("keeps adjacent fd-zero redirects on the typed raw semantic path", async () => {
+    for (const source of [
+      "cat >a 0>/tmp/output.py <<EOF\nprint(1)\nEOF",
+      "cat >a 0>&1",
+      "cat >a 0<&1",
+      "cat >a 01>/tmp/output.py",
+      "bash -c 'cat >a 0>/tmp/output.py'",
+      "cat >a 0>/tmp/output.py 1>&2",
+    ]) {
+      const result = await parseShellSemantic(source);
+      expect(result.ok, source).toBe(false);
+    }
+  });
+
+  it("rejects adjacent numeric descriptors across line continuations", async () => {
+    for (const source of [
+      "cat 0\\\n>out",
+      "cat 0\\\r\n>out",
+      "cat 01\\\n>out",
+      "cat 01\\\r\n>out",
+      "cat >a 0\\\n>/tmp/output.py <<EOF\nprint(1)\nEOF",
+      "cat >a 0\\\r\n>/tmp/output.py <<EOF\r\nprint(1)\r\nEOF",
+      "cat <<EOF 0\\\n>/tmp/output.py\nprint(1)\nEOF",
+      "cat <<EOF 0\\\r\n>/tmp/output.py\r\nprint(1)\r\nEOF",
+    ]) {
+      const result = await parseShellSemantic(source);
+      expect(result, source).toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
+    }
+  });
+
+  it("keeps a whitespace boundary before a continuation numeric argument", async () => {
+    for (const source of ["cat >a 0 \\\n>out", "cat >a 0 \\\r\n>out"]) {
+      const result = await parseShellSemantic(source);
+      expect(result, source).not.toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
+    }
+  });
+
+  it("maps continued variable descriptors to unsafe shell syntax", async () => {
+    for (const source of ["cat {fd}\\\n>out", "cat {fd}\\\r\n>out"]) {
+      await expect(parseShellSemantic(source)).resolves.toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
+    }
+  });
+
+  it("does not classify words from later prefix channels as a wrapper", async () => {
+    for (const source of [
+      "{fd}\\\n>one echo >two bash -c 'echo hi'",
+      "{fd}\\\r\n>one echo >two bash -c 'echo hi'",
+      "{fd}\\\n>&- echo hi",
+      "{fd}\\\r\n>&- echo hi",
+      "{fd}\\\n<&- echo hi",
+      "{fd}\\\r\n<&- echo hi",
+    ]) {
+      const result = await parseShellSemantic(source);
+      expect(result, source).not.toMatchObject({
+        ok: true,
+        value: { kind: "read" },
+      });
+    }
+    for (const source of [
+      "{a}\\\n>one {b} \\\n>two cat >/tmp/output.py <<EOF\nprint(1)\nEOF",
+      "{a}\\\r\n>one {b} \\\r\n>two cat >/tmp/output.py <<EOF\r\nprint(1)\r\nEOF",
+    ]) {
+      expect(await parseShellSemantic(source), source).not.toMatchObject({
+        ok: true,
+        value: { kind: "read" },
+      });
+    }
+  });
+
+  it("rejects unaccounted anonymous recovered-prefix children", async () => {
+    for (const source of [
+      "{fd}\\\n>one bash -c 'echo hi' )",
+      "{fd}\\\r\n>one bash -c 'echo hi' )",
+      "{fd}\\\n>one echo >two )",
+      "{fd}\\\r\n>one echo >two )",
+      "{fd}\\\n>one echo >two $(",
+      "{fd}\\\r\n>one echo >two $(",
+    ]) {
+      await expect(parseShellSemantic(source)).resolves.toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
+    }
+  });
+
+  it("rejects malformed atomic-close error fragments", async () => {
+    const descriptors = ["", "2", "{fd}"] as const;
+    const operators = [">&-", "<&-"] as const;
+    const fragments = ['""(', '"" )', '""`'] as const;
+    for (const descriptor of descriptors) {
+      for (const operator of operators) {
+        for (const fragment of fragments) {
+          const source = `cat ${descriptor}${operator}${fragment} extra`;
+          await expect(parseShellSemantic(source)).resolves.toMatchObject({
+            ok: false,
+            code: "unsafe_shell_syntax",
+          });
+        }
+      }
+    }
+    for (const source of [
+      'cat >/tmp/output.py 2>&-""( extra <<EOF\nprint(1)\nEOF',
+      'cat >/tmp/output.py 2>&-""( extra <<EOF\r\nprint(1)\r\nEOF',
+    ]) {
+      await expect(parseShellSemantic(source)).resolves.toMatchObject({
+        ok: false,
+        code: "unsafe_shell_syntax",
+      });
+    }
+  });
+
+  it("rejects orphaned nonempty atomic-close continuation fragments", async () => {
+    const descriptors = ["", "2", "{fd}"] as const;
+    const operators = [">&-", "<&-"] as const;
+    const lineEndings = ["\n", "\r\n"] as const;
+    const fragments = ["x", '"x"', "$(printf x)"] as const;
+
+    for (const descriptor of descriptors) {
+      for (const operator of operators) {
+        for (const lineEnding of lineEndings) {
+          for (const fragment of fragments) {
+            for (const source of [
+              `: ${descriptor}${operator}\\${lineEnding}${fragment}`,
+              `bash -c 'echo hi' ${descriptor}${operator}\\${lineEnding}${fragment}`,
+              `cat >/tmp/output.py ${descriptor}${operator}\\${lineEnding}${fragment} <<EOF${lineEnding}print(1)${lineEnding}EOF`,
+            ]) {
+              await expect(parseShellSemantic(source)).resolves.toMatchObject({
+                ok: false,
+                code: "unsafe_shell_syntax",
+              });
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("rejects malformed atomic-close errors after continued empty fragments", async () => {
+    const descriptors = ["", "2", "{fd}"] as const;
+    const operators = [">&-", "<&-"] as const;
+    const lineEndings = ["\n", "\r\n"] as const;
+    const fragments = ['""(', '"" )', '""`'] as const;
+
+    for (const descriptor of descriptors) {
+      for (const operator of operators) {
+        for (const lineEnding of lineEndings) {
+          for (const fragment of fragments) {
+            for (const source of [
+              `: ${descriptor}${operator}\\${lineEnding}${fragment} extra`,
+              `bash -c 'echo hi' ${descriptor}${operator}\\${lineEnding}${fragment} extra`,
+              `cat >/tmp/output.py ${descriptor}${operator}\\${lineEnding}${fragment} extra <<EOF${lineEnding}print(1)${lineEnding}EOF`,
+            ]) {
+              await expect(parseShellSemantic(source)).resolves.toMatchObject({
+                ok: false,
+                code: "unsafe_shell_syntax",
+              });
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("maps continued atomic closes to unsafe shell syntax", async () => {
+    await expect(parseShellSemantic(': >&-\\\n\\"\\"')).resolves.toMatchObject({
+      ok: false,
+      code: "unsafe_shell_syntax",
+    });
+  });
+
+  it("maps ambiguous redirect ownership to a typed semantic rejection", async () => {
+    const parsed = await loadParsedShellDocument("cat >{fd}>b");
+    expect(parsed).toMatchObject({
+      ok: false,
+      reason: "unsafe_shell_syntax",
+      issue: "error_node",
+    });
+    const semantic = await parseShellSemantic("cat >{fd}>b");
+    expect(semantic).toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "shell parser rejected syntax: error_node",
+    });
+  });
+
+  it("quoted wrapper command parses to a root shell node with payload embed", async () => {
     const cmd =
       "/run/current-system/sw/bin/zsh -lc 'program --some-flag -y \"hello world\"'";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.language).toBe("bash");
@@ -1077,10 +1426,10 @@ describe("source tree parsing and invariants", () => {
     expect(payload.content.text).toBe('program --some-flag -y "hello world"');
   });
 
-  it("double-quoted wrapper command keeps raw escaped source span", () => {
+  it("double-quoted wrapper command keeps raw escaped source span", async () => {
     const cmd =
       '/run/current-system/sw/bin/zsh -lc "nl -ba source/cydo/app.d | sed -n \'720,790p\' && rg -n \\"CYDO_SKIP_LOAD_TASKS\\" -n source tests"';
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.value.text).toBe(cmd);
@@ -1105,10 +1454,10 @@ describe("source tree parsing and invariants", () => {
     expect(r.code).toBe("unsupported_command");
   });
 
-  it("wrapped python heredoc creates nested wrapper + heredoc embeds", () => {
+  it("wrapped python heredoc creates nested wrapper + heredoc embeds", async () => {
     const cmd =
       "/run/current-system/sw/bin/zsh -lc \"python - <<'PY'\nprint('x')\nPY\"";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const wrapper = parsed.value.segments.find((s) => s.kind === "embed");
@@ -1132,9 +1481,9 @@ describe("source tree parsing and invariants", () => {
     expect(parsed.value.text).toBe(cmd);
   });
 
-  it("segment spans are offsets into each containing node text", () => {
+  it("segment spans are offsets into each containing node text", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     for (const segment of parsed.value.segments) {
@@ -1149,32 +1498,76 @@ describe("source tree parsing and invariants", () => {
     }
   });
 
-  it("dynamic double-quoted wrapper payload rejects source-tree parsing", () => {
-    const parsed = parseShellCommandSourceTree(
+  it("dynamic double-quoted wrapper payload rejects source-tree parsing", async () => {
+    const parsed = await loadParsedShellDocument(
       '/run/current-system/sw/bin/zsh -lc "cat $HOME/README.md"',
     );
-    expect(parsed.ok).toBe(false);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(buildShellSourceTree(parsed.document)).toMatchObject({ ok: false });
   });
 
-  it("multiple heredocs and <<- remain rejected safely", () => {
-    const multiple = parseShellCommandSourceTree(
+  it("multiple heredocs and <<- remain rejected safely", async () => {
+    const multiple = await loadParsedShellDocument(
       "cat <<'A'\na\nA\ncat <<'B'\nb\nB",
     );
     expect(multiple.ok).toBe(false);
-    const tabs = parseShellCommandSourceTree("cat <<-EOF\nx\nEOF");
+    const tabs = await loadParsedShellDocument("cat <<-EOF\nx\nEOF");
     expect(tabs.ok).toBe(false);
-    const missing = parseShellCommandSourceTree("cat <<'EOF'\nhello");
+    const missing = await loadParsedShellDocument("cat <<'EOF'\nhello");
     expect(missing.ok).toBe(false);
   });
 
   it("quoted << literal remains parseable and keeps search semantic behavior", async () => {
     const cmd = "rg -n '<<' web/src/lib/sourceTree.ts";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const semantic = await parseShellSemantic(cmd);
     expect(semantic.ok).toBe(true);
     if (!semantic.ok) return;
     expect(semantic.value.kind).toBe("search");
+  });
+});
+
+describe("whole-command shell wrapper semantic unwrapping", () => {
+  it.each([
+    "zsh -lc 'cat README.md'",
+    "env FOO=1 zsh -lc 'cat README.md'",
+    "zsh -lc 'cat README.md' 2>/dev/null",
+  ])("unwraps %s", async (command) => {
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.kind).toBe("read");
+    expect((result.value as ShellReadSemantic).filePath).toBe("README.md");
+  });
+
+  it.each([
+    "cd /tmp && zsh -lc 'cat README.md'",
+    "echo before && zsh -lc 'cat README.md'",
+    "zsh -lc 'cat README.md' && echo after",
+    "echo before | zsh -lc 'cat README.md'",
+    "zsh -lc 'cat README.md' | cat",
+    "zsh -lc 'cat README.md'; echo after",
+    "zsh -lc 'cat README.md'\necho after",
+    ">prefix zsh -lc 'cat README.md'",
+  ])("does not unwrap compound source %s", async (command) => {
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(false);
+    if (!result.ok && !command.startsWith(">prefix"))
+      expect(result.code).toBe("unsupported_command");
+  });
+
+  it("keeps recursive direct wrappers in the existing unsupported semantic path", async () => {
+    const result = await parseShellSemantic(
+      "zsh -lc \"bash -lc 'cat README.md'\"",
+    );
+    expect(result).toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason:
+        "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+    });
   });
 });
 
@@ -1247,17 +1640,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
       end: { kind: "end-of-output", requiresComplete: true },
       validator: "non-empty",
     });
-    const sourceTree = r.value.sourceTree;
-    expect(sourceTree?.language).toBe("bash");
-    const wrapper = sourceTree?.segments.find((s) => s.kind === "embed");
-    expect(wrapper?.kind).toBe("embed");
-    if (wrapper) {
-      const heredoc = wrapper.content.segments.find((s) => s.kind === "embed");
-      expect(heredoc?.kind).toBe("embed");
-      if (heredoc) {
-        expect(heredoc.content.language).toBe("markdown");
-      }
-    }
   });
 
   it("wrapped markdown heredoc with ls -1 dir has no markdown output plan", async () => {
@@ -1277,11 +1659,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    const wrapper = r.value.sourceTree?.segments.find(
-      (s) => s.kind === "embed",
-    );
-    const heredoc = wrapper?.content.segments.find((s) => s.kind === "embed");
-    expect(heredoc?.content.text).toBe("# T");
   });
 
   it("mixed-quoted wrapper heredoc emits wrapper segments and clean embedded content", async () => {
@@ -1291,13 +1668,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    const wrapper = r.value.sourceTree?.segments.find(
-      (s) => s.kind === "embed",
-    );
-    const heredoc = wrapper?.content.segments.find((s) => s.kind === "embed");
-    expect(heredoc?.content.text).toBe(
-      'heredoc body with "quotes" and $literal',
-    );
   });
 
   it("heredoc body containing << does not trigger false multi-heredoc rejection", async () => {
@@ -1311,7 +1681,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing quoted << literal after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\necho '<<'";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1321,7 +1691,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing comment with << after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n# << comment";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1331,7 +1701,7 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
 
   it("trailing ;# comment with << after heredoc does not trigger false multi-heredoc rejection", async () => {
     const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n:;# << comment";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1339,10 +1709,27 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.value.kind).toBe("write");
   });
 
+  it("treats the normalized bare :; suffix like the comment-equivalent write", async () => {
+    const cmd = "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\n:;";
+    const r = await parseShellSemantic(cmd);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.value.kind !== "write") return;
+    expect(r.value).toMatchObject({
+      filePath: "/tmp/a/output.md",
+      heredoc: { content: "# Title" },
+      steps: [
+        {
+          kind: "write-file",
+          targetPath: "/tmp/a/output.md",
+        },
+      ],
+    });
+  });
+
   it("trailing here-string <<< after heredoc is not treated as second heredoc", async () => {
     const cmd =
       "cat > /tmp/a/output.md <<'EOF'\n# Title\nEOF\ngrep foo <<< 'bar'";
-    const parsed = parseShellCommandSourceTree(cmd);
+    const parsed = await buildLoadedShellSourceTree(cmd);
     expect(parsed.ok).toBe(true);
     const r = await parseShellSemantic(cmd);
     expect(r.ok).toBe(true);
@@ -1356,10 +1743,6 @@ describe("batch 1 wrapper quoting and heredoc source preservation", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe("write");
-    const heredoc = r.value.sourceTree?.segments.find(
-      (s) => s.kind === "embed",
-    );
-    expect(heredoc?.content.text).toBe("# Title");
   });
 });
 
@@ -1395,6 +1778,28 @@ describe("batch 1 rg/sed/structured output plans", () => {
       validator: "colon-line-number-prefixed",
     });
   });
+
+  it.each([
+    ['rg -n "" README.md', "rg"],
+    ['grep -n "" README.md', "grep"],
+  ] as const)(
+    "rejects a direct empty quoted %s pattern",
+    async (command, tool) => {
+      const r = await parseShellSemantic(command);
+      expect(r, `${tool}: ${command}`).toMatchObject({
+        ok: false,
+        code: "variable_path",
+      });
+    },
+  );
+
+  it.each(['cat README.md | rg -n ""', 'cat README.md | grep -n ""'])(
+    "rejects an empty quoted pattern in a search pipeline: %s",
+    async (command) => {
+      const r = await parseShellSemantic(command);
+      expect(r).toMatchObject({ ok: false, code: "variable_path" });
+    },
+  );
 
   it("unsupported rg forms reject", async () => {
     const bad = [
@@ -1474,6 +1879,18 @@ describe("batch 1 rg/sed/structured output plans", () => {
     });
     expect(plan(v)?.blocks[1]?.source?.filePath).toBe("README.md");
   });
+
+  it.each([
+    "ls -l README.md; sed -n '1,20p' README.md",
+    "ls -l README.md\nsed -n '1,20p' README.md",
+  ])(
+    "does not treat direct %j ls/sed boundaries as the exact readback",
+    async (command) => {
+      const r = await parseShellSemantic(command);
+      expect(r.ok, command).toBe(false);
+      if (!r.ok) expect(r.code, command).toBe("unsupported_command");
+    },
+  );
 
   it("sed/printf multiline list emits unique-literal separator anchors", async () => {
     const cmd = [
@@ -1577,5 +1994,1305 @@ describe("batch 1 rg/sed/structured output plans", () => {
       validator: "non-empty",
     });
     expect(plan(r.value)?.blocks[1]?.source?.filePath).toBe("file.md");
+  });
+});
+
+describe("Unit 2 public shell semantic contracts", () => {
+  it("keeps the canonical mixed program exact and exposes its trailing pipeline", async () => {
+    const command =
+      "cd /tmp && python3 - <<'EOF'\nprint(1)\nEOF\ngit diff | cat";
+    expect(command.length).toBe(56);
+
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const value = result.value;
+    if (value.kind !== "script-exec") return;
+    expect(value.command).toBe(command);
+    expect(value.commandName).toBe("python3");
+    expect(value.language).toBe("python");
+    expect(value.scriptSource).toMatchObject({
+      type: "heredoc",
+      delimiter: "EOF",
+      quoted: true,
+      content: "print(1)",
+      commandLine: "cd /tmp && python3 - <<'EOF'",
+      terminator: "EOF",
+    });
+    expect(value.steps).toEqual([
+      {
+        kind: "execute-script",
+        order: 0,
+        commandName: "python3",
+        language: "python",
+        contentNodeId: "heredoc-body",
+        outputShape: { kind: "unknown" },
+      },
+    ]);
+    expect(plan(value)).toBeUndefined();
+  });
+
+  it.each([
+    "cd /tmp && python3 - <<'EOF'\nprint(1)\nEOF",
+    "cd /tmp && python3 -c 'print(1)'",
+    "env FOO=bar python3 -c 'print(1)'",
+    "cd /tmp && env FOO=bar python3 -c 'print(1)'",
+  ])(
+    "recognizes cd-prefix and environment Python forms: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("script-exec");
+      expect(result.value.command, command).toBe(command);
+      expect((result.value as ShellScriptExecSemantic).language, command).toBe(
+        "python",
+      );
+    },
+  );
+
+  it.each([
+    "env FOO=bar python3 - <<'PY'\nprint(1)\nPY",
+    "cd /tmp && env FOO=bar python3 - <<'PY'\nprint(1)\nPY",
+  ])(
+    "publishes exact Python heredoc metadata for environment-prefixed commands: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("script-exec");
+      if (result.value.kind !== "script-exec") return;
+      expect(result.value).toMatchObject({
+        command,
+        commandName: "python3",
+        language: "python",
+        scriptSource: {
+          type: "heredoc",
+          delimiter: "PY",
+          quoted: true,
+          content: "print(1)",
+          commandLine: command.split("\n", 1)[0],
+          terminator: "PY",
+        },
+      });
+      expect(result.value.steps).toEqual([
+        {
+          kind: "execute-script",
+          order: 0,
+          commandName: "python3",
+          language: "python",
+          contentNodeId: "heredoc-body",
+          outputShape: { kind: "unknown" },
+        },
+      ]);
+    },
+  );
+
+  it.each(["cat foo\\ bar*", "cat foo\\ bar?", "cat ~/foo\\ bar"])(
+    "rejects mixed escaped and dynamic path operands: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(false);
+    },
+  );
+
+  it.each([
+    "cat operand >output.md <<EOF\nbody\nEOF",
+    "cat -n >output.md <<EOF\nbody\nEOF",
+  ])(
+    "does not classify a cat heredoc with operands or options as a write: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok ? result.value.kind : undefined, command).not.toBe(
+        "write",
+      );
+    },
+  );
+
+  it("keeps an unsupported trailing ls pipeline out of cat heredoc steps", async () => {
+    const command =
+      "cat >output.md <<EOF\nbody\nEOF\nls -l output.md | sed -n '1,2p' output.md";
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "write") return;
+    expect(result.value.steps).toEqual([
+      {
+        kind: "write-file",
+        order: 0,
+        targetPath: "output.md",
+        contentNodeId: "heredoc-body",
+        outputShape: { kind: "none" },
+      },
+    ]);
+  });
+
+  it("classifies the exact trailing ls readback after a cat heredoc", async () => {
+    const command =
+      "cat >output.md <<EOF\nbody\nEOF\nls -l output.md && sed -n '1,2p' output.md";
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "write") return;
+    expect(result.value.steps).toEqual([
+      {
+        kind: "write-file",
+        order: 0,
+        targetPath: "output.md",
+        contentNodeId: "heredoc-body",
+        outputShape: { kind: "none" },
+      },
+      {
+        kind: "plain-output",
+        order: 1,
+        commandName: "ls",
+        filePath: "output.md",
+        outputShape: {
+          kind: "fixed-lines",
+          count: 1,
+          format: { kind: "content", language: "shell-output" },
+          validator: "non-empty",
+        },
+        blockId: "listing",
+      },
+      {
+        kind: "read-file",
+        order: 2,
+        commandName: "sed",
+        filePath: "output.md",
+        range: { type: "lines", start: 1, end: 2 },
+        outputShape: {
+          kind: "content",
+          format: { kind: "content", language: "markdown" },
+          validator: "non-empty",
+        },
+        blockId: "sed-output",
+      },
+    ]);
+  });
+
+  it("classifies the exact trailing ls directory listing after a cat heredoc", async () => {
+    const command = "cat >output.md <<EOF\nbody\nEOF\nls -1 src";
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "write") return;
+    expect(result.value.steps).toEqual([
+      {
+        kind: "write-file",
+        order: 0,
+        targetPath: "output.md",
+        contentNodeId: "heredoc-body",
+        outputShape: { kind: "none" },
+      },
+      {
+        kind: "plain-output",
+        order: 1,
+        commandName: "ls",
+        outputShape: { kind: "unknown" },
+      },
+    ]);
+  });
+
+  it("classifies direct ls -1 src as one unknown plain-output step", async () => {
+    const result = await parseShellSemantic("ls -1 src");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.kind).toBe("structured-output");
+    expect(result.value.steps).toEqual([
+      {
+        kind: "plain-output",
+        order: 0,
+        commandName: "ls",
+        outputShape: { kind: "unknown" },
+      },
+    ]);
+  });
+
+  it.each([
+    "env -i python3 -c 'print(1)'",
+    "env FOO=$BAR python3 -c 'print(1)'",
+    "FOO=one python3 -c 'print(1)'",
+    "FOO=$BAR python3 -c 'print(1)'",
+    "env FOO=bar",
+    "env FOO=bar unknown-interpreter -c 'print(1)'",
+    "env FOO=bar python3 -c 'print(1)' extra",
+    "python3 -c 'print(1)' && python3 -c 'print(2)'",
+    "cd /tmp && python3 -c 'print(1)' | cat",
+  ])(
+    "does not false-positive unsupported environment or compound form: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok ? result.value.kind : undefined, command).not.toBe(
+        "script-exec",
+      );
+    },
+  );
+
+  it.each([
+    ["/usr/bin/cat README.md", "README.md"],
+    ["cat 'README'\".md\"", "README.md"],
+    ["cat 'a>b'", "a>b"],
+    ["cat 'a|b'", "a|b"],
+    ["cat 'cost$USD'", "cost$USD"],
+    ["cat /tmp/project/README.md", "/tmp/project/README.md"],
+  ] as const)(
+    "normalizes literal command and path forms: %s",
+    async (command, filePath) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("read");
+      expect((result.value as ShellReadSemantic).filePath, command).toBe(
+        filePath,
+      );
+    },
+  );
+
+  it.each([
+    'cat "$(pwd)/README.md"',
+    'cat "README$SUFFIX"',
+    "cat README$(suffix)",
+    "cat >out.txt README.md",
+  ])("rejects dynamic or post-redirect read operands: %s", async (command) => {
+    const result = await parseShellSemantic(command);
+    expect(result.ok, command).toBe(false);
+  });
+
+  it.each(["cat a; cat b", "cat a && cat b", "cat a\ncat b"])(
+    "accepts normalized list boundaries: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("structured-output");
+      expect(result.value.steps, command).toHaveLength(2);
+    },
+  );
+
+  it("keeps pipe lowering separate from conservative control operators", async () => {
+    const pipe = await parseShellSemantic("cat a | head -1");
+    expect(pipe).toMatchObject({
+      ok: true,
+      value: { kind: "read", filePath: "a", range: { type: "head", count: 1 } },
+    });
+
+    for (const command of [
+      "cat a || cat b",
+      "cat a |& cat b",
+      "cat a & cat b",
+      "cat a ;; cat b",
+      "case x in x) cat a ;; esac",
+      "if true; then cat a; fi",
+      "cat '",
+    ]) {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(false);
+    }
+  });
+
+  it("retains normalized parser diagnostics for unsupported control", async () => {
+    const command = "cat a || cat b";
+    const parsed = await loadParsedShellDocument(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.document.diagnostics).toEqual([
+      {
+        kind: "unsupported_control",
+        span: { start: 6, end: 8 },
+        operator: "||",
+      },
+    ]);
+  });
+
+  it.each([
+    ["if list", "if true; then echo x; fi && cat <<EOF\nbody\nEOF"],
+    ["for list", "for x in x; do echo x; done && cat <<EOF\nbody\nEOF"],
+    ["while list", "while true; do echo x; done && cat <<EOF\nbody\nEOF"],
+    ["subshell list", "(echo x) && cat <<EOF\nbody\nEOF"],
+    ["if pipeline", "if true; then echo x; fi | cat <<EOF\nbody\nEOF"],
+    ["for pipeline", "for x in x; do echo x; done | cat <<EOF\nbody\nEOF"],
+    ["while pipeline", "while true; do echo x; done | cat <<EOF\nbody\nEOF"],
+    ["subshell pipeline", "(echo x) | cat <<EOF\nbody\nEOF"],
+  ] as const)(
+    "returns the unsupported-construct fallback after a leading opaque %s",
+    async (_label, command) => {
+      expect((await parseShellSemantic(command)).ok, command).toBe(false);
+    },
+  );
+
+  it.each(["bash -c 'if'", "bash -c 'cat <<EOF'"] as const)(
+    "keeps the failed Bash child fallback typed for %s",
+    async (command) => {
+      await expect(parseShellSemantic(command)).resolves.toEqual({
+        ok: false,
+        code: "unsupported_command",
+        reason: "unsupported shell wrapper structure",
+      });
+    },
+  );
+
+  it.each([
+    ["python3 -c 'print(1)'", "python3", "python", "-c", "print(1)"],
+    ["node -e 'console.log(1)'", "node", "javascript", "-e", "console.log(1)"],
+    ["ruby -e 'puts 1'", "ruby", "ruby", "-e", "puts 1"],
+    ["perl -e 'print 1'", "perl", "perl", "-e", "print 1"],
+  ] as const)(
+    "publishes inline %s invocation metadata",
+    async (command, commandName, language, flag, content) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      const value = result.value;
+      if (value.kind !== "script-exec") return;
+      expect(value).toMatchObject({
+        kind: "script-exec",
+        command,
+        commandName,
+        language,
+        scriptSource: { type: "inline", flag, content },
+      });
+      expect(plan(value)).toBeUndefined();
+    },
+  );
+
+  it("unwraps one shell wrapper with trailing redirects", async () => {
+    const command = "bash -lc \"python3 - <<'PY'\nprint(1)\nPY\" 2>/dev/null";
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      kind: "script-exec",
+      command,
+      commandName: "python3",
+      language: "python",
+      scriptSource: {
+        type: "heredoc",
+        delimiter: "PY",
+        content: "print(1)",
+      },
+    });
+  });
+
+  it("keeps direct multi-level wrappers unsupported while preserving nested source nodes", async () => {
+    const command = `zsh -lc "bash -lc 'cat README.md'"`;
+    const semantic = await parseShellSemantic(command);
+    expect(semantic).toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason:
+        "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
+    });
+
+    const parsed = await buildLoadedShellSourceTree(command);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.text).toBe(command);
+    const outer = parsed.value.segments.find(
+      (segment) => segment.kind === "embed",
+    );
+    expect(outer?.kind).toBe("embed");
+    if (!outer) return;
+    expect(outer.content.text).toBe("bash -lc 'cat README.md'");
+    const inner = outer.content.segments.find(
+      (segment) => segment.kind === "embed",
+    );
+    expect(inner?.kind).toBe("embed");
+    if (!inner) return;
+    expect(inner.content.text).toBe("cat README.md");
+  });
+
+  it.each(["\n", "\r\n"] as const)(
+    "preserves interpreter and cat heredoc segments with %j line endings",
+    async (lineEnding) => {
+      const body = 'print("$HOME | && <<")';
+      const interpreterCommand = `python3 - <<'PY'${lineEnding}${body}${lineEnding}PY`;
+      const interpreter = await parseShellSemantic(interpreterCommand);
+      expect(interpreter.ok, interpreterCommand).toBe(true);
+      if (!interpreter.ok) return;
+      const script = interpreter.value;
+      if (script.kind !== "script-exec") return;
+      expect(script.scriptSource).toMatchObject({
+        type: "heredoc",
+        content: body,
+        terminator: "PY",
+      });
+      expect(
+        script.segments.map((segment) => segment.text).join(""),
+        interpreterCommand,
+      ).toBe(interpreterCommand);
+
+      const catCommand = `cat >output.py <<'EOF'${lineEnding}${body}${lineEnding}EOF`;
+      const cat = await parseShellSemantic(catCommand);
+      expect(cat.ok, catCommand).toBe(true);
+      if (!cat.ok) return;
+      const write = cat.value;
+      if (write.kind !== "write") return;
+      expect(write.heredoc.content).toBe(body);
+      expect(
+        write.segments.map((segment) => segment.text).join(""),
+        catCommand,
+      ).toBe(catCommand);
+    },
+  );
+
+  it.each([
+    ["cat 2>error.log >output.py <<EOF\nbody\nEOF", "output.py"],
+    ["cat &>all.log <<EOF\nbody\nEOF", "all.log"],
+    ["cat 2>$ERR >output.py <<EOF\nbody\nEOF", "output.py"],
+  ] as const)(
+    "uses the literal stdout redirect for cat heredoc: %s",
+    async (command, filePath) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("write");
+      expect(
+        (result.value as ShellHeredocWriteSemantic).filePath,
+        command,
+      ).toBe(filePath);
+    },
+  );
+
+  it.each([
+    "cat 2>error.log <<EOF\nbody\nEOF",
+    "cat >$OUT <<EOF\nbody\nEOF",
+    "cat >output.py 1>&- <<EOF\nbody\nEOF",
+  ])(
+    "rejects cat heredoc without a known open stdout file: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(false);
+    },
+  );
+
+  it.each([
+    "cat >output.py 2<<EOF\nbody\nEOF",
+    "cat >output.py {fd}<<EOF\nbody\nEOF",
+    "cat >output.py 1<&0 <<EOF\nbody\nEOF",
+    "cat >output.py <<EOF <in\nbody\nEOF",
+    "cat >output.py <<EOF <&-\nbody\nEOF",
+  ])(
+    "does not classify a non-effective cat heredoc as a write: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok ? result.value.kind : undefined, command).not.toBe(
+        "write",
+      );
+    },
+  );
+
+  it.each(["cat >output.py <in <<EOF\nbody\nEOF"])(
+    "classifies a cat write when its heredoc remains effective stdin: %s",
+    async (command) => {
+      const result = await parseShellSemantic(command);
+      expect(result.ok, command).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.kind, command).toBe("write");
+    },
+  );
+
+  it.each([
+    "cat >output.py 0<&1 <<EOF\nbody\nEOF",
+    "cat >output.py 0<&- <<EOF\nbody\nEOF",
+  ])(
+    "keeps adjacent fd-zero cat redirect limitations typed: %s",
+    async (command) => {
+      await expect(parseShellSemantic(command), command).resolves.toMatchObject(
+        {
+          ok: false,
+          code: "unsafe_shell_syntax",
+        },
+      );
+    },
+  );
+
+  it("does not invent output steps for an unsupported trailing unit", async () => {
+    const command = 'cat >output.py <<EOF\nbody\nEOF\nprintf "$OUT"';
+    const result = await parseShellSemantic(command);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "write") return;
+    expect(result.value.steps).toEqual([
+      {
+        kind: "write-file",
+        order: 0,
+        targetPath: "output.py",
+        contentNodeId: "heredoc-body",
+        outputShape: { kind: "none" },
+      },
+    ]);
+  });
+
+  it("fails fast on a corrupted direct Python invocation command ID", async () => {
+    const command = "python3 -c 'print(1)'";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const invocation = loaded.document.embeddedInvocations[0];
+    expect(invocation?.kind).toBe("inline");
+    if (!invocation || invocation.kind !== "inline") return;
+
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockResolvedValue({
+        ok: true,
+        document: {
+          ...loaded.document,
+          embeddedInvocations: [{ ...invocation, commandId: 99 }],
+        },
+      });
+    try {
+      await expect(parseShellSemantic(command)).rejects.toThrow(
+        "parsed shell document invariant: command id",
+      );
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("fails fast when a loader shortens the sole command unit", async () => {
+    const command = "cat README.md";
+    expect(command).toHaveLength(13);
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok, command).toBe(true);
+    if (!loaded.ok) return;
+    const [unit] = loaded.document.program.children;
+    if (
+      loaded.document.program.children.length !== 1 ||
+      unit?.kind !== "command" ||
+      unit.span.end !== 13
+    )
+      throw new Error("test sole command unit is incomplete");
+
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockResolvedValue({
+        ok: true,
+        document: {
+          ...loaded.document,
+          program: {
+            ...loaded.document.program,
+            children: [{ ...unit, span: { ...unit.span, end: 12 } }],
+          },
+        },
+      });
+    try {
+      await expect(parseShellSemantic(command)).rejects.toThrow(
+        "parsed shell document invariant:",
+      );
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("fails fast before an ordinary read when a loader marks its argument synthetic", async () => {
+    const command = "cat REVIEW-SYNTHETIC.md";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok, command).toBe(true);
+    if (!loaded.ok) return;
+    const record = loaded.document.commands[0];
+    const argument = record?.arguments[0];
+    const unit = loaded.document.program.children[0];
+    if (
+      loaded.document.commands.length !== 1 ||
+      record === undefined ||
+      record.arguments.length !== 1 ||
+      argument === undefined ||
+      argument.synthetic ||
+      argument.word.kind !== "literal" ||
+      argument.word.syntax === "synthetic" ||
+      unit?.kind !== "command" ||
+      unit.span.start !== 0 ||
+      unit.span.end !== command.length
+    )
+      throw new Error("test ordinary argument record is incomplete");
+
+    const corruptions: readonly Readonly<{
+      label: string;
+      document: ParsedShellDocument;
+    }>[] = [
+      {
+        label: "ordinary argument marked synthetic",
+        document: {
+          ...loaded.document,
+          commands: [
+            {
+              ...record,
+              arguments: [{ ...argument, synthetic: true }],
+            },
+          ],
+        },
+      },
+      {
+        label: "synthetic marker with shortened sole command unit",
+        document: {
+          ...loaded.document,
+          commands: [
+            {
+              ...record,
+              arguments: [{ ...argument, synthetic: true }],
+            },
+          ],
+          program: {
+            ...loaded.document.program,
+            children: [{ ...unit, span: { start: 0, end: 3 } }],
+          },
+        },
+      },
+    ];
+    for (const corruption of corruptions) {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document: corruption.document });
+      try {
+        await expect(
+          parseShellSemantic(command),
+          corruption.label,
+        ).rejects.toThrow("parsed shell document invariant:");
+      } finally {
+        load.mockRestore();
+      }
+    }
+  });
+
+  it("fails fast when a loader returns an opaque unit that no longer matches its construct diagnostic", async () => {
+    const command = "if true; then echo x; fi";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok, command).toBe(true);
+    if (!loaded.ok) return;
+    const opaque = loaded.document.program.children[0];
+    if (
+      loaded.document.program.children.length !== 1 ||
+      loaded.document.diagnostics.length !== 1 ||
+      opaque?.kind !== "opaque" ||
+      opaque.nodeType !== "if_statement"
+    )
+      throw new Error("test opaque if document is incomplete");
+
+    for (const [label, unit] of [
+      ["node type", { ...opaque, nodeType: "for_statement" }],
+      [
+        "span start",
+        {
+          ...opaque,
+          span: { ...opaque.span, start: opaque.span.start + 1 },
+        },
+      ],
+    ] as const) {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({
+          ok: true,
+          document: {
+            ...loaded.document,
+            program: {
+              ...loaded.document.program,
+              children: [unit],
+            },
+          },
+        });
+      try {
+        await expect(parseShellSemantic(command), label).rejects.toThrow(
+          "parsed shell document invariant:",
+        );
+      } finally {
+        load.mockRestore();
+      }
+    }
+  });
+
+  it("fails fast before classifying an ordinary read with unlisted redirect ownership", async () => {
+    const command = "cat README.md >/tmp/out4";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const redirect = loaded.document.redirects[0];
+    if (redirect === undefined) throw new Error("test redirect missing");
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockResolvedValue({
+        ok: true,
+        document: {
+          ...loaded.document,
+          commands: loaded.document.commands.map((owner) =>
+            owner.id === redirect.ownerId
+              ? { ...owner, redirectIds: [] }
+              : owner,
+          ),
+        },
+      });
+    try {
+      await expect(parseShellSemantic(command)).rejects.toThrow(
+        "parsed shell document invariant: redirect owner membership",
+      );
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("fails fast before inline semantic fallback on invalid invocation metadata", async () => {
+    const command = "python3 -c 'print(3)' >/tmp/out3";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const invocation = loaded.document.embeddedInvocations[0];
+    expect(invocation?.kind).toBe("inline");
+    if (invocation?.kind !== "inline") return;
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockResolvedValue({
+        ok: true,
+        document: {
+          ...loaded.document,
+          embeddedInvocations: [{ ...invocation, flagArgumentIndex: 99 }],
+        },
+      });
+    try {
+      await expect(parseShellSemantic(command)).rejects.toThrow(
+        "parsed shell document invariant: inline argument indices",
+      );
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("validates parser provenance before semantic policy selects an invocation", async () => {
+    const expectInvariant = async (
+      command: string,
+      document: ParsedShellDocument,
+    ): Promise<void> => {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document });
+      try {
+        await expect(parseShellSemantic(command)).rejects.toThrow(
+          "parsed shell document invariant:",
+        );
+      } finally {
+        load.mockRestore();
+      }
+    };
+
+    const inlineCommand = "python3 -c 'print(3)' >/tmp/out3";
+    const inline = await loadParsedShellDocument(inlineCommand);
+    expect(inline.ok).toBe(true);
+    if (!inline.ok) return;
+    const inlineInvocation = inline.document.embeddedInvocations[0];
+    const inlineRedirect = inline.document.redirects[0];
+    expect(inlineInvocation?.kind).toBe("inline");
+    if (inlineInvocation?.kind !== "inline" || inlineRedirect === undefined)
+      return;
+    await expectInvariant(inlineCommand, {
+      ...inline.document,
+      redirects: [{ ...inlineRedirect, id: 99 }],
+    });
+    await expectInvariant(inlineCommand, {
+      ...inline.document,
+      embeddedInvocations: [
+        {
+          ...inlineInvocation,
+          payload: {
+            ...inlineInvocation.payload,
+            projection: {
+              ...inlineInvocation.payload.projection,
+              span: {
+                ...inlineInvocation.payload.projection.span,
+                end: inlineInvocation.payload.projection.span.end - 1,
+              },
+            },
+          },
+        },
+      ],
+    });
+    await expectInvariant(inlineCommand, {
+      ...inline.document,
+      embeddedInvocations: [{ ...inlineInvocation, child: inline.document }],
+    });
+
+    const envCommand = "env FOO=bar python3 -c 'print(3)'";
+    const env = await loadParsedShellDocument(envCommand);
+    expect(env.ok).toBe(true);
+    if (!env.ok) return;
+    const envInvocation = env.document.embeddedInvocations[0];
+    expect(envInvocation?.prefix.kind).toBe("env");
+    if (envInvocation?.prefix.kind !== "env") return;
+    const assignment = envInvocation.prefix.assignments[0];
+    if (assignment === undefined) return;
+    await expectInvariant(envCommand, {
+      ...env.document,
+      embeddedInvocations: [
+        {
+          ...envInvocation,
+          prefix: {
+            ...envInvocation.prefix,
+            assignments: [{ ...assignment, value: "different" }],
+          },
+        },
+      ],
+    });
+
+    const heredocCommand = "python3 -u - <<EOF\nprint(3)\nEOF";
+    const heredoc = await loadParsedShellDocument(heredocCommand);
+    expect(heredoc.ok).toBe(true);
+    if (!heredoc.ok) return;
+    const heredocInvocation = heredoc.document.embeddedInvocations[0];
+    const heredocRedirect = heredoc.document.redirects.find(
+      (redirect) => redirect.kind === "heredoc",
+    );
+    expect(heredocInvocation?.kind).toBe("heredoc");
+    if (heredocInvocation?.kind !== "heredoc" || heredocRedirect === undefined)
+      return;
+    await expectInvariant(heredocCommand, {
+      ...heredoc.document,
+      embeddedInvocations: [{ ...heredocInvocation, stdinArgumentIndex: 0 }],
+    });
+    await expectInvariant(heredocCommand, {
+      ...heredoc.document,
+      redirects: heredoc.document.redirects.map((redirect) =>
+        redirect.id === heredocRedirect.id
+          ? {
+              ...heredocRedirect,
+              rawBodySpan: {
+                ...heredocRedirect.rawBodySpan,
+                end: heredocRedirect.rawBodySpan.end - 1,
+              },
+            }
+          : redirect,
+      ),
+    });
+
+    const bashCommand = "bash -c 'cat README.md'";
+    const bash = await loadParsedShellDocument(bashCommand);
+    expect(bash.ok).toBe(true);
+    if (!bash.ok) return;
+    const bashInvocation = bash.document.embeddedInvocations[0];
+    if (bashInvocation?.kind !== "inline" || bashInvocation.child === null)
+      return;
+    await expectInvariant(bashCommand, {
+      ...bash.document,
+      embeddedInvocations: [{ ...bashInvocation, child: inline.document }],
+    });
+  });
+
+  it("fails fast for command, member, and descriptor provenance before semantic policy", async () => {
+    const expectInvariant = async (
+      command: string,
+      document: ParsedShellDocument,
+      message: string,
+    ): Promise<void> => {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document });
+      try {
+        await expect(parseShellSemantic(command)).rejects.toThrow(message);
+      } finally {
+        load.mockRestore();
+      }
+    };
+
+    const multiCommand = "echo hi; cat README.md";
+    const multi = await loadParsedShellDocument(multiCommand);
+    expect(multi.ok).toBe(true);
+    if (!multi.ok) return;
+    const [firstUnit, secondUnit] = multi.document.program.children;
+    const [echoCommand, catCommand] = multi.document.commands;
+    if (
+      firstUnit?.kind !== "command" ||
+      secondUnit?.kind !== "command" ||
+      echoCommand === undefined ||
+      catCommand === undefined
+    )
+      throw new Error("test multi-command document is incomplete");
+    await expectInvariant(
+      multiCommand,
+      {
+        ...multi.document,
+        program: {
+          ...multi.document.program,
+          children: [
+            { ...firstUnit, commandId: secondUnit.commandId },
+            secondUnit,
+          ],
+        },
+      },
+      "parsed shell document invariant: command unit references",
+    );
+    await expectInvariant(
+      multiCommand,
+      {
+        ...multi.document,
+        commands: [{ ...echoCommand, name: catCommand.name }, catCommand],
+      },
+      "parsed shell document invariant: command name span",
+    );
+    await expectInvariant(
+      multiCommand,
+      {
+        ...multi.document,
+        commands: [
+          { ...echoCommand, arguments: [catCommand.arguments[0]!] },
+          catCommand,
+        ],
+      },
+      "parsed shell document invariant: command argument span",
+    );
+
+    const narrowedCommand = "cat README.md >out";
+    const narrowed = await loadParsedShellDocument(narrowedCommand);
+    expect(narrowed.ok).toBe(true);
+    if (!narrowed.ok) return;
+    const narrowedRecord = narrowed.document.commands[0];
+    if (narrowedRecord === undefined)
+      throw new Error("test narrowed command is incomplete");
+    await expectInvariant(
+      narrowedCommand,
+      {
+        ...narrowed.document,
+        commands: [
+          {
+            ...narrowedRecord,
+            span: {
+              start: narrowedRecord.span.start,
+              end: narrowedRecord.name.rawSpan.end,
+            },
+          },
+        ],
+      },
+      "parsed shell document invariant: command argument span",
+    );
+
+    const numericCommand = "cat 2>out";
+    const numeric = await loadParsedShellDocument(numericCommand);
+    expect(numeric.ok).toBe(true);
+    if (!numeric.ok) return;
+    const numericRedirect = numeric.document.redirects[0];
+    const numericDescriptor =
+      numericRedirect?.kind === "file" ? numericRedirect.descriptor : null;
+    if (
+      numericRedirect?.kind !== "file" ||
+      numericDescriptor?.kind !== "number"
+    )
+      throw new Error("test numeric descriptor is incomplete");
+    await expectInvariant(
+      numericCommand,
+      {
+        ...numeric.document,
+        redirects: [
+          {
+            ...numericRedirect,
+            descriptor: { ...numericDescriptor, value: "1" },
+          },
+        ],
+      },
+      "parsed shell document invariant: redirect descriptor value",
+    );
+  });
+
+  it("fails fast for redirect components and heredoc header anchors before semantic policy", async () => {
+    const expectInvariant = async (
+      command: string,
+      document: ParsedShellDocument,
+    ): Promise<void> => {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document });
+      try {
+        await expect(parseShellSemantic(command)).rejects.toThrow(
+          "parsed shell document invariant:",
+        );
+      } finally {
+        load.mockRestore();
+      }
+    };
+
+    const quotedCommand = 'cat <"in>out" <<EOF\nbody\nEOF';
+    const quotedDestination = await loadParsedShellDocument(quotedCommand);
+    expect(quotedDestination.ok).toBe(true);
+    if (!quotedDestination.ok) return;
+    const quotedRedirect = quotedDestination.document.redirects[0];
+    if (
+      quotedRedirect?.kind !== "file" ||
+      quotedRedirect.destination?.kind !== "literal"
+    )
+      throw new Error("test quoted redirect is incomplete");
+    const quotedOperatorStart = quotedCommand.indexOf(
+      ">",
+      quotedRedirect.destination.rawSpan.start,
+    );
+    if (quotedOperatorStart < quotedRedirect.destination.rawSpan.start)
+      throw new Error("test quoted destination operator is missing");
+    await expectInvariant(quotedCommand, {
+      ...quotedDestination.document,
+      redirects: quotedDestination.document.redirects.map((redirect) =>
+        redirect.id === quotedRedirect.id
+          ? {
+              ...quotedRedirect,
+              operator: ">",
+              operatorSpan: {
+                start: quotedOperatorStart,
+                end: quotedOperatorStart + 1,
+              },
+            }
+          : redirect,
+      ),
+    });
+
+    const descriptorCommand = "cat 1>2 <<EOF\nbody\nEOF";
+    const descriptorDestination =
+      await loadParsedShellDocument(descriptorCommand);
+    expect(descriptorDestination.ok).toBe(true);
+    if (!descriptorDestination.ok) return;
+    const descriptorRedirect = descriptorDestination.document.redirects[0];
+    if (descriptorRedirect?.kind !== "file")
+      throw new Error("test descriptor redirect is incomplete");
+    const { descriptor, destination } = descriptorRedirect;
+    if (descriptor?.kind !== "number" || destination?.kind !== "literal")
+      throw new Error("test descriptor redirect is incomplete");
+    expect(destination.value).toBe("2");
+    expect(descriptor.value).toBe("1");
+    await expectInvariant(descriptorCommand, {
+      ...descriptorDestination.document,
+      redirects: descriptorDestination.document.redirects.map((redirect) =>
+        redirect.id === descriptorRedirect.id
+          ? {
+              ...descriptorRedirect,
+              destination: {
+                ...destination,
+                rawSpan: descriptor.rawSpan,
+                value: descriptor.value,
+                projection: {
+                  ...destination.projection,
+                  span: descriptor.rawSpan,
+                },
+              },
+            }
+          : redirect,
+      ),
+    });
+
+    const headerCases = [
+      {
+        command: "cd /tmp && python3 - <<EOF\nbody\nEOF",
+        headerStart: (source: string) => source.indexOf("python3"),
+      },
+      {
+        command: "mkdir output\ncat <<EOF\nbody\nEOF",
+        headerStart: (source: string) => source.indexOf("mkdir"),
+      },
+      {
+        command: "cat <<EOF\nbody\nEOF",
+        headerStart: (source: string) => source.indexOf("<<"),
+      },
+    ] as const;
+    for (const testCase of headerCases) {
+      const loaded = await loadParsedShellDocument(testCase.command);
+      expect(loaded.ok, testCase.command).toBe(true);
+      if (!loaded.ok) return;
+      const heredoc = loaded.document.redirects.find(
+        (redirect) => redirect.kind === "heredoc",
+      );
+      if (heredoc === undefined)
+        throw new Error("test heredoc redirect is missing");
+      const headerStart = testCase.headerStart(testCase.command);
+      if (headerStart < 0 || heredoc.headerSpan.start === headerStart)
+        throw new Error("test heredoc anchor is incomplete");
+      await expectInvariant(testCase.command, {
+        ...loaded.document,
+        redirects: loaded.document.redirects.map((redirect) =>
+          redirect.id === heredoc.id
+            ? {
+                ...heredoc,
+                headerSpan: { ...heredoc.headerSpan, start: headerStart },
+              }
+            : redirect,
+        ),
+      });
+    }
+  });
+
+  it("fails fast for a file redirect payload transplanted from its later sibling before public semantic output", async () => {
+    const expectInvariant = async (
+      command: string,
+      document: ParsedShellDocument,
+    ): Promise<void> => {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document });
+      try {
+        await expect(parseShellSemantic(command)).rejects.toThrow(
+          "parsed shell document invariant:",
+        );
+      } finally {
+        load.mockRestore();
+      }
+    };
+
+    const redirectCommand = "cat >out.py 2>err.log <<EOF\nprint(1)\nEOF";
+    const redirectDocument = await loadParsedShellDocument(redirectCommand);
+    expect(redirectDocument.ok, redirectCommand).toBe(true);
+    if (!redirectDocument.ok) return;
+    const [firstRedirect, secondRedirect] = redirectDocument.document.redirects;
+    if (
+      firstRedirect?.kind !== "file" ||
+      secondRedirect?.kind !== "file" ||
+      firstRedirect.destination === null ||
+      secondRedirect.destination === null
+    )
+      throw new Error("test paired file redirects are incomplete");
+    const secondDestination = secondRedirect.destination;
+    await expectInvariant(redirectCommand, {
+      ...redirectDocument.document,
+      redirects: redirectDocument.document.redirects.map((redirect) =>
+        redirect.id === firstRedirect.id
+          ? {
+              ...firstRedirect,
+              destination: secondDestination,
+              span: {
+                ...firstRedirect.span,
+                end: secondDestination.rawSpan.end,
+              },
+            }
+          : redirect,
+      ),
+    });
+  });
+
+  it("fails fast for co-mutated redirected-statement and heredoc header starts before public semantic output", async () => {
+    const expectInvariant = async (
+      command: string,
+      document: ParsedShellDocument,
+    ): Promise<void> => {
+      const load = vi
+        .spyOn(shellParser, "loadParsedShellDocument")
+        .mockResolvedValue({ ok: true, document });
+      try {
+        await expect(parseShellSemantic(command)).rejects.toThrow(
+          "parsed shell document invariant:",
+        );
+      } finally {
+        load.mockRestore();
+      }
+    };
+
+    const headerCommand =
+      "mkdir -p output\n# neighboring trivia\ncat >out.py <<EOF\nprint(1)\nEOF";
+    const headerDocument = await loadParsedShellDocument(headerCommand);
+    expect(headerDocument.ok, headerCommand).toBe(true);
+    if (!headerDocument.ok) return;
+    const [firstUnit, secondUnit] = headerDocument.document.program.children;
+    const heredoc = headerDocument.document.redirects.find(
+      (redirect) => redirect.kind === "heredoc",
+    );
+    const commentStart = headerCommand.indexOf("# neighboring trivia");
+    if (
+      headerDocument.document.program.children.length !== 2 ||
+      firstUnit?.kind !== "command" ||
+      secondUnit?.kind !== "redirected_statement" ||
+      heredoc === undefined ||
+      commentStart < 0 ||
+      secondUnit.span.start <= commentStart ||
+      heredoc.headerSpan.start <= commentStart
+    )
+      throw new Error("test redirected statement header is incomplete");
+    await expectInvariant(headerCommand, {
+      ...headerDocument.document,
+      program: {
+        ...headerDocument.document.program,
+        children: [
+          firstUnit,
+          {
+            ...secondUnit,
+            span: { ...secondUnit.span, start: commentStart },
+          },
+        ],
+      },
+      redirects: headerDocument.document.redirects.map((redirect) =>
+        redirect.id === heredoc.id
+          ? {
+              ...heredoc,
+              headerSpan: {
+                ...heredoc.headerSpan,
+                start: commentStart,
+              },
+            }
+          : redirect,
+      ),
+    });
+  });
+
+  it("preserves a genuine nested Bash child parse diagnostic", async () => {
+    await expect(parseShellSemantic('bash -c "cat \'"')).resolves.toEqual({
+      ok: false,
+      code: "unsupported_command",
+      reason: "unsupported shell wrapper structure",
+    });
+  });
+
+  it("uses a typed fallback for a source-consistent terminal cat boundary", async () => {
+    const command = "cat >output.md <<EOF\nbody\nEOF;";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.document.program.boundaries).toEqual([
+      {
+        kind: "semicolon",
+        text: ";",
+        span: { start: command.length - 1, end: command.length },
+      },
+    ]);
+    await expect(parseShellSemantic(command)).resolves.toEqual({
+      ok: false,
+      code: "unsafe_shell_syntax",
+      reason: "unsupported heredoc structure",
+    });
+  });
+
+  it("fails fast for a source-inconsistent cat program boundary", async () => {
+    const command = "cat >output.md <<EOF\nbody\nEOF";
+    const loaded = await loadParsedShellDocument(command);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const load = vi
+      .spyOn(shellParser, "loadParsedShellDocument")
+      .mockResolvedValue({
+        ok: true,
+        document: {
+          ...loaded.document,
+          program: {
+            ...loaded.document.program,
+            boundaries: [
+              {
+                kind: "newline",
+                text: "\n",
+                span: { start: command.length, end: command.length },
+              },
+            ],
+          },
+        },
+      });
+    try {
+      await expect(parseShellSemantic(command)).rejects.toThrow(
+        "parsed shell document invariant: program boundary text",
+      );
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("maps malformed ordinary syntax and incomplete heredocs to typed results", async () => {
+    await expect(parseShellSemantic("cat '")).resolves.toMatchObject({
+      ok: false,
+      code: "unsafe_shell_syntax",
+    });
+    await expect(
+      parseShellSemantic("python3 - <<'EOF'\nprint(1)"),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_heredoc",
+    });
+    for (const command of ["cat <<-EOF\nbody\nEOF", "cat <<$EOF\nbody\n$EOF"]) {
+      await expect(parseShellSemantic(command)).resolves.toMatchObject({
+        ok: false,
+        code: "invalid_heredoc",
+      });
+    }
   });
 });

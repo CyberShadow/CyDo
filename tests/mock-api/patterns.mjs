@@ -575,6 +575,30 @@ export function matchPattern(userText) {
         "cat > /tmp/test-output.md <<EOF\n# Hello World\n\nThis is **markdown** content.\nEOF",
     };
 
+  if (/semantic shell compound heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command: "cd /tmp && python3 - <<'EOF'\nprint(1)\nEOF\ngit diff | cat",
+    };
+
+  if (/semantic shell env heredoc/i.test(userText))
+    return {
+      type: "shell",
+      command: "env FOO=1 python3 - <<EOF\nprint(1)\nEOF",
+    };
+
+  if (/semantic shell inline interpreter/i.test(userText))
+    return {
+      type: "shell",
+      command: `node -e 'console.log("inline-semantic")'`,
+    };
+
+  if (/semantic shell multi-level wrapper/i.test(userText))
+    return {
+      type: "shell",
+      command: `bash -lc "bash -lc 'cat README.md'"`,
+    };
+
   // "semantic shell pipe read <path>" — pipe that SHOULD get semantic rendering
   match = userText.match(/semantic shell pipe read (\S+)/i);
   if (match) return { type: "shell", command: `cat ${match[1]} | head -5` };

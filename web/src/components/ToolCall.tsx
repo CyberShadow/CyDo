@@ -57,9 +57,13 @@ import {
 } from "../lib/shellSemantic";
 import type { SourceNode } from "../lib/sourceTree";
 import {
-  parseShellCommandSourceTree,
+  buildShellSourceTree,
   isShellCommandWrapperEmbed,
 } from "../lib/shellSourceTree";
+import {
+  getCachedParsedShellDocument,
+  loadParsedShellDocument,
+} from "../lib/shellParser";
 
 /**
  * Tool Result Rendering Principles
@@ -256,13 +260,15 @@ interface Props {
 /** Render an array of token lines (no trailing newline). */
 function renderTokenLines(
   tokens: ReturnType<typeof useHighlight>,
+  source?: string,
 ): h.JSX.Element {
   if (!tokens) return <></>;
+  const lineBreaks = source?.match(/\r\n|\r|\n/g);
   return (
     <Fragment>
       {tokens.map((line, i) => (
         <Fragment key={i}>
-          {i > 0 && "\n"}
+          {i > 0 && (lineBreaks?.[i - 1] ?? "\n")}
           {renderTokens(line)}
         </Fragment>
       ))}
@@ -781,10 +787,7 @@ function ShellCommandInput({
   const displayCommand = extractShellDisplayCommand(input, actionCommand);
   const semanticCommand = extractSemanticShellCommand(input, actionCommand);
   const semantic = useShellSemantic(semanticCommand);
-  const parsedSourceTree = useMemo(
-    () => (displayCommand ? parseShellCommandSourceTree(displayCommand) : null),
-    [displayCommand],
-  );
+  const parsedSourceTree = useShellSourceTree(displayCommand);
   const isHeredocWrite =
     semantic?.ok === true && semantic.value.kind === "write";
   const isScriptExec =
@@ -808,11 +811,11 @@ function ShellCommandInput({
     const writeVal = (
       semantic as { ok: true; value: ShellHeredocWriteSemantic }
     ).value;
-    if (displayCommand && parsedSourceTree?.ok) {
+    if (displayCommand && parsedSourceTree) {
       return formatGenericInput(
         remaining,
         <div class="semantic-shell-command" data-testid="semantic-shell-write">
-          {renderSourceTreeCommand(parsedSourceTree.value, writeVal.filePath)}
+          {renderSourceTreeCommand(parsedSourceTree, writeVal.filePath)}
         </div>,
       );
     }
@@ -824,20 +827,20 @@ function ShellCommandInput({
     (semantic as { ok: true; value: ShellScriptExecSemantic }).value
       .scriptSource.type === "heredoc"
   ) {
-    if (displayCommand && parsedSourceTree?.ok) {
+    if (displayCommand && parsedSourceTree) {
       return formatGenericInput(
         remaining,
         <div class="semantic-shell-command" data-testid="semantic-shell-script">
-          {renderSourceTreeCommand(parsedSourceTree.value)}
+          {renderSourceTreeCommand(parsedSourceTree)}
         </div>,
       );
     }
   }
 
-  if (displayCommand && parsedSourceTree?.ok) {
+  if (displayCommand && parsedSourceTree) {
     return formatGenericInput(
       remaining,
-      renderSourceTreeCommand(parsedSourceTree.value),
+      renderSourceTreeCommand(parsedSourceTree),
     );
   }
 
@@ -845,10 +848,68 @@ function ShellCommandInput({
     remaining,
     displayCommand ? (
       <CodePre class="write-content" copyText={displayCommand}>
-        {tokens ? renderTokenLines(tokens) : displayCommand}
+        {tokens ? renderTokenLines(tokens, displayCommand) : displayCommand}
       </CodePre>
     ) : undefined,
   );
+}
+
+type ShellSourceTreeState = {
+  command: string | null;
+  tree: SourceNode | null;
+};
+
+function cachedShellSourceTree(command: string | null): SourceNode | null {
+  if (command === null) return null;
+  const cached = getCachedParsedShellDocument(command);
+  if (cached === undefined || !cached.ok) return null;
+  const tree = buildShellSourceTree(cached.document);
+  return tree.ok ? tree.value : null;
+}
+
+function useShellSourceTree(command: string | null): SourceNode | null {
+  const [state, setState] = useState<ShellSourceTreeState>(() => ({
+    command,
+    tree: cachedShellSourceTree(command),
+  }));
+
+  useEffect(() => {
+    if (command === null) {
+      setState({ command: null, tree: null });
+      return;
+    }
+
+    const cached = getCachedParsedShellDocument(command);
+    if (cached !== undefined) {
+      const tree = cached.ok ? buildShellSourceTree(cached.document) : null;
+      setState({
+        command,
+        tree: tree?.ok ? tree.value : null,
+      });
+      return;
+    }
+
+    let active = true;
+    void loadParsedShellDocument(command).then(
+      (result) => {
+        if (!active) return;
+        const tree = result.ok ? buildShellSourceTree(result.document) : null;
+        setState({
+          command,
+          tree: tree?.ok ? tree.value : null,
+        });
+      },
+      () => {
+        if (active) setState({ command, tree: null });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [command]);
+
+  if (state.command === command) return state.tree;
+  return cachedShellSourceTree(command);
 }
 
 function hasWrapperSourceTree(root: SourceNode): boolean {

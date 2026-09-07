@@ -1,20 +1,20 @@
 import { useState, useEffect } from "preact/hooks";
-import {
-  tokenizeWithScopes,
-  type TokenWithScopes,
-  langFromPath,
-} from "../highlight";
-import type { ShikiTheme } from "../highlight";
+import { langFromPath } from "../highlight";
 import type { CommandStep, ReadRange } from "./commandStep";
-import { type SourceNode, type SourceSegment } from "./sourceTree";
 import {
-  parseShellCommandSourceTree,
-  isShellCommandWrapperEmbed,
-  isShellHeredocEmbed,
-} from "./shellSourceTree";
-import { useCurrentTheme } from "../useTheme";
+  assertValidParsedShellDocument,
+  foldParsedShellUnit,
+  loadParsedShellDocument,
+  type ParsedShellCommand,
+  type ParsedShellDocument,
+  type ParsedShellEmbeddedInvocation,
+  type ParsedShellRedirect,
+  type ParsedShellUnit,
+} from "./shellParser";
+import { ownsWholeCommand } from "./shellInvocationOwnership";
+import type { ShellRedirectStateResult } from "./shellRedirectState";
+import { reduceShellRedirectState } from "./shellRedirectState";
 
-// ---------------------------------------------------------------------------
 // Public types (API contract — do not change)
 // ---------------------------------------------------------------------------
 
@@ -50,15 +50,8 @@ export interface ShellSourceSpan {
   rawText: string;
 }
 
-export type ShellEscapingScheme =
-  | { kind: "shell-single-quote" }
-  | { kind: "shell-double-quote"; conservative: true }
-  | { kind: "projected" };
-
 export type ShellSemanticBase = {
   command: string;
-  source?: ShellSourceSpan;
-  sourceTree?: SourceNode;
   steps?: CommandStep[];
 };
 
@@ -142,205 +135,25 @@ export type ShellSemanticResult =
   | { ok: false; code: RejectCode; reason: string };
 
 // ---------------------------------------------------------------------------
-// Layer 1: Shiki scope → ShellToken mapping
-// ---------------------------------------------------------------------------
-
-type ShellTokenRole =
-  | "command"
-  | "flag"
-  | "argument"
-  | "string"
-  | "pipe"
-  | "and"
-  | "or"
-  | "semicolon"
-  | "redirect"
-  | "heredoc-op"
-  | "heredoc-delim"
-  | "escape"
-  | "whitespace"
-  | "unknown";
-
-interface ShellToken {
-  /** Extracted text: quotes stripped from strings, raw otherwise */
-  text: string;
-  /** Original Shiki token content */
-  raw: string;
-  role: ShellTokenRole;
-  /** Whether the heredoc delimiter was quoted (<<'EOF') */
-  quoted?: boolean;
-}
-
-function allScopesOf(tok: TokenWithScopes): string[] {
-  return tok.explanation.flatMap((e) => e.scopes.map((s) => s.scopeName));
-}
-
-/**
- * Map Shiki scope-annotated tokens to ShellToken[].
- *
- * Verified scope names (Shiki 4.x TextMate bash grammar):
- *   entity.name.command.shell                             — external commands: cat, sed, …
- *   support.function.builtin.shell                        — builtins: echo, cd, …
- *   constant.other.option / constant.other.option.dash.shell — flags: -n, -ba, --
- *   string.unquoted.argument.shell                        — bare arguments: file.txt, +40, …
- *   constant.numeric.integer.shell                        — numeric args: 50, 30, …
- *   string.quoted.single.shell                            — 'hello world' (anywhere in all scopes)
- *   string.quoted.double.shell                            — "hello world" (anywhere in all scopes)
- *   keyword.operator.pipe.shell                           — | and ||
- *   punctuation.separator.statement.and.shell             — && (anywhere in all scopes)
- *   punctuation.terminator.statement.semicolon.shell      — ; (anywhere in all scopes)
- *   keyword.operator.redirect.shell                       — >, >>
- *   keyword.operator.heredoc.shell                        — <<
- *   punctuation.definition.string.heredoc.delimiter.shell — EOF (unquoted delimiter)
- *   punctuation.definition.string.heredoc.quote.shell     — 'EOF' (quoted delimiter)
- *   constant.character.escape.shell                       — backslash-escape sequences
- */
-export function mapShikiTokens(shikiLines: TokenWithScopes[][]): ShellToken[] {
-  const out: ShellToken[] = [];
-  for (const line of shikiLines) {
-    for (const tok of line) {
-      const raw = tok.content;
-      const all = allScopesOf(tok);
-
-      // Operators that appear as compound tokens (e.g. " && ", "; ")
-      if (all.includes("punctuation.separator.statement.and.shell")) {
-        out.push({ text: "&&", raw, role: "and" });
-        continue;
-      }
-      if (all.includes("punctuation.terminator.statement.semicolon.shell")) {
-        out.push({ text: ";", raw, role: "semicolon" });
-        continue;
-      }
-
-      if (all.includes("keyword.operator.pipe.shell")) {
-        const trimmed = raw.trim();
-        out.push({
-          text: trimmed,
-          raw,
-          role: trimmed === "||" ? "or" : "pipe",
-        });
-        continue;
-      }
-
-      if (all.includes("keyword.operator.heredoc.shell")) {
-        out.push({ text: "<<", raw, role: "heredoc-op" });
-        continue;
-      }
-
-      // Quoted heredoc delimiter: 'EOF'
-      if (all.includes("punctuation.definition.string.heredoc.quote.shell")) {
-        // Strip surrounding single quotes from 'EOF'
-        const inner = raw.slice(1, -1);
-        out.push({ text: inner, raw, role: "heredoc-delim", quoted: true });
-        continue;
-      }
-      // Unquoted heredoc delimiter: EOF
-      if (
-        all.includes("punctuation.definition.string.heredoc.delimiter.shell")
-      ) {
-        out.push({ text: raw, raw, role: "heredoc-delim", quoted: false });
-        continue;
-      }
-
-      if (all.includes("keyword.operator.redirect.shell")) {
-        out.push({ text: raw.trim(), raw, role: "redirect" });
-        continue;
-      }
-
-      if (
-        all.includes("constant.other.option") ||
-        all.includes("constant.other.option.dash.shell")
-      ) {
-        out.push({ text: raw, raw, role: "flag" });
-        continue;
-      }
-
-      if (
-        all.includes("entity.name.command.shell") ||
-        all.includes("support.function.builtin.shell")
-      ) {
-        out.push({ text: raw, raw, role: "command" });
-        continue;
-      }
-
-      if (all.includes("constant.character.escape.shell")) {
-        out.push({ text: raw, raw, role: "escape" });
-        continue;
-      }
-
-      if (
-        all.some(
-          (scope) =>
-            scope.includes("variable.") ||
-            scope.includes("punctuation.definition.variable.shell"),
-        )
-      ) {
-        out.push({ text: raw, raw, role: "unknown" });
-        continue;
-      }
-
-      if (
-        all.includes("string.unquoted.argument.shell") ||
-        all.includes("constant.numeric.integer.shell")
-      ) {
-        out.push({ text: raw, raw, role: "argument" });
-        continue;
-      }
-
-      // Single-quoted strings: strip surrounding quotes
-      if (all.includes("string.quoted.single.shell")) {
-        out.push({ text: raw.slice(1, -1), raw, role: "string" });
-        continue;
-      }
-
-      // Double-quoted strings: strip surrounding quotes
-      if (all.includes("string.quoted.double.shell")) {
-        out.push({ text: raw.slice(1, -1), raw, role: "string" });
-        continue;
-      }
-
-      // Whitespace or meta-only scopes
-      if (!raw.trim()) {
-        out.push({ text: raw, raw, role: "whitespace" });
-      } else {
-        out.push({ text: raw, raw, role: "unknown" });
-      }
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Layer 2: AST builder
-// ---------------------------------------------------------------------------
-
-interface SimpleCommand {
+type SimpleCommand = {
+  id: number;
   name: string | null;
   args: CommandArg[];
   redirects: Redirect[];
-}
+};
 
 type CommandArg =
   | { kind: "flag"; text: string }
   | { kind: "value"; text: string };
 
-interface Redirect {
-  op: ">" | ">>" | "<" | "<<";
-  target: string;
-}
-
-interface HeredocInfo {
-  delimiter: string;
-  quoted: boolean;
-  content: string;
-  terminator: string;
-}
+type Redirect = {
+  op: ParsedShellRedirect["operator"];
+};
 
 type ShellAST =
   | { type: "simple"; command: SimpleCommand }
   | { type: "pipeline"; stages: SimpleCommand[] }
   | { type: "list"; op: "&&" | ";"; left: ShellAST; right: ShellAST }
-  | { type: "heredoc"; command: SimpleCommand; heredoc: HeredocInfo }
   | { type: "unsupported"; reason: string };
 
 function reject(
@@ -354,282 +167,15 @@ function reject(
   return { ok: false, code, reason };
 }
 
-/**
- * Find the next non-whitespace token at or after position i.
- */
-function nextNonWs(tokens: ShellToken[], i: number): number {
-  while (i < tokens.length && tokens[i]!.role === "whitespace") i++;
-  return i;
+function basename(value: string): string {
+  const parts = value.split("/");
+  return parts[parts.length - 1] ?? value;
 }
 
-/**
- * Build a SimpleCommand from a token array.
- * Whitespace tokens act as word separators. Consecutive non-whitespace
- * argument/string/escape tokens (e.g. from backslash escaping: file\ name.txt)
- * are merged into a single value.
- */
-export function buildSimpleCommand(tokens: ShellToken[]): SimpleCommand | null {
-  const cmd: SimpleCommand = { name: null, args: [], redirects: [] };
-  let i = 0;
-
-  while (i < tokens.length) {
-    const tok = tokens[i]!;
-
-    if (tok.role === "whitespace") {
-      i++;
-      continue;
-    }
-
-    if (tok.role === "unknown") return null;
-
-    if (tok.role === "command") {
-      if (cmd.name === null) {
-        cmd.name = tok.text;
-      } else {
-        return null; // multiple commands without separator
-      }
-      i++;
-      continue;
-    }
-
-    if (tok.role === "redirect") {
-      i++;
-      i = nextNonWs(tokens, i);
-      const target = tokens[i];
-      if (!target || (target.role !== "argument" && target.role !== "string"))
-        return null;
-      cmd.redirects.push({
-        op: tok.text as Redirect["op"],
-        target: target.text,
-      });
-      i++;
-      continue;
-    }
-
-    if (tok.role === "heredoc-op") {
-      i++;
-      i = nextNonWs(tokens, i);
-      const delim = tokens[i];
-      if (!delim || delim.role !== "heredoc-delim") return null;
-      cmd.redirects.push({ op: "<<", target: delim.text });
-      i++;
-      continue;
-    }
-
-    if (tok.role === "flag") {
-      cmd.args.push({ kind: "flag", text: tok.text });
-      i++;
-      continue;
-    }
-
-    if (
-      tok.role === "argument" ||
-      tok.role === "string" ||
-      tok.role === "escape"
-    ) {
-      // Accumulate tokens until we hit whitespace or an operator.
-      // This merges adjacent parts like: file\ name.txt → "file name.txt"
-      let value = tok.role === "escape" ? tok.text.slice(1) : tok.text;
-      i++;
-      while (i < tokens.length) {
-        const peek = tokens[i]!;
-        if (peek.role === "whitespace") break; // word boundary
-        if (peek.role === "argument" || peek.role === "string") {
-          value += peek.text;
-          i++;
-        } else if (peek.role === "escape") {
-          value += peek.text.slice(1);
-          i++;
-        } else {
-          break;
-        }
-      }
-      cmd.args.push({ kind: "value", text: value });
-      continue;
-    }
-
-    // Unexpected token (pipe, and, or, heredoc-delim outside heredoc context, etc.)
-    return null;
-  }
-
-  return cmd;
-}
-
-/**
- * Split a token array at a specific operator role.
- */
-function splitAt(
-  tokens: ShellToken[],
-  roles: ShellTokenRole[],
-): { segments: ShellToken[][]; operators: ShellToken[] } {
-  const segments: ShellToken[][] = [];
-  const operators: ShellToken[] = [];
-  let current: ShellToken[] = [];
-  for (const tok of tokens) {
-    if (roles.includes(tok.role)) {
-      segments.push(current);
-      operators.push(tok);
-      current = [];
-    } else {
-      current.push(tok);
-    }
-  }
-  segments.push(current);
-  return { segments, operators };
-}
-
-function buildPipelineOrSimple(tokens: ShellToken[]): ShellAST {
-  const { segments: pipeSegs } = splitAt(tokens, ["pipe"]);
-
-  if (pipeSegs.length === 1) {
-    const cmd = buildSimpleCommand(pipeSegs[0]!);
-    if (!cmd) return { type: "unsupported", reason: "invalid command" };
-    return { type: "simple", command: cmd };
-  }
-
-  const stages: SimpleCommand[] = [];
-  for (const seg of pipeSegs) {
-    const cmd = buildSimpleCommand(seg);
-    if (!cmd) return { type: "unsupported", reason: "invalid pipeline stage" };
-    stages.push(cmd);
-  }
-  return { type: "pipeline", stages };
-}
-
-/**
- * Build a ShellAST from a flat ShellToken array.
- * rawCommand is used for heredoc body extraction.
- */
-export function buildAST(tokens: ShellToken[], rawCommand: string): ShellAST {
-  // Unknown tokens → unsupported
-  if (tokens.some((t) => t.role === "unknown")) {
-    return { type: "unsupported", reason: "unrecognized token" };
-  }
-
-  // Detect heredoc: any token has role heredoc-op
-  if (tokens.some((t) => t.role === "heredoc-op")) {
-    return buildHeredocAST(tokens, rawCommand);
-  }
-
-  // Split at && and ; for command lists
-  const { segments: andSegments, operators: andOps } = splitAt(tokens, [
-    "and",
-    "semicolon",
-  ]);
-
-  if (andOps.length > 0) {
-    const firstPart = buildPipelineOrSimple(andSegments[0]!);
-    if (firstPart.type === "unsupported") return firstPart;
-
-    let result: ShellAST = firstPart;
-    for (let i = 0; i < andOps.length; i++) {
-      const op = andOps[i]!.role === "and" ? "&&" : (";" as "&&" | ";");
-      const rightTokens = andSegments[i + 1]!;
-      const right = buildPipelineOrSimple(rightTokens);
-      if (right.type === "unsupported") return right;
-      result = { type: "list", op, left: result, right };
-    }
-    return result;
-  }
-
-  return buildPipelineOrSimple(tokens);
-}
-
-function buildHeredocAST(tokens: ShellToken[], rawCommand: string): ShellAST {
-  const lines = rawCommand.replace(/\r\n/g, "\n").split("\n");
-
-  // Find heredoc-op in the original token array (with whitespace intact)
-  const heredocOpIdx = tokens.findIndex((t) => t.role === "heredoc-op");
-  if (heredocOpIdx < 0)
-    return { type: "unsupported", reason: "no heredoc-op found" };
-
-  // Find the delimiter token (first non-whitespace after heredoc-op)
-  const delimIdx = nextNonWs(tokens, heredocOpIdx + 1);
-  const heredocDelimToken = tokens[delimIdx];
-  if (!heredocDelimToken || heredocDelimToken.role !== "heredoc-delim")
-    return { type: "unsupported", reason: "invalid heredoc syntax" };
-
-  const delimiter = heredocDelimToken.text;
-  const quoted = heredocDelimToken.quoted ?? false;
-
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(delimiter))
-    return {
-      type: "unsupported",
-      reason: "delimiter must be a simple literal word",
-    };
-
-  const terminatorIndex = lines.findIndex((l, i) => i > 0 && l === delimiter);
-  if (terminatorIndex < 0)
-    return { type: "unsupported", reason: "terminator line was not found" };
-  if (
-    terminatorIndex !== lines.length - 1 &&
-    !(terminatorIndex === lines.length - 2 && lines.at(-1) === "")
-  )
-    return { type: "unsupported", reason: "content after heredoc terminator" };
-
-  // Build command from tokens before the heredoc-op (whitespace preserved)
-  const preHeredocTokens = tokens.slice(0, heredocOpIdx);
-  const syntheticCmd = buildSimpleCommand(preHeredocTokens);
-  if (!syntheticCmd)
-    return { type: "unsupported", reason: "invalid heredoc command" };
-
-  // Process tokens after the delimiter for any redirect (e.g. <<EOF > file)
-  // Note: tokens may include body/terminator tokens from multi-line Shiki output;
-  // we stop at any unrecognized token (body gets "unknown" scope from Shiki,
-  // so if tokens include multi-line, they'll be caught here).
-  // For safety, only process tokens that appear on the same line as the command
-  // (i.e., until we see any heredoc body token with "unknown" role, which we stop at).
-  const postTokens = tokens.slice(delimIdx + 1);
-  for (let i = 0; i < postTokens.length; i++) {
-    const t = postTokens[i]!;
-    if (t.role === "whitespace") continue;
-    if (t.role === "redirect") {
-      i = nextNonWs(postTokens, i + 1);
-      const next = postTokens[i];
-      if (!next || (next.role !== "argument" && next.role !== "string"))
-        return { type: "unsupported", reason: "invalid redirect in heredoc" };
-      syntheticCmd.redirects.push({
-        op: t.text as Redirect["op"],
-        target: next.text,
-      });
-      continue;
-    }
-    // Stop at heredoc body/terminator tokens (from multi-line Shiki output)
-    // These are "unknown" (body) or "heredoc-delim" (terminator) — not relevant
-    // to command parsing, which uses raw line content for extraction.
-    break;
-  }
-
-  return {
-    type: "heredoc",
-    command: syntheticCmd,
-    heredoc: {
-      delimiter,
-      quoted,
-      content: lines.slice(1, terminatorIndex).join("\n"),
-      terminator: lines[terminatorIndex]!,
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Layer 3: Classifier
 // ---------------------------------------------------------------------------
 
 const READ_COMMANDS = new Set<string>(["cat", "nl", "sed", "head", "tail"]);
-
-const INTERPRETER_LANG: Record<string, string> = {
-  python: "python",
-  python3: "python",
-  node: "javascript",
-  nodejs: "javascript",
-  ruby: "ruby",
-  perl: "perl",
-  lua: "lua",
-  php: "php",
-  Rscript: "r",
-  R: "r",
-};
 
 const OPAQUE_TRANSFORM_COMMANDS = new Set<string>([
   "wc",
@@ -967,16 +513,14 @@ function parseRgArgs(
 
   const pattern = values[0]!;
   const filePath = values[1];
-  if (!pattern || isDynamicShellValue(pattern)) {
+  if (!pattern)
     return reject("variable_path", `${toolName} pattern/path must be literal`);
-  }
   if (requireFile) {
-    if (!filePath || isDynamicShellValue(filePath)) {
+    if (!filePath)
       return reject(
         "variable_path",
         `${toolName} pattern/path must be literal`,
       );
-    }
     if (filePath === "." || filePath === ".." || filePath.endsWith("/")) {
       return reject(
         "unsupported_command",
@@ -1418,6 +962,21 @@ function lowerReadFromFileExpr(
   };
 }
 
+function lowerDiffSource(
+  expr: Extract<ShellOutputExpr, { kind: "diff-source" }>,
+  originalCommand: string,
+): ShellSemanticResult {
+  return {
+    ok: true,
+    value: {
+      kind: "diff",
+      commandName: expr.commandName,
+      command: originalCommand,
+      subcommand: expr.subcommand,
+    },
+  };
+}
+
 function conservativeLower(
   expr: ShellOutputExpr,
   originalCommand: string,
@@ -1425,25 +984,27 @@ function conservativeLower(
   const rejectUnsupportedPipeline = () =>
     reject("unsafe_shell_syntax", "pipeline has multiple read stages");
   const lowerAsDiffOnly = (input: ShellOutputExpr): ShellSemanticResult => {
-    const lowered = conservativeLower(input, originalCommand);
-    if (lowered.ok && lowered.value.kind === "diff") return lowered;
-    return rejectUnsupportedPipeline();
+    let current = input;
+    while (current.kind !== "diff-source") {
+      if (
+        current.kind === "file-read" ||
+        current.kind === "sparse-match-lines" ||
+        (current.kind === "select-lines" &&
+          current.input.kind === "line-number-prefix") ||
+        (current.kind === "line-number-prefix" &&
+          current.input.kind === "select-lines")
+      )
+        return rejectUnsupportedPipeline();
+      current = current.input;
+    }
+    return lowerDiffSource(current, originalCommand);
   };
 
   if (expr.kind === "file-read") {
     return lowerReadFromFileExpr(expr, originalCommand, { type: "all" });
   }
-  if (expr.kind === "diff-source") {
-    return {
-      ok: true,
-      value: {
-        kind: "diff",
-        commandName: expr.commandName,
-        command: originalCommand,
-        subcommand: expr.subcommand,
-      },
-    };
-  }
+  if (expr.kind === "diff-source")
+    return lowerDiffSource(expr, originalCommand);
   if (expr.kind === "take-first-lines") {
     if (expr.input.kind === "file-read") {
       const range = expr.count
@@ -1624,19 +1185,17 @@ function classifyGenericList(
 ): ShellSemanticResult {
   const commands: SimpleCommand[] = [];
 
-  function flatten(node: ShellAST): boolean {
-    if (node.type === "simple") {
-      commands.push(node.command);
-      return true;
-    }
+  const pending = [ast];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
     if (node.type === "list") {
-      return flatten(node.left) && flatten(node.right);
+      pending.push(node.right, node.left);
+    } else if (node.type === "simple") {
+      commands.push(node.command);
+    } else {
+      return reject("unsafe_shell_syntax", "unsupported list structure");
     }
-    return false;
   }
-
-  if (!flatten(ast))
-    return reject("unsafe_shell_syntax", "unsupported list structure");
 
   let cdPath = "";
   const steps: CommandStep[] = [];
@@ -1646,7 +1205,7 @@ function classifyGenericList(
       const values = cmd.args.filter((a) => a.kind === "value");
       // Use last value (Codex behaviour: cd dir1 dir2 uses dir2)
       const target = values.at(-1)?.text ?? "";
-      if (!target || isDynamicShellValue(target)) {
+      if (!target) {
         return reject(
           "unsafe_shell_syntax",
           "cd target must be a literal path",
@@ -1713,165 +1272,6 @@ function classifyGenericList(
 
 /**
  * Classify a heredoc AST node — dispatches to cat-write or script-exec.
- */
-function classifyHeredoc(
-  cmd: SimpleCommand,
-  heredoc: HeredocInfo,
-  originalCommand: string,
-): ShellSemanticResult {
-  if (cmd.name === "cat")
-    return classifyCatHeredoc(cmd, heredoc, originalCommand);
-  const lang = cmd.name ? INTERPRETER_LANG[cmd.name] : undefined;
-  if (lang) return classifyScriptHeredoc(cmd, heredoc, originalCommand, lang);
-  return reject(
-    "unsupported_command",
-    "only cat heredoc writes and interpreter script heredocs are recognized",
-  );
-}
-
-/**
- * Classify a `cat <<EOF > file` heredoc write.
- */
-function classifyCatHeredoc(
-  cmd: SimpleCommand,
-  heredoc: HeredocInfo,
-  originalCommand: string,
-): ShellSemanticResult {
-  if (cmd.args.length > 0)
-    return reject("invalid_heredoc", "unexpected arguments in heredoc command");
-
-  const redirectOp = cmd.redirects.find((r) => r.op === ">" || r.op === ">>");
-  if (!redirectOp)
-    return reject(
-      "missing_path",
-      "heredoc write requires a > redirect for the file path",
-    );
-
-  const lines = originalCommand.replace(/\r\n/g, "\n").split("\n");
-  const commandLine = lines[0] ?? "";
-
-  return {
-    ok: true,
-    value: {
-      kind: "write",
-      command: originalCommand,
-      commandName: "cat",
-      filePath: redirectOp.target,
-      writeMode: "overwrite",
-      heredoc: {
-        delimiter: heredoc.delimiter,
-        quoted: heredoc.quoted,
-        commandLine,
-        content: heredoc.content,
-        terminator: heredoc.terminator,
-      },
-      segments: [
-        { kind: "command-header", text: `${commandLine}\n` },
-        {
-          kind: "write-content",
-          text: heredoc.content,
-          filePath: redirectOp.target,
-        },
-        { kind: "command-footer", text: `\n${heredoc.terminator}` },
-      ],
-    },
-  };
-}
-
-/**
- * Classify an interpreter heredoc script: `python3 - <<'PY' ... PY`
- */
-function classifyScriptHeredoc(
-  cmd: SimpleCommand,
-  heredoc: HeredocInfo,
-  originalCommand: string,
-  language: string,
-): ShellSemanticResult {
-  // Must not have a > redirect (that would be writing to a file, not executing)
-  if (cmd.redirects.some((r) => r.op === ">" || r.op === ">>"))
-    return reject(
-      "invalid_heredoc",
-      "interpreter heredoc must not redirect output to a file",
-    );
-
-  const lines = originalCommand.replace(/\r\n/g, "\n").split("\n");
-  const commandLine = lines[0] ?? "";
-
-  return {
-    ok: true,
-    value: {
-      kind: "script-exec",
-      command: originalCommand,
-      commandName: cmd.name!,
-      language,
-      scriptSource: {
-        type: "heredoc",
-        delimiter: heredoc.delimiter,
-        quoted: heredoc.quoted,
-        content: heredoc.content,
-        terminator: heredoc.terminator,
-        commandLine,
-      },
-      segments: [
-        { kind: "command-header", text: `${commandLine}\n` },
-        { kind: "script-content", text: heredoc.content, language },
-        { kind: "command-footer", text: `\n${heredoc.terminator}` },
-      ],
-    },
-  };
-}
-
-/**
- * Classify an interpreter command with inline -c/-e script.
- * e.g. `python3 -c 'import sys; print(sys.version)'`
- */
-function classifyInterpreterCommand(
-  cmd: SimpleCommand,
-  originalCommand: string,
-): ShellSemanticResult {
-  const name = cmd.name!;
-  const language = INTERPRETER_LANG[name]!;
-
-  // Look for -c or -e flag
-  for (let i = 0; i < cmd.args.length; i++) {
-    const arg = cmd.args[i]!;
-    if (arg.kind === "flag" && (arg.text === "-c" || arg.text === "-e")) {
-      const next = cmd.args[i + 1];
-      if (!next || next.kind !== "value")
-        return reject(
-          "unsupported_option",
-          `${arg.text} requires a script argument`,
-        );
-      return {
-        ok: true,
-        value: {
-          kind: "script-exec",
-          command: originalCommand,
-          commandName: name,
-          language,
-          scriptSource: {
-            type: "inline",
-            flag: arg.text,
-            content: next.text,
-          },
-          segments: [
-            { kind: "command-header", text: originalCommand },
-            { kind: "script-content", text: next.text, language },
-          ],
-        },
-      };
-    }
-  }
-
-  // No -c/-e flag: running a file (e.g. python script.py) — not embedded code
-  return reject(
-    "unsupported_command",
-    `${name} without -c/-e flag is running a file, not an embedded script`,
-  );
-}
-
-/**
- * Classify a `git` command: diff, show, log -p, or show HEAD:file (→ read).
  */
 function classifyGitCommand(
   cmd: SimpleCommand,
@@ -1950,30 +1350,801 @@ function classifyGitCommand(
   );
 }
 
-function isDynamicShellValue(value: string): boolean {
-  return (
-    value.includes("$") ||
-    value.includes("`") ||
-    value.includes("$(") ||
-    value.includes("${")
+function commandForId(
+  document: ParsedShellDocument,
+  commandId: number,
+): ParsedShellCommand {
+  return document.commands[commandId]!;
+}
+
+function redirectForId(
+  document: ParsedShellDocument,
+  redirectId: number,
+): ParsedShellRedirect {
+  return document.redirects[redirectId]!;
+}
+
+function adaptCommand(
+  document: ParsedShellDocument,
+  commandId: number,
+): SimpleCommand | null {
+  const command = commandForId(document, commandId);
+  if (command.assignments.length > 0 || command.name.kind !== "literal")
+    return null;
+  const args: CommandArg[] = [];
+  for (const argument of command.arguments) {
+    if (argument.word.kind !== "literal") return null;
+    args.push({
+      kind: argument.word.value.startsWith("-") ? "flag" : "value",
+      text: argument.word.value,
+    });
+  }
+  const redirects = command.redirectIds.map((redirectId) => {
+    const redirect = redirectForId(document, redirectId);
+    return { op: redirect.operator };
+  });
+  return {
+    id: command.id,
+    name: basename(command.name.value),
+    args,
+    redirects,
+  };
+}
+
+function directCommandId(unit: ParsedShellUnit): number | null {
+  if (unit.kind === "command") return unit.commandId;
+  if (unit.kind === "redirected_statement" && unit.body.kind === "command")
+    return unit.body.commandId;
+  return null;
+}
+
+function directCommand(
+  document: ParsedShellDocument,
+  unit: ParsedShellUnit,
+): SimpleCommand | null {
+  const commandId = directCommandId(unit);
+  return commandId === null ? null : adaptCommand(document, commandId);
+}
+
+function listAST(children: readonly ShellAST[], op: "&&" | ";"): ShellAST {
+  if (children.length === 0)
+    return { type: "unsupported", reason: "empty command list" };
+  let result = children[0]!;
+  for (let i = 1; i < children.length; i++)
+    result = {
+      type: "list",
+      op,
+      left: result,
+      right: children[i]!,
+    };
+  return result;
+}
+
+function flattenAndUnits(unit: ParsedShellUnit): ParsedShellUnit[] | null {
+  const pending = [unit];
+  const flattened: ParsedShellUnit[] = [];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (directCommandId(current) !== null) {
+      flattened.push(current);
+      continue;
+    }
+    if (
+      current.kind !== "list" ||
+      current.operators.length !== current.children.length - 1 ||
+      current.operators.some((operator) => operator.kind !== "and")
+    )
+      return null;
+    for (let index = current.children.length - 1; index >= 0; index--)
+      pending.push(current.children[index]!);
+  }
+  return flattened;
+}
+
+function adaptUnit(
+  document: ParsedShellDocument,
+  unit: ParsedShellUnit,
+): ShellAST {
+  return foldParsedShellUnit<ShellAST>(unit, (current, children) =>
+    adaptUnitFromChildren(document, current, children),
   );
 }
 
-export function classifyAST(
+function adaptUnitFromChildren(
+  document: ParsedShellDocument,
+  unit: ParsedShellUnit,
+  children: readonly ShellAST[],
+): ShellAST {
+  if (unit.kind === "command") {
+    const command = adaptCommand(document, unit.commandId);
+    return command === null
+      ? { type: "unsupported", reason: "nonliteral command" }
+      : { type: "simple", command };
+  }
+
+  if (unit.kind === "redirected_statement") {
+    return children[0]!;
+  }
+
+  if (unit.kind === "pipeline") {
+    if (
+      unit.operators.length !== unit.children.length - 1 ||
+      unit.operators.some((operator) => operator.kind !== "pipe")
+    )
+      return { type: "unsupported", reason: "unsupported pipeline operator" };
+    const stages: SimpleCommand[] = [];
+    for (const [index, child] of children.entries()) {
+      if (
+        child.type !== "simple" ||
+        directCommandId(unit.children[index]!) === null
+      )
+        return { type: "unsupported", reason: "unsupported pipeline stage" };
+      stages.push(child.command);
+    }
+    return { type: "pipeline", stages };
+  }
+
+  if (unit.kind === "list") {
+    if (
+      unit.operators.length !== unit.children.length - 1 ||
+      unit.operators.some((operator) => operator.kind !== "and")
+    )
+      return { type: "unsupported", reason: "unsupported list structure" };
+    return listAST(children, "&&");
+  }
+
+  if (unit.kind === "program") {
+    if (unit.children.length === 0)
+      return { type: "unsupported", reason: "empty command list" };
+    if (unit.boundaries.length !== unit.children.length - 1)
+      return { type: "unsupported", reason: "malformed program boundaries" };
+    if (
+      unit.boundaries.some(
+        (boundary) =>
+          boundary.kind !== "newline" && boundary.kind !== "semicolon",
+      )
+    )
+      return { type: "unsupported", reason: "unsupported program boundary" };
+    return unit.children.length === 1 ? children[0]! : listAST(children, ";");
+  }
+
+  return { type: "unsupported", reason: "opaque shell unit" };
+}
+
+function isLiteralCd(command: SimpleCommand | null): command is SimpleCommand {
+  return (
+    command !== null &&
+    command.name === "cd" &&
+    command.args.length === 1 &&
+    command.args[0]!.kind === "value" &&
+    command.redirects.length === 0
+  );
+}
+
+function invocationContextCommand(
+  document: ParsedShellDocument,
+): number | null {
+  let unit: ParsedShellUnit = document.program;
+  for (;;) {
+    if (unit.kind === "command") return unit.commandId;
+    if (unit.kind === "redirected_statement") {
+      unit = unit.body;
+      continue;
+    }
+    if (unit.kind === "program") {
+      if (
+        unit.children.length === 0 ||
+        unit.boundaries.length !== unit.children.length - 1 ||
+        unit.boundaries.some(
+          (boundary) =>
+            boundary.kind !== "newline" && boundary.kind !== "semicolon",
+        )
+      )
+        return null;
+      unit = unit.children[0]!;
+      continue;
+    }
+    break;
+  }
+
+  if (unit.kind !== "list") return null;
+  const children = flattenAndUnits(unit);
+  if (children === null) return null;
+  let prefixLength = 0;
+  for (const child of children) {
+    if (!isLiteralCd(directCommand(document, child)))
+      return prefixLength > 0 ? directCommandId(child) : null;
+    prefixLength++;
+  }
+  return null;
+}
+
+function oneEligibleInvocation(
+  document: ParsedShellDocument,
+): ParsedShellEmbeddedInvocation | null {
+  if (document.embeddedInvocations.length === 0) return null;
+  const contextCommand = invocationContextCommand(document);
+  const soleCommand =
+    document.program.children.length === 1
+      ? directCommandId(document.program.children[0]!)
+      : null;
+  let eligible: ParsedShellEmbeddedInvocation | null = null;
+  for (const invocation of document.embeddedInvocations) {
+    const candidate =
+      invocation.kind === "inline" && invocation.interpreter.language === "bash"
+        ? soleCommand
+        : contextCommand;
+    if (
+      invocation.commandId !== candidate ||
+      commandForId(document, invocation.commandId).assignments.length > 0
+    )
+      continue;
+    if (eligible !== null) return null;
+    eligible = invocation;
+  }
+  return eligible;
+}
+
+function heredocForInvocation(
+  document: ParsedShellDocument,
+  invocation: Extract<ParsedShellEmbeddedInvocation, { kind: "heredoc" }>,
+): Extract<ParsedShellRedirect, { kind: "heredoc" }> {
+  return document.redirects[invocation.heredocRedirectId]! as Extract<
+    ParsedShellRedirect,
+    { kind: "heredoc" }
+  >;
+}
+
+function heredocSegments(
+  document: ParsedShellDocument,
+  redirect: Extract<ParsedShellRedirect, { kind: "heredoc" }>,
+  content: string,
+  language: string,
+): ShellScriptExecSemantic["segments"] {
+  const headerEnd = redirect.headerLineBreakSpan.end;
+  const contentEnd = redirect.contentSpan.end;
+  return [
+    {
+      kind: "command-header",
+      text: document.source.slice(redirect.headerSpan.start, headerEnd),
+    },
+    { kind: "script-content", text: content, language },
+    {
+      kind: "command-footer",
+      text: document.source.slice(contentEnd, redirect.terminatorSpan.end),
+    },
+  ];
+}
+
+function catHeredocSegments(
+  document: ParsedShellDocument,
+  redirect: Extract<ParsedShellRedirect, { kind: "heredoc" }>,
+  content: string,
+  filePath: string,
+): ShellHeredocWriteSemantic["segments"] {
+  const headerEnd = redirect.headerLineBreakSpan.end;
+  const contentEnd = redirect.contentSpan.end;
+  return [
+    {
+      kind: "command-header",
+      text: document.source.slice(redirect.headerSpan.start, headerEnd),
+    },
+    { kind: "write-content", text: content, filePath },
+    {
+      kind: "command-footer",
+      text: document.source.slice(contentEnd, redirect.terminatorSpan.end),
+    },
+  ];
+}
+
+type CatHeredocContext = {
+  leading: readonly ParsedShellUnit[];
+  owner: ParsedShellUnit;
+  trailing: readonly ParsedShellUnit[];
+};
+
+function unitContainsCommand(
+  unit: ParsedShellUnit,
+  commandId: number,
+): boolean {
+  const pending = [unit];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.kind === "command" && current.commandId === commandId)
+      return true;
+    if (current.kind === "redirected_statement") {
+      pending.push(current.body);
+    } else if (
+      current.kind === "program" ||
+      current.kind === "list" ||
+      current.kind === "pipeline"
+    ) {
+      for (const child of current.children) pending.push(child);
+    }
+  }
+  return false;
+}
+
+function withoutBareTerminalColonNoop(
+  document: ParsedShellDocument,
+): Pick<
+  Extract<ParsedShellUnit, { kind: "program" }>,
+  "children" | "boundaries"
+> | null {
+  const { children, boundaries } = document.program;
+  if (children.length < 2 || boundaries.length !== children.length) return null;
+  const colonUnit = children.at(-1);
+  const beforeColon = boundaries.at(-2);
+  const terminal = boundaries.at(-1);
+  if (
+    colonUnit === undefined ||
+    beforeColon === undefined ||
+    terminal === undefined ||
+    colonUnit.kind !== "command" ||
+    (beforeColon.kind !== "newline" && beforeColon.kind !== "semicolon") ||
+    beforeColon.span.end !== colonUnit.span.start ||
+    terminal.kind !== "semicolon" ||
+    terminal.text !== ";" ||
+    terminal.span.start !== colonUnit.span.end
+  )
+    return null;
+  const command = document.commands[colonUnit.commandId]!;
+  if (
+    command.name.kind !== "literal" ||
+    command.name.value !== ":" ||
+    command.assignments.length !== 0 ||
+    command.arguments.length !== 0 ||
+    command.redirectIds.length !== 0
+  )
+    return null;
+  return {
+    children: children.slice(0, -1),
+    boundaries: boundaries.slice(0, -2),
+  };
+}
+
+function catHeredocContext(
+  document: ParsedShellDocument,
+  ownerId: number,
+): CatHeredocContext | null {
+  const suffixless = withoutBareTerminalColonNoop(document);
+  const { children, boundaries } = suffixless ?? document.program;
+  if (boundaries.length !== children.length - 1) return null;
+  if (
+    boundaries.some(
+      (boundary) =>
+        boundary.kind !== "newline" && boundary.kind !== "semicolon",
+    )
+  )
+    return null;
+  const ownerIndices = children
+    .map((child, index) => (unitContainsCommand(child, ownerId) ? index : -1))
+    .filter((index) => index >= 0);
+  if (ownerIndices.length !== 1) return null;
+  const ownerIndex = ownerIndices[0]!;
+  return {
+    leading: children.slice(0, ownerIndex),
+    owner: children[ownerIndex]!,
+    trailing: children.slice(ownerIndex + 1),
+  };
+}
+
+function directUnitCommand(
+  document: ParsedShellDocument,
+  unit: ParsedShellUnit,
+): SimpleCommand | null {
+  if (unit.kind === "command") return directCommand(document, unit);
+  if (unit.kind === "redirected_statement" && unit.body.kind === "command")
+    return directCommand(document, unit);
+  return null;
+}
+
+function trailingCatHeredocSteps(
+  document: ParsedShellDocument,
+  units: readonly ParsedShellUnit[],
+): CommandStep[] {
+  if (units.length !== 1) return [];
+  const unit = units[0]!;
+  if (unit.kind === "list") {
+    if (
+      unit.children.length !== 2 ||
+      unit.operators.length !== 1 ||
+      unit.operators[0]!.kind !== "and"
+    )
+      return [];
+    const commands = unit.children.map((child) =>
+      directUnitCommand(document, child),
+    );
+    if (commands.some((command) => command === null)) return [];
+    const readback = parseLsReadbackCommands(commands as SimpleCommand[]);
+    return readback === null ? [] : structuredReadbackSteps(readback);
+  }
+  if (unit.kind !== "command") return [];
+  const command = directUnitCommand(document, unit);
+  const directory = command === null ? null : parseLsDirectoryCommand(command);
+  return directory === null
+    ? []
+    : [
+        {
+          kind: "plain-output",
+          order: 0,
+          commandName: "ls",
+          outputShape: { kind: "unknown" },
+        },
+      ];
+}
+
+function isMkdirSetup(command: SimpleCommand): boolean {
+  return (
+    command.name === "mkdir" &&
+    command.args.length === 2 &&
+    command.args[0]!.kind === "flag" &&
+    command.args[0]!.text === "-p" &&
+    command.args[1]!.kind === "value" &&
+    command.redirects.length === 0
+  );
+}
+
+function parseLsReadbackCommands(
+  commands: readonly SimpleCommand[],
+): { filePath: string; sedStart: number; sedEnd: number } | null {
+  if (commands.length !== 2) return null;
+  const ls = commands[0]!;
+  const sed = commands[1]!;
+  if (
+    ls.name !== "ls" ||
+    ls.args.length !== 2 ||
+    ls.args[0]!.kind !== "flag" ||
+    ls.args[0]!.text !== "-l" ||
+    ls.args[1]!.kind !== "value" ||
+    ls.redirects.length > 0 ||
+    sed.name !== "sed" ||
+    sed.args.length !== 3 ||
+    sed.args[0]!.kind !== "flag" ||
+    sed.args[0]!.text !== "-n" ||
+    sed.args[1]!.kind !== "value" ||
+    sed.args[2]!.kind !== "value" ||
+    sed.redirects.length > 0
+  )
+    return null;
+  const range = sed.args[1]!.text.match(/^([1-9]\d*),([1-9]\d*)p$/);
+  if (!range) return null;
+  const filePath = ls.args[1]!.text;
+  const sedPath = sed.args[2]!.text;
+  const sedStart = Number(range[1]);
+  const sedEnd = Number(range[2]);
+  if (filePath !== sedPath || sedEnd < sedStart) return null;
+  return { filePath, sedStart, sedEnd };
+}
+
+function parseLsDirectoryCommand(command: SimpleCommand): string | null {
+  if (
+    command.name !== "ls" ||
+    command.args.length !== 2 ||
+    command.args[0]!.kind !== "flag" ||
+    command.args[0]!.text !== "-1" ||
+    command.args[1]!.kind !== "value" ||
+    command.redirects.length > 0
+  )
+    return null;
+  return command.args[1]!.text;
+}
+
+function structuredReadbackSteps(readback: {
+  filePath: string;
+  sedStart: number;
+  sedEnd: number;
+}): CommandStep[] {
+  const language = langFromPath(readback.filePath) || "text";
+  return [
+    {
+      kind: "plain-output",
+      order: 0,
+      commandName: "ls",
+      filePath: readback.filePath,
+      outputShape: {
+        kind: "fixed-lines",
+        count: 1,
+        format: { kind: "content", language: "shell-output" },
+        validator: "non-empty",
+      },
+      blockId: "listing",
+    },
+    {
+      kind: "read-file",
+      order: 1,
+      commandName: "sed",
+      filePath: readback.filePath,
+      range: {
+        type: "lines",
+        start: readback.sedStart,
+        end: readback.sedEnd,
+      },
+      outputShape: {
+        kind: "content",
+        format: { kind: "content", language },
+        validator: "non-empty",
+      },
+      blockId: "sed-output",
+    },
+  ];
+}
+
+function classifyLsCommands(
+  commands: readonly SimpleCommand[],
+  originalCommand: string,
+): ShellSemanticResult | null {
+  if (commands.length === 1 && parseLsDirectoryCommand(commands[0]!) !== null)
+    return {
+      ok: true,
+      value: {
+        kind: "structured-output",
+        commandName: "ls",
+        command: originalCommand,
+        steps: [
+          {
+            kind: "plain-output",
+            order: 0,
+            commandName: "ls",
+            outputShape: { kind: "unknown" },
+          },
+        ],
+      },
+    };
+  return null;
+}
+
+function classifyLsReadbackAST(
+  ast: ShellAST,
+  originalCommand: string,
+): ShellSemanticResult | null {
+  if (
+    ast.type !== "list" ||
+    ast.op !== "&&" ||
+    ast.left.type !== "simple" ||
+    ast.right.type !== "simple"
+  )
+    return null;
+  const readback = parseLsReadbackCommands([
+    ast.left.command,
+    ast.right.command,
+  ]);
+  if (readback === null) return null;
+  return {
+    ok: true,
+    value: {
+      kind: "structured-output",
+      commandName: "ls",
+      command: originalCommand,
+      steps: structuredReadbackSteps(readback),
+    },
+  };
+}
+
+function classifyCatHeredoc(
+  document: ParsedShellDocument,
+  redirect: Extract<ParsedShellRedirect, { kind: "heredoc" }>,
+  originalCommand: string,
+): ShellSemanticResult {
+  const command = adaptCommand(document, redirect.ownerId);
+  if (command === null || command.name !== "cat")
+    return reject("unsupported_command", "unsupported heredoc command");
+  if (command.args.length > 0)
+    return reject("invalid_heredoc", "unexpected arguments in heredoc command");
+  if (redirect.header.arguments.length > 0 || redirect.header.continuation)
+    return reject("invalid_heredoc", "unsupported heredoc header");
+  const state: ShellRedirectStateResult = reduceShellRedirectState(
+    document,
+    redirect.ownerId,
+  );
+  if (state.effectiveStdinRedirectId !== redirect.id)
+    return reject("invalid_heredoc", "heredoc is not effective stdin");
+  if (state.literalStdoutPath === null)
+    return reject(
+      "missing_path",
+      "heredoc write requires a literal stdout path",
+    );
+  const content = document.source.slice(
+    redirect.contentSpan.start,
+    redirect.contentSpan.end,
+  );
+  const context = catHeredocContext(document, redirect.ownerId);
+  if (context === null)
+    return reject("unsafe_shell_syntax", "unsupported heredoc structure");
+  const ownerUnitCommand = directUnitCommand(document, context.owner);
+  if (ownerUnitCommand === null || ownerUnitCommand.id !== command.id)
+    return reject("unsafe_shell_syntax", "unsupported heredoc structure");
+  for (const unit of context.leading) {
+    if (unit.kind !== "command")
+      return reject(
+        "invalid_heredoc",
+        "only leading mkdir -p setup is supported before heredoc",
+      );
+    const leading = directUnitCommand(document, unit);
+    if (leading === null || !isMkdirSetup(leading))
+      return reject(
+        "invalid_heredoc",
+        "only leading mkdir -p setup is supported before heredoc",
+      );
+  }
+  const trailingSteps = trailingCatHeredocSteps(document, context.trailing);
+  const steps: CommandStep[] = [
+    {
+      kind: "write-file",
+      order: 0,
+      targetPath: state.literalStdoutPath,
+      contentNodeId: "heredoc-body",
+      outputShape: { kind: "none" },
+    },
+    ...trailingSteps.map((step, index) => ({
+      ...step,
+      order: index + 1,
+    })),
+  ];
+  return {
+    ok: true,
+    value: {
+      kind: "write",
+      command: originalCommand,
+      commandName: "cat",
+      filePath: state.literalStdoutPath,
+      writeMode: "overwrite",
+      heredoc: {
+        delimiter: redirect.delimiter.value,
+        quoted: redirect.delimiter.quoted,
+        commandLine: document.source.slice(
+          redirect.headerSpan.start,
+          redirect.headerSpan.end,
+        ),
+        content,
+        terminator: document.source.slice(
+          redirect.terminatorSpan.start,
+          redirect.terminatorSpan.end,
+        ),
+      },
+      segments: catHeredocSegments(
+        document,
+        redirect,
+        content,
+        state.literalStdoutPath,
+      ),
+      steps,
+    },
+  };
+}
+
+function classifyScriptHeredoc(
+  document: ParsedShellDocument,
+  invocation: Extract<ParsedShellEmbeddedInvocation, { kind: "heredoc" }>,
+  originalCommand: string,
+): ShellSemanticResult {
+  const redirect = heredocForInvocation(document, invocation);
+  const command = adaptCommand(document, invocation.commandId);
+  if (command === null)
+    return reject("unsupported_command", "unsupported heredoc command");
+  if (
+    redirect.header.arguments.length > 0 ||
+    redirect.header.continuation ||
+    command.redirects.some(
+      (redirect) =>
+        redirect.op === ">" ||
+        redirect.op === ">>" ||
+        redirect.op === ">|" ||
+        redirect.op === "&>" ||
+        redirect.op === "&>>",
+    )
+  )
+    return reject("invalid_heredoc", "unsupported interpreter heredoc header");
+  const content = document.source.slice(
+    redirect.contentSpan.start,
+    redirect.contentSpan.end,
+  );
+  const language = invocation.interpreter.language;
+  return {
+    ok: true,
+    value: {
+      kind: "script-exec",
+      command: originalCommand,
+      commandName: invocation.interpreter.basename,
+      language,
+      scriptSource: {
+        type: "heredoc",
+        delimiter: redirect.delimiter.value,
+        quoted: redirect.delimiter.quoted,
+        content,
+        terminator: document.source.slice(
+          redirect.terminatorSpan.start,
+          redirect.terminatorSpan.end,
+        ),
+        commandLine: document.source.slice(
+          redirect.headerSpan.start,
+          redirect.headerSpan.end,
+        ),
+      },
+      segments: heredocSegments(document, redirect, content, language),
+      steps: [
+        {
+          kind: "execute-script",
+          order: 0,
+          commandName: invocation.interpreter.basename,
+          language,
+          contentNodeId: "heredoc-body",
+          outputShape: { kind: "unknown" },
+        },
+      ],
+    },
+  };
+}
+
+function invocationFlagAndPayload(
+  document: ParsedShellDocument,
+  invocation: Extract<ParsedShellEmbeddedInvocation, { kind: "inline" }>,
+): { flag: string; content: string } | null {
+  const command = commandForId(document, invocation.commandId);
+  const flag = command.arguments[invocation.flagArgumentIndex]!.word as Extract<
+    ParsedShellCommand["name"],
+    { kind: "literal" }
+  >;
+  if (flag.value !== "-c" && flag.value !== "-e") return null;
+  return {
+    flag: flag.value,
+    content: invocation.payload.text,
+  };
+}
+
+function classifyInlineInvocation(
+  document: ParsedShellDocument,
+  invocation: Extract<ParsedShellEmbeddedInvocation, { kind: "inline" }>,
+  originalCommand: string,
+): ShellSemanticResult {
+  if (invocation.interpreter.language === "bash") {
+    return classifyNormalizedDocument(
+      invocation.child!,
+      originalCommand,
+      false,
+    );
+  }
+  const metadata = invocationFlagAndPayload(document, invocation);
+  if (metadata === null)
+    return reject("unsafe_shell_syntax", "invalid normalized invocation");
+  const commandName = invocation.interpreter.basename;
+  return {
+    ok: true,
+    value: {
+      kind: "script-exec",
+      command: originalCommand,
+      commandName,
+      language: invocation.interpreter.language,
+      scriptSource: {
+        type: "inline",
+        flag: metadata.flag,
+        content: metadata.content,
+      },
+      segments: [
+        { kind: "command-header", text: originalCommand },
+        {
+          kind: "script-content",
+          text: metadata.content,
+          language: invocation.interpreter.language,
+        },
+      ],
+    },
+  };
+}
+
+function classifyNormalizedAST(
   ast: ShellAST,
   originalCommand: string,
 ): ShellSemanticResult {
   if (ast.type === "unsupported")
-    return reject("unsafe_shell_syntax", ast.reason);
-
-  if (ast.type === "heredoc")
-    return classifyHeredoc(ast.command, ast.heredoc, originalCommand);
-
+    return reject("unsupported_command", ast.reason);
   if (ast.type === "simple") {
+    if (ast.command.name === "ls") {
+      const classified = classifyLsCommands([ast.command], originalCommand);
+      if (classified !== null) return classified;
+    }
     const name = ast.command.name;
     if (!name) return reject("empty", "empty command");
-    if (INTERPRETER_LANG[name])
-      return classifyInterpreterCommand(ast.command, originalCommand);
     if (
       READ_COMMANDS.has(name) ||
       name === "rg" ||
@@ -1990,493 +2161,52 @@ export function classifyAST(
       "only cat, nl, sed, head, tail, git, diff, and interpreters are recognized",
     );
   }
-
   if (ast.type === "pipeline")
     return classifyPipeline(ast.stages, originalCommand);
-
-  // ast.type === "list"
-  return classifyGenericList(ast, originalCommand);
-}
-
-// ---------------------------------------------------------------------------
-// Shell wrapper + Batch 1 structured parsing helpers
-// ---------------------------------------------------------------------------
-
-interface WrapperParse {
-  decodedPayload: string;
-  rawPayload: string;
-  escaping: ShellEscapingScheme;
-  prefix: ShellSourceSpan;
-  payload: ShellSourceSpan;
-  suffix: ShellSourceSpan;
-}
-
-function sourceSpan(
-  source: string,
-  start: number,
-  end: number,
-): ShellSourceSpan {
-  return { start, end, rawText: source.slice(start, end) };
-}
-
-type SourceEmbedSegment = Extract<SourceSegment, { kind: "embed" }>;
-
-interface LocatedEmbed {
-  id: string;
-  segment: SourceEmbedSegment;
-  absoluteStart: number;
-  absoluteEnd: number;
-}
-
-function shellEscapingFromWrapperEmbed(
-  segment: SourceEmbedSegment,
-): ShellEscapingScheme {
-  const quote = segment.origin?.attributes?.quote;
-  if (quote === "single") return { kind: "shell-single-quote" };
-  if (quote === "double") {
-    return { kind: "shell-double-quote", conservative: true };
-  }
-  return { kind: "projected" };
-}
-
-function findShellCommandWrapperEmbed(root: SourceNode): LocatedEmbed | null {
-  if (root.language !== "bash") return null;
-  const idx = root.segments.findIndex(
-    (segment) =>
-      segment.kind === "embed" && isShellCommandWrapperEmbed(segment),
+  return (
+    classifyLsReadbackAST(ast, originalCommand) ??
+    classifyGenericList(ast, originalCommand)
   );
-  if (idx < 0) return null;
-  const segment = root.segments[idx] as SourceEmbedSegment;
-  return {
-    id: `embed-${idx}`,
-    segment,
-    absoluteStart: segment.span.start,
-    absoluteEnd: segment.span.end,
-  };
 }
 
-function findFirstHeredocEmbed(
-  root: SourceNode,
-  baseOffset = 0,
-  path: number[] = [],
-): LocatedEmbed | null {
-  for (let i = 0; i < root.segments.length; i++) {
-    const segment = root.segments[i]!;
-    if (segment.kind !== "embed") continue;
-    const absoluteStart = baseOffset + segment.span.start;
-    const absoluteEnd = baseOffset + segment.span.end;
-    const nextPath = path.concat(i);
-    if (isShellHeredocEmbed(segment)) {
-      return {
-        id: `embed-${nextPath.join(".")}`,
-        segment,
-        absoluteStart,
-        absoluteEnd,
-      };
-    }
-    const nested = findFirstHeredocEmbed(
-      segment.content,
-      absoluteStart,
-      nextPath,
-    );
-    if (nested) return nested;
-  }
-  return null;
-}
-
-function wrapperParseFromSourceTree(root: SourceNode): WrapperParse | null {
-  const wrapperEmbed = findShellCommandWrapperEmbed(root);
-  if (!wrapperEmbed) return null;
-  return {
-    decodedPayload: wrapperEmbed.segment.content.text,
-    rawPayload: root.text.slice(
-      wrapperEmbed.absoluteStart,
-      wrapperEmbed.absoluteEnd,
-    ),
-    escaping: shellEscapingFromWrapperEmbed(wrapperEmbed.segment),
-    prefix: sourceSpan(root.text, 0, wrapperEmbed.absoluteStart),
-    payload: sourceSpan(
-      root.text,
-      wrapperEmbed.absoluteStart,
-      wrapperEmbed.absoluteEnd,
-    ),
-    suffix: sourceSpan(root.text, wrapperEmbed.absoluteEnd, root.text.length),
-  };
-}
-
-function withSourceTreeCompatibility(
-  value: ShellSemantic,
-  command: string,
-  sourceTree: SourceNode,
-): ShellSemantic {
-  const baseSource = sourceSpan(command, 0, command.length);
-  return {
-    ...value,
-    source: value.source ?? baseSource,
-    sourceTree,
-  };
-}
-
-function splitTopLevelCommandList(command: string): string[] | null {
-  const items: string[] = [];
-  let start = 0;
-  let inSingle = false;
-  let inDouble = false;
-
-  const push = (end: number): boolean => {
-    const item = command.slice(start, end).trim();
-    if (!item) return false;
-    items.push(item);
-    return true;
-  };
-
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i]!;
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === "\\" && i + 1 < command.length) {
-        i++;
-        continue;
-      }
-      if (ch === '"') inDouble = false;
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-      continue;
-    }
-    if (ch === '"') {
-      inDouble = true;
-      continue;
-    }
-    if (ch === "\n") {
-      if (!push(i)) return null;
-      start = i + 1;
-      continue;
-    }
-    if (ch === "&" && command[i + 1] === "&") {
-      if (!push(i)) return null;
-      i++;
-      start = i + 1;
-      continue;
-    }
-  }
-
-  if (inSingle || inDouble) return null;
-  if (!push(command.length)) return null;
-  return items;
-}
-
-function parseLsReadbackSpec(
-  command: string,
-): { filePath: string; sedStart: number; sedEnd: number } | null {
-  const m = command.match(
-    /^\s*ls\s+-l\s+(\S+)\s*&&\s*sed\s+-n\s+'([1-9]\d*),([1-9]\d*)p'\s+(\S+)\s*$/,
-  );
-  if (!m) return null;
-  const filePath = m[1]!;
-  const sedPath = m[4]!;
-  if (filePath !== sedPath) return null;
-  if (isDynamicShellValue(filePath)) return null;
-  const sedStart = Number(m[2]);
-  const sedEnd = Number(m[3]);
-  if (sedEnd < sedStart) return null;
-  return { filePath, sedStart, sedEnd };
-}
-
-function parseLsDirectoryListing(command: string): { dirPath: string } | null {
-  const m = command.match(/^\s*ls\s+-1\s+(\S+)\s*$/);
-  if (!m) return null;
-  return { dirPath: m[1]! };
-}
-
-function classifyTrailingStructuredOutput(
-  trailing: string,
-): { steps: CommandStep[] } | null {
-  const readback = parseLsReadbackSpec(trailing);
-  if (readback) {
-    const language = langFromPath(readback.filePath) || "text";
-    return {
-      steps: [
-        {
-          kind: "plain-output",
-          order: 0,
-          commandName: "ls",
-          filePath: readback.filePath,
-          outputShape: {
-            kind: "fixed-lines",
-            count: 1,
-            format: { kind: "content", language: "shell-output" },
-            validator: "non-empty",
-          },
-          blockId: "listing",
-        },
-        {
-          kind: "read-file",
-          order: 1,
-          commandName: "sed",
-          filePath: readback.filePath,
-          range: {
-            type: "lines",
-            start: readback.sedStart,
-            end: readback.sedEnd,
-          },
-          outputShape: {
-            kind: "content",
-            format: { kind: "content", language },
-            validator: "non-empty",
-          },
-          blockId: "sed-output",
-        },
-      ],
-    };
-  }
-
-  const lsDir = parseLsDirectoryListing(trailing);
-  if (lsDir) {
-    return {
-      steps: [
-        {
-          kind: "plain-output",
-          order: 0,
-          commandName: "ls",
-          outputShape: { kind: "unknown" },
-        },
-      ],
-    };
-  }
-  return null;
-}
-
-function findHeredocOperatorIndex(line: string): number {
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i + 1 < line.length; i++) {
-    const ch = line[i]!;
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === "\\" && i + 1 < line.length) {
-        i++;
-        continue;
-      }
-      if (ch === '"') inDouble = false;
-      continue;
-    }
-    if (ch === "'") {
-      inSingle = true;
-      continue;
-    }
-    if (ch === '"') {
-      inDouble = true;
-      continue;
-    }
-    if (ch === "#") {
-      const prev = line[i - 1] ?? "";
-      if (prev !== "\\" && (i === 0 || /[\s;&|()<>]/.test(prev))) {
-        break;
-      }
-    }
-    if (
-      ch === "<" &&
-      line[i + 1] === "<" &&
-      line[i + 2] !== "<" &&
-      line[i - 1] !== "<"
-    ) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-function classifyHeredocDocument(
-  innerCommand: string,
+function classifyNormalizedDocument(
+  document: ParsedShellDocument,
   originalCommand: string,
-): ShellSemanticResult | null {
-  const normalized = innerCommand.replace(/\r\n/g, "\n");
-  const lines = normalized.split("\n");
-  let heredocLineIndex = -1;
-  let opIndex = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const idx = findHeredocOperatorIndex(lines[i] ?? "");
-    if (idx >= 0) {
-      heredocLineIndex = i;
-      opIndex = idx;
-      break;
-    }
-  }
-  if (heredocLineIndex < 0 || opIndex < 0) return null;
-  const leading = lines.slice(0, heredocLineIndex);
+  allowWholeCommand: boolean,
+): ShellSemanticResult {
+  assertValidParsedShellDocument(document);
+  const invocation = oneEligibleInvocation(document);
   if (
-    leading.some(
-      (line) => line.trim().length > 0 && !/^mkdir\s+-p\s+\S+\s*$/.test(line),
-    )
+    invocation !== null &&
+    (allowWholeCommand || invocation.interpreter.language !== "bash")
   ) {
-    return reject(
-      "invalid_heredoc",
-      "only leading mkdir -p setup is supported before heredoc",
-    );
-  }
-
-  const commandLine = lines[heredocLineIndex] ?? "";
-  if (commandLine.startsWith("<<-", opIndex)) {
-    return reject("invalid_heredoc", "<<- heredoc is not supported");
-  }
-  let cursor = opIndex + 2;
-  while (cursor < commandLine.length && /\s/.test(commandLine[cursor]!))
-    cursor++;
-  let quoted = false;
-  let delimiter = "";
-  let delimiterEnd: number;
-  if (commandLine[cursor] === "'") {
-    quoted = true;
-    cursor++;
-    const close = commandLine.indexOf("'", cursor);
-    if (close < 0)
+    if (
+      invocation.kind === "inline" &&
+      invocation.interpreter.language === "bash" &&
+      !ownsWholeCommand(document, invocation)
+    )
       return reject(
-        "unterminated_quote",
-        "unterminated quoted heredoc delimiter",
+        "unsupported_command",
+        "unsupported shell wrapper structure",
       );
-    delimiter = commandLine.slice(cursor, close);
-    delimiterEnd = close + 1;
-  } else {
-    const m = commandLine.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-    if (!m) return reject("invalid_heredoc", "invalid heredoc delimiter");
-    delimiter = m[1]!;
-    delimiterEnd = cursor + delimiter.length;
+    return invocation.kind === "inline"
+      ? classifyInlineInvocation(document, invocation, originalCommand)
+      : classifyScriptHeredoc(document, invocation, originalCommand);
   }
-  if (!delimiter) return reject("invalid_heredoc", "empty heredoc delimiter");
-  if (findHeredocOperatorIndex(commandLine.slice(delimiterEnd)) >= 0) {
-    return reject(
-      "invalid_heredoc",
-      "multiple heredocs are not supported in this batch",
-    );
-  }
-  const terminatorIndex = lines.findIndex(
-    (line, idx) => idx > heredocLineIndex && line === delimiter,
+  const heredocs = document.redirects.filter(
+    (redirect): redirect is Extract<ParsedShellRedirect, { kind: "heredoc" }> =>
+      redirect.kind === "heredoc",
   );
-  if (terminatorIndex < 0) {
-    return reject("invalid_heredoc", "heredoc terminator line was not found");
-  }
-  const hasTrailingHeredoc = lines
-    .slice(terminatorIndex + 1)
-    .some((line) => findHeredocOperatorIndex(line) >= 0);
-  if (hasTrailingHeredoc) {
-    return reject(
-      "invalid_heredoc",
-      "multiple heredocs are not supported in this batch",
-    );
-  }
-
-  const body = lines.slice(heredocLineIndex + 1, terminatorIndex).join("\n");
-  const trailing = lines
-    .slice(terminatorIndex + 1)
-    .join("\n")
-    .trim();
-  const commandName = commandLine.trim().split(/\s+/)[0];
-  if (!commandName)
-    return reject("unsupported_command", "missing heredoc command name");
-
-  if (commandName === "cat") {
-    const redirect = commandLine.match(/(?:^|\s)>\s*(\S+)/);
-    if (!redirect) {
-      return reject("missing_path", "cat heredoc write requires > path");
-    }
-    const filePath = redirect[1]!;
-    if (isDynamicShellValue(filePath)) {
-      return reject("variable_path", "heredoc target path must be literal");
-    }
-    const writeValue: ShellSemantic = {
-      kind: "write",
-      command: originalCommand,
-      commandName: "cat",
-      filePath,
-      writeMode: "overwrite",
-      heredoc: {
-        delimiter,
-        quoted,
-        commandLine,
-        content: body,
-        terminator: delimiter,
-      },
-      segments: [
-        { kind: "command-header", text: `${commandLine}\n` },
-        { kind: "write-content", text: body, filePath },
-        { kind: "command-footer", text: `\n${delimiter}` },
-      ],
-      steps: [
-        {
-          kind: "write-file" as const,
-          order: 0,
-          targetPath: filePath,
-          contentNodeId: "heredoc-body",
-          outputShape: { kind: "none" as const },
-        },
-      ],
-    };
-    const trailingResult = trailing
-      ? classifyTrailingStructuredOutput(trailing)
-      : null;
-    if (trailing && !trailingResult) {
-      return { ok: true, value: writeValue };
-    }
-    const trailingSteps = trailingResult?.steps ?? [];
-    const allSteps: CommandStep[] = [
-      ...(writeValue.steps ?? []),
-      ...trailingSteps.map((s, idx) => ({ ...s, order: idx + 1 })),
-    ];
-    return {
-      ok: true,
-      value: {
-        ...writeValue,
-        steps: allSteps,
-      },
-    };
-  }
-
-  const language = INTERPRETER_LANG[commandName];
-  if (!language) {
+  if (heredocs.length > 0) {
+    const owner = commandForId(document, heredocs[0]!.ownerId);
+    if (owner.name.kind === "literal" && basename(owner.name.value) === "cat")
+      return classifyCatHeredoc(document, heredocs[0]!, originalCommand);
     return reject("unsupported_command", "unsupported heredoc command");
   }
-  const scriptValue: ShellSemantic = {
-    kind: "script-exec",
-    command: originalCommand,
-    commandName,
-    language,
-    scriptSource: {
-      type: "heredoc",
-      delimiter,
-      quoted,
-      content: body,
-      terminator: delimiter,
-      commandLine,
-    },
-    segments: [
-      { kind: "command-header", text: `${commandLine}\n` },
-      { kind: "script-content", text: body, language },
-      { kind: "command-footer", text: `\n${delimiter}` },
-    ],
-    steps: [
-      {
-        kind: "execute-script" as const,
-        order: 0,
-        commandName,
-        language,
-        contentNodeId: "heredoc-body",
-        outputShape: { kind: "unknown" as const },
-      },
-    ],
-  };
-  return {
-    ok: true,
-    value: scriptValue,
-  };
+  return classifyNormalizedAST(
+    adaptUnit(document, document.program),
+    originalCommand,
+  );
 }
 
 function decodePrintfEscapes(raw: string): string | null {
@@ -2533,7 +2263,6 @@ function classifyWcSummary(
   if (values.length !== 1) return null;
   if (cmd.redirects.length > 0) return null;
   const filePath = values[0]!.text;
-  if (isDynamicShellValue(filePath)) return null;
   return {
     steps: [
       {
@@ -2559,7 +2288,6 @@ function classifyEchoListMember(
   if (cmd.args.some((a) => a.kind === "flag")) return null;
   if (cmd.redirects.length > 0) return null;
   const valueArgs = cmd.args.filter((a) => a.kind === "value");
-  if (valueArgs.some((v) => isDynamicShellValue(v.text))) return null;
   // POSIX: echo joins args with single spaces and appends a newline.
   const text = valueArgs.map((v) => v.text).join(" ") + "\n";
   return {
@@ -2602,164 +2330,55 @@ function classifySimpleCommandAsListMember(
   }
 }
 
-async function classifyMultilineAsList(
-  inner: string,
-  originalCommand: string,
-  theme: ShikiTheme,
-): Promise<ShellSemanticResult | null> {
-  const lines = splitTopLevelCommandList(inner);
-  if (!lines || lines.length < 2) return null;
-
-  const asts: ShellAST[] = [];
-  for (const line of lines) {
-    let shikiLines: TokenWithScopes[][] | null;
-    try {
-      shikiLines = await tokenizeWithScopes(line, theme);
-    } catch {
-      return null;
-    }
-    if (!shikiLines) return null;
-    const tokens = mapShikiTokens(shikiLines);
-    const ast = buildAST(tokens, line);
-    if (ast.type === "unsupported") return null;
-    asts.push(ast);
-  }
-
-  let combined: ShellAST = asts[0]!;
-  for (let i = 1; i < asts.length; i++) {
-    combined = { type: "list", op: "&&", left: combined, right: asts[i]! };
-  }
-
-  return classifyAST(combined, originalCommand);
-}
-
-// ---------------------------------------------------------------------------
-// Public async API
-// ---------------------------------------------------------------------------
-
 export async function parseShellSemantic(
   command: string,
-  theme: ShikiTheme = "github-dark",
 ): Promise<ShellSemanticResult> {
   if (!command.trim()) return reject("empty", "empty command");
-
-  const sourceTreeResult = parseShellCommandSourceTree(command);
-  if (!sourceTreeResult.ok) {
-    return reject(sourceTreeResult.code, sourceTreeResult.reason);
+  const parsed = await loadParsedShellDocument(command);
+  if (!parsed.ok) {
+    if (parsed.reason === "invalid_heredoc")
+      return reject(
+        "invalid_heredoc",
+        "shell parser rejected heredoc: " + parsed.issue,
+      );
+    if (parsed.reason === "unsafe_shell_syntax")
+      return reject(
+        "unsafe_shell_syntax",
+        "shell parser rejected syntax: " + parsed.issue,
+      );
+    return reject("unsafe_shell_syntax", "shell parser initialization failed");
   }
-  const sourceTree = sourceTreeResult.value;
-  const wrapperEmbed = findShellCommandWrapperEmbed(sourceTree);
-  const wrapper = wrapperParseFromSourceTree(sourceTree);
-  const innerNode = wrapperEmbed ? wrapperEmbed.segment.content : sourceTree;
-  const inner = wrapper ? wrapper.decodedPayload : sourceTree.text;
-
-  if (findFirstHeredocEmbed(innerNode)) {
-    const heredocResult = classifyHeredocDocument(inner, command);
-    if (heredocResult) {
-      return heredocResult.ok
-        ? {
-            ok: true,
-            value: withSourceTreeCompatibility(
-              heredocResult.value,
-              command,
-              sourceTree,
-            ),
-          }
-        : heredocResult;
-    }
-  }
-
-  // ls-readback fast path: ls -l X && sed -n N,Mp X — kept as a regex pre-check
-  // to enforce parseLsReadbackSpec's same-filePath equality constraint.
-  const normalizedInner = inner.replace(/\r\n/g, "\n");
-  if (parseLsReadbackSpec(normalizedInner)) {
-    const lsReadback = classifyTrailingStructuredOutput(normalizedInner);
-    if (lsReadback) {
-      return {
-        ok: true,
-        value: withSourceTreeCompatibility(
-          {
-            kind: "structured-output",
-            commandName: "ls",
-            command,
-            steps: lsReadback.steps,
-          },
-          command,
-          sourceTree,
-        ),
-      };
-    }
-  }
-
-  if (inner.includes("\n")) {
-    const listResult = await classifyMultilineAsList(inner, command, theme);
-    if (listResult) {
-      return listResult.ok
-        ? {
-            ok: true,
-            value: withSourceTreeCompatibility(
-              listResult.value,
-              command,
-              sourceTree,
-            ),
-          }
-        : listResult;
-    }
-    return reject(
-      "unsupported_command",
-      "unsupported multiline shell command list",
-    );
-  }
-
-  // For heredoc commands, only tokenize the first line (the command line).
-  // Shiki tokenizes heredoc bodies with special heredoc scopes which we don't
-  // need — body content is extracted via line splitting from the raw command.
-  const tokenizeLine = inner.includes("\n") ? inner.split("\n")[0]! : inner;
-
-  let shikiLines: TokenWithScopes[][] | null;
-  try {
-    shikiLines = await tokenizeWithScopes(tokenizeLine, theme);
-  } catch {
-    return reject("unsafe_shell_syntax", "tokenizer unavailable");
-  }
-  if (!shikiLines)
-    return reject("unsafe_shell_syntax", "tokenizer unavailable");
-
-  const shellTokens = mapShikiTokens(shikiLines);
-  const ast = buildAST(shellTokens, inner);
-  const classified = classifyAST(ast, command);
-  if (!classified.ok) return classified;
-  return {
-    ok: true,
-    value: withSourceTreeCompatibility(classified.value, command, sourceTree),
-  };
+  return classifyNormalizedDocument(parsed.document, command, true);
 }
-
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
 
 export function useShellSemantic(
   command: string | null,
 ): ShellSemanticResult | null {
-  const appTheme = useCurrentTheme();
-  const shikiTheme: ShikiTheme =
-    appTheme === "light" ? "github-light" : "github-dark";
-  const [result, setResult] = useState<ShellSemanticResult | null>(null);
+  const [state, setState] = useState<{
+    command: string | null;
+    result: ShellSemanticResult | null;
+  }>({ command: null, result: null });
 
   useEffect(() => {
-    if (!command) {
-      setResult(null);
+    if (command === null) {
+      setState({ command: null, result: null });
       return;
     }
-    let cancelled = false;
-    void parseShellSemantic(command, shikiTheme).then((r) => {
-      if (!cancelled) setResult(r);
-    });
+    const requestedCommand = command;
+    let active = true;
+    setState({ command: requestedCommand, result: null });
+    void parseShellSemantic(requestedCommand).then(
+      (result) => {
+        if (active) setState({ command: requestedCommand, result });
+      },
+      () => {
+        if (active) setState({ command: requestedCommand, result: null });
+      },
+    );
     return () => {
-      cancelled = true;
+      active = false;
     };
-  }, [command, shikiTheme]);
+  }, [command]);
 
-  return result;
+  return state.command === command ? state.result : null;
 }
