@@ -24,9 +24,15 @@ import {
   assistantText,
   responseTimeout,
   lastAssistantText,
+  installCydoE2eBridge,
+  parseShellThroughBridge,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { writeTestConfig } from "./test-config";
+import {
+  installExportCdnRoutes,
+  readExportCdnFixtures,
+} from "./export-cdn-fixtures";
 
 test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({ page, backend, agentType }, testInfo) => {
 
@@ -59,7 +65,23 @@ test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({
       throw new Error(`cydo export-html failed (status ${result.status}):\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
     }
 
+    await installCydoE2eBridge(page);
+    const fixtures = readExportCdnFixtures();
+    const routeState = await installExportCdnRoutes(page, fixtures);
+    const requests: string[] = [];
+    page.on("request", (request) => requests.push(request.url()));
+
     await page.goto(`file://${outputPath}`);
+
+    expect(await parseShellThroughBridge(page, "echo export")).toEqual({
+      ok: true,
+      source: "echo export",
+      commands: [{
+        name: "echo",
+        argv: ["echo", "export"],
+        span: { start: 0, end: 11 },
+      }],
+    });
 
     await expect(
       page.locator('[data-testid="assistant-text"]', { hasText: "export-marker-ok" }),
@@ -73,9 +95,6 @@ test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({
 
     await expect(page.locator(".input-textarea")).toHaveCount(0);
 
-    // Assert on the embedded JSON blob directly rather than rendered DOM:
-    // the exported HTML loads shiki/mermaid from the esm.sh CDN, unreachable
-    // in a network-sandboxed nix build.
     const html = readFileSync(outputPath, "utf8");
     const match = html.match(
       /<script id="cydo-export-data" type="application\/json">([\s\S]*?)<\/script>/,
@@ -83,6 +102,40 @@ test("export-html creates viewable HTML file", { tag: "@claude-only" }, async ({
     expect(match).toBeTruthy();
     const data = JSON.parse(match![1]);
     expect(data.tasks.find((t: { tid: number }) => t.tid === Number(tid))?.driver).toBe("claude");
+
+    expect(routeState.unexpectedHttps).toEqual([]);
+    expect(routeState.attempts.every((url) => fixtures.byUrl.has(url))).toBe(true);
+    expect(routeState.attempts.filter((url) => new URL(url).hostname === "esm.sh")).toEqual([]);
+    expect(requests.filter((url) => url.startsWith("file:") && /\.wasm(?:$|[?#])/.test(url))).toEqual([]);
+
+    const parserFixtureFiles = [
+      "files/web-tree-sitter/web-tree-sitter.wasm",
+      "files/tree-sitter-bash/tree-sitter-bash.wasm",
+    ];
+    for (const file of parserFixtureFiles) {
+      const candidates = fixtures.records.filter((record) => record.file === file);
+      const jsDelivr = candidates.filter((record) => new URL(record.url).hostname === "cdn.jsdelivr.net");
+      const unpkg = candidates.filter((record) => new URL(record.url).hostname === "unpkg.com");
+      const esm = candidates.filter((record) => new URL(record.url).hostname === "esm.sh");
+      expect(jsDelivr).toHaveLength(1);
+      expect(unpkg).toHaveLength(1);
+      expect(esm).toHaveLength(1);
+
+      const jsDelivrIndex = routeState.attempts.indexOf(jsDelivr[0]!.url);
+      const unpkgIndex = routeState.attempts.indexOf(unpkg[0]!.url);
+      expect(jsDelivrIndex).toBeGreaterThanOrEqual(0);
+      expect(unpkgIndex).toBeGreaterThan(jsDelivrIndex);
+      expect(routeState.actions.filter((action) => action.url === jsDelivr[0]!.url && action.action === "abort-jsdelivr")).toHaveLength(1);
+      expect(routeState.actions.filter((action) => action.url === unpkg[0]!.url && action.action === "fulfill-unpkg")).toHaveLength(1);
+      expect(routeState.attempts).not.toContain(esm[0]!.url);
+    }
+
+    expect(html).not.toMatch(/\/assets\/(?:web-tree-sitter|tree-sitter-bash)-[^"']+\.wasm/);
+    expect(html).not.toContain("data:application/wasm");
+    expect(html).not.toMatch(/new URL\(["']web-tree-sitter\.wasm["'],\s*import\.meta\.url\)/);
+    for (const record of fixtures.records) {
+      expect(html).not.toContain(record.bytes.toString("base64"));
+    }
   } finally {
     try {
       unlinkSync(outputPath);

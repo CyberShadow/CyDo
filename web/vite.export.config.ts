@@ -4,6 +4,7 @@ import { viteSingleFile } from "vite-plugin-singlefile";
 import path from "path";
 import type { Plugin } from "vite";
 import { generateRuntimeManifest } from "./scripts/export-cdn-manifest.mjs";
+import { exportWasmFallbackGuard } from "./scripts/export-wasm-fallback-guard.mjs";
 
 const exportCdnModule = "virtual:cydo-export-cdn";
 const resolvedExportCdnModule = `\0${exportCdnModule}`;
@@ -23,7 +24,12 @@ function exportCdnManifestPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [preact(), exportCdnManifestPlugin(), viteSingleFile()],
+  plugins: [
+    preact(),
+    exportCdnManifestPlugin(),
+    exportWasmFallbackGuard(),
+    viteSingleFile(),
+  ],
   resolve: {
     alias: {
       shiki: path.resolve(__dirname, "src/shiki-cdn.ts"),

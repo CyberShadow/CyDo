@@ -166,6 +166,72 @@ export async function installCydoE2eBridge(page: Page) {
   });
 }
 
+type BrowserShellWord = { kind: "literal"; value: string } | { kind: string };
+
+type BrowserShellParseResult =
+  | {
+      ok: true;
+      document: {
+        commands: Array<{
+          name: BrowserShellWord;
+          arguments: Array<{ word: BrowserShellWord }>;
+          span: { start: number; end: number };
+        }>;
+      };
+    }
+  | { ok: false; reason: string };
+
+export type ShellParseBridgeSummary =
+  | {
+      ok: true;
+      source: string;
+      commands: Array<{
+        name: string;
+        argv: Array<string | null>;
+        span: { start: number; end: number };
+      }>;
+    }
+  | { ok: false; source: string; reason: string };
+
+export async function parseShellThroughBridge(
+  page: Page,
+  source: string,
+): Promise<ShellParseBridgeSummary> {
+  return page.evaluate(async (source): Promise<ShellParseBridgeSummary> => {
+    const bridge = (
+      window as Window & {
+        __cydoE2e?: {
+          parseShell?: (source: string) => Promise<BrowserShellParseResult>;
+        };
+      }
+    ).__cydoE2e;
+    if (bridge?.parseShell === undefined)
+      throw new Error("CyDo e2e shell parser bridge unavailable");
+
+    const result = await bridge.parseShell(source);
+    if (!result.ok) return { ok: false, source, reason: result.reason };
+
+    const commands = result.document.commands.map((command) => {
+      if (command.name.kind !== "literal")
+        throw new Error(
+          "CyDo e2e shell parser returned a nonliteral command name",
+        );
+      return {
+        name: command.name.value,
+        argv: [
+          command.name.value,
+          ...command.arguments.map((argument) =>
+            argument.word.kind === "literal" ? argument.word.value : null,
+          ),
+        ],
+        span: command.span,
+      };
+    });
+
+    return { ok: true, source, commands };
+  }, source);
+}
+
 export async function forkThroughBridge(page: Page, tid: number, anchor: string) {
   await page.evaluate(({ tid, anchor }) => {
     if (!window.__cydoE2e?.fork) throw new Error("CyDo e2e fork bridge unavailable");

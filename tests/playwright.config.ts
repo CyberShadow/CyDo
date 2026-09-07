@@ -25,6 +25,7 @@ export default defineConfig({
   use: {
     headless: true,
     screenshot: "on",
+    serviceWorkers: "block",
     actionTimeout: 540_000,
     navigationTimeout: 540_000,
     launchOptions: {
