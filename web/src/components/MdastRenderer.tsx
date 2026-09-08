@@ -251,14 +251,20 @@ let mermaidCurrentTheme: string | null = null;
 
 function getMermaid(theme: "default" | "dark") {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((m) => {
-      m.default.initialize({ startOnLoad: false, theme });
+    mermaidPromise = import("mermaid").then(async (m) => {
+      const initialize = m.default.initialize.bind(m.default) as unknown as (
+        options: Parameters<typeof m.default.initialize>[0],
+      ) => unknown;
+      await Promise.resolve(initialize({ startOnLoad: false, theme }));
       mermaidCurrentTheme = theme;
       return m;
     });
   } else if (mermaidCurrentTheme !== theme) {
-    mermaidPromise = mermaidPromise.then((m) => {
-      m.default.initialize({ startOnLoad: false, theme });
+    mermaidPromise = mermaidPromise.then(async (m) => {
+      const initialize = m.default.initialize.bind(m.default) as unknown as (
+        options: Parameters<typeof m.default.initialize>[0],
+      ) => unknown;
+      await Promise.resolve(initialize({ startOnLoad: false, theme }));
       mermaidCurrentTheme = theme;
       return m;
     });

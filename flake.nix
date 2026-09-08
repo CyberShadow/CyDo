@@ -195,7 +195,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild
@@ -218,7 +218,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             inherit nodejs;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
             dontNpmBuild = true;
 
             installPhase = ''
@@ -713,6 +713,7 @@ EOF
             };
             HOME = "/tmp/playwright-home";
             CYDO_EXPORT_CDN_FIXTURES = "${exportCdnFixtures}";
+            CYDO_EXPORT_CDN_EXPECTED_MANIFEST = "${exportCdnFixtures}/manifest.json";
 
             CI = "1";
 
@@ -1047,7 +1048,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild
@@ -1064,7 +1065,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild
@@ -1081,7 +1082,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild
@@ -1098,7 +1099,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild
@@ -1137,7 +1138,7 @@ EOF
             version = "0.1.0";
             src = frontendSrc;
             nodejs = pkgs.nodejs_22;
-            npmDepsHash = "sha256-yfne6qm/CJIHWzUW2c0dmdI85KWEfr1G/eH0+h2NbsA=";
+            npmDepsHash = "sha256-b11KjgyUyj6TIRbRTMovG08tPSqTOSditQewtxbuQZM=";
 
             buildPhase = ''
               runHook preBuild

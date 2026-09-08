@@ -3,22 +3,44 @@ import preact from "@preact/preset-vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import path from "path";
 import type { Plugin } from "vite";
-import { generateRuntimeManifest } from "./scripts/export-cdn-manifest.mjs";
+import { generateExportCdnSnapshot } from "./scripts/export-cdn-manifest.mjs";
 import { exportWasmFallbackGuard } from "./scripts/export-wasm-fallback-guard.mjs";
 
 const exportCdnModule = "virtual:cydo-export-cdn";
 const resolvedExportCdnModule = `\0${exportCdnModule}`;
 
-function exportCdnManifestPlugin(): Plugin {
+type ExportCdnSnapshot = Awaited<ReturnType<typeof generateExportCdnSnapshot>>;
+
+export function exportCdnManifestPlugin(
+  createSnapshot: () => Promise<ExportCdnSnapshot> = () =>
+    generateExportCdnSnapshot({ projectRoot: __dirname }),
+): Plugin {
+  let snapshot: Promise<ExportCdnSnapshot> | undefined;
+
+  const getSnapshot = () => {
+    if (!snapshot) snapshot = createSnapshot();
+    return snapshot;
+  };
+
   return {
     name: "cydo-export-cdn-manifest",
     resolveId(id) {
       return id === exportCdnModule ? resolvedExportCdnModule : undefined;
     },
-    load(id) {
+    async load(id) {
       if (id !== resolvedExportCdnModule) return undefined;
-      const manifest = generateRuntimeManifest({ projectRoot: __dirname });
-      return `export const treeSitterRuntime = ${JSON.stringify(manifest.treeSitterRuntime)};\nexport const treeSitterBash = ${JSON.stringify(manifest.treeSitterBash)};\n`;
+      const { runtimeManifest } = await getSnapshot();
+      return `export const treeSitterRuntime = ${JSON.stringify(runtimeManifest.treeSitterRuntime)};\nexport const treeSitterBash = ${JSON.stringify(runtimeManifest.treeSitterBash)};\nexport const shikiRoots = ${JSON.stringify(runtimeManifest.shikiRoots)};\nexport const mermaidRoots = ${JSON.stringify(runtimeManifest.mermaidRoots)};\nexport const shikiLanguages = ${JSON.stringify(runtimeManifest.shikiLanguages)};\n`;
+    },
+    async transformIndexHtml() {
+      return [
+        {
+          tag: "script",
+          attrs: { type: "importmap" },
+          children: JSON.stringify((await getSnapshot()).importMap),
+          injectTo: "head-prepend",
+        },
+      ];
     },
   };
 }
@@ -32,8 +54,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      shiki: path.resolve(__dirname, "src/shiki-cdn.ts"),
-      mermaid: path.resolve(__dirname, "src/mermaid-cdn.ts"),
+      shiki: path.resolve(__dirname, "src/export/shiki.ts"),
+      mermaid: path.resolve(__dirname, "src/export/mermaid.ts"),
     },
   },
   build: {

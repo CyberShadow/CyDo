@@ -1,18 +1,24 @@
-import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { Page } from "@playwright/test";
 
 const FIXTURE_ENV = "CYDO_EXPORT_CDN_FIXTURES";
-const EXPECTED_URL_COUNT = 6;
+const EXPECTED_MANIFEST_ENV = "CYDO_EXPORT_CDN_EXPECTED_MANIFEST";
 const WASM_MAGIC = Buffer.from([0, 0x61, 0x73, 0x6d]);
 const RECORD_KEYS = ["contentType", "file", "integrity"];
 
+type FixtureContentType = "application/javascript" | "application/wasm";
+
 type FixtureManifestRecord = {
-  contentType: "application/wasm";
+  contentType: FixtureContentType;
   file: string;
   integrity: string;
+};
+
+type FixtureManifest = {
+  urls: Record<string, FixtureManifestRecord>;
 };
 
 export type ExportCdnFixture = FixtureManifestRecord & {
@@ -79,19 +85,18 @@ function isOutside(root: string, target: string): boolean {
   return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
 }
 
-function readManifest(fixtureRoot: string): unknown {
-  const manifestPath = resolve(fixtureRoot, "manifest.json");
+function readManifest(manifestPath: string, description: string): unknown {
   let text: string;
   try {
     text = readFileSync(manifestPath, "utf8");
   } catch (error) {
-    fail(`cannot read manifest.json at ${manifestPath}: ${error}`);
+    fail(`cannot read ${description} at ${manifestPath}: ${error}`);
   }
 
   try {
     return JSON.parse(text) as unknown;
   } catch (error) {
-    fail(`cannot parse manifest.json at ${manifestPath}: ${error}`);
+    fail(`cannot parse ${description} at ${manifestPath}: ${error}`);
   }
 }
 
@@ -104,6 +109,81 @@ function validateUrl(url: string): void {
   }
   if (parsed.protocol !== "https:" || parsed.hostname.length === 0) {
     fail(`fixture URL is not absolute HTTPS: ${url}`);
+  }
+}
+
+function readFixtureManifest(
+  manifestPath: string,
+  description: string,
+): FixtureManifest {
+  const manifest = readManifest(manifestPath, description);
+  if (!isRecord(manifest)) fail(`${description} must be an object`);
+  requireExactKeys(manifest, ["urls"], description);
+  if (!isRecord(manifest.urls)) fail(`${description}.urls must be an object`);
+
+  const entries = Object.entries(manifest.urls);
+  if (entries.length === 0) fail(`${description}.urls must not be empty`);
+  const sortedUrls = entries.map(([url]) => url).sort();
+  if (
+    JSON.stringify(entries.map(([url]) => url)) !== JSON.stringify(sortedUrls)
+  ) {
+    fail(`${description}.urls must be sorted by URL`);
+  }
+
+  const urls: Record<string, FixtureManifestRecord> = {};
+  for (const [url, value] of entries) {
+    validateUrl(url);
+    if (!isRecord(value)) {
+      fail(`fixture URL record for ${url} must be an object`);
+    }
+    requireExactKeys(value, RECORD_KEYS, `fixture URL record for ${url}`);
+
+    const file = value.file;
+    const integrity = value.integrity;
+    const contentType = value.contentType;
+    if (typeof file !== "string") {
+      fail(`fixture URL record for ${url} has a non-string file`);
+    }
+    if (typeof integrity !== "string") {
+      fail(`fixture URL record for ${url} has a non-string integrity`);
+    }
+    if (
+      contentType !== "application/javascript" &&
+      contentType !== "application/wasm"
+    ) {
+      fail(`fixture file ${file} has an unexpected content type`);
+    }
+    urls[url] = { file, integrity, contentType };
+  }
+
+  return { urls };
+}
+
+function requireExpectedFixtureManifest(
+  actual: FixtureManifest,
+  expected: FixtureManifest,
+): void {
+  const actualUrls = Object.keys(actual.urls);
+  const expectedUrls = Object.keys(expected.urls);
+  if (JSON.stringify(actualUrls) !== JSON.stringify(expectedUrls)) {
+    const missing = expectedUrls.filter((url) => !(url in actual.urls));
+    const orphaned = actualUrls.filter((url) => !(url in expected.urls));
+    fail(
+      `fixture URL records differ from expected manifest: missing ${missing.join(", ") || "none"}; orphaned ${orphaned.join(", ") || "none"}`,
+    );
+  }
+
+  for (const url of actualUrls) {
+    const actualRecord = actual.urls[url];
+    const expectedRecord = expected.urls[url];
+    if (
+      !expectedRecord ||
+      actualRecord.file !== expectedRecord.file ||
+      actualRecord.integrity !== expectedRecord.integrity ||
+      actualRecord.contentType !== expectedRecord.contentType
+    ) {
+      fail(`fixture URL record for ${url} differs from expected manifest`);
+    }
   }
 }
 
@@ -129,6 +209,7 @@ function readFixtureBytes(
   fixtureRoot: string,
   file: string,
   integrity: string,
+  contentType: FixtureContentType,
 ): Buffer {
   const target = validateFixturePath(fixtureRoot, file);
   const realRoot = realpathSync(fixtureRoot);
@@ -144,13 +225,31 @@ function readFixtureBytes(
     fail(`fixture file ${file} is missing: ${error}`);
   }
 
-  if (!bytes.subarray(0, WASM_MAGIC.length).equals(WASM_MAGIC)) {
+  if (
+    contentType === "application/wasm" &&
+    !bytes.subarray(0, WASM_MAGIC.length).equals(WASM_MAGIC)
+  ) {
     fail(`fixture file ${file} does not have the WASM magic header`);
   }
   if (integrity !== sha384(bytes)) {
     fail(`fixture file ${file} does not match its integrity record`);
   }
   return bytes;
+}
+
+function fixtureFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = resolve(directory, entry.name);
+      const entryPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(entryPath, entryPrefix);
+      else if (entry.isFile()) files.push(entryPrefix);
+      else fail(`fixture contains unsupported filesystem entry ${entryPrefix}`);
+    }
+  };
+  visit(root, "");
+  return files.sort();
 }
 
 /**
@@ -161,44 +260,27 @@ function readFixtureBytes(
 export function readExportCdnFixtures(): ExportCdnFixtures {
   const fixtureRootValue = process.env[FIXTURE_ENV];
   if (!fixtureRootValue) fail(`${FIXTURE_ENV} is required`);
+  const expectedManifestValue = process.env[EXPECTED_MANIFEST_ENV];
+  if (!expectedManifestValue) fail(`${EXPECTED_MANIFEST_ENV} is required`);
 
   const fixtureRoot = resolve(fixtureRootValue);
-  const manifest = readManifest(fixtureRoot);
-  if (!isRecord(manifest)) fail("manifest must be an object");
-  requireExactKeys(manifest, ["urls"], "manifest");
-
-  const urls = manifest.urls;
-  if (!isRecord(urls)) fail("manifest.urls must be an object");
-
-  const entries = Object.entries(urls);
-  if (entries.length !== EXPECTED_URL_COUNT) {
-    fail(
-      `manifest.urls has ${entries.length} URL records, expected ${EXPECTED_URL_COUNT}`,
-    );
-  }
+  const actual = readFixtureManifest(
+    resolve(fixtureRoot, "manifest.json"),
+    "fixture manifest",
+  );
+  const expected = readFixtureManifest(
+    resolve(expectedManifestValue),
+    "expected fixture manifest",
+  );
+  requireExpectedFixtureManifest(actual, expected);
 
   const records: ExportCdnFixture[] = [];
   const byUrl = new Map<string, ExportCdnFixture>();
-  for (const [url, value] of entries) {
-    validateUrl(url);
-    if (!isRecord(value))
-      fail(`fixture URL record for ${url} must be an object`);
-    requireExactKeys(value, RECORD_KEYS, `fixture URL record for ${url}`);
-
-    const file = value.file;
-    const integrity = value.integrity;
-    const contentType = value.contentType;
-    if (typeof file !== "string") {
-      fail(`fixture URL record for ${url} has a non-string file`);
-    }
-    if (typeof integrity !== "string") {
-      fail(`fixture URL record for ${url} has a non-string integrity`);
-    }
-    if (contentType !== "application/wasm") {
-      fail(`fixture file ${file} has an unexpected content type`);
-    }
-
-    const bytes = readFixtureBytes(fixtureRoot, file, integrity);
+  const enumeratedFiles = new Set<string>();
+  for (const [url, { file, integrity, contentType }] of Object.entries(
+    actual.urls,
+  )) {
+    const bytes = readFixtureBytes(fixtureRoot, file, integrity, contentType);
     const record: ExportCdnFixture = {
       url,
       file,
@@ -208,6 +290,15 @@ export function readExportCdnFixtures(): ExportCdnFixtures {
     };
     records.push(record);
     byUrl.set(url, record);
+    enumeratedFiles.add(file);
+  }
+
+  const expectedFiles = ["manifest.json", ...enumeratedFiles].sort();
+  const actualFiles = fixtureFiles(fixtureRoot);
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    fail(
+      `fixture output files differ from its manifest: expected ${expectedFiles.join(", ")}; got ${actualFiles.join(", ")}`,
+    );
   }
 
   return { records, byUrl };

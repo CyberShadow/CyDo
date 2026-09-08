@@ -1,11 +1,17 @@
 import type { CdnCandidate } from "virtual:cydo-export-cdn";
 
-type NonEmptyCandidates = readonly [CdnCandidate, ...CdnCandidate[]];
+export type NonEmptyCdnCandidates = readonly [CdnCandidate, ...CdnCandidate[]];
+
+export type LoadedCdnModule<Module> = Readonly<{
+  module: Module;
+  candidate: CdnCandidate;
+}>;
 
 const WASM_MAGIC = [0, 0x61, 0x73, 0x6d];
+const successfulModuleImports = new Map<string, LoadedCdnModule<unknown>>();
 
 export async function fetchBytesWithFallback(
-  candidates: NonEmptyCandidates,
+  candidates: NonEmptyCdnCandidates,
   assetLabel: string,
 ): Promise<Uint8Array> {
   const failures: unknown[] = [];
@@ -36,5 +42,30 @@ export async function fetchBytesWithFallback(
   throw new AggregateError(
     failures,
     `failed to load ${assetLabel} from CDN candidates`,
+  );
+}
+
+export async function importModuleWithFallback<Module>(
+  dependencyKey: string,
+  candidates: NonEmptyCdnCandidates,
+): Promise<LoadedCdnModule<Module>> {
+  const cached = successfulModuleImports.get(dependencyKey);
+  if (cached) return cached as LoadedCdnModule<Module>;
+
+  const failures: unknown[] = [];
+  for (const candidate of candidates) {
+    try {
+      const module = (await import(/* @vite-ignore */ candidate.url)) as Module;
+      const loaded = { module, candidate };
+      successfulModuleImports.set(dependencyKey, loaded);
+      return loaded;
+    } catch (error: unknown) {
+      failures.push(error);
+    }
+  }
+
+  throw new AggregateError(
+    failures,
+    `failed to import ${dependencyKey} from CDN candidates`,
   );
 }

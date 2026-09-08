@@ -32,4 +32,8 @@ export default tseslint.config(
       "@typescript-eslint/no-non-null-assertion": "off",
     },
   },
+  {
+    files: ["src/highlightLanguages.mjs"],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
 );

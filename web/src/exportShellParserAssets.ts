@@ -1,5 +1,5 @@
 import { treeSitterBash, treeSitterRuntime } from "virtual:cydo-export-cdn";
-import { fetchBytesWithFallback } from "./exportCdn";
+import { fetchBytesWithFallback } from "./export/cdnLoader";
 import type { ShellParserAssets } from "./lib/shellParser";
 
 export const exportShellParserAssets: ShellParserAssets = {
