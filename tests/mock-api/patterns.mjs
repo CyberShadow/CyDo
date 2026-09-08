@@ -581,6 +581,25 @@ export function matchPattern(userText) {
       command: "cd /tmp && python3 - <<'EOF'\nprint(1)\nEOF\ngit diff | cat",
     };
 
+  if (/rich export rendering fixture/i.test(userText))
+    return {
+      type: "text",
+      text: [
+        "rich-export-marker",
+        "",
+        "```rust",
+        "fn main() {",
+        '    println!("rust-export-marker");',
+        "}",
+        "```",
+        "",
+        "```mermaid",
+        "graph TD",
+        "  Export[Export] --> Ready[Ready]",
+        "```",
+      ].join("\n"),
+    };
+
   if (/semantic shell env heredoc/i.test(userText))
     return {
       type: "shell",
