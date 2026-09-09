@@ -321,8 +321,8 @@ test(
 );
 
 test(
-  "claude live idle undo on turn three removes only turns three through five",
-  { tag: "@claude-only" },
+  "non-Codex live idle undo removes selected user or assistant history",
+  { tag: "@no-codex" },
   async ({ page, agentType }) => {
     const turns = [
       "live-one",
@@ -369,6 +369,51 @@ test(
 
     await sendMessage(page, 'Please reply with "live-six"');
     await expect(assistantText(page, "live-six")).toBeVisible({ timeout });
+
+    await enterSession(page);
+    await sendMessage(page, 'Please reply with "assistant-undo-prefix"');
+    await expect(assistantText(page, "assistant-undo-prefix")).toBeVisible({
+      timeout,
+    });
+    await sendMessage(page, 'Please reply with "assistant-undo-selected"');
+    await expect(assistantText(page, "assistant-undo-selected")).toBeVisible({
+      timeout,
+    });
+    await sendMessage(page, 'Please reply with "assistant-undo-later"');
+    await expect(assistantText(page, "assistant-undo-later")).toBeVisible({
+      timeout,
+    });
+    const selectedAssistant = page
+      .locator(".message-wrapper", {
+        has: page.locator(".assistant-message", {
+          hasText: "assistant-undo-selected",
+        }),
+      })
+      .last();
+    await selectedAssistant.hover();
+    await selectedAssistant.locator(".undo-btn").click();
+    await expect(page.locator(".undo-dialog")).toBeVisible();
+    await expect(page.locator(".undo-dialog-prompt-retention")).toHaveText(
+      "This response and later history will be removed. The preceding prompt will remain.",
+    );
+    await page.locator(".btn-undo").click();
+    await expect(async () => {
+      await assertTurnPresence(page, ["assistant-undo-prefix"], true);
+      await expect(
+        page.locator(
+          ".message.user-message:visible:not(.pending):not(.meta-message)",
+          { hasText: "assistant-undo-selected" },
+        ),
+      ).toBeVisible();
+      await expect(assistantText(page, "assistant-undo-selected")).toHaveCount(
+        0,
+      );
+      await assertTurnPresence(page, ["assistant-undo-later"], false);
+    }).toPass();
+    await sendMessage(page, 'Please reply with "assistant-undo-follow-up"');
+    await expect(assistantText(page, "assistant-undo-follow-up")).toBeVisible({
+      timeout,
+    });
   },
 );
 

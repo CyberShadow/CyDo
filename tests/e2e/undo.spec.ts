@@ -164,7 +164,7 @@ test(
 
 test(
   "offline assistant undo retains its prompt",
-  { tag: "@claude-only" },
+  { tag: "@no-codex" },
   async ({ page, agentType }) => {
     const prompt = "ASSISTANT_UNDO_PROMPT";
     const selected = "ASSISTANT_UNDO_SELECTED";

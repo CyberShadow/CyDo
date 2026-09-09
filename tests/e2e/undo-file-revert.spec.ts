@@ -17,6 +17,53 @@ test(
     const secondContent = "selected checkpoint state";
     const thirdContent = "third checkpoint state";
     const fourthContent = "conversation only state";
+    const liveFile = `${backend.wsDir}/undo-live-revert-test.txt`;
+    const livePrevious = "live predecessor state";
+    const liveSelected = "live selected state";
+
+    await enterSession(page);
+    await sendMessage(
+      page,
+      `create file ${liveFile} with content ${livePrevious}`,
+    );
+    await expect(assistantText(page, "Done.")).toBeVisible();
+    await sendMessage(
+      page,
+      `create file ${liveFile} with content ${liveSelected}`,
+    );
+    await expect(assistantText(page, "Done.")).toHaveCount(2);
+    const liveCheckpointUser = page
+      .locator(".message-wrapper", {
+        has: page.locator(".user-message", { hasText: liveSelected }),
+      })
+      .last();
+    await liveCheckpointUser.hover();
+    const liveUndo = liveCheckpointUser.locator(".undo-btn");
+    await expect(liveUndo).toHaveAttribute(
+      "title",
+      "Undo this message and later history, restoring its prompt to the composer (file checkpoint available)",
+    );
+    await liveUndo.click();
+    const dialog = page.locator(".undo-dialog");
+    await expect(dialog).toBeVisible();
+    const revertConversation = dialog.getByLabel("Revert conversation history");
+    const revertFiles = dialog.getByLabel("Revert file changes");
+    await revertConversation.uncheck();
+    await expect(revertFiles).toBeEnabled();
+    await expect(revertFiles).toBeChecked();
+    await dialog.locator(".btn-undo").click();
+    await expect(page.locator(".undo-result-banner")).toBeVisible();
+    expect(readFileSync(liveFile, "utf8").trimEnd()).toBe(livePrevious);
+    await expect(
+      page.locator(".message.user-message:not(.pending)", {
+        hasText: liveSelected,
+      }),
+    ).toBeVisible();
+    await expect(assistantText(page, "Done.")).toHaveCount(2);
+    await sendMessage(page, 'Please reply with "live-file-revert-follow-up"');
+    await expect(
+      assistantText(page, "live-file-revert-follow-up"),
+    ).toBeVisible();
 
     await enterSession(page);
     await sendMessage(

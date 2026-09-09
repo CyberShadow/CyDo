@@ -24,6 +24,7 @@ import {
   visibleHistory,
   installCydoE2eBridge,
   forkThroughBridge,
+  codexRolloutRecords,
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 
@@ -57,9 +58,7 @@ async function waitForNewTid(
 
 async function resumeIfNeeded(page: Parameters<typeof sendMessage>[0]) {
   const resumeBtn = page.locator(".btn-banner-resume:visible").first();
-  const visible = await resumeBtn
-    .isVisible()
-    .catch(() => false);
+  const visible = await resumeBtn.isVisible().catch(() => false);
   if (visible) {
     await resumeBtn.click();
   }
@@ -87,6 +86,19 @@ function activeAssistantText(
       hasText: text,
     })
     .last();
+}
+
+async function activePersistedMessages(page: Page) {
+  return page
+    .locator(
+      "[style*='display: contents'] .message.user-message:not(.pending):not(.meta-message), [style*='display: contents'] .assistant-message",
+    )
+    .evaluateAll((messages) =>
+      messages.map((message) => ({
+        role: message.classList.contains("user-message") ? "user" : "assistant",
+        text: (message.textContent ?? "").trimEnd(),
+      })),
+    );
 }
 
 function messageWrapper(page: Page, selector: string, text: string) {
@@ -122,16 +134,32 @@ test(
   "codex fork from older turn truncates later history and isolates branches",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
+    await installCydoE2eBridge(page);
     const taskCreatedEvents: Array<{
       tid: number;
       parent_tid?: number;
       relation_type?: string;
     }> = [];
+    const frames: any[] = [];
+    const frameWaiters: Array<{
+      predicate: (frame: any) => boolean;
+      resolve: (frame: any) => void;
+    }> = [];
+    const nextFrame = (predicate: (frame: any) => boolean) =>
+      new Promise<any>((resolve) => frameWaiters.push({ predicate, resolve }));
 
     page.on("websocket", (ws) => {
       ws.on("framereceived", (event) => {
         try {
           const data = JSON.parse(event.payload.toString());
+          frames.push(data);
+          for (let index = frameWaiters.length - 1; index >= 0; index--) {
+            const waiter = frameWaiters[index];
+            if (waiter.predicate(data)) {
+              frameWaiters.splice(index, 1);
+              waiter.resolve(data);
+            }
+          }
           if (data.type === "task_created") {
             taskCreatedEvents.push({
               tid: data.tid,
@@ -144,6 +172,27 @@ test(
         }
       });
     });
+
+    const isCanonicalUserBoundary = (frame: any, tid: number, prompt: string) =>
+      frame?.type === "task_history_boundary_replaced" &&
+      frame?.tid === tid &&
+      frame?.event?.type === "item/started" &&
+      frame?.event?.item_type === "user_message" &&
+      !frame?.event?.pending &&
+      !frame?.event?.is_meta &&
+      !frame?.event?.is_synthetic &&
+      !frame?.event?.is_sidechain &&
+      Array.isArray(frame?.event?.content) &&
+      frame.event.content.length === 1 &&
+      frame.event.content[0]?.type === "text" &&
+      frame.event.content[0]?.text === prompt &&
+      frame?.event?.history_boundary?.kind === "user";
+    const isSuccessfulTurn = (frame: any, tid: number) =>
+      frame?.tid === tid &&
+      frame?.event?.type === "turn/result" &&
+      frame?.event?.subtype === "success";
+    const isHistoryEnd = (frame: any, tid: number) =>
+      frame?.type === "task_history_end" && frame?.tid === tid;
 
     const turnOne = "FORK_OLD_TURN_ONE";
     const turnTwo = "FORK_OLD_TURN_TWO";
@@ -255,6 +304,97 @@ test(
         },
       ),
     ).toHaveCount(0);
+
+    await enterSession(page);
+    const userBefore = await snapshotTids(page);
+    const offlineUser = "FORK_OFFLINE_USER";
+    const offlineResponse = "FORK_OFFLINE_USER_RESPONSE";
+    const offlineTail = "FORK_OFFLINE_USER_TAIL";
+    await sendMessage(page, `Reply exactly with ${turnOne}`);
+    const offlineParentTid = await waitForNewTid(page, userBefore);
+    await expect(activeAssistantText(page, turnOne)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    const offlinePrompt = `Reply exactly with ${offlineResponse}. Marker ${offlineUser}`;
+    const offlineFrameStart = frames.length;
+    const offlineCanonical = nextFrame((frame) =>
+      isCanonicalUserBoundary(frame, Number(offlineParentTid), offlinePrompt),
+    );
+    const offlineTurnComplete = nextFrame((frame) =>
+      isSuccessfulTurn(frame, Number(offlineParentTid)),
+    );
+    await sendMessage(page, offlinePrompt);
+    await expect(activeAssistantText(page, offlineResponse)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    await Promise.all([offlineCanonical, offlineTurnComplete]);
+    await sendMessage(page, `Reply exactly with ${offlineTail}`);
+    await expect(activeAssistantText(page, offlineTail)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    await killSession(page, agentType);
+    const offlineSetupHistoryEnd = nextFrame((frame) =>
+      isHistoryEnd(frame, Number(offlineParentTid)),
+    );
+    await page.reload();
+    await offlineSetupHistoryEnd;
+    const offlineParentHistory = await activePersistedMessages(page);
+    const offlineTids = await snapshotTids(page);
+    const taskCreatedBeforeUnsupported = taskCreatedEvents.length;
+    const offlineUserMessage = messageWrapper(
+      page,
+      ".user-message",
+      offlineUser,
+    );
+    await offlineUserMessage.hover();
+    await expect(offlineUserMessage.locator(".fork-btn")).toHaveCount(0);
+    const userBoundaries = frames
+      .slice(offlineFrameStart)
+      .filter((frame) =>
+        isCanonicalUserBoundary(frame, Number(offlineParentTid), offlinePrompt),
+      );
+    expect(userBoundaries).toHaveLength(1);
+    const offlineUserAnchor = userBoundaries[0].event.history_boundary.anchor;
+    expect(offlineUserAnchor).toMatch(/^line:\d+$/);
+    const offlineRollout = codexRolloutRecords(Number(offlineParentTid));
+    await forkThroughBridge(page, Number(offlineParentTid), offlineUserAnchor!);
+    const forkError = page.locator(".command-error-dialog");
+    await expect(forkError).toContainText(
+      "Fork failed: message UUID not found in task history",
+    );
+    await forkError.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page).toHaveURL(new RegExp(`/task/${offlineParentTid}$`));
+    await expect(activeAssistantText(page, offlineTail)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    expect(
+      taskCreatedEvents
+        .slice(taskCreatedBeforeUnsupported)
+        .filter(
+          (event) =>
+            event.parent_tid === Number(offlineParentTid) &&
+            event.relation_type === "fork",
+        ),
+    ).toHaveLength(0);
+    expect(await snapshotTids(page)).toEqual(offlineTids);
+    expect(await activePersistedMessages(page)).toEqual(offlineParentHistory);
+    expect(codexRolloutRecords(Number(offlineParentTid))).toEqual(
+      offlineRollout,
+    );
+    const offlineFinalHistoryEnd = nextFrame((frame) =>
+      isHistoryEnd(frame, Number(offlineParentTid)),
+    );
+    await page.reload();
+    await offlineFinalHistoryEnd;
+    await expect(page).toHaveURL(new RegExp(`/task/${offlineParentTid}$`));
+    await expect(activeAssistantText(page, offlineTail)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    expect(await snapshotTids(page)).toEqual(offlineTids);
+    expect(await activePersistedMessages(page)).toEqual(offlineParentHistory);
+    expect(codexRolloutRecords(Number(offlineParentTid))).toEqual(
+      offlineRollout,
+    );
   },
 );
 
@@ -701,20 +841,18 @@ async function findRolloutJsonlContaining(
   const sessionsDir = join(root, "sessions");
   let found: string | undefined;
   await expect
-    .poll(
-      () => {
-        const matches: string[] = [];
-        for (const full of listRolloutFiles(sessionsDir)) {
-          try {
-            if (readFileSync(full, "utf8").includes(marker)) matches.push(full);
-          } catch {
-            // file may be mid-write; retry on next poll
-          }
+    .poll(() => {
+      const matches: string[] = [];
+      for (const full of listRolloutFiles(sessionsDir)) {
+        try {
+          if (readFileSync(full, "utf8").includes(marker)) matches.push(full);
+        } catch {
+          // file may be mid-write; retry on next poll
         }
-        found = matches.length === 1 ? matches[0] : undefined;
-        return matches.length;
-      },
-    )
+      }
+      found = matches.length === 1 ? matches[0] : undefined;
+      return matches.length;
+    })
     .toBe(1);
   return found!;
 }
@@ -796,6 +934,7 @@ codexProfileTest(
   { tag: "@codex-only" },
   async ({ page, profileBackend }) => {
     const parentMarker = "ac23-fork-parent-marker";
+    const laterMarker = "ac23-fork-later-marker";
     const childMarker = "ac23-fork-child-marker";
     const parentPoisonMarker = "ac23-fork-a-parent-poison-marker";
     const childPoisonMarker = "ac23-fork-a-child-poison-marker";
@@ -807,6 +946,10 @@ codexProfileTest(
     await sendMessage(page, `Reply exactly with ${parentMarker}`);
     const parentTid = await waitForNewTid(page, before);
     await expect(activeAssistantText(page, parentMarker)).toBeVisible({
+      timeout,
+    });
+    await sendMessage(page, `Reply exactly with ${laterMarker}`);
+    await expect(activeAssistantText(page, laterMarker)).toBeVisible({
       timeout,
     });
 
@@ -849,6 +992,7 @@ codexProfileTest(
     // fully render before probing for the banner below — mirrors the
     // existing fork test's settle-then-resume ordering.
     await expect(activeAssistantText(page, parentMarker)).toBeVisible();
+    await expect(activeAssistantText(page, laterMarker)).toHaveCount(0);
 
     // Fork materializes the child dead (thread/fork mints the thread on the
     // parent's own live process, but the child task itself still needs a

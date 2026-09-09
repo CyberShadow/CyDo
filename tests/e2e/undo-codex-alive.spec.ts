@@ -23,7 +23,10 @@ import {
   responseTimeout,
   visibleHistory,
   installCydoE2eBridge,
-  undoThroughBridge, currentTaskTid, codexRolloutRecords, expectUndoRefusalForUserMessage, // One line on purpose: check attribute names are pinned to test() line numbers.
+  undoThroughBridge,
+  currentTaskTid,
+  codexRolloutRecords,
+  expectUndoRefusalForUserMessage, // One line on purpose: check attribute names are pinned to test() line numbers.
 } from "./fixtures";
 import type { Page } from "@playwright/test";
 
@@ -34,7 +37,10 @@ async function activeTid(page: Page): Promise<number> {
     .catch(() => null);
   if (tid !== null) return Number(tid);
   return Number(
-    await page.locator(".sidebar-item[data-tid]").last().getAttribute("data-tid"),
+    await page
+      .locator(".sidebar-item[data-tid]")
+      .last()
+      .getAttribute("data-tid"),
   );
 }
 
@@ -72,13 +78,12 @@ async function openUndoDialogForUserMessage(
   );
   const commandError = page.locator(".command-error-dialog:visible");
   await expect
-    .poll(
-      async () =>
-        (await commandError.count()) > 0
-          ? "error"
-          : (await confirmation.count()) > 0
-            ? "confirmation"
-            : "pending",
+    .poll(async () =>
+      (await commandError.count()) > 0
+        ? "error"
+        : (await confirmation.count()) > 0
+          ? "confirmation"
+          : "pending",
     )
     .not.toBe("pending");
   if ((await commandError.count()) > 0)
@@ -186,21 +191,18 @@ test(
 
     const rollbackFrames = () => frames.slice(rollbackFrameStart);
     await expect
-      .poll(
-        () => {
-          const reloads = rollbackFrames().filter(
-            (frame) => frame?.type === "task_reload",
-          );
-          const reloadIdx = rollbackFrames().findIndex(
-            (frame) => frame?.type === "task_reload",
-          );
-          const historyEndIdx = rollbackFrames().findIndex(
-            (frame, idx) =>
-              idx > reloadIdx && frame?.type === "task_history_end",
-          );
-          return reloads.length === 1 && historyEndIdx > reloadIdx;
-        },
-      )
+      .poll(() => {
+        const reloads = rollbackFrames().filter(
+          (frame) => frame?.type === "task_reload",
+        );
+        const reloadIdx = rollbackFrames().findIndex(
+          (frame) => frame?.type === "task_reload",
+        );
+        const historyEndIdx = rollbackFrames().findIndex(
+          (frame, idx) => idx > reloadIdx && frame?.type === "task_history_end",
+        );
+        return reloads.length === 1 && historyEndIdx > reloadIdx;
+      })
       .toBe(true);
     expect(
       rollbackFrames().findIndex((frame) => frame?.type === "task_history_end"),
@@ -211,12 +213,11 @@ test(
     // Send a follow-up message to confirm the session is fully functional.
     await sendMessage(page, 'Please reply with "alive-six"');
     await expect
-      .poll(
-        () =>
-          rollbackFrames().some(
-            (frame) =>
-              typeof frame?.agentAck === "string" && frame.agentAck.length > 0,
-          ),
+      .poll(() =>
+        rollbackFrames().some(
+          (frame) =>
+            typeof frame?.agentAck === "string" && frame.agentAck.length > 0,
+        ),
       )
       .toBe(true);
     await expect(assistantText(page, "alive-six")).toBeVisible();
@@ -415,9 +416,13 @@ test(
     await expectUndoRequestRejected(page, tid, "line:999999", true, false);
     await expectUndoRequestRejected(page, tid, "line:999999", false, true);
 
-    await expect.poll(() => frames.slice(frameStart).filter(
-      (frame) => frame?.type === "error",
-    ).length).toBe(2);
+    await expect
+      .poll(
+        () =>
+          frames.slice(frameStart).filter((frame) => frame?.type === "error")
+            .length,
+      )
+      .toBe(2);
     expect(
       frames
         .slice(frameStart)
@@ -428,12 +433,14 @@ test(
       { tid, message: "UUID not found in task history" },
     ]);
     expect(
-      frames.slice(frameStart).some(
-        (frame) =>
-          frame?.type === "undo_preview" ||
-          frame?.type === "undo_result" ||
-          frame?.type === "task_reload",
-      ),
+      frames
+        .slice(frameStart)
+        .some(
+          (frame) =>
+            frame?.type === "undo_preview" ||
+            frame?.type === "undo_result" ||
+            frame?.type === "task_reload",
+        ),
     ).toBe(false);
     expect(await visibleHistory(page)).toEqual(history);
     expect(readFileSync(testFile, "utf8").trimEnd()).toBe(fileContent);
@@ -501,19 +508,17 @@ test(
     await undoUserMessage(page, `Reply exactly with ${rolledBack}`);
     await expect(assistantText(page, rolledBack)).toHaveCount(0);
     await expect
-      .poll(
-        () =>
-          frames
-            .slice(rollbackFrameStart)
-            .some((frame) => frame?.type === "undo_result"),
+      .poll(() =>
+        frames
+          .slice(rollbackFrameStart)
+          .some((frame) => frame?.type === "undo_result"),
       )
       .toBe(true);
     await expect
-      .poll(
-        () =>
-          frames
-            .slice(rollbackFrameStart)
-            .some((frame) => frame?.type === "task_reload"),
+      .poll(() =>
+        frames
+          .slice(rollbackFrameStart)
+          .some((frame) => frame?.type === "task_reload"),
       )
       .toBe(true);
     // Reload from the canonical active boundary set before replaying the old
@@ -525,9 +530,13 @@ test(
     const frameStart = frames.length;
 
     await expectUndoRequestRejected(page, tid, staleAnchor, false, true);
-    await expect.poll(() => frames.slice(frameStart).filter(
-      (frame) => frame?.type === "error",
-    ).length).toBe(1);
+    await expect
+      .poll(
+        () =>
+          frames.slice(frameStart).filter((frame) => frame?.type === "error")
+            .length,
+      )
+      .toBe(1);
     expect(
       frames
         .slice(frameStart)
@@ -535,12 +544,14 @@ test(
         .map((frame) => ({ tid: frame.tid, message: frame.message })),
     ).toEqual([{ tid, message: "UUID not found in task history" }]);
     expect(
-      frames.slice(frameStart).some(
-        (frame) =>
-          frame?.type === "undo_preview" ||
-          frame?.type === "undo_result" ||
-          frame?.type === "task_reload",
-      ),
+      frames
+        .slice(frameStart)
+        .some(
+          (frame) =>
+            frame?.type === "undo_preview" ||
+            frame?.type === "undo_result" ||
+            frame?.type === "task_reload",
+        ),
     ).toBe(false);
     expect(await visibleHistory(page)).toEqual(history);
     await page.reload();
@@ -557,6 +568,14 @@ test(
   "codex second live undo after an interrupted turn retains earlier history",
   { tag: "@codex-only" },
   async ({ page }) => {
+    const frames: any[] = [];
+    page.on("websocket", (ws) =>
+      ws.on("framereceived", (event) => {
+        try {
+          frames.push(JSON.parse(event.payload.toString()));
+        } catch {}
+      }),
+    );
     await enterSession(page);
 
     // The small Codex model uses the v1 interrupted-turn history marker, which
@@ -615,18 +634,17 @@ test(
 
     const tid = currentTaskTid(page);
     await expect
-      .poll(
-        () =>
-          codexRolloutRecords(tid).some(
-            (record) =>
-              record.type === "response_item" &&
-              record.payload?.type === "message" &&
-              record.payload?.role === "user" &&
-              (record.payload?.content ?? [])
-                .map((part: any) => part?.text ?? "")
-                .join("")
-                .includes("<turn_aborted>"),
-          ),
+      .poll(() =>
+        codexRolloutRecords(tid).some(
+          (record) =>
+            record.type === "response_item" &&
+            record.payload?.type === "message" &&
+            record.payload?.role === "user" &&
+            (record.payload?.content ?? [])
+              .map((part: any) => part?.text ?? "")
+              .join("")
+              .includes("<turn_aborted>"),
+        ),
       )
       .toBe(true);
 
@@ -667,15 +685,14 @@ test(
     });
 
     await expect
-      .poll(
-        () =>
-          codexRolloutRecords(tid)
-            .filter(
-              (record) =>
-                record.type === "event_msg" &&
-                record.payload?.type === "thread_rolled_back",
-            )
-            .map((record) => record.payload.num_turns),
+      .poll(() =>
+        codexRolloutRecords(tid)
+          .filter(
+            (record) =>
+              record.type === "event_msg" &&
+              record.payload?.type === "thread_rolled_back",
+          )
+          .map((record) => record.payload.num_turns),
       )
       .toEqual([1, 3]);
   },
@@ -754,9 +771,12 @@ test(
     await expect(remainingWrapper.locator(".undo-btn")).toBeVisible();
 
     await expect(
-      page.locator(".message.user-message:visible:not(.pending):not(.meta-message)", {
-        hasText: "dup-first",
-      }),
+      page.locator(
+        ".message.user-message:visible:not(.pending):not(.meta-message)",
+        {
+          hasText: "dup-first",
+        },
+      ),
     ).toBeVisible();
     await expect(assistantText(page, "dup-first")).toBeVisible();
 
@@ -767,24 +787,26 @@ test(
         const clientIds = codexRolloutRecords(tid)
           .filter(
             (record) =>
-              record.type === "event_msg" && record.payload?.type === "user_message",
+              record.type === "event_msg" &&
+              record.payload?.type === "user_message",
           )
           .map((record) => record.payload?.client_id)
-          .filter((clientId) => typeof clientId === "string" && clientId.length > 0);
+          .filter(
+            (clientId) => typeof clientId === "string" && clientId.length > 0,
+          );
         return { count: clientIds.length, distinct: new Set(clientIds).size };
       })
       .toEqual({ count: 2, distinct: 2 });
 
     await expect
-      .poll(
-        () =>
-          codexRolloutRecords(tid)
-            .filter(
-              (record) =>
-                record.type === "event_msg" &&
-                record.payload?.type === "thread_rolled_back",
-            )
-            .map((record) => record.payload.num_turns),
+      .poll(() =>
+        codexRolloutRecords(tid)
+          .filter(
+            (record) =>
+              record.type === "event_msg" &&
+              record.payload?.type === "thread_rolled_back",
+          )
+          .map((record) => record.payload.num_turns),
       )
       .toEqual([1]);
 
@@ -829,9 +851,12 @@ test(
     await sendMessage(page, 'Also please reply with "steer-marker"');
 
     await expect(
-      page.locator(".message.user-message:visible:not(.pending):not(.meta-message)", {
-        hasText: "steer-marker",
-      }),
+      page.locator(
+        ".message.user-message:visible:not(.pending):not(.meta-message)",
+        {
+          hasText: "steer-marker",
+        },
+      ),
     ).toBeVisible();
     await expect(page.locator(".btn-stop:visible")).toHaveCount(0);
 
@@ -1132,20 +1157,18 @@ async function findRolloutJsonlContaining(
   const sessionsDir = join(root, "sessions");
   let found: string | undefined;
   await expect
-    .poll(
-      () => {
-        const matches: string[] = [];
-        for (const full of listRolloutFiles(sessionsDir)) {
-          try {
-            if (readFileSync(full, "utf8").includes(marker)) matches.push(full);
-          } catch {
-            // file may be mid-write; retry on next poll
-          }
+    .poll(() => {
+      const matches: string[] = [];
+      for (const full of listRolloutFiles(sessionsDir)) {
+        try {
+          if (readFileSync(full, "utf8").includes(marker)) matches.push(full);
+        } catch {
+          // file may be mid-write; retry on next poll
         }
-        found = matches.length === 1 ? matches[0] : undefined;
-        return matches.length;
-      },
-    )
+      }
+      found = matches.length === 1 ? matches[0] : undefined;
+      return matches.length;
+    })
     .toBe(1);
   return found!;
 }
@@ -1301,9 +1324,9 @@ codexProfileTest(
     expect(
       readFileSync(join(profileBackend.backendProfileA, relPath), "utf8"),
     ).toBe(poisonAContent);
-    expect(
-      readFileSync(join(profileBackend.profileC, relPath), "utf8"),
-    ).toBe(poisonCContent);
+    expect(readFileSync(join(profileBackend.profileC, relPath), "utf8")).toBe(
+      poisonCContent,
+    );
 
     // Session is still alive and fully functional after the rollback, and
     // its follow-up turn lands in the very same B rollout file, not a new
@@ -1319,8 +1342,8 @@ codexProfileTest(
     expect(
       readFileSync(join(profileBackend.backendProfileA, relPath), "utf8"),
     ).toBe(poisonAContent);
-    expect(
-      readFileSync(join(profileBackend.profileC, relPath), "utf8"),
-    ).toBe(poisonCContent);
+    expect(readFileSync(join(profileBackend.profileC, relPath), "utf8")).toBe(
+      poisonCContent,
+    );
   },
 );

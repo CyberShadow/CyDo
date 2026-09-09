@@ -8,6 +8,19 @@ import {
   assistantText,
 } from "./fixtures";
 
+async function activeHistory(page: import("@playwright/test").Page) {
+  return page
+    .locator("[style*='display: contents'] .message-wrapper")
+    .evaluateAll((wrappers) =>
+      wrappers
+        .filter((wrapper) =>
+          wrapper.querySelector(".message:not(.meta-message)"),
+        )
+        .map((wrapper) => (wrapper.textContent ?? "").trimEnd())
+        .filter((text) => text.length > 0),
+    );
+}
+
 test("sidebar status dot reflects session state", async ({
   page,
   agentType,
@@ -33,33 +46,33 @@ test("sidebar status dot reflects session state", async ({
   await expect(sidebarItem.locator(".task-type-icon.failed")).toBeVisible();
 });
 
-test("multi-client navigation isolation", { tag: "@no-codex" }, async ({
-  page,
-  agentType,
-  context,
-}) => {
-  const pageA = page;
-  const pageB = await context.newPage();
+test(
+  "multi-client navigation isolation",
+  { tag: "@no-codex" },
+  async ({ page, agentType, context }) => {
+    const pageA = page;
+    const pageB = await context.newPage();
 
-  await enterSession(pageA);
-  await enterSession(pageB);
+    await enterSession(pageA);
+    await enterSession(pageB);
 
-  await sendMessage(pageA, 'Please reply with "isolation-a"');
+    await sendMessage(pageA, 'Please reply with "isolation-a"');
 
-  await expect(
-    pageA.locator(".message.user-message", { hasText: "isolation-a" }),
-  ).toBeVisible();
+    await expect(
+      pageA.locator(".message.user-message", { hasText: "isolation-a" }),
+    ).toBeVisible();
 
-  await expect(
-    pageB.locator(".message.user-message", { hasText: "isolation-a" }),
-  ).not.toBeVisible();
+    await expect(
+      pageB.locator(".message.user-message", { hasText: "isolation-a" }),
+    ).not.toBeVisible();
 
-  await expect(
-    pageB.locator(".sidebar-item .sidebar-label", { hasText: "isolation-a" }),
-  ).toBeVisible();
+    await expect(
+      pageB.locator(".sidebar-item .sidebar-label", { hasText: "isolation-a" }),
+    ).toBeVisible();
 
-  await pageB.close();
-});
+    await pageB.close();
+  },
+);
 
 test("auto-scroll stays at bottom for new messages", async ({
   page,
@@ -92,7 +105,7 @@ test("tool result with Bash output renders correctly", async ({
 
   await expect(
     page.locator(".tool-result", { hasText: "tool-result-test" }),
-  ).toBeVisible({ timeout: responseTimeout(agentType)});
+  ).toBeVisible({ timeout: responseTimeout(agentType) });
 
   // Tool subtitle only present for Claude (description field)
   if (agentType === "claude") {
@@ -125,7 +138,10 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   await expect(assistantText(page, "fork-source")).toBeVisible({
     timeout: responseTimeout(agentType),
   });
-
+  await sendMessage(page, 'Please reply with "fork-tail"');
+  await expect(assistantText(page, "fork-tail")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
   if (agentType === "codex" || agentType === "copilot") {
     // Codex/Copilot: kill and reload so JSONL is finalized and fork buttons appear
     await killSession(page, agentType);
@@ -142,6 +158,24 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
     }),
   });
   await expect(metaUserMsg).toHaveCount(0);
+
+  if (agentType === "claude") {
+    await expect(async () => {
+      const completedTurns = frames.filter(
+        (frame) =>
+          frame?.type === "task_history_boundary_replaced" &&
+          frame?.event?.history_boundary?.kind === "agent_turn",
+      );
+      expect(completedTurns).toHaveLength(3);
+    }).toPass();
+  }
+
+  const parentHistory = await activeHistory(page);
+
+  const parentTid = await page
+    .locator(".sidebar-item.active[data-tid]")
+    .getAttribute("data-tid");
+  expect(parentTid).toBeTruthy();
 
   const userMsg = page.locator(".message-wrapper").filter({
     has: page.locator(
@@ -202,10 +236,63 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
   });
   await expect(forkSidebarItem).toBeVisible();
 
-  // Use :visible to avoid strict mode violation from multiple resume buttons (codex sessions)
   await expect(
-    page.locator(".btn-banner-resume:visible").first(),
+    page.locator(".message.user-message:visible", {
+      hasText: "fork-bootstrap",
+    }),
   ).toBeVisible();
+  await expect(
+    page.locator(".message.user-message:visible", { hasText: "fork-source" }),
+  ).toBeVisible();
+  await expect(assistantText(page, "fork-source")).toHaveCount(0);
+  await expect(
+    page.locator(".message.user-message:visible", { hasText: "fork-tail" }),
+  ).toHaveCount(0);
+  await expect(assistantText(page, "fork-tail")).toHaveCount(0);
+
+  if (agentType === "claude") {
+    await expect(
+      page.locator(".btn-banner-resume:visible").first(),
+    ).toBeVisible();
+  }
+
+  const parentItem = page.locator(`.sidebar-item[data-tid="${parentTid}"]`);
+  await parentItem.click();
+  await expect(assistantText(page, "fork-tail")).toBeVisible({
+    timeout: responseTimeout(agentType),
+  });
+  expect(await activeHistory(page)).toEqual(parentHistory);
+
+  if (agentType === "claude") {
+    await page.locator("[style*='display: contents'] .btn-banner-stop").click();
+    await expect(
+      page.locator("[style*='display: contents'] .btn-banner-archive"),
+    ).toBeVisible();
+    await page.reload();
+    await expect(assistantText(page, "fork-tail")).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    const repeatSource = page.locator(
+      "[style*='display: contents'] .message-wrapper",
+      {
+        has: page.locator(
+          ".message.user-message:not(.meta-message):not(.system-user-message):not(.pending)",
+          { hasText: "fork-source" },
+        ),
+      },
+    );
+    await expect(repeatSource).toHaveCount(1);
+    await repeatSource.hover();
+    const repeatFork = repeatSource.locator(".fork-btn");
+    await expect(repeatFork).toBeVisible();
+    await repeatFork.click();
+    await expect(forkSidebarItem).toBeVisible();
+    await expect(
+      page.locator(".message.user-message:visible", { hasText: "fork-source" }),
+    ).toBeVisible();
+    await expect(assistantText(page, "fork-source")).toHaveCount(0);
+    await expect(assistantText(page, "fork-tail")).toHaveCount(0);
+  }
 });
 
 test("assistant messages do not render literal undefined", async ({
