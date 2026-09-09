@@ -351,6 +351,16 @@ test(
         hasText: prompt,
       }),
     ).toBeVisible();
+    await expect
+      .poll(() =>
+        codexRolloutRecords(currentTaskTid(page)).some(
+          (record) =>
+            record.type === "event_msg" &&
+            record.payload?.type === "agent_message" &&
+            record.payload?.message === response,
+        ),
+      )
+      .toBe(false);
 
     await page.reload();
     for (const marker of ["CODEX_ROLLBACK_DEAD", response, later]) {

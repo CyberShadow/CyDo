@@ -397,6 +397,142 @@ int countActiveFallbackRecordsFromBoundary(string content, string anchor)
 	return -1;
 }
 
+/// The user-facing assistant boundary is the response item, but a JSONL
+/// fallback cuts at whichever projection comes first so it removes its native
+/// agent event as well.
+string resolveCodexFallbackUndoAnchor(string content,
+	PersistedHistoryBoundaryKind kind, string anchor)
+{
+	if (kind != PersistedHistoryBoundaryKind.agent_turn)
+		return anchor;
+	import std.conv : to;
+	import std.string : startsWith;
+	if (!anchor.startsWith("line:"))
+		return null;
+	int targetLine;
+	try targetLine = to!int(anchor[5 .. $]);
+	catch (Exception) return null;
+	auto scan = scanRollout(content);
+	RolloutLineEvidence target;
+	int targetIndex = -1;
+	foreach (i, ref line; scan.lines)
+		if (line.lineNumber == targetLine)
+		{
+			target = line;
+			targetIndex = cast(int)i;
+			break;
+		}
+	if (targetIndex < 0 || !target.probe.isAssistantMessage || !target.contentKnown
+		|| target.contentText.length == 0)
+		return null;
+	NativeRolloutSegment* segment;
+	foreach (ref candidate; scan.nativeSegments)
+		if (candidate.start <= cast(size_t)targetIndex
+			&& cast(size_t)targetIndex < candidate.end)
+		{
+			if (segment !is null)
+				return null;
+			segment = &candidate;
+		}
+	if (segment is null)
+		return null;
+	int matchedLine;
+	foreach (i; segment.start .. segment.end)
+	{
+		auto line = scan.lines[i];
+		if (isExactNativeAgentEvent(line) && line.eventMessage == target.contentText)
+		{
+			if (matchedLine > 0)
+				return null;
+			matchedLine = line.lineNumber;
+		}
+	}
+	return matchedLine > 0
+		? "line:" ~ to!string(targetLine < matchedLine ? targetLine : matchedLine)
+		: null;
+}
+
+unittest
+{
+	string submitted(string turnId, string answer, bool assistantFirst = false,
+		string telemetry = null)
+	{
+		auto started = `{"type":"event_msg","payload":{"type":"task_started","turn_id":"`
+			~ turnId ~ `","started_at":1,"model_context_window":1,"collaboration_mode_kind":"default"}}`;
+		auto user = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"prompt"}],"internal_chat_message_metadata_passthrough":{"turn_id":"`
+			~ turnId ~ `"}}}`;
+		auto userEvent = `{"type":"event_msg","payload":{"type":"user_message","client_id":"client-`
+			~ turnId ~ `","message":"prompt","images":[],"local_images":[],"text_elements":[]}}`;
+		auto agent = `{"type":"event_msg","payload":{"type":"agent_message","message":"`
+			~ answer ~ `","phase":null,"memory_citation":null}}`;
+		auto assistant = `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"`
+			~ answer ~ `"}],"internal_chat_message_metadata_passthrough":{"turn_id":"`
+			~ turnId ~ `"},"id":"assistant-` ~ turnId ~ `"}}`;
+		auto complete = `{"type":"event_msg","payload":{"type":"task_complete","turn_id":"`
+			~ turnId ~ `","last_agent_message":"` ~ answer
+			~ `","completed_at":1,"duration_ms":1,"time_to_first_token_ms":1}}`;
+		string[] records = [started, user, userEvent];
+		if (assistantFirst) records ~= assistant; else records ~= agent;
+		if (telemetry !is null) records ~= telemetry;
+		if (assistantFirst) records ~= agent; else records ~= assistant;
+		records ~= complete;
+		import std.array : join;
+		return records.join("\n");
+	}
+
+	auto normal = submitted("normal", "answer");
+	assert(resolveCodexFallbackUndoAnchor(normal,
+		PersistedHistoryBoundaryKind.agent_turn, "line:5") == "line:4");
+	assert(resolveCodexFallbackUndoAnchor(normal,
+		PersistedHistoryBoundaryKind.user, "line:2") == "line:2");
+	assert(resolveCodexFallbackUndoAnchor(normal,
+		PersistedHistoryBoundaryKind.agent_turn, "line:1") is null);
+	assert(resolveCodexFallbackUndoAnchor(normal,
+		PersistedHistoryBoundaryKind.agent_turn, "line:99") is null);
+	assert(resolveCodexFallbackUndoAnchor(normal,
+		PersistedHistoryBoundaryKind.agent_turn, "not-a-line") is null);
+
+	// Both observed response/event projections remain valid with their
+	// pre-terminal token telemetry; the fallback anchor selects the earlier
+	// projection so truncation removes both.
+	auto telemetry = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":0,"total_tokens":62},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":6494},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}}`;
+	foreach (assistantFirst; [false, true])
+	{
+		auto projected = submitted(assistantFirst ? "first" : "last", "telemetry",
+			assistantFirst, telemetry);
+		auto scan = scanRollout(projected);
+		assert(scan.nativeSegments.length == 1);
+		auto target = assistantFirst ? "line:4" : "line:6";
+		auto native = assistantFirst ? "line:6" : "line:4";
+		import std.algorithm : min;
+		auto expected = min(target, native);
+		assert(resolveCodexFallbackUndoAnchor(projected,
+			PersistedHistoryBoundaryKind.agent_turn, target)
+			== expected);
+	}
+
+	// A visible assistant record without a complete, corroborated lifecycle
+	// cannot authorize deletion of a coincidental native event.
+	auto uncorroborated = `{"type":"event_msg","payload":{"type":"agent_message","message":"answer","phase":null,"memory_citation":null}}\n`
+		~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}`;
+	assert(resolveCodexFallbackUndoAnchor(uncorroborated,
+		PersistedHistoryBoundaryKind.agent_turn, "line:2") is null);
+
+	// Matching twice in the selected lifecycle is ambiguous and fails closed.
+	auto duplicate = submitted("duplicate", "answer");
+	import std.string : replace;
+	duplicate = duplicate.replace(`{"type":"response_item","payload":{"type":"message","role":"assistant"`,
+		`{"type":"event_msg","payload":{"type":"agent_message","message":"answer","phase":null,"memory_citation":null}}\n{"type":"response_item","payload":{"type":"message","role":"assistant"`);
+	assert(resolveCodexFallbackUndoAnchor(duplicate,
+		PersistedHistoryBoundaryKind.agent_turn, "line:6") is null);
+
+	// Equal assistant text in an earlier completed lifecycle does not make the
+	// later response ambiguous: segment membership selects its own event.
+	auto repeated = submitted("earlier", "same") ~ "\n" ~ submitted("later", "same");
+	assert(resolveCodexFallbackUndoAnchor(repeated,
+		PersistedHistoryBoundaryKind.agent_turn, "line:11") == "line:10");
+}
+
 /// Check if a JSONL line is a ThreadRolledBack event_msg.
 bool isRollbackMarker(string line)
 {

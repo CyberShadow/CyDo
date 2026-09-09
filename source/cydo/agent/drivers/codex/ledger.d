@@ -354,6 +354,7 @@ package struct RolloutTurnLifecycleEvidence
 package struct RolloutScan
 {
 	RolloutLineEvidence[] lines;
+	NativeRolloutSegment[] nativeSegments;
 	/// Historical replay-facing lifecycle view, derived from active user
 	/// segments for compatibility with existing boundary behavior.
 	RolloutTurnLifecycleEvidence[string] lifecycles;
@@ -1424,7 +1425,7 @@ package bool isExactNativePostTerminalTelemetry(const ref RolloutLineEvidence li
 	}
 }
 
-private struct NativeRolloutSegment
+package struct NativeRolloutSegment
 {
 	size_t start;
 	size_t end;
@@ -1864,6 +1865,10 @@ package RolloutScan scanRollout(string content, int lineOffset = 0)
 			foreach (lineIndex; segment.start .. segment.end)
 				result.lines[lineIndex].nativeActive = false;
 	}
+	if (nativeSegmentStart >= 0)
+		appendCompleteKnownNativeSegment(activeNativeSegments,
+			seenNativeLifecycleTurnIds, result.lines,
+			cast(size_t) nativeSegmentStart, result.lines.length, false);
 
 	foreach (i, ref line; result.lines)
 	{
@@ -1876,6 +1881,7 @@ package RolloutScan scanRollout(string content, int lineOffset = 0)
 			&& result.lines[i + 1].payloadType == "user_message")
 				line.immediateUserEventIndex = cast(int)(i + 1);
 	}
+	result.nativeSegments = activeNativeSegments;
 
 	foreach (i, ref line; result.lines)
 	{
@@ -2425,6 +2431,11 @@ unittest
 		~ `{"type":"event_msg","payload":{"type":"agent_message","message":"answer","phase":null,"memory_citation":null}}` ~ "\n"
 		~ `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}],"internal_chat_message_metadata_passthrough":{"turn_id":"U1"},"id":"agent"}}` ~ "\n"
 		~ complete("U1");
+	auto exposedSegment = scanRollout(validU1);
+	assert(exposedSegment.nativeSegments.length == 1
+		&& exposedSegment.nativeSegments[0].start == 0
+		&& exposedSegment.nativeSegments[0].end == 6
+		&& exposedSegment.nativeSegments[0].turnId == "U1");
 	// task_started's mode is a pinned discriminant, not arbitrary string data.
 	// An empty or future value makes U2 strict live evidence while the marker
 	// still retires the only corroborated U1 slot.
