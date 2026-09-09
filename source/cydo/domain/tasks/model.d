@@ -1154,7 +1154,7 @@ struct WsMessage
 	int seq = -1;
 	string workspace;
 	string project_path;
-	string after_uuid;
+	string anchor;
 	string task_type;
 	string entry_point;
 	string agent_name;

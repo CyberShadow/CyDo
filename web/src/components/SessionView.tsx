@@ -42,8 +42,8 @@ interface Props {
   onCloseStdin: (uuid: string) => void;
   onResume: (uuid: string) => void;
   onPromote?: (tid: number) => void;
-  onFork: (tid: number, afterUuid: string) => void;
-  onUndo: (tid: number, afterUuid: string) => void;
+  onFork: (tid: number, anchor: string) => void;
+  onUndo: (tid: number, anchor: string) => void;
   onUndoConfirm: (
     tid: number,
     revertConversation: boolean,

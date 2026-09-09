@@ -208,15 +208,15 @@ export interface TaskManager {
   closeStdin: (uuid: string) => void;
   resume: (uuid: string) => void;
   promote: (tid: number) => void;
-  fork: (tid: number, afterUuid: string) => void;
+  fork: (tid: number, anchor: string) => void;
   undo: (
     tid: number,
-    afterUuid: string,
+    anchor: string,
     dryRun: boolean,
     revertConversation: boolean,
     revertFiles: boolean,
   ) => void;
-  undoPreview: (tid: number, afterUuid: string) => void;
+  undoPreview: (tid: number, anchor: string) => void;
   undoConfirm: (
     tid: number,
     revertConversation: boolean,
@@ -1933,7 +1933,7 @@ export function useTaskManager(
           const t = findByTid(tid);
           if (!t) break;
           const undoPending: UndoPending = {
-            afterUuid: t.undoPending?.afterUuid ?? "",
+            anchor: t.undoPending?.anchor ?? "",
             kind: count_unit,
             messagesRemoved: messages_removed,
             canRevertFiles: t.undoPending?.canRevertFiles ?? false,
@@ -2939,21 +2939,21 @@ export function useTaskManager(
     if (tid !== null) connRef.current?.sendCloseStdin(tid);
   }, []);
 
-  const fork = useCallback((tid: number, afterUuid: string) => {
-    connRef.current?.forkTask(tid, afterUuid);
+  const fork = useCallback((tid: number, anchor: string) => {
+    connRef.current?.forkTask(tid, anchor);
   }, []);
 
   const undo = useCallback(
     (
       tid: number,
-      afterUuid: string,
+      anchor: string,
       dryRun: boolean,
       revertConversation: boolean,
       revertFiles: boolean,
     ) => {
       connRef.current?.undoTask(
         tid,
-        afterUuid,
+        anchor,
         dryRun,
         revertConversation,
         revertFiles,
@@ -2962,14 +2962,14 @@ export function useTaskManager(
     [],
   );
 
-  const undoPreview = useCallback((tid: number, afterUuid: string) => {
-    // Optimistically set afterUuid so confirmation bar can reference it
+  const undoPreview = useCallback((tid: number, anchor: string) => {
+    // Optimistically set anchor so confirmation bar can reference it
     const t = findByTid(tid);
     if (t) {
       const boundary = [...t.replacementEvents.values()].find(
         (event) =>
           (event as { history_boundary?: { anchor: string } }).history_boundary
-            ?.anchor === afterUuid,
+            ?.anchor === anchor,
       ) as
         | {
             history_boundary?: {
@@ -2982,7 +2982,7 @@ export function useTaskManager(
         boundary?.history_boundary?.kind !== "provisional_user" &&
         !!boundary?.history_boundary?.checkpoint_uuid;
       const undoPending: UndoPending = {
-        afterUuid,
+        anchor,
         kind: "requesting",
         canRevertFiles,
         retainsPrompt: boundary?.history_boundary?.kind === "agent_turn",
@@ -2999,7 +2999,7 @@ export function useTaskManager(
         return next;
       });
     }
-    connRef.current?.undoTask(tid, afterUuid, true, false, false);
+    connRef.current?.undoTask(tid, anchor, true, false, false);
   }, []);
 
   const undoConfirm = useCallback(
@@ -3009,7 +3009,7 @@ export function useTaskManager(
       const pending = t.undoPending;
       connRef.current?.undoTask(
         tid,
-        pending.afterUuid,
+        pending.anchor,
         false,
         revertConversation,
         revertFilesForUndo(pending.canRevertFiles, revertFiles),

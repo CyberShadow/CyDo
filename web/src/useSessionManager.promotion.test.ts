@@ -171,7 +171,7 @@ describe("task promotion", () => {
 
     currentManager.undoPreview(42, "boundary-42");
     expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
-      afterUuid: "boundary-42",
+      anchor: "boundary-42",
       kind: "requesting",
       canRevertFiles: false,
       retainsPrompt: false,
@@ -194,7 +194,7 @@ describe("task promotion", () => {
     });
 
     expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
-      afterUuid: "boundary-42",
+      anchor: "boundary-42",
       kind: "codex_turns",
       messagesRemoved: 3,
       canRevertFiles: false,
@@ -229,7 +229,7 @@ describe("task promotion", () => {
     });
 
     expect((await renderManager()).getByTid(42)?.undoPending).toEqual({
-      afterUuid: "boundary-42",
+      anchor: "boundary-42",
       kind: "history_entries",
       messagesRemoved: 4,
       canRevertFiles: false,

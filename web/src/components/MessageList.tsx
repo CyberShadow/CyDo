@@ -35,8 +35,8 @@ interface Props {
   blocks: Map<string, Block>;
   isProcessing: boolean;
   bandStatus: string;
-  onFork?: (sid: number, afterUuid: string) => void;
-  onUndo?: (tid: number, afterUuid: string) => void;
+  onFork?: (sid: number, anchor: string) => void;
+  onUndo?: (tid: number, anchor: string) => void;
   onEditMessage?: (tid: number, uuid: string, content: string) => void;
   onEditRawEvent?: (tid: number, seq: number, content: string) => void;
   onViewFile?: (filePath: string) => void;
@@ -524,8 +524,8 @@ const MessageView = memo(
     childrenByParent: Map<string, DisplayMessage[]>;
     resolvedBlocksByMsg: Map<string, Block[]>;
     onViewFile?: (filePath: string) => void;
-    onFork?: (afterUuid: string) => void;
-    onUndo?: (afterUuid: string) => void;
+    onFork?: (anchor: string) => void;
+    onUndo?: (anchor: string) => void;
     onEdit?: (uuid: string, content: string) => void;
     onEditRaw?: (seq: number, content: string) => void;
     actionUuid?: string;
@@ -892,8 +892,8 @@ export function MessageList({
   const handleFork = useMemo(
     () =>
       onFork
-        ? (afterUuid: string) => {
-            onFork(taskTid, afterUuid);
+        ? (anchor: string) => {
+            onFork(taskTid, anchor);
           }
         : undefined,
     [onFork, taskTid],
@@ -901,8 +901,8 @@ export function MessageList({
   const handleUndo = useMemo(
     () =>
       onUndo
-        ? (afterUuid: string) => {
-            onUndo(taskTid, afterUuid);
+        ? (anchor: string) => {
+            onUndo(taskTid, anchor);
           }
         : undefined,
     [onUndo, taskTid],

@@ -73,7 +73,7 @@ describe("UndoConfirmDialog", () => {
 describe("SessionView undo pending", () => {
   it("hides a requesting undo", () => {
     const html = renderSession({
-      afterUuid: "boundary-7",
+      anchor: "boundary-7",
       kind: "requesting",
       canRevertFiles: false,
       retainsPrompt: false,
@@ -85,7 +85,7 @@ describe("SessionView undo pending", () => {
 
   it("explains that undoing a user target removes it and restores its prompt", () => {
     const html = renderSession({
-      afterUuid: "boundary-7",
+      anchor: "boundary-7",
       kind: "history_entries",
       messagesRemoved: 1,
       canRevertFiles: false,
@@ -101,7 +101,7 @@ describe("SessionView undo pending", () => {
 
   it("describes a native Codex preview as whole turns and retains its prompt", () => {
     const html = renderSession({
-      afterUuid: "boundary-7",
+      anchor: "boundary-7",
       kind: "codex_turns",
       messagesRemoved: 2,
       canRevertFiles: false,

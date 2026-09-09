@@ -378,7 +378,7 @@ tool inputs.
 
 `forkTask()` already implements JSONL truncation:
 1. Read source JSONL
-2. Copy lines up to and including `after_uuid`, rewriting `sessionId`
+2. Copy lines up to and including `anchor`, rewriting `sessionId`
 3. Write new JSONL with a fresh UUID
 4. Create a new DB row with `relation_type="fork"`, `status="completed"`
 5. Return `ForkResult{tid, claudeSessionId}`
@@ -397,7 +397,7 @@ Current client→server commands relevant to undo:
 
 | Command | Fields | Purpose |
 |---|---|---|
-| `fork_task` | `tid`, `after_uuid` | Fork session at a message UUID |
+| `fork_task` | `tid`, `anchor` | Fork session at a message UUID |
 | `interrupt` | `tid` | Graceful protocol interrupt |
 | `stop` | `tid` | SIGTERM |
 | `resume` | `tid` | Resume stopped session |

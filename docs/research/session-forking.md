@@ -67,7 +67,7 @@ This is non-destructive — the original session file is untouched.
 
 **Backend:**
 - Track `currentSessionId` from `system.init` output
-- Handle `{"type":"fork","after_uuid":"<uuid>"}` WebSocket command
+- Handle `{"type":"fork","anchor":"<uuid>"}` WebSocket command
 - Read + truncate + rewrite JSONL, spawn new session with `--resume`
 
 **Frontend:**

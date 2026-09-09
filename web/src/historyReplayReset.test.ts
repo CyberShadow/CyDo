@@ -90,7 +90,7 @@ function makeRichState(): TaskState {
     inputDraft: "draft B",
     error: "stderr line",
     undoPending: {
-      afterUuid: "u-1",
+      anchor: "u-1",
       kind: "history_entries",
       messagesRemoved: 1,
       canRevertFiles: false,

@@ -240,7 +240,7 @@ export type TaskStatus =
   | "importable";
 
 interface UndoPendingBase {
-  afterUuid: string;
+  anchor: string;
   canRevertFiles: boolean;
   retainsPrompt: boolean;
   supportsFileRevert?: boolean;

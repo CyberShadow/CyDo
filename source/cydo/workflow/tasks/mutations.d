@@ -237,7 +237,7 @@ public:
 			return;
 		auto ta = source.agent;
 		HistoryBoundary boundary;
-		if (!host_.resolveFreshPersistedBoundary(tid, source, json.after_uuid, boundary))
+		if (!host_.resolveFreshPersistedBoundary(tid, source, json.anchor, boundary))
 		{
 			ws.send(Data(toJson(ErrorMessage("error",
 				"Fork failed: message UUID not found in task history", tid)).representation));
@@ -359,7 +359,7 @@ public:
 			return;
 		auto ta = access.agent;
 		HistoryBoundary boundary;
-		if (!host_.resolveFreshPersistedBoundary(tid, access, json.after_uuid, boundary))
+		if (!host_.resolveFreshPersistedBoundary(tid, access, json.anchor, boundary))
 		{
 			ws.send(Data(toJson(ErrorMessage("error", "UUID not found in task history", tid)).representation));
 			return;
@@ -627,7 +627,7 @@ public:
 		auto ta = access.agent;
 		auto jsonlPath = access.path;
 		auto newContent = json.content.json !is null ? jsonParse!string(json.content.json) : "";
-		auto targetUuid = json.after_uuid;
+		auto targetUuid = json.anchor;
 		string fallbackUuid;
 		if (targetUuid.startsWith("enqueue-"))
 		{
@@ -1499,6 +1499,23 @@ private:
 
 unittest
 {
+	// Browser history mutations accept the canonical boundary field only.  Keep
+	// this parser test here with the mutation entry points so a compatibility
+	// alias cannot silently reintroduce the retired wire name.
+	auto canonical = jsonParse!WsMessage(
+		`{"type":"undo_task","tid":71,"anchor":"line:2"}`);
+	assert(canonical.anchor == "line:2");
+
+	bool rejectedLegacyField;
+	try
+		jsonParse!WsMessage(`{"type":"undo_task","tid":71,"after_` ~ "uuid" ~ `":"line:2"}`);
+	catch (Exception)
+		rejectedLegacyField = true;
+	assert(rejectedLegacyField);
+}
+
+unittest
+{
 	import cydo.agent.drivers.claude : ClaudeCodeAgent;
 	import cydo.runtime.launch.types : NativeHistoryProfile;
 	import std.file : remove, write;
@@ -1551,7 +1568,7 @@ unittest
 	{
 		resolution = Resolution.forged;
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-			after_uuid: "line:999999", dry_run: dryRun,
+			anchor: "line:999999", dry_run: dryRun,
 			revert_conversation: true));
 	}
 	assert(replies == 2);
@@ -1563,7 +1580,7 @@ unittest
 	{
 		resolution = Resolution.stale;
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-			after_uuid: "line:4", dry_run: dryRun, revert_conversation: true));
+			anchor: "line:4", dry_run: dryRun, revert_conversation: true));
 	}
 	assert(replies == 4);
 	assert(sideEffects == 0);
@@ -1574,7 +1591,7 @@ unittest
 	{
 		resolution = Resolution.noCheckpoint;
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-			after_uuid: "assistant", dry_run: dryRun, revert_conversation: true,
+			anchor: "assistant", dry_run: dryRun, revert_conversation: true,
 			revert_files: true));
 	}
 	assert(replies == 6);
@@ -1720,9 +1737,9 @@ unittest
 		replies ~= cast(string) data.toGC();
 	};
 	WsMessage previewRequest() => WsMessage(type: "undo_task", tid: tid,
-		after_uuid: "line:2", dry_run: true, revert_conversation: true);
+		anchor: "line:2", dry_run: true, revert_conversation: true);
 	WsMessage nativeConfirmation(uint expected) => jsonParse!WsMessage(
-		`{"type":"undo_task","tid":72,"after_uuid":"line:2","expected_num_turns":`
+		`{"type":"undo_task","tid":72,"anchor":"line:2","expected_num_turns":`
 		~ expected.to!string ~ `}`);
 	void resetEffects()
 	{
@@ -1780,7 +1797,7 @@ unittest
 	// A native confirmation without an echoed count does not prepare or mutate.
 	resetEffects();
 	service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-		after_uuid: "line:2"));
+		anchor: "line:2"));
 	assert(session.prepareCalls == 0 && session.executeCalls == 0 && lineageCalls == 0
 		&& clearCalls == 0 && unsubscribeCalls == 0 && reloadCalls == 0
 		&& watchCalls == 0 && updateCalls == 0
@@ -1930,7 +1947,7 @@ unittest
 		write(rolloutPath, failureCase.rollout);
 		auto before = readText(rolloutPath);
 		service.handleUndoTaskMsg(reply, WsMessage(type: "undo_task", tid: tid,
-			after_uuid: "line:3", dry_run: false, revert_conversation: true));
+		anchor: "line:3", dry_run: false, revert_conversation: true));
 		assert(selectedSourceState == CodexForkSourceState.liveBusy
 			&& liveLaunchCalls == 0 && backupCalls == 0 && stopCalls == 0
 			&& lineageCalls == 0 && clearCalls == 0 && unsubscribeCalls == 0

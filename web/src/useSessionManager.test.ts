@@ -28,7 +28,7 @@ function task(tid: number, undoPending = false): TaskState {
     uuid: `task-${tid}`,
     undoPending: undoPending
       ? {
-          afterUuid: `message-${tid}`,
+          anchor: `message-${tid}`,
           kind: "codex_turns",
           messagesRemoved: 2,
           canRevertFiles: false,
@@ -65,7 +65,7 @@ describe("receiveServerError", () => {
     });
     expect(result.tasks.get(other.uuid)).toBe(other);
     expect(other.undoPending).toEqual({
-      afterUuid: "message-2",
+      anchor: "message-2",
       kind: "codex_turns",
       messagesRemoved: 2,
       canRevertFiles: false,
@@ -85,7 +85,7 @@ describe("receiveServerError", () => {
     });
     expect(result.tasks).toBe(tasks);
     expect(pending.undoPending).toEqual({
-      afterUuid: "message-1",
+      anchor: "message-1",
       kind: "codex_turns",
       messagesRemoved: 2,
       canRevertFiles: false,

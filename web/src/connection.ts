@@ -357,15 +357,13 @@ export class Connection {
     return this.send(JSON.stringify({ type: "request_history", tid }));
   }
 
-  forkTask(tid: number, afterUuid: string) {
-    this.send(
-      JSON.stringify({ type: "fork_task", tid, after_uuid: afterUuid }),
-    );
+  forkTask(tid: number, anchor: string) {
+    this.send(JSON.stringify({ type: "fork_task", tid, anchor }));
   }
 
   undoTask(
     tid: number,
-    afterUuid: string,
+    anchor: string,
     dryRun: boolean,
     revertConversation?: boolean,
     revertFiles?: boolean,
@@ -375,7 +373,7 @@ export class Connection {
       JSON.stringify({
         type: "undo_task",
         tid,
-        after_uuid: afterUuid,
+        anchor,
         dry_run: dryRun,
         revert_conversation: revertConversation ?? true,
         revert_files: revertFiles ?? true,
@@ -414,10 +412,8 @@ export class Connection {
     );
   }
 
-  editMessage(tid: number, uuid: string, content: string) {
-    this.send(
-      JSON.stringify({ type: "edit_message", tid, after_uuid: uuid, content }),
-    );
+  editMessage(tid: number, anchor: string, content: string) {
+    this.send(JSON.stringify({ type: "edit_message", tid, anchor, content }));
   }
 
   editRawEvent(tid: number, seq: number, content: string) {

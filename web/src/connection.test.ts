@@ -518,6 +518,31 @@ describe("Connection client behavior", () => {
     );
   });
 
+  it("serializes history mutation targets with anchor", () => {
+    const conn = new Connection();
+    conn.connect();
+    const ws = MockWebSocket.instances[0]!;
+
+    conn.forkTask(7, "boundary-7");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)![0] as string)).toEqual({
+      type: "fork_task",
+      tid: 7,
+      anchor: "boundary-7",
+    });
+
+    conn.editMessage(7, "boundary-7", "revised prompt");
+    const editRequest = JSON.parse(
+      ws.send.mock.calls.at(-1)![0] as string,
+    ) as Record<string, unknown>;
+    expect(editRequest).toEqual({
+      type: "edit_message",
+      tid: 7,
+      anchor: "boundary-7",
+      content: "revised prompt",
+    });
+    expect(editRequest).not.toHaveProperty("after_" + "uuid");
+  });
+
   describe("undo request serialization", () => {
     function lastSentJson(ws: MockWebSocket): Record<string, unknown> {
       const call = ws.send.mock.calls.at(-1);
@@ -533,12 +558,15 @@ describe("Connection client behavior", () => {
       conn.undoTask(7, "boundary-7", true, false, false);
 
       const request = lastSentJson(ws);
-      expect(request).toMatchObject({
+      expect(request).toEqual({
         type: "undo_task",
         tid: 7,
-        after_uuid: "boundary-7",
+        anchor: "boundary-7",
         dry_run: true,
+        revert_conversation: false,
+        revert_files: false,
       });
+      expect(request).not.toHaveProperty("after_" + "uuid");
       expect(request).not.toHaveProperty("expected_num_turns");
     });
 
@@ -549,13 +577,17 @@ describe("Connection client behavior", () => {
 
       conn.undoTask(7, "boundary-7", false, true, false, 3);
 
-      expect(lastSentJson(ws)).toMatchObject({
+      const request = lastSentJson(ws);
+      expect(request).toEqual({
         type: "undo_task",
         tid: 7,
-        after_uuid: "boundary-7",
+        anchor: "boundary-7",
         dry_run: false,
+        revert_conversation: true,
+        revert_files: false,
         expected_num_turns: 3,
       });
+      expect(request).not.toHaveProperty("after_" + "uuid");
     });
 
     it("omits the expected turn count for history-entry confirmations", () => {
@@ -565,7 +597,17 @@ describe("Connection client behavior", () => {
 
       conn.undoTask(7, "boundary-7", false, true, false, undefined);
 
-      expect(lastSentJson(ws)).not.toHaveProperty("expected_num_turns");
+      const request = lastSentJson(ws);
+      expect(request).toEqual({
+        type: "undo_task",
+        tid: 7,
+        anchor: "boundary-7",
+        dry_run: false,
+        revert_conversation: true,
+        revert_files: false,
+      });
+      expect(request).not.toHaveProperty("after_" + "uuid");
+      expect(request).not.toHaveProperty("expected_num_turns");
     });
   });
 });
