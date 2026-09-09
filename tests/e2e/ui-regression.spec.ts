@@ -172,16 +172,22 @@ test("fork stays focused on forked session", async ({ page, agentType }) => {
     );
     expect(targetReplacements).toHaveLength(1);
     expect(
-      frames.slice(postReloadFrameStart).some(
-        (frame) =>
-          frame?.type === "history_operations" &&
-          frame?.history_operations?.fork?.user ===
-            (agentType === "codex" ? "codex_native" : "jsonl"),
-      ),
+      frames
+        .slice(postReloadFrameStart)
+        .some(
+          (frame) =>
+            frame?.type === "history_operations" &&
+            frame?.history_operations?.fork?.user ===
+              (agentType === "codex" ? undefined : "jsonl"),
+        ),
     ).toBe(true);
   }).toPass();
   await userMsg.hover();
   const forkBtn = userMsg.locator(".fork-btn");
+  if (agentType === "codex") {
+    await expect(forkBtn).toHaveCount(0);
+    return;
+  }
   await expect(forkBtn).toBeVisible();
 
   await forkBtn.click();

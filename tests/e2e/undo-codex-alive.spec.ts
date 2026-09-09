@@ -38,23 +38,6 @@ async function activeTid(page: Page): Promise<number> {
   );
 }
 
-async function undoAnchorForUserMessage(page: Page, userText: string) {
-  const userMessage = page
-    .locator(".message-wrapper:visible", {
-      has: page.locator(
-        ".message.user-message:visible:not(.pending):not(.meta-message)",
-        { hasText: userText },
-      ),
-    })
-    .last();
-  await userMessage.hover();
-  const anchor = await userMessage
-    .locator(".fork-btn")
-    .getAttribute("data-fork-anchor");
-  expect(anchor).toMatch(/^line:\d+$/);
-  return anchor!;
-}
-
 async function expectUndoRequestRejected(
   page: Page,
   tid: number,
@@ -477,8 +460,32 @@ test(
     await expect(assistantText(page, retained)).toBeVisible();
     await sendMessage(page, `Reply exactly with ${rolledBack}`);
     await expect(assistantText(page, rolledBack)).toBeVisible();
-    const staleAnchor = await undoAnchorForUserMessage(page, rolledBack);
     const tid = await activeTid(page);
+    let staleAnchor: string | undefined;
+    await expect
+      .poll(() => {
+        const matches = frames.filter(
+          (frame) =>
+            frame?.type === "task_history_boundary_replaced" &&
+            frame?.tid === tid &&
+            frame?.event?.type === "item/started" &&
+            frame?.event?.item_type === "user_message" &&
+            !frame.event?.pending &&
+            !frame.event?.is_meta &&
+            !frame.event?.is_synthetic &&
+            !frame.event?.is_sidechain &&
+            Array.isArray(frame.event?.content) &&
+            frame.event.content.length === 1 &&
+            frame.event.content[0]?.type === "text" &&
+            frame.event.content[0]?.text ===
+              `Reply exactly with ${rolledBack}` &&
+            frame.event?.history_boundary?.kind === "user",
+        );
+        staleAnchor = matches[0]?.event?.history_boundary?.anchor;
+        return matches.length;
+      })
+      .toBe(1);
+    expect(staleAnchor).toMatch(/^line:\d+$/);
 
     const rollbackFrameStart = frames.length;
     await undoUserMessage(page, `Reply exactly with ${rolledBack}`);
@@ -668,6 +675,14 @@ test(
   "codex live undo of a duplicate prompt retires only the later client id",
   { tag: "@codex-only" },
   async ({ page }) => {
+    const frames: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", (event) => {
+        try {
+          frames.push(JSON.parse(event.payload.toString()));
+        } catch {}
+      });
+    });
     await enterSession(page);
 
     await sendMessage(page, 'Please reply with "dup-first"');
@@ -680,21 +695,31 @@ test(
     await expect(assistantText(page, "dup-marker").nth(1)).toBeVisible();
 
     const tid = currentTaskTid(page);
-    const dupWrappers = page.locator(".message-wrapper", {
-      has: page.locator(
-        ".message.user-message:not(.pending):not(.meta-message)",
-        { hasText: "dup-marker" },
-      ),
-    });
-    // Wait for both wrappers' fork anchors to be bound before the one-shot
-    // evaluateAll read below: the rollout-identity late bind means a
-    // just-sent message's uuid/anchor may not be attached yet.
-    await expect(dupWrappers.locator(".fork-btn")).toHaveCount(2);
-    const dupAnchors = await dupWrappers.evaluateAll((wrappers) =>
-      wrappers.map((wrapper) =>
-        wrapper.querySelector(".fork-btn")?.getAttribute("data-fork-anchor") ?? null,
-      ),
-    );
+    let dupAnchors: string[] = [];
+    await expect
+      .poll(() => {
+        dupAnchors = frames
+          .filter(
+            (frame) =>
+              frame?.type === "task_history_boundary_replaced" &&
+              frame?.tid === tid &&
+              frame?.event?.type === "item/started" &&
+              frame?.event?.item_type === "user_message" &&
+              !frame.event?.pending &&
+              !frame.event?.is_meta &&
+              !frame.event?.is_synthetic &&
+              !frame.event?.is_sidechain &&
+              Array.isArray(frame.event?.content) &&
+              frame.event.content.length === 1 &&
+              frame.event.content[0]?.type === "text" &&
+              frame.event.content[0]?.text ===
+                'Please reply with "dup-marker"' &&
+              frame.event?.history_boundary?.kind === "user",
+          )
+          .map((frame) => frame.event.history_boundary.anchor);
+        return dupAnchors.length;
+      })
+      .toBe(2);
     expect(dupAnchors).toHaveLength(2);
     const [earlierAnchor, laterAnchor] = dupAnchors;
     expect(earlierAnchor).toMatch(/^line:\d+$/);
@@ -715,10 +740,8 @@ test(
     const remainingWrapper = page
       .locator(".message-wrapper:visible", { has: remainingDupMarkers })
       .last();
-    await expect(remainingWrapper.locator(".fork-btn")).toHaveAttribute(
-      "data-fork-anchor",
-      earlierAnchor!,
-    );
+    await remainingWrapper.hover();
+    await expect(remainingWrapper.locator(".undo-btn")).toBeVisible();
 
     await expect(
       page.locator(".message.user-message:visible:not(.pending):not(.meta-message)", {

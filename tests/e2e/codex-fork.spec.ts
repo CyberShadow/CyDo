@@ -259,13 +259,28 @@ test(
 );
 
 test(
-  "codex forks inclusively from the current user turn",
+  "codex does not offer user-boundary forks",
   { tag: "@codex-only" },
   async ({ page, agentType }) => {
     const currentUser = "FORK_CURRENT_USER";
     const currentResponse = "FORK_CURRENT_RESPONSE";
     const earlierUser = "FORK_EARLIER_USER";
-
+    const currentPrompt = `Reply exactly with ${currentResponse}. Marker ${currentUser}`;
+    await installCydoE2eBridge(page);
+    const taskCreatedEvents: Array<{
+      parent_tid?: number;
+      relation_type?: string;
+    }> = [];
+    const frames: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", (event) => {
+        try {
+          const frame = JSON.parse(event.payload.toString());
+          frames.push(frame);
+          if (frame.type === "task_created") taskCreatedEvents.push(frame);
+        } catch {}
+      });
+    });
     await enterSession(page);
     const before = await snapshotTids(page);
 
@@ -274,36 +289,77 @@ test(
     await expect(activeAssistantText(page, earlierUser)).toBeVisible({
       timeout: responseTimeout(agentType),
     });
-    await sendMessage(
-      page,
-      `Reply exactly with ${currentResponse}. Marker ${currentUser}`,
+    await expect
+      .poll(() =>
+        frames.some(
+          (frame) =>
+            frame?.tid === Number(parentTid) &&
+            frame?.event?.type === "turn/result" &&
+            frame?.event?.subtype === "success",
+        ),
+      )
+      .toBe(true);
+    const currentFrameStart = frames.length;
+    await sendMessage(page, currentPrompt);
+    await expect(activeAssistantText(page, currentResponse)).toBeVisible({
+      timeout: responseTimeout(agentType),
+    });
+    await expect
+      .poll(() =>
+        frames
+          .slice(currentFrameStart)
+          .some(
+            (frame) =>
+              frame?.tid === Number(parentTid) &&
+              frame?.event?.type === "turn/result" &&
+              frame?.event?.subtype === "success",
+          ),
+      )
+      .toBe(true);
+    let userAnchor: string | undefined;
+    await expect
+      .poll(() => {
+        const matches = frames.filter(
+          (frame) =>
+            frame?.type === "task_history_boundary_replaced" &&
+            frame?.tid === Number(parentTid) &&
+            frame?.event?.type === "item/started" &&
+            frame?.event?.item_type === "user_message" &&
+            !frame.event?.pending &&
+            !frame.event?.is_meta &&
+            !frame.event?.is_synthetic &&
+            !frame.event?.is_sidechain &&
+            Array.isArray(frame.event?.content) &&
+            frame.event.content.length === 1 &&
+            frame.event.content[0]?.type === "text" &&
+            frame.event.content[0]?.text === currentPrompt &&
+            frame?.event?.history_boundary?.kind === "user",
+        );
+        userAnchor = matches[0]?.event?.history_boundary?.anchor;
+        return matches.length;
+      })
+      .toBe(1);
+    expect(userAnchor).toMatch(/^line:\d+$/);
+
+    const userMessage = messageWrapper(page, ".user-message", currentUser);
+    await userMessage.hover();
+    await expect(userMessage.locator(".fork-btn")).toHaveCount(0);
+    const tidsBeforeFork = await snapshotTids(page);
+
+    await forkThroughBridge(page, Number(parentTid), userAnchor!);
+    const forkError = page.locator(".command-error-dialog");
+    await expect(forkError).toContainText(
+      "Fork failed: message UUID not found in task history",
     );
-    await expect(activeAssistantText(page, currentResponse)).toBeVisible({
-      timeout: responseTimeout(agentType),
-    });
-    const parentHistory = await visibleHistory(page);
-
-    await forkFromMessage(page, ".user-message", currentUser);
-    const forkTid = await waitForNewTid(page, before);
-    await expect(page).toHaveURL(new RegExp(`/task/${forkTid}$`));
-
-    await expect(
-      page.locator(".message.user-message:visible", { hasText: currentUser }),
-    ).toBeVisible();
-    await expect(
-      page.locator(".message.user-message:visible", { hasText: earlierUser }),
-    ).toBeVisible();
-    await expect(
-      page.locator(".message.user-message:visible", { hasText: currentUser }),
-    ).toBeVisible();
-    await expect(activeAssistantText(page, currentResponse)).toHaveCount(0);
-
-    await page.locator(`.sidebar-item[data-tid="${parentTid}"]`).click();
-    await page.reload();
-    await expect(activeAssistantText(page, currentResponse)).toBeVisible({
-      timeout: responseTimeout(agentType),
-    });
-    expect(await visibleHistory(page)).toEqual(parentHistory);
+    await forkError.getByRole("button", { name: "Dismiss" }).click();
+    expect(await snapshotTids(page)).toEqual(tidsBeforeFork);
+    expect(
+      taskCreatedEvents.filter(
+        (event) =>
+          event.parent_tid === Number(parentTid) &&
+          event.relation_type === "fork",
+      ),
+    ).toHaveLength(0);
   },
 );
 
@@ -394,7 +450,7 @@ test(
       timeout: responseTimeout(agentType),
     });
 
-    const staleMessage = messageWrapper(page, ".user-message", rolledBack);
+    const staleMessage = messageWrapper(page, ".assistant-message", rolledBack);
     await staleMessage.hover();
     const staleFork = staleMessage.locator(".fork-btn");
     await expect(staleFork).toBeVisible();

@@ -39,13 +39,13 @@ HistoryOperations selectHistoryOperations(AgentDriver driver,
 	final switch (codexForkSource)
 	{
 	case CodexForkSourceState.dead:
-		result.fork.user = HistoryOperationMechanism.codex_native;
+		// The pinned Codex 0.144.1 thread/fork accepts completed turns only; it has no
+		// user/response cut parameter, so user-boundary forks are unsupported.
 		result.fork.agent_turn = HistoryOperationMechanism.codex_native;
 		result.undo.user = HistoryOperationMechanism.jsonl;
 		result.undo.agent_turn = HistoryOperationMechanism.jsonl;
 		break;
 	case CodexForkSourceState.liveReady:
-		result.fork.user = HistoryOperationMechanism.codex_native;
 		result.fork.agent_turn = HistoryOperationMechanism.codex_native;
 		result.undo.user = HistoryOperationMechanism.codex_native;
 		break;
@@ -86,13 +86,13 @@ unittest
 	import cydo.protocol : HistoryBoundary;
 	auto offline = selectHistoryOperations(AgentDriver.codex,
 		CodexForkSourceState.dead);
-	assert(offline.fork.user == HistoryOperationMechanism.codex_native);
+	assert(offline.fork.user == HistoryOperationMechanism.none);
 	assert(offline.fork.agent_turn == HistoryOperationMechanism.codex_native);
 	assert(offline.undo.user == HistoryOperationMechanism.jsonl);
 	assert(offline.undo.agent_turn == HistoryOperationMechanism.jsonl);
 	auto native = selectHistoryOperations(AgentDriver.codex,
 		CodexForkSourceState.liveReady);
-	assert(native.fork.user == HistoryOperationMechanism.codex_native);
+	assert(native.fork.user == HistoryOperationMechanism.none);
 	assert(native.fork.agent_turn == HistoryOperationMechanism.codex_native);
 	assert(native.undo.user == HistoryOperationMechanism.codex_native);
 	assert(native.undo.agent_turn == HistoryOperationMechanism.none);
@@ -115,6 +115,9 @@ unittest
 	auto boundary = HistoryBoundary("a", HistoryBoundaryKind.agent_turn, "");
 	assert(allowsOperation(boundary, offline, HistoryOperation.undo));
 	assert(!allowsOperation(boundary, native, HistoryOperation.undo));
+	boundary.kind = HistoryBoundaryKind.user;
+	assert(!allowsOperation(boundary, offline, HistoryOperation.fork));
+	assert(!allowsOperation(boundary, native, HistoryOperation.fork));
 	assert(!allowsFileRevert(boundary));
 	boundary.checkpoint_uuid = "checkpoint";
 	assert(allowsFileRevert(boundary));
