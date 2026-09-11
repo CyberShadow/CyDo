@@ -774,6 +774,35 @@ export const Sidebar = memo(function Sidebar({
   ensureIconStyles();
   ensureRelationIconStyles();
 
+  // Recency mode puts the newest tasks and the New Task row at the visual top,
+  // but column-reverse rests the scroll at the visual bottom, so open at the
+  // top instead. The last DOM child is the top-most one; scrollIntoView avoids
+  // the sign conventions browsers use for scrollTop in reversed containers.
+  // Opening happens on mount, each time the list finishes loading (the first
+  // load, and every reconnect, which empties and refills it) and each time
+  // the sidebar becomes visible on mobile. Keyed on the load completing
+  // rather than on the list having content, since the list arrives in packets
+  // and a reconnect never toggles visibility. Runs before the active-item
+  // effect below so that one still wins when the active task sits off-screen.
+  const openScrollRanRef = useRef(false);
+  const prevTasksLoadingRef = useRef(tasksLoading);
+  const prevOpenVisibleRef = useRef(visible);
+  const prevSortByRecencyRef = useRef(sortByRecency);
+  useEffect(() => {
+    const firstRun = !openScrollRanRef.current;
+    const finishedLoading = prevTasksLoadingRef.current && !tasksLoading;
+    const becameVisible = prevOpenVisibleRef.current === false && visible;
+    const switchedToRecency = !prevSortByRecencyRef.current && sortByRecency;
+    openScrollRanRef.current = true;
+    prevTasksLoadingRef.current = tasksLoading;
+    prevOpenVisibleRef.current = visible;
+    prevSortByRecencyRef.current = sortByRecency;
+    if (!sortByRecency || !visible || tasksLoading) return;
+    if (!firstRun && !finishedLoading && !becameVisible && !switchedToRecency)
+      return;
+    listRef.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
+  }, [sortByRecency, visible, tasksLoading]);
+
   useEffect(() => {
     if (activeTaskId === null) return;
     const selector = `.sidebar-item[data-tid="${activeTaskId}"]`;
