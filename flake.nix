@@ -696,6 +696,7 @@ EOF
             ANTHROPIC_BASE_URL = "http://127.0.0.1:9000";
             ANTHROPIC_API_KEY = "test-key-mock";
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+            CLAUDE_CODE_BASH_EDIT_DIFF = "1";
             DISABLE_TELEMETRY = "1";
             DISABLE_AUTOUPDATER = "1";
             CLAUDE_CONFIG_DIR = "/tmp/claude-test-home";
