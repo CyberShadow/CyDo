@@ -4,7 +4,7 @@ import core.sys.posix.signal : SIGINT, SIGKILL, SIGTERM;
 import core.sys.posix.unistd : dup;
 import core.time : Duration, seconds;
 
-import std.logger : tracef;
+import std.logger : tracef, warningf;
 import std.process : Pid, Pipe, Redirect, Config, spawnProcess, pipe, kill;
 import std.stdio : File;
 
@@ -19,6 +19,54 @@ import ae.net.jsonrpc.contentlength : ContentLengthAdapter;
 
 /// Selects the framing mode for stdout of an AgentProcess.
 enum FramingMode { ndjson, contentLength, raw }
+
+/// Run one line handler, containing any fault and reporting it through
+/// `report` (which may be null). Lives outside AgentProcess so the
+/// containment contract is testable without a child process or an event loop.
+private void runContainedLineHandler(string source, scope void delegate() handler,
+	scope void delegate(string source, Exception e) report)
+{
+	try
+		handler();
+	catch (Exception e)
+	{
+		warningf("agent %s line handler error: %s", source, e.msg);
+		tracef("agent %s line handler error detail: %s", source, e.toString());
+		if (report is null)
+			return;
+		try
+			report(source, e);
+		catch (Exception reportError)
+			warningf("agent %s line handler error report failed: %s",
+				source, reportError.msg);
+	}
+}
+
+unittest
+{
+	// 1. a handler that returns normally runs once and reports nothing
+	int handled, reported;
+	runContainedLineHandler("stdout", { handled++; },
+		(string source, Exception e) { reported++; });
+	assert(handled == 1 && reported == 0);
+
+	// 2. a throwing handler is contained, and the fault reaches the report
+	string reportedSource, reportedMessage;
+	runContainedLineHandler("stdout", { throw new Exception("bad line"); },
+		(string source, Exception e) {
+			reportedSource = source;
+			reportedMessage = e.msg;
+		});
+	assert(reportedSource == "stdout" && reportedMessage == "bad line");
+
+	// 3. with no report hook the fault is still contained
+	runContainedLineHandler("stderr", { throw new Exception("bad line"); }, null);
+
+	// 4. a report hook that throws in turn is contained as well: nothing may
+	// escape into the event loop, however badly a driver misbehaves
+	runContainedLineHandler("stdout", { throw new Exception("bad line"); },
+		(string source, Exception e) { throw new Exception("bad report"); });
+}
 
 /// Manages a child process with event-loop-integrated I/O.
 /// Uses FileConnection to wrap pipe fds, Duplex to combine stdin/stdout,
@@ -46,6 +94,14 @@ class AgentProcess
 	void delegate(string line) onStdoutLine;
 	void delegate(string line) onStderrLine;
 	void delegate(int status) onExit;
+
+	/// Called when a line handler throws. These handlers run from the socket
+	/// event loop, which has no way to attribute a fault to one agent: an
+	/// exception that escapes unwinds out of the loop and ends the process,
+	/// so a single session's bad line would take down every other session
+	/// with it. Faults are contained here and reported through this hook
+	/// instead; drivers set it to surface the fault on the affected task.
+	void delegate(string source, Exception e) onLineHandlerError;
 
 	/// Spawn a child process with the given arguments and optional environment/workdir.
 	/// If noStdin is true, stdin is redirected from /dev/null (no Duplex needed).
@@ -140,7 +196,7 @@ class AgentProcess
 			if (onStdoutLine)
 			{
 				auto text = cast(string) data.toGC();
-				onStdoutLine(text);
+				contained("stdout", { onStdoutLine(text); });
 			}
 		};
 
@@ -155,7 +211,7 @@ class AgentProcess
 			if (onStderrLine)
 			{
 				auto text = cast(string) data.toGC();
-				onStderrLine(text);
+				contained("stderr", { onStderrLine(text); });
 			}
 		};
 		stderrLines.handleDisconnect = (string, DisconnectType) {
@@ -172,6 +228,12 @@ class AgentProcess
 			exitStatus = status;
 			tryFireExit();
 		});
+	}
+
+	/// Run a line handler, keeping any fault out of the socket event loop.
+	private void contained(string source, scope void delegate() handler)
+	{
+		runContainedLineHandler(source, handler, onLineHandlerError);
 	}
 
 	/// Fire onExit only once all conditions are met:

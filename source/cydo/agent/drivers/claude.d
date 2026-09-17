@@ -1316,6 +1316,25 @@ class ClaudeCodeSession : AgentSession
 			if (exitHandler)
 				exitHandler(status);
 		};
+
+		process.onLineHandlerError = (string source, Exception e) {
+			reportLineHandlerError(source, e);
+		};
+	}
+
+	/// Surface a contained line-handler fault on the task it belongs to.
+	/// The session keeps running: the agent process is unaffected by CyDo
+	/// failing to translate one of its lines, and the rest of the turn is
+	/// still worth showing.
+	private void reportLineHandlerError(string source, Exception e)
+	{
+		import cydo.protocol : TaskDiagnosticEvent, TaskDiagnosticSeverity;
+
+		TaskDiagnosticEvent ev;
+		ev.severity = TaskDiagnosticSeverity.error;
+		ev.subject = "CyDo error";
+		ev.body = "Failed to process agent " ~ source ~ ": " ~ e.msg;
+		emitEvent(TranslatedEvent(toJson(ev), null));
 	}
 
 	/// Send a user message formatted as Claude stream-json input.
