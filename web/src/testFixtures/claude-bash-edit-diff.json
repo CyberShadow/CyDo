@@ -1,0 +1,255 @@
+{
+  "files": [
+    {
+      "filePath": "/workspace/source/btdu/impexp.d",
+      "hunks": [
+        {
+          "oldStart": 15,
+          "oldLines": 7,
+          "newStart": 15,
+          "newLines": 7,
+          "lines": [
+            " ",
+            " import ae.sys.data;",
+            " import ae.sys.datamm;",
+            "-import ae.utils.serialization.json;",
+            "+import ae.utils.json;",
+            " ",
+            " import btrfs.c.ioctl : btrfs_ioctl_fs_info_args;",
+            " "
+          ]
+        },
+        {
+          "oldStart": 91,
+          "oldLines": 25,
+          "newStart": 91,
+          "newLines": 14,
+          "lines": [
+            " // JSON format",
+            " // ============================================================================",
+            " ",
+            "-/// Serialized import state",
+            "-struct ImportedSerializedState",
+            "+/// Serialized",
+            "+struct SerializedState",
+            " {",
+            " \tbool expert;",
+            " \t@JSONOptional bool physical;",
+            " \tstring fsPath;",
+            " \t@JSONOptional string fsid;  /// UUID formatted as \"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\"",
+            " \tulong totalSize;",
+            "-\tBrowserPath.SerializedForm root;",
+            "-}",
+            "-",
+            "-/// Serialized export state",
+            "-struct ExportedSerializedState",
+            "-{",
+            "-\tbool expert;",
+            "-\t@JSONOptional bool physical;",
+            "-\tstring fsPath;",
+            "-\t@JSONOptional string fsid;  /// UUID formatted as \"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\"",
+            "-\tulong totalSize;",
+            " \tBrowserPath* root;",
+            " }",
+            " "
+          ]
+        },
+        {
+          "oldStart": 132,
+          "oldLines": 36,
+          "newStart": 121,
+          "newLines": 20,
+          "lines": [
+            " /// Load and parse an exported JSON file.",
+            " /// Returns the parsed state structure.",
+            " /// The memory-mapped file is stored in the output parameter to keep it alive.",
+            "-private ImportedSerializedState loadExportFile(string path, out Data mmapData)",
+            "+private SerializedState loadExportFile(string path, out Data mmapData)",
+            " {",
+            " \tmmapData = mapFile(path, MmMode.read);",
+            " \tauto json = cast(string)mmapData.unsafeContents;",
+            " ",
+            " \tdebug importing = true;",
+            " \tscope(exit) debug importing = false;",
+            "-\treturn json.jsonParse!ImportedSerializedState();",
+            "+\treturn json.jsonParse!SerializedState();",
+            " }",
+            " ",
+            " /// Keep memory-mapped files alive, as directory names may reference them",
+            " private __gshared Data importMmapData;",
+            " private __gshared Data compareMmapData;",
+            " ",
+            "-private struct JsonOutputAdapter(Output)",
+            "-{",
+            "-\tOutput output;",
+            "-",
+            "-\tvoid put(T...)(T args)",
+            "-\t{",
+            "-\t\tstatic foreach (arg; args)",
+            "-\t\t\toutput.put(arg);",
+            "-\t}",
+            "-",
+            "-\tstring get()",
+            "-\t{",
+            "-\t\treturn null;",
+            "-\t}",
+            "-}",
+            "-",
+            " bool isJsonFormat(string path)",
+            " {",
+            " \timport std.file : read;"
+          ]
+        },
+        {
+          "oldStart": 185,
+          "oldLines": 10,
+          "newStart": 158,
+          "newLines": 7,
+          "lines": [
+            " \tfsPath = s.fsPath;",
+            " \tfsid = parseFsid(s.fsid);",
+            " \ttotalSize = s.totalSize;",
+            "-\tdebug importing = true;",
+            "-\tscope(exit) debug importing = false;",
+            "-\tauto importedRoot = BrowserPath.fromJSON(s.root);",
+            "-\tmove(importedRoot, browserRoot);",
+            "+\tmove(*s.root, browserRoot);",
+            " ",
+            " \tbrowserRoot.resetParents();",
+            " \timported = true;"
+          ]
+        },
+        {
+          "oldStart": 224,
+          "oldLines": 10,
+          "newStart": 194,
+          "newLines": 7,
+          "lines": [
+            " \tcompareTotalSize = s.totalSize;",
+            " \tcompareFsid = parseFsid(s.fsid);",
+            " \t// Note: we don't set fsPath from compare - keep current fsPath",
+            "-\tdebug importing = true;",
+            "-\tscope(exit) debug importing = false;",
+            "-\tauto importedCompareRoot = BrowserPath.fromJSON(s.root);",
+            "-\tmove(importedCompareRoot, compareRoot);",
+            "+\tmove(*s.root, compareRoot);",
+            " ",
+            " \tcompareRoot.resetParents();",
+            " \tcompareMode = true;"
+          ]
+        },
+        {
+          "oldStart": 254,
+          "oldLines": 7,
+          "newStart": 221,
+          "newLines": 7,
+          "lines": [
+            " ",
+            " private void exportJson(string path)",
+            " {",
+            "-\tExportedSerializedState s;",
+            "+\tSerializedState s;",
+            " \ts.expert = expert;",
+            " \ts.physical = physical;",
+            " \ts.fsPath = fsPath;"
+          ]
+        },
+        {
+          "oldStart": 263,
+          "oldLines": 14,
+          "newStart": 230,
+          "newLines": 14,
+          "lines": [
+            " \ts.root = browserRootPtr;",
+            " ",
+            " \talias LockingBinaryWriter = typeof(File.lockingBinaryWriter());",
+            "-\talias OutputAdapter = JsonOutputAdapter!LockingBinaryWriter;",
+            "+\talias JsonFileSerializer = CustomJsonSerializer!(JsonWriter!LockingBinaryWriter);",
+            " ",
+            "-\tauto file = path is null ? stdout : File(path, \"wb\");",
+            "-\tOutputAdapter output;",
+            "-\toutput.output = file.lockingBinaryWriter;",
+            "-\tJsonWriter!OutputAdapter writer;",
+            "-\twriter.output = output;",
+            "-\tJsonCustomSerializer.Impl!Object.read(&writer, s);",
+            "+\t{",
+            "+\t\tJsonFileSerializer j;",
+            "+\t\tauto file = path is null ? stdout : File(path, \"wb\");",
+            "+\t\tj.writer.output = file.lockingBinaryWriter;",
+            "+\t\tj.put(s);",
+            "+\t}",
+            " }",
+            " ",
+            " // ============================================================================"
+          ]
+        }
+      ]
+    },
+    {
+      "filePath": "/workspace/source/btdu/paths.d",
+      "hunks": [
+        {
+          "oldStart": 1286,
+          "oldLines": 24,
+          "newStart": 1286,
+          "newLines": 15,
+          "lines": [
+            " \t\t@JSONOptional Nullable!bool mark;",
+            " \t\t@JSONOptional ulong[string] seenAs; // Map: path -> sample count",
+            " ",
+            "-\t\tSerializedForm[] children;",
+            "-\t}",
+            "-",
+            "-\tstruct ExportSerializedForm",
+            "-\t{",
+            "-\t\tstring name;",
+            "-\t\tSerializedForm.SerializedData data;",
+            "-\t\t@JSONOptional Nullable!bool mark;",
+            "-\t\t@JSONOptional ulong[string] seenAs; // Map: path -> sample count",
+            " \t\tBrowserPath*[] children;",
+            " \t}",
+            " ",
+            "-\tExportSerializedForm toJSON()",
+            "+\tSerializedForm toJSON()",
+            " \t{",
+            " \t\timport std.conv : to;",
+            " \t\timport btdu.state : exportSeenAs;",
+            " ",
+            "-\t\tExportSerializedForm s;",
+            "+\t\tSerializedForm s;",
+            " \t\ts.name = this.name[];",
+            " \t\tfor (auto p = firstChild; p; p = p.nextSibling)",
+            " \t\t\ts.children ~= p;"
+          ]
+        },
+        {
+          "oldStart": 1332,
+          "oldLines": 11,
+          "newStart": 1323,
+          "newLines": 10,
+          "lines": [
+            " \t\timport std.conv : to;",
+            " ",
+            " \t\tauto p = BrowserPath(null, NameString(s.name));",
+            "-\t\tforeach_reverse (ref child; s.children)",
+            "+\t\tforeach_reverse (child; s.children)",
+            " \t\t{",
+            "-\t\t\tauto parsedChild = growAllocator.make!BrowserPath(BrowserPath.fromJSON(child));",
+            "-\t\t\tparsedChild.nextSibling = p.firstChild;",
+            "-\t\t\tp.firstChild = parsedChild;",
+            "+\t\t\tchild.nextSibling = p.firstChild;",
+            "+\t\t\tp.firstChild = child;",
+            " \t\t}",
+            " \t\tauto aggData = p.ensureAggregateData();",
+            " \t\tstatic foreach (sampleType; EnumMembers!SampleType)"
+          ]
+        }
+      ]
+    }
+  ],
+  "moreFiles": 0,
+  "changedFiles": [
+    "/workspace/source/btdu/impexp.d",
+    "/workspace/source/btdu/paths.d"
+  ]
+}

@@ -9,6 +9,7 @@ import type {
   ModelUsageInfo,
   TaskDiagnosticEvent,
 } from "./protocol";
+import type { PatchHunk } from "./lib/patches";
 
 export type { HistoryBoundary } from "./protocol";
 
@@ -148,13 +149,31 @@ export type FileEditStatus = "pending" | "applied" | "cancelled";
 
 export type FileEditSource =
   | "claude-tool"
+  | "claude-bashEditDiff"
   | "codex-fileChange"
   | "codex-apply_patch-history";
 
 export type FileChangePayload =
   | { mode: "full_content"; content: string }
   | { mode: "patch_text"; patchText: string }
+  | { mode: "hunks"; hunks: PatchHunk[] }
   | { mode: "none" };
+
+export interface BashEditDiffFile {
+  filePath: string;
+  hunks: PatchHunk[];
+  created?: boolean;
+  deleted?: boolean;
+}
+
+export interface BashEditDiff {
+  files: BashEditDiffFile[];
+  moreFiles: number;
+  changedFiles?: string[];
+  unavailable?: boolean;
+  shared?: boolean;
+  skipped?: boolean;
+}
 
 /** A single edit operation on a file, linked to a tool call.
  *  Stores only lightweight metadata; file content is resolved on-demand

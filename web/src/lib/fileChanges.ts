@@ -1,4 +1,4 @@
-import type { FileChangePayload, FileEditOp } from "../types";
+import type { BashEditDiff, FileChangePayload, FileEditOp } from "../types";
 import {
   looksLikePatchText,
   parseApplyPatchSections,
@@ -25,6 +25,50 @@ export interface NormalizedFileChange {
   patchText?: string;
   patchHunks?: PatchHunk[];
   raw: unknown;
+}
+
+export function getBashEditDiff(toolResult: unknown): BashEditDiff | null {
+  if (
+    !toolResult ||
+    typeof toolResult !== "object" ||
+    Array.isArray(toolResult) ||
+    !("bashEditDiff" in toolResult)
+  ) {
+    return null;
+  }
+  const value = (toolResult as { bashEditDiff: unknown }).bashEditDiff;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid Bash bashEditDiff result");
+  }
+  const sidecar = value as Record<string, unknown>;
+  if (!Array.isArray(sidecar.files) || typeof sidecar.moreFiles !== "number") {
+    throw new Error("Invalid Bash bashEditDiff result");
+  }
+  for (const file of sidecar.files) {
+    if (!file || typeof file !== "object" || Array.isArray(file)) {
+      throw new Error("Invalid Bash bashEditDiff file");
+    }
+    const record = file as Record<string, unknown>;
+    if (typeof record.filePath !== "string" || !Array.isArray(record.hunks)) {
+      throw new Error("Invalid Bash bashEditDiff file");
+    }
+  }
+  return value as BashEditDiff;
+}
+
+export function getBashEditDiffFileChanges(
+  bashEditDiff: BashEditDiff,
+): NormalizedFileChange[] {
+  return bashEditDiff.files.map((file) => {
+    const op = file.created ? "add" : file.deleted ? "delete" : "update";
+    return {
+      path: file.filePath,
+      op,
+      label: op === "add" ? "Add" : op === "delete" ? "Delete" : "Patch",
+      patchHunks: file.hunks,
+      raw: file,
+    };
+  });
 }
 
 function parseFileChangeOperation(

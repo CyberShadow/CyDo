@@ -44,6 +44,8 @@ import type {
 import {
   fileEditPayloadFromNormalizedChange,
   getApplyPatchFileChanges,
+  getBashEditDiff,
+  getBashEditDiffFileChanges,
   parseCodexFileChanges,
   toFileEditOperation,
 } from "./lib/fileChanges";
@@ -594,6 +596,12 @@ function trackResultFileEdits(
           toolBlock.driver,
           toolBlock.toolServer,
           "codex/apply_patch",
+        ) &&
+        !toolIs(
+          toolName,
+          toolBlock.driver,
+          toolBlock.toolServer,
+          "claude/Bash",
         ))
     )
       continue;
@@ -609,6 +617,35 @@ function trackResultFileEdits(
     }
 
     const input = (toolBlock.input ?? {}) as Record<string, unknown>;
+
+    if (
+      toolIs(toolName, toolBlock.driver, toolBlock.toolServer, "claude/Bash")
+    ) {
+      if (!toolBlock.result) continue;
+      const toolResult = toolBlock.result.toolResult;
+      const bashEditDiff = getBashEditDiff(toolResult);
+      if (!bashEditDiff) continue;
+      if (bashEditDiff.skipped) continue;
+      if (hasTrackedEditsForToolUseId(state, block.tool_use_id)) continue;
+      const edits = getBashEditDiffFileChanges(bashEditDiff).map(
+        (change, changeIndex) =>
+          buildFileEdit(
+            {
+              toolUseId: block.tool_use_id,
+              messageId,
+              status: "applied",
+              source: "claude-bashEditDiff",
+              cwd: state.sessionInfo?.cwd,
+            },
+            change.path!,
+            toFileEditOperation(change.op)!,
+            { mode: "hunks", hunks: change.patchHunks! },
+            changeIndex,
+          ),
+      );
+      state = appendTrackedEdits(state, edits);
+      continue;
+    }
 
     if (
       toolIs(

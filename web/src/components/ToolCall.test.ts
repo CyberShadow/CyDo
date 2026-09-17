@@ -3,6 +3,7 @@ import { h } from "preact";
 import renderToString from "preact-render-to-string";
 import type { ShellSemanticResult } from "../lib/shellSemantic";
 import type { ToolResult } from "../types";
+import bashEditDiff from "../testFixtures/claude-bash-edit-diff.json";
 import {
   ToolCall,
   formatCydoTaskResultItem,
@@ -113,6 +114,19 @@ function makeResult(
     content,
     ...overrides,
   };
+}
+
+function renderClaudeBashEditDiff(): string {
+  return renderToString(
+    h(ToolCall, {
+      name: "Bash",
+      driver: "claude",
+      toolUseId: "bash-edit-diff-1",
+      input: { command: "git diff" },
+      result: makeResult({ toolResult: { bashEditDiff } }),
+      onViewFile: () => {},
+    }),
+  );
 }
 
 describe("CyDo task result helpers", () => {
@@ -275,6 +289,61 @@ function renderCodexFileChangeInput(
 }
 
 describe("claude/Bash subtitle badges", () => {
+  it("renders each included Bash edit diff as an openable file row", () => {
+    const html = renderClaudeBashEditDiff();
+
+    expect(html.match(/class="filechange-change"/g)).toHaveLength(2);
+    expect(html.match(/class="tool-view-file"/g)).toHaveLength(2);
+    expect(html).toContain("impexp.d");
+    expect(html).toContain("paths.d");
+    expect(html).toContain("SerializedState");
+    expect(html).not.toContain("unknown-result-fields");
+    expect(html).not.toContain("bashEditDiff");
+  });
+
+  it("shows Bash availability and omitted-file metadata", () => {
+    const render = (bashEditDiff: unknown) =>
+      renderToString(
+        h(ToolCall, {
+          name: "Bash",
+          driver: "claude",
+          input: { command: "true" },
+          result: makeResult({ toolResult: { bashEditDiff } }),
+          onViewFile: () => {},
+        }),
+      );
+    const unavailable = {
+      ...bashEditDiff,
+      unavailable: true,
+      moreFiles: 2,
+      changedFiles: [
+        ...bashEditDiff.files.map((file) => file.filePath),
+        "/omitted",
+      ],
+    };
+    expect(render(unavailable)).toContain("2 more changed files not shown");
+    expect(render(unavailable)).toContain("diff may be incomplete");
+    expect(render(unavailable)).toContain("omitted");
+    const omittedOnly = render({
+      files: [],
+      moreFiles: 2,
+      changedFiles: ["/omitted"],
+      unavailable: true,
+    });
+    expect(omittedOnly).toContain("2 more changed files not shown");
+    expect(omittedOnly).toContain("omitted");
+    expect(omittedOnly).toContain("diff may be incomplete");
+    expect(
+      render({ ...bashEditDiff, unavailable: true, moreFiles: 0 }),
+    ).toContain("diff may be incomplete");
+    expect(
+      render({ files: [], moreFiles: 0, unavailable: true }),
+    ).not.toContain("diff may be incomplete");
+    expect(render({ files: [], moreFiles: 0, skipped: true })).not.toContain(
+      "filechange-list",
+    );
+  });
+
   it("renders description only — no badge", () => {
     const html = renderBashInput({ command: "ls", description: "list files" });
     expect(html).toContain("list files");

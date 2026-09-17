@@ -18,6 +18,7 @@ vi.hoisted(() => {
 import { reduceMessage } from "./sessionReducer";
 import { qualifiedToolKey } from "./toolIdentity";
 import { type TaskState } from "./types";
+import bashEditDiff from "./testFixtures/claude-bash-edit-diff.json";
 import {
   taskStateFromEntry,
   type TaskSnapshotEntry,
@@ -91,6 +92,14 @@ const EDIT_RESULT = asEvent({
   is_error: false,
 });
 
+const BASH_EDIT_DIFF_RESULT = asEvent({
+  type: "item/result",
+  item_id: "bash-1",
+  content: [{ type: "text", text: "done" }],
+  is_error: false,
+  tool_result: { bashEditDiff },
+});
+
 const SESSION_INIT = asEvent({
   type: "session/init",
   model: "claude-sonnet",
@@ -135,6 +144,64 @@ describe.each([
     expect(tracked?.edits).toHaveLength(1);
     expect(tracked?.edits[0]?.type).toBe("edit");
     expect(tracked?.edits[0]?.source).toBe("claude-tool");
+  });
+
+  it("replays complete Bash edit records identically to a live session", () => {
+    const initialized = reduceMessage(
+      makeReloadedTask(agentName, "claude"),
+      SESSION_INIT,
+    );
+    const replay = reduceMessage(
+      reduceMessage(
+        {
+          ...makeReloadedTask(agentName, "claude"),
+          msgIdCounter: initialized.msgIdCounter,
+        },
+        BASH_STARTED,
+      ),
+      BASH_EDIT_DIFF_RESULT,
+    );
+    const live = reduceMessage(
+      reduceMessage(initialized, BASH_STARTED),
+      BASH_EDIT_DIFF_RESULT,
+    );
+    const paths = bashEditDiff.files.map((file) => file.filePath);
+    const replayRecords = paths.map(
+      (path) => replay.trackedFiles.get(path)?.edits,
+    );
+    const liveRecords = paths.map((path) => live.trackedFiles.get(path)?.edits);
+
+    expect(replayRecords).toEqual(liveRecords);
+    expect(replayRecords).toEqual([
+      [
+        {
+          toolUseId: "bash-1",
+          messageId: "streaming-2",
+          filePath: bashEditDiff.files[0]!.filePath,
+          type: "edit",
+          op: "update",
+          status: "applied",
+          source: "claude-bashEditDiff",
+          changeIndex: 0,
+          turnId: undefined,
+          payload: { mode: "hunks", hunks: bashEditDiff.files[0]!.hunks },
+        },
+      ],
+      [
+        {
+          toolUseId: "bash-1",
+          messageId: "streaming-2",
+          filePath: bashEditDiff.files[1]!.filePath,
+          type: "edit",
+          op: "update",
+          status: "applied",
+          source: "claude-bashEditDiff",
+          changeIndex: 1,
+          turnId: undefined,
+          payload: { mode: "hunks", hunks: bashEditDiff.files[1]!.hunks },
+        },
+      ],
+    ]);
   });
 });
 

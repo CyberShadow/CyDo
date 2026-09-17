@@ -122,6 +122,38 @@ function applyTrackedPatch(content: string, patchText: string): string | null {
 /** Resolve the content for a single FileEdit by looking up the tool_use block
  *  directly from the flat block store.  This avoids storing full file contents
  *  in the reducer — content is only computed when the viewer is actually rendering. */
+function applyStructuredHunks(
+  content: string,
+  hunks: PatchHunk[],
+): string | null {
+  const adaptedHunks = hunks.map((hunk) => ({
+    ...hunk,
+    oldStart: hunk.oldStart + (hunk.oldLines === 0 ? 1 : 0),
+    newStart: hunk.newStart + (hunk.newLines === 0 ? 1 : 0),
+    lines: [...hunk.lines],
+  }));
+  const result = applyPatch(content, {
+    oldFileName: "",
+    newFileName: "",
+    oldHeader: undefined,
+    newHeader: undefined,
+    hunks: adaptedHunks,
+  });
+  return typeof result === "string" ? result : null;
+}
+
+function sparseHunkResolution(
+  hunks: PatchHunk[],
+  isDeleted = false,
+): ResolvedEdit {
+  return {
+    sourceBefore: hunksToOldSource(hunks),
+    sourceAfter: hunksToSource(hunks),
+    patchHunks: hunks,
+    isDeleted,
+  };
+}
+
 function resolveEditContent(
   edit: FileEdit,
   currentContent: string | null,
@@ -168,12 +200,7 @@ function resolveEditContent(
       // Parse the patch text into structured hunks for partial rendering.
       const hunks = parsePatchHunksFromText(edit.payload.patchText);
       if (!hunks?.length) return null;
-      return {
-        sourceBefore: hunksToOldSource(hunks),
-        sourceAfter: hunksToSource(hunks),
-        patchHunks: hunks,
-        isDeleted: edit.op === "delete",
-      };
+      return sparseHunkResolution(hunks, edit.op === "delete");
     }
     const contentAfter = applyTrackedPatch(
       contentBefore,
@@ -188,6 +215,24 @@ function resolveEditContent(
       sourceBefore: contentToSource(contentBefore),
       sourceAfter: contentToSource(contentAfter),
       patchHunks: hunks,
+    };
+  }
+
+  if (edit.payload?.mode === "hunks") {
+    const contentBefore = currentContent ?? originalFile;
+    if (contentBefore == null) {
+      return sparseHunkResolution(edit.payload.hunks, edit.op === "delete");
+    }
+    const contentAfter = applyStructuredHunks(
+      contentBefore,
+      edit.payload.hunks,
+    );
+    if (contentAfter == null) return null;
+    return {
+      sourceBefore: contentToSource(contentBefore),
+      sourceAfter: contentToSource(contentAfter),
+      patchHunks: edit.payload.hunks,
+      isDeleted: edit.op === "delete",
     };
   }
 
@@ -244,7 +289,7 @@ interface ResolvedFileContent {
 }
 
 /** Resolve all edits for a file and return the current (latest) content. */
-function resolveFileContent(
+export function resolveFileContent(
   file: TrackedFile,
   blocks: Map<string, Block>,
   itemIdMap: Map<string, string>,
@@ -306,7 +351,7 @@ function resolveFileContent(
   };
 }
 
-function composeResolvedHunksThrough(
+export function composeResolvedHunksThrough(
   file: TrackedFile,
   resolvedEdits: Map<number, ResolvedEdit>,
   endIdx: number,

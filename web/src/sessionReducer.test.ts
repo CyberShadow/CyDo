@@ -6,6 +6,7 @@ import {
   replaceHistoryBoundary,
 } from "./sessionReducer";
 import { makeTaskState, TaskState } from "./types";
+import bashEditDiff from "./testFixtures/claude-bash-edit-diff.json";
 
 function asEvent(event: object): Parameters<typeof reduceMessage>[1] {
   return event as Parameters<typeof reduceMessage>[1];
@@ -839,6 +840,306 @@ describe("system event suppression", () => {
 });
 
 describe("tracked file edits", () => {
+  it("tracks every included Claude Bash edit-diff hunk at result time", () => {
+    const started = reduceMessage(
+      { ...makeState(), driver: "claude" },
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "bash-edit-diff-1",
+        name: "Bash",
+        input: { command: "git diff" },
+      }),
+    );
+
+    const next = reduceMessage(
+      started,
+      asEvent({
+        type: "item/result",
+        item_id: "bash-edit-diff-1",
+        content: [{ type: "text", text: "done" }],
+        is_error: false,
+        tool_result: { bashEditDiff },
+      }),
+    );
+
+    const impexp = next.trackedFiles.get("/workspace/source/btdu/impexp.d");
+    const paths = next.trackedFiles.get("/workspace/source/btdu/paths.d");
+
+    expect(impexp?.edits).toEqual([
+      {
+        toolUseId: "bash-edit-diff-1",
+        messageId: "streaming-1",
+        filePath: "/workspace/source/btdu/impexp.d",
+        type: "edit",
+        op: "update",
+        status: "applied",
+        source: "claude-bashEditDiff",
+        changeIndex: 0,
+        turnId: undefined,
+        payload: { mode: "hunks", hunks: bashEditDiff.files[0]!.hunks },
+      },
+    ]);
+    expect(paths?.edits).toEqual([
+      {
+        toolUseId: "bash-edit-diff-1",
+        messageId: "streaming-1",
+        filePath: "/workspace/source/btdu/paths.d",
+        type: "edit",
+        op: "update",
+        status: "applied",
+        source: "claude-bashEditDiff",
+        changeIndex: 1,
+        turnId: undefined,
+        payload: { mode: "hunks", hunks: bashEditDiff.files[1]!.hunks },
+      },
+    ]);
+
+    const duplicate = reduceMessage(
+      next,
+      asEvent({
+        type: "item/result",
+        item_id: "bash-edit-diff-1",
+        content: [{ type: "text", text: "done" }],
+        is_error: false,
+        tool_result: { bashEditDiff },
+      }),
+    );
+    expect(
+      duplicate.trackedFiles.get("/workspace/source/btdu/impexp.d")?.edits,
+    ).toHaveLength(1);
+    expect(
+      duplicate.trackedFiles.get("/workspace/source/btdu/paths.d")?.edits,
+    ).toHaveLength(1);
+  });
+
+  it("tracks only included non-skipped Bash sidecar files", () => {
+    const start = (state: TaskState, id: string) =>
+      reduceMessage(
+        state,
+        asEvent({
+          type: "item/started",
+          item_type: "tool_use",
+          item_id: id,
+          name: "Bash",
+          input: { command: "true" },
+        }),
+      );
+    const result = (
+      state: TaskState,
+      id: string,
+      sidecar: unknown,
+      error = false,
+    ) =>
+      reduceMessage(
+        state,
+        asEvent({
+          type: "item/result",
+          item_id: id,
+          content: [],
+          is_error: error,
+          tool_result: sidecar === undefined ? {} : { bashEditDiff: sidecar },
+        }),
+      );
+    const hunk = {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ["-a", "+b"],
+    };
+    let state: TaskState = { ...makeState(), driver: "claude" };
+    state = result(start(state, "created"), "created", {
+      files: [{ filePath: "/created", hunks: [hunk], created: true }],
+      moreFiles: 0,
+    });
+    state = result(start(state, "deleted"), "deleted", {
+      files: [{ filePath: "/deleted", hunks: [hunk], deleted: true }],
+      moreFiles: 0,
+    });
+    state = result(start(state, "shared"), "shared", {
+      files: [{ filePath: "/shared", hunks: [] }],
+      moreFiles: 0,
+      shared: true,
+    });
+    state = result(start(state, "available"), "available", {
+      files: [{ filePath: "/available", hunks: [hunk] }],
+      moreFiles: 0,
+      unavailable: true,
+    });
+    state = result(start(state, "changed-only"), "changed-only", {
+      files: [],
+      moreFiles: 1,
+      changedFiles: ["/changed-only"],
+    });
+    state = result(start(state, "skipped"), "skipped", {
+      files: [{ filePath: "/skipped", hunks: [hunk] }],
+      moreFiles: 0,
+      skipped: true,
+    });
+    state = result(start(state, "empty"), "empty", {
+      files: [],
+      moreFiles: 0,
+      unavailable: true,
+    });
+    state = result(
+      start(state, "error"),
+      "error",
+      { files: [{ filePath: "/error", hunks: [hunk] }], moreFiles: 0 },
+      true,
+    );
+
+    expect(state.trackedFiles.get("/created")?.edits[0]?.op).toBe("add");
+    expect(state.trackedFiles.get("/deleted")?.edits[0]?.op).toBe("delete");
+    expect(state.trackedFiles.get("/shared")?.edits[0]?.payload).toEqual({
+      mode: "hunks",
+      hunks: [],
+    });
+    expect(state.trackedFiles.get("/available")?.edits).toHaveLength(1);
+    for (const path of ["/changed-only", "/skipped", "/empty", "/error"]) {
+      expect(state.trackedFiles.has(path)).toBe(false);
+    }
+  });
+
+  it("leaves tracked files unchanged when a Bash result has no sidecar", () => {
+    const started = reduceMessage(
+      { ...makeState(), driver: "claude" },
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "bash-without-sidecar",
+        name: "Bash",
+        input: { command: "true" },
+      }),
+    );
+    const next = reduceMessage(
+      started,
+      asEvent({
+        type: "item/result",
+        item_id: "bash-without-sidecar",
+        content: [],
+        is_error: false,
+        tool_result: {},
+      }),
+    );
+
+    expect(next.trackedFiles).toEqual(started.trackedFiles);
+    expect(next.trackedFiles.has("/empty")).toBe(false);
+  });
+
+  it("appends Bash edits after existing Claude Write and Edit records", () => {
+    const target = "/tmp/project/ordered.txt";
+    const start = (state: TaskState, id: string, name: string, input: object) =>
+      reduceMessage(
+        state,
+        asEvent({
+          type: "item/started",
+          item_type: "tool_use",
+          item_id: id,
+          name,
+          input,
+        }),
+      );
+    const result = (state: TaskState, id: string, tool_result?: object) =>
+      reduceMessage(
+        state,
+        asEvent({
+          type: "item/result",
+          item_id: id,
+          content: [],
+          is_error: false,
+          tool_result,
+        }),
+      );
+    let state: TaskState = { ...makeState(), driver: "claude" };
+    state = result(
+      start(state, "write", "Write", { file_path: target, content: "a\n" }),
+      "write",
+    );
+    state = result(
+      start(state, "edit", "Edit", {
+        file_path: target,
+        old_string: "a",
+        new_string: "b",
+      }),
+      "edit",
+    );
+    state = result(start(state, "bash", "Bash", { command: "true" }), "bash", {
+      bashEditDiff: {
+        files: [
+          {
+            filePath: target,
+            hunks: [
+              {
+                oldStart: 1,
+                oldLines: 1,
+                newStart: 1,
+                newLines: 1,
+                lines: ["-b", "+c"],
+              },
+            ],
+          },
+        ],
+        moreFiles: 0,
+      },
+    });
+
+    expect(state.trackedFiles.get(target)?.edits).toEqual([
+      expect.objectContaining({
+        source: "claude-tool",
+        status: "applied",
+        payload: { mode: "full_content", content: "a\n" },
+      }),
+      expect.objectContaining({
+        source: "claude-tool",
+        status: "applied",
+        payload: { mode: "none" },
+      }),
+      expect.objectContaining({
+        source: "claude-bashEditDiff",
+        status: "applied",
+        changeIndex: 0,
+        payload: {
+          mode: "hunks",
+          hunks: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ["-b", "+c"],
+            },
+          ],
+        },
+      }),
+    ]);
+  });
+
+  it("does not silently accept malformed Bash sidecars", () => {
+    const started = reduceMessage(
+      { ...makeState(), driver: "claude" },
+      asEvent({
+        type: "item/started",
+        item_type: "tool_use",
+        item_id: "bad",
+        name: "Bash",
+        input: {},
+      }),
+    );
+    const deliver = (bashEditDiff: unknown) =>
+      reduceMessage(
+        started,
+        asEvent({
+          type: "item/result",
+          item_id: "bad",
+          content: [],
+          is_error: false,
+          tool_result: { bashEditDiff },
+        }),
+      );
+    expect(() => deliver({ files: "bad", moreFiles: 0 })).toThrow();
+  });
+
   it("tracks codex fileChange markdown add events as full-content edits", () => {
     const state = {
       ...makeState(),

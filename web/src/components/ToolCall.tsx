@@ -34,6 +34,8 @@ import {
 } from "../lib/fileFormats";
 import {
   getApplyPatchFileChanges,
+  getBashEditDiff,
+  getBashEditDiffFileChanges,
   getNormalizedFilePaths,
   parseCodexFileChanges,
   type NormalizedFileChange,
@@ -443,14 +445,49 @@ function WriteInput({ input }: { input: Record<string, unknown> }) {
   );
 }
 
+function ViewFileButton({
+  path,
+  onViewFile,
+}: {
+  path: string;
+  onViewFile: (filePath: string) => void;
+}) {
+  return (
+    <button
+      class="tool-view-file"
+      onClick={(e) => {
+        e.stopPropagation();
+        onViewFile(path);
+      }}
+      title="View file"
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+    </button>
+  );
+}
+
 function FileChangeRow({
   change,
   showMeta,
   preservePatchSource = false,
+  onViewFile,
 }: {
   change: NormalizedFileChange;
   showMeta: boolean;
   preservePatchSource?: boolean;
+  onViewFile?: (filePath: string) => void;
 }) {
   const path = change.path ?? undefined;
   const renderableContentFormat = detectRenderableFormat(path, change.content);
@@ -497,6 +534,9 @@ function FileChangeRow({
         <div class="tool-input-field filechange-meta">
           <span class="tool-subtitle-tag">{change.label}</span>
           <FileChangePathDisplay path={change.path} />
+          {change.path && onViewFile && (
+            <ViewFileButton path={change.path} onViewFile={onViewFile} />
+          )}
         </div>
       )}
       {canRenderAddedContent &&
@@ -1657,6 +1697,7 @@ const knownResultFields: Record<string, Set<string>> = {
     // Claude 2.1.26x reports a commit a Bash call produced; CyDo derives
     // commit state from the repository itself, so this is informational.
     "gitOperation",
+    "bashEditDiff",
   ]),
   "codex/commandExecution": new Set([
     "exitCode",
@@ -2798,6 +2839,7 @@ function formatCommandExecutionResult(
  */
 function formatBashResult(
   toolResult: Record<string, unknown>,
+  onViewFile?: (filePath: string) => void,
 ): h.JSX.Element | null {
   const fields: Record<string, unknown> = {};
   if (typeof toolResult.stderr === "string" && toolResult.stderr.length > 0)
@@ -2808,8 +2850,47 @@ function formatBashResult(
     toolResult.returnCodeInterpretation.length > 0
   )
     fields.returnCodeInterpretation = toolResult.returnCodeInterpretation;
-  if (Object.keys(fields).length === 0) return null;
-  return formatGenericInput(fields);
+  const bashEditDiff = getBashEditDiff(toolResult);
+  const renderDiff = bashEditDiff !== null && !bashEditDiff.skipped;
+  const changes = renderDiff ? getBashEditDiffFileChanges(bashEditDiff) : [];
+  const omittedPaths = renderDiff
+    ? (bashEditDiff.changedFiles ?? []).filter(
+        (path) => !bashEditDiff.files.some((file) => file.filePath === path),
+      )
+    : [];
+  const hasOmittedFiles = renderDiff && bashEditDiff.moreFiles > 0;
+  const hasIncompleteDiff =
+    renderDiff &&
+    bashEditDiff.unavailable === true &&
+    (changes.length > 0 || hasOmittedFiles);
+  const metadata =
+    hasOmittedFiles || hasIncompleteDiff ? (
+      <div class="tool-input-field">
+        {hasOmittedFiles && (
+          <span>{bashEditDiff.moreFiles} more changed files not shown</span>
+        )}
+        {hasIncompleteDiff && <span> diff may be incomplete</span>}
+        {omittedPaths.map((path) => (
+          <PathDisplay key={path} path={path} />
+        ))}
+      </div>
+    ) : null;
+  const children =
+    changes.length > 0 || metadata ? (
+      <div class="filechange-list">
+        {changes.map((change, index) => (
+          <FileChangeRow
+            key={index}
+            change={change}
+            showMeta={true}
+            onViewFile={onViewFile}
+          />
+        ))}
+        {metadata}
+      </div>
+    ) : null;
+  if (Object.keys(fields).length === 0 && !children) return null;
+  return formatGenericInput(fields, children ?? undefined);
 }
 
 /**
@@ -3136,7 +3217,10 @@ export const ToolCall = memo(
         )
       : null;
     const bashElement = useBashResult
-      ? formatBashResult(result.toolResult as Record<string, unknown>)
+      ? formatBashResult(
+          result.toolResult as Record<string, unknown>,
+          onViewFile,
+        )
       : null;
     const resultImagesElement =
       !useReadHighlight && result ? renderResultImages(result.content) : null;
@@ -3252,28 +3336,7 @@ export const ToolCall = memo(
             isFileWriteTool(name, driver)) &&
             viewPaths.length > 0 &&
             onViewFile && (
-              <button
-                class="tool-view-file"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onViewFile(viewPaths[0]!);
-                }}
-                title="View file"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                  <circle cx="12" cy="12" r="3" />
-                </svg>
-              </button>
+              <ViewFileButton path={viewPaths[0]!} onViewFile={onViewFile} />
             )}
         </div>
         {inputOpen &&
