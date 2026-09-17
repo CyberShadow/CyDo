@@ -114,15 +114,7 @@ class ClaudeCodeAgent : Agent
 		return new ClaudeCodeSession(claudeBin, resumeSessionId, launch.cmdPrefix,
 			lastMcpConfigPath_, config,
 			(string sessionId, string cwd) {
-				import std.path : buildPath;
-				// The init event's cwd is the CLI's own observed CWD — the
-				// one Claude mangles into its project directory name.
-				enforce(cwd.length > 0,
-					"Claude session initialization did not provide a CWD");
-				registerHistoryPath(sessionId,
-					buildPath(profile.root, "projects", mangleProjectPath(cwd),
-						sessionId ~ ".jsonl"),
-					profile);
+				registerLiveHistoryPath(sessionId, cwd, profile);
 			});
 	}
 
@@ -443,6 +435,60 @@ class ClaudeCodeAgent : Agent
 		registeredHistoryPaths_[profile.root][sessionId] = path;
 	}
 
+	/// Bind a live session to its history file, given the CWD its init event
+	/// reported.
+	///
+	/// Claude names a project directory after the CLI process's own observed
+	/// CWD, so that CWD locates the transcript of a session Claude is
+	/// *creating*. It does not locate the transcript of one that already
+	/// exists — Claude keeps appending to the file it has, wherever that is,
+	/// and merely materializes an empty project directory for the new name.
+	/// The two disagree in two ways seen in practice:
+	///
+	/// - the session CWD moves under a running process (a `cd` in a Bash tool
+	///   call), and Claude re-announces it in a fresh init event on a later
+	///   turn of that same process;
+	/// - a process resumes a session somewhere other than where it was
+	///   created, because the project directory moved or its CWD is respelled
+	///   across sandbox changes.
+	///
+	/// The derived location is therefore a candidate, never an authority.
+	private void registerLiveHistoryPath(string sessionId, string cwd,
+		const ref NativeHistoryProfile profile)
+	{
+		import std.logger : tracef;
+		import std.path : buildPath;
+		enforce(cwd.length > 0,
+			"Claude session initialization did not provide a CWD");
+		auto derived = buildPath(profile.root, "projects", mangleProjectPath(cwd),
+			sessionId ~ ".jsonl");
+		auto chosen = preferExistingHistoryPath(derived,
+			historyPath(sessionId, profile));
+		if (chosen != derived)
+			tracef("Claude session %s reported CWD %s; keeping its history at %s "
+				~ "rather than the CWD-derived %s", sessionId, cwd, chosen, derived);
+		registeredHistoryPaths_[profile.root][sessionId] = chosen;
+	}
+
+	/// Choose between a CWD-derived candidate and a location CyDo already
+	/// knows. A file that exists beats one that does not; when both exist the
+	/// newest wins, the same way the profile scan resolves a session ID that
+	/// appears in two project directories. When neither exists the known path
+	/// wins: it was learned first-hand (a fork destination, an imported
+	/// locator, an earlier init of this same session), while the candidate is
+	/// only a guess about where a file is about to appear.
+	private static string preferExistingHistoryPath(string derived, string known)
+	{
+		import std.file : exists, timeLastModified;
+		if (known.length == 0 || known == derived)
+			return derived;
+		auto derivedExists = exists(derived);
+		if (derivedExists && exists(known))
+			return timeLastModified(derived) >= timeLastModified(known)
+				? derived : known;
+		return derivedExists ? derived : known;
+	}
+
 	string createHistoryForkDestination(string sessionId, string sourceHistoryPath,
 		const ref NativeHistoryProfile profile)
 	{
@@ -516,6 +562,67 @@ class ClaudeCodeAgent : Agent
 		auto destination = agent.createHistoryForkDestination(idC, pathA, profile);
 		assert(destination == buildPath(sandboxDir, idC ~ ".jsonl"));
 		assert(agent.historyPath(idC, profile) == destination);
+	}
+
+	// A live session's init CWD locates a new session's transcript, but not
+	// an existing one's: Claude keeps appending to the file it already has
+	// and leaves the CWD-derived project directory empty, whether the CWD
+	// moved under the running process or the session resumed elsewhere.
+	unittest
+	{
+		import std.datetime.systime : SysTime;
+		import std.file : exists, mkdirRecurse, rmdirRecurse, setTimes, write;
+		import std.path : buildPath;
+
+		auto root = buildPath("/tmp", "cydo-claude-live-history-path");
+		if (exists(root))
+			rmdirRecurse(root);
+		scope (exit)
+			if (exists(root))
+				rmdirRecurse(root);
+		enum created = "/home/user/proj";
+		enum resumed = "/home/user/proj-moved";
+		auto createdDir = buildPath(root, "projects", "-home-user-proj");
+		auto resumedDir = buildPath(root, "projects", "-home-user-proj-moved");
+		mkdirRecurse(createdDir);
+		mkdirRecurse(resumedDir);  // Claude materializes it, empty
+		enum idA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+		enum idB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+		auto agent = new ClaudeCodeAgent();
+		auto profile = NativeHistoryProfile(AgentDriver.claude, root);
+		auto createdPath = buildPath(createdDir, idA ~ ".jsonl");
+
+		// 23. a session Claude is creating has no transcript yet, so the
+		// CWD-derived location is all there is to go on
+		agent.registerLiveHistoryPath(idA, created, profile);
+		assert(agent.historyPath(idA, profile) == createdPath);
+
+		// 24. a later init naming a different CWD — the session moved, or it
+		// resumed elsewhere — keeps the transcript Claude is actually
+		// writing, rather than the empty directory that CWD names
+		write(createdPath, "");
+		agent.registerLiveHistoryPath(idA, resumed, profile);
+		assert(agent.historyPath(idA, profile) == createdPath);
+
+		// 25. repeating that init is stable, and never throws the way a plain
+		// re-registration of a conflicting path does
+		agent.registerLiveHistoryPath(idA, resumed, profile);
+		assert(agent.historyPath(idA, profile) == createdPath);
+
+		// 26. when both locations hold a transcript the newest wins, matching
+		// how the profile scan resolves a session ID in two directories
+		auto stale = buildPath(createdDir, idB ~ ".jsonl");
+		auto fresh = buildPath(resumedDir, idB ~ ".jsonl");
+		write(stale, "");
+		write(fresh, "");
+		auto older = SysTime.fromUnixTime(1_000_000);
+		auto newer = SysTime.fromUnixTime(2_000_000);
+		setTimes(stale, older, older);
+		setTimes(fresh, newer, newer);
+		agent.registerHistoryPath(idB, stale, profile);
+		agent.registerLiveHistoryPath(idB, resumed, profile);
+		assert(agent.historyPath(idB, profile) == fresh);
 	}
 
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
