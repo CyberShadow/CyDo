@@ -80,6 +80,7 @@ import cydo.agent.drivers.codex : CodexSession;
 import cydo.runtime.config : AgentConfig, AgentDriver, CydoConfig, PathMode, SandboxConfig, WorkspaceConfig;
 import cydo.domain.storage.persistence : LoadedHistory, Persistence, openDatabase;
 import cydo.server.config_resolution : loadRuntimeConfig, reloadRuntimeConfig;
+import cydo.server.environment : consumeServerEnvironment;
 import cydo.runtime.launch.sandbox : cleanup, resolveExecutablePath, runtimeDir, sharedTmpBaseDir;
 import cydo.runtime.launch.types : NativeHistoryProfile, NativeHistoryRule;
 import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, OutputType, WorktreeMode, byName, loadTaskTypes,
@@ -216,6 +217,8 @@ class App
 	private bool shuttingDown;
 	void start()
 	{
+		// Consume server-only settings before anything can spawn a child.
+		auto serverEnv = consumeServerEnvironment();
 		initLogger();
 		applyConfiguredLogLevel("info");
 		{
@@ -964,14 +967,12 @@ class App
 
 		discoveryService.enumerateSessions();
 
-		import std.process : environment;
-
-		auto sslCert = environment.get("CYDO_TLS_CERT", null);
-		auto sslKey = environment.get("CYDO_TLS_KEY", null);
+		auto sslCert = serverEnv.tlsCert;
+		auto sslKey = serverEnv.tlsKey;
 		import core.sys.posix.unistd : isatty, STDERR_FILENO;
 
-		auto userEnv = environment.get("CYDO_AUTH_USER", null);
-		auto passEnv = environment.get("CYDO_AUTH_PASS", null);
+		auto userEnv = serverEnv.authUser;
+		auto passEnv = serverEnv.authPass;
 		bool generatedCredentials;
 
 		if (passEnv is null)
@@ -1006,7 +1007,7 @@ class App
 		transport.startHttpServer(sslCert, sslKey);
 		auto server = transport.server;
 
-		auto listenSocket = environment.get("CYDO_LISTEN_SOCKET", null);
+		auto listenSocket = serverEnv.listenSocket;
 		if (listenSocket)
 		{
 			import std.file : remove;
@@ -1025,8 +1026,8 @@ class App
 		else
 		{
 			import std.conv : to;
-			auto listenAddrEnv = environment.get("CYDO_LISTEN_ADDRESS", "localhost");
-			auto listenPort = to!ushort(environment.get("CYDO_LISTEN_PORT", "3940"));
+			auto listenAddrEnv = serverEnv.listenAddress is null ? "localhost" : serverEnv.listenAddress;
+			auto listenPort = to!ushort(serverEnv.listenPort is null ? "3940" : serverEnv.listenPort);
 			auto listenAddr = listenAddrEnv == "*" ? null : listenAddrEnv;
 
 			auto port = server.listen(listenPort, listenAddr);
