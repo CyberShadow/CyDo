@@ -1654,6 +1654,9 @@ const knownResultFields: Record<string, Set<string>> = {
     "assistantAutoBackgrounded",
     "persistedOutputPath",
     "persistedOutputSize",
+    // Claude 2.1.26x reports a commit a Bash call produced; CyDo derives
+    // commit state from the repository itself, so this is informational.
+    "gitOperation",
   ]),
   "codex/commandExecution": new Set([
     "exitCode",
@@ -1737,6 +1740,10 @@ const knownResultFields: Record<string, Set<string>> = {
     "tmux_pane_id",
     "tmux_session_name",
     "tmux_window_name",
+    // Claude 2.1.26x subagent accounting.
+    "harnessNoteCount",
+    "harnessTailCount",
+    "harnessSectionHash",
   ]),
   "claude/Agent": new Set([
     "status",
@@ -1766,6 +1773,10 @@ const knownResultFields: Record<string, Set<string>> = {
     "tmux_pane_id",
     "tmux_session_name",
     "tmux_window_name",
+    // Claude 2.1.26x subagent accounting.
+    "harnessNoteCount",
+    "harnessTailCount",
+    "harnessSectionHash",
   ]),
   "claude/TaskCreate": new Set(["task"]),
   "claude/TaskGet": new Set(["task"]),
