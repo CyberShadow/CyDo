@@ -1024,6 +1024,7 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 		return null;
 
 	string resultUuid;
+	string resultPromptId;
 	bool rewroteResult;
 	string[] rewritten;
 	foreach (line; lines)
@@ -1058,6 +1059,7 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 					record.object["toolUseResult"] = JSONValue(resultText);
 					record.object.remove("toolDenialKind");
 					resultUuid = interruptedToolCallStringAt(record, "uuid");
+					resultPromptId = interruptedToolCallStringAt(record, "promptId");
 					rewritten ~= record.toString();
 					rewroteResult = true;
 					continue;
@@ -1070,6 +1072,7 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 		return null;
 
 	string interruptionUuid;
+	string interruptionParentUuid;
 	string[] withoutInterruption;
 	foreach (line; rewritten)
 	{
@@ -1084,9 +1087,18 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 
 		if (interruptionUuid.length == 0
 			&& interruptedToolCallStringAt(record, "type") == "user"
-			&& interruptedToolCallStringAt(record, "parentUuid") == resultUuid
+			&& (interruptedToolCallStringAt(record, "parentUuid") == resultUuid
+				|| (resultPromptId.length > 0
+					&& interruptedToolCallStringAt(record, "promptId") == resultPromptId))
 			&& interruptedToolCallHasKey(record, "message"))
 		{
+			auto markerUuid = interruptedToolCallStringAt(record, "uuid");
+			auto markerParentUuid = interruptedToolCallStringAt(record, "parentUuid");
+			if (markerUuid.length == 0 || markerParentUuid.length == 0)
+			{
+				withoutInterruption ~= line;
+				continue;
+			}
 			auto message = record.object["message"];
 			if (interruptedToolCallHasKey(message, "content")
 				&& message.object["content"].type == JSONType.array
@@ -1098,9 +1110,9 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 					&& (text == "[Request interrupted by user for tool use]"
 						|| text == "[Request interrupted by user]"))
 				{
-					interruptionUuid = interruptedToolCallStringAt(record, "uuid");
-					if (interruptionUuid.length > 0)
-						continue;
+					interruptionUuid = markerUuid;
+					interruptionParentUuid = markerParentUuid;
+					continue;
 				}
 			}
 		}
@@ -1108,6 +1120,7 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 	}
 	if (interruptionUuid.length == 0)
 		return new InterruptedToolCallRepair(withoutInterruption);
+	assert(interruptionParentUuid.length > 0);
 
 	string[] repaired;
 	foreach (line; withoutInterruption)
@@ -1125,7 +1138,7 @@ InterruptedToolCallRepair repairInterruptedToolCallImpl(string[] lines, string t
 		foreach (key; ["leafUuid", "parentUuid"])
 			if (interruptedToolCallStringAt(record, key) == interruptionUuid)
 			{
-				record.object[key] = JSONValue(resultUuid);
+				record.object[key] = JSONValue(interruptionParentUuid);
 				changed = true;
 			}
 		repaired ~= changed ? record.toString() : line;
@@ -1161,6 +1174,71 @@ unittest
 	assert(older !is null && older.lines.length == 3);
 	assert(older.removedInterruptionUuid == "u2");
 	assert(parseJSON(older.lines[2])["leafUuid"].str == "u1");
+
+	// Claude 2.1.272 may put an attachment between the rewritten result and
+	// its native interruption marker. promptId links the two records; removing
+	// the marker must retain that attachment as the parent of subsequent rows.
+	auto attachment = `{"type":"attachment","uuid":"at1","parentUuid":"u1","promptId":"p1"}`;
+	auto attachedInterruption = `{"type":"user","uuid":"u3","parentUuid":"at1","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`;
+	auto attachedChild = `{"type":"assistant","uuid":"a2","parentUuid":"u3","promptId":"p1","message":{"content":[]}}`;
+	auto attachedLastPrompt = `{"type":"last-prompt","leafUuid":"u3","sessionId":"session"}`;
+	auto promptLinked = repairInterruptedToolCallImpl([
+		assistant,
+		`{"type":"user","uuid":"u1","parentUuid":"a1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","content":"rejected","is_error":true,"tool_use_id":"toolu_switch"}]}}`,
+		attachment, attachedInterruption, attachedChild, attachedLastPrompt,
+	], "mcp__cydo__SwitchMode", "RESULT");
+	assert(promptLinked !is null && promptLinked.lines.length == 5);
+	assert(promptLinked.removedInterruptionUuid == "u3");
+	assert(parseJSON(promptLinked.lines[2])["uuid"].str == "at1");
+	assert(parseJSON(promptLinked.lines[3])["parentUuid"].str == "at1");
+	assert(parseJSON(promptLinked.lines[4])["leafUuid"].str == "at1");
+
+	// Exact native marker text alone is not enough: a different transaction's
+	// interruption must survive when it is neither a result child nor prompt-linked.
+	auto unrelatedInterruption = `{"type":"user","uuid":"other-u","parentUuid":"other-parent","promptId":"other-prompt","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`;
+	auto unrelatedMarker = repairInterruptedToolCallImpl([
+		assistant,
+		`{"type":"user","uuid":"u1","parentUuid":"a1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","content":"rejected","is_error":true,"tool_use_id":"toolu_switch"}]}}`,
+		unrelatedInterruption,
+	], "mcp__cydo__SwitchMode", "RESULT");
+	assert(unrelatedMarker !is null && unrelatedMarker.lines.length == 3);
+	assert(unrelatedMarker.removedInterruptionUuid.length == 0);
+	assert(unrelatedMarker.lines[2] == unrelatedInterruption);
+
+	// Missing prompt IDs cannot link an indirect marker to the repaired result.
+	auto missingPromptMarker = `{"type":"user","uuid":"u3","parentUuid":"at1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`;
+	auto missingPromptIds = repairInterruptedToolCallImpl([
+		assistant, rejected,
+		`{"type":"attachment","uuid":"at1","parentUuid":"u1"}`,
+		missingPromptMarker,
+	], "mcp__cydo__SwitchMode", "RESULT");
+	assert(missingPromptIds !is null && missingPromptIds.lines.length == 4);
+	assert(missingPromptIds.removedInterruptionUuid.length == 0);
+	assert(missingPromptIds.lines[3] == missingPromptMarker);
+
+	// A prompt-linked native marker without a usable linkage cannot be removed
+	// because descendants have no valid parent to target.
+	auto missingParentMarker = `{"type":"user","uuid":"u3","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`;
+	auto missingParent = repairInterruptedToolCallImpl([
+		assistant,
+		`{"type":"user","uuid":"u1","parentUuid":"a1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","content":"rejected","is_error":true,"tool_use_id":"toolu_switch"}]}}`,
+		missingParentMarker,
+	], "mcp__cydo__SwitchMode", "RESULT");
+	assert(missingParent !is null && missingParent.lines.length == 3);
+	assert(missingParent.removedInterruptionUuid.length == 0);
+	assert(missingParent.lines[2] == missingParentMarker);
+
+	// A marker UUID is likewise required before an indirect marker can be
+	// selected and subsequently relinked.
+	auto missingUuidMarker = `{"type":"user","parentUuid":"at1","promptId":"p1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`;
+	auto missingUuid = repairInterruptedToolCallImpl([
+		assistant,
+		`{"type":"user","uuid":"u1","parentUuid":"a1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","content":"rejected","is_error":true,"tool_use_id":"toolu_switch"}]}}`,
+		missingUuidMarker,
+	], "mcp__cydo__SwitchMode", "RESULT");
+	assert(missingUuid !is null && missingUuid.lines.length == 3);
+	assert(missingUuid.removedInterruptionUuid.length == 0);
+	assert(missingUuid.lines[2] == missingUuidMarker);
 
 	auto noInterruption = repairInterruptedToolCallImpl([assistant, rejected],
 		"mcp__cydo__SwitchMode", "RESULT");
@@ -1386,7 +1464,10 @@ class ClaudeCodeSession : AgentSession
 			claudeArgs ~= ["--effort", config.effort];
 
 		if (config.appendSystemPrompt.length > 0)
-			claudeArgs ~= ["--append-system-prompt", config.appendSystemPrompt];
+			claudeArgs ~= [
+				"--append-system-prompt", config.appendSystemPrompt,
+				"--system-prompt-snapshot", "off",
+			];
 
 		// Monitor interacts poorly with batch execution: the agent may yield its
 		// turn (producing a result) after calling Monitor, expecting a ping when
