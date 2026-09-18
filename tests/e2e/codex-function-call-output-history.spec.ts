@@ -229,437 +229,455 @@ async function replayAndFindTaskTool(
   return taskTool;
 }
 
-test("live invalid child task_type returns structured task error payload", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  await page.goto("/");
-  await page.locator('button[title="New task"]').first().click();
+test(
+  "live invalid child task_type returns structured task error payload",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    await page.goto("/");
+    await page.locator('button[title="New task"]').first().click();
 
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled();
+    const input = page.locator(".input-textarea:visible").first();
+    await expect(input).toBeEnabled();
 
-  await input.fill("call task invalid_type reproduce the bug");
-  await page.locator(".btn-send:visible").first().click();
+    await input.fill("call task invalid_type reproduce the bug");
+    await page.locator(".btn-send:visible").first().click();
 
-  const toolError = "Task type 'invalid_type' is not in creatable_tasks";
-  const taskTool = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "Task" }),
-  });
-  await expect(taskTool).toContainText(toolError);
-  const taskText = await taskTool.innerText();
-  expect(taskText).not.toContain("0: T");
+    const toolError = "Task type 'invalid_type' is not in creatable_tasks";
+    const taskTool = page.locator(".tool-call").filter({
+      has: page.locator(".tool-name", { hasText: "Task" }),
+    });
+    await expect(taskTool).toContainText(toolError);
+    const taskText = await taskTool.innerText();
+    expect(taskText).not.toContain("0: T");
 
-  const rolloutPath = findRolloutJsonl(
-    join(restartableBackend.codexHome, "sessions"),
-  );
-  expect(rolloutPath).not.toBeNull();
+    const rolloutPath = findRolloutJsonl(
+      join(restartableBackend.codexHome, "sessions"),
+    );
+    expect(rolloutPath).not.toBeNull();
 
-  const outputPayloads = readFunctionCallOutputs(rolloutPath!);
-  const invalidTaskOutput = outputPayloads.find((out) =>
-    out.includes("not in creatable_tasks"),
-  );
-  expect(invalidTaskOutput).toBeTruthy();
-  expect(invalidTaskOutput!).toContain('"error"');
-});
+    const outputPayloads = readFunctionCallOutputs(rolloutPath!);
+    const invalidTaskOutput = outputPayloads.find((out) =>
+      out.includes("not in creatable_tasks"),
+    );
+    expect(invalidTaskOutput).toBeTruthy();
+    expect(invalidTaskOutput!).toContain('"error"');
+  },
+);
 
-test("codex history replay renders primitive task error as one message", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
+test(
+  "codex history replay renders primitive task error as one message",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
 
-  const callId = "call_axv2WYmc7W5v0I3un7in9Hvl";
-  const toolError =
-    "Task type 'execute' is not in creatable_tasks for 'plan_mode'. Allowed: plan, quick_research, deep_research, spike";
+    const callId = "call_axv2WYmc7W5v0I3un7in9Hvl";
+    const toolError =
+      "Task type 'execute' is not in creatable_tasks for 'plan_mode'. Allowed: plan, quick_research, deep_research, spike";
 
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-03-27T07:32:23.000Z",
-        type: "response_item",
-        payload: {
-          type: "function_call",
-          call_id: callId,
-          name: "mcp__cydo__Task",
-          arguments:
-            '{"tasks":[{"task_type":"execute","prompt":"reproduce the bug","description":"Invalid task"}]}',
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-03-27T07:32:23.428Z",
-        type: "response_item",
-        payload: {
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({ tasks: [toolError] }),
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-
-  const taskTool = await replayAndFindTaskTool(
-    page,
-    restartableBackend,
-    taskUrl,
-  );
-  await expect(taskTool).toContainText(toolError);
-  const taskText = await taskTool.innerText();
-  expect(taskText).not.toContain("0: T");
-});
-
-test("codex history replay renders structured task error object cleanly", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
-
-  const callId = "call_structured_task_error";
-  const toolError =
-    "Task type 'execute' is not in creatable_tasks for 'plan_mode'. Allowed: plan, quick_research, deep_research, spike";
-
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-03-27T07:33:23.000Z",
-        type: "response_item",
-        payload: {
-          type: "function_call",
-          call_id: callId,
-          name: "mcp__cydo__Task",
-          arguments:
-            '{"tasks":[{"task_type":"execute","prompt":"reproduce the bug","description":"Invalid task"}]}',
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-03-27T07:33:23.428Z",
-        type: "response_item",
-        payload: {
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({
-            tasks: [{ summary: toolError, error: toolError }],
-          }),
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-
-  const taskTool = await replayAndFindTaskTool(
-    page,
-    restartableBackend,
-    taskUrl,
-  );
-  await expect(taskTool).toContainText(toolError);
-  const taskText = await taskTool.innerText();
-  expect(taskText).not.toContain("0: T");
-});
-
-test("codex history replay keeps successful structured task rendering", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
-
-  const callId = "call_structured_task_success";
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-03-27T07:34:23.000Z",
-        type: "response_item",
-        payload: {
-          type: "function_call",
-          call_id: callId,
-          name: "mcp__cydo__Task",
-          arguments:
-            '{"tasks":[{"task_type":"plan","prompt":"draft plan","description":"Plan task"}]}',
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-03-27T07:34:23.428Z",
-        type: "response_item",
-        payload: {
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({
-            tasks: [
-              {
-                summary: "Task finished successfully",
-                output_file: "/tmp/out.md",
-                note: "Read the output file for full findings.",
-              },
-            ],
-          }),
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-
-  const taskTool = await replayAndFindTaskTool(
-    page,
-    restartableBackend,
-    taskUrl,
-  );
-  await expect(taskTool).toContainText("Task finished successfully");
-  await expect(taskTool).toContainText("output_file:");
-  await expect(taskTool).toContainText("/tmp/out.md");
-});
-
-test("codex history replay renders custom exec output as one expanded tool", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
-  await expect(assistantText(page, "seed-history")).toBeVisible();
-  const diagnostics = page
-    .locator(".message.system-message")
-    .filter({ hasText: "Unrecognized agent data" });
-  const diagnosticCount = await diagnostics.count();
-
-  const callId = "call_custom_exec_history";
-  const script =
-    'const result = await tools.exec_command({ cmd: "pwd" });\ntext(result.output);';
-  appendFileSync(
-    rolloutPath,
-    [
-      JSON.stringify({
-        timestamp: "2026-03-27T07:35:23.000Z",
-        type: "response_item",
-        payload: {
-          type: "custom_tool_call",
-          call_id: callId,
-          name: "exec",
-          input: script,
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-03-27T07:35:23.428Z",
-        type: "response_item",
-        payload: {
-          type: "custom_tool_call_output",
-          call_id: callId,
-          output: [
-            { type: "input_text", text: "first " },
-            { type: "input_text", text: "second" },
-          ],
-        },
-      }),
-      "",
-    ].join("\n"),
-  );
-
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
-  await expect(assistantText(page, "seed-history")).toBeVisible();
-
-  const execTool = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "exec" }),
-  });
-  await expect(execTool).toHaveCount(1);
-  await expect(execTool.locator(".write-content")).toHaveText(script);
-  await expect(execTool.locator(".field-label", { hasText: "input:" })).toHaveCount(0);
-  await expect(execTool.locator(".write-content span").first()).toBeVisible();
-  const scriptCopy = execTool
-    .locator(".code-pre-wrap")
-    .first()
-    .locator('button[title="Copy to clipboard"]');
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
-    origin: "http://localhost:3940",
-  });
-  await expect(scriptCopy).toBeVisible();
-  await scriptCopy.click();
-  await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toBe(script);
-  await expect(execTool).toContainText("first second");
-  await expect(diagnostics).toHaveCount(diagnosticCount);
-});
-
-test("codex history replay renders wait output", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
-  await expect(assistantText(page, "seed-history")).toBeVisible();
-  const diagnostics = page
-    .locator(".message.system-message")
-    .filter({ hasText: "Unrecognized agent data" });
-  const diagnosticCount = await diagnostics.count();
-
-  const waitCases = [
-    ["cell_second_boundary", 999.95, "1s"],
-    ["cell_one_second", 1000, "1s"],
-    ["cell_ten_seconds", 10_000, "10s"],
-    ["cell_fractional_second", 1500, "1.5s"],
-    ["cell_minute_boundary", 59_999, "1m"],
-    ["cell_hour", 3_600_000, "1h"],
-    ["cell_hour_boundary", 3_599_999, "1h"],
-  ] as const;
-  appendFileSync(
-    rolloutPath,
-    [
-      ...waitCases.flatMap(([cellId, yieldTimeMs]) => [
+    appendFileSync(
+      rolloutPath,
+      [
         JSON.stringify({
-          timestamp: "2026-03-27T07:35:24.000Z",
+          timestamp: "2026-03-27T07:32:23.000Z",
           type: "response_item",
           payload: {
             type: "function_call",
-            call_id: `call_wait_${cellId}`,
-            name: "wait",
-            arguments: JSON.stringify({
-              cell_id: cellId,
-              yield_time_ms: yieldTimeMs,
-              max_tokens: 2000,
-            }),
+            call_id: callId,
+            name: "mcp__cydo__Task",
+            arguments:
+              '{"tasks":[{"task_type":"execute","prompt":"reproduce the bug","description":"Invalid task"}]}',
           },
         }),
         JSON.stringify({
-          timestamp: "2026-03-27T07:35:24.428Z",
+          timestamp: "2026-03-27T07:32:23.428Z",
           type: "response_item",
           payload: {
             type: "function_call_output",
-            call_id: `call_wait_${cellId}`,
-            output: "Command finished.",
+            call_id: callId,
+            output: JSON.stringify({ tasks: [toolError] }),
           },
         }),
-      ]),
-      "",
-    ].join("\n"),
-  );
+        "",
+      ].join("\n"),
+    );
 
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
-  await expect(assistantText(page, "seed-history")).toBeVisible();
+    const taskTool = await replayAndFindTaskTool(
+      page,
+      restartableBackend,
+      taskUrl,
+    );
+    await expect(taskTool).toContainText(toolError);
+    const taskText = await taskTool.innerText();
+    expect(taskText).not.toContain("0: T");
+  },
+);
 
-  const waitTool = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "wait" }),
-  });
-  await expect(waitTool).toHaveCount(waitCases.length);
-  for (const [cellId, yieldTimeMs, duration] of waitCases) {
-    const tool = waitTool.filter({
-      has: page.locator(".tool-subtitle-tag", {
-        hasText: new RegExp(`^cell ${cellId}$`),
-      }),
+test(
+  "codex history replay renders structured task error object cleanly",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
+
+    const callId = "call_structured_task_error";
+    const toolError =
+      "Task type 'execute' is not in creatable_tasks for 'plan_mode'. Allowed: plan, quick_research, deep_research, spike";
+
+    appendFileSync(
+      rolloutPath,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-27T07:33:23.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            call_id: callId,
+            name: "mcp__cydo__Task",
+            arguments:
+              '{"tasks":[{"task_type":"execute","prompt":"reproduce the bug","description":"Invalid task"}]}',
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-27T07:33:23.428Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({
+              tasks: [{ summary: toolError, error: toolError }],
+            }),
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    const taskTool = await replayAndFindTaskTool(
+      page,
+      restartableBackend,
+      taskUrl,
+    );
+    await expect(taskTool).toContainText(toolError);
+    const taskText = await taskTool.innerText();
+    expect(taskText).not.toContain("0: T");
+  },
+);
+
+test(
+  "codex history replay keeps successful structured task rendering",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
+
+    const callId = "call_structured_task_success";
+    appendFileSync(
+      rolloutPath,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-27T07:34:23.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            call_id: callId,
+            name: "mcp__cydo__Task",
+            arguments:
+              '{"tasks":[{"task_type":"plan","prompt":"draft plan","description":"Plan task"}]}',
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-27T07:34:23.428Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({
+              tasks: [
+                {
+                  summary: "Task finished successfully",
+                  output_file: "/tmp/out.md",
+                  note: "Read the output file for full findings.",
+                },
+              ],
+            }),
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    const taskTool = await replayAndFindTaskTool(
+      page,
+      restartableBackend,
+      taskUrl,
+    );
+    await expect(taskTool).toContainText("Task finished successfully");
+    await expect(taskTool).toContainText("output_file:");
+    await expect(taskTool).toContainText("/tmp/out.md");
+  },
+);
+
+test(
+  "codex history replay renders custom exec output as one expanded tool",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+    await expect(assistantText(page, "seed-history")).toBeVisible();
+    const diagnostics = page
+      .locator(".message.system-message")
+      .filter({ hasText: "Unrecognized agent data" });
+    const diagnosticCount = await diagnostics.count();
+
+    const callId = "call_custom_exec_history";
+    const script =
+      'const result = await tools.exec_command({ cmd: "pwd" });\ntext(result.output);';
+    appendFileSync(
+      rolloutPath,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-27T07:35:23.000Z",
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call",
+            call_id: callId,
+            name: "exec",
+            input: script,
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-27T07:35:23.428Z",
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: callId,
+            output: [
+              { type: "input_text", text: "first " },
+              { type: "input_text", text: "second" },
+            ],
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+    await expect(assistantText(page, "seed-history")).toBeVisible();
+
+    const execTool = page.locator(".tool-call").filter({
+      has: page.locator(".tool-name", { hasText: "exec" }),
     });
-    await expect(tool.locator(".tool-subtitle-tag")).toHaveText(`cell ${cellId}`);
-    await tool.locator(".tool-header").click();
-    await expect(tool.locator(".field-label", { hasText: "cell_id:" })).toHaveCount(1);
-    await expect(tool).toContainText(cellId);
+    await expect(execTool).toHaveCount(1);
+    await expect(execTool.locator(".write-content")).toHaveText(script);
     await expect(
-      tool.locator(".field-label", { hasText: "yield_time_ms:" }),
-    ).toHaveCount(1);
-    await expect(tool).toContainText(duration);
-    await expect(tool).not.toContainText(String(yieldTimeMs));
-    await expect(tool.locator(".field-label", { hasText: "max_tokens:" })).toHaveCount(1);
-    await expect(tool).toContainText("2000");
-    await expect(tool).toContainText("Command finished.");
-    await expect(tool.locator(".unknown-result-fields")).toHaveCount(0);
-  }
-  await expect(diagnostics).toHaveCount(diagnosticCount);
-});
+      execTool.locator(".field-label", { hasText: "input:" }),
+    ).toHaveCount(0);
+    await expect(execTool.locator(".write-content span").first()).toBeVisible();
+    const scriptCopy = execTool
+      .locator(".code-pre-wrap")
+      .first()
+      .locator('button[title="Copy to clipboard"]');
+    await page
+      .context()
+      .grantPermissions(["clipboard-read", "clipboard-write"], {
+        origin: "http://localhost:3940",
+      });
+    await expect(scriptCopy).toBeVisible();
+    await scriptCopy.click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(script);
+    await expect(execTool).toContainText("first second");
+    await expect(diagnostics).toHaveCount(diagnosticCount);
+  },
+);
 
-test("codex history replay exposes unknown response-item payloads in dev mode", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
-    page,
-    restartableBackend,
-  );
+test(
+  "codex history replay renders wait output",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+    await expect(assistantText(page, "seed-history")).toBeVisible();
+    const diagnostics = page
+      .locator(".message.system-message")
+      .filter({ hasText: "Unrecognized agent data" });
+    const diagnosticCount = await diagnostics.count();
 
-  appendFileSync(
-    rolloutPath,
-    `${JSON.stringify({
-      timestamp: "2026-03-27T07:36:23.000Z",
-      type: "response_item",
-      payload: { type: "future_codex_payload" },
-    })}\n`,
-  );
+    const waitCases = [
+      ["cell_second_boundary", 999.95, "1s"],
+      ["cell_one_second", 1000, "1s"],
+      ["cell_ten_seconds", 10_000, "10s"],
+      ["cell_fractional_second", 1500, "1.5s"],
+      ["cell_minute_boundary", 59_999, "1m"],
+      ["cell_hour", 3_600_000, "1h"],
+      ["cell_hour_boundary", 3_599_999, "1h"],
+    ] as const;
+    appendFileSync(
+      rolloutPath,
+      [
+        ...waitCases.flatMap(([cellId, yieldTimeMs]) => [
+          JSON.stringify({
+            timestamp: "2026-03-27T07:35:24.000Z",
+            type: "response_item",
+            payload: {
+              type: "function_call",
+              call_id: `call_wait_${cellId}`,
+              name: "wait",
+              arguments: JSON.stringify({
+                cell_id: cellId,
+                yield_time_ms: yieldTimeMs,
+                max_tokens: 2000,
+              }),
+            },
+          }),
+          JSON.stringify({
+            timestamp: "2026-03-27T07:35:24.428Z",
+            type: "response_item",
+            payload: {
+              type: "function_call_output",
+              call_id: `call_wait_${cellId}`,
+              output: "Command finished.",
+            },
+          }),
+        ]),
+        "",
+      ].join("\n"),
+    );
 
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+    await expect(assistantText(page, "seed-history")).toBeVisible();
 
-  const diagnostic = page
-    .locator(".message.system-message")
-    .filter({ hasText: "future_codex_payload" });
-  await expect(diagnostic).toBeVisible();
-  await expect(diagnostic).toContainText("Unrecognized agent data");
-});
+    const waitTool = page.locator(".tool-call").filter({
+      has: page.locator(".tool-name", { hasText: "wait" }),
+    });
+    await expect(waitTool).toHaveCount(waitCases.length);
+    for (const [cellId, yieldTimeMs, duration] of waitCases) {
+      const tool = waitTool.filter({
+        has: page.locator(".tool-subtitle-tag", {
+          hasText: new RegExp(`^cell ${cellId}$`),
+        }),
+      });
+      await expect(tool.locator(".tool-subtitle-tag")).toHaveText(
+        `cell ${cellId}`,
+      );
+      await tool.locator(".tool-header").click();
+      await expect(
+        tool.locator(".field-label", { hasText: "cell_id:" }),
+      ).toHaveCount(1);
+      await expect(tool).toContainText(cellId);
+      await expect(
+        tool.locator(".field-label", { hasText: "yield_time_ms:" }),
+      ).toHaveCount(1);
+      await expect(tool).toContainText(duration);
+      await expect(tool).not.toContainText(String(yieldTimeMs));
+      await expect(
+        tool.locator(".field-label", { hasText: "max_tokens:" }),
+      ).toHaveCount(1);
+      await expect(tool).toContainText("2000");
+      await expect(tool).toContainText("Command finished.");
+      await expect(tool.locator(".unknown-result-fields")).toHaveCount(0);
+    }
+    await expect(diagnostics).toHaveCount(diagnosticCount);
+  },
+);
 
-test("codex history replay renders live task output from organic rollout", { tag: "@codex-only" }, async ({
-  page,
-  restartableBackend,
-}) => {
-  await page.goto("/");
-  await page.locator('button[title="New task"]').first().click();
+test(
+  "codex history replay exposes unknown response-item payloads in dev mode",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
 
-  const input = page.locator(".input-textarea:visible").first();
-  await expect(input).toBeEnabled();
+    appendFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        timestamp: "2026-03-27T07:36:23.000Z",
+        type: "response_item",
+        payload: { type: "future_codex_payload" },
+      })}\n`,
+    );
 
-  const markdownItem = "Organic rollout markdown item";
-  await input.fill(`call task research reply with "1. ${markdownItem}"`);
-  await page.locator(".btn-send:visible").first().click();
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
 
-  const taskTool = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "Task" }),
-  });
-  await expect(taskTool).toContainText("Open task");
-  await expect(taskTool).toContainText(markdownItem);
-  await expect(
-    taskTool.locator(".text-content ol li", {
-      hasText: markdownItem,
-    }),
-  ).toBeVisible();
+    const diagnostic = page
+      .locator(".message.system-message")
+      .filter({ hasText: "future_codex_payload" });
+    await expect(diagnostic).toBeVisible();
+    await expect(diagnostic).toContainText("Unrecognized agent data");
+  },
+);
 
-  const taskUrl = page.url();
-  await page.waitForTimeout(1_000);
+test(
+  "codex history replay renders live task output from organic rollout",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    await page.goto("/");
+    await page.locator('button[title="New task"]').first().click();
 
-  const rolloutPath = findRolloutJsonl(
-    join(restartableBackend.codexHome, "sessions"),
-  );
-  expect(rolloutPath).not.toBeNull();
-  const organicTaskOutput = readFunctionCallOutputs(rolloutPath!).find((out) =>
-    out.includes(markdownItem),
-  );
-  expect(organicTaskOutput).toBeTruthy();
+    const input = page.locator(".input-textarea:visible").first();
+    await expect(input).toBeEnabled();
 
-  await restartableBackend.restart();
-  await page.goto(taskUrl);
+    const markdownItem = "Organic rollout markdown item";
+    await input.fill(`call task research reply with "1. ${markdownItem}"`);
+    await page.locator(".btn-send:visible").first().click();
 
-  const replayedTaskTool = page.locator(".tool-call").filter({
-    has: page.locator(".tool-name", { hasText: "Task" }),
-  });
-  await expect(replayedTaskTool).toContainText("Open task");
-  await expect(replayedTaskTool).toContainText(markdownItem);
-  await expect(
-    replayedTaskTool.locator(".text-content ol li", {
-      hasText: markdownItem,
-    }),
-  ).toBeVisible();
-  await expect(replayedTaskTool).not.toContainText("Wall time:");
-});
+    const taskTool = page.locator(".tool-call").filter({
+      has: page.locator(".tool-name", { hasText: "Task" }),
+    });
+    await expect(taskTool).toContainText("Open task");
+    await expect(taskTool).toContainText(markdownItem);
+    await expect(
+      taskTool.locator(".text-content ol li", {
+        hasText: markdownItem,
+      }),
+    ).toBeVisible();
+
+    const taskUrl = page.url();
+    await page.waitForTimeout(1_000);
+
+    const rolloutPath = findRolloutJsonl(
+      join(restartableBackend.codexHome, "sessions"),
+    );
+    expect(rolloutPath).not.toBeNull();
+    const organicTaskOutput = readFunctionCallOutputs(rolloutPath!).find(
+      (out) => out.includes(markdownItem),
+    );
+    expect(organicTaskOutput).toBeTruthy();
+
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+
+    const replayedTaskTool = page.locator(".tool-call").filter({
+      has: page.locator(".tool-name", { hasText: "Task" }),
+    });
+    await expect(replayedTaskTool).toContainText("Open task");
+    await expect(replayedTaskTool).toContainText(markdownItem);
+    await expect(
+      replayedTaskTool.locator(".text-content ol li", {
+        hasText: markdownItem,
+      }),
+    ).toBeVisible();
+    await expect(replayedTaskTool).not.toContainText("Wall time:");
+  },
+);
