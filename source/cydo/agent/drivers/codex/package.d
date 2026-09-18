@@ -5306,6 +5306,35 @@ unittest
 
 unittest
 {
+	import std.algorithm : canFind;
+
+	enum before = `{"timestamp":"2026-03-27T07:32:23.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_text","text":"start"}]}}`;
+	enum taskStarted = `{"timestamp":"2026-03-27T07:32:24.000Z","type":"event_msg","payload":{"type":"task_started"}}`;
+	enum later = `{"timestamp":"2026-03-27T07:32:25.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"before"},{"type":"input_text","text":"start"}]}}`;
+
+	auto agent = new CodexAgent;
+	auto first = agent.translateHistoryLine(before, 1);
+	assert(first.length == 1 && first[0].raw == before);
+	assert(first[0].translated.canFind(`"uuid":"line:1"`));
+	assert(first[0].translated.canFind(`"is_meta":true`));
+	assert(first[0].translated.canFind(`"text":"before"`));
+	assert(first[0].translated.canFind(`"text":"start"`));
+
+	agent.translateHistoryLine(taskStarted, 2);
+	auto after = agent.translateHistoryLine(later, 3);
+	assert(after.length == 1 && after[0].raw == later);
+	assert(after[0].translated.canFind(`"uuid":"line:3"`));
+	assert(!after[0].translated.canFind(`"is_meta":true`));
+	assert(after[0].translated.canFind(`"text":"before"`));
+	assert(after[0].translated.canFind(`"text":"start"`));
+
+	agent.resetHistoryReplay();
+	auto replay = agent.translateHistoryLine(before, 1);
+	assert(replay.length == 1 && replay[0].translated.canFind(`"is_meta":true`));
+}
+
+unittest
+{
 	import ae.net.asockets : socketManager;
 	import ae.utils.jsonrpc : JsonRpcError, JsonRpcErrorCode;
 	import std.algorithm.searching : canFind;

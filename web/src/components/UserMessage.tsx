@@ -24,7 +24,9 @@ export function UserMessage({ message }: Props) {
     }
   }
 
-  const text = textParts.join("\n");
+  const isMultipart = textParts.length > 1;
+  const usesMarkdown =
+    message.isSynthetic || message.parentToolUseId || message.isCompactSummary;
 
   const ackClass =
     message.ackState !== undefined ? ` ack-${message.ackState}` : "";
@@ -37,6 +39,8 @@ export function UserMessage({ message }: Props) {
   return (
     <div
       class={`message user-message${ackClass}${pendingClass}${
+        isMultipart ? " multipart-user-message" : ""
+      }${
         message.isMeta ? " meta-message" : ""
       }${message.isSteering ? " steering-message" : ""}${
         message.isCompactSummary ? " compact-summary-message" : ""
@@ -84,14 +88,26 @@ export function UserMessage({ message }: Props) {
           ))}
         </div>
       )}
-      {text &&
-        (message.isSynthetic ||
-        message.parentToolUseId ||
-        message.isCompactSummary ? (
-          <Markdown text={text} />
+      {isMultipart ? (
+        <div class="user-content-items">
+          {textParts.map((text, i) => (
+            <div class="user-content-item" key={i}>
+              {usesMarkdown ? (
+                <Markdown text={text} />
+              ) : (
+                <div class="user-text">{text}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        textParts[0] &&
+        (usesMarkdown ? (
+          <Markdown text={textParts[0]} />
         ) : (
-          <div class="user-text">{text}</div>
-        ))}
+          <div class="user-text">{textParts[0]}</div>
+        ))
+      )}
       {devMode &&
         message.extraFields &&
         Object.keys(message.extraFields).length > 0 && (

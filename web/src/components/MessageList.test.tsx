@@ -6,6 +6,92 @@ import type { DisplayMessage } from "../types";
 import type { AgnosticEvent } from "../protocol";
 
 describe("MessageList parse-error rendering", () => {
+  it("gives a multipart user message one wrapper and action/source owner", () => {
+    const message: DisplayMessage = {
+      id: "multipart-user",
+      type: "user",
+      content: [
+        { type: "text", text: "first entry" },
+        { type: "text", text: "second entry" },
+      ],
+      rawSource: { type: "user" },
+      uuid: "user-uuid",
+    };
+    const html = renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[message]}
+        replacementEvents={new Map()}
+        blocks={new Map()}
+        isProcessing={false}
+        bandStatus=""
+        onFork={() => {}}
+        onUndo={() => {}}
+      />,
+    );
+
+    expect(html.match(/class="message-wrapper/g)).toHaveLength(1);
+    expect(html.match(/class="message-actions"/g)).toHaveLength(1);
+    expect(html.match(/view-source-btn/g)).toHaveLength(1);
+    expect(html.match(/class="message user-message(?:[^"]*)"/g)).toHaveLength(
+      1,
+    );
+    expect(html.match(/class="user-content-item"/g)).toHaveLength(2);
+  });
+
+  it("renders nested multipart users as the same sequence of child boxes", () => {
+    const html = renderToString(
+      <MessageList
+        taskTid={1}
+        messages={[
+          {
+            id: "assistant",
+            type: "assistant",
+            content: [],
+            blockIds: ["task-tool"],
+          },
+          {
+            id: "nested-user",
+            type: "user",
+            parentToolUseId: "task-tool",
+            content: [
+              { type: "text", text: "nested first" },
+              { type: "text", text: "nested second" },
+            ],
+          },
+        ]}
+        replacementEvents={new Map()}
+        blocks={
+          new Map([
+            [
+              "task-tool",
+              {
+                itemId: "task-tool",
+                type: "tool_use" as const,
+                name: "Task",
+                text: "",
+                input: {},
+                completed: true,
+                creationOrder: 0,
+              },
+            ],
+          ])
+        }
+        isProcessing={false}
+        bandStatus=""
+      />,
+    );
+
+    expect(html).toContain("sub-agent-messages");
+    expect(html.match(/class="message user-message(?:[^"]*)"/g)).toHaveLength(
+      1,
+    );
+    expect(html.match(/class="user-content-item"/g)).toHaveLength(2);
+    expect(html.indexOf("nested first")).toBeLessThan(
+      html.indexOf("nested second"),
+    );
+  });
+
   it("puts user undo before the message and fork after it", () => {
     const user: DisplayMessage = { id: "u", type: "user", content: [], seq: 7 };
     const replacementEvents: Map<number, AgnosticEvent> = new Map([

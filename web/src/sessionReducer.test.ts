@@ -764,6 +764,35 @@ describe("live user echo reconciliation", () => {
       ).replacementEvents.get(12),
     ).toMatchObject({ history_boundary: { anchor: "anchor" } });
   });
+
+  it("keeps multipart canonical echo blocks when replacing a pending placeholder", () => {
+    const state = {
+      ...makeState(),
+      messages: [
+        {
+          id: "pending",
+          type: "user" as const,
+          content: [{ type: "text" as const, text: "firstsecond" }],
+          ackState: 3 as const,
+          pending: true,
+        },
+      ],
+    };
+    const content = [
+      { type: "text" as const, text: "first" },
+      { type: "text" as const, text: "second" },
+    ];
+
+    const next = reduceMessage(state, {
+      type: "item/started",
+      item_type: "user_message",
+      item_id: "native-user",
+      content,
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]?.content).toEqual(content);
+  });
 });
 
 describe("queue history reducer", () => {

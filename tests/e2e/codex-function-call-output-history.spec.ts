@@ -272,7 +272,6 @@ test(
       page,
       restartableBackend,
     );
-
     const callId = "call_axv2WYmc7W5v0I3un7in9Hvl";
     const toolError =
       "Task type 'execute' is not in creatable_tasks for 'plan_mode'. Allowed: plan, quick_research, deep_research, spike";
@@ -312,6 +311,142 @@ test(
     await expect(taskTool).toContainText(toolError);
     const taskText = await taskTool.innerText();
     expect(taskText).not.toContain("0: T");
+  },
+);
+
+test(
+  "codex history replay preserves native multipart user entries",
+  { tag: "@codex-only" },
+  async ({ page, restartableBackend }) => {
+    const { taskUrl, rolloutPath } = await seedTaskAndLocateRollout(
+      page,
+      restartableBackend,
+    );
+    const seed = page.locator(".user-message", {
+      hasText: 'reply with "seed-history"',
+    });
+    await expect(seed).toHaveCount(1);
+    await expect(
+      seed.locator(".user-content-items, .user-content-item"),
+    ).toHaveCount(0);
+
+    const multipart = (role: string, text: string[], metadata?: object) => ({
+      timestamp: "2026-03-27T08:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role,
+        content: text.map((entry) => ({ type: "input_text", text: entry })),
+        ...metadata,
+      },
+    });
+    const developerRecord = multipart(
+      "developer",
+      ["developer first", "developer second"],
+      { source: "multipart-source-fixture" },
+    );
+    appendFileSync(
+      rolloutPath,
+      [
+        JSON.stringify(
+          multipart("user", [
+            "<recommended_plugins>",
+            "# AGENTS.md instructions",
+            "<environment_context>",
+          ]),
+        ),
+        JSON.stringify(developerRecord),
+        JSON.stringify({
+          timestamp: "2026-03-27T08:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "task_started" },
+        }),
+        JSON.stringify(multipart("user", ["later first", "", "later third"])),
+        JSON.stringify(multipart("user", ["singleton control"])),
+        "",
+      ].join("\n"),
+    );
+
+    await restartableBackend.restart();
+    await page.goto(taskUrl);
+    await expect(assistantText(page, "seed-history")).toBeVisible();
+
+    const recommended = page.locator(".user-message", {
+      hasText: "<recommended_plugins>",
+    });
+    await expect(recommended).toHaveCount(1);
+    await expect(recommended.locator(".user-content-item")).toHaveCount(3);
+    const boxes = recommended.locator(".user-content-item");
+    const first = await boxes.nth(0).boundingBox();
+    const second = await boxes.nth(1).boundingBox();
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second!.y - (first!.y + first!.height)).toBe(4);
+
+    const developer = page.locator(".user-message", {
+      hasText: "developer first",
+    });
+    await expect(developer).toHaveCount(1);
+    await expect(developer.locator(".user-content-item")).toHaveCount(2);
+    await expect(developer.locator(".user-content-item").nth(0)).toHaveText(
+      "developer first",
+    );
+    await expect(developer.locator(".user-content-item").nth(1)).toHaveText(
+      "developer second",
+    );
+
+    const recommendedWrapper = page.locator(".message-wrapper", {
+      has: recommended,
+    });
+    const developerWrapper = page.locator(".message-wrapper", {
+      has: developer,
+    });
+    await expect(recommendedWrapper).toHaveCount(1);
+    await expect(developerWrapper).toHaveCount(1);
+    const recommendedBox = await recommended.boundingBox();
+    const developerBox = await developer.boundingBox();
+    expect(recommendedBox).not.toBeNull();
+    expect(developerBox).not.toBeNull();
+    expect(developerBox!.y - (recommendedBox!.y + recommendedBox!.height)).toBe(
+      16,
+    );
+    await expect(developerWrapper.locator(".message-actions")).toHaveCount(1);
+    await expect(developerWrapper.locator(".view-source-btn")).toHaveCount(1);
+    const developerWrapperId = await developerWrapper.getAttribute("id");
+    expect(developerWrapperId).toBeTruthy();
+    await developerWrapper.locator(".view-source-btn").click();
+    const sourceEvent = page.locator(`#${developerWrapperId} .source-event`);
+    await expect(sourceEvent).toHaveCount(1);
+    await sourceEvent.locator(".source-event-header").click();
+    await sourceEvent.getByRole("button", { name: "Raw" }).click();
+    await expect(sourceEvent.locator(".code-pre-wrap pre")).toContainText(
+      "multipart-source-fixture",
+    );
+    await expect(sourceEvent.locator(".code-pre-wrap pre")).toContainText(
+      "developer second",
+    );
+
+    const later = page.locator(".user-message", { hasText: "later first" });
+    await expect(later).toHaveCount(1);
+    await expect(later.locator(".user-content-item")).toHaveCount(3);
+    const singleton = page.locator(".user-message", {
+      hasText: "singleton control",
+    });
+    await expect(singleton).toHaveCount(1);
+    await expect(singleton.locator(".user-content-item")).toHaveCount(0);
+
+    await page.reload();
+    await expect(seed).toHaveCount(1);
+    await expect(
+      seed.locator(".user-content-items, .user-content-item"),
+    ).toHaveCount(0);
+    await expect(recommended).toHaveCount(1);
+    await expect(recommended.locator(".user-content-item")).toHaveCount(3);
+    await expect(developer).toHaveCount(1);
+    await expect(developer.locator(".user-content-item")).toHaveCount(2);
+    await expect(later.locator(".user-content-item")).toHaveCount(3);
+    await expect(singleton).toHaveCount(1);
+    await expect(singleton.locator(".user-content-item")).toHaveCount(0);
   },
 );
 

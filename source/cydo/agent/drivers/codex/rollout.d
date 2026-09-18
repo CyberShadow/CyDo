@@ -1167,22 +1167,32 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 		}
 
 		string userText;
+		ContentBlock[] contentBlocks;
 		try
 		{
 			auto blocks = jsonParse!(TextBlock[])(content);
 			foreach (ref b; blocks)
 				if (b.type == "text")
+				{
 					userText ~= b.text;
+					ContentBlock cb;
+					cb.type = "text";
+					cb.text = b.text;
+					contentBlocks ~= cb;
+				}
 		}
 		catch (Exception) {}
 
-		ContentBlock cb;
-		cb.type = "text";
-		cb.text = userText;
+		if (contentBlocks.length == 0)
+		{
+			ContentBlock cb;
+			cb.type = "text";
+			contentBlocks = [cb];
+		}
 		ItemStartedEvent ev;
 		ev.item_id = "codex-user-hist";
 		ev.item_type = "user_message";
-		ev.content = [cb];
+		ev.content = contentBlocks;
 		if (role != "user" || forceMeta)
 			ev.is_meta = true;
 		else if (isCodexContextOnlyUserText(userText))
@@ -1191,6 +1201,43 @@ string[] translateRolloutMessage(string role, string contentJson, string forkId 
 			ev.uuid = forkId;
 		return [toJson(ev)];
 	}
+}
+
+unittest
+{
+	@JSONPartial static struct UserEvent
+	{
+		string type;
+		string item_id;
+		ContentBlock[] content;
+		@JSONOptional bool is_meta;
+		@JSONOptional string uuid;
+	}
+
+	auto multipart = translateRolloutMessage("user",
+		`[{"type":"input_text","text":"first"},{"type":"output_text","text":""},{"type":"image"},{"type":"text","text":" third "}]`,
+		"line:17");
+	assert(multipart.length == 1);
+	auto event = jsonParse!UserEvent(multipart[0]);
+	assert(event.type == "item/started");
+	assert(event.item_id == "codex-user-hist");
+	assert(event.uuid == "line:17");
+	assert(!event.is_meta);
+	assert(event.content.length == 3);
+	assert(event.content[0].text == "first");
+	assert(event.content[1].text == "");
+	assert(event.content[2].text == " third ");
+
+	auto singleton = jsonParse!UserEvent(translateRolloutMessage("developer",
+		`[{"type":"text","text":"only"}]`)[0]);
+	assert(singleton.content.length == 1);
+	assert(singleton.content[0].text == "only");
+	assert(singleton.is_meta);
+
+	auto empty = jsonParse!UserEvent(translateRolloutMessage("user",
+		`[{"type":"image"}]`)[0]);
+	assert(empty.content.length == 1);
+	assert(empty.content[0].text == "");
 }
 
 /// Translate a tool_use response_item → item/started + item/completed.
