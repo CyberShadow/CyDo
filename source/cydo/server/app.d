@@ -53,6 +53,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.workflow.history.abbrev : extractMessageText;
+import cydo.workflow.history.last_turn : lastTurnStdTime;
 import cydo.workflow.history.operations : CodexForkSourceState,
 	selectHistoryOperations;
 import cydo.runtime.logging : installRobustLogger;
@@ -877,6 +878,7 @@ class App
 			td.createdAt = row.createdAt;
 			td.lastActive = row.lastActive;
 			td.needsAttention = row.needsAttention;
+			td.lastTurnAt = row.lastTurnAt;
 			td.titleGenDone = row.title.length > 0;
 			auto rowTid = row.tid;
 			tasks[rowTid] = move(td);
@@ -964,6 +966,34 @@ class App
 			// Final fallback: if still no lastActive but has createdAt, use that
 			if (td.lastActive == 0 && td.createdAt != 0)
 				td.lastActive = td.createdAt;
+
+			// Recompute when the task was last actually worked on. Always, not
+			// just when unset: the stored value is a cache, and re-deriving it
+			// from the transcript keeps a task that went stale from staying
+			// stale until it happens to be used again. Resumes append session
+			// records rather than turns, so this steps over the restart.
+			if (td.agentSessionId.length > 0)
+			{
+				try
+				{
+					auto resolution = resolveTaskHistory(td.tid);
+					auto jp = resolution.kind == TaskHistoryResolutionKind.access
+						? resolution.requireAccess().path
+						: "";
+					if (jp.length > 0)
+					{
+						auto turnAt = lastTurnStdTime(jp);
+						if (turnAt != 0 && turnAt != td.lastTurnAt)
+						{
+							td.lastTurnAt = turnAt;
+							persistence.setLastTurnAt(td.tid, turnAt);
+						}
+					}
+				}
+				catch (Exception) {} // best-effort; falls back to createdAt below
+			}
+			if (td.lastTurnAt == 0)
+				td.lastTurnAt = td.createdAt;
 		}
 
 		discoveryService.enumerateSessions();
@@ -1138,6 +1168,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.sidebar_sort_by_recency,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -3443,6 +3474,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.sidebar_sort_by_recency,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();
@@ -3532,7 +3564,12 @@ class App
 	private void touchTask(int tid)
 	{
 		import std.datetime : Clock;
-		tasks[tid].lastActive = Clock.currStdTime;
+		auto now = Clock.currStdTime;
+		tasks[tid].lastActive = now;
+		// real activity (a message sent, a turn finished), never session
+		// lifecycle, so this is safe to persist and survives restarts
+		tasks[tid].lastTurnAt = now;
+		persistence.setLastTurnAt(tid, now);
 	}
 
 	private AgentSession sessionForTask(int tid)
