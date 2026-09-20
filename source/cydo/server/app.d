@@ -583,6 +583,9 @@ class App
 			onHistorySubscribed: &onHistorySubscribed,
 			updateClaudeUsageFromEvent: &updateClaudeUsageFromEvent,
 			planBroadcast: &planHistoryBroadcast,
+			persistTurnOpen: (int tid, bool open) {
+				persistence.setTurnOpen(tid, open);
+			},
 		));
 		derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
@@ -877,6 +880,7 @@ class App
 			td.createdAt = row.createdAt;
 			td.lastActive = row.lastActive;
 			td.needsAttention = row.needsAttention;
+			td.turnOpen = row.turnOpen;
 			td.titleGenDone = row.title.length > 0;
 			auto rowTid = row.tid;
 			tasks[rowTid] = move(td);
