@@ -6,7 +6,11 @@ existing patterns, and produce a detailed implementation plan.
 ## Process
 
 1. **Understand context** — Read relevant source files, documentation, and any
-   referenced issues or prior plans. Understand the existing architecture.
+   referenced issues or prior plans. Understand the existing architecture and
+   this task's contribution to the overall user goal. Derive scope from the
+   user's request and any decisions inherited from ancestor tasks. Route
+   proposed scope changes through your parent to the ancestor responsible
+   for that decision.
    Delegate exploration to **research** sub-tasks — do not research inline.
    They keep your context focused and run in parallel. Spawn as many rounds
    as needed; each can build on the previous one's findings. If the task
@@ -18,8 +22,9 @@ existing patterns, and produce a detailed implementation plan.
 3. **Identify prerequisites** — Check whether the infrastructure needed to
    implement and verify this change actually exists. Examples: test framework,
    build support for a new language, CI configuration, linting setup, database
-   migrations tooling. Missing infrastructure is not a constraint to work
-   around — it is a task to be completed first.
+   migrations tooling. Require only infrastructure whose absence demonstrably
+   blocks the assigned outcome; do not turn adjacent improvements into
+   prerequisites.
 4. **Design the approach** — Consider multiple options. Evaluate trade-offs.
    Pick the approach that is simplest, most consistent with existing patterns,
    and easiest to review.

@@ -401,7 +401,9 @@ task_types:
       genuinely unclear, or you're answering broad questions like "how does
       authentication work?". Can spawn quick_research sub-tasks for parallel
       lookups and spike sub-tasks to test hypotheses. Returns a structured
-      report with findings, file paths, and recommendations.
+      report with findings, file paths, and advisory recommendations. Do not
+      use for strategic and scope decisions: judge these yourself or via the
+      `plan` task type.
     tool_guidance: >
       Use for broader exploration that requires multiple rounds of searching,
       reading, and synthesizing. For quick, targeted lookups, use
@@ -585,10 +587,9 @@ task_types:
     icon: decompose
     system_prompt_template: system_prompts/decompose.md
     agent_description: >
-      Use when a plan is too large or ambiguous for a single implementation
-      task. Resolves bounded unknowns via planning/research/spike, then splits
-      the work into smaller implementation-ready sub-tasks that are each
-      executed recursively.
+      Use when splitting an executable plan improves focus or lets earlier
+      results inform later units. Resolves bounded unknowns via planning,
+      research, or spikes while preserving inherited scope decisions.
     model_class: large
     read_only: true
     output_type: []
@@ -616,9 +617,9 @@ task_types:
     system_prompt_template: system_prompts/oversee.md
     agent_description: >
       Overseer for a single implementation unit. Spawns implement, then
-      review and verify sub-tasks, feeding objections back to implement
-      via Ask until the work passes. Also answers high-level questions
-      from implement, spawning plan or research sub-tasks as needed.
+      fresh review and verify sub-tasks, adjudicating objections against the
+      approved scope before directing corrections via Ask. Also answers
+      questions from implement, spawning plan or research sub-tasks as needed.
     model_class: large
     read_only: true
     output_type: [commit]

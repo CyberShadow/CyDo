@@ -19,17 +19,18 @@ decomposition as an online process, not a one-shot transform.
 Run the following loop until the plan is fully delivered or you decide to
 stop and escalate.
 
-1. **Survey the map** — Identify the natural seams in the plan: separate
-   features, separate layers, separate concerns. Note ordering constraints
-   (what must precede what) and dependencies (what informs what). This is a
-   working understanding, not a frozen schedule. Revisit it after each unit
-   completes.
+1. **Survey the map** — Identify the overall user goal, this plan's role in
+   it, and the scope and exclusions inherited from ancestor tasks. Find natural
+   seams that improve focus or allow results to inform later work. Note what
+   is already complete, what remains, and ordering constraints. Revisit this
+   working understanding after each unit completes.
 
 2. **Handle prerequisites first** — If the plan lists prerequisites (missing
-   infrastructure: test framework, build tooling, etc.), those are the first
-   units. Nothing else can be trusted to work until they are in place.
+   infrastructure: test framework, build tooling, etc.), address the ones
+   that demonstrably block the assigned outcome. An adjacent improvement is
+   not automatically a prerequisite.
 
-3. **Pick the next unit** — Choose the smallest forward step that is either
+3. **Pick the next unit** — Choose a focused, meaningful step that is either
    (a) on the critical path, or (b) reduces uncertainty for everything that
    follows. Do not pick a unit just because it is convenient or independent
    if a more informative one is blocking.
@@ -48,7 +49,14 @@ stop and escalate.
    earlier units land.
 
    Every sub-plan must include:
-   - What the unit should achieve and how it relates to the surrounding work
+   - What the unit should achieve, its contribution to the overall user goal,
+     and the applicable inherited scope decisions and exclusions
+   - Why this unit was separated, what relevant work is already complete,
+     and what is outside this child's scope and reserved for later sibling
+     units. State these boundaries directly: children do not inherit your
+     decision process, and references to ancestor plans alone are insufficient.
+     Describe reserved work only enough to establish the boundary, without
+     pre-planning those later units.
    - Ordering constraints, dependencies, and citations to any research,
      spike, or plan output file paths the implementer should read
    - **Acceptance criteria** — concrete, testable, observable behavior:
@@ -57,7 +65,15 @@ stop and escalate.
      necessary but not sufficient — new behavior needs new tests, and the
      sub-plan must say what those tests should verify.
 
-5. **Dispatch and wait for that unit** — Run units serially by default so
+5. **Check progress, dispatch, and wait** — Before adding another child,
+   compare the proposed unit with your assigned outcome, the scope boundaries
+   supplied by your parent, and results from your own children. Identify what
+   this child will complete and why it needs a separate execution unit. If
+   your children's results leave the same blocker unresolved, or the next
+   unit would take on work reserved elsewhere, resolve that with your parent
+   before dispatching it.
+
+   Run units serially by default so
    each result can inform the next. Dispatch in parallel only when the units
    are genuinely independent *and* you are confident neither result will
    change the other's scope.
@@ -77,11 +93,13 @@ stop and escalate.
 
 8. **Reassess and repeat** — Based on what you learned:
    - Continue with the next planned unit if the plan still holds.
-   - Re-scope, re-order, add, or drop upcoming units if it does not.
-   - Insert a **plan**, **spike**, or **research** task if a previously
-     clear area has become unclear.
-   - Escalate via **mcp__cydo__Ask** to your parent if the plan as a whole
-     no longer fits the territory.
+   - Reorganize upcoming units within the assigned scope as needed.
+   - Resolve a concrete blocking uncertainty with a **plan**, **spike**, or
+     **research** task; do not reopen settled decisions for completeness.
+   - Before expanding acceptance criteria, adding hardening beyond the plan,
+     or changing an exclusion, use **mcp__cydo__Ask** to agree on the change
+     through your parent with the ancestor responsible for that decision.
+     Distinguish a necessary correction from optional work.
 
    Then return to step 3.
 
@@ -101,9 +119,9 @@ answer.
 - If a sub-task itself needs planning (unclear approach, multiple options,
   missing design decisions), dispatch a **plan** task instead of an
   **execute** task.
-- Aim for 2-5 units total. If you find yourself wanting more than 5,
-  consider grouping — or consider that the parent plan should have been
-  decomposed in stages rather than all at once.
+- Aim for a few focused units. A local target of 2-5 children does not bound
+  the whole tree: assess progress toward the assigned outcome, not just how
+  small each child has become.
 - Prefer one focused unit at a time over broad parallel fan-out. Parallelism
   is an optimization; correctness comes from observing each step.
 
