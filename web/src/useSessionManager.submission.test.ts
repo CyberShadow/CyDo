@@ -554,6 +554,89 @@ describe("submission acknowledgement routing", () => {
     testState.animationFrames.clear();
   });
 
+  it("keeps project catalog lookups bounded while typing a new-task draft", async () => {
+    const projects = [
+      { name: "project", path: "/source-project" },
+      ...Array.from({ length: 63 }, (_, index) => ({
+        name: `project-${index}`,
+        path: `/source-project-${index}`,
+      })),
+    ];
+    const projectFind = vi.spyOn(projects, "find");
+    let seedId = 0;
+    const taskUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockImplementation(() => `seed-${++seedId}-0000-0000-000000000000`);
+    await renderManager();
+    await act(() => {
+      testState.connection!.onControlMessage?.({
+        type: "workspaces_list",
+        workspaces: [
+          {
+            name: "source",
+            projects,
+            default_agent: "agent",
+            default_task_type: "entry",
+          },
+        ],
+      } satisfies ControlMessage);
+      testState.connection!.onControlMessage?.(
+        globalTaskTypes("entry", "blank"),
+      );
+      testState.connection!.onControlMessage?.(
+        projectTaskTypes("entry", "blank"),
+      );
+      testState.connection!.onControlMessage?.(agents("agent"));
+      testState.connection!.onControlMessage?.(
+        tasksList(
+          Array.from({ length: 160 }, (_, index) => ({
+            ...activeSnapshot(index + 1),
+            project_path: projects[index % projects.length]!.path,
+          })),
+        ),
+      );
+    });
+    taskUuid.mockRestore();
+
+    expect((await renderManager()).tasks.size).toBeGreaterThanOrEqual(160);
+    const initial = (await renderManager()).draftView;
+    if (!initial || initial.kind !== "resolved") {
+      throw new Error("Project draft did not resolve");
+    }
+    await act(() => {
+      initial.onTextChange("a");
+    });
+    await vi.waitFor(() => {
+      expect(testState.connection!.createTask).toHaveBeenCalled();
+    });
+    await act(() => {
+      testState.connection!.onControlMessage?.({
+        type: "task_created",
+        tid: 10000,
+        workspace: "source",
+        project_path: "/source-project",
+        correlation_id: "submission-uuid",
+      } satisfies ControlMessage);
+    });
+
+    expect(projectFind).toHaveBeenCalled();
+    // Each draft edit updates the task map and recomputes the sidebar projection.
+    // Project lookup must not scale with the 160 tasks on every keystroke.
+    projectFind.mockClear();
+    for (const text of ["ab", "abc", "abcd"]) {
+      const draft = (await renderManager()).draftView;
+      if (!draft || draft.kind !== "resolved") {
+        throw new Error("Project draft disappeared while typing");
+      }
+      await act(() => {
+        draft.onTextChange(text);
+      });
+    }
+
+    expect((await renderManager()).draftView).toMatchObject({ text: "abcd" });
+    expect(projectFind.mock.calls.length).toBeLessThan(30);
+  });
+
   it("merges arbitrary task-list packets and completes after the terminal merge", async () => {
     testState.route.tid = "2";
     await bootstrapProject();

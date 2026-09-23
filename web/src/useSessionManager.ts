@@ -3308,16 +3308,13 @@ export function useTaskManager(
       );
       filtered = filtered.filter((t) => {
         if (!t.projectPath) return false;
-        // Importable tasks have workspace="" — match by projectPath instead
+        // Importable tasks have workspace="" — match by projectPath alone
         if (!t.workspace) {
           return t.projectPath === activeProjectPath;
         }
-        const projName = findProjectName(
-          workspaces,
-          t.workspace,
-          t.projectPath,
+        return (
+          t.workspace === activeWorkspace && t.projectPath === activeProjectPath
         );
-        return t.workspace === activeWorkspace && projName === activeProject;
       });
     }
     const result = filtered
