@@ -21,6 +21,7 @@ import cydo.domain.policy.permissions : PermissionPrompt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
 import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
+import cydo.domain.tasks.yield_gate : NaggedYieldGates;
 
 import cydo.mcp : McpResult;
 import cydo.domain.task_types.definition : substituteVars;
@@ -593,7 +594,7 @@ struct TaskData
 	/// persisted: uncertainty blocks this server process only.
 	NativeUndoState nativeUndoState = NativeUndoState.idle;
 	bool stdinClosed = false;      // set after closeStdin, cleared on session restart/exit
-	bool outputEnforcementAttempted; // true after first enforcement retry for missing outputs
+	NaggedYieldGates naggedYieldGates;
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
 	string lastSessionStatus;

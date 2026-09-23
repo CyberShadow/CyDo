@@ -1,6 +1,6 @@
 module cydo.workflow.sessions.task_runner;
 
-import core.time : seconds;
+import core.time : Duration, seconds;
 
 import std.file : exists, isFile, mkdirRecurse;
 import std.exception : enforce;
@@ -13,10 +13,11 @@ import ae.utils.json : JSONFragment, JSONOptional, JSONPartial, jsonParse, toJso
 import ae.utils.promise : Promise, reject, resolve;
 
 import cydo.agent.contract : Agent, SessionConfig;
-import cydo.agent.session : AgentSession, BackgroundWork;
+import cydo.agent.session : AgentSession, AgentSubmissionReceipt, BackgroundWork,
+	MessageSource;
 import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 	ToolDescriptionViolation, checkRenderedCydoToolDescriptionViolations;
-import cydo.protocol : ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
+import cydo.protocol : ContentBlock, ItemDeltaEvent, ItemStartedEvent, ProcessExitEvent,
 	ProcessStderrEvent, TranslatedEvent;
 import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
@@ -36,6 +37,7 @@ import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, Ta
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
+import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates, shouldRetryYieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
 import cydo.domain.task_types.definition : TaskTypeDef, formatCompactSingletonToolSummary, singletonsOfferedTo,
@@ -199,7 +201,7 @@ struct TaskSessionRunnerHost
 	bool delegate(int tid) hasPendingChildQuestion;
 	void delegate(int tid) sendPendingChildAnswerReminder;
 	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
-	string delegate(int tid) checkDeclaredOutputs;
+	YieldGateFinding delegate(int tid) checkOutputGate;
 	bool delegate(int tid, bool eagerDepCleanup) finalizeCompletedSubTask;
 	bool delegate(int tid) recordChildTerminal;
 	int delegate(int childTid) parentTaskForChild;
@@ -230,7 +232,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
 		TaskNotificationChange notification) transitionTaskFrom;
 	void delegate(int tid, string resultText) persistResultText;
-	void delegate(int tid, string missingOutputs) requestMissingOutputs;
+	void delegate(int tid, YieldGateFinding finding) requestYieldGateRetry;
 	void delegate(int tid) spawnContinuation;
 	void delegate(int tid) spawnOnYieldContinuation;
 	void delegate(int tid) emitTaskReload;
@@ -961,12 +963,12 @@ public:
 					if (owned && current.pendingContinuation is null && !hasOnYield
 						&& !current.lastTurnFailed)
 					{
-						auto missingOutputs = host_.checkDeclaredOutputs(tid);
-						if (missingOutputs is null)
+						auto finding = checkYieldGates(tid, host_.checkOutputGate);
+						if (!finding.found)
 							host_.finalizeCompletedSubTask(tid, false);
 						else
 							tracef("onOutput: tid=%d deferring sub-task finalization; %s",
-								tid, missingOutputs);
+								tid, finding.detail);
 					}
 					current = host_.getTask(tid);
 					if (current is null) return;
@@ -1189,18 +1191,18 @@ public:
 			bool consumerWaiting = host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid);
 			if (cleanExit && consumerWaiting && !current.lastTurnFailed)
 			{
-				auto missing = host_.checkDeclaredOutputs(tid);
-				if (missing !is null && !current.outputEnforcementAttempted)
+				auto finding = checkYieldGates(tid, host_.checkOutputGate);
+				if (shouldRetryYieldGate(current.naggedYieldGates, finding))
 				{
-					current.outputEnforcementAttempted = true;
+					current.naggedYieldGates.mark(finding.gate);
 					infof("Output enforcement: tid=%d missing outputs, resuming: %s",
-						tid, missing);
-					host_.requestMissingOutputs(tid, missing);
+						tid, finding.detail);
+					host_.requestYieldGateRetry(tid, finding);
 					return;
 				}
-				if (missing !is null)
+				if (finding.found)
 					warningf("Output enforcement: tid=%d still missing outputs after retry: %s",
-						tid, missing);
+						tid, finding.detail);
 			}
 
 			bool deliveredPendingSubTask = false;
@@ -2671,4 +2673,207 @@ unittest
 			assert(projectMode.get.effectiveMode == PathMode.rw);
 			assert(launch.processLaunch.sandbox.paths.exact(fixture.commonGitDir).isNull);
 		});
+}
+
+version (unittest) private final class YieldGateTestSession : AgentSession
+{
+	void delegate(TranslatedEvent) outputCallback;
+	void delegate(int) exitCallback;
+
+	Promise!AgentSubmissionReceipt sendMessage(const(ContentBlock)[] content,
+		string correlationId = null, bool isContextBootstrap = false,
+		string nativeSubmissionUuid = null,
+		MessageSource source = MessageSource.harness)
+	{
+		return resolve(AgentSubmissionReceipt.localEnqueued);
+	}
+	void invalidatePendingSubmittedMessages() {}
+	@property bool supportsImages() const { return false; }
+	void interrupt() {}
+	void sigint() {}
+	void stop() {}
+	void closeStdin() {}
+	@property bool canStopAfterCloseStdin() const { return false; }
+	void killAfterTimeout(Duration timeout) {}
+	@property void onNativeSessionStarted(void delegate(string) callback) {}
+	@property void onOutput(void delegate(TranslatedEvent) callback) { outputCallback = callback; }
+	@property void onStderr(void delegate(string) callback) {}
+	@property void onExit(void delegate(int) callback) { exitCallback = callback; }
+	@property bool alive() { return true; }
+	@property const(BackgroundWork)[] backgroundWork() { return null; }
+
+	void result(bool failed = false)
+	{
+		outputCallback(TranslatedEvent(failed
+			? `{"type":"turn/result","subtype":"error","is_error":true,"result":"failed"}`
+			: `{"type":"turn/result","subtype":"success","result":"done"}`, null));
+	}
+
+	void exit(int code)
+	{
+		exitCallback(code);
+	}
+}
+
+version (unittest) private final class YieldGateTestAgent : ClaudeCodeAgent
+{
+	YieldGateTestSession session;
+
+	override AgentSession createSession(int tid, string resumeSessionId,
+		ProcessLaunch launch, SessionConfig config = SessionConfig.init)
+	{
+		session = new YieldGateTestSession;
+		return session;
+	}
+}
+
+version (unittest) private void assertYieldGateRunnerCase(
+	string caseName, bool outputsPresent, bool consumerWaiting, bool failedTurn,
+	int exitCode, bool continuation, bool onYield, bool secondExit)
+{
+	import ae.utils.statequeue : StateQueue;
+	import configy.attributes : SetInfo;
+	import cydo.domain.tasks.yield_gate : YieldGate;
+	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
+
+	withGitMetadataLaunchFixture("cydo-yield-gate-" ~ caseName,
+		(GitMetadataLaunchFixture fixture) {
+			auto yaml = "task_types:\n"
+				~ "  runner:\n"
+				~ "    model_class: large\n";
+			if (onYield)
+				yaml ~= "    on_yield:\n      task_type: next\n"
+					~ "  next:\n    model_class: large\n";
+			auto catalog = gitMetadataTaskCatalog(fixture, yaml);
+			auto config = new CydoConfig;
+			config.sandbox = unrestrictedLaunchTestSandbox();
+			AgentConfig configuredAgent;
+			configuredAgent.driver = SetInfo!AgentDriver(AgentDriver.claude, true);
+			configuredAgent.sandbox = unrestrictedLaunchTestSandbox();
+			configuredAgent.sandbox.env = [
+				"HOME": buildPath(fixture.root, "home"),
+				"CLAUDE_CONFIG_DIR": buildPath(fixture.root, "claude-profile"),
+			];
+			config.agents["claude"] = configuredAgent;
+			config.workspaces = [WorkspaceConfig(name: "local", root: fixture.workspaceRoot,
+				sandbox: unrestrictedLaunchTestSandbox())];
+
+			TaskData[int] tasks;
+			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
+			tasks[1].taskType = "runner";
+			tasks[1].agentName = "claude";
+			tasks[1].status = TaskStatus.active;
+			tasks[1].processQueue = new StateQueue!ProcessState(
+				(ProcessState state) => resolve(state), ProcessState.Dead);
+			auto agent = new YieldGateTestAgent;
+			int checks, retries, deliveries, continuations, onYieldContinuations;
+			auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+				getTask: (int tid) => &tasks[tid],
+				taskDir: (const TaskData* td) => buildPath(fixture.root, "tasks", "task"),
+				outputPath: (const TaskData* td) => buildPath(fixture.root, "tasks", "task", "output.md"),
+				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
+				worktreePath: (const TaskData* td) => "",
+				currentConfig: () => config,
+				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
+				reportMcpToolDescriptionLimit: (string path, string type,
+					ToolDescriptionViolation[] violations) {},
+				resolveSharedTmpPath: (int tid) => "",
+				mcpSocketPath: () => "",
+				agentForTask: (int tid) => agent,
+				tryAgentForTask: (int tid) => agent,
+				clearLastActive: (int tid) {},
+				broadcastTask: (int tid, TranslatedEvent event) {},
+				publishTaskSnapshot: (int tid) {},
+				hasLiveBatchOwner: (int tid) => consumerWaiting,
+				hasTaskDependency: (int tid) => false,
+				hasPendingChildQuestion: (int tid) => false,
+				checkOutputGate: (int tid) {
+					checks++;
+					return YieldGateFinding(YieldGate.outputs,
+						outputsPresent ? null : "missing report");
+				},
+				finalizeCompletedSubTask: (int tid, bool eager) {
+					deliveries++;
+					tasks[tid].status = TaskStatus.completed;
+					return true;
+				},
+				recordChildTerminal: (int tid) => false,
+				parentTaskForChild: (int tid) => 0,
+				deliverWaitingParentResultsIfReady: (int tid) => resolve(),
+				failPendingAskUserQuestionOnExit: (int tid) {},
+				failPendingPermissionPromptOnExit: (int tid) {},
+				pump: (int tid) => false,
+				cancelExitBackgroundWork: (int tid) {},
+				resetHistoryWatermarkAfterExit: (int tid) => false,
+				touchAndPersistLastActive: (int tid) {},
+				findAliveAncestor: (int tid) => -1,
+				transitionTask: (int tid, TaskStatus from, TaskStatus to,
+					TaskNotificationChange change) { tasks[tid].status = to; },
+				transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
+					TaskNotificationChange change) { tasks[tid].status = to; },
+				persistResultText: (int tid, string text) {},
+				requestYieldGateRetry: (int tid, YieldGateFinding finding) {
+					assert(finding.gate == YieldGate.outputs);
+					assert(finding.detail == "missing report");
+					retries++;
+				},
+				spawnContinuation: (int tid) { continuations++; },
+				spawnOnYieldContinuation: (int tid) { onYieldContinuations++; },
+				emitTaskReload: (int tid) {},
+				startJsonlWatch: (int tid) {},
+				broadcastHistoryOperations: (int tid) {},
+				ensureHistoryLoadedForExit: (int tid) => Nullable!TaskHistoryResolution.init,
+				finalReconcileJsonlIfPresent: (int tid, Nullable!TaskHistoryResolution r) {},
+				stopJsonlWatch: (int tid) {},
+				shuttingDown: () => false,
+				taskTypeCatalog: catalog,
+			));
+
+			runner.spawnTaskSession(1);
+			if (continuation)
+				tasks[1].pendingContinuation = new PendingContinuation;
+			if (consumerWaiting)
+				agent.session.result(failedTurn);
+			if (outputsPresent && consumerWaiting && !failedTurn && !continuation && !onYield)
+				assert(deliveries == 1);
+			else
+				assert(deliveries == 0);
+			if (!consumerWaiting)
+				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
+			agent.session.exit(exitCode);
+			assert(retries == (consumerWaiting && !outputsPresent && !failedTurn
+				&& exitCode == 0 && !continuation && !onYield ? 1 : 0));
+			assert(tasks[1].naggedYieldGates.contains(YieldGate.outputs) == (retries == 1));
+			assert(continuations == (continuation ? 1 : 0));
+			assert(onYieldContinuations == (onYield ? 1 : 0));
+			if (exitCode != 0 || failedTurn)
+				assert(tasks[1].status == TaskStatus.failed && deliveries == 0);
+			else if (!consumerWaiting)
+				assert(tasks[1].status == TaskStatus.completed && deliveries == 0);
+			else if (continuation || onYield)
+				assert(tasks[1].status == TaskStatus.active && deliveries == 0);
+			if (secondExit)
+			{
+				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
+				runner.spawnTaskSession(1);
+				agent.session.result();
+				assert(deliveries == 0);
+				agent.session.exit(0);
+				assert(retries == 1);
+				assert(deliveries == 1);
+			}
+			if (!consumerWaiting)
+				assert(checks == 0);
+		});
+}
+
+unittest
+{
+	assertYieldGateRunnerCase("missing", false, true, false, 0, false, false, true);
+	assertYieldGateRunnerCase("present", true, true, false, 0, false, false, false);
+	assertYieldGateRunnerCase("nonzero", false, true, false, 1, false, false, false);
+	assertYieldGateRunnerCase("failed-turn", false, true, true, 0, false, false, false);
+	assertYieldGateRunnerCase("no-consumer", false, false, false, 0, false, false, false);
+	assertYieldGateRunnerCase("continuation", false, true, false, 0, true, false, false);
+	assertYieldGateRunnerCase("on-yield", false, true, false, 0, false, true, false);
 }

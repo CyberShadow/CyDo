@@ -64,6 +64,8 @@ import cydo.workflow.tools.backend : WorkflowToolsBackend, WorkflowToolsHost;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
+import cydo.domain.tasks.yield_gate : YieldGate;
+import cydo.workflow.sessions.yield_gates : YieldGateFinding;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,
 	TaskSessionRunnerHost;
 import cydo.web.transport : McpCallbacks, RawSourceLookupResult, RawSourceLookupStatus,
@@ -655,7 +657,7 @@ class App
 			hasTaskDependency: &workflowTools.hasTaskDependency,
 			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
-			checkDeclaredOutputs: &checkDeclaredOutputs,
+			checkOutputGate: &checkOutputGate,
 			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
 			recordChildTerminal: &workflowTools.recordChildTerminal,
 			parentTaskForChild: &workflowTools.parentTaskForChild,
@@ -680,7 +682,7 @@ class App
 			persistResultText: (int tid, string resultText) {
 				persistence.setResultText(tid, resultText);
 			},
-			requestMissingOutputs: &requestMissingOutputs,
+			requestYieldGateRetry: &requestYieldGateRetry,
 			spawnContinuation: &workflowTools.spawnContinuation,
 			spawnOnYieldContinuation: &workflowTools.spawnOnYieldContinuation,
 			emitTaskReload: (int tid) {
@@ -2998,11 +3000,12 @@ class App
 		return reloadEmitted;
 	}
 
-	private void requestMissingOutputs(int tid, string missing)
+	private void requestYieldGateRetry(int tid, YieldGateFinding finding)
 	{
 		if (tid !in tasks)
 			return;
-		auto enfMissing = missing;
+		assert(finding.gate == YieldGate.outputs);
+		auto enfMissing = finding.detail;
 		tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 			auto msg = wrapKnownSystemMessage(config.system_keyword,
 				KnownSystemMessageKind.missingRequiredOutputs,
@@ -3133,6 +3136,11 @@ class App
 			return "";
 		}
 		return result.output.strip;
+	}
+
+	private YieldGateFinding checkOutputGate(int tid)
+	{
+		return YieldGateFinding(YieldGate.outputs, checkDeclaredOutputs(tid));
 	}
 
 	/// Check whether a completing task has produced all declared outputs.
