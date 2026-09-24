@@ -94,7 +94,8 @@ import cydo.domain.task_types.definition : DjinjaTemplate, TaskTypeDef, UserEntr
 	loadProjectMemory, resolveAgent;
 import cydo.foundation.system.framing : prependTaskFraming, validateTemplateSource;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
-	sessionStartSubject, systemMessagePrefix, wrapKnownSystemMessage;
+	sessionStartSubject, systemMessagePrefix, wrapKnownSystemMessage,
+	tryKnownSystemMessageMatch, KnownSystemMessageMatch;
 import cydo.foundation.platform.path : bestEffortProjectPathIdentity, canonicalProjectPath;
 import cydo.domain.tasks.model;
 import cydo.domain.tasks.lifecycle : TaskLifecycle, TaskNotificationChange,
@@ -3009,10 +3010,8 @@ class App
 		tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 			auto msg = wrapKnownSystemMessage(config.system_keyword,
 				KnownSystemMessageKind.missingRequiredOutputs,
-				"Your task type declares outputs that were not produced:\n"
-					~ enfMissing ~ "\n\n"
-					~ "Please produce the missing output(s) before finishing. "
-					~ "Write your report to your output file if you haven't already.");
+				readPromptFile("gates/missing_outputs.md", tasks[tid].projectPath,
+					["missing_outputs": enfMissing]));
 			auto outputsMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
 				KnownSystemMessageKind.missingRequiredOutputs);
 			return sendTaskMessage(tid, [ContentBlock("text", msg)], null,
@@ -5788,6 +5787,67 @@ unittest
 	app.taskTypeCatalog = new TaskTypeCatalog(tmp,
 		buildPath(tmp, "task-types.yaml"), &isKnownPromptParityAgent);
 	assert(app.readPromptFile("prompts/empty.md", "", null) == "");
+}
+
+unittest
+{
+	import std.path : dirName;
+
+	auto root = buildPath(tempDir(), "cydo-app-missing-output-template");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome)
+			environment["HOME"] = oldHome;
+		else
+			environment.remove("HOME");
+	}
+	auto home = buildPath(root, "home");
+	if (!exists(home))
+		mkdirRecurse(home);
+	environment["HOME"] = home;
+
+	auto bundled = environment.get("CYDO_TEST_DEFS", "defs");
+	assert(exists(buildPath(bundled, "gates", "missing_outputs.md")),
+		"bundled missing-output template is required; set CYDO_TEST_DEFS");
+	auto app = new App();
+	app.taskTypeCatalog = new TaskTypeCatalog(bundled,
+		buildPath(bundled, "task-types.yaml"), &isKnownPromptParityAgent);
+	auto project = buildPath(root, "project");
+	mkdirRecurse(project);
+	string details = "- /output/report.md\n- {{another_placeholder}}";
+	auto body = app.readPromptFile("gates/missing_outputs.md", project,
+		["missing_outputs": details]);
+	assert(body == "Your task type declares outputs that were not produced:\n"
+		~ details ~ "\n\n"
+		~ "Please produce the missing output(s) before finishing. "
+		~ "Write your report to your output file if you haven't already.");
+	auto message = wrapKnownSystemMessage("SYSTEM",
+		KnownSystemMessageKind.missingRequiredOutputs, body);
+	assert(message == "[SYSTEM: Missing required outputs]\n\n" ~ body ~ "\n\n[/SYSTEM]");
+	KnownSystemMessageMatch match;
+	assert(tryKnownSystemMessageMatch("Missing required outputs", match));
+	assert(match.kind == KnownSystemMessageKind.missingRequiredOutputs);
+
+	auto userTemplate = buildPath(home, ".config", "cydo", "defs", "gates", "missing_outputs.md");
+	mkdirRecurse(dirName(userTemplate));
+	write(userTemplate, "user {{missing_outputs}}");
+	assert(app.readPromptFile("gates/missing_outputs.md", project,
+		["missing_outputs": details]) == "user " ~ details);
+	auto projectTemplate = buildPath(project, ".cydo", "defs", "gates", "missing_outputs.md");
+	mkdirRecurse(dirName(projectTemplate));
+	write(projectTemplate, "project one {{missing_outputs}}");
+	assert(app.readPromptFile("gates/missing_outputs.md", project,
+		["missing_outputs": details]) == "project one " ~ details);
+	write(projectTemplate, "project two {{missing_outputs}}");
+	assert(app.readPromptFile("gates/missing_outputs.md", project,
+		["missing_outputs": details]) == "project two " ~ details);
+	assertThrown!Exception(app.readPromptFile("gates/absent.md", project, null));
 }
 
 unittest

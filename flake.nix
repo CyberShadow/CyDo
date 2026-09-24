@@ -1001,6 +1001,8 @@ EOF
             # back out of it and fails when a version bump changes it.
             CYDO_TEST_CODEX_BIN = "${codex}/bin/codex";
             CYDO_TEST_CLAUDE_BIN = "${pkgs.claude-code}/bin/claude";
+            # Unit tests read the shipped gate templates from this directory.
+            CYDO_TEST_DEFS = "${./defs}";
 
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
