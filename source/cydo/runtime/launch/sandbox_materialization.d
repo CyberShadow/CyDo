@@ -90,6 +90,20 @@ string sharedTmpBaseDir()
 	return base;
 }
 
+/// Return the task-owned child of a tree's shared temporary directory.
+string taskTmpHostPath(string sharedTmpPath, int tid)
+{
+	import std.conv : to;
+
+	return buildPath(sharedTmpPath, "cydo-task-" ~ tid.to!string);
+}
+
+/// Return the path used by the launched process for its task-owned directory.
+string taskTmpAgentPath(string sharedTmpPath, int tid, bool isolateFilesystem)
+{
+	return taskTmpHostPath(isolateFilesystem ? "/tmp" : sharedTmpPath, tid);
+}
+
 /// Return path to a guaranteed-empty directory for ro-bind mounts.
 package(cydo.runtime.launch) string emptyDirPath()
 {

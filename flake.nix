@@ -1003,6 +1003,8 @@ EOF
             CYDO_TEST_CLAUDE_BIN = "${pkgs.claude-code}/bin/claude";
             # Unit tests read the shipped gate templates from this directory.
             CYDO_TEST_DEFS = "${./defs}";
+            # Real bwrap cannot create namespaces inside the Nix build sandbox.
+            CYDO_TEST_SKIP_BWRAP = "1";
 
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
@@ -1179,6 +1181,7 @@ EOF
               zlib
               pkg-config
               playwright-test
+              bubblewrap
             ];
 
             # The Codex driver's exact-shape grammar transcribes the model

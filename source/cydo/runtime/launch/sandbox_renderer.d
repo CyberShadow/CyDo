@@ -1194,6 +1194,61 @@ unittest
 	assert(executableMountPaths(binPath).canFind(binDir));
 }
 
+unittest
+{
+	import std.file : readText, remove, rmdirRecurse, write;
+	import std.process : execute, environment;
+	import cydo.runtime.launch.sandbox_materialization : taskTmpAgentPath,
+		taskTmpHostPath;
+
+	auto root = buildPath("/tmp", "cydo-renderer-task-tmp");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope (exit)
+		if (exists(root))
+			rmdirRecurse(root);
+	auto sharedTmp = buildPath(root, "shared");
+	auto hostTmp = taskTmpHostPath(sharedTmp, 7);
+	mkdirRecurse(hostTmp);
+	write(buildPath(hostTmp, "input"), "from-host\n");
+
+	auto oldTmpDir = environment.get("TMPDIR", "");
+	auto hadTmpDir = "TMPDIR" in environment;
+	scope (exit)
+	{
+		if (hadTmpDir)
+			environment["TMPDIR"] = oldTmpDir;
+		else
+			environment.remove("TMPDIR");
+	}
+	environment["TMPDIR"] = buildPath(root, "inherited");
+
+	foreach (isolated; [false, true])
+	{
+		// Only the sandboxed Nix unit-test derivation opts out of real bwrap.
+		if (isolated && environment.get("CYDO_TEST_SKIP_BWRAP", "") != "")
+			continue;
+		if (isolated)
+			assert(resolveExecutablePath("bwrap", null).length > 0,
+				"bwrap is required for the isolated renderer test; run under nix develop "
+				~ "or set CYDO_TEST_SKIP_BWRAP");
+		ResolvedSandbox sandbox;
+		sandbox.isolate_filesystem = isolated;
+		sandbox.isolate_processes = false;
+		sandbox.isolate_environment = false;
+		sandbox.sharedTmpPath = sharedTmp;
+		sandbox.env["TMPDIR"] = taskTmpAgentPath(sharedTmp, 7, isolated);
+		auto prefix = buildCommandPrefix(sandbox, "");
+		auto result = execute(prefix ~ ["/bin/sh", "-c",
+			"cat \"$TMPDIR/input\" && printf '%s' \"$TMPDIR\" > \"$TMPDIR/output\""]);
+		assert(result.status == 0, result.output);
+		assert(result.output == "from-host\n");
+		assert(readText(buildPath(hostTmp, "output")) == sandbox.env["TMPDIR"]);
+		foreach (tempFile; sandbox.tempFiles)
+			remove(tempFile);
+	}
+}
+
 // An executable reached through a symlink with a relative target (npm's
 // global-install layout) must resolve to its physical package directory,
 // not a '..' spelling, which path registration rejects.

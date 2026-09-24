@@ -763,6 +763,10 @@ public:
 		}
 
 		sandbox.sharedTmpPath = host_.resolveSharedTmpPath(tid);
+		auto taskTmpPath = launchSandbox.taskTmpHostPath(sandbox.sharedTmpPath, tid);
+		mkdirRecurse(taskTmpPath);
+		sandbox.env["TMPDIR"] = launchSandbox.taskTmpAgentPath(
+			sandbox.sharedTmpPath, tid, sandbox.isolate_filesystem);
 		auto processLaunch = launchSandbox.prepareProcessLaunch(sandbox,
 			nativeHistoryContext.rule, nativeHistoryContext.profile, chdir,
 			taskAgent.executableName(sandbox.env));
@@ -1937,7 +1941,8 @@ version (unittest) private SandboxConfig unrestrictedLaunchTestSandbox()
 version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 	TaskData[int]* tasks, TaskTypeCatalog catalog, GitMetadataLaunchFixture fixture,
 	SandboxConfig workspaceSandbox, string worktreePath, string taskCwd,
-	string mcpSocketPath = "", string taskDirPath = "")
+	string mcpSocketPath = "", string taskDirPath = "",
+	bool isolateFilesystem = false, string configuredTmpDir = "")
 {
 	import configy.attributes : SetInfo;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
@@ -1947,10 +1952,13 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 	AgentConfig configuredAgent;
 	configuredAgent.driver = SetInfo!AgentDriver(AgentDriver.claude, true);
 	configuredAgent.sandbox = unrestrictedLaunchTestSandbox();
+	configuredAgent.sandbox.isolate_filesystem = SetInfo!bool(isolateFilesystem);
 	configuredAgent.sandbox.env = [
 		"HOME": buildPath(fixture.root, "home"),
 		"CLAUDE_CONFIG_DIR": buildPath(fixture.root, "claude-profile"),
 	];
+	if (configuredTmpDir.length > 0)
+		configuredAgent.sandbox.env["TMPDIR"] = configuredTmpDir;
 	config.agents["claude"] = configuredAgent;
 	config.workspaces = [WorkspaceConfig(name: "local", root: fixture.workspaceRoot,
 		sandbox: workspaceSandbox)];
@@ -1971,10 +1979,86 @@ version (unittest) private TaskSessionRunner gitMetadataTestRunner(
 		permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 		reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 			ToolDescriptionViolation[] violations) {},
-		resolveSharedTmpPath: (int tid) => "",
+		resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 		mcpSocketPath: () => mcpSocketPath,
 		taskTypeCatalog: catalog,
 	));
+}
+
+unittest
+{
+	import std.file : exists, mkdirRecurse, readText, write;
+	import std.process : environment;
+	import configy.attributes : SetInfo;
+
+	withGitMetadataLaunchFixture("cydo-task-runner-persistent-tmp",
+		(GitMetadataLaunchFixture fixture) {
+			auto oldTmpDir = environment.get("TMPDIR", "");
+			auto hadTmpDir = "TMPDIR" in environment;
+			scope (exit)
+			{
+				if (hadTmpDir)
+					environment["TMPDIR"] = oldTmpDir;
+				else
+					environment.remove("TMPDIR");
+			}
+			environment["TMPDIR"] = buildPath(fixture.root, "inherited-tmp");
+			auto fakeBin = buildPath(fixture.root, "bin");
+			mkdirRecurse(fakeBin);
+			auto fakeBwrap = buildPath(fakeBin, "bwrap");
+			write(fakeBwrap, "#!/bin/sh\nexit 0\n");
+			assert(execute(["chmod", "+x", fakeBwrap]).status == 0);
+			auto oldPath = environment.get("PATH", "");
+			environment["PATH"] = fakeBin ~ ":" ~ oldPath;
+			scope (exit) environment["PATH"] = oldPath;
+
+			auto catalog = gitMetadataTaskCatalog(fixture,
+				"task_types:\n  operation:\n    model_class: large\n");
+			foreach (isolated; [false, true])
+			{
+				auto workspaceSandbox = unrestrictedLaunchTestSandbox();
+				workspaceSandbox.isolate_filesystem =
+					SetInfo!bool(isolated);
+				TaskData[int] tasks;
+				foreach (tid; [1, 2])
+				{
+					tasks[tid] = TaskData(tid, "local", fixture.linkedCheckout);
+					tasks[tid].taskType = "operation";
+					tasks[tid].agentName = "claude";
+				}
+				auto runner = gitMetadataTestRunner(&tasks, catalog, fixture,
+					workspaceSandbox, "", fixture.linkedCheckout,
+					"", "", isolated, buildPath(fixture.root, "configured-tmp"));
+				auto typeDef = catalog.getTaskTypesForProject(fixture.linkedCheckout)
+					.byName("operation");
+				auto agent = new LinkedWorktreeSandboxTestAgent();
+				auto first = runner.prepareOperationSessionLaunch(1, agent, typeDef);
+				auto firstHost = launchSandbox.taskTmpHostPath(
+					first.processLaunch.sandbox.sharedTmpPath, 1);
+				auto expected = launchSandbox.taskTmpAgentPath(
+					first.processLaunch.sandbox.sharedTmpPath, 1, isolated);
+				assert(exists(firstHost));
+				assert(first.processLaunch.sandbox.env["TMPDIR"] == expected);
+				write(buildPath(firstHost, "resume-fixture"), "retained");
+
+				auto second = runner.prepareOperationSessionLaunch(2, agent, typeDef);
+				assert(first.processLaunch.sandbox.sharedTmpPath
+					== second.processLaunch.sandbox.sharedTmpPath);
+				assert(second.processLaunch.sandbox.env["TMPDIR"]
+					== launchSandbox.taskTmpAgentPath(
+						second.processLaunch.sandbox.sharedTmpPath, 2, isolated));
+				assert(exists(launchSandbox.taskTmpHostPath(
+					second.processLaunch.sandbox.sharedTmpPath, 2)));
+				assert(first.processLaunch.sandbox.env["TMPDIR"]
+					!= second.processLaunch.sandbox.env["TMPDIR"]);
+				auto resumed = runner.prepareOperationSessionLaunch(1, agent, typeDef);
+				assert(resumed.processLaunch.sandbox.env["TMPDIR"] == expected);
+				assert(readText(buildPath(firstHost, "resume-fixture")) == "retained");
+				launchSandbox.cleanup(first.processLaunch.sandbox);
+				launchSandbox.cleanup(second.processLaunch.sandbox);
+				launchSandbox.cleanup(resumed.processLaunch.sandbox);
+			}
+		});
 }
 
 unittest
@@ -2123,7 +2207,7 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string projectPath, string taskType,
 					ToolDescriptionViolation[] violations) {},
-				resolveSharedTmpPath: (int tid) => "",
+				resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 					mcpSocketPath: () => mcpSocket,
 					agentForTask: (int tid) => agent,
 					tryAgentForTask: (int tid) => agent,
@@ -2782,7 +2866,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				permissionSettings: (string agentName, string workspaceName) => PermissionSettings.init,
 				reportMcpToolDescriptionLimit: (string path, string type,
 					ToolDescriptionViolation[] violations) {},
-				resolveSharedTmpPath: (int tid) => "",
+				resolveSharedTmpPath: (int tid) => buildPath(fixture.root, "shared-tmp"),
 				mcpSocketPath: () => "",
 				agentForTask: (int tid) => agent,
 				tryAgentForTask: (int tid) => agent,
