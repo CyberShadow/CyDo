@@ -37,7 +37,6 @@ struct SubtaskResultDeliveryHost
 	bool delegate(int childTid) wasLiveDelivered;
 	void delegate(int childTid) markLiveDelivered;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
-	bool delegate(int tid, out string sessionState) canSendSystemMessage;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body) sendKnownSystemMessage;
 	void delegate(int parentTid, int childTid) removeTaskDependency;
 	bool delegate(int tid) taskAlive;
@@ -281,14 +280,6 @@ private:
 			return resolve();
 		}
 
-		string sessionState;
-		if (!host_.canSendSystemMessage(parentTid, sessionState))
-		{
-			warningf("actuallyDeliverBatchResults: parent tid=%d session %s, retrying via deliverBatchResults",
-				parentTid, sessionState);
-			return deliverBatchResults(parentTid);
-		}
-
 		auto children = host_.childTaskIds(parentTid);
 		if (children.length == 0)
 		{
@@ -478,11 +469,6 @@ unittest
 			ensureProcessQueueAlive: (int tid) {
 				assert(tid == 1, test.name);
 				return resolve();
-			},
-			canSendSystemMessage: (int tid, out string sessionState) {
-				assert(tid == 1, test.name);
-				sessionState = "";
-				return true;
 			},
 			sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 				string body) {

@@ -484,7 +484,6 @@ class App
 						TaskStatus.active, TaskNotificationChange.preserve);
 				return td.processQueue.setGoal(ProcessState.Alive);
 			},
-			canSendSystemMessage: &canSendSystemMessage,
 			sendKnownSystemMessage: &sendKnownSystemMessage,
 			persistAddTaskDep: (int parentTid, int childTid) {
 				persistence.addTaskDep(parentTid, childTid);
@@ -2958,24 +2957,6 @@ class App
 			workflowTools.deliverFailedPendingSubTaskResult(tid);
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
-	}
-
-	private bool canSendSystemMessage(int tid, out string sessionState)
-	{
-		auto session = sessionForTask(tid);
-		if (session is null)
-		{
-			sessionState = "is null";
-			return false;
-		}
-		if (!session.alive)
-		{
-			sessionState = "not alive";
-			return false;
-		}
-
-		sessionState = "";
-		return true;
 	}
 
 	private Promise!void sendKnownSystemMessage(int tid, KnownSystemMessageKind kind,

@@ -91,7 +91,6 @@ struct WorkflowToolsHost
 	string delegate(int tid) taskWorkspaceLabel;
 	void delegate(int tid, void delegate() cb) addIdleCallback;
 	Promise!void delegate(int tid) reactivateTask;
-	bool delegate(int tid, out string sessionState) canSendSystemMessage;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body)
 		sendKnownSystemMessage;
 
@@ -208,7 +207,6 @@ unittest
 		taskAlive: (int tid) => false, tasksShareWorkspace: (int aTid, int bTid) => true,
 		taskWorkspaceLabel: (int tid) => "local", addIdleCallback: (int tid, void delegate() cb) {},
 		reactivateTask: (int tid) => resolve(),
-		canSendSystemMessage: (int tid, out string sessionState) { sessionState = "dead"; return false; },
 		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind, string body) { return resolve(); },
 		persistAddTaskDep: (int parentTid, int childTid) {}, persistRemoveTaskDep: (int parentTid, int childTid) {},
 		persistRemoveAllChildDeps: (int childTid) {}, loadTaskDeps: () => cast(int[][int]) null,
@@ -287,7 +285,6 @@ public:
 					liveDeliveredSubTasks_[childTid] = true;
 				},
 				ensureProcessQueueAlive: host_.ensureProcessQueueAlive,
-				canSendSystemMessage: host_.canSendSystemMessage,
 				sendKnownSystemMessage: host_.sendKnownSystemMessage,
 				removeTaskDependency: &removeTaskDependency,
 				taskAlive: host_.taskAlive,
@@ -1782,10 +1779,6 @@ unittest
 		taskWorkspaceLabel: (int tid) => "local",
 		addIdleCallback: (int tid, void delegate() cb) {},
 		reactivateTask: (int tid) => resolve(),
-		canSendSystemMessage: (int tid, out string sessionState) {
-			sessionState = "dead";
-			return false;
-		},
 		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 			string body) { return resolve(); },
 		persistAddTaskDep: (int parentTid, int childTid) {},
@@ -2084,10 +2077,6 @@ unittest
 				loadTaskDeps: () => cast(int[][int]) null,
 				broadcastTaskUpdate: (int tid) {},
 				broadcastTaskCreated: (TaskCreatedMessage message) {},
-				canSendSystemMessage: (int tid, out string sessionState) {
-					sessionState = "live";
-					return true;
-				},
 				sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 					string body) { return resolve(); },
 				sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
