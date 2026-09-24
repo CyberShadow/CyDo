@@ -36,6 +36,8 @@ import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 import cydo.mcp.tools;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
+import cydo.workflow.sessions.disk_usage : DiskUsageHost, buildDiskScanInput;
+import cydo.runtime.storage.disk_usage : DiskScanInput;
 import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
 import cydo.web.client_hub : ClientHub;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
@@ -3145,6 +3147,17 @@ class App
 			return "";
 		}
 		return result.output.strip;
+	}
+
+	private DiskScanInput diskScanInput(int tid)
+	{
+		return buildDiskScanInput(tid, DiskUsageHost(
+			taskDir: (int taskTid) => taskPathResolver.taskDir(tasks[taskTid]),
+			sharedTmpPath: &resolveSharedTmpPath,
+			ownsWorktree: (int taskTid) => tasks[taskTid].ownsWorktree,
+			worktreePath: (int taskTid) => taskPathResolver.worktreePath(&tasks[taskTid]),
+			forkBaseSha: (int taskTid) => getWorktreeForkBaseHead(tasks[taskTid]),
+		));
 	}
 
 	private YieldGateFinding checkOutputGate(int tid)
