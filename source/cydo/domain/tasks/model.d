@@ -538,6 +538,7 @@ struct TaskData
 	bool archived;
 	long createdAt;    // StdTime; 0 = not set
 	long lastActive;   // StdTime; 0 = not set
+	NaggedYieldGates naggedYieldGates;
 
 	/// Git repository root for the selected project.
 	/// Falls back to projectPath if git resolution fails.
@@ -594,7 +595,6 @@ struct TaskData
 	/// persisted: uncertainty blocks this server process only.
 	NativeUndoState nativeUndoState = NativeUndoState.idle;
 	bool stdinClosed = false;      // set after closeStdin, cleared on session restart/exit
-	NaggedYieldGates naggedYieldGates;
 	bool needsAttention = false;
 	bool hasPendingQuestion = false;
 	string lastSessionStatus;

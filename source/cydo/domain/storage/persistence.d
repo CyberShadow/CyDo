@@ -2,6 +2,7 @@ module cydo.domain.storage.persistence;
 
 import ae.sys.database : Database;
 import ae.sys.dataset : DataVec;
+import cydo.domain.tasks.yield_gate : NaggedYieldGates;
 
 /// Open the cydo database, preferring the legacy data/cydo.db if present.
 Persistence openDatabase()
@@ -136,6 +137,8 @@ struct Persistence
 			");",
 			// Migration 22: Claude rows cached a directory-name guess and must be rescanned.
 			"DELETE FROM session_meta_cache WHERE driver = 'claude';",
+			// Migration 23: durable independent pre-yield retry opportunities.
+			"ALTER TABLE tasks ADD COLUMN yield_gates_nagged INTEGER NOT NULL DEFAULT 0;",
 		]);
 
 		// In CI, disable durability to speed up tests. This trades crash-safety
@@ -272,6 +275,11 @@ struct Persistence
 		db.stmt!"UPDATE tasks SET needs_attention = ? WHERE tid = ?".exec(needsAttention ? 1 : 0, tid);
 	}
 
+	void setYieldGatesNagged(int tid, NaggedYieldGates nagged)
+	{
+		db.stmt!"UPDATE tasks SET yield_gates_nagged = ? WHERE tid = ?".exec(nagged.bits, tid);
+	}
+
 	struct TaskRow
 	{
 		int tid;
@@ -294,6 +302,7 @@ struct Persistence
 		long lastActive;
 		string entryPoint;
 		bool needsAttention;
+		NaggedYieldGates naggedYieldGates;
 	}
 
 	TaskRow[] loadTasks()
@@ -302,11 +311,11 @@ struct Persistence
 		foreach (int tid, string agentSessionId, string description, string taskType,
 			int parentTid, string relationType, string workspace, string projectPath,
 			int worktreeTid, string taskStartHead, string title, string status, string agentName, int archived, string draft,
-			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention;
-			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0) FROM tasks".iterate())
+			string resultText, long createdAt, long lastActive, string entryPoint, int needsAttention, long yieldGatesNagged;
+			db.stmt!"SELECT tid, COALESCE(agent_session_id,''), COALESCE(description,''), COALESCE(task_type,'blank'), COALESCE(parent_tid,0), COALESCE(relation_type,''), COALESCE(workspace,''), COALESCE(project_path,''), COALESCE(worktree_tid,0), COALESCE(task_start_head,''), COALESCE(title,''), COALESCE(status,'completed'), COALESCE(agent_type,'claude'), COALESCE(archived,0), COALESCE(draft,''), COALESCE(result_text,''), COALESCE(created_at,0), COALESCE(last_active,0), COALESCE(entry_point,''), COALESCE(needs_attention,0), yield_gates_nagged FROM tasks".iterate())
 		{
 			// tasks.agent_type stores the configured agent name from config.agents.
-			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0);
+			result ~= TaskRow(tid, agentSessionId, description, taskType, parentTid, relationType, workspace, projectPath, worktreeTid, taskStartHead, title, status, agentName, archived != 0, draft, resultText, createdAt, lastActive, entryPoint, needsAttention != 0, NaggedYieldGates.fromStored(yieldGatesNagged));
 		}
 		return result;
 	}
@@ -612,13 +621,30 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 23);
+	assert(userVersion == 24);
 
 	auto rows = persistence.loadTasks();
 	assert(rows.length == 1);
 	assert(rows[0].workspace == "existing-workspace");
 	assert(rows[0].projectPath == "project");
 	assert(rows[0].status == "completed");
+	assert(rows[0].naggedYieldGates.bits == 0);
+	foreach (uint mask; 0 .. 4)
+	{
+		persistence.setYieldGatesNagged(1, NaggedYieldGates(mask));
+		assert(Persistence(dbPath).loadTasks()[0].naggedYieldGates.bits == mask);
+	}
+	foreach (long invalid; [-1L, 4L, 8L])
+	{
+		persistence.db.stmt!"UPDATE tasks SET yield_gates_nagged = ? WHERE tid = 1".exec(invalid);
+		bool rejected;
+		try
+			Persistence(dbPath).loadTasks();
+		catch (Exception)
+			rejected = true;
+		assert(rejected);
+	}
+	persistence.setYieldGatesNagged(1, NaggedYieldGates(0));
 	assert(persistence.loadSessionMetaCache().length == 0,
 		"ambiguous pre-profile cache rows must be discarded");
 
@@ -631,7 +657,7 @@ unittest
 		"relation_type", "workspace", "project_path", "title", "status",
 		"worktree_path", "has_worktree", "agent_type", "archived", "draft",
 		"result_text", "created_at", "last_active", "worktree_tid", "entry_point",
-		"needs_attention", "task_start_head",
+		"needs_attention", "task_start_head", "yield_gates_nagged",
 	]);
 
 	persistence.upsertSessionMetaCache("claude", "/profiles/one", "same-id", 1,
@@ -698,6 +724,8 @@ unittest
 			"('claude', '/profiles/one', 'same-id', 1, '/guessed', 'Claude session', 1), " ~
 			"('codex', '/profiles/one', 'same-id', 2, '/recorded', 'Codex session', 1);"
 		);
+		// Later migrations alter the tasks table.
+		legacy.db.exec("CREATE TABLE tasks (tid INTEGER PRIMARY KEY);");
 		legacy.db.exec("PRAGMA user_version = 22;");
 	}
 
@@ -705,9 +733,36 @@ unittest
 	int userVersion;
 	foreach (int value; persistence.db.stmt!"PRAGMA user_version".iterate())
 		userVersion = value;
-	assert(userVersion == 23);
+	assert(userVersion == 24);
 
 	auto rows = persistence.loadSessionMetaCache();
 	assert(rows == [Persistence.CacheRow("codex", "/profiles/one", "same-id", 2,
 		"/recorded", "Codex session", true)]);
+}
+
+
+unittest
+{
+	import std.file : exists, rmdirRecurse;
+	import std.path : buildPath;
+
+	auto root = buildPath("/tmp", "cydo-yield-gate-migration-unittest");
+	if (exists(root))
+		rmdirRecurse(root);
+	scope (exit)
+		if (exists(root))
+			rmdirRecurse(root);
+	auto path = buildPath(root, "cydo.db");
+	{
+		auto old = Persistence(path);
+		old.createTask("workspace", "project");
+		old.db.db.exec("ALTER TABLE tasks DROP COLUMN yield_gates_nagged;");
+		old.db.db.exec("PRAGMA user_version = 23;");
+	}
+	auto upgraded = Persistence(path);
+	auto rows = upgraded.loadTasks();
+	assert(rows.length == 1);
+	assert(rows[0].workspace == "workspace");
+	assert(rows[0].projectPath == "project");
+	assert(rows[0].naggedYieldGates.bits == 0);
 }

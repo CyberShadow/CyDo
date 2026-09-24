@@ -38,6 +38,7 @@ import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
 import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates, shouldRetryYieldGate;
+import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
 import cydo.domain.task_types.definition : TaskTypeDef, formatCompactSingletonToolSummary, singletonsOfferedTo,
@@ -232,6 +233,7 @@ struct TaskSessionRunnerHost
 	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
 		TaskNotificationChange notification) transitionTaskFrom;
 	void delegate(int tid, string resultText) persistResultText;
+	void delegate(int tid, YieldGate gate) markYieldGateNagged;
 	void delegate(int tid, YieldGateFinding finding) requestYieldGateRetry;
 	void delegate(int tid) spawnContinuation;
 	void delegate(int tid) spawnOnYieldContinuation;
@@ -1194,7 +1196,7 @@ public:
 				auto finding = checkYieldGates(tid, host_.checkOutputGate);
 				if (shouldRetryYieldGate(current.naggedYieldGates, finding))
 				{
-					current.naggedYieldGates.mark(finding.gate);
+					host_.markYieldGateNagged(tid, finding.gate);
 					infof("Output enforcement: tid=%d missing outputs, resuming: %s",
 						tid, finding.detail);
 					host_.requestYieldGateRetry(tid, finding);
@@ -2729,11 +2731,12 @@ version (unittest) private final class YieldGateTestAgent : ClaudeCodeAgent
 
 version (unittest) private void assertYieldGateRunnerCase(
 	string caseName, bool outputsPresent, bool consumerWaiting, bool failedTurn,
-	int exitCode, bool continuation, bool onYield, bool secondExit)
+	int exitCode, bool continuation, bool onYield, bool secondExit, bool retryFails = false)
 {
 	import ae.utils.statequeue : StateQueue;
 	import configy.attributes : SetInfo;
 	import cydo.domain.tasks.yield_gate : YieldGate;
+	import cydo.domain.storage.persistence : Persistence;
 	import cydo.runtime.config : AgentConfig, WorkspaceConfig;
 
 	withGitMetadataLaunchFixture("cydo-yield-gate-" ~ caseName,
@@ -2758,6 +2761,8 @@ version (unittest) private void assertYieldGateRunnerCase(
 			config.workspaces = [WorkspaceConfig(name: "local", root: fixture.workspaceRoot,
 				sandbox: unrestrictedLaunchTestSandbox())];
 
+			auto persistence = Persistence(buildPath(fixture.root, "yield-gates.db"));
+			assert(persistence.createTask("local", fixture.linkedCheckout) == 1);
 			TaskData[int] tasks;
 			tasks[1] = TaskData(1, "local", fixture.linkedCheckout);
 			tasks[1].taskType = "runner";
@@ -2812,10 +2817,20 @@ version (unittest) private void assertYieldGateRunnerCase(
 				transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
 					TaskNotificationChange change) { tasks[tid].status = to; },
 				persistResultText: (int tid, string text) {},
+				markYieldGateNagged: (int tid, YieldGate gate) {
+					auto mask = tasks[tid].naggedYieldGates;
+					mask.mark(gate);
+					persistence.setYieldGatesNagged(tid, mask);
+					tasks[tid].naggedYieldGates = mask;
+				},
 				requestYieldGateRetry: (int tid, YieldGateFinding finding) {
 					assert(finding.gate == YieldGate.outputs);
 					assert(finding.detail == "missing report");
+					assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+						.loadTasks()[0].naggedYieldGates.contains(YieldGate.outputs));
 					retries++;
+					if (retryFails)
+						throw new Exception("simulated retry submission failure");
 				},
 				spawnContinuation: (int tid) { continuations++; },
 				spawnOnYieldContinuation: (int tid) { onYieldContinuations++; },
@@ -2840,10 +2855,22 @@ version (unittest) private void assertYieldGateRunnerCase(
 				assert(deliveries == 0);
 			if (!consumerWaiting)
 				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
-			agent.session.exit(exitCode);
+			if (retryFails)
+			{
+				bool failureObserved;
+				try
+					agent.session.exit(exitCode);
+				catch (Exception e)
+					failureObserved = e.msg == "simulated retry submission failure";
+				assert(failureObserved);
+			}
+			else
+				agent.session.exit(exitCode);
 			assert(retries == (consumerWaiting && !outputsPresent && !failedTurn
 				&& exitCode == 0 && !continuation && !onYield ? 1 : 0));
 			assert(tasks[1].naggedYieldGates.contains(YieldGate.outputs) == (retries == 1));
+			assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+				.loadTasks()[0].naggedYieldGates.bits == (retries == 1 ? 1 : 0));
 			assert(continuations == (continuation ? 1 : 0));
 			assert(onYieldContinuations == (onYield ? 1 : 0));
 			if (exitCode != 0 || failedTurn)
@@ -2854,6 +2881,13 @@ version (unittest) private void assertYieldGateRunnerCase(
 				assert(tasks[1].status == TaskStatus.active && deliveries == 0);
 			if (secondExit)
 			{
+				tasks[1].naggedYieldGates = Persistence(buildPath(fixture.root,
+					"yield-gates.db")).loadTasks()[0].naggedYieldGates;
+				assert(!shouldRetryYieldGate(tasks[1].naggedYieldGates,
+					YieldGateFinding(YieldGate.outputs, "missing report")));
+				assert(shouldRetryYieldGate(tasks[1].naggedYieldGates,
+					YieldGateFinding(YieldGate.diskCleanup, "disk")));
+				assert(!tasks[1].naggedYieldGates.contains(YieldGate.diskCleanup));
 				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
 				runner.spawnTaskSession(1);
 				agent.session.result();
@@ -2870,6 +2904,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 unittest
 {
 	assertYieldGateRunnerCase("missing", false, true, false, 0, false, false, true);
+	assertYieldGateRunnerCase("retry-fails", false, true, false, 0, false, false, true, true);
 	assertYieldGateRunnerCase("present", true, true, false, 0, false, false, false);
 	assertYieldGateRunnerCase("nonzero", false, true, false, 1, false, false, false);
 	assertYieldGateRunnerCase("failed-turn", false, true, true, 0, false, false, false);

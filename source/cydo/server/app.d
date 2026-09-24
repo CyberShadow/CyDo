@@ -683,6 +683,7 @@ class App
 			persistResultText: (int tid, string resultText) {
 				persistence.setResultText(tid, resultText);
 			},
+			markYieldGateNagged: &markYieldGateNagged,
 			requestYieldGateRetry: &requestYieldGateRetry,
 			spawnContinuation: &workflowTools.spawnContinuation,
 			spawnOnYieldContinuation: &workflowTools.spawnOnYieldContinuation,
@@ -889,6 +890,7 @@ class App
 			td.resultText = row.resultText;
 			td.createdAt = row.createdAt;
 			td.lastActive = row.lastActive;
+			td.naggedYieldGates = row.naggedYieldGates;
 			td.needsAttention = row.needsAttention;
 			td.titleGenDone = row.title.length > 0;
 			auto rowTid = row.tid;
@@ -2999,6 +3001,14 @@ class App
 		if (unsubscribeSubscribers)
 			clientHub.unsubscribeAll(tid);
 		return reloadEmitted;
+	}
+
+	private void markYieldGateNagged(int tid, YieldGate gate)
+	{
+		auto nagged = tasks[tid].naggedYieldGates;
+		nagged.mark(gate);
+		persistence.setYieldGatesNagged(tid, nagged);
+		tasks[tid].naggedYieldGates = nagged;
 	}
 
 	private void requestYieldGateRetry(int tid, YieldGateFinding finding)

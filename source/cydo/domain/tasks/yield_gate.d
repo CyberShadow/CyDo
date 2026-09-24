@@ -6,9 +6,20 @@ enum YieldGate : uint
 	diskCleanup = 2,
 }
 
+enum uint supportedYieldGateMask = cast(uint) YieldGate.outputs | cast(uint) YieldGate.diskCleanup;
+
 struct NaggedYieldGates
 {
 	uint bits;
+
+	static NaggedYieldGates fromStored(long value)
+	{
+		import std.exception : enforce;
+
+		enforce(value >= 0 && (value & ~cast(long) supportedYieldGateMask) == 0,
+			"Invalid persisted yield gate mask");
+		return NaggedYieldGates(cast(uint) value);
+	}
 
 	bool contains(YieldGate gate) const
 	{
