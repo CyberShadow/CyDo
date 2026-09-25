@@ -1005,6 +1005,8 @@ EOF
             CYDO_TEST_DEFS = "${./defs}";
             # Real bwrap cannot create namespaces inside the Nix build sandbox.
             CYDO_TEST_SKIP_BWRAP = "1";
+            # The build sandbox has no Nix store database or daemon socket.
+            CYDO_TEST_SKIP_NIX_STORE = "1";
 
             # Provide git identity so worktree unit tests can create commits.
             GIT_AUTHOR_NAME = "CyDo Test";
@@ -1182,6 +1184,8 @@ EOF
               pkg-config
               playwright-test
               bubblewrap
+              # Host live-store tests need path-info --json-format 1 in the dev shell.
+              nixVersions.latest
             ];
 
             # The Codex driver's exact-shape grammar transcribes the model

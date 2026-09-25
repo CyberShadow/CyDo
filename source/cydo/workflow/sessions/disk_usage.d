@@ -3,8 +3,15 @@ module cydo.workflow.sessions.disk_usage;
 import ae.utils.promise : Promise;
 import ae.utils.promise.concurrency : threadAsync;
 import cydo.runtime.launch.sandbox_materialization : taskTmpAgentPath, taskTmpHostPath;
-import cydo.runtime.storage.disk_usage : DiskScanInput, DiskUsageResult,
+import cydo.runtime.storage.nix_roots : NixClosureReport, reportNixClosures;
+import cydo.runtime.storage.disk_usage : DiskScanInput, DiskUsageResult, DiskSymlink,
 	listDirectory, measureDiskUsage;
+
+struct DiskEvaluation
+{
+	DiskUsageResult usage;
+	NixClosureReport nix;
+}
 
 struct DiskUsageHost
 {
@@ -28,16 +35,23 @@ DiskScanInput buildDiskScanInput(int tid, DiskUsageHost host)
 	return input;
 }
 
-Promise!DiskUsageResult measureDiskUsageAsync(DiskScanInput input)
+Promise!DiskEvaluation measureDiskUsageAsync(DiskScanInput input)
 {
-	return measureDiskUsageAsync(input, (string dir) => listDirectory(dir));
+	return measureDiskUsageAsync(input, (string dir) => listDirectory(dir),
+		(links) => reportNixClosures(links));
 }
 
-Promise!DiskUsageResult measureDiskUsageAsync(DiskScanInput input,
-	string[] delegate(string dir) list)
+Promise!DiskEvaluation measureDiskUsageAsync(DiskScanInput input,
+	string[] delegate(string dir) list,
+	NixClosureReport delegate(DiskSymlink[]) reporter)
 {
 	auto workerInput = input;
-	return threadAsync({ return measureDiskUsage(workerInput, list); });
+	return threadAsync({
+		DiskEvaluation result;
+		result.usage = measureDiskUsage(workerInput, list);
+		result.nix = reporter(result.usage.symlinks);
+		return result;
+	});
 }
 
 unittest
@@ -101,9 +115,10 @@ unittest
 		foreach (child; dirEntries(dir, SpanMode.shallow)) paths ~= child.name;
 		return paths;
 	};
-	measureDiskUsageAsync(input, blockingList).then((DiskUsageResult result) {
+	measureDiskUsageAsync(input, blockingList,
+		(DiskSymlink[] links) => NixClosureReport.init).then((DiskEvaluation result) {
 		assert(atomicLoad(progressed));
-		assert(result.totalBytes == 0);
+		assert(result.usage.totalBytes == 0);
 		completed = true;
 	}).ignoreResult();
 	input.taskDir = "/nonexistent-after-dispatch";
@@ -115,7 +130,7 @@ unittest
 	input.forkWorktree = task;
 	input.forkBaseSha = "bad-sha";
 	bool rejected;
-	measureDiskUsageAsync(input).then((DiskUsageResult result) {
+	measureDiskUsageAsync(input).then((DiskEvaluation result) {
 		assert(false, "expected Git failure");
 	}, (Exception e) {
 		assert(e.msg.canFind(task));
@@ -136,7 +151,7 @@ unittest
 	);
 	auto missingBase = buildDiskScanInput(12, ownedHost);
 	rejected = false;
-	measureDiskUsageAsync(missingBase).then((DiskUsageResult result) {
+	measureDiskUsageAsync(missingBase).then((DiskEvaluation result) {
 		assert(false, "expected missing-base failure");
 	}, (Exception e) {
 		assert(e.msg.canFind(fork));
@@ -157,7 +172,7 @@ unittest
 		assert(chmod(blocked.toStringz, 0) == 0);
 		scope (exit) chmod(blocked.toStringz, 448);
 		rejected = false;
-		measureDiskUsageAsync(input).then((DiskUsageResult result) {
+		measureDiskUsageAsync(input).then((DiskEvaluation result) {
 			assert(false, "expected unreadable-directory failure");
 		}, (Exception e) {
 			assert(e.msg.canFind(blocked));
