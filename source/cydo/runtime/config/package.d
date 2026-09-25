@@ -154,12 +154,15 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	@Optional long disk_cleanup_threshold_bytes = 10_485_760;
 
 	/// Called by configy during parsing (configy/read.d:650), so a semantic
 	/// error surfaces on the same path as a YAML syntax error.
 	void validate() const
 	{
 		import std.format : format;
+		if (disk_cleanup_threshold_bytes <= 0)
+			throw new Exception("disk_cleanup_threshold_bytes must be positive");
 		foreach (name, ref ac; agents)
 		{
 			auto driver = effectiveDriver(name, ac);
@@ -238,9 +241,9 @@ private void normalizeWorkspacePaths(ref CydoConfig config)
 
 version (unittest)
 {
+	import std.algorithm : canFind;
 	import ae.sys.file : realPath;
 	import configy.read : parseConfigString;
-	import std.algorithm : canFind;
 	import std.exception : assertThrown;
 	import std.file : exists, mkdirRecurse, rmdirRecurse, symlink, write;
 	import std.path : buildPath, buildNormalizedPath;
@@ -493,5 +496,31 @@ version (unittest)
 	{
 		auto yaml = "workspaces:\n  local:\n    root: /tmp\n    auto_mode: true\n";
 		assertThrown!Exception(parseConfigString!CydoConfig(yaml, "/dev/null"));
+	}
+
+	// Disk cleanup has a positive, wide threshold and preserves its default.
+	unittest
+	{
+		assert(parseConfigString!CydoConfig(workspacesYAML, "/dev/null")
+			.disk_cleanup_threshold_bytes == 10_485_760);
+		assert(parseConfigString!CydoConfig(workspacesYAML
+			~ "disk_cleanup_threshold_bytes: 4294967296\n", "/dev/null")
+			.disk_cleanup_threshold_bytes == 4_294_967_296L);
+		foreach (value; ["0", "-1", "\"9223372036854775808\""])
+		{
+			bool rejected;
+			try
+				parseConfigString!CydoConfig(workspacesYAML
+					~ "disk_cleanup_threshold_bytes: " ~ value ~ "\n", "/dev/null");
+			catch (Exception e)
+			{
+				assert(e.toString.canFind("disk_cleanup_threshold_bytes"),
+					value ~ ": " ~ e.toString);
+				rejected = true;
+			}
+			assert(rejected);
+		}
+		assertThrown!Exception(parseConfigString!CydoConfig(workspacesYAML
+			~ "disk_cleanup_threshold_bytes: 9223372036854775808\n", "/dev/null"));
 	}
 }

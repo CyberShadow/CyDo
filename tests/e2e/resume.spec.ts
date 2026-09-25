@@ -5,7 +5,7 @@
  * with a `restart()` method, independent of the worker-scoped backend fixture.
  */
 import { test as base, expect } from "@playwright/test";
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, execFileSync } from "child_process";
 import type { ChildProcess } from "child_process";
 import type { Locator, Page } from "@playwright/test";
 import { mkdirSync, rmSync, symlinkSync, cpSync, writeFileSync } from "fs";
@@ -600,6 +600,21 @@ test("waiting parent retains pre-restart completed child in batch results", { ta
   await expect(allTaskItems).toHaveCount(3);
 
   await openRunningChildTask(page, "Slow child", "sleep 20");
+  const completedFastChild = sidebarTaskByLabel(page, "Fast child");
+  const fastTid = Number(await completedFastChild.getAttribute("data-tid"));
+  const dbPath = `${restartableBackend.workDir}/data/cydo/cydo.db`;
+  await expect
+    .poll(
+      () =>
+        execFileSync("sqlite3", [
+          dbPath,
+          `SELECT status FROM tasks WHERE tid = ${fastTid}`,
+        ])
+          .toString()
+          .trim(),
+      { timeout: 540_000 },
+    )
+    .toBe("completed");
   const fastChildRow = await openSidebarTaskByLabel(page, "Fast child");
   await expect(
     fastChildRow.locator(

@@ -136,6 +136,7 @@ private:
 		case KnownSystemMessageKind.sessionStart:
 			return false;
 		case KnownSystemMessageKind.missingRequiredOutputs:
+		case KnownSystemMessageKind.diskCleanupRequest:
 		case KnownSystemMessageKind.subTaskResults:
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:

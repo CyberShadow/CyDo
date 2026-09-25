@@ -36,7 +36,7 @@ import cydo.mcp.tool_descriptions : RenderedCydoToolsOptions,
 import cydo.mcp.tools;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
 import cydo.workflow.workspace.task_path_resolver : TaskPathResolver, TaskPathResolverHost;
-import cydo.workflow.sessions.disk_usage : DiskUsageHost, buildDiskScanInput;
+import cydo.workflow.sessions.disk_usage : DiskUsageHost, buildDiskScanInput, measureDiskUsageAsync;
 import cydo.runtime.storage.disk_usage : DiskScanInput;
 import cydo.workflow.workspace.worktree_allocator : WorktreeAllocator, WorktreeAllocatorHost;
 import cydo.web.client_hub : ClientHub;
@@ -661,6 +661,7 @@ class App
 			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
 			checkOutputGate: &checkOutputGate,
+			evaluateDiskUsage: (int tid) => measureDiskUsageAsync(diskScanInput(tid)),
 			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
 			recordChildTerminal: &workflowTools.recordChildTerminal,
 			parentTaskForChild: &workflowTools.parentTaskForChild,
@@ -721,6 +722,7 @@ class App
 				tasks[tid] = move(td);
 			},
 			removeTask: (int tid) {
+				taskSessionRunner.discardPendingExit(tid);
 				tasks.remove(tid);
 			},
 			agentForTask: &agentForTask,
@@ -900,6 +902,7 @@ class App
 			if (tasks[rowTid].status == TaskStatus.importable)
 			{
 				persistence.deleteTask(rowTid);
+				taskSessionRunner.discardPendingExit(rowTid);
 				tasks.remove(rowTid);
 				continue;
 			}
@@ -2000,8 +2003,8 @@ class App
 		{
 			td.wasKilledByUser = true;
 			td.processQueue.setGoal(ProcessState.Dead).ignoreResult();
-			taskSessionRunner.stopTask(tid);
 		}
+		taskSessionRunner.stopTask(tid);
 	}
 
 	private void handleDismissAttention(WsMessage json)
@@ -2056,6 +2059,7 @@ class App
 		// Clean up subscriptions
 		clientHub.unsubscribeAll(tid);
 		// Remove from in-memory state
+		taskSessionRunner.discardPendingExit(tid);
 		tasks.remove(tid);
 		// Remove from database
 		persistence.deleteTask(tid);
@@ -2422,6 +2426,13 @@ class App
 		auto td = tid in tasks;
 		if (td is null)
 			return false;
+		if (archived && archiving)
+		{
+			taskSessionRunner.settlePendingExit(tid);
+			td = tid in tasks;
+			if (td is null)
+				return false;
+		}
 		td.archived = archived;
 		td.archiving = archiving;
 		return true;
@@ -2541,7 +2552,10 @@ class App
 			enforce(scanGeneration >= importableScanGeneration_,
 				"A stale discovery generation cannot replace importable session records");
 			foreach (tid; existing)
+			{
+				taskSessionRunner.discardPendingExit(tid);
 				tasks.remove(tid);
+			}
 			foreach (tid, ref td; stagedTasks)
 				tasks[tid] = move(td);
 			importableScanGeneration_ = scanGeneration;
@@ -3017,15 +3031,24 @@ class App
 	{
 		if (tid !in tasks)
 			return;
-		assert(finding.gate == YieldGate.outputs);
-		auto enfMissing = finding.detail;
+		final switch (finding.gate)
+		{
+		case YieldGate.outputs: break;
+		case YieldGate.diskCleanup: break;
+		}
+		auto kind = finding.gate == YieldGate.outputs
+			? KnownSystemMessageKind.missingRequiredOutputs
+			: KnownSystemMessageKind.diskCleanupRequest;
+		auto templatePath = finding.gate == YieldGate.outputs
+			? "gates/missing_outputs.md" : "gates/disk_cleanup.md";
+		auto vars = finding.vars;
+		if (finding.gate == YieldGate.outputs)
+			vars["missing_outputs"] = finding.detail;
 		tasks[tid].processQueue.setGoal(ProcessState.Alive).then(() {
 			auto msg = wrapKnownSystemMessage(config.system_keyword,
-				KnownSystemMessageKind.missingRequiredOutputs,
-				readPromptFile("gates/missing_outputs.md", tasks[tid].projectPath,
-					["missing_outputs": enfMissing]));
+				kind, readPromptFile(templatePath, tasks[tid].projectPath, vars));
 			auto outputsMeta = systemMessageNormalizer.buildKnownSystemMessageMeta(
-				KnownSystemMessageKind.missingRequiredOutputs);
+				kind);
 			return sendTaskMessage(tid, [ContentBlock("text", msg)], null,
 				outputsMeta);
 		}).except((Exception e) {
@@ -3042,9 +3065,12 @@ class App
 			transitionTask(tid, TaskStatus.active, TaskStatus.failed,
 				TaskNotificationChange.preserve);
 			auto translated = historyPipeline.appendTaskDiagnostic(tid,
-				"Failed to request missing outputs", e.msg);
+				finding.gate == YieldGate.outputs
+					? "Failed to request missing outputs" : "Failed to request disk cleanup",
+				e.msg);
 			broadcastAppendedTaskEvent(tid, translated);
-			workflowTools.recordChildTerminal(tid);
+			if (!workflowTools.recordChildTerminal(tid))
+				workflowTools.deliverWaitingParentResultsIfReady(tid).ignoreResult();
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
 	}
@@ -5875,6 +5901,68 @@ unittest
 
 unittest
 {
+	import std.algorithm : canFind;
+	import std.path : dirName;
+	import cydo.workflow.sessions.disk_usage : DiskEvaluation;
+	import cydo.workflow.sessions.yield_gates : checkDiskCleanupGate;
+	import cydo.runtime.storage.disk_usage : DiskCategory, DiskTopPath;
+	import cydo.runtime.storage.nix_roots : NixClosureEntry, nixClosureLabel;
+
+	auto root = buildPath(tempDir(), "cydo-app-disk-cleanup-template");
+	if (exists(root)) rmdirRecurse(root);
+	scope (exit) if (exists(root)) rmdirRecurse(root);
+	auto oldHome = environment.get("HOME", "");
+	auto hadHome = "HOME" in environment;
+	scope (exit)
+	{
+		if (hadHome) environment["HOME"] = oldHome;
+		else environment.remove("HOME");
+	}
+	auto home = buildPath(root, "home");
+	mkdirRecurse(home);
+	environment["HOME"] = home;
+	auto bundled = environment.get("CYDO_TEST_DEFS", "defs");
+	assert(exists(buildPath(bundled, "gates", "disk_cleanup.md")));
+	auto app = new App();
+	app.taskTypeCatalog = new TaskTypeCatalog(bundled,
+		buildPath(bundled, "task-types.yaml"), &isKnownPromptParityAgent);
+	auto project = buildPath(root, "project");
+	mkdirRecurse(project);
+	DiskEvaluation evaluation;
+	evaluation.usage.taskBytes = -3;
+	evaluation.usage.temporaryBytes = 15;
+	evaluation.usage.totalBytes = 12;
+	evaluation.usage.topPaths = [DiskTopPath(DiskCategory.temporary, "build{{x}}", 15)];
+	evaluation.nix.entries = [NixClosureEntry(["/task/result"], "/nix/store/example", 100)];
+	auto vars = checkDiskCleanupGate(evaluation, 10, "/task", "/tmp/task").vars;
+	vars["x"] = "must-not-expand";
+	auto bundledBody = app.readPromptFile("gates/disk_cleanup.md", project, vars);
+	assert(bundledBody.canFind("Task directory /task: -3 bytes"));
+	assert(bundledBody.canFind("Temporary directory /tmp/task: 15 bytes"));
+	assert(bundledBody.canFind("Signed total: 12 bytes"));
+	assert(bundledBody.canFind("15 temporary build{{x}}"));
+	assert(!bundledBody.canFind("must-not-expand"));
+	assert(bundledBody.canFind(nixClosureLabel));
+	assert(bundledBody.canFind("100 /nix/store/example /task/result"));
+	assert(bundledBody.canFind("Retain required outputs, shared inputs, and needed build"));
+	assert(bundledBody.canFind("sent once per task and will not be repeated"));
+	assert(bundledBody.canFind("Other independent requirements"));
+	assert(bundledBody.canFind("does not guarantee reclamation"));
+	auto userTemplate = buildPath(home, ".config", "cydo", "defs", "gates", "disk_cleanup.md");
+	mkdirRecurse(dirName(userTemplate));
+	write(userTemplate, "user {{total_bytes}}");
+	assert(app.readPromptFile("gates/disk_cleanup.md", project, vars) == "user 12");
+	auto projectTemplate = buildPath(project, ".cydo", "defs", "gates", "disk_cleanup.md");
+	mkdirRecurse(dirName(projectTemplate));
+	write(projectTemplate, "project {{total_bytes}}");
+	assert(app.readPromptFile("gates/disk_cleanup.md", project, vars) == "project 12");
+	write(projectTemplate, "updated {{total_bytes}}");
+	assert(app.readPromptFile("gates/disk_cleanup.md", project, vars) == "updated 12");
+	assertThrown!Exception(app.readPromptFile("gates/missing-required-disk.md", project, vars));
+}
+
+unittest
+{
 	auto tmp = buildPath("/tmp", "cydo-app-task-prompt-parity");
 	scope (exit)
 	{
@@ -6385,4 +6473,39 @@ unittest
 	// and undoStopInProgress onExit branches.
 	checkNeverLoaded((App app, int tid) => app.resetHistoryWatermarkOnly(tid), "only");
 	checkAlreadyLoaded((App app, int tid) => app.resetHistoryWatermarkOnly(tid), "only");
+}
+
+version (unittest) private final class ArchivePendingExitProbeRunner : TaskSessionRunner
+{
+	bool pending = true;
+	int deliveries;
+
+	this()
+	{
+		super(TaskSessionRunnerHost.init);
+	}
+
+	override void settlePendingExit(int tid)
+	{
+		assert(tid == 1);
+		if (pending)
+		{
+			pending = false;
+			deliveries++;
+		}
+	}
+}
+
+unittest
+{
+	auto app = new App;
+	app.tasks[1] = TaskData(1, "local", "/tmp/cydo-archive-pending-exit");
+	auto runner = new ArchivePendingExitProbeRunner;
+	app.taskSessionRunner = runner;
+	assert(app.updateArchiveTaskState(1, true, true));
+	assert(runner.deliveries == 1 && !runner.pending);
+	assert(app.tasks[1].archived && app.tasks[1].archiving);
+	assert(app.updateArchiveTaskState(1, false, false));
+	assert(runner.deliveries == 1);
+	assert(!app.tasks[1].archived && !app.tasks[1].archiving);
 }

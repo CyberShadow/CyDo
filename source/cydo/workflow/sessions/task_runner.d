@@ -22,6 +22,7 @@ import cydo.protocol : ContentBlock, ItemDeltaEvent, ItemStartedEvent, ProcessEx
 import cydo.runtime.config : AgentDriver, CydoConfig, PathMode, SandboxConfig;
 import cydo.runtime.launch.sandbox_paths : PathAccess, SandboxPathOrigin,
 	SandboxPathOriginKind, SandboxPaths;
+import cydo.runtime.launch.sandbox_materialization : taskTmpHostPath;
 import cydo.runtime.launch.types : AgentSandboxConfig, NativeHistoryProfile,
 	NativeHistoryRule, ProcessLaunch;
 import launchSandbox = cydo.runtime.launch.sandbox;
@@ -37,7 +38,9 @@ import cydo.domain.tasks.model : PendingContinuation, ProcessState, TaskData, Ta
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.domain.policy.permissions : PermissionEscalation, PermissionPrompt,
 	PermissionSettings, ToolCallRuling;
-import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates, shouldRetryYieldGate;
+import cydo.workflow.sessions.yield_gates : YieldGateFinding, checkYieldGates,
+	checkDiskCleanupGate, shouldEvaluateDiskCleanup, shouldRetryYieldGate;
+import cydo.workflow.sessions.disk_usage : DiskEvaluation;
 import cydo.domain.tasks.yield_gate : YieldGate;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.workspace.worktree : linkCheckoutFiles;
@@ -203,7 +206,8 @@ struct TaskSessionRunnerHost
 	void delegate(int tid) sendPendingChildAnswerReminder;
 	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
 	YieldGateFinding delegate(int tid) checkOutputGate;
-	bool delegate(int tid, bool eagerDepCleanup) finalizeCompletedSubTask;
+	Promise!DiskEvaluation delegate(int tid) evaluateDiskUsage;
+	bool delegate(int tid) finalizeCompletedSubTask;
 	bool delegate(int tid) recordChildTerminal;
 	int delegate(int childTid) parentTaskForChild;
 	Promise!void delegate(int tid) deliverWaitingParentResultsIfReady;
@@ -335,10 +339,36 @@ private:
 
 class TaskSessionRunner
 {
+	private struct PendingDiskExit
+	{
+		ulong token;
+		ulong generation;
+		TaskStatus status;
+		int exitCode;
+		bool reloadEmitted;
+	}
+
 	private TaskSessionRunnerHost host_;
 	private AgentSession[int] sessions_;
 	private LiveHistoryBinding[int] liveHistoryBindings_;
 	private CodexForkSourceOperation[int] forkSourceOperations_;
+	private ulong nextDiskGateToken_;
+	private PendingDiskExit[int] pendingDiskExits_;
+
+	void discardPendingExit(int tid)
+	{
+		pendingDiskExits_.remove(tid);
+	}
+
+	void settlePendingExit(int tid)
+	{
+		auto pending = tid in pendingDiskExits_;
+		if (pending is null)
+			return;
+		auto exit = *pending;
+		pendingDiskExits_.remove(tid);
+		finishTaskExit(tid, exit.exitCode, exit.reloadEmitted);
+	}
 
 	this(TaskSessionRunnerHost host)
 	{
@@ -353,6 +383,91 @@ class TaskSessionRunner
 			[TaskStatus.active, TaskStatus.alive, TaskStatus.waiting],
 			TaskStatus.completed, TaskNotificationChange.preserve);
 		task.processQueue.setGoal(ProcessState.Dead).ignoreResult();
+	}
+
+	private bool exitStillAwaited(int tid, PendingDiskExit pending)
+	{
+		auto task = host_.getTask(tid);
+		return task !is null
+			&& task.history.generation == pending.generation
+			&& task.status == pending.status
+			&& task.processQueue.oldState == ProcessState.Dead
+			&& task.processQueue.newState == ProcessState.Dead
+			&& task.processQueue.goalState != ProcessState.Alive
+			&& (host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid));
+	}
+
+	private void failDiskGateEvaluation(int tid, Exception e,
+		string subject = "Disk usage evaluation failed")
+	{
+		auto task = host_.getTask(tid);
+		task.error = e.msg;
+		task.resultText = e.msg;
+		host_.persistResultText(tid, e.msg);
+		host_.transitionTaskFrom(tid,
+			[TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+				TaskStatus.waiting], TaskStatus.failed,
+			TaskNotificationChange.preserve);
+		auto diagnostic = host_.appendTaskDiagnostic(tid, subject, e.msg);
+		host_.broadcastAppendedTaskEvent(tid, diagnostic);
+		if (!host_.recordChildTerminal(tid))
+			observeWaitingParentDeliveryAttempt(tid,
+				host_.deliverWaitingParentResultsIfReady(tid));
+		host_.emitTaskReload(tid);
+	}
+
+	private void finishTaskExit(int tid, int exitCode, bool reloadEmitted)
+	{
+		auto current = host_.getTask(tid);
+		bool deliveredPendingSubTask = false;
+		bool statusWasAlreadyTarget;
+		if (current.status == TaskStatus.completed)
+		{
+			statusWasAlreadyTarget = true;
+			deliveredPendingSubTask = host_.recordChildTerminal(tid);
+		}
+		else if (exitCode == 0 && !current.lastTurnFailed && host_.hasLiveBatchOwner(tid))
+			deliveredPendingSubTask = host_.finalizeCompletedSubTask(tid);
+		else
+		{
+			auto targetStatus = exitCode == 0 && !current.lastTurnFailed
+				? TaskStatus.completed : TaskStatus.failed;
+			host_.persistResultText(tid, current.resultText);
+			if (current.status != targetStatus)
+			{
+				host_.transitionTaskFrom(tid,
+					targetStatus == TaskStatus.completed
+						? [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+							TaskStatus.waiting, TaskStatus.failed]
+						: [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
+							TaskStatus.waiting, TaskStatus.completed],
+					targetStatus, TaskNotificationChange.preserve);
+			}
+			else
+				statusWasAlreadyTarget = true;
+			if (current.status != TaskStatus.completed)
+				deliveredPendingSubTask = host_.recordChildTerminal(tid);
+		}
+
+		if (!deliveredPendingSubTask)
+			observeWaitingParentDeliveryAttempt(tid,
+				host_.deliverWaitingParentResultsIfReady(tid));
+
+		if (!reloadEmitted)
+			host_.emitTaskReload(tid);
+
+		current = host_.getTask(tid);
+		if (current is null)
+			return;
+
+		if (current.relationType != "fork")
+		{
+			auto ancestor = host_.findAliveAncestor(tid);
+			if (ancestor >= 0)
+				host_.broadcastFocusHint(tid, ancestor);
+		}
+		if (!deliveredPendingSubTask && statusWasAlreadyTarget)
+			host_.publishTaskSnapshot(tid);
 	}
 
 	AgentSession sessionForTask(int tid)
@@ -425,6 +540,8 @@ class TaskSessionRunner
 
 	bool taskCanStop(int tid, bool stdinClosed)
 	{
+		if (tid in pendingDiskExits_)
+			return true;
 		auto session = sessionForTask(tid);
 		return session !is null
 			&& session.alive
@@ -590,6 +707,11 @@ public:
 
 	void stopTask(int tid)
 	{
+		if (tid in pendingDiskExits_)
+		{
+			settlePendingExit(tid);
+			return;
+		}
 		if (auto operation = tid in forkSourceOperations_)
 			(*operation).closeStdin();
 		if (auto session = sessionForTask(tid))
@@ -809,6 +931,7 @@ public:
 
 	void spawnTaskSession(int tid)
 	{
+		discardPendingExit(tid);
 		auto td = requireTask(tid, "Task must exist before spawning session");
 		assert(td.taskType.length > 0,
 			"Task must have a task_type before spawning session");
@@ -955,8 +1078,8 @@ public:
 			}
 
 			bool hasOnYield = taskHasOnYield(current);
-			bool owned = host_.hasLiveBatchOwner(tid);
-			bool consumerWaiting = owned || current.pendingContinuation !is null
+			bool consumerWaiting = host_.hasLiveBatchOwner(tid)
+				|| current.pendingContinuation !is null
 				|| host_.hasTaskDependency(tid) || hasOnYield;
 			if (consumerWaiting)
 			{
@@ -966,18 +1089,6 @@ public:
 					host_.sendPendingChildAnswerReminder(tid);
 				else
 				{
-					if (owned && current.pendingContinuation is null && !hasOnYield
-						&& !current.lastTurnFailed)
-					{
-						auto finding = checkYieldGates(tid, host_.checkOutputGate);
-						if (!finding.found)
-							host_.finalizeCompletedSubTask(tid, false);
-						else
-							tracef("onOutput: tid=%d deferring sub-task finalization; %s",
-								tid, finding.detail);
-					}
-					current = host_.getTask(tid);
-					if (current is null) return;
 					current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 					session.closeStdin();
 					session.killAfterTimeout(5.seconds);
@@ -1197,69 +1308,75 @@ public:
 			bool consumerWaiting = host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid);
 			if (cleanExit && consumerWaiting && !current.lastTurnFailed)
 			{
-				auto finding = checkYieldGates(tid, host_.checkOutputGate);
+				auto finding = checkYieldGates(current.naggedYieldGates,
+					tid, host_.checkOutputGate);
 				if (shouldRetryYieldGate(current.naggedYieldGates, finding))
 				{
 					host_.markYieldGateNagged(tid, finding.gate);
-					infof("Output enforcement: tid=%d missing outputs, resuming: %s",
-						tid, finding.detail);
 					host_.requestYieldGateRetry(tid, finding);
 					return;
 				}
-				if (finding.found)
-					warningf("Output enforcement: tid=%d still missing outputs after retry: %s",
-						tid, finding.detail);
-			}
-
-			bool deliveredPendingSubTask = false;
-			bool statusWasAlreadyTarget;
-			if (current.status == TaskStatus.completed)
-			{
-				statusWasAlreadyTarget = true;
-				deliveredPendingSubTask = host_.recordChildTerminal(tid);
-			}
-			else if (exitCode == 0 && !current.lastTurnFailed && host_.hasLiveBatchOwner(tid))
-				deliveredPendingSubTask = host_.finalizeCompletedSubTask(tid, false);
-			else
-			{
-				auto targetStatus = exitCode == 0 && !current.lastTurnFailed
-					? TaskStatus.completed : TaskStatus.failed;
-				host_.persistResultText(tid, current.resultText);
-				if (current.status != targetStatus)
+				if (shouldEvaluateDiskCleanup(current.naggedYieldGates))
 				{
-					host_.transitionTaskFrom(tid,
-						targetStatus == TaskStatus.completed
-							? [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-								TaskStatus.waiting, TaskStatus.failed]
-							: [TaskStatus.pending, TaskStatus.active, TaskStatus.alive,
-								TaskStatus.waiting, TaskStatus.completed],
-						targetStatus, TaskNotificationChange.preserve);
+					auto token = ++nextDiskGateToken_;
+					pendingDiskExits_[tid] = PendingDiskExit(token,
+						current.history.generation, current.status, exitCode, reloadEmitted);
+					auto threshold = host_.currentConfig().disk_cleanup_threshold_bytes;
+					auto taskDir = host_.taskDir(current);
+					auto temporaryDir = taskTmpHostPath(host_.resolveSharedTmpPath(tid), tid);
+					Promise!DiskEvaluation evaluationPromise;
+					try
+						evaluationPromise = host_.evaluateDiskUsage(tid);
+					catch (Exception e)
+					{
+						discardPendingExit(tid);
+						failDiskGateEvaluation(tid, e);
+						return;
+					}
+					evaluationPromise.then((DiskEvaluation evaluation) {
+						auto pending = tid in pendingDiskExits_;
+						if (pending is null || pending.token != token)
+							return;
+						auto exit = *pending;
+						pendingDiskExits_.remove(tid);
+						if (!exitStillAwaited(tid, exit))
+						{
+							tracef("Discarding stale disk evaluation for tid=%d token=%s", tid, token);
+							return;
+						}
+						auto task = host_.getTask(tid);
+						auto finding = checkDiskCleanupGate(evaluation, threshold,
+							taskDir, temporaryDir);
+						if (shouldRetryYieldGate(task.naggedYieldGates, finding))
+						{
+							host_.markYieldGateNagged(tid, finding.gate);
+							try
+								host_.requestYieldGateRetry(tid, finding);
+							catch (Exception e)
+								failDiskGateEvaluation(tid, e,
+									"Failed to request disk cleanup");
+						}
+						else
+						{
+							finishTaskExit(tid, exitCode, reloadEmitted);
+						}
+					}, (Exception e) {
+						auto pending = tid in pendingDiskExits_;
+						if (pending is null || pending.token != token)
+							return;
+						auto exit = *pending;
+						pendingDiskExits_.remove(tid);
+						if (!exitStillAwaited(tid, exit))
+						{
+							tracef("Discarding stale disk evaluation for tid=%d token=%s", tid, token);
+							return;
+						}
+						failDiskGateEvaluation(tid, e);
+					}).ignoreResult();
+					return;
 				}
-				else
-					statusWasAlreadyTarget = true;
-				if (current.status != TaskStatus.completed)
-					deliveredPendingSubTask = host_.recordChildTerminal(tid);
 			}
-
-			if (!deliveredPendingSubTask)
-				observeWaitingParentDeliveryAttempt(tid,
-					host_.deliverWaitingParentResultsIfReady(tid));
-
-			if (!reloadEmitted)
-				host_.emitTaskReload(tid);
-
-			current = host_.getTask(tid);
-			if (current is null)
-				return;
-
-			if (current.relationType != "fork")
-			{
-				auto ancestor = host_.findAliveAncestor(tid);
-				if (ancestor >= 0)
-					host_.broadcastFocusHint(tid, ancestor);
-			}
-			if (!deliveredPendingSubTask && statusWasAlreadyTarget)
-				host_.publishTaskSnapshot(tid);
+			finishTaskExit(tid, exitCode, reloadEmitted);
 		};
 
 		td.error = null;
@@ -2815,9 +2932,15 @@ version (unittest) private final class YieldGateTestAgent : ClaudeCodeAgent
 
 version (unittest) private void assertYieldGateRunnerCase(
 	string caseName, bool outputsPresent, bool consumerWaiting, bool failedTurn,
-	int exitCode, bool continuation, bool onYield, bool secondExit, bool retryFails = false)
+	int exitCode, bool continuation, bool onYield, bool secondExit,
+	bool retryFails = false, bool highDisk = false, bool deferredScan = false,
+	string staleMode = null, bool rejectScan = false,
+	bool bothNagged = false, bool diskFirstThenMissing = false,
+	bool laterHigh = false, bool laterMissing = false,
+	bool diskRetryFails = false)
 {
 	import ae.utils.statequeue : StateQueue;
+	import std.conv : to;
 	import configy.attributes : SetInfo;
 	import cydo.domain.tasks.yield_gate : YieldGate;
 	import cydo.domain.storage.persistence : Persistence;
@@ -2852,12 +2975,27 @@ version (unittest) private void assertYieldGateRunnerCase(
 			tasks[1].taskType = "runner";
 			tasks[1].agentName = "claude";
 			tasks[1].status = TaskStatus.active;
+			if (bothNagged)
+			{
+				auto mask = tasks[1].naggedYieldGates;
+				mask.mark(YieldGate.outputs);
+				mask.mark(YieldGate.diskCleanup);
+				tasks[1].naggedYieldGates = mask;
+				persistence.setYieldGatesNagged(1, mask);
+				assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+					.loadTasks()[0].naggedYieldGates.bits == 3);
+			}
 			tasks[1].processQueue = new StateQueue!ProcessState(
 				(ProcessState state) => resolve(state), ProcessState.Dead);
 			auto agent = new YieldGateTestAgent;
-			int checks, retries, deliveries, continuations, onYieldContinuations;
+			int checks, scans, retries, diskRetries, deliveries, failedDeliveries,
+				continuations,
+				onYieldContinuations;
+			auto pendingScan = deferredScan ? new Promise!DiskEvaluation : null;
+			DiskEvaluation diskEvaluation;
+			diskEvaluation.usage.totalBytes = highDisk ? 10_485_760 : 0;
 			auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
-				getTask: (int tid) => &tasks[tid],
+				getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
 				taskDir: (const TaskData* td) => buildPath(fixture.root, "tasks", "task"),
 				outputPath: (const TaskData* td) => buildPath(fixture.root, "tasks", "task", "output.md"),
 				effectiveCwd: (const TaskData* td) => fixture.linkedCheckout,
@@ -2872,6 +3010,14 @@ version (unittest) private void assertYieldGateRunnerCase(
 				tryAgentForTask: (int tid) => agent,
 				clearLastActive: (int tid) {},
 				broadcastTask: (int tid, TranslatedEvent event) {},
+				appendTaskDiagnostic: (int tid, string subject, string body) {
+					assert(subject == (diskRetryFails
+						? "Failed to request disk cleanup" : "Disk usage evaluation failed"));
+					assert(body == (diskRetryFails
+						? "simulated disk retry failure" : "simulated disk scan failure"));
+					return body;
+				},
+				broadcastAppendedTaskEvent: (int tid, string event) {},
 				publishTaskSnapshot: (int tid) {},
 				hasLiveBatchOwner: (int tid) => consumerWaiting,
 				hasTaskDependency: (int tid) => false,
@@ -2881,12 +3027,21 @@ version (unittest) private void assertYieldGateRunnerCase(
 					return YieldGateFinding(YieldGate.outputs,
 						outputsPresent ? null : "missing report");
 				},
-				finalizeCompletedSubTask: (int tid, bool eager) {
+				evaluateDiskUsage: (int tid) {
+					scans++;
+					if (staleMode == "relaunch" && scans > 1)
+						return resolve(DiskEvaluation.init);
+					return deferredScan ? pendingScan : resolve(diskEvaluation);
+				},
+				finalizeCompletedSubTask: (int tid) {
 					deliveries++;
 					tasks[tid].status = TaskStatus.completed;
 					return true;
 				},
-				recordChildTerminal: (int tid) => false,
+				recordChildTerminal: (int tid) {
+					failedDeliveries++;
+					return true;
+				},
 				parentTaskForChild: (int tid) => 0,
 				deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 				failPendingAskUserQuestionOnExit: (int tid) {},
@@ -2908,13 +3063,21 @@ version (unittest) private void assertYieldGateRunnerCase(
 					tasks[tid].naggedYieldGates = mask;
 				},
 				requestYieldGateRetry: (int tid, YieldGateFinding finding) {
-					assert(finding.gate == YieldGate.outputs);
-					assert(finding.detail == "missing report");
+					if (finding.gate == YieldGate.outputs)
+						assert(finding.detail == "missing report");
+					else
+					{
+						assert(finding.gate == YieldGate.diskCleanup);
+						assert(finding.vars["total_bytes"] == "10485760");
+						diskRetries++;
+					}
 					assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
-						.loadTasks()[0].naggedYieldGates.contains(YieldGate.outputs));
+						.loadTasks()[0].naggedYieldGates.contains(finding.gate));
 					retries++;
-					if (retryFails)
+					if (retryFails && finding.gate == YieldGate.outputs)
 						throw new Exception("simulated retry submission failure");
+					if (diskRetryFails && finding.gate == YieldGate.diskCleanup)
+						throw new Exception("simulated disk retry failure");
 				},
 				spawnContinuation: (int tid) { continuations++; },
 				spawnOnYieldContinuation: (int tid) { onYieldContinuations++; },
@@ -2933,10 +3096,7 @@ version (unittest) private void assertYieldGateRunnerCase(
 				tasks[1].pendingContinuation = new PendingContinuation;
 			if (consumerWaiting)
 				agent.session.result(failedTurn);
-			if (outputsPresent && consumerWaiting && !failedTurn && !continuation && !onYield)
-				assert(deliveries == 1);
-			else
-				assert(deliveries == 0);
+			assert(deliveries == 0);
 			if (!consumerWaiting)
 				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
 			if (retryFails)
@@ -2950,11 +3110,127 @@ version (unittest) private void assertYieldGateRunnerCase(
 			}
 			else
 				agent.session.exit(exitCode);
-			assert(retries == (consumerWaiting && !outputsPresent && !failedTurn
-				&& exitCode == 0 && !continuation && !onYield ? 1 : 0));
-			assert(tasks[1].naggedYieldGates.contains(YieldGate.outputs) == (retries == 1));
-			assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
-				.loadTasks()[0].naggedYieldGates.bits == (retries == 1 ? 1 : 0));
+			if (deferredScan && scans > 0)
+			{
+				assert(deliveries == 0 && diskRetries == 0);
+				assert(diskEvaluation.usage.totalBytes >= 10_485_760
+					|| staleMode.length == 0);
+				if (staleMode == "relaunch")
+					runner.spawnTaskSession(1);
+				else if (staleMode == "archive")
+				{
+					assert(runner.taskCanStop(1, false));
+					runner.settlePendingExit(1);
+					tasks[1].archived = true;
+				}
+				else if (staleMode == "removal")
+				{
+					runner.discardPendingExit(1);
+					tasks.remove(1);
+				}
+				else if (staleMode == "stop" || staleMode == "stop-reject")
+				{
+					assert(runner.taskCanStop(1, false));
+					runner.stopTask(1);
+					assert(!runner.taskCanStop(1, false));
+				}
+				else if (staleMode == "generation" || staleMode == "generation-reject")
+				{
+					import cydo.domain.tasks.model : Watermark;
+					tasks[1].history.reset(Watermark.none());
+				}
+				else if (staleMode == "consumer")
+					consumerWaiting = false;
+				else if (staleMode == "goal-alive")
+					tasks[1].processQueue.setGoal(ProcessState.Alive).ignoreResult();
+				auto beforeStatus = staleMode == "removal"
+					? TaskStatus.active : tasks[1].status;
+				if (staleMode == "stop" || staleMode == "stop-reject"
+					|| staleMode == "archive")
+				{
+					assert(deliveries == 1 && retries == 0 && diskRetries == 0);
+					assert(tasks[1].status == TaskStatus.completed);
+				}
+				if (rejectScan)
+					pendingScan.reject(new Exception("simulated disk scan failure"));
+				else
+					pendingScan.fulfill(diskEvaluation);
+				if (staleMode == "stop" || staleMode == "stop-reject"
+					|| staleMode == "archive")
+				{
+					import ae.net.asockets : socketManager;
+					socketManager.loop();
+					assert(deliveries == 1 && retries == 0 && diskRetries == 0);
+					assert(failedDeliveries == 0 && tasks[1].status == TaskStatus.completed);
+					return;
+				}
+				if (staleMode.length)
+				{
+					import ae.net.asockets : socketManager;
+					socketManager.loop();
+					assert(deliveries == 0 && retries == 0 && failedDeliveries == 0);
+					if (staleMode != "removal")
+						assert(tasks[1].status == beforeStatus);
+					if (staleMode == "generation" || staleMode == "generation-reject"
+						|| staleMode == "consumer" || staleMode == "goal-alive")
+					{
+						assert(!runner.taskCanStop(1, false));
+						runner.stopTask(1);
+						assert(deliveries == 0 && retries == 0 && failedDeliveries == 0);
+						assert(tasks[1].status == beforeStatus);
+					}
+					if (staleMode == "relaunch")
+					{
+						agent.session.result();
+						agent.session.exit(0);
+						socketManager.loop();
+						assert(deliveries == 1 && retries == 0
+							&& tasks[1].status == TaskStatus.completed);
+					}
+					return;
+				}
+				if (rejectScan)
+				{
+					import ae.net.asockets : socketManager;
+					socketManager.loop();
+					assert(tasks[1].status == TaskStatus.failed);
+					assert(tasks[1].resultText == "simulated disk scan failure");
+					assert(failedDeliveries == 1 && deliveries == 0 && retries == 0);
+					return;
+				}
+				if (diskRetryFails)
+				{
+					import ae.net.asockets : socketManager;
+					socketManager.loop();
+					assert(tasks[1].status == TaskStatus.failed);
+					assert(tasks[1].naggedYieldGates.bits == 2);
+					assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+						.loadTasks()[0].naggedYieldGates.bits == 2);
+					assert(failedDeliveries == 1 && retries == 1 && deliveries == 0);
+					return;
+				}
+			}
+			if (consumerWaiting && outputsPresent && !failedTurn && exitCode == 0
+				&& !continuation && !onYield)
+			{
+				import ae.net.asockets : socketManager;
+				socketManager.loop();
+			}
+			bool eligible = consumerWaiting && !failedTurn && exitCode == 0
+				&& !continuation && !onYield;
+			bool outputsFire = eligible && !outputsPresent && !bothNagged;
+			bool diskRuns = eligible && !outputsFire && !bothNagged;
+			bool diskFires = diskRuns && highDisk;
+			assert(scans == (diskRuns ? 1 : 0));
+			assert(retries == (outputsFire || diskFires ? 1 : 0));
+			assert(tasks[1].naggedYieldGates.contains(YieldGate.outputs)
+				== (bothNagged || outputsFire));
+			assert(tasks[1].naggedYieldGates.contains(YieldGate.diskCleanup)
+				== (bothNagged || diskFires));
+			auto storedBits = Persistence(buildPath(fixture.root, "yield-gates.db"))
+				.loadTasks()[0].naggedYieldGates.bits;
+			assert(storedBits == (bothNagged ? 3 : outputsFire ? 1 : diskFires ? 2 : 0),
+				caseName ~ " stored bits " ~ to!string(storedBits));
 			assert(continuations == (continuation ? 1 : 0));
 			assert(onYieldContinuations == (onYield ? 1 : 0));
 			if (exitCode != 0 || failedTurn)
@@ -2963,22 +3239,75 @@ version (unittest) private void assertYieldGateRunnerCase(
 				assert(tasks[1].status == TaskStatus.completed && deliveries == 0);
 			else if (continuation || onYield)
 				assert(tasks[1].status == TaskStatus.active && deliveries == 0);
+			else if (diskFires)
+				assert(tasks[1].status == TaskStatus.active && deliveries == 0);
+			else if (bothNagged)
+				assert(tasks[1].status == TaskStatus.completed && deliveries == 1
+					&& scans == 0);
+			if (laterHigh || laterMissing)
+			{
+				import ae.net.asockets : socketManager;
+				assert(tasks[1].naggedYieldGates.bits == 0 && deliveries == 1);
+				if (laterHigh)
+				{
+					foreach (attempt; 0 .. 2)
+					{
+						tasks[1].status = TaskStatus.active;
+						runner.spawnTaskSession(1);
+						agent.session.result();
+						agent.session.exit(0);
+						socketManager.loop();
+						assert(tasks[1].naggedYieldGates.bits == 0);
+						assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+							.loadTasks()[0].naggedYieldGates.bits == 0);
+					}
+					diskEvaluation.usage.totalBytes = 10_485_760;
+				}
+				else
+					outputsPresent = false;
+				tasks[1].status = TaskStatus.active;
+				runner.spawnTaskSession(1);
+				agent.session.result();
+				agent.session.exit(0);
+				socketManager.loop();
+				assert(retries == 1);
+				assert(tasks[1].naggedYieldGates.bits == (laterHigh ? 2 : 1));
+				assert(Persistence(buildPath(fixture.root, "yield-gates.db"))
+					.loadTasks()[0].naggedYieldGates.bits == (laterHigh ? 2 : 1));
+				return;
+			}
 			if (secondExit)
 			{
 				tasks[1].naggedYieldGates = Persistence(buildPath(fixture.root,
 					"yield-gates.db")).loadTasks()[0].naggedYieldGates;
-				assert(!shouldRetryYieldGate(tasks[1].naggedYieldGates,
-					YieldGateFinding(YieldGate.outputs, "missing report")));
-				assert(shouldRetryYieldGate(tasks[1].naggedYieldGates,
-					YieldGateFinding(YieldGate.diskCleanup, "disk")));
-				assert(!tasks[1].naggedYieldGates.contains(YieldGate.diskCleanup));
+				if (diskFirstThenMissing)
+				{
+					assert(tasks[1].naggedYieldGates.contains(YieldGate.diskCleanup));
+					assert(!tasks[1].naggedYieldGates.contains(YieldGate.outputs));
+					outputsPresent = false;
+				}
+				else
+				{
+					assert(!shouldRetryYieldGate(tasks[1].naggedYieldGates,
+						YieldGateFinding(YieldGate.outputs, "missing report")));
+					assert(shouldRetryYieldGate(tasks[1].naggedYieldGates,
+						YieldGateFinding(YieldGate.diskCleanup, "disk")));
+					assert(!tasks[1].naggedYieldGates.contains(YieldGate.diskCleanup));
+				}
 				tasks[1].processQueue.setGoal(ProcessState.Dead).ignoreResult();
 				runner.spawnTaskSession(1);
 				agent.session.result();
 				assert(deliveries == 0);
 				agent.session.exit(0);
-				assert(retries == 1);
-				assert(deliveries == 1);
+				import ae.net.asockets : socketManager;
+				socketManager.loop();
+				assert(retries == (highDisk ? 2 : 1));
+				assert(deliveries == (highDisk ? 0 : 1));
+				if (diskFirstThenMissing)
+				{
+					assert(scans == 1);
+					assert(tasks[1].naggedYieldGates.bits == 3);
+				}
 			}
 			if (!consumerWaiting)
 				assert(checks == 0);
@@ -2995,4 +3324,50 @@ unittest
 	assertYieldGateRunnerCase("no-consumer", false, false, false, 0, false, false, false);
 	assertYieldGateRunnerCase("continuation", false, true, false, 0, true, false, false);
 	assertYieldGateRunnerCase("on-yield", false, true, false, 0, false, true, false);
+}
+
+unittest
+{
+	// The awaiting parent stays unresolved until the disk promise settles.
+	assertYieldGateRunnerCase("disk-deferred-pass", true, true, false, 0,
+		false, false, false, false, false, true);
+	assertYieldGateRunnerCase("disk-deferred-retry", true, true, false, 0,
+		false, false, false, false, true, true);
+	// Outputs preempt scanning, then disk remains eligible at the next exit.
+	assertYieldGateRunnerCase("outputs-then-disk", false, true, false, 0,
+		false, false, true, false, true);
+	assertYieldGateRunnerCase("no-consumer-high-disk", true, false, false, 0,
+		false, false, false, false, true);
+	assertYieldGateRunnerCase("failed-turn-high-disk", true, true, true, 0,
+		false, false, false, false, true);
+	assertYieldGateRunnerCase("nonzero-high-disk", true, true, false, 1,
+		false, false, false, false, true);
+	assertYieldGateRunnerCase("continuation-high-disk", true, true, false, 0,
+		true, false, false, false, true);
+	assertYieldGateRunnerCase("on-yield-high-disk", true, true, false, 0,
+		false, true, false, false, true);
+	assertYieldGateRunnerCase("both-gates-nagged", false, true, false, 0,
+		false, false, false, false, true, false, null, false, true);
+	assertYieldGateRunnerCase("disk-then-missing-output", true, true, false, 0,
+		false, false, true, false, true, false, null, false, false, true);
+	assertYieldGateRunnerCase("later-disk-growth", true, true, false, 0,
+		false, false, false, false, false, false, null, false, false, false, true);
+	assertYieldGateRunnerCase("later-output-loss", true, true, false, 0,
+		false, false, false, false, false, false, null, false, false, false, false, true);
+}
+
+unittest
+{
+	foreach (mode; ["relaunch", "archive", "removal", "stop", "generation", "consumer", "goal-alive"])
+		assertYieldGateRunnerCase("disk-stale-" ~ mode, true, true, false, 0,
+			false, false, false, false, true, true, mode);
+	assertYieldGateRunnerCase("disk-stale-generation-rejection", true, true, false, 0,
+		false, false, false, false, true, true, "generation-reject", true);
+	assertYieldGateRunnerCase("disk-stop-rejected-late-scan", true, true, false, 0,
+		false, false, false, false, true, true, "stop-reject", true);
+	assertYieldGateRunnerCase("disk-scan-rejection", true, true, false, 0,
+		false, false, false, false, false, true, null, true);
+	assertYieldGateRunnerCase("disk-retry-submission-failure", true, true, false, 0,
+		false, false, false, false, true, true, null, false,
+		false, false, false, false, true);
 }

@@ -1239,7 +1239,7 @@ public:
 		}).ignoreResult();
 	}
 
-	bool finalizeCompletedSubTask(int tid, bool eagerDepCleanup = false)
+	bool finalizeCompletedSubTask(int tid)
 	{
 		auto td = requireTask(tid, "Completed sub-task must exist");
 		host_.persistResultText(tid, td.resultText);

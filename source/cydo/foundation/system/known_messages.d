@@ -12,6 +12,7 @@ enum KnownSystemMessageKind
 	questionFromTask,
 	subTaskWaitingForAnswer,
 	missingRequiredOutputs,
+	diskCleanupRequest,
 	handoff,
 	subTaskResults,
 	restartNudge,
@@ -48,6 +49,8 @@ string systemMessageSubject(KnownSystemMessageKind kind)
 		return "Sub-task waiting for answer";
 	case KnownSystemMessageKind.missingRequiredOutputs:
 		return "Missing required outputs";
+	case KnownSystemMessageKind.diskCleanupRequest:
+		return "Disk cleanup request";
 	case KnownSystemMessageKind.handoff:
 		return "Handoff";
 	case KnownSystemMessageKind.subTaskResults:
@@ -281,6 +284,12 @@ bool tryKnownSystemMessageMatch(string subject, out KnownSystemMessageMatch matc
 		match.label = subject;
 		return true;
 	}
+	if (subject == systemMessageSubject(KnownSystemMessageKind.diskCleanupRequest))
+	{
+		match.kind = KnownSystemMessageKind.diskCleanupRequest;
+		match.label = subject;
+		return true;
+	}
 	if (subject == systemMessageSubject(KnownSystemMessageKind.subTaskResults))
 	{
 		match.kind = KnownSystemMessageKind.subTaskResults;
@@ -332,6 +341,20 @@ unittest
 
 unittest
 {
+	auto subject = systemMessageSubject(KnownSystemMessageKind.diskCleanupRequest);
+	assert(subject == "Disk cleanup request");
+	auto wrapped = wrapKnownSystemMessage("SYSTEM",
+		KnownSystemMessageKind.diskCleanupRequest, "Review disk usage");
+	assert(wrapped == "[SYSTEM: " ~ subject ~ "]\n\nReview disk usage\n\n[/SYSTEM]");
+	KnownSystemMessageMatch match;
+	assert(tryKnownSystemMessageMatch(subject, match));
+	assert(match.kind == KnownSystemMessageKind.diskCleanupRequest);
+	assert(match.label == subject);
+	assert(!tryKnownSystemMessageMatch(subject ~ " extra", match));
+}
+
+unittest
+{
 	import std.conv : to;
 	import std.file : exists, thisExePath;
 	import std.path : buildPath, dirName;
@@ -352,6 +375,7 @@ unittest
 		case KnownSystemMessageKind.subTaskWaitingForAnswer:
 			return "Sub-task \"test\" (tid=1) is waiting for your answer (qid=2)";
 		case KnownSystemMessageKind.missingRequiredOutputs:
+		case KnownSystemMessageKind.diskCleanupRequest:
 		case KnownSystemMessageKind.subTaskResults:
 		case KnownSystemMessageKind.restartNudge:
 		case KnownSystemMessageKind.postCompactionTaskModeReminder:
