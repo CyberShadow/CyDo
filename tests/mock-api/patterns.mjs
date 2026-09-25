@@ -429,6 +429,27 @@ export function matchPattern(userText) {
       },
     };
 
+  // One child stays busy while the other releases the parent's Task carrier.
+  if (/call held-question-test/i.test(userText))
+    return {
+      type: "tool_call",
+      name: "mcp__cydo__Task",
+      input: {
+        tasks: [
+          {
+            task_type: "research",
+            prompt: "run command sleep 15 && echo busy-child-done",
+            description: "Busy child",
+          },
+          {
+            task_type: "research",
+            prompt: "call ask am I doing this right?",
+            description: "Questioning child",
+          },
+        ],
+      },
+    };
+
   // "call busy-child-test" → two children:
   //   - child A (tid+1): creates a grandchild that stalls → becomes "waiting"
   //   - child B (tid+2): asks parent → makes parent's Task return early

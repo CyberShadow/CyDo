@@ -335,12 +335,10 @@ async function createTopLevelTask(page: Page): Promise<number> {
   ).toBeVisible();
 
   await expect
-    .poll(
-      async () => {
-        const tids = await sidebarTids(page);
-        return tids[tids.length - 1] ?? 0;
-      },
-    )
+    .poll(async () => {
+      const tids = await sidebarTids(page);
+      return tids[tids.length - 1] ?? 0;
+    })
     .toBeGreaterThan(beforeMaxTid);
 
   return activeTid(page);
@@ -374,6 +372,21 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   const observedTaskEvents = observeTaskEvents(page);
   const taskCreatedEvents = observeTaskCreatedEvents(page);
   const reloadEvents = observeTaskReloadEvents(page);
+  const completedTasks: { tid: number; eventIndex: number }[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framereceived", (frame) => {
+      const data = JSON.parse(frame.payload.toString()) as {
+        type?: string;
+        task?: { tid: number; status: string };
+      };
+      if (data.type === "task_updated" && data.task?.status === "completed") {
+        completedTasks.push({
+          tid: data.task.tid,
+          eventIndex: observedTaskEvents.length,
+        });
+      }
+    });
+  });
   await enterSession(page);
 
   // Create a sub-task that completes normally.
@@ -492,6 +505,30 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
     ]),
   );
 
+  const childAnswerResult = await waitForTaskEvent(
+    observedTaskEvents,
+    ({ tid, event }) =>
+      tid === childTid &&
+      event.type === "item/result" &&
+      event.item_id === childAnswerStarted.event.item_id,
+    { sinceIndex: childAnswerStarted.index + 1 },
+  );
+  expect(parseTaskResultItems(childAnswerResult.event)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ status: "delivered", tid: 1, qid: Number(qid) }),
+    ]),
+  );
+
+  await expect
+    .poll(
+      () =>
+        completedTasks.find(
+          ({ tid, eventIndex }) =>
+            tid === childTid && eventIndex > childAnswerStarted.index,
+        )?.eventIndex,
+    )
+    .toBeGreaterThan(Math.max(parentAskResult.index, childAnswerResult.index));
+
   await waitForTaskEvent(
     observedTaskEvents,
     ({ tid, event }) =>
@@ -514,13 +551,11 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
 
   if (agentType === "claude") {
     await expect
-      .poll(
-        async () => {
-          return currentMessageList(page)
-            .getByText("Done.", { exact: true })
-            .count();
-        },
-      )
+      .poll(async () => {
+        return currentMessageList(page)
+          .getByText("Done.", { exact: true })
+          .count();
+      })
       .toBeGreaterThan(doneCountBeforeFollowUpAsk);
   }
 
@@ -533,11 +568,10 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   ).toBeVisible();
 
   await expect
-    .poll(
-      () =>
-        reloadEvents
-          .slice(reloadCountBeforeFollowUpAsk)
-          .some((event) => event.tid === childTid),
+    .poll(() =>
+      reloadEvents
+        .slice(reloadCountBeforeFollowUpAsk)
+        .some((event) => event.tid === childTid),
     )
     .toBe(true);
 
@@ -667,13 +701,11 @@ test("Ask/Answer: parent can answer child question after another Task call", asy
       .getByText("interleaving-child-done", { exact: true })
       .last(),
   ).toBeVisible();
-  await expect(
-    waitForTaskResultItem(
-      observedTaskResults,
-      (item) => item["status"] === "success" && item["tid"] === 3,
-      { sinceIndex: beforeInterveningTaskResultIndex },
-    ),
-  ).resolves.toBeTruthy();
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === 3,
+    { sinceIndex: beforeInterveningTaskResultIndex },
+  );
 
   await page.locator('.sidebar-item[data-tid="1"]').click();
   await expect(
@@ -684,13 +716,11 @@ test("Ask/Answer: parent can answer child question after another Task call", asy
   const beforeAnswerEventCount = observedTaskEvents.length;
   await sendMessage(page, `call answer ${capturedQid} interleaved-answer`);
 
-  await expect(
-    waitForTaskResultItem(
-      observedTaskResults,
-      (item) => item["status"] === "success" && item["tid"] === 2,
-      { sinceIndex: beforeAnswerTaskResultIndex },
-    ),
-  ).resolves.toBeTruthy();
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === 2,
+    { sinceIndex: beforeAnswerTaskResultIndex },
+  );
 
   const answerResult = await waitForTaskResultEventAfter(
     observedTaskEvents,
@@ -812,7 +842,7 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   // "call mixed batch research" spawns two children:
   //   - child A: replies with "normal-child-done" (completes normally)
   //   - child B: calls Ask("what approach should I use?") (asks parent)
-  // createTasks returns early with child B's question.
+  // The first available question wakes the parent's Task call.
   await sendMessage(page, "call mixed batch research");
 
   // Wait for child B's question to appear in parent's result.
@@ -846,8 +876,15 @@ test("Ask/Answer: batch with one completing child and one asking child", async (
   // Parent answers child B using the observed qid.
   await sendMessage(page, `call answer ${capturedQid} use approach A`);
 
-  // After child B completes, Answer returns with the full batch results
-  // in original request order (Normal child, then Questioning child).
+  // The batch result retains request order, whichever carrier receives it.
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === 2,
+  );
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === 3,
+  );
   const finalSpecs = page
     .locator(
       '[style*="display: contents"] .message-list .tool-result-container',
@@ -894,13 +931,11 @@ test("Ask/Answer: same-workspace top-level peer Ask succeeds", async ({
     .filter({ hasText: /Question from task.*qid=/ })
     .last();
   await expect
-    .poll(
-      async () => {
-        if (await askerWaitingIcon.isVisible()) return "waiting";
-        if (await peerQuestion.isVisible()) return "questioned";
-        return "pending";
-      },
-    )
+    .poll(async () => {
+      if (await askerWaitingIcon.isVisible()) return "waiting";
+      if (await peerQuestion.isVisible()) return "questioned";
+      return "pending";
+    })
     .not.toBe("pending");
 
   const qid = await extractLatestQuestionQid(page);
@@ -974,13 +1009,11 @@ test("Ask/Answer: same-workspace non-direct Ask succeeds", async ({
     .getByText("non-direct-answer", { exact: true })
     .last();
   await expect
-    .poll(
-      async () => {
-        if (await askerWaitingIcon.isVisible()) return "waiting";
-        if (await nonDirectAnswer.isVisible()) return "answered";
-        return "pending";
-      },
-    )
+    .poll(async () => {
+      if (await askerWaitingIcon.isVisible()) return "waiting";
+      if (await nonDirectAnswer.isVisible()) return "answered";
+      return "pending";
+    })
     .not.toBe("pending");
 
   await expect(nonDirectAnswer).toBeVisible();
@@ -1147,6 +1180,7 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
 }) => {
   const observedTaskResults = observeTaskResultItems(page);
   const taskCreatedEvents = observeTaskCreatedEvents(page);
+  const events = observeTaskEvents(page);
 
   await enterSession(page);
 
@@ -1178,14 +1212,6 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible();
 
-  // Wait for the first question to appear in parent's Task tool result.
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("what approach?")
-      .last(),
-  ).toBeVisible();
-
   // Wait for parent's Turn 2 to complete (mock returns "Done." for the Task result).
   await expect(
     page
@@ -1201,7 +1227,17 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
       item["status"] === "question" && item["message"] === "what approach?",
   );
   const firstQid = firstQuestion["qid"] as number;
-  const resultCountBeforeFirstAnswer = observedTaskResults.length;
+  const secondQuestion = await waitForTaskEvent(
+    events,
+    ({ tid, event }) =>
+      tid === 1 &&
+      event.type === "item/started" &&
+      event.item_type === "user_message" &&
+      eventText(event).includes("[SYSTEM: Question from task ") &&
+      eventText(event).includes("what approach?"),
+  );
+  const secondQid = Number(eventText(secondQuestion.event).match(/qid=(\d+)/)?.[1]);
+  expect(secondQid).toBeGreaterThan(firstQid);
 
   // Answer the first child using the observed qid.
   await sendMessage(page, `call answer ${firstQid} answer one`);
@@ -1218,16 +1254,11 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible();
 
-  // Capture qid of the second question from the next observed item/result after the first answer.
-  const secondQuestion = await waitForTaskResultItem(
+  await waitForTaskResultItem(
     observedTaskResults,
     (item) =>
-      item["status"] === "question" &&
-      item["message"] === "what approach?" &&
-      item["qid"] !== firstQid,
-    { sinceIndex: resultCountBeforeFirstAnswer },
+      item["status"] === "delivered" && item["qid"] === firstQid,
   );
-  const secondQid = secondQuestion["qid"] as number;
 
   // The inciting focus_hint(parent → firstChild) from the first answer may not
   // have arrived yet when the pre-step-3 wait fired. By the time we reach here,
@@ -1241,14 +1272,14 @@ test("Ask/Answer: two children asking simultaneously are queued", async ({
   // Answer the second child using the observed qid.
   await sendMessage(page, `call answer ${secondQid} answer two`);
 
-  // Both children complete → Task returns with batch results (cydo-task-spec items).
-  await expect(
-    page
-      .locator(
-        '[style*="display: contents"] .message-list .tool-result, [style*="display: contents"] .message-list .cydo-task-spec',
-      )
-      .last(),
-  ).toBeVisible();
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === 2,
+  );
+  await waitForTaskResultItem(
+    observedTaskResults,
+    (item) => item["status"] === "success" && item["tid"] === secondChildTid,
+  );
 });
 
 test("Ask/Answer: Ask to active sub-task delivers follow-up message", async ({
@@ -1368,6 +1399,7 @@ test("Ask/Answer: Ask to busy (waiting) sub-task is enqueued", async ({
   page,
   agentType,
 }) => {
+  const childResults = observeTaskResultItems(page, 2);
   await enterSession(page);
 
   // "call busy-child-test" creates two children:
@@ -1403,54 +1435,113 @@ test("Ask/Answer: Ask to busy (waiting) sub-task is enqueued", async ({
   await expect(
     page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
   ).toBeVisible();
+  const question = await waitForTaskResultItem(
+    childResults,
+    (item) =>
+      item["status"] === "question" &&
+      item["tid"] === 1 &&
+      String(item["message"]).startsWith("hey are you done?"),
+  );
+  expect(question["qid"]).toEqual(expect.any(Number));
 });
 
-test("Ask/Answer: Ask to busy sub-task fails if child exits before delivery", async ({
+test("Ask/Answer: held question reaches a busy child at idle as a system message", async ({
   page,
-  agentType,
 }) => {
+  const childEvents = observeTaskEvents(page);
+  const parentResults = observeTaskResultItems(page);
   await enterSession(page);
-
-  // "call busy-child-test" creates:
-  //   - child A (tid=2): waits on a stalling grandchild (tid=4)
-  //   - child B (tid=3): asks the parent so the parent can issue another Ask
-  await sendMessage(page, "call busy-child-test");
-
-  await page.locator('.sidebar-item[data-tid="4"]').waitFor({
-    state: "visible",
-  });
-
-  await page.locator('.sidebar-item[data-tid="1"]').click();
+  await sendMessage(page, "call held-question-test");
+  await page.locator('.sidebar-item[data-tid="3"]').waitFor({ state: "visible" });
+  await openTask(page, 2);
   await expect(
-    page.locator('.sidebar-item[data-tid="1"].active'),
+    currentMessageList(page).getByText(
+      "run command sleep 15 && echo busy-child-done",
+      { exact: true },
+    ),
   ).toBeVisible();
+  await openTask(page, 1);
+  await waitForTaskResultItem(
+    parentResults,
+    (item) =>
+      item["status"] === "question" &&
+      item["message"] === "am I doing this right?",
+  );
   await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("Done.", { exact: true })
-      .last(),
+    currentMessageList(page).getByText("Done.", { exact: true }).last(),
   ).toBeVisible();
 
-  // Parent asks the busy child. Delivery is queued on the child's idle callbacks.
-  await sendMessage(page, "call ask 2 child-exit-before-delivery?");
+  const askIndex = childEvents.length;
+  await sendMessage(page, "call ask 2 held non-direct question?");
   await expect(
     page.locator('.sidebar-item[data-tid="1"] .task-type-icon.waiting'),
   ).toBeVisible();
+  const questionReached = ({ tid, event }: ObservedTaskEvent) =>
+    tid === 2 &&
+    event.type === "item/started" &&
+    event.item_type === "user_message" &&
+    eventText(event).includes("held non-direct question?");
+  expect(childEvents.some(questionReached)).toBe(false);
+  const busyTurnEnd = await waitForTaskEvent(
+    childEvents,
+    ({ tid, event }) => tid === 2 && event.type === "turn/stop",
+    { sinceIndex: askIndex },
+  );
+  const delivered = await waitForTaskEvent(
+    childEvents,
+    questionReached,
+    { sinceIndex: busyTurnEnd.index },
+  );
+  expect(eventText(delivered.event)).toContain(
+    "[SYSTEM: Question from task 1 (qid=",
+  );
+  await waitForTaskResultItem(
+    parentResults,
+    (item) =>
+      item["status"] === "answered" &&
+      String(item["message"]).startsWith("non-direct-answer") &&
+      item["qid"] !== undefined,
+  );
+});
 
-  // Stop the child before it can become idle and drain the queued injected Ask.
-  await page.locator('.sidebar-item[data-tid="2"]').click();
+test("Ask/Answer: question for a completed child arrives as a system message", async ({
+  page,
+}) => {
+  const childEvents = observeTaskEvents(page);
+  const parentResults = observeTaskResultItems(page);
+  await enterSession(page);
+  await sendMessage(page, 'call task research reply with "idle-child-ready"');
   await expect(
-    page.locator('.sidebar-item[data-tid="2"].active'),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Kill" }).click();
-
-  await page.locator('.sidebar-item[data-tid="1"]').click();
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText(/Session ended while waiting for Ask response/i)
+    currentMessageList(page)
+      .getByText("idle-child-ready", { exact: true })
       .last(),
   ).toBeVisible();
+  await openTask(page, 1);
+  await expect(
+    currentMessageList(page).getByText("Done.", { exact: true }).last(),
+  ).toBeVisible();
+
+  const boundary = childEvents.length;
+  await sendMessage(page, "call ask 2 idle-child-question?");
+  const delivered = await waitForTaskEvent(
+    childEvents,
+    ({ tid, event }) =>
+      tid === 2 &&
+      event.type === "item/started" &&
+      event.item_type === "user_message" &&
+      eventText(event).includes("idle-child-question?"),
+    { sinceIndex: boundary },
+  );
+  expect(eventText(delivered.event)).toContain(
+    "[SYSTEM: Follow-up question from parent task (qid=",
+  );
+  await waitForTaskResultItem(
+    parentResults,
+    (item) =>
+      item["status"] === "answered" &&
+      item["message"] === "follow-up-answered" &&
+      item["qid"] !== undefined,
+  );
 });
 
 test("Ask/Answer: yield enforcement steers parent with unanswered child question", async ({
@@ -1516,10 +1607,11 @@ test("Ask/Answer: yield enforcement steers parent with unanswered child question
   ).toBeVisible();
 });
 
-test("Ask/Answer: answer delivery is deferred until child becomes idle", async ({
+test("Ask/Answer: answer reaches the parent's Ask", async ({
   page,
   agentType,
 }) => {
+  const events = observeTaskEvents(page);
   await enterSession(page);
 
   // Create a child that completes normally.
@@ -1546,16 +1638,22 @@ test("Ask/Answer: answer delivery is deferred until child becomes idle", async (
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible();
 
-  // Ask follow-up with "deferred-test" trigger — child will Answer + do extra Bash work.
+  // The child Answers and then runs a separate Bash tool.
   await sendMessage(page, "call ask 2 deferred-test");
 
-  // Parent should receive the answer after the child's full turn completes.
-  await expect(
-    page
-      .locator('[style*="display: contents"] .message-list')
-      .getByText("deferred-answer-result", { exact: true })
-      .last(),
-  ).toBeVisible();
+  await waitForTaskEvent(
+    events,
+    ({ tid, event }) =>
+      tid === 1 &&
+      event.type === "item/result" &&
+      parseTaskResultItems(event)?.some(
+        (item) =>
+          item["status"] === "answered" &&
+          item["tid"] === 2 &&
+          item["message"] === "deferred-answer-result" &&
+          typeof item["qid"] === "number",
+      ) === true,
+  );
 });
 
 test(
@@ -1564,12 +1662,7 @@ test(
   async ({ page, agentType }) => {
     // Claude Code ≥2.1.2xx dispatches a completed tool_use block as soon as
     // its input finishes streaming, before the rest of the assistant message
-    // has arrived. An Ask issued this way puts the asker into waiting, but
-    // the same message's remaining stream events immediately flip it back to
-    // active — so when the answer is later delivered on the answerer's idle,
-    // the asker is NOT in waiting. This reproduces a production crash where
-    // that delivery hit the strict waiting→active transition and the enforce
-    // brought down the whole backend.
+    // has arrived. The Ask result must still arrive while that stream runs.
     await enterSession(page);
 
     // Create a child that completes normally.
@@ -1594,9 +1687,7 @@ test(
     ).toBeVisible();
 
     // The mock streams the Ask as block 0 of a message whose block 1 keeps
-    // trickling for ~25s. The child answers with post-answer work
-    // ("deferred-test" trigger), so delivery defers to the child's idle —
-    // which lands while the parent's stream is still in flight.
+    // trickling for ~25s. The child answers and then does post-answer work.
     await sendMessage(page, "call eager ask 2 deferred-test");
 
     // The answer must reach the parent as the Ask tool result.
@@ -1617,6 +1708,76 @@ test(
     ).toBeVisible();
   },
 );
+
+test("Ask/Answer: grandchild Ask reaches grandparent's pending Task", async ({
+  page,
+}) => {
+  const grandparentResults = observeTaskResultItems(page, 1);
+  const grandchildResults = observeTaskResultItems(page, 3);
+  const events = observeTaskEvents(page);
+  const created = observeTaskCreatedEvents(page);
+  const question = "grandchild-to-grandparent-question";
+
+  await enterSession(page);
+  await sendMessage(
+    page,
+    `call task research call task research call ask 1 ${question}`,
+  );
+
+  let childTid: number | undefined;
+  let grandchildTid: number | undefined;
+  await expect(async () => {
+    childTid = created.find(
+      (event) => event.relation_type === "subtask" && event.parent_tid === 1,
+    )?.tid;
+    grandchildTid = created.find(
+      (event) =>
+        event.relation_type === "subtask" && event.parent_tid === childTid,
+    )?.tid;
+    expect(childTid).toBeDefined();
+    expect(grandchildTid).toBeDefined();
+  }).toPass();
+
+  await waitForTaskEvent(
+    events,
+    ({ tid, event }) =>
+      tid === grandchildTid &&
+      event.type === "item/started" &&
+      event.item_type === "tool_use" &&
+      event.name === "Ask" &&
+      event.tool_server === "cydo",
+  );
+
+  const returnedQuestion = await waitForTaskResultItem(
+    grandparentResults,
+    (item) => item["status"] === "question" && item["message"] === question,
+    { timeout: 15_000 },
+  );
+  expect(returnedQuestion).toMatchObject({
+    status: "question",
+    tid: grandchildTid,
+    qid: expect.any(Number),
+    message: question,
+  });
+
+  await openTask(page, 1);
+  await sendMessage(
+    page,
+    `call answer ${returnedQuestion["qid"]} skip-level-reply`,
+  );
+
+  await waitForTaskResultItem(
+    grandchildResults,
+    (item) =>
+      item["status"] === "answered" &&
+      item["qid"] === returnedQuestion["qid"] &&
+      String(item["message"]).startsWith("skip-level-reply"),
+  );
+  await waitForTaskResultItem(
+    grandparentResults,
+    (item) => item["tid"] === childTid && item["status"] === "success",
+  );
+});
 
 test("Ask/Answer: Answer with invalid qid returns error", async ({
   page,

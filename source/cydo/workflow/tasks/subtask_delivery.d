@@ -19,6 +19,17 @@ import cydo.mcp.payloads : TaskResult;
 
 package(cydo):
 
+string renderBatchResults(string[] resultJsons)
+{
+	auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
+	return "The following sub-task(s) completed while your session was interrupted. "
+		~ "Their results are provided below exactly as they would have been "
+		~ "returned by the Task tool.\n\n"
+		~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
+		~ "Continue from where you left off. Process these results as if they "
+		~ "were returned normally by the Task tool.";
+}
+
 struct SubtaskResultDeliveryHost
 {
 	TaskData* delegate(int tid) getTask;
@@ -30,12 +41,8 @@ struct SubtaskResultDeliveryHost
 	void delegate(int tid, TaskStatus[] expectedFrom, TaskStatus to,
 		TaskNotificationChange notification) transitionTaskFrom;
 	void delegate(int tid, string resultText) persistResultText;
-	bool delegate(int tid, out Promise!(McpResult) pending) readPendingSubTask;
-	void delegate(int tid) clearPendingSubTask;
 	int delegate(int childTid) parentTaskForChild;
 	int[] delegate(int parentTid) childTaskIds;
-	bool delegate(int childTid) wasLiveDelivered;
-	void delegate(int childTid) markLiveDelivered;
 	Promise!void delegate(int tid) ensureProcessQueueAlive;
 	bool delegate() shuttingDown;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body) sendKnownSystemMessage;
@@ -57,63 +64,12 @@ public:
 		host_ = host;
 	}
 
-	bool finalizeCompletedSubTask(int childTid, bool eagerDepCleanup = false)
-	{
-		import ae.utils.json : toJson;
-
-		auto td = host_.getTask(childTid);
-		if (td is null)
-			return false;
-
-		host_.persistResultText(childTid, td.resultText);
-		host_.transitionTaskFrom(childTid,
-			[TaskStatus.active, TaskStatus.alive, TaskStatus.waiting],
-			TaskStatus.completed, TaskNotificationChange.preserve);
-
-		Promise!(McpResult) pending;
-		if (!host_.readPendingSubTask(childTid, pending))
-			return false;
-
-		auto taskResult = buildTaskResult(childTid);
-		auto resultJson = toJson(taskResult);
-		pending.fulfill(McpResult.structured(resultJson));
-		host_.clearPendingSubTask(childTid);
-
-		// Early result delivery can race onExit for agents with synchronous stdin
-		// close. Record this child so onExit does not trigger duplicate fallback.
-		if (eagerDepCleanup)
-			host_.markLiveDelivered(childTid);
-
-		return true;
-	}
-
-	bool deliverFailedPendingSubTaskResult(int tid)
-	{
-		import ae.utils.json : toJson;
-
-		Promise!(McpResult) pending;
-		if (!host_.readPendingSubTask(tid, pending))
-			return false;
-
-		auto taskResult = buildTaskResult(tid);
-		auto resultJson = toJson(taskResult);
-		pending.fulfill(McpResult.structured(resultJson, true));
-		host_.clearPendingSubTask(tid);
-		return true;
-	}
-
 	Promise!void deliverWaitingParentResultsIfReady(int tid)
 	{
 		auto parentTid = host_.parentTaskForChild(tid);
 		if (parentTid <= 0)
 			return resolve();
 
-		if (host_.wasLiveDelivered(tid))
-		{
-			tracef("onExit Branch B: child tid=%d already delivered to live batch, skipping fallback",
-				tid);
-			return resolve();
-		}
 
 		auto td = requireTask(tid, "Completed child task must exist while delivering parent fallback results");
 		tracef("onExit Branch B: child tid=%d (status=%s) finished, parent tid=%d",
@@ -220,6 +176,16 @@ public:
 		return attempt;
 	}
 
+	TaskResult taskResult(int tid)
+	{
+		return buildTaskResult(tid);
+	}
+
+	void recoveryDeliveryFailed(int tid, Exception error)
+	{
+		handleRecoveryDeliveryFailure(tid, error);
+	}
+
 private:
 	TaskResult buildTaskResult(int tid)
 	{
@@ -310,13 +276,7 @@ private:
 		infof("deliverBatchResults: delivering %d result(s) to parent tid=%d",
 			resultJsons.length, parentTid);
 
-		auto resultsArray = "[" ~ resultJsons.join(",") ~ "]";
-		auto body = "The following sub-task(s) completed while your session was interrupted. "
-			~ "Their results are provided below exactly as they would have been "
-			~ "returned by the Task tool.\n\n"
-			~ "<task_results>\n" ~ resultsArray ~ "\n</task_results>\n\n"
-			~ "Continue from where you left off. Process these results as if they "
-			~ "were returned normally by the Task tool.";
+		auto body = renderBatchResults(resultJsons);
 		try
 		{
 			return host_.sendKnownSystemMessage(parentTid,

@@ -583,7 +583,7 @@ struct AnswerResult
 
 	string status;
 	int tid;
-	@JSONOptional int qid;
+	int qid;
 	@JSONOptional string title;
 	@JSONOptional string message;
 	@JSONOptional string note;

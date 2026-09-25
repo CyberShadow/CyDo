@@ -58,6 +58,8 @@ class CopilotAgent : Agent
 	private string lastMcpConfigPath_;
 	// Tool dispatch callback — set externally (e.g., by App) before creating sessions.
 	package(cydo) ToolDispatchFn toolDispatch_;
+	package(cydo) void delegate(string) onToolResultDelivered_;
+	package(cydo) void delegate(string) onToolResultDeliveryFailed_;
 	void configureSandbox(ref SandboxPaths paths, ref string[string] env)
 	{
 		import std.process : environment;
@@ -138,7 +140,8 @@ class CopilotAgent : Agent
 		sharedSdkServer_ = server;
 		sharedWorkDir_ = workDir;
 		return attachSession(server, tid, sessionId, resumeSessionId, model,
-			workDir, launch.cmdPrefix, toolDispatch_, config);
+			workDir, launch.cmdPrefix, toolDispatch_, onToolResultDelivered_,
+			onToolResultDeliveryFailed_, config);
 	}
 
 	string extractResultText(string line)
@@ -905,10 +908,14 @@ unittest
 
 private CopilotSession attachSession(SdkProcess server, int tid,
 	string sessionId, string resumeSessionId, string model, string workDir,
-	string[] cmdPrefix, ToolDispatchFn toolDispatch, SessionConfig config)
+	string[] cmdPrefix, ToolDispatchFn toolDispatch,
+	void delegate(string) onToolResultDelivered,
+	void delegate(string) onToolResultDeliveryFailed, SessionConfig config)
 {
 	auto session = new CopilotSession(server, tid, sessionId, model, workDir,
 		cmdPrefix, toolDispatch, config.agentName);
+	session.onToolResultDelivered_ = onToolResultDelivered;
+	session.onToolResultDeliveryFailed_ = onToolResultDeliveryFailed;
 
 	// Register before sending create/resume so events can be routed immediately.
 	server.registerSession(sessionId, session);
@@ -981,6 +988,8 @@ class CopilotSession : AgentSession, SdkSessionHandler
 	private bool gracefulShutdown_; // true after closeStdin() — handleExit reports 0
 	private bool forcedStop_;       // true after stop() — handleExit always reports 1
 	private ToolDispatchFn toolDispatch_;
+	private void delegate(string) onToolResultDelivered_;
+	private void delegate(string) onToolResultDeliveryFailed_;
 
 	// Streaming state: item tracking for item-based protocol.
 	private int nextItemIndex;
@@ -1483,8 +1492,16 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			result.fulfill(SdkToolCallResult(SdkToolResult(
 				mcpResult.text,
 				mcpResult.isError ? "failure" : "success")));
+			onNextTick(socketManager, {
+				if (onToolResultDelivered_ !is null)
+					onToolResultDelivered_(to!string(tid));
+			});
 		}, (Exception e) {
 			result.fulfill(SdkToolCallResult(SdkToolResult(e.msg, "failure")));
+			onNextTick(socketManager, {
+				if (onToolResultDelivered_ !is null)
+					onToolResultDelivered_(to!string(tid));
+			});
 		});
 		return result;
 	}
@@ -1579,21 +1596,53 @@ class CopilotSession : AgentSession, SdkSessionHandler
 			extResEv.content = JSONFragment(toJson(mcpResult.text));
 			emitEvent(toJson(extResEv), rawJson);
 
-			if (!alive_ || server.dead) return;
+			if (!alive_ || server.dead)
+			{
+				if (onToolResultDeliveryFailed_ !is null)
+					onToolResultDeliveryFailed_(to!string(tid));
+				return;
+			}
 			HandlePendingToolCallParams tcp;
 			tcp.sessionId = sessionId;
 			tcp.requestId = req.requestId;
 			tcp.result    = ToolCallResultInner(mcpResult.text, mcpResult.isError ? "failure" : "success");
 			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcp))
-				.ignoreResult();
+				.then((JsonRpcResponse response) {
+					if (response.isError)
+					{
+						if (onToolResultDeliveryFailed_ !is null)
+							onToolResultDeliveryFailed_(to!string(tid));
+					}
+					else if (onToolResultDelivered_ !is null)
+						onToolResultDelivered_(to!string(tid));
+				}, (Exception) {
+					if (onToolResultDeliveryFailed_ !is null)
+						onToolResultDeliveryFailed_(to!string(tid));
+				}).ignoreResult();
 		}, (Exception e) {
-			if (!alive_ || server.dead) return;
+			if (!alive_ || server.dead)
+			{
+				if (onToolResultDeliveryFailed_ !is null)
+					onToolResultDeliveryFailed_(to!string(tid));
+				return;
+			}
 			HandlePendingToolCallError tcpe;
 			tcpe.sessionId = sessionId;
 			tcpe.requestId = req.requestId;
 			tcpe.error     = e.msg;
 			server.sendRequest("session.tools.handlePendingToolCall", toJson(tcpe))
-				.ignoreResult();
+				.then((JsonRpcResponse response) {
+					if (response.isError)
+					{
+						if (onToolResultDeliveryFailed_ !is null)
+							onToolResultDeliveryFailed_(to!string(tid));
+					}
+					else if (onToolResultDelivered_ !is null)
+						onToolResultDelivered_(to!string(tid));
+				}, (Exception) {
+					if (onToolResultDeliveryFailed_ !is null)
+						onToolResultDeliveryFailed_(to!string(tid));
+				}).ignoreResult();
 		});
 	}
 
@@ -2352,7 +2401,7 @@ unittest
 		SessionConfig config;
 		config.model = "test-model";
 		auto session = attachSession(server, 1, "create-success", null,
-			"test-model", "/test/workdir", null, null, config);
+			"test-model", "/test/workdir", null, null, null, null, config);
 		auto createRequest = connection.takeRequest("session.create");
 		auto createParams = jsonParse!SessionCreateParams(
 			toJson(createRequest.params));
@@ -2626,7 +2675,7 @@ unittest
 		auto sessionId = resumeSessionId.length > 0
 			? resumeSessionId : "create-failure";
 		auto session = attachSession(server, 6, sessionId, resumeSessionId,
-			"test-model", "/test/workdir", null, null, config);
+			"test-model", "/test/workdir", null, null, null, null, config);
 		auto setupRequest = connection.takeRequest(expectedMethod);
 		if (resumeSessionId.length > 0)
 		{

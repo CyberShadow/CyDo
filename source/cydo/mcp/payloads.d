@@ -13,7 +13,6 @@ struct TaskResult
 	@JSONOptional string note;        // contextual guidance for the parent agent
 	@JSONOptional string error;       // canonical per-task error message
 	@JSONOptional int tid;            // child task ID for follow-up via Ask
-	@JSONOptional int qid;            // reserved for compatibility; QuestionResult carries qid for questions
 	@JSONOptional string[] commits;   // commit SHAs from worktree (for commit output type)
 	string status = "success";
 }

@@ -10,7 +10,7 @@ import std.string : strip;
 import ae.sys.timing : TimerTask, setTimeout;
 import ae.utils.json : JSONFragment, jsonParse, toJson;
 import ae.utils.promise : Promise, resolve;
-import ae.utils.promise.await : await;
+import ae.utils.promise.await : async, await;
 
 import cydo.agent.contract : Agent;
 import cydo.agent.terminal : TerminalProcess;
@@ -24,21 +24,21 @@ import cydo.domain.task_types.definition : ContinuationDef, CreatableTaskDef, Dj
 import cydo.domain.tasks.model;
 import cydo.domain.tasks.lifecycle : TaskNotificationChange;
 import cydo.foundation.system.known_messages : KnownSystemMessageKind,
-	handoffSubject, modeSwitchSubject, subTaskWaitingForAnswerSubject,
-	taskPromptSubject, wrapKnownSystemMessage;
+	followUpFromParentSubject, handoffSubject, modeSwitchSubject,
+	questionFromTaskSubject, subTaskWaitingForAnswerSubject,
+	systemMessageSubject, taskPromptSubject, wrapKnownSystemMessage;
 import cydo.foundation.system.framing : prependTaskFraming;
 import cydo.foundation.text.title : truncateTitle;
 import cydo.mcp : McpResult;
 import cydo.mcp.payloads : TaskResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend,
 	ValidatedTask;
-import cydo.protocol : BatchResultEnvelope, ContentBlock;
+import cydo.protocol : AnswerResult, BatchResultEnvelope, ContentBlock, QuestionResult;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
-import cydo.workflow.batch.router : BatchConsumeKind;
-import cydo.workflow.questions.router : QuestionRouter,
-	QuestionRouterHost;
+import cydo.workflow.mailbox : Mailbox, MailboxEvent;
+import cydo.workflow.questions.router : makeQuestionMessage;
 import cydo.workflow.tasks.subtask_delivery : SubtaskResultDelivery,
-	SubtaskResultDeliveryHost;
+	SubtaskResultDeliveryHost, renderBatchResults;
 
 package(cydo):
 
@@ -99,10 +99,11 @@ struct WorkflowToolsHost
 	string delegate(const TaskData* td) effectiveCwd;
 	bool delegate(int aTid, int bTid) tasksShareWorkspace;
 	string delegate(int tid) taskWorkspaceLabel;
-	void delegate(int tid, void delegate() cb) addIdleCallback;
 	Promise!void delegate(int tid) reactivateTask;
 	Promise!void delegate(int tid, KnownSystemMessageKind kind, string body)
 		sendKnownSystemMessage;
+	Promise!void delegate(int tid, const(ContentBlock)[] blocks,
+		string cydoMeta, string nonce) sendPreparedKnownSystemMessage;
 
 	void delegate(int parentTid, int childTid) persistAddTaskDep;
 	void delegate(int parentTid, int childTid) persistRemoveTaskDep;
@@ -215,7 +216,7 @@ unittest
 		emitTaskReload: (int tid, string reason, string excludedUserUuid) {},
 		appendTaskDiagnostic: (int tid, string subject, string body) {},
 		taskAlive: (int tid) => false, tasksShareWorkspace: (int aTid, int bTid) => true,
-		taskWorkspaceLabel: (int tid) => "local", addIdleCallback: (int tid, void delegate() cb) {},
+		taskWorkspaceLabel: (int tid) => "local",
 		reactivateTask: (int tid) => resolve(),
 		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind, string body) { return resolve(); },
 		persistAddTaskDep: (int parentTid, int childTid) {}, persistRemoveTaskDep: (int parentTid, int childTid) {},
@@ -251,9 +252,7 @@ final class WorkflowToolsBackend : ToolsBackend
 {
 private:
 	WorkflowToolsHost host_;
-	Promise!(McpResult)[int] pendingSubTasks_;
 	int[int] taskDeps_;
-	bool[int] liveDeliveredSubTasks_;
 	Promise!(McpResult)[int] pendingAskUserQuestions_;
 	/// Fulfilled with the decision payload sent back to the agent.
 	Promise!string[int] pendingPermissionPrompts_;
@@ -261,7 +260,20 @@ private:
 	/// Deny a pending permission prompt nobody answers in time.
 	TimerTask[int] permissionPromptTimeouts_;
 	BatchRegistry batchRegistry_;
-	QuestionRouter questionRouter_;
+	Mailbox[int] mailboxes_;
+	ref Mailbox mailbox(int tid)
+	{
+		if ((tid in mailboxes_) is null) mailboxes_[tid] = Mailbox.init;
+		return mailboxes_[tid];
+	}
+	struct QuestionRecord
+	{
+		int qid, askerTid, answererTid;
+		string text, answer;
+		bool answered, cancelled;
+	}
+	QuestionRecord[int] questions_;
+	int nextQid_ = 1;
 	SubtaskResultDelivery subtaskResultDelivery_;
 	TerminalProcess[] activeTerminals_;
 
@@ -278,25 +290,8 @@ public:
 				transitionTask: host_.transitionTask,
 				transitionTaskFrom: host_.transitionTaskFrom,
 				persistResultText: host_.persistResultText,
-				readPendingSubTask: (int tid,
-					out Promise!(McpResult) pending) {
-					auto entry = tid in pendingSubTasks_;
-					if (entry is null)
-						return false;
-					pending = *entry;
-					return true;
-				},
-				clearPendingSubTask: (int tid) {
-					pendingSubTasks_.remove(tid);
-				},
 				parentTaskForChild: &parentTaskForChild,
 				childTaskIds: &childrenOf,
-				wasLiveDelivered: (int childTid) {
-					return (childTid in liveDeliveredSubTasks_) !is null;
-				},
-				markLiveDelivered: (int childTid) {
-					liveDeliveredSubTasks_[childTid] = true;
-				},
 				ensureProcessQueueAlive: host_.ensureProcessQueueAlive,
 				shuttingDown: host_.shuttingDown,
 				sendKnownSystemMessage: host_.sendKnownSystemMessage,
@@ -306,44 +301,7 @@ public:
 				appendAndBroadcastRecoveryDeliveryDiagnostic:
 					host_.appendAndBroadcastRecoveryDeliveryDiagnostic,
 			));
-		questionRouter_ = new QuestionRouter(QuestionRouterHost(
-			getTask: host_.getTask,
-			isTaskAlive: host_.taskAlive,
-			tasksShareWorkspace: host_.tasksShareWorkspace,
-			taskWorkspaceLabel: host_.taskWorkspaceLabel,
-			systemKeyword: host_.systemKeyword,
-			readPromptFile: host_.readPromptFile,
-			buildKnownSystemMessageMeta: host_.buildKnownSystemMessageMeta,
-			sendTaskMessage: (int tid, const(ContentBlock)[] content,
-				string cydoMeta, string nonce) {
-				return host_.sendTaskMessage(tid, content, null, cydoMeta, nonce);
-			},
-			transitionTask: host_.transitionTask,
-			transitionTaskFrom: host_.transitionTaskFrom,
-			persistResultText: host_.persistResultText,
-			broadcastFocusHint: host_.broadcastFocusHint,
-			addIdleCallback: host_.addIdleCallback,
-			reactivateTask: host_.reactivateTask,
-			hasPendingSubTask: &hasPendingSubTask,
-			registerFollowUpBatchChild: (int parentTid, int childTid,
-				BatchHandle handle) {
-				auto subTaskPromise = new Promise!McpResult;
-				pendingSubTasks_[childTid] = subTaskPromise;
-				taskDeps_[childTid] = parentTid;
-				host_.persistAddTaskDep(parentTid, childTid);
-				subTaskPromise.then((McpResult r) {
-					batchRegistry_.enqueueChildDone(handle, 0, childTid, r);
-				});
-			},
-			cleanupAfterFollowUpAnswerDelivery: (int childTid) {
-				if (childTid in pendingSubTasks_)
-					pendingSubTasks_.remove(childTid);
-				if (auto parentTidPtr = childTid in taskDeps_)
-					removeTaskDependency(*parentTidPtr, childTid);
-			},
-			awaitBatchLoop: &awaitBatchLoop,
-			makeInternalBatchError: &makeInternalBatchError,
-		), &batchRegistry_);
+
 	}
 
 	ValidatedTask handleCreateTask(string callerTid, int specIndex,
@@ -436,8 +394,6 @@ public:
 			host_.persistRelationType(childTid, "subtask");
 			host_.persistTitle(childTid, childTd.title);
 
-			auto promise = new Promise!McpResult;
-			pendingSubTasks_[childTid] = promise;
 			host_.persistAddTaskDep(parentTid, childTid);
 			taskDeps_[childTid] = parentTid;
 			if (pd.status != TaskStatus.waiting)
@@ -481,9 +437,7 @@ public:
 					host_.transitionTaskFrom(childTid,
 						[TaskStatus.pending, TaskStatus.active], TaskStatus.failed,
 						TaskNotificationChange.preserve);
-					if (hasPendingSubTask(childTid))
-						deliverFailedPendingSubTaskResult(childTid);
-					return LaunchedTask(childTid, promise);
+					return LaunchedTask(childTid);
 				}
 				childTd.taskStartHead = taskStartHead;
 				host_.persistTaskStartHead(childTid, childTd.taskStartHead);
@@ -525,8 +479,7 @@ public:
 						[TaskStatus.pending, TaskStatus.active], TaskStatus.failed,
 						TaskNotificationChange.preserve);
 				}
-				if (hasPendingSubTask(childTid))
-					deliverFailedPendingSubTaskResult(childTid);
+				recordChildTerminal(childTid);
 			}).ignoreResult();
 
 			if (description.length == 0)
@@ -539,7 +492,7 @@ public:
 			infof("Task: tid=%d type=%s parent=%d", childTid,
 				resolvedTaskType, parentTid);
 
-			return LaunchedTask(childTid, promise);
+			return LaunchedTask(childTid);
 		});
 	}
 
@@ -798,42 +751,113 @@ public:
 
 		int[] childTids = new int[launchedTasks.length];
 		foreach (i, ref launchedTask; launchedTasks)
-		{
-			if (launchedTask.promise is null)
-			{
-				return resolve(makeInternalBatchError(
-					format!"missing child promise for slot %s"(i)));
-			}
 			childTids[i] = launchedTask.childTid;
-		}
 
 		BatchHandle handle;
 		string batchError;
 		if (!batchRegistry_.create(parentTid, childTids, handle, batchError))
 			return resolve(makeInternalBatchError(batchError));
 
-		foreach (i, ref launchedTask; launchedTasks)
+		foreach (childTid; childTids)
 		{
-			(BatchHandle h, size_t slot, int cTid, Promise!McpResult promise) {
-				promise.then((McpResult r) {
-					batchRegistry_.enqueueChildDone(h, slot, cTid, r);
-				});
-			}(handle, i, launchedTask.childTid, launchedTask.promise);
+			auto child = requireTask(childTid, "Registered child must exist");
+			if (child.status == TaskStatus.completed || child.status == TaskStatus.failed)
+				recordChildTerminal(childTid);
 		}
 
-		return awaitBatchLoop(parentTid, handle.batchId);
+		return awaitEvent(parentTid);
 	}
 
 	Promise!McpResult handleAsk(string callerTidStr, string message,
 		int targetTid)
 	{
-		return questionRouter_.handleAsk(callerTidStr, message, targetTid);
+		import std.conv : to;
+		int askerTid;
+		try askerTid = to!int(callerTidStr);
+		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
+		auto asker = host_.getTask(askerTid);
+		if (asker is null) return resolve(McpResult("Task not found", true));
+		bool explicitTarget = targetTid != -1;
+		if (!explicitTarget)
+		{
+			if (asker.parentTid <= 0)
+				return resolve(McpResult("No parent task — tid is required", true));
+			targetTid = asker.parentTid;
+		}
+		auto answerer = host_.getTask(targetTid);
+		if (answerer is null)
+			return resolve(McpResult("Target task not found: " ~ to!string(targetTid), true));
+		if (targetTid == askerTid)
+			return resolve(McpResult("Ask target must be a different task", true));
+		if (explicitTarget && answerer.status == "importable")
+			return resolve(McpResult("Cannot Ask importable task " ~ to!string(targetTid)
+				~ "; import or resume it first", true));
+		if (!host_.tasksShareWorkspace(askerTid, targetTid))
+			return resolve(McpResult("Ask target must be in the same workspace (caller="
+				~ host_.taskWorkspaceLabel(askerTid) ~ ", target="
+				~ host_.taskWorkspaceLabel(targetTid) ~ ")", true));
+		if (answerer.parentTid == askerTid)
+		{
+			int pendingQid = presentedQuestionFor(targetTid);
+			if (pendingQid > 0)
+				return resolve(McpResult(
+					"Sub-task has a pending question (qid=" ~ to!string(pendingQid)
+					~ "). Use Answer(qid, message) instead.", true));
+		}
+		auto qid = nextQid_++;
+		questions_[qid] = QuestionRecord(qid, askerTid, targetTid, message);
+		mailbox(targetTid).push(MailboxEvent(MailboxEvent.Kind.question, 0, qid));
+		pump(targetTid);
+		if (asker.status != TaskStatus.waiting)
+			host_.transitionTaskFrom(askerTid,
+				[TaskStatus.active, TaskStatus.alive], TaskStatus.waiting,
+				TaskNotificationChange.preserve);
+		host_.broadcastFocusHint(askerTid, targetTid);
+		return awaitEvent(askerTid);
 	}
 
 	Promise!McpResult handleAnswer(string callerTidStr, int qid,
 		string message)
 	{
-		return questionRouter_.handleAnswer(callerTidStr, qid, message);
+		import std.conv : to;
+		int answererTid;
+		try answererTid = to!int(callerTidStr);
+		catch (Exception) return resolve(McpResult("Invalid calling task ID", true));
+		auto answerer = host_.getTask(answererTid);
+		if (answerer is null) return resolve(McpResult("Task not found", true));
+		auto q = qid in questions_;
+		if (q is null || q.answererTid != answererTid || q.answered)
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+		if (q.cancelled)
+			return resolve(McpResult(format!"Question %s was cancelled: the asking task has ended"(qid), true));
+		if (hasEvent(answererTid, MailboxEvent.Kind.question, qid))
+			return resolve(McpResult("Unknown question ID: " ~ to!string(qid), true));
+		q.answered = true;
+		q.answer = message;
+		mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.answer, 0, qid));
+		pump(q.askerTid);
+		host_.broadcastFocusHint(answererTid, q.askerTid);
+		bool pendingOwnQuestion;
+		foreach (ref candidate; questions_)
+			if (candidate.askerTid == answererTid)
+				pendingOwnQuestion = true;
+		bool owesPresentedQuestion;
+		foreach (id, ref candidate; questions_)
+			if (candidate.answererTid == answererTid && !candidate.answered
+				&& !candidate.cancelled
+				&& !hasEvent(answererTid, MailboxEvent.Kind.question, id))
+				owesPresentedQuestion = true;
+		if ((batchRegistry_.hasBatches(answererTid) || pendingOwnQuestion)
+			&& !owesPresentedQuestion)
+		{
+			if (answerer.status != TaskStatus.waiting)
+				host_.transitionTaskFrom(answererTid,
+					[TaskStatus.active, TaskStatus.alive], TaskStatus.waiting,
+					TaskNotificationChange.preserve);
+			return awaitEvent(answererTid);
+		}
+		return resolve(McpResult.structured(toJson(AnswerResult("delivered",
+			q.askerTid, qid, null, null, null))));
 	}
 
 	/// Land: a question to the project's integrator, which answers once the
@@ -859,7 +883,7 @@ public:
 		return host_.integratorForTask(callerTid).then((int integratorTid) {
 			if (integratorTid == 0)
 				return resolve(McpResult("This project has no integrator", true));
-			return questionRouter_.handleServedRequest(callerTid, request, integratorTid);
+			return handleAsk(callerTidStr, request, integratorTid);
 		}, (Exception e) => resolve(McpResult(e.msg, true)));
 	}
 
@@ -964,15 +988,7 @@ public:
 		if (td is null)
 			return;
 
-		if (batchRegistry_.parentHasLiveBatches(tid))
-			return;
-
-		auto children = childrenOf(tid);
-		if (children.length == 0)
-			return;
-
-		foreach (childTid; children)
-			removeTaskDependency(tid, childTid);
+		commitDelivered(tid);
 
 		if (td.status == TaskStatus.waiting)
 			host_.transitionTask(tid, TaskStatus.waiting, TaskStatus.active,
@@ -990,6 +1006,9 @@ public:
 			return;
 
 		if (host_.getTask(tid) is null)
+			return;
+		rebuildMailbox(tid);
+		if (host_.shuttingDown() || pump(tid) || batchRegistry_.hasBatches(tid))
 			return;
 
 		deliverBatchFallbackIfReady(tid).except((Exception e) {
@@ -1143,9 +1162,11 @@ public:
 		}
 	}
 
-	bool hasPendingSubTask(int tid)
+	bool hasLiveBatchOwner(int tid)
 	{
-		return (tid in pendingSubTasks_) !is null;
+		BatchHandle handle;
+		size_t slot;
+		return batchRegistry_.findOwnerOfChild(tid, handle, slot);
 	}
 
 	bool hasTaskDependency(int tid)
@@ -1178,7 +1199,7 @@ public:
 			return;
 
 		auto childTd = requireTask(childTid,
-			"Pending child question must belong to a live child task");
+			"Pending question must belong to a live asker task");
 		auto parentTd = requireTask(tid,
 			"Reminder target must be a live parent task");
 		auto reminderSubject = subTaskWaitingForAnswerSubject(
@@ -1198,20 +1219,43 @@ public:
 			["question": question], "question");
 		host_.sendTaskMessage(tid, [ContentBlock("text", reminder)],
 			null, askReminderMeta, null).except((Exception e) {
-			questionRouter_.failQuestionRoute(qid,
-				"Failed to submit sub-task answer reminder: " ~ e.msg);
+			if (auto pending = qid in questions_)
+			{
+				int askerTid = pending.askerTid;
+				questions_.remove(qid);
+				mailbox(askerTid).push(MailboxEvent(
+					MailboxEvent.Kind.failed, 0, qid,
+					"Failed to submit sub-task answer reminder: " ~ e.msg));
+				pump(askerTid);
+			}
 		}).ignoreResult();
 	}
 
 	bool finalizeCompletedSubTask(int tid, bool eagerDepCleanup = false)
 	{
-		return subtaskResultDelivery_.finalizeCompletedSubTask(tid,
-			eagerDepCleanup);
+		auto td = requireTask(tid, "Completed sub-task must exist");
+		host_.persistResultText(tid, td.resultText);
+		host_.transitionTaskFrom(tid,
+			[TaskStatus.active, TaskStatus.alive, TaskStatus.waiting],
+			TaskStatus.completed, TaskNotificationChange.preserve);
+		return recordChildTerminal(tid);
 	}
 
-	bool deliverFailedPendingSubTaskResult(int tid)
+	bool recordChildTerminal(int tid)
 	{
-		return subtaskResultDelivery_.deliverFailedPendingSubTaskResult(tid);
+		BatchHandle handle;
+		size_t slot;
+		if (!batchRegistry_.findOwnerOfChild(tid, handle, slot))
+			return batchRegistry_.isRecorded(tid);
+		auto result = subtaskResultDelivery_.taskResult(tid);
+		if (batchRegistry_.recordChildDone(handle, slot, tid,
+			McpResult.structured(toJson(result), result.status == "error")))
+		{
+			mailbox(handle.parentTid).push(MailboxEvent(
+				MailboxEvent.Kind.batch, handle.batchId));
+			pump(handle.parentTid);
+		}
+		return true;
 	}
 
 	Promise!void deliverWaitingParentResultsIfReady(int tid)
@@ -1277,23 +1321,38 @@ public:
 		}
 	}
 
-	void failPendingAskRouteOnExit(int tid)
+	void onTaskTerminal(int tid)
 	{
-		auto td = host_.getTask(tid);
-		if (td is null)
-			return;
-		if (td.wasKilledByUser
-			|| (td.pendingContinuation is null
-				&& !hasPendingChildQuestion(tid)))
+		int[] removeQids;
+		foreach (qid, ref q; questions_)
 		{
-			questionRouter_.failQuestionRoutesForAnswerer(tid,
-				"Session ended while waiting for Ask response");
+			if (q.askerTid == tid)
+			{
+				if (q.answered)
+				{
+					mailbox(tid).remove((in MailboxEvent e) =>
+						e.kind == MailboxEvent.Kind.answer && e.qid == qid);
+					removeQids ~= qid;
+				}
+				else
+				{
+					if (mailbox(q.answererTid).remove((in MailboxEvent e) =>
+						e.kind == MailboxEvent.Kind.question && e.qid == qid))
+						removeQids ~= qid;
+					else
+						q.cancelled = true;
+				}
+			}
 		}
-		if (td.pendingAskPromise !is null && td.pendingAskQid > 0)
-		{
-			questionRouter_.failQuestionRoute(td.pendingAskQid,
-				"Session ended while waiting for Ask response");
-		}
+		foreach (qid; removeQids) questions_.remove(qid);
+		auto askers = failQuestionsForAnswerer(tid, "Session ended while waiting for Ask response");
+		mailbox(tid).release(new Exception(
+			"Session ended while waiting for Ask response"));
+		mailboxes_.remove(tid);
+		rebuildMailbox(tid);
+		foreach (askerTid; askers)
+			pump(askerTid);
+		pump(tid);
 	}
 
 	void spawnContinuation(int tid)
@@ -1408,7 +1467,6 @@ private:
 	{
 		host_.persistRemoveTaskDep(parentTid, childTid);
 		taskDeps_.remove(childTid);
-		liveDeliveredSubTasks_.remove(childTid);
 	}
 
 	McpResult makeInternalBatchError(string message)
@@ -1417,66 +1475,286 @@ private:
 		return McpResult("Internal batch routing error: " ~ message, true);
 	}
 
-	Promise!McpResult awaitBatchLoop(int parentTid, ulong batchId)
+	McpResult envelopeResult(BatchHandle handle)
 	{
-		auto handle = BatchHandle(parentTid, batchId);
-		if (!batchRegistry_.exists(handle))
-		{
-			return resolve(makeInternalBatchError(
-				format!"no active batch for parent tid=%d batch=%s"(
-					parentTid, batchId)));
-		}
-
-		while (true)
-		{
-			Promise!BatchSignal event;
-			string batchError;
-			if (!batchRegistry_.waitOne(handle, event, batchError))
-			{
-				if (batchError.length > 0)
-					return resolve(makeInternalBatchError(batchError));
-				break;
-			}
-
-			auto sig = event.await();
-			auto consumed = batchRegistry_.consume(handle, sig,
-				(int childTid, int qid) => questionRouter_
-					.childHasPendingQuestion(childTid, qid),
-				batchError);
-			if (batchError.length > 0)
-				return resolve(makeInternalBatchError(batchError));
-
-			final switch (consumed.kind)
-			{
-				case BatchConsumeKind.ignored:
-					break;
-				case BatchConsumeKind.childDone:
-					break;
-				case BatchConsumeKind.question:
-					return resolve(questionRouter_.buildQuestionResult(
-						consumed.childTid, consumed.qid,
-						consumed.questionText));
-			}
-		}
-
-		McpResult[] results;
-		string batchError;
-		if (!batchRegistry_.finalize(handle, results, batchError))
-			return resolve(makeInternalBatchError(batchError));
-
 		bool anyError;
 		JSONFragment[] items;
-		foreach (ref result; results)
+		foreach (ref childResult; batchRegistry_.envelope(handle))
 		{
-			if (result.structuredContent)
-				items ~= result.structuredContent;
-			else
-				items ~= JSONFragment(toJson(result.text));
-			if (result.isError)
-				anyError = true;
+			items ~= childResult.structuredContent
+				? childResult.structuredContent
+				: JSONFragment(toJson(childResult.text));
+			anyError = anyError || childResult.isError;
 		}
-		auto wrappedJson = toJson(BatchResultEnvelope(items));
-		return resolve(McpResult.structured(wrappedJson, anyError));
+		return McpResult.structured(toJson(BatchResultEnvelope(items)), anyError);
+	}
+
+	bool hasEvent(int tid, MailboxEvent.Kind kind, int qid = 0,
+		ulong batchId = 0)
+	{
+		foreach (event; mailbox(tid).events)
+			if (event.kind == kind && event.qid == qid
+				&& event.batchId == batchId)
+				return true;
+		return false;
+	}
+
+	int presentedQuestionFor(int tid)
+	{
+		int earliest = int.max;
+		foreach (qid, q; questions_)
+			if (q.answererTid == tid && !q.answered && !q.cancelled
+				&& !hasEvent(tid, MailboxEvent.Kind.question, qid)
+				&& qid < earliest)
+				earliest = qid;
+		return earliest == int.max ? 0 : earliest;
+	}
+
+	void commitDelivered(int tid)
+	{
+		foreach (handle; batchRegistry_.batchesFor(tid))
+		{
+			if (!batchRegistry_.complete(handle)
+				|| hasEvent(tid, MailboxEvent.Kind.batch, 0, handle.batchId))
+				continue;
+			foreach (childTid; batchRegistry_.children(handle))
+				removeTaskDependency(tid, childTid);
+			string error;
+			assert(batchRegistry_.remove(handle, error));
+		}
+		int[] delivered;
+		foreach (qid, q; questions_)
+			if (q.askerTid == tid && q.answered
+				&& !hasEvent(tid, MailboxEvent.Kind.answer, qid))
+				delivered ~= qid;
+		foreach (qid; delivered)
+			questions_.remove(qid);
+	}
+
+	int[] failQuestionsForAnswerer(int tid, string reason)
+	{
+		int[] removeQids;
+		foreach (qid, ref q; questions_)
+			if (q.answererTid == tid && (!q.answered || q.cancelled))
+				removeQids ~= qid;
+		int[] askers;
+		foreach (qid; removeQids)
+		{
+			auto q = questions_[qid];
+			questions_.remove(qid);
+			if (q.cancelled) continue;
+			mailbox(q.askerTid).push(MailboxEvent(MailboxEvent.Kind.failed, 0, qid,
+				format!"Question %d: %s"(qid, reason)));
+			askers ~= q.askerTid;
+		}
+		return askers;
+	}
+
+	void rebuildMailbox(int tid, MailboxEvent[] drained = null)
+	{
+		import std.algorithm : sort;
+		auto m = &mailbox(tid);
+		auto held = drained ~ m.events;
+		m.events = null;
+		MailboxEvent[] pending;
+		int[] questionIds, answerIds;
+		foreach (qid, q; questions_)
+		{
+			if (q.answererTid == tid && !q.answered && !q.cancelled)
+				questionIds ~= qid;
+			if (q.askerTid == tid && q.answered)
+				answerIds ~= qid;
+		}
+		questionIds.sort();
+		answerIds.sort();
+		foreach (qid; questionIds)
+			pending ~= MailboxEvent(MailboxEvent.Kind.question, 0, qid);
+		foreach (qid; answerIds)
+			pending ~= MailboxEvent(MailboxEvent.Kind.answer, 0, qid);
+		auto handles = batchRegistry_.batchesFor(tid);
+		handles.sort!((a, b) => a.batchId < b.batchId)();
+		foreach (handle; handles)
+			if (batchRegistry_.complete(handle))
+				pending ~= MailboxEvent(MailboxEvent.Kind.batch, handle.batchId);
+
+		// Keep the known FIFO order and drop entries invalidated during delivery.
+		bool[MailboxEvent] remaining;
+		foreach (event; pending)
+			remaining[event] = true;
+		foreach (event; held)
+			if (event.kind == MailboxEvent.Kind.failed || remaining.remove(event))
+				m.push(event);
+		foreach (event; pending)
+			if (event in remaining)
+				m.push(event);
+	}
+
+public:
+	bool pump(int tid)
+	{
+		import std.array : join;
+		import std.conv : to;
+		if (host_.shuttingDown())
+			return false;
+		auto td = host_.getTask(tid);
+		if (td is null || td.isProcessing || td.hasPendingQuestion
+			|| mailbox(tid).empty)
+			return false;
+		if (td.status != TaskStatus.active && td.status != TaskStatus.alive
+			&& td.status != TaskStatus.waiting
+			&& td.status != TaskStatus.completed && td.status != TaskStatus.failed)
+			return false;
+		bool wasTerminal = td.status == TaskStatus.completed
+			|| td.status == TaskStatus.failed;
+		// Keep events held while the asynchronous wake is in flight.
+		td.isProcessing = true;
+		void releaseClaim()
+		{
+			td.isProcessing = false;
+			host_.broadcastTaskUpdate(tid);
+		}
+		MailboxEvent[] drained;
+		void deliveryFailed(Exception e)
+		{
+			bool shuttingDown = host_.shuttingDown();
+			bool terminal = td.status == TaskStatus.completed || td.status == TaskStatus.failed;
+			int[] askers;
+			if (!shuttingDown && terminal)
+				askers = failQuestionsForAnswerer(tid, e.msg);
+			rebuildMailbox(tid, drained);
+			releaseClaim();
+			if (shuttingDown)
+				return;
+			if (terminal)
+			{
+				foreach (askerTid; askers)
+					pump(askerTid);
+				warningf("Cannot wake terminal task %s for mailbox delivery: %s",
+					tid, e.msg);
+			}
+			else
+				subtaskResultDelivery_.recoveryDeliveryFailed(tid, e);
+		}
+		try host_.ensureProcessQueueAlive(tid).then(() {
+			if (host_.shuttingDown() || mailbox(tid).empty)
+			{
+				releaseClaim();
+				return resolve();
+			}
+			drained = mailbox(tid).events;
+			mailbox(tid).events = null;
+			ContentBlock[] blocks;
+			string[] nonces;
+			string firstMeta;
+			foreach (event; drained)
+			{
+				KnownSystemMessageKind kind;
+				string body, subject, meta, nonce;
+				final switch (event.kind)
+				{
+				case MailboxEvent.Kind.batch:
+					kind = KnownSystemMessageKind.subTaskResults;
+					subject = systemMessageSubject(kind);
+					string[] resultJsons;
+					foreach (result; batchRegistry_.envelope(BatchHandle(tid, event.batchId)))
+						resultJsons ~= result.structuredContent
+							? result.structuredContent.json : toJson(result.text);
+					body = renderBatchResults(resultJsons);
+					meta = host_.buildKnownSystemMessageMeta(kind, subject, null, null);
+					nonce = "batch:" ~ event.batchId.to!string;
+					break;
+				case MailboxEvent.Kind.question:
+					auto q = event.qid in questions_;
+					assert(q !is null);
+					bool followUp = wasTerminal && td.parentTid == q.askerTid;
+					kind = followUp ? KnownSystemMessageKind.followUpFromParent
+						: KnownSystemMessageKind.questionFromTask;
+					subject = followUp ? followUpFromParentSubject(q.qid)
+						: questionFromTaskSubject(q.askerTid, q.qid);
+					body = host_.readPromptFile(followUp
+						? "prompts/follow_up_from_parent.md"
+						: "prompts/question_from_task.md", td.projectPath,
+						["message": q.text, "qid": q.qid.to!string]);
+					meta = host_.buildKnownSystemMessageMeta(kind, subject,
+						["message": q.text], "message");
+					nonce = (followUp ? "follow-up:" : "question:")
+						~ q.qid.to!string;
+					host_.broadcastFocusHint(q.askerTid, tid);
+					break;
+				case MailboxEvent.Kind.answer:
+					auto q = event.qid in questions_;
+					assert(q !is null && q.answered);
+					kind = KnownSystemMessageKind.subTaskResults;
+					subject = "Answer to your question " ~ q.qid.to!string;
+					body = subject ~ "\n" ~ toJson(AnswerResult("answered",
+						q.answererTid, q.qid, null, q.answer, null));
+					meta = host_.buildKnownSystemMessageMeta(kind, subject, null, null);
+					nonce = "answer:" ~ q.qid.to!string;
+					break;
+				case MailboxEvent.Kind.failed:
+					kind = KnownSystemMessageKind.subTaskResults;
+					subject = systemMessageSubject(kind);
+					body = event.error;
+					meta = host_.buildKnownSystemMessageMeta(kind, subject, null, null);
+					nonce = "failed:" ~ event.qid.to!string;
+					break;
+				}
+				auto wrapped = kind == KnownSystemMessageKind.questionFromTask
+					? makeQuestionMessage(host_.systemKeyword(),
+						questions_[event.qid].askerTid, event.qid, body)
+					: wrapKnownSystemMessage(host_.systemKeyword(), kind, body, subject);
+				blocks ~= ContentBlock("text", wrapped);
+				if (firstMeta.length == 0) firstMeta = meta;
+				nonces ~= nonce;
+			}
+			return host_.sendPreparedKnownSystemMessage(tid, blocks,
+				firstMeta, nonces.join(";")).then(() {
+				commitDelivered(tid);
+			});
+		}).except(&deliveryFailed).ignoreResult();
+		catch (Exception e)
+			deliveryFailed(e);
+		return true;
+	}
+
+private:
+	Promise!McpResult awaitEvent(int tid)
+	{
+		return async({
+			MailboxEvent ev;
+			try ev = mailbox(tid).take().await;
+			catch (Exception e) return McpResult(e.msg, true);
+			McpResult result;
+			final switch (ev.kind)
+			{
+				case MailboxEvent.Kind.batch:
+					result = envelopeResult(BatchHandle(tid, ev.batchId));
+					break;
+				case MailboxEvent.Kind.question:
+				{
+					auto q = ev.qid in questions_;
+					assert(q !is null);
+					auto asker = host_.getTask(q.askerTid);
+					result = McpResult.structured(toJson(QuestionResult("question",
+						q.askerTid, q.qid, asker is null ? null : asker.title, q.text)));
+					break;
+				}
+				case MailboxEvent.Kind.answer:
+				{
+					auto q = ev.qid in questions_;
+					assert(q !is null && q.answered);
+					auto answerer = host_.getTask(q.answererTid);
+					result = McpResult.structured(toJson(AnswerResult("answered",
+						q.answererTid, q.qid, answerer is null ? null : answerer.title,
+						q.answer, null)));
+					break;
+				}
+				case MailboxEvent.Kind.failed:
+					result = McpResult(ev.error, true);
+					break;
+			}
+			return result;
+		});
 	}
 
 	Promise!string promptUserForPermission(int tid, PermissionPrompt prompt,
@@ -1519,16 +1797,18 @@ private:
 	bool findPendingChildQuestion(int tid, out int childTid,
 		out string question, out int qid)
 	{
-		if (!batchRegistry_.findFirstLiveChild(tid, (int cTid) {
-			auto child = host_.getTask(cTid);
-			return child !is null && child.pendingAskPromise !is null;
-		}, childTid))
-			return false;
-
-		auto child = requireTask(childTid,
-			"Pending child question must belong to a live child task");
-		question = child.pendingAskQuestion;
-		qid = child.pendingAskQid;
+		int earliest = int.max;
+		foreach (id, q; questions_)
+			if (q.answererTid == tid && !q.answered && !q.cancelled
+				&& !hasEvent(tid, MailboxEvent.Kind.question, id)
+				&& host_.getTask(q.askerTid) !is null
+				&& id < earliest)
+				earliest = id;
+		if (earliest == int.max) return false;
+		auto q = questions_[earliest];
+		childTid = q.askerTid;
+		question = q.text;
+		qid = earliest;
 		return true;
 	}
 
@@ -1610,13 +1890,7 @@ private:
 						TaskNotificationChange.preserve);
 					host_.appendTaskDiagnostic(tid, "Continuation failed", e.msg);
 				}
-				if (hasPendingSubTask(tid))
-					deliverFailedPendingSubTaskResult(tid);
-				questionRouter_.failQuestionRoutesForAnswerer(tid,
-					"Continuation message submission failed: " ~ e.msg);
-				if (failed.pendingAskPromise !is null && failed.pendingAskQid > 0)
-					questionRouter_.failQuestionRoute(failed.pendingAskQid,
-						"Continuation message submission failed: " ~ e.msg);
+				recordChildTerminal(tid);
 			}).ignoreResult();
 			if (wasActive)
 				host_.broadcastTaskUpdate(tid);
@@ -1670,15 +1944,15 @@ private:
 			host_.broadcastTaskUpdate(childTid);
 			host_.broadcastFocusHint(tid, childTid);
 
-			if (auto pending = tid in pendingSubTasks_)
+			BatchHandle owner;
+			size_t slot;
+			if (batchRegistry_.findOwnerOfChild(tid, owner, slot))
 			{
-				pendingSubTasks_[childTid] = *pending;
-				pendingSubTasks_.remove(tid);
+				batchRegistry_.replaceChild(tid, childTid);
 				host_.persistRemoveAllChildDeps(tid);
-				host_.persistAddTaskDep(td.parentTid, childTid);
+				host_.persistAddTaskDep(owner.parentTid, childTid);
 				taskDeps_.remove(tid);
-				liveDeliveredSubTasks_.remove(tid);
-				taskDeps_[childTid] = td.parentTid;
+				taskDeps_[childTid] = owner.parentTid;
 			}
 
 			host_.setupWorktreeForEdge(childTid, tid, contDef.worktree);
@@ -1722,8 +1996,7 @@ private:
 						TaskNotificationChange.preserve);
 					host_.appendTaskDiagnostic(childTid, "Handoff failed", e.msg);
 				}
-				if (hasPendingSubTask(childTid))
-					deliverFailedPendingSubTaskResult(childTid);
+				recordChildTerminal(childTid);
 			}).ignoreResult();
 		}
 	}
@@ -1867,6 +2140,8 @@ unittest
 		},
 		shuttingDown: () => false,
 		ensureProcessQueueAlive: (int tid) {
+			if (tid == 1)
+				return resolve();
 			launchCalls++;
 			if (tid == 4)
 			{
@@ -1883,13 +2158,20 @@ unittest
 		},
 		emitTaskReload: (int tid, string reason, string excludedUserUuid) {},
 		appendTaskDiagnostic: (int tid, string subject, string body) {},
+		appendAndBroadcastRecoveryDeliveryDiagnostic: (int tid, string subject, string body) {
+			assert(0, "recovery delivery must not fail in this test: " ~ subject ~ ": " ~ body);
+		},
 		taskAlive: (int tid) => false,
 		tasksShareWorkspace: (int aTid, int bTid) => true,
 		taskWorkspaceLabel: (int tid) => "local",
-		addIdleCallback: (int tid, void delegate() cb) {},
 		reactivateTask: (int tid) => resolve(),
 		sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 			string body) { return resolve(); },
+		sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
+			string cydoMeta, string nonce) {
+			assert(0, "results must reach the parent through its awaiting Task call, not a system message");
+			return resolve();
+		},
 		persistAddTaskDep: (int parentTid, int childTid) {},
 		persistRemoveTaskDep: (int parentTid, int childTid) {},
 		persistRemoveAllChildDeps: (int childTid) {},
@@ -2012,7 +2294,6 @@ unittest
 	import ae.utils.promise : reject;
 	import ae.utils.promise.await : async;
 	import core.exception : AssertError;
-	import cydo.workflow.batch.registry : ActiveBatchKey;
 	import std.algorithm.searching : canFind;
 	import std.exception : assertThrown;
 
@@ -2040,6 +2321,17 @@ unittest
 		int waitingToActiveTransitions;
 		int nextTid = 3;
 		size_t sendCalls;
+		int[] sentTids;
+		int[] acceptedPreparedTids;
+		int[] releasedTids;
+		bool failEnsure;
+		bool shuttingDown;
+		int integratorTid;
+		size_t wakeCalls;
+		int[2][] focusHints;
+		Promise!void wakeGate;
+		Promise!void preparedSendGate;
+		string[] sentBodies;
 		string sendFailure;
 		string[] diagnosticSubjects;
 		string[] diagnosticBodies;
@@ -2112,7 +2404,7 @@ unittest
 				taskWorkspaceLabel: (int tid) => "local",
 				systemKeyword: () => "SYSTEM",
 				readPromptFile: (string relativePath, string projectPath,
-					string[string] vars) => "",
+					string[string] vars) => vars["message"],
 				buildKnownSystemMessageMeta: (KnownSystemMessageKind kind,
 					string subject, string[string] vars,
 					string bodyVar) => "{}",
@@ -2122,8 +2414,14 @@ unittest
 				taskProducesCommitOutput: (string projectPath, string taskType) => false,
 				setupWorktreeForEdge: (int childTid, int parentTid,
 					WorktreeMode mode) {},
-				shuttingDown: () => false,
+				shuttingDown: () => shuttingDown,
+				effectiveCwd: (const TaskData* task) => task.projectPath,
+				integratorForTask: (int tid) => resolve(integratorTid),
 				ensureProcessQueueAlive: (int tid) {
+					wakeCalls++;
+					if (failEnsure)
+						return reject!void(new Exception("wake failed"));
+					if (wakeGate !is null) return wakeGate;
 					if (tasks[tid].status == TaskStatus.pending)
 						tasks[tid].status = TaskStatus.active;
 					return resolve();
@@ -2169,8 +2467,10 @@ unittest
 				persistTaskStartHead: (int tid, string taskStartHead) {},
 				touchTask: (int tid) {},
 				taskAlive: (int tid) => (tid in tasks) !is null,
-				broadcastFocusHint: (int fromTid, int toTid) {},
-				addIdleCallback: (int tid, void delegate() cb) {},
+				broadcastFocusHint: (int fromTid, int toTid) {
+					focusHints ~= [fromTid, toTid];
+				},
+
 				reactivateTask: (int tid) {
 					assert(tid == 2);
 					return reactivationGate;
@@ -2184,10 +2484,22 @@ unittest
 				},
 				persistRemoveAllChildDeps: (int childTid) {},
 				loadTaskDeps: () => cast(int[][int]) null,
-				broadcastTaskUpdate: (int tid) {},
+				broadcastTaskUpdate: (int tid) {
+					if (!tasks[tid].isProcessing)
+						releasedTids ~= tid;
+				},
 				broadcastTaskCreated: (TaskCreatedMessage message) {},
 				sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind,
 					string body) { return resolve(); },
+				sendPreparedKnownSystemMessage: (int tid,
+					const(ContentBlock)[] blocks, string cydoMeta, string nonce) {
+					sendCalls++;
+					sentTids ~= tid;
+					foreach (block; blocks) sentBodies ~= block.text;
+					return (preparedSendGate is null ? resolve() : preparedSendGate).then(() {
+						acceptedPreparedTids ~= tid;
+					});
+				},
 				sendAskUserQuestionPrompt: (int tid, JSONFragment questions,
 					string toolUseId) {},
 				clearAskUserQuestionPrompt: (int tid) {},
@@ -2202,568 +2514,641 @@ unittest
 		}
 	}
 
-	BatchRegistry* batchRegistryOf(WorkflowToolsBackend backend)
+	// Land releases the asker at Answer while the integrator's turn continues.
+	foreach (status; [TaskStatus.active, TaskStatus.waiting])
 	{
-		return &__traits(getMember, backend, "batchRegistry_");
-	}
-
-	BatchHandle liveHandle(BatchRegistry* registry, int childTid)
-	{
-		BatchHandle handle;
-		size_t slot;
-		assert(registry.findOwnerOfChild(childTid, handle, slot));
-		assert(slot == 0);
-		return handle;
-	}
-
-	void corruptOrderedChild(BatchRegistry* registry, BatchHandle handle)
-	{
-		auto key = ActiveBatchKey(handle.parentTid, handle.batchId);
-		__traits(getMember, *registry,
-			"activeBatches")[key].childTids[0] = 99;
-	}
-
-	void removeReverseOwner(BatchRegistry* registry, int childTid)
-	{
-		__traits(getMember, *registry,
-			"batchKeyByChildTid").remove(childTid);
-	}
-
-	void assertChildAskPreflightUntouched(BatchInvariantFixture fixture,
-		WorkflowToolsBackend backend, BatchRegistry* registry,
-		BatchHandle handle)
-	{
-		auto router = __traits(getMember, backend, "questionRouter_");
-		assert(__traits(getMember, router, "questionRoutes_").length == 0);
-		assert(__traits(getMember, router, "pendingQuestions_").length == 0);
-		assert(fixture.tasks[1].status == TaskStatus.active);
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assert(fixture.tasks[2].status == TaskStatus.active);
-		assert(fixture.tasks[2].pendingAskPromise is null);
-		assert(fixture.tasks[2].pendingAskQuestion.length == 0);
-		assert(fixture.tasks[2].pendingAskQid == 0);
-		assert(!backend.hasTaskDependency(2));
-		assert(fixture.persistAddDependencyCalls == 0);
-		assert(fixture.persistRemoveDependencyCalls == 0);
-		assert(registry.exists(handle));
-	}
-
-	// The on-exit repair must persist exactly the result transport intended to
-	// deliver before it interrupted the continuation tool call.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto switchResult = backend.handleSwitchMode("1", "keep");
-		assert(!switchResult.isError);
-		assert(fixture.tasks[1].pendingContinuation !is null);
-		assert(fixture.tasks[1].pendingContinuation.resultText == switchResult.text);
-
-		fixture = new BatchInvariantFixture;
-		backend = fixture.makeBackend();
-		auto handoffResult = backend.handleHandoff("1", "continue", "prompt");
-		assert(!handoffResult.isError);
-		assert(fixture.tasks[1].pendingContinuation !is null);
-		assert(fixture.tasks[1].pendingContinuation.resultText == handoffResult.text);
-
-		fixture = new BatchInvariantFixture;
-		backend = fixture.makeBackend();
-		auto pending = new PendingContinuation(
-			PendingContinuation.Kind.switchMode, "keep");
-		pending.repairedInterruptionUuid = "u2";
-		fixture.tasks[1].pendingContinuation = pending;
-		backend.spawnContinuation(1);
-		assert(fixture.reloadTid == 1
-			&& fixture.reloadReason == "continuation"
-			&& fixture.reloadExcludedUserUuid == "u2");
-	}
-
-	// Initial child prompt failure is observed through the real send Promise,
-	// then settles the direct Task result exactly once for its parent.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.sendFailure = "initial child prompt rejected";
-		auto backend = fixture.makeBackend();
-		auto validated = backend.handleCreateTask("1", 0, "child title",
-			"child", "child prompt");
-		assert(validated.launch !is null && !validated.error.isError);
-		auto launched = validated.launch();
-		bool settled;
-		McpResult result;
-		launched.promise.then((McpResult value) {
-			settled = true;
-			result = value;
+		auto f = new BatchInvariantFixture;
+		f.integratorTid = 2;
+		f.tasks[2].parentTid = 0;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult landed, presented, delivered;
+		b.handleLand("1", "land this").then((McpResult r) { landed = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(f.tasks[1].status == TaskStatus.waiting && landed.text.length == 0);
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		auto question = presented.text.jsonParse!QuestionResult;
+		assert(question.message == "land this");
+		f.tasks[2].status = status;
+		b.handleAnswer("2", question.qid, "landed").then((McpResult r) {
+			delivered = r;
 		}).ignoreResult();
 		drainPromiseNextTicks();
 
-		assert(fixture.sendCalls == 1 && settled && result.isError);
-		assert(fixture.tasks[launched.childTid].status == TaskStatus.failed);
-		assert(fixture.tasks[launched.childTid].resultText
-			== "initial child prompt rejected");
-		assert(!backend.hasPendingSubTask(launched.childTid));
+		assert(!landed.isError && landed.text.jsonParse!AnswerResult.message == "landed");
+		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
+		assert(f.focusHints[$ - 1] == [2, 1]);
+		b.onToolCallDelivered("1");
+		assert(f.tasks[1].status == TaskStatus.active && b.questions_.length == 0);
+		assert(f.tasks[2].status == status && f.tasks[2].isProcessing);
 	}
 
-	// An answer reminder must settle its existing Ask route when its actual
-	// submission Promise rejects; it cannot leave the child waiting forever.
+	// Shutdown leaves held results available for a later delivery attempt.
 	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.sendFailure = "answer reminder rejected";
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
 		BatchHandle handle;
 		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		bool settled;
-		McpResult result;
-		backend.handleAsk("2", "need an answer", -1).then((McpResult value) {
-			settled = true;
-			result = value;
+		assert(b.batchRegistry_.create(1, [2], handle, error), error);
+		f.tasks[2].resultText = "completed before shutdown";
+		assert(b.finalizeCompletedSubTask(2));
+		f.tasks[1].isProcessing = false;
+
+		f.shuttingDown = true;
+		assert(!b.pump(1));
+		assert(f.wakeCalls == 0 && f.sendCalls == 0);
+		assert(b.mailbox(1).events.length == 1 && b.batchRegistry_.exists(handle));
+
+		f.shuttingDown = false;
+		assert(b.pump(1));
+		assert(f.wakeCalls == 1);
+		f.shuttingDown = true;
+		drainPromiseNextTicks();
+		assert(!f.tasks[1].isProcessing && f.sendCalls == 0);
+		assert(b.mailbox(1).events.length == 1 && b.batchRegistry_.exists(handle));
+
+		f.shuttingDown = false;
+		assert(b.pump(1));
+		drainPromiseNextTicks();
+		assert(f.wakeCalls == 2 && f.sendCalls == 1);
+		assert(f.sentBodies[0].canFind("completed before shutdown"));
+		assert(b.mailbox(1).empty && !b.batchRegistry_.exists(handle));
+	}
+
+	// Shutdown after submission starts preserves the drained FIFO on rejection.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].status = TaskStatus.completed;
+		f.tasks[2].isProcessing = true;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[4] = TaskData(4, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[4].status = TaskStatus.active;
+		f.preparedSendGate = new Promise!void;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		bool firstResolved, secondResolved;
+		b.handleAsk("1", "first held question", 2).then((McpResult r) {
+			firstResolved = true;
 		}).ignoreResult();
-		assert(fixture.tasks[2].pendingAskQid > 0);
-		Promise!BatchSignal questionEvent;
-		assert(registry.waitOne(handle, questionEvent, error), error);
-		questionEvent.then((BatchSignal signal) {}).ignoreResult();
-		drainPromiseNextTicks();
-		backend.sendPendingChildAnswerReminder(1);
-		drainPromiseNextTicks();
-
-		assert(fixture.sendCalls == 1 && settled && result.isError);
-		assert(result.text.canFind("Failed to submit sub-task answer reminder"));
-		assert(fixture.tasks[2].pendingAskPromise is null
-			&& fixture.tasks[2].pendingAskQid == 0);
-		auto router = __traits(getMember, backend, "questionRouter_");
-		assert(__traits(getMember, router, "questionRoutes_").length == 0
-			&& __traits(getMember, router, "pendingQuestions_").length == 0);
-	}
-
-	// A keep-context continuation owns only its own failed task and diagnostic
-	// when the actual mode-switch send is rejected.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.sendFailure = "keep-context submission rejected";
-		auto backend = fixture.makeBackend();
-		fixture.tasks[1].pendingContinuation = new PendingContinuation(
-			PendingContinuation.Kind.switchMode, "keep");
-		backend.spawnContinuation(1);
-		drainPromiseNextTicks();
-
-		assert(fixture.sendCalls == 1);
-		assert(fixture.tasks[1].status == TaskStatus.failed
-			&& fixture.tasks[1].resultText == "keep-context submission rejected");
-		assert(fixture.diagnosticSubjects == ["Continuation failed"]
-			&& fixture.diagnosticBodies == ["keep-context submission rejected"]);
-	}
-
-	// Handoff moves its pending Task topology before submission. A rejected
-	// successor send fails and settles that moved owner without rolling it back.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.sendFailure = "handoff submission rejected";
-		auto backend = fixture.makeBackend();
-		auto pending = new Promise!McpResult;
-		bool settled;
-		McpResult result;
-		pending.then((McpResult value) {
-			settled = true;
-			result = value;
+		assert(b.batchRegistry_.create(2, [4], handle, error), error);
+		f.tasks[4].resultText = "held batch result";
+		assert(b.finalizeCompletedSubTask(4));
+		b.handleAsk("3", "second held question", 2).then((McpResult r) {
+			secondResolved = true;
 		}).ignoreResult();
-		__traits(getMember, backend, "pendingSubTasks_")[1] = pending;
-		__traits(getMember, backend, "taskDeps_")[1] = 0;
-		auto accepted = backend.handleHandoff("1", "continue", "handoff prompt");
-		assert(!accepted.isError);
-		backend.spawnContinuation(1);
+		auto held = b.mailbox(2).events.dup;
+		assert(held.length == 3);
+		f.tasks[2].isProcessing = false;
+		assert(b.pump(2));
 		drainPromiseNextTicks();
+		assert(b.mailbox(2).empty && f.sentTids == [2]);
 
-		assert(fixture.sendCalls == 1 && settled && result.isError);
-		assert(fixture.tasks[1].status == TaskStatus.completed);
-		assert(fixture.tasks[3].status == TaskStatus.failed
-			&& fixture.tasks[3].resultText == "handoff submission rejected");
-		assert(!backend.hasPendingSubTask(1)
-			&& !backend.hasPendingSubTask(3));
-		assert(!backend.hasTaskDependency(1) && backend.hasTaskDependency(3));
-		assert(fixture.diagnosticSubjects == ["Handoff failed"]
-			&& fixture.diagnosticBodies == ["handoff submission rejected"]);
-	}
-
-	// A missing unfinished batchKeyByChildTid entry aborts the ordinary Task
-	// callback before enqueue/consume can change its result state.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto childResult = new Promise!McpResult;
-		auto batchResult = async({
-			return backend.registerBatchAndAwait("1",
-				[LaunchedTask(2, childResult)]).await;
-		});
-		batchResult.ignoreResult();
-
-		auto registry = batchRegistryOf(backend);
-		auto handle = liveHandle(registry, 2);
-		auto key = ActiveBatchKey(handle.parentTid, handle.batchId);
-		removeReverseOwner(registry, 2);
-
-		childResult.fulfill(McpResult("done", false));
-		assertThrown!AssertError(drainPromiseNextTicks());
-		auto batch = key in __traits(getMember, *registry, "activeBatches");
-		assert(batch !is null);
-		assert((*batch).results[0].text.length == 0);
-		assert(!(*batch).done[0]);
-		assert((*batch).completed == 0);
-		assert(__traits(getMember, *registry, "activeBatches").length == 1);
-		auto ids = 1 in __traits(getMember, *registry,
-			"batchIdsByParentTid");
-		assert(ids !is null && ids.length == 1 && (*ids)[0] == handle.batchId);
-		assert((2 in __traits(getMember, *registry,
-			"batchKeyByChildTid")) is null);
-	}
-
-	// A local ordered-child/captured-slot mismatch still aborts the real
-	// follow-up pending-subtask completion callback.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[2].status = TaskStatus.completed;
-		auto backend = fixture.makeBackend();
-		backend.handleAsk("1", "follow up", 2).ignoreResult();
-		assert(fixture.persistAddDependencyCalls == 1);
-
-		auto registry = batchRegistryOf(backend);
-		auto handle = liveHandle(registry, 2);
-		corruptOrderedChild(registry, handle);
-
-		auto pending = 2 in __traits(getMember, backend,
-			"pendingSubTasks_");
-		assert(pending !is null);
-		(*pending).fulfill(McpResult("follow-up result", false));
-		assertThrown!AssertError(drainPromiseNextTicks());
-	}
-
-	// Child Ask treats a missing unfinished batchKeyByChildTid entry as an
-	// assertion before it creates a route or changes task state.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		removeReverseOwner(registry, 2);
-
-		assertThrown!AssertError(backend.handleAsk("2", "need an answer", -1));
-		assertChildAskPreflightUntouched(fixture, backend, registry, handle);
-	}
-
-	// A dangling batchKeyByChildTid target also asserts before child-to-parent
-	// Ask can return an internal MCP result or start a route.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		__traits(getMember, *registry, "batchKeyByChildTid")[2] =
-			ActiveBatchKey(999, 999);
-
-		assertThrown!AssertError(backend.handleAsk("2", "need an answer", -1));
-		assertChildAskPreflightUntouched(fixture, backend, registry, handle);
-	}
-
-	// A live batch that does not contain the child is not a foreign Ask owner;
-	// it is a globally corrupt batchKeyByChildTid entry.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		BatchHandle wrong;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		assert(registry.create(1, [3], wrong, error), error);
-		__traits(getMember, *registry, "batchKeyByChildTid")[2] =
-			ActiveBatchKey(wrong.parentTid, wrong.batchId);
-
-		assertThrown!AssertError(backend.handleAsk("2", "need an answer", -1));
-		assertChildAskPreflightUntouched(fixture, backend, registry, handle);
-		assert(registry.exists(wrong));
-	}
-
-	// A reverse owner cannot point at a completed historical slot. It must
-	// assert before child-to-parent Ask starts its route.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle completed;
-		string error;
-		assert(registry.create(1, [2], completed, error), error);
-		auto consumed = registry.consume(completed,
-			BatchSignal.childDone(completed.batchId, 0, 2,
-				McpResult("completed", false)),
-			(int childTid, int qid) => false, error);
-		assert(consumed.kind == BatchConsumeKind.childDone);
-		assert(error.length == 0);
-		auto completedBatch = ActiveBatchKey(completed.parentTid,
-			completed.batchId) in __traits(getMember, *registry,
-				"activeBatches");
-		assert(completedBatch !is null && (*completedBatch).done[0]);
-		__traits(getMember, *registry, "batchKeyByChildTid")[2] =
-			ActiveBatchKey(completed.parentTid, completed.batchId);
-
-		assertThrown!AssertError(backend.handleAsk("2", "need an answer", -1));
-		assertChildAskPreflightUntouched(fixture, backend, registry, completed);
-	}
-
-	// A missing parent index asserts before post-response cleanup.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[1].status = TaskStatus.waiting;
-		auto backend = fixture.makeBackend();
-		__traits(getMember, backend, "taskDeps_")[2] = 1;
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		__traits(getMember, *registry, "batchIdsByParentTid").remove(1);
-
-		assertThrown!AssertError(backend.onToolCallDelivered("1"));
-		assert(fixture.persistRemoveDependencyCalls == 0);
-		assert(backend.hasTaskDependency(2));
-		assert(fixture.tasks[1].status == TaskStatus.waiting);
-		assert(fixture.waitingToActiveTransitions == 0);
-		assert(registry.exists(handle));
-	}
-
-	// A missing batchKeyByChildTid entry asserts in parentHasLiveBatches before
-	// post-response cleanup can remove a dependency or reactivate the parent.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[1].status = TaskStatus.waiting;
-		auto backend = fixture.makeBackend();
-		__traits(getMember, backend, "taskDeps_")[2] = 1;
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		removeReverseOwner(registry, 2);
-
-		assertThrown!AssertError(backend.onToolCallDelivered("1"));
-		assert(fixture.persistRemoveDependencyCalls == 0);
-		assert(backend.hasTaskDependency(2));
-		assert(fixture.tasks[1].status == TaskStatus.waiting);
-		assert(fixture.waitingToActiveTransitions == 0);
-		assert(registry.exists(handle));
-	}
-
-	// A partial parent index asserts before post-response cleanup.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[1].status = TaskStatus.waiting;
-		auto backend = fixture.makeBackend();
-		__traits(getMember, backend, "taskDeps_")[2] = 1;
-		__traits(getMember, backend, "taskDeps_")[3] = 1;
-		auto registry = batchRegistryOf(backend);
-		BatchHandle visible;
-		BatchHandle omitted;
-		string error;
-		assert(registry.create(1, [2], visible, error), error);
-		assert(registry.create(1, [3], omitted, error), error);
-		__traits(getMember, *registry, "batchIdsByParentTid")[1] =
-			[visible.batchId];
-
-		assertThrown!AssertError(backend.onToolCallDelivered("1"));
-		assert(fixture.persistRemoveDependencyCalls == 0);
-		assert(backend.hasTaskDependency(2));
-		assert(backend.hasTaskDependency(3));
-		assert(fixture.tasks[1].status == TaskStatus.waiting);
-		assert(fixture.waitingToActiveTransitions == 0);
-		assert(registry.exists(visible));
-		assert(registry.exists(omitted));
-	}
-
-	// Normal delivery removes every dependency once and reactivates the parent.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[1].status = TaskStatus.waiting;
-		auto backend = fixture.makeBackend();
-		__traits(getMember, backend, "taskDeps_")[2] = 1;
-		__traits(getMember, backend, "taskDeps_")[3] = 1;
-
-		backend.onToolCallDelivered("1");
-		assert(fixture.persistRemoveDependencyCalls == 2);
-		assert(fixture.removedChildren.canFind(2));
-		assert(fixture.removedChildren.canFind(3));
-		assert(!backend.hasTaskDependency(2));
-		assert(!backend.hasTaskDependency(3));
-		assert(fixture.tasks[1].status == TaskStatus.active);
-		assert(fixture.waitingToActiveTransitions == 1);
-
-		backend.onToolCallDelivered("1");
-		assert(fixture.persistRemoveDependencyCalls == 2);
-		assert(fixture.waitingToActiveTransitions == 1);
-	}
-
-	// A real live batch continues to defer dependency cleanup.
-	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[1].status = TaskStatus.waiting;
-		auto backend = fixture.makeBackend();
-		__traits(getMember, backend, "taskDeps_")[2] = 1;
-		auto registry = batchRegistryOf(backend);
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-
-		backend.onToolCallDelivered("1");
-		assert(fixture.persistRemoveDependencyCalls == 0);
-		assert(backend.hasTaskDependency(2));
-		assert(fixture.tasks[1].status == TaskStatus.waiting);
-	}
-
-	// Handoff distinguishes absence, a real pending question, and corruption.
-	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		assert(!backend.hasPendingChildQuestion(1));
-
-		BatchHandle handle;
-		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		backend.handleAsk("2", "need an answer", -1).ignoreResult();
-		assert(backend.hasPendingChildQuestion(1));
-		auto handoff = backend.handleHandoff(
-			"1", "continue", "handoff prompt");
-		assert(handoff.isError);
-		assert(handoff.text.canFind("Handoff cannot continue"));
-
-		Promise!BatchSignal questionEvent;
-		assert(registry.waitOne(handle, questionEvent, error), error);
-		questionEvent.then((BatchSignal signal) {}).ignoreResult();
+		f.shuttingDown = true;
+		f.preparedSendGate.reject(new Exception("shutdown during submission"));
 		drainPromiseNextTicks();
+		assert(f.acceptedPreparedTids.length == 0);
+		assert(!f.tasks[2].isProcessing && f.tasks[2].status == TaskStatus.completed);
+		assert(!firstResolved && !secondResolved);
+		assert(b.questions_.length == 2 && b.batchRegistry_.exists(handle));
+		assert(b.mailbox(2).events == held);
 
-		__traits(getMember, *registry, "batchIdsByParentTid").remove(1);
-		assertThrown!AssertError(backend.hasPendingChildQuestion(1));
-		assertThrown!AssertError(backend.handleHandoff(
-			"1", "continue", "handoff prompt"));
-		assert(registry.exists(handle));
+		f.shuttingDown = false;
+		f.preparedSendGate = null;
+		assert(b.pump(2));
+		drainPromiseNextTicks();
+		assert(f.acceptedPreparedTids == [2] && f.sentBodies.length == 6);
+		assert(f.sentBodies[3 .. $] == f.sentBodies[0 .. 3]);
+		assert(f.sentBodies[3].canFind("first held question"));
+		assert(f.sentBodies[4].canFind("held batch result"));
+		assert(f.sentBodies[5].canFind("second held question"));
+		assert(!firstResolved && !secondResolved);
+		assert(b.mailbox(2).empty && !b.batchRegistry_.exists(handle));
+		assert(!b.pump(2));
 	}
 
-	// A completed old slot cannot smuggle a dangling alleged later owner
-	// through the parent-wide Handoff scan.
+	// A completed child's follow-up releases the parent before the child idles.
 	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle oldHandle;
-		string error;
-		assert(registry.create(1, [2, 3], oldHandle, error), error);
-		auto consumed = registry.consume(oldHandle,
-			BatchSignal.childDone(oldHandle.batchId, 0, 2,
-				McpResult("first", false)),
-			(int childTid, int qid) => false, error);
-		assert(consumed.kind == BatchConsumeKind.childDone);
-		assert(error.length == 0);
-		auto oldBatch = ActiveBatchKey(oldHandle.parentTid, oldHandle.batchId)
-			in __traits(getMember, *registry, "activeBatches");
-		assert(oldBatch !is null);
-		assert((*oldBatch).done[0] && !(*oldBatch).done[1]);
-		__traits(getMember, *registry, "batchKeyByChildTid")[2] =
-			ActiveBatchKey(999, 999);
+		import ae.utils.statequeue : StateQueue;
+		import cydo.domain.tasks.model : ProcessState;
+		import cydo.workflow.sessions.task_runner : TaskSessionRunner, TaskSessionRunnerHost;
 
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assert(fixture.tasks[1].status == TaskStatus.active);
-		assertThrown!AssertError(backend.handleHandoff(
-			"1", "continue", "handoff prompt"));
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assert(fixture.tasks[1].status == TaskStatus.active);
-		assert(registry.exists(oldHandle));
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].status = TaskStatus.completed;
+		f.tasks[2].relationType = "subtask";
+		auto b = f.makeBackend();
+		McpResult answered, delivered;
+		b.handleAsk("1", "follow up", 2).then((McpResult r) { answered = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		auto qid = b.presentedQuestionFor(2);
+		assert(qid > 0);
+		assert(f.sentBodies.length == 1 && f.sentBodies[0].canFind(followUpFromParentSubject(qid)));
+		assert(f.tasks[2].isProcessing && answered.text.length == 0);
+		f.tasks[2].status = TaskStatus.active;
+		b.handleAnswer("2", qid, "follow-up answer").then((McpResult r) {
+			delivered = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!answered.isError && answered.text.jsonParse!AnswerResult.message == "follow-up answer");
+		assert(!delivered.isError && delivered.text.jsonParse!AnswerResult.status == "delivered");
+		assert(f.tasks[2].status == TaskStatus.active && f.tasks[2].isProcessing);
+
+		auto td = &f.tasks[2];
+		td.processQueue = new StateQueue!ProcessState(
+			(ProcessState state) => resolve(state), ProcessState.Alive);
+		auto runner = new TaskSessionRunner(TaskSessionRunnerHost(
+			persistResultText: (int tid, string result) {},
+			transitionTaskFrom: (int tid, TaskStatus[] from, TaskStatus to,
+				TaskNotificationChange notification) {
+				assert(from.canFind(f.tasks[tid].status));
+				f.tasks[tid].status = to;
+			},
+		));
+		td.isProcessing = false;
+		runner.completeIdleSubtask(td);
+		assert(td.status == TaskStatus.completed && td.processQueue.goalState == ProcessState.Dead);
 	}
 
-	// Handoff validates live child ownership before treating a question as absent.
+	// A grandchild question reaches the grandparent's Task carrier.
 	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].parentTid = 2;
+		f.tasks[3].status = TaskStatus.active;
+		auto b = f.makeBackend();
+		bool grandparentDone, parentDone, askDone, answerDone;
+		McpResult grandparentResult, parentResult, askResult, answerResult;
+		b.registerBatchAndAwait("1", [LaunchedTask(2)]).then((McpResult r) {
+			grandparentDone = true; grandparentResult = r;
+		}).ignoreResult();
+		b.registerBatchAndAwait("2", [LaunchedTask(3)]).then((McpResult r) {
+			parentDone = true; parentResult = r;
+		}).ignoreResult();
+		b.handleAsk("3", "skip-level question", 1).then((McpResult r) {
+			askDone = true; askResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(grandparentDone && !parentDone && !askDone);
+		auto q = grandparentResult.text.jsonParse!QuestionResult;
+		assert(q.tid == 3 && q.qid > 0);
+		b.handleAnswer("1", q.qid, "reply").then((McpResult r) {
+			answerDone = true; answerResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(askDone && !answerDone);
+		assert(askResult.text.jsonParse!AnswerResult.qid == q.qid);
+		f.tasks[3].resultText = "grandchild done";
+		assert(b.finalizeCompletedSubTask(3));
+		drainPromiseNextTicks();
+		assert(parentDone && !answerDone);
+		assert(parentResult.text.jsonParse!BatchResultEnvelope.tasks[0]
+			.json.jsonParse!TaskResult.tid == 3);
+		f.tasks[2].resultText = "child done";
+		assert(b.finalizeCompletedSubTask(2));
+		drainPromiseNextTicks();
+		assert(answerDone);
+		assert(answerResult.text.jsonParse!BatchResultEnvelope.tasks[0]
+			.json.jsonParse!TaskResult.tid == 2);
+	}
+
+	// A presented question is cancelled when its asker ends.
+	{
+		auto f = new BatchInvariantFixture;
+		auto b = f.makeBackend();
+		McpResult askResult, presented, late;
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		b.handleAsk("1", "question", 2).then((McpResult r) {
+			askResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(presented.text.length > 0);
+		b.onTaskTerminal(1);
+		drainPromiseNextTicks();
+		assert(askResult.isError);
+		b.handleAnswer("2", presented.text.jsonParse!QuestionResult.qid,
+			"late").then((McpResult r) { late = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(late.isError && late.text.canFind("cancelled"));
+	}
+
+	// Held question and batch events remain FIFO across carrier calls.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("3", "first", 1).ignoreResult();
 		BatchHandle handle;
 		string error;
-		assert(registry.create(1, [2], handle, error), error);
-		backend.handleAsk("2", "need an answer", -1).ignoreResult();
-		assert(backend.hasPendingChildQuestion(1));
-		auto router = __traits(getMember, backend, "questionRouter_");
-		assert(__traits(getMember, router, "questionRoutes_").length == 1);
-		assert(__traits(getMember, router, "pendingQuestions_").length == 1);
-		Promise!BatchSignal questionEvent;
-		assert(registry.waitOne(handle, questionEvent, error), error);
-		questionEvent.then((BatchSignal signal) {}).ignoreResult();
+		assert(b.batchRegistry_.create(1, [2], handle, error));
+		f.tasks[2].resultText = "done";
+		assert(b.finalizeCompletedSubTask(2));
+		McpResult first, second;
+		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
+		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
 		drainPromiseNextTicks();
-
-		corruptOrderedChild(registry, handle);
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assertThrown!AssertError(backend.handleHandoff(
-			"1", "continue", "handoff prompt"));
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assert(fixture.tasks[2].status == TaskStatus.waiting);
-		assert(fixture.tasks[2].pendingAskPromise !is null);
-		assert(fixture.tasks[2].pendingAskQuestion == "need an answer");
-		assert(fixture.tasks[2].pendingAskQid > 0);
-		assert(__traits(getMember, router, "questionRoutes_").length == 1);
-		assert(__traits(getMember, router, "pendingQuestions_").length == 1);
-		assert(registry.exists(handle));
+		assert(first.text.jsonParse!QuestionResult.status == "question");
+		assert(second.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
 	}
 
-	// A partial parent index cannot hide a pending question during Handoff.
+	// Answer acknowledges immediately without an obligation and carries while
+	// the answerer still owns a batch.
 	{
-		auto fixture = new BatchInvariantFixture;
-		fixture.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
-		fixture.tasks[3].taskType = "child";
-		fixture.tasks[3].agentName = "fake";
-		fixture.tasks[3].parentTid = 1;
-		fixture.tasks[3].status = TaskStatus.active;
-		auto backend = fixture.makeBackend();
-		auto registry = batchRegistryOf(backend);
-		BatchHandle visible;
-		BatchHandle omitted;
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "direct", 2).ignoreResult();
+		McpResult presented, delivered;
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		auto qid = presented.text.jsonParse!QuestionResult.qid;
+		b.handleAnswer("2", qid, "reply").then((McpResult r) {
+			delivered = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(delivered.text.jsonParse!AnswerResult.status == "delivered");
+		assert(delivered.text.jsonParse!AnswerResult.qid == qid);
+	}
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[1].isProcessing = true;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		BatchHandle handle;
 		string error;
-		assert(registry.create(1, [2], visible, error), error);
-		assert(registry.create(1, [3], omitted, error), error);
-		backend.handleAsk("3", "need an answer", -1).ignoreResult();
-		assert(backend.hasPendingChildQuestion(1));
-
-		Promise!BatchSignal questionEvent;
-		assert(registry.waitOne(omitted, questionEvent, error), error);
-		questionEvent.then((BatchSignal signal) {}).ignoreResult();
+		assert(b.batchRegistry_.create(2, [3], handle, error));
+		b.handleAsk("1", "blocked", 2).ignoreResult();
+		McpResult presented, answerResult;
+		bool answerDone;
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
 		drainPromiseNextTicks();
-
-		__traits(getMember, *registry, "batchIdsByParentTid")[1] =
-			[visible.batchId];
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assertThrown!AssertError(backend.hasPendingChildQuestion(1));
-		assertThrown!AssertError(backend.handleHandoff(
-			"1", "continue", "handoff prompt"));
-		assert(fixture.tasks[1].pendingContinuation is null);
-		assert(registry.exists(visible));
-		assert(registry.exists(omitted));
+		b.handleAnswer("2", presented.text.jsonParse!QuestionResult.qid,
+			"reply").then((McpResult r) {
+			answerDone = true; answerResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!answerDone);
+		f.tasks[3].resultText = "done";
+		assert(b.finalizeCompletedSubTask(3));
+		drainPromiseNextTicks();
+		assert(answerDone && answerResult.text.jsonParse!BatchResultEnvelope.tasks.length == 1);
 	}
 
-	// Local slotByChildTid corruption must still escape through the real Promise
-	// scheduler.
+	// A busy answerer can answer only after the idle pump delivers the question.
 	{
-		auto fixture = new BatchInvariantFixture;
-		auto backend = fixture.makeBackend();
-		auto childResult = new Promise!McpResult;
-		auto batchResult = async({
-			return backend.registerBatchAndAwait("1",
-				[LaunchedTask(2, childResult)]).await;
-		});
-		batchResult.ignoreResult();
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		auto qid = b.nextQid_;
+		McpResult askResult, earlyAnswer, answerResult;
+		b.handleAsk("1", "held question", 2).then((McpResult r) {
+			askResult = r;
+		}).ignoreResult();
+		b.handleAnswer("2", qid, "early").then((McpResult r) {
+			earlyAnswer = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(earlyAnswer.isError && earlyAnswer.text.canFind("Unknown question ID"));
+		assert(askResult.text.length == 0 && f.sendCalls == 0);
 
-		auto registry = batchRegistryOf(backend);
-		auto handle = liveHandle(registry, 2);
-		auto key = ActiveBatchKey(handle.parentTid, handle.batchId);
-		__traits(getMember, *registry,
-			"activeBatches")[key].slotByChildTid.remove(2);
+		f.tasks[2].isProcessing = false;
+		assert(b.pump(2));
+		drainPromiseNextTicks();
+		f.tasks[2].isProcessing = false;
+		assert(!b.pump(2));
+		drainPromiseNextTicks();
+		assert(f.sentTids == [2] && f.sentBodies.length == 1);
+		assert(f.sentBodies[0].canFind("held question"));
 
-		childResult.fulfill(McpResult("done", false));
-		assertThrown!AssertError(drainPromiseNextTicks());
+		b.handleAnswer("2", qid, "reply").then((McpResult r) {
+			answerResult = r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(!answerResult.isError);
+		assert(answerResult.text.jsonParse!AnswerResult.status == "delivered");
+		assert(askResult.text.jsonParse!AnswerResult.qid == qid);
+	}
+
+	// Idle pump sends held question and batch in one accepted message.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		b.handleAsk("3", "held question", 1).ignoreResult();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error));
+		f.tasks[2].resultText = "held result";
+		assert(b.finalizeCompletedSubTask(2));
+		assert(f.sendCalls == 0);
+		f.tasks[1].isProcessing = false;
+		f.tasks[1].hasPendingQuestion = true;
+		assert(!b.pump(1));
+		f.tasks[1].hasPendingQuestion = false;
+		assert(b.pump(1));
+		drainPromiseNextTicks();
+		assert(f.sendCalls == 1 && f.sentBodies.length == 2);
+		assert(f.sentBodies[0].canFind("held question"));
+		assert(f.sentBodies[1].canFind("held result"));
+	}
+
+	// A question from the parent counts once presented, while a held
+	// question does not become an idle reminder.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult presented;
+		b.handleAsk("1", "parent asks child", 2).ignoreResult();
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(presented.text.jsonParse!QuestionResult.status == "question");
+		assert(b.hasPendingChildQuestion(2));
+		b.handleAsk("3", "held question", 2).ignoreResult();
+		drainPromiseNextTicks();
+		assert(b.hasPendingChildQuestion(2));
+		b.onTaskTerminal(1);
+		assert(!b.hasPendingChildQuestion(2));
+	}
+
+	// The answerer's exit deletes a cancelled question without waking the
+	// asker that already terminated.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult presented;
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		b.handleAsk("1", "question", 2).ignoreResult();
+		drainPromiseNextTicks();
+		auto qid = presented.text.jsonParse!QuestionResult.qid;
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		assert((qid in b.questions_) !is null);
+		assert(b.questions_[qid].cancelled);
+		auto sendCalls = f.sendCalls;
+		f.tasks[2].status = TaskStatus.failed;
+		b.onTaskTerminal(2);
+		drainPromiseNextTicks();
+		assert((qid in b.questions_) is null);
+		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
+		assert(f.sendCalls == sendCalls);
+		assert(f.tasks[1].status == TaskStatus.failed);
+	}
+
+	// A question stays held during a terminal target's wake. If the asker
+	// ends first, neither a successful nor a failed wake presents it.
+	foreach (rejectWake; [false, true])
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].status = TaskStatus.completed;
+		f.wakeGate = new Promise!void;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "question during wake", 2).ignoreResult();
+		assert(b.mailbox(2).events.length == 1);
+		assert(f.tasks[2].isProcessing);
+		assert(!b.pump(2));
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		assert(b.questions_.length == 0 && b.mailbox(2).empty);
+		if (rejectWake)
+			f.wakeGate.reject(new Exception("wake failed"));
+		else
+			f.wakeGate.fulfill();
+		drainPromiseNextTicks();
+		assert(!f.tasks[2].isProcessing);
+		assert(f.sendCalls == 0 && b.mailbox(1).empty);
+	}
+
+	// A question cancelled after the wake but before send confirmation is
+	// discarded when delivery fails, without failing it back to its asker.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].status = TaskStatus.completed;
+		f.wakeGate = new Promise!void;
+		f.preparedSendGate = new Promise!void;
+		auto b = f.makeBackend();
+		b.handleAsk("1", "question during send", 2).ignoreResult();
+		f.wakeGate.fulfill();
+		drainPromiseNextTicks();
+		assert(f.sendCalls == 1 && b.mailbox(2).empty);
+		f.tasks[1].status = TaskStatus.failed;
+		b.onTaskTerminal(1);
+		assert(b.questions_[1].cancelled);
+		f.preparedSendGate.reject(new Exception("send failed"));
+		drainPromiseNextTicks();
+		assert(b.questions_.length == 0);
+		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
+		assert(f.sentTids == [2]);
+		assert(!f.tasks[2].isProcessing);
+	}
+
+	// A failed wake still returns one error to a live asker.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[2].status = TaskStatus.completed;
+		f.wakeGate = new Promise!void;
+		auto b = f.makeBackend();
+		McpResult failed;
+		b.handleAsk("1", "live question", 2).then((McpResult r) {
+			failed = r;
+		}).ignoreResult();
+		f.wakeGate.reject(new Exception("wake failed"));
+		drainPromiseNextTicks();
+		assert(failed.isError && failed.text.canFind("wake failed"));
+		assert(b.questions_.length == 0 && b.mailbox(1).empty);
+	}
+
+	// A task that ends during startup releases its wake once and keeps its batch.
+	foreach (terminalStatus; [TaskStatus.failed, TaskStatus.completed])
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[4] = TaskData(4, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[4].status = TaskStatus.active;
+		f.tasks[2].isProcessing = true;
+		f.wakeGate = new Promise!void;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(2, [4], handle, error));
+		f.tasks[4].resultText = "batch result";
+		assert(b.finalizeCompletedSubTask(4));
+		f.tasks[2].isProcessing = false;
+
+		McpResult[] first, second;
+		b.handleAsk("1", "question during startup", 2).then((McpResult r) {
+			first ~= r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(f.tasks[2].isProcessing && f.sendCalls == 0);
+
+		f.tasks[2].status = terminalStatus;
+		b.onTaskTerminal(2);
+		f.wakeGate.reject(new Exception("startup failed"));
+		drainPromiseNextTicks();
+		assert(first.length == 1 && first[0].isError
+			&& first[0].text.canFind("Session ended"));
+		assert(!f.tasks[2].isProcessing, "Failed wake left the answerer processing");
+		assert(f.releasedTids == [2], "Failed wake must publish the release once");
+		assert(b.mailbox(2).events.length == 1);
+		assert(b.mailbox(2).events[0].kind == MailboxEvent.Kind.batch);
+		assert(b.mailbox(2).events[0].batchId == handle.batchId);
+
+		f.failEnsure = true;
+		b.handleAsk("3", "question after startup failure", 2).then((McpResult r) {
+			second ~= r;
+		}).ignoreResult();
+		drainPromiseNextTicks();
+		assert(second.length == 1 && second[0].isError
+			&& second[0].text.canFind("wake failed"));
+		assert(f.sendCalls == 0);
+		assert(b.questions_.length == 0);
+		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
+		assert(b.mailbox(3).empty && !b.mailbox(3).hasWaiter);
+		assert(b.mailbox(2).events.length == 1 && !b.mailbox(2).hasWaiter);
+		assert(b.mailbox(2).events[0].kind == MailboxEvent.Kind.batch);
+		assert(b.mailbox(2).events[0].batchId == handle.batchId);
+	}
+
+	// A target ending during send fails the drained asks and rebuilds the batch once.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[4] = TaskData(4, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[4].status = TaskStatus.active;
+		f.tasks[2].status = TaskStatus.completed;
+		f.tasks[2].isProcessing = true;
+		f.wakeGate = new Promise!void;
+		f.preparedSendGate = new Promise!void;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(2, [4], handle, error));
+		f.tasks[4].resultText = "batch result";
+		assert(b.finalizeCompletedSubTask(4));
+		f.tasks[2].isProcessing = false;
+
+		McpResult[] first, second;
+		b.handleAsk("1", "first drained question", 2).then((McpResult r) {
+			first ~= r;
+		}).ignoreResult();
+		b.handleAsk("3", "second drained question", 2).then((McpResult r) {
+			second ~= r;
+		}).ignoreResult();
+		f.tasks[2].status = TaskStatus.active;
+		f.wakeGate.fulfill();
+		drainPromiseNextTicks();
+		assert(f.sentTids == [2] && f.sentBodies.length == 3);
+		assert(b.mailbox(2).empty);
+		assert(first.length == 0 && second.length == 0);
+
+		f.tasks[2].status = TaskStatus.failed;
+		b.onTaskTerminal(2);
+		f.preparedSendGate.reject(new Exception("send failed"));
+		drainPromiseNextTicks();
+		assert(first.length == 1 && first[0].isError
+			&& first[0].text.canFind("Session ended"));
+		assert(second.length == 1 && second[0].isError
+			&& second[0].text.canFind("Session ended"));
+		assert(b.questions_.length == 0);
+		assert(b.mailbox(1).empty && !b.mailbox(1).hasWaiter);
+		assert(b.mailbox(3).empty && !b.mailbox(3).hasWaiter);
+		assert(b.mailbox(2).events.length == 1);
+		assert(b.mailbox(2).events[0].kind == MailboxEvent.Kind.batch);
+		assert(b.mailbox(2).events[0].batchId == handle.batchId);
+	}
+
+	// Terminal answerer fails both presented and still-held questions.
+	{
+		auto f = new BatchInvariantFixture;
+		foreach (tid; [3, 4])
+		{
+			f.tasks[tid] = TaskData(tid, "local", "/tmp/cydo-batch-invariants");
+			f.tasks[tid].status = TaskStatus.active;
+			f.tasks[tid].isProcessing = true;
+		}
+		f.tasks[2].isProcessing = true;
+		auto b = f.makeBackend();
+		McpResult first, second, presented;
+		b.handleAsk("3", "first", 2).then((McpResult r) { first = r; }).ignoreResult();
+		b.awaitEvent(2).then((McpResult r) { presented = r; }).ignoreResult();
+		b.handleAsk("4", "second", 2).then((McpResult r) { second = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(presented.text.jsonParse!QuestionResult.message == "first");
+		b.onTaskTerminal(2);
+		drainPromiseNextTicks();
+		assert(first.isError && second.isError);
+		assert(first.text.canFind("Question 1") && second.text.canFind("Question 2"));
+		assert(b.questions_.length == 0);
+	}
+
+	// An unconfirmed batch is rebuilt after MCP transport failure.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[1].isProcessing = true;
+		auto b = f.makeBackend();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error));
+		f.tasks[2].resultText = "result";
+		assert(b.finalizeCompletedSubTask(2));
+		McpResult first, second;
+		b.awaitEvent(1).then((McpResult r) { first = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		f.shuttingDown = true;
+		b.onMcpDeliveryFailed("1");
+		assert(b.mailbox(1).events.length == 1 && f.wakeCalls == 0);
+		f.shuttingDown = false;
+		b.awaitEvent(1).then((McpResult r) { second = r; }).ignoreResult();
+		drainPromiseNextTicks();
+		assert(first.text == second.text && b.mailbox(1).empty);
+		b.onToolCallDelivered("1");
+		assert(!b.batchRegistry_.hasBatches(1));
+	}
+
+	// A terminal target that cannot be re-woken fails the question back to
+	// its asker while retaining other mailbox work.
+	{
+		auto f = new BatchInvariantFixture;
+		f.tasks[3] = TaskData(3, "local", "/tmp/cydo-batch-invariants");
+		f.tasks[3].status = TaskStatus.active;
+		f.tasks[3].isProcessing = true;
+		f.tasks[1].status = TaskStatus.completed;
+		f.tasks[1].isProcessing = true;
+		f.failEnsure = true;
+		auto b = f.makeBackend();
+		McpResult askResult;
+		b.handleAsk("3", "wake question", 1).then((McpResult r) {
+			askResult = r;
+		}).ignoreResult();
+		BatchHandle handle;
+		string error;
+		assert(b.batchRegistry_.create(1, [2], handle, error));
+		f.tasks[2].resultText = "batch result";
+		assert(b.finalizeCompletedSubTask(2));
+		f.tasks[1].isProcessing = false;
+		assert(b.pump(1));
+		drainPromiseNextTicks();
+		assert(askResult.isError && askResult.text.canFind("wake failed"));
+		assert(b.questions_.length == 0);
+		assert(b.mailbox(1).events.length == 1);
+		assert(b.mailbox(1).events[0].kind == MailboxEvent.Kind.batch);
+		assert(!f.tasks[1].isProcessing);
 	}
 }
 

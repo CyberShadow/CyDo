@@ -204,7 +204,6 @@ import ae.utils.promise : Promise;
 struct LaunchedTask
 {
 	int childTid;
-	Promise!McpResult promise;
 }
 
 /// Result of validating a single Task spec.
@@ -466,6 +465,5 @@ unittest
 	assert(payload.worktree is null);
 	assert(payload.note is null);
 	assert(payload.tid == 0);
-	assert(payload.qid == 0);
 	assert(payload.commits is null);
 }

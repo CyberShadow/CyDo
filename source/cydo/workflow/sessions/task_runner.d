@@ -193,16 +193,15 @@ struct TaskSessionRunnerHost
 	void delegate(int tid, string translated) broadcastAppendedTaskEvent;
 	void delegate(int tid) publishTaskSnapshot;
 	void delegate(int tid) onTaskTurnCompletedAlive;
-	bool delegate(int tid) drainIdleCallbacksForTurnResult;
-	void delegate(int tid) drainIdleCallbacksOnExit;
-	bool delegate(int tid) hasPendingSubTask;
+	bool delegate(int tid) pump;
+	bool delegate(int tid) hasLiveBatchOwner;
 	bool delegate(int tid) hasTaskDependency;
 	bool delegate(int tid) hasPendingChildQuestion;
 	void delegate(int tid) sendPendingChildAnswerReminder;
 	void delegate(int tid, const(BackgroundWork)[] running) sendBackgroundWorkReminder;
 	string delegate(int tid) checkDeclaredOutputs;
 	bool delegate(int tid, bool eagerDepCleanup) finalizeCompletedSubTask;
-	bool delegate(int tid) deliverFailedPendingSubTaskResult;
+	bool delegate(int tid) recordChildTerminal;
 	int delegate(int childTid) parentTaskForChild;
 	Promise!void delegate(int tid) deliverWaitingParentResultsIfReady;
 	Promise!void delegate(int parentTid) deliverBatchResults;
@@ -217,7 +216,6 @@ struct TaskSessionRunnerHost
 	ToolCallRuling delegate(int tid, string toolName, JSONFragment input) decidePreToolUse;
 	/// The CLI cancelled a `can_use_tool` request it is no longer waiting on.
 	void delegate(int tid, string toolUseId) withdrawToolPermissionPrompt;
-	void delegate(int tid) failPendingAskRouteOnExit;
 	void delegate(int tid) cancelExitBackgroundWork;
 	/// Returns true when the reset already emitted a task reload (unavailable
 	/// history), so the caller must not emit a redundant one.
@@ -341,6 +339,16 @@ class TaskSessionRunner
 	this(TaskSessionRunnerHost host)
 	{
 		host_ = host;
+	}
+
+	void completeIdleSubtask(TaskData* task)
+	{
+		assert(task.relationType == "subtask" && !task.isProcessing);
+		host_.persistResultText(task.tid, task.resultText);
+		host_.transitionTaskFrom(task.tid,
+			[TaskStatus.active, TaskStatus.alive, TaskStatus.waiting],
+			TaskStatus.completed, TaskNotificationChange.preserve);
+		task.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 	}
 
 	AgentSession sessionForTask(int tid)
@@ -906,6 +914,12 @@ public:
 			current.resultText = taskAgent.extractResultText(ev.translated);
 			current.lastTurnFailed = isErrorTurnResult(ev.translated);
 
+			if (host_.pump(tid))
+			{
+				host_.publishTaskSnapshot(tid);
+				return;
+			}
+
 			// The agent ended its turn with work still running in the
 			// background. Either it waits for that work (it starts a turn of
 			// its own when the work reports) or it forgot about it, and only
@@ -936,73 +950,45 @@ public:
 			}
 
 			bool hasOnYield = taskHasOnYield(current);
-			if (host_.hasPendingSubTask(tid) || current.pendingContinuation !is null
-				|| host_.hasTaskDependency(tid) || hasOnYield
-				|| current.onIdleCallbacks.length > 0)
+			bool owned = host_.hasLiveBatchOwner(tid);
+			bool consumerWaiting = owned || current.pendingContinuation !is null
+				|| host_.hasTaskDependency(tid) || hasOnYield;
+			if (consumerWaiting)
 			{
-				if (current.onIdleCallbacks.length > 0)
+				bool hasPendingChildQuestion = current.pendingContinuation is null
+					&& !current.lastTurnFailed && host_.hasPendingChildQuestion(tid);
+				if (hasPendingChildQuestion)
+					host_.sendPendingChildAnswerReminder(tid);
+				else
 				{
-					if (host_.drainIdleCallbacksForTurnResult(tid))
-					{
-						host_.publishTaskSnapshot(tid);
-						return;
-					}
-				}
-				else if (host_.hasPendingSubTask(tid))
-				{
-					// A terminally-errored turn must not finalize the sub-task
-					// as a success; onExit delivers the failure instead.
-					if (current.pendingContinuation is null && !hasOnYield
+					if (owned && current.pendingContinuation is null && !hasOnYield
 						&& !current.lastTurnFailed)
 					{
 						auto missingOutputs = host_.checkDeclaredOutputs(tid);
 						if (missingOutputs is null)
-							host_.finalizeCompletedSubTask(tid, true);
+							host_.finalizeCompletedSubTask(tid, false);
 						else
 							tracef("onOutput: tid=%d deferring sub-task finalization; %s",
 								tid, missingOutputs);
 					}
-				}
-
-				current = host_.getTask(tid);
-				if (current is null)
-					return;
-
-				// After a terminal agent error, prodding the agent to answer a
-				// pending child question would just fail again — close instead.
-				bool hasPendingChildQuestion =
-					current.pendingContinuation is null
-					&& !current.lastTurnFailed
-					&& host_.hasPendingChildQuestion(tid);
-
-				if (hasPendingChildQuestion)
-				{
-					host_.sendPendingChildAnswerReminder(tid);
-				}
-				else
-				{
+					current = host_.getTask(tid);
+					if (current is null) return;
 					current.processQueue.setGoal(ProcessState.Dead).ignoreResult();
 					session.closeStdin();
 					session.killAfterTimeout(5.seconds);
 				}
 			}
+			else if (host_.shuttingDown()) return;
+			else if (current.relationType == "subtask")
+			{
+				completeIdleSubtask(current);
+				session.closeStdin();
+				session.killAfterTimeout(5.seconds);
+			}
 			else
 			{
-				if (current.onIdleCallbacks.length > 0)
-					host_.drainIdleCallbacksOnExit(tid);
-				else if (host_.shuttingDown())
-				{
-					// The agent aborts its in-flight tool call when shutdown
-					// closes stdin (Claude ≥2.1.2xx emits an error turn result).
-					// Keep the persisted status as-is so the post-restart resume
-					// still sees the task mid-turn and sends the restart nudge.
-					return;
-				}
-				else
-				{
-					host_.onTaskTurnCompletedAlive(tid);
-					return;
-				}
+				host_.onTaskTurnCompletedAlive(tid);
+				return;
 			}
 
 			host_.publishTaskSnapshot(tid);
@@ -1115,8 +1101,6 @@ public:
 
 			host_.failPendingAskUserQuestionOnExit(tid);
 			host_.failPendingPermissionPromptOnExit(tid);
-			host_.failPendingAskRouteOnExit(tid);
-			host_.drainIdleCallbacksOnExit(tid);
 			host_.cancelExitBackgroundWork(tid);
 
 			bool missingExecutableLaunchFailure = exitCode != 0
@@ -1185,9 +1169,9 @@ public:
 					if (ancestor >= 0)
 						host_.broadcastFocusHint(tid, ancestor);
 				}
-					if (!host_.deliverFailedPendingSubTaskResult(tid))
-						observeWaitingParentDeliveryAttempt(tid,
-							host_.deliverWaitingParentResultsIfReady(tid));
+				if (!host_.recordChildTerminal(tid))
+					observeWaitingParentDeliveryAttempt(tid,
+						host_.deliverWaitingParentResultsIfReady(tid));
 				return;
 			}
 
@@ -1205,7 +1189,7 @@ public:
 				return;
 			}
 
-			bool consumerWaiting = host_.hasPendingSubTask(tid) || host_.hasTaskDependency(tid);
+			bool consumerWaiting = host_.hasLiveBatchOwner(tid) || host_.hasTaskDependency(tid);
 			if (cleanExit && consumerWaiting && !current.lastTurnFailed)
 			{
 				auto missing = host_.checkDeclaredOutputs(tid);
@@ -1225,8 +1209,11 @@ public:
 			bool deliveredPendingSubTask = false;
 			bool statusWasAlreadyTarget;
 			if (current.status == TaskStatus.completed)
+			{
 				statusWasAlreadyTarget = true;
-			else if (exitCode == 0 && !current.lastTurnFailed && host_.hasPendingSubTask(tid))
+				deliveredPendingSubTask = host_.recordChildTerminal(tid);
+			}
+			else if (exitCode == 0 && !current.lastTurnFailed && host_.hasLiveBatchOwner(tid))
 				deliveredPendingSubTask = host_.finalizeCompletedSubTask(tid, false);
 			else
 			{
@@ -1246,7 +1233,7 @@ public:
 				else
 					statusWasAlreadyTarget = true;
 				if (current.status != TaskStatus.completed)
-					deliveredPendingSubTask = host_.deliverFailedPendingSubTaskResult(tid);
+					deliveredPendingSubTask = host_.recordChildTerminal(tid);
 			}
 
 			if (!deliveredPendingSubTask)
@@ -1311,7 +1298,7 @@ public:
 				auto translated = host_.appendTaskDiagnostic(
 					tid, "Failed to resume session", buildLaunchFailureBody(tid, e));
 				host_.broadcastAppendedTaskEvent(tid, translated);
-				if (!host_.deliverFailedPendingSubTaskResult(tid))
+				if (!host_.recordChildTerminal(tid))
 					observeWaitingParentDeliveryAttempt(tid,
 						host_.deliverWaitingParentResultsIfReady(tid));
 				return reject!ProcessState(e);
@@ -2145,7 +2132,8 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 					clearLastActive: (int tid) {},
 				broadcastTask: (int tid, TranslatedEvent event) {},
 				publishTaskSnapshot: (int tid) {},
-				hasPendingSubTask: (int tid) => false,
+				pump: (int tid) => false,
+				hasLiveBatchOwner: (int tid) => false,
 				hasTaskDependency: (int tid) => false,
 				hasPendingChildQuestion: (int tid) => false,
 				touchAndPersistLastActive: (int tid) {},
@@ -2160,8 +2148,6 @@ version (unittest) private void assertRunnerMcpConfigCleanup(
 				decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
 					JSONFragment input) { assert(0, "unexpected call"); },
 				withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
-				failPendingAskRouteOnExit: (int tid) {},
-				drainIdleCallbacksOnExit: (int tid) {},
 				cancelExitBackgroundWork: (int tid) {},
 				resetHistoryWatermarkAfterExit: (int tid) => false,
 				parentTaskForChild: (int childTid) => 0,

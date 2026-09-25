@@ -40,6 +40,7 @@ struct TaskLifecycle
 	void delegate(int tid, string status) persistStatus;
 	void delegate(int tid, bool needsAttention) persistNeedsAttention;
 	void delegate(int tid) publishSnapshot;
+	void delegate(int tid) onTaskTerminal;
 
 	void transitionTask(int tid, TaskStatus expectedFrom, TaskStatus to,
 		TaskNotificationChange notification = TaskNotificationChange.preserve)
@@ -76,6 +77,9 @@ struct TaskLifecycle
 		}
 
 		persistStatus(tid, cast(string) to);
+		if (to == TaskStatus.completed || to == TaskStatus.failed)
+			if (onTaskTerminal !is null)
+				onTaskTerminal(tid);
 		if (attentionChanged)
 			persistNeedsAttention(tid, false);
 		publishSnapshot(tid);

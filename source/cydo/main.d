@@ -27,9 +27,7 @@ mixin SSLUseLib;
 
 import cydo.mcp : McpResult;
 import cydo.mcp.tools : AskQuestion, LaunchedTask, ToolsBackend, ValidatedTask;
-import cydo.domain.tasks.model : BatchSignal;
 import cydo.workflow.workspace.archive_manager : ArchiveManager, ArchiveManagerHost, ArchiveTaskSnapshot;
-import cydo.workflow.batch.router : BatchConsumeKind;
 import cydo.workflow.batch.registry : BatchHandle, BatchRegistry;
 import cydo.web.client_hub : ClientHub;
 import cydo.runtime.config.watcher : ConfigWatcher, ConfigWatcherHost;
@@ -44,7 +42,7 @@ import cydo.workflow.history.pipeline : HistoryBroadcastPlan, HistoryEventPipeli
 import cydo.workflow.history.abbrev : buildAbbreviatedHistoryFromStrings, extractMessageText;
 import cydo.workflow.history.jsonl_edit : replaceUserMessageContent;
 import cydo.runtime.logging : installRobustLogger;
-import cydo.workflow.questions.router : QuestionRouter, QuestionRouterHost;
+import cydo.workflow.questions.router : makeQuestionMessage;
 import cydo.domain.policy.permissions : evaluatePermissionPolicy, makePermissionAllowJson, makePermissionDenyJson;
 import cydo.domain.task_types.catalog : TaskTypeCatalog;
 import cydo.workflow.sessions.task_runner : TaskSessionLaunch, TaskSessionRunner,

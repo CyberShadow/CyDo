@@ -460,43 +460,6 @@ public:
     }
 }
 
-/// Signal type for batch event queue: child completion or child question.
-struct BatchSignal
-{
-	enum Kind { childDone, question }
-	Kind kind;
-	ulong batchId;
-	size_t slot;
-	int childTid;
-	McpResult result;      // populated for childDone
-	string questionText;   // populated for question
-
-	static BatchSignal childDone(ulong batchId, size_t slot, int tid, McpResult r)
-	{
-		BatchSignal s;
-		s.kind = Kind.childDone;
-		s.batchId = batchId;
-		s.slot = slot;
-		s.childTid = tid;
-		s.result = r;
-		return s;
-	}
-
-	int qid;            // question ID for question signals
-
-	static BatchSignal question(ulong batchId, size_t slot, int tid, string text, int qid)
-	{
-		BatchSignal s;
-		s.kind = Kind.question;
-		s.batchId = batchId;
-		s.slot = slot;
-		s.childTid = tid;
-		s.questionText = text;
-		s.qid = qid;
-		return s;
-	}
-}
-
 struct VisibleTurnAnchor
 {
 	size_t seq;
@@ -920,10 +883,6 @@ struct TaskData
 	string pendingAskToolUseId;  // correlation ID of a pending AskUserQuestion call
 	JSONFragment pendingAskQuestions;  // serialized questions for re-broadcast on reconnect
 	PendingPermission pendingPermission; // kept for late joiners
-	Promise!McpResult pendingAskPromise;   // child waiting for parent's answer
-	string pendingAskQuestion;             // question text from child
-	int pendingAskQid;                     // qid allocated for this question
-	void delegate()[] onIdleCallbacks;     // callbacks to run when the task next yields idle
 	string error;  // last stderr text on non-zero exit; cleared on restart
 }
 

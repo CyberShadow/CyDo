@@ -250,6 +250,9 @@ class App
 				persistNeedsAttention: (int tid, bool needsAttention) =>
 					persistence.setNeedsAttention(tid, needsAttention),
 				publishSnapshot: &broadcastTaskUpdate,
+				onTaskTerminal: (int tid) {
+					if (workflowTools !is null) workflowTools.onTaskTerminal(tid);
+				},
 			);
 			import cydo.runtime.launch.sandbox : runtimeDir;
 			createPidFile("cydo.pid", runtimeDir());
@@ -473,12 +476,7 @@ class App
 					format!"WorkflowTools workspace label requested for missing task %d"(tid));
 				return taskWorkspaceLabel(*td);
 			},
-			addIdleCallback: (int tid, void delegate() cb) {
-				auto td = tid in tasks;
-				assert(td !is null,
-					format!"WorkflowTools idle callback requested for missing task %d"(tid));
-				td.onIdleCallbacks ~= cb;
-			},
+
 			reactivateTask: (int tid) {
 				auto td = tid in tasks;
 				assert(td !is null,
@@ -493,6 +491,9 @@ class App
 			},
 			sendKnownSystemMessage: (int tid, KnownSystemMessageKind kind, string body) =>
 				sendKnownSystemMessage(tid, kind, body),
+			sendPreparedKnownSystemMessage: (int tid, const(ContentBlock)[] blocks,
+				string cydoMeta, string nonce) =>
+				sendPreparedKnownSystemMessage(tid, blocks, cydoMeta, nonce),
 			persistAddTaskDep: (int parentTid, int childTid) {
 				persistence.addTaskDep(parentTid, childTid);
 			},
@@ -648,15 +649,14 @@ class App
 			publishTaskSnapshot: &broadcastTaskUpdate,
 			onTaskTurnCompletedAlive: &onTaskTurnCompletedAlive,
 			sendBackgroundWorkReminder: &sendBackgroundWorkReminder,
-			drainIdleCallbacksForTurnResult: &drainIdleCallbacksForTurnResult,
-			drainIdleCallbacksOnExit: &drainIdleCallbacksOnExit,
-			hasPendingSubTask: &workflowTools.hasPendingSubTask,
+			pump: &workflowTools.pump,
+			hasLiveBatchOwner: &workflowTools.hasLiveBatchOwner,
 			hasTaskDependency: &workflowTools.hasTaskDependency,
 			hasPendingChildQuestion: &workflowTools.hasPendingChildQuestion,
 			sendPendingChildAnswerReminder: &workflowTools.sendPendingChildAnswerReminder,
 			checkDeclaredOutputs: &checkDeclaredOutputs,
 			finalizeCompletedSubTask: &workflowTools.finalizeCompletedSubTask,
-			deliverFailedPendingSubTaskResult: &workflowTools.deliverFailedPendingSubTaskResult,
+			recordChildTerminal: &workflowTools.recordChildTerminal,
 			parentTaskForChild: &workflowTools.parentTaskForChild,
 			deliverWaitingParentResultsIfReady: &workflowTools.deliverWaitingParentResultsIfReady,
 			deliverBatchResults: &workflowTools.deliverBatchResults,
@@ -665,7 +665,6 @@ class App
 			decideToolPermission: &workflowTools.decideToolPermission,
 			decidePreToolUse: &workflowTools.decidePreToolUse,
 			withdrawToolPermissionPrompt: &workflowTools.withdrawToolPermissionPrompt,
-			failPendingAskRouteOnExit: &workflowTools.failPendingAskRouteOnExit,
 			cancelExitBackgroundWork: &cancelExitBackgroundWork,
 			resetHistoryWatermarkOnly: &resetHistoryWatermarkOnly,
 			resetHistoryWatermarkAfterExit: &resetHistoryWatermarkAfterExit,
@@ -1448,9 +1447,7 @@ class App
 
 	/// The task that lands work for the project of `callerTid`, started if the
 	/// project has none; 0 if the project's task types name no integrator.
-	/// Fulfills once the task can be asked: one that had to be started has
-	/// finished the turn of its first message. (An agent need not take a
-	/// second message while it is still starting the turn of the first.)
+	/// Fulfills once a new integrator has accepted its first message.
 	///
 	/// A project has one integrator at a time, so that it sees everything
 	/// that is being landed: the newest unarchived task at the integrator
@@ -1490,9 +1487,7 @@ class App
 			MessageSource.harness).then((bool accepted) {
 				enforce(accepted, format!"Could not start the integrator (task %d): %s"(
 					tid, tasks[tid].error));
-				auto ready = new Promise!int;
-				tasks[tid].onIdleCallbacks ~= () { ready.fulfill(tid); };
-				return ready;
+				return tid;
 			});
 	}
 
@@ -1571,7 +1566,7 @@ class App
 			auto translated = historyPipeline.appendTaskDiagnostic(tid,
 				"Failed to submit initial message", e.msg);
 			broadcastAppendedTaskEvent(tid, translated);
-			workflowTools.deliverFailedPendingSubTaskResult(tid);
+			workflowTools.recordChildTerminal(tid);
 			broadcastTaskUpdate(tid);
 			return false;
 		});
@@ -2739,8 +2734,14 @@ class App
 		{
 			import cydo.agent.drivers.copilot : CopilotAgent;
 			if (auto ca = cast(CopilotAgent) a)
+			{
 				ca.toolDispatch_ = (string tool, string callerTid, JSONFragment args) =>
 					dispatchTool(tool, callerTid, args);
+				ca.onToolResultDelivered_ = (string callerTid) =>
+					workflowTools.onToolCallDelivered(callerTid);
+				ca.onToolResultDeliveryFailed_ = (string callerTid) =>
+					workflowTools.onMcpDeliveryFailed(callerTid);
+			}
 		}
 		return a;
 	}
@@ -2948,39 +2949,6 @@ class App
 			}).ignoreResult();
 	}
 
-	private bool drainIdleCallbacksForTurnResult(int tid)
-	{
-		if (tid !in tasks)
-			return false;
-		auto td = &tasks[tid];
-		if (td.onIdleCallbacks.length == 0)
-			return false;
-
-		auto callbacks = td.onIdleCallbacks.dup;
-		td.onIdleCallbacks = null;
-		foreach (cb; callbacks)
-			cb();
-
-		if (tid !in tasks)
-			return false;
-		td = &tasks[tid];
-		return td.status == "active" || td.status == "alive";
-	}
-
-	private void drainIdleCallbacksOnExit(int tid)
-	{
-		if (tid !in tasks)
-			return;
-		auto td = &tasks[tid];
-		if (td.onIdleCallbacks.length == 0)
-			return;
-
-		auto callbacks = td.onIdleCallbacks.dup;
-		td.onIdleCallbacks = null;
-		foreach (cb; callbacks)
-			cb();
-	}
-
 	private void cancelExitBackgroundWork(int tid)
 	{
 		derivedTextJobs.cancelSessionBackgroundWork(tid);
@@ -3062,7 +3030,7 @@ class App
 			auto translated = historyPipeline.appendTaskDiagnostic(tid,
 				"Failed to request missing outputs", e.msg);
 			broadcastAppendedTaskEvent(tid, translated);
-			workflowTools.deliverFailedPendingSubTaskResult(tid);
+			workflowTools.recordChildTerminal(tid);
 			broadcastTaskUpdate(tid);
 		}).ignoreResult();
 	}
@@ -3070,12 +3038,18 @@ class App
 	private Promise!void sendKnownSystemMessage(int tid, KnownSystemMessageKind kind,
 		string body, MessageSource source = MessageSource.harness)
 	{
-		auto td = tid in tasks;
-		assert(td !is null, "Known system message task must exist");
 		auto msg = wrapKnownSystemMessage(config.system_keyword, kind, body);
 		auto meta = systemMessageNormalizer.buildKnownSystemMessageMeta(kind);
-		return sendTaskMessage(tid, [ContentBlock("text", msg)], null, meta,
-			null, false, null, source)
+		return sendPreparedKnownSystemMessage(tid, [ContentBlock("text", msg)],
+			meta, null, source);
+	}
+
+	private Promise!void sendPreparedKnownSystemMessage(int tid,
+		const(ContentBlock)[] blocks, string cydoMeta, string nonce,
+		MessageSource source = MessageSource.harness)
+	{
+		assert((tid in tasks) !is null, "Known system message task must exist");
+		return sendTaskMessage(tid, blocks, null, cydoMeta, nonce, false, null, source)
 			.then(() {
 				auto accepted = tid in tasks;
 				assert(accepted !is null,
@@ -5236,12 +5210,12 @@ unittest
 		publishTaskSnapshot: (int tid) {
 			fixture.app.broadcastTaskUpdate(tid);
 		},
-		drainIdleCallbacksOnExit: (int tid) {},
-		hasPendingSubTask: (int tid) => false,
+		pump: (int tid) => false,
+		hasLiveBatchOwner: (int tid) => false,
 		hasTaskDependency: (int tid) => false,
 		hasPendingChildQuestion: (int tid) => false,
 		parentTaskForChild: (int childTid) => 0,
-		deliverFailedPendingSubTaskResult: (int tid) => false,
+		recordChildTerminal: (int tid) => false,
 		deliverWaitingParentResultsIfReady: (int tid) => resolve(),
 		failPendingAskUserQuestionOnExit: (int tid) {},
 		failPendingPermissionPromptOnExit: (int tid) {},
@@ -5250,7 +5224,6 @@ unittest
 		decidePreToolUse: delegate ToolCallRuling(int tid, string toolName,
 			JSONFragment input) { assert(0, "unexpected call"); },
 		withdrawToolPermissionPrompt: (int tid, string toolUseId) {},
-		failPendingAskRouteOnExit: (int tid) {},
 		cancelExitBackgroundWork: (int tid) {},
 		resetHistoryWatermarkAfterExit: (int tid) => false,
 		touchAndPersistLastActive: (int tid) {},
