@@ -440,6 +440,36 @@ function streamMultiToolUseResponse(
   res.end();
 }
 
+function streamMultiTextResponse(res, texts, model) {
+  const msgId = nextMsgId();
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId, type: "message", role: "assistant", content: [], model,
+      stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  });
+  for (let i = 0; i < texts.length; i++) {
+    sseEvent(res, "content_block_start", {
+      type: "content_block_start", index: i,
+      content_block: { type: "text", text: "" },
+    });
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta", index: i,
+      delta: { type: "text_delta", text: texts[i] },
+    });
+    sseEvent(res, "content_block_stop", { type: "content_block_stop", index: i });
+  }
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: 20 },
+  });
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI Responses API helpers (Codex CLI)
 // ---------------------------------------------------------------------------
@@ -1351,6 +1381,20 @@ function handleMessages(req, res) {
     // before defaulting to "Done."
     if (isToolResult) {
       const origText = findOriginalUserText(messages);
+      if (origText && /fork multi-block rounds fixture/i.test(origText)) {
+        if (messages.length <= 3) {
+          streamMultiToolUseResponse(
+            res, ["Bash", "Bash"],
+            [{ command: "echo second-round-a" }, { command: "echo second-round-b" }],
+            model,
+          );
+        } else {
+          streamMultiTextResponse(
+            res, ["fork-final-first-block", "fork-final-last-block"], model,
+          );
+        }
+        return;
+      }
       if (
         origText &&
         /sequential required commit children/i.test(origText) &&

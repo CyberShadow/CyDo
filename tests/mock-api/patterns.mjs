@@ -768,6 +768,15 @@ export function matchPattern(userText) {
   if (/stall session/i.test(userText)) return { type: "stall" };
 
   // "run parallel commands" — two parallel tool_use blocks in a single response
+  if (/fork multi-block rounds fixture/i.test(userText))
+    return {
+      type: "multi_tool_call",
+      tool_calls: [
+        { name: "Bash", input: { command: "echo first-round-a" } },
+        { name: "Bash", input: { command: "echo first-round-b" } },
+      ],
+    };
+
   match = userText.match(/run parallel commands/i);
   if (match)
     return { type: "parallel_shell", commands: ["echo one", "echo two"] };
