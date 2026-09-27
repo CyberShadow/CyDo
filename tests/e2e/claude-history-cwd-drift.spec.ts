@@ -26,7 +26,7 @@ import {
   historyPathForTask,
   readHistoryFile,
 } from "./fixtures";
-import { mkdirSync, renameSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "fs";
 
 const WORKSPACE = "/tmp/cydo-test-workspace";
 const MOVED = "/tmp/cydo-test-workspace-moved";
@@ -99,6 +99,9 @@ test(
 
     const tid = currentTaskTid(page);
     const historyPath = historyPathForTask(tid);
+    await expect
+      .poll(() => existsSync(historyPath), { timeout: responseTimeout(agentType) })
+      .toBe(true);
     await expect
       .poll(() => readHistoryFile(historyPath).includes("cwd-move-before"), {
         timeout: responseTimeout(agentType),
