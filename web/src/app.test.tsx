@@ -116,6 +116,7 @@ vi.mock("./useSessionManager", () => ({
       getByTid: state.getByTid,
       refreshWorkspaces: vi.fn(),
       scanState: "idle",
+      sidebarSortByActivity: false,
     }) satisfies TaskManager,
 }));
 

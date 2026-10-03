@@ -381,6 +381,7 @@ export interface ServerStatusMessage {
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  sidebar_sort?: "creation" | "activity";
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";

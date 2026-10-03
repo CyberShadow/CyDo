@@ -175,6 +175,8 @@ export interface SidebarTask {
   taskType?: string;
   hasPendingQuestion?: boolean;
   hasMessages?: boolean;
+  /// activity timestamp used by the activity ordering; falls back to creation
+  lastActive?: number;
 }
 
 interface TreeNode {
@@ -184,7 +186,10 @@ interface TreeNode {
   knownChildCount: number;
 }
 
-export function flatTaskOrder(tasks: SidebarTask[]): string[] {
+export function flatTaskOrder(
+  tasks: SidebarTask[],
+  sortByActivity = false,
+): string[] {
   const ids: string[] = [];
   function walk(nodes: TreeNode[]) {
     for (const n of nodes) {
@@ -192,13 +197,39 @@ export function flatTaskOrder(tasks: SidebarTask[]): string[] {
       walk(n.children);
     }
   }
-  walk(buildTree(tasks));
+  walk(buildTree(tasks, sortByActivity));
   return ids;
 }
 
-function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
+/**
+ * Activity of a node: its own, or its most recently active descendant's,
+ * whichever is later. A parent therefore rises when work happens anywhere
+ * beneath it, at any depth, without the hierarchy itself changing.
+ */
+function subtreeActivity(node: TreeNode): number {
+  let newest = node.task.lastActive ?? 0;
+  for (const child of node.children)
+    newest = Math.max(newest, subtreeActivity(child));
+  return newest;
+}
+
+/**
+ * Order every level by activity, most recent first. Siblings re-sort among
+ * themselves; nothing is reparented. Group nodes (Archive, Import) carry no
+ * activity of their own, so they are left to the caller to place.
+ */
+function sortNodesByActivity(nodes: TreeNode[]): TreeNode[] {
+  return nodes
+    .map((node) => ({ ...node, children: sortNodesByActivity(node.children) }))
+    .sort((a, b) => subtreeActivity(b) - subtreeActivity(a));
+}
+
+function insertArchiveNodes(
+  nodes: TreeNode[],
+  archiveLast: boolean,
+): TreeNode[] {
   return nodes.map((node) => {
-    const processed = insertArchiveNodes(node.children);
+    const processed = insertArchiveNodes(node.children, archiveLast);
     const archived = processed.filter((c) => c.task.archived);
     const active = processed.filter((c) => !c.task.archived);
     if (archived.length === 0) {
@@ -220,11 +251,19 @@ function insertArchiveNodes(nodes: TreeNode[]): TreeNode[] {
       children: archived,
       knownChildCount: 0,
     };
-    return { ...node, children: [archiveNode, ...active] };
+    return {
+      ...node,
+      children: archiveLast
+        ? [...active, archiveNode]
+        : [archiveNode, ...active],
+    };
   });
 }
 
-export function buildTree(tasks: SidebarTask[]): TreeNode[] {
+export function buildTree(
+  tasks: SidebarTask[],
+  sortByActivity = false,
+): TreeNode[] {
   const tidSet = new Set(tasks.map((t) => t.tid));
   const childMap = new Map<number, SidebarTask[]>();
   const roots: SidebarTask[] = [];
@@ -252,7 +291,10 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
   }
 
   let tree = toNodes(roots);
-  tree = insertArchiveNodes(tree);
+  // Activity ordering happens before the group nodes are inserted, so Archive
+  // and Import (which have no activity of their own) keep their fixed places.
+  if (sortByActivity) tree = sortNodesByActivity(tree);
+  tree = insertArchiveNodes(tree, sortByActivity);
 
   // Handle archived roots
   const archivedRoots = tree.filter((n) => n.task.archived);
@@ -274,7 +316,9 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
       children: archivedRoots,
       knownChildCount: 0,
     };
-    tree = [archiveRoot, ...activeRoots];
+    tree = sortByActivity
+      ? [...activeRoots, archiveRoot]
+      : [archiveRoot, ...activeRoots];
   }
 
   // Handle importable roots — group under "Import" node
@@ -301,10 +345,11 @@ export function buildTree(tasks: SidebarTask[]): TreeNode[] {
       children: importableRoots,
       knownChildCount: 0,
     };
-    // Array order (sidebar renders reversed):
-    //   [groupNodes..., importRoot, regularNonImportable...]
-    // After .reverse(): regularNonImportable (top), importRoot (middle), groupNodes (bottom)
-    tree = [...groupNodes, importRoot, ...regularNonImportable];
+    // The list's two reversals (.reverse() in the JSX and the column-reverse on
+    // .sidebar-list) cancel, so array order is display order, top to bottom.
+    tree = sortByActivity
+      ? [...regularNonImportable, ...groupNodes, importRoot]
+      : [...groupNodes, importRoot, ...regularNonImportable];
   }
 
   return tree;
@@ -678,6 +723,7 @@ interface Props {
   onOpenSearch?: () => void;
   onArchive?: (tid: number) => void;
   hasGlobalAttention?: boolean;
+  sortByActivity?: boolean;
 }
 
 export const Sidebar = memo(function Sidebar({
@@ -699,8 +745,12 @@ export const Sidebar = memo(function Sidebar({
   onOpenSearch,
   onArchive,
   hasGlobalAttention,
+  sortByActivity = false,
 }: Props) {
-  const tree = useMemo(() => buildTree(tasks), [tasks]);
+  const tree = useMemo(
+    () => buildTree(tasks, sortByActivity),
+    [tasks, sortByActivity],
+  );
   const flatItems = useMemo(
     () => flattenTree(tree, activeTaskId, taskTypes, tasksLoading),
     [tree, activeTaskId, taskTypes, tasksLoading],
@@ -723,6 +773,35 @@ export const Sidebar = memo(function Sidebar({
   // Ensure icon styles are injected once
   ensureIconStyles();
   ensureRelationIconStyles();
+
+  // Activity mode puts the newest tasks and the New Task row at the visual top,
+  // but column-reverse rests the scroll at the visual bottom, so open at the
+  // top instead. The last DOM child is the top-most one; scrollIntoView avoids
+  // the sign conventions browsers use for scrollTop in reversed containers.
+  // Opening happens on mount, each time the list finishes loading (the first
+  // load, and every reconnect, which empties and refills it) and each time
+  // the sidebar becomes visible on mobile. Keyed on the load completing
+  // rather than on the list having content, since the list arrives in packets
+  // and a reconnect never toggles visibility. Runs before the active-item
+  // effect below so that one still wins when the active task sits off-screen.
+  const openScrollRanRef = useRef(false);
+  const prevTasksLoadingRef = useRef(tasksLoading);
+  const prevOpenVisibleRef = useRef(visible);
+  const prevSortByActivityRef = useRef(sortByActivity);
+  useEffect(() => {
+    const firstRun = !openScrollRanRef.current;
+    const finishedLoading = prevTasksLoadingRef.current && !tasksLoading;
+    const becameVisible = prevOpenVisibleRef.current === false && visible;
+    const switchedToActivity = !prevSortByActivityRef.current && sortByActivity;
+    openScrollRanRef.current = true;
+    prevTasksLoadingRef.current = tasksLoading;
+    prevOpenVisibleRef.current = visible;
+    prevSortByActivityRef.current = sortByActivity;
+    if (!sortByActivity || !visible || tasksLoading) return;
+    if (!firstRun && !finishedLoading && !becameVisible && !switchedToActivity)
+      return;
+    listRef.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
+  }, [sortByActivity, visible, tasksLoading]);
 
   useEffect(() => {
     if (activeTaskId === null) return;
@@ -838,6 +917,23 @@ export const Sidebar = memo(function Sidebar({
     };
   }, [flatItems, attention]);
 
+  const newTaskRow = onNewTask && (
+    <a
+      href={newTaskHref}
+      class={`sidebar-item sidebar-new-task${
+        activeTaskId === null ? " active" : ""
+      }`}
+      title="New Task (Ctrl+Shift+O)"
+      onClick={(e: MouseEvent) => {
+        if (!isPlainLeftClick(e)) return;
+        onNewTask();
+      }}
+    >
+      <span class="task-type-icon task-type-icon-plus" />
+      <span class="sidebar-label">New Task</span>
+    </a>
+  );
+
   return (
     <div class="sidebar">
       <div class="sidebar-header">
@@ -938,22 +1034,10 @@ export const Sidebar = memo(function Sidebar({
         data-glow-below={glowBelow === "none" ? undefined : glowBelow}
       >
         <div class="sidebar-list" ref={listRef}>
-          {onNewTask && (
-            <a
-              href={newTaskHref}
-              class={`sidebar-item sidebar-new-task${
-                activeTaskId === null ? " active" : ""
-              }`}
-              title="New Task (Ctrl+Shift+O)"
-              onClick={(e: MouseEvent) => {
-                if (!isPlainLeftClick(e)) return;
-                onNewTask();
-              }}
-            >
-              <span class="task-type-icon task-type-icon-plus" />
-              <span class="sidebar-label">New Task</span>
-            </a>
-          )}
+          {/* .sidebar-list is column-reverse, so the first child renders last:
+              New Task sits at the bottom by default, and above everything in
+              activity mode where the newest things belong at the top. */}
+          {!sortByActivity && newTaskRow}
           {flatItems
             .map((item) => {
               if (item.kind === "loading") {
@@ -991,6 +1075,7 @@ export const Sidebar = memo(function Sidebar({
               );
             })
             .reverse()}
+          {sortByActivity && newTaskRow}
         </div>
       </div>
     </div>

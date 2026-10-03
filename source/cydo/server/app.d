@@ -5,6 +5,7 @@ import core.time : seconds;
 
 import std.algorithm : sort;
 import std.array : appender;
+import std.conv : to;
 import std.exception : enforce;
 import std.file : exists, isFile, thisExePath;
 import std.format : format;
@@ -53,6 +54,7 @@ import cydo.workflow.history.native_history : ConfiguredNativeHistoryContext,
 	TaskHistoryResolution, TaskHistoryResolutionKind, UnavailableHistory,
 	UnavailableHistoryKind, resolveNativeHistoryContext;
 import cydo.workflow.history.abbrev : extractMessageText;
+import cydo.workflow.history.last_turn : lastTurnStdTime;
 import cydo.workflow.history.operations : CodexForkSourceState,
 	selectHistoryOperations;
 import cydo.runtime.logging : installRobustLogger;
@@ -940,8 +942,14 @@ class App
 
 		resumeInFlightTasks();
 
-		// Recover last_active from .jsonl mtime for tasks that were alive
-		// when the backend crashed (last_active was cleared on session start).
+		// Recover last_active for tasks that were alive when the backend
+		// stopped (last_active was cleared on session start). The transcript's
+		// last conversation record is the activity time; its mtime is not,
+		// since records written around a session's start and exit (claude's
+		// last-prompt and cost-state, for example) touch the file without any
+		// work happening, so a restart moves every alive task's mtime. mtime
+		// stays the fallback for a transcript with no record lastTurnStdTime
+		// recognizes.
 		foreach (ref td; tasks)
 		{
 			if (td.lastActive == 0 && td.agentSessionId.length > 0)
@@ -955,7 +963,9 @@ class App
 						import std.file : exists, timeLastModified;
 						if (exists(jp))
 						{
-							td.lastActive = timeLastModified(jp).stdTime;
+							td.lastActive = lastTurnStdTime(jp);
+							if (td.lastActive == 0)
+								td.lastActive = timeLastModified(jp).stdTime;
 							persistence.setLastActive(td.tid, td.lastActive);
 						}
 					}
@@ -1139,6 +1149,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui.sidebar.sort.to!string,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -3444,6 +3455,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui.sidebar.sort.to!string,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();

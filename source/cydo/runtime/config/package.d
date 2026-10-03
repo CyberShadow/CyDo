@@ -104,6 +104,22 @@ struct WorkspaceConfig
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
+/// How the sidebar orders tasks. `creation` is the tid order the list has
+/// always had; `activity` puts the most recently active task at the top, a
+/// parent rising with its most recently active descendant, with Archive and
+/// Import below the live tasks.
+enum SidebarSort { creation, activity }
+
+struct SidebarConfig
+{
+	@Optional SidebarSort sort = SidebarSort.creation;
+}
+
+struct UiConfig
+{
+	@Optional SidebarConfig sidebar;
+}
+
 struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
@@ -119,6 +135,7 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	@Optional UiConfig ui;
 
 	/// Called by configy during parsing (configy/read.d:650), so a semantic
 	/// error surfaces on the same path as a YAML syntax error.

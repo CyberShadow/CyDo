@@ -1303,6 +1303,7 @@ struct ServerStatusMessage
 	bool auth_enabled;
 	bool dev_mode;
 	string build_id;
+	string sidebar_sort;
 }
 
 struct ScanStatusMessage

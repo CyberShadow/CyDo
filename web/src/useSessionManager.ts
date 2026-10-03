@@ -248,6 +248,7 @@ export interface TaskManager {
     taskType?: string;
     hasPendingQuestion?: boolean;
     hasMessages?: boolean;
+    lastActive?: number;
   }>;
   workspaces: WorkspaceInfo[];
   entryPoints: EntryPointInfo[];
@@ -263,6 +264,7 @@ export interface TaskManager {
   serverError: { message: string; tid?: number } | null;
   dismissServerError: () => void;
   devMode: boolean;
+  sidebarSortByActivity: boolean;
   exportLoadError?: string | null;
   navigateHome: () => void;
   navigateToProject: (workspace: string, projectName: string) => void;
@@ -597,6 +599,7 @@ export function useTaskManager(
     tid?: number;
   } | null>(null);
   const [devMode, setDevMode] = useState(false);
+  const [sidebarSortByActivity, setSidebarSortByActivity] = useState(false);
   const addToastRef = useRef(addToast);
   addToastRef.current = addToast;
   const prevNoticeIdsRef = useRef<Set<string>>(new Set());
@@ -2016,6 +2019,7 @@ export function useTaskManager(
         }
         case "server_status": {
           setDevMode(msg.dev_mode ?? false);
+          setSidebarSortByActivity(msg.sidebar_sort === "activity");
           const serverBuildId = msg.build_id ?? "";
           if (
             serverBuildId.length > 0 &&
@@ -3343,6 +3347,9 @@ export function useTaskManager(
         taskType: t.taskType,
         hasPendingQuestion: t.hasPendingQuestion,
         hasMessages: t.messages.length > 0,
+        // a task that never ran falls back to its creation time, so a fresh
+        // draft sorts near the top rather than the floor
+        lastActive: t.lastActive || t.createdAt || 0,
       }));
 
     const prev = prevSidebarTasksRef.current;
@@ -3366,7 +3373,8 @@ export function useTaskManager(
           t.archiving === p.archiving &&
           t.taskType === p.taskType &&
           t.hasPendingQuestion === p.hasPendingQuestion &&
-          t.hasMessages === p.hasMessages
+          t.hasMessages === p.hasMessages &&
+          t.lastActive === p.lastActive
         );
       })
     ) {
@@ -3432,6 +3440,7 @@ export function useTaskManager(
       setServerError(null);
     },
     devMode,
+    sidebarSortByActivity,
     exportLoadError: null,
     navigateHome,
     navigateToProject,
