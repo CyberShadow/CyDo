@@ -16,6 +16,9 @@ import cydo.workflow.history.abbrev : buildAbbreviatedHistoryFromStrings;
 struct DerivedTextJobsHost
 {
 	TaskData* delegate(int tid) getTask;
+	/// Whether suggestion generation is enabled at all (config `suggestions`).
+	/// Gating here stops the backend one-shots themselves, not just the display.
+	bool delegate() suggestionsEnabled;
 	int[] delegate() snapshotTaskIds;
 	Agent delegate(int tid) agentForTask;
 	bool delegate(int tid) hasSubscribers;
@@ -152,6 +155,8 @@ public:
 
 	void generateSuggestions(int tid)
 	{
+		if (!host_.suggestionsEnabled())
+			return;
 		auto td = host_.getTask(tid);
 		if (td is null)
 			return;

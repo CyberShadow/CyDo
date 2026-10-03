@@ -586,6 +586,7 @@ class App
 		));
 		derivedTextJobs = new DerivedTextJobs(DerivedTextJobsHost(
 			getTask: (int tid) => tid in tasks ? &tasks[tid] : null,
+			suggestionsEnabled: () => config.suggestions,
 			snapshotTaskIds: &snapshotTaskIdsForResume,
 			agentForTask: &agentForTask,
 			hasSubscribers: (int tid) => clientHub.hasSubscribers(tid),
@@ -4401,6 +4402,7 @@ version (unittest) private final class GatedSubmissionFixture
 				auto task = lookupTid in app.tasks;
 				return task is null ? null : task;
 			},
+			suggestionsEnabled: () => app.config.suggestions,
 			readPromptFile: (int lookupTid, string relativePath,
 				string[string] vars) {
 				assert(relativePath == "prompts/generate-title.md");
@@ -4515,6 +4517,7 @@ unittest
 			auto task = lookupTid in app.tasks;
 			return task is null ? null : task;
 		},
+		suggestionsEnabled: () => app.config.suggestions,
 	));
 	auto session = new GatedSubmissionSession;
 	app.taskSessionRunner = new GatedSubmissionRunner(session);
@@ -6184,6 +6187,7 @@ unittest
 				auto task = lookupTid in app.tasks;
 				return task is null ? null : task;
 			},
+			suggestionsEnabled: () => app.config.suggestions,
 		));
 
 		reloadCount = new int;
