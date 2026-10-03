@@ -206,6 +206,7 @@ export interface TaskManager {
   interrupt: (uuid: string) => void;
   stop: (uuid: string) => void;
   closeStdin: (uuid: string) => void;
+  renameTask: (uuid: string, title: string) => void;
   resume: (uuid: string) => void;
   promote: (tid: number) => void;
   fork: (tid: number, anchor: string) => void;
@@ -2939,6 +2940,11 @@ export function useTaskManager(
     if (tid !== null) connRef.current?.sendCloseStdin(tid);
   }, []);
 
+  const renameTask = useCallback((uuid: string, title: string) => {
+    const tid = liveStates.get(uuid)?.tid ?? null;
+    if (tid !== null) connRef.current?.renameTask(tid, title);
+  }, []);
+
   const fork = useCallback((tid: number, anchor: string) => {
     connRef.current?.forkTask(tid, anchor);
   }, []);
@@ -3399,6 +3405,7 @@ export function useTaskManager(
     interrupt,
     stop,
     closeStdin,
+    renameTask,
     resume,
     promote,
     fork,

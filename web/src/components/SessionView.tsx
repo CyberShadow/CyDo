@@ -40,6 +40,7 @@ interface Props {
   onInterrupt: (uuid: string) => void;
   onStop: (uuid: string) => void;
   onCloseStdin: (uuid: string) => void;
+  onRename?: (uuid: string, title: string) => void;
   onResume: (uuid: string) => void;
   onPromote?: (tid: number) => void;
   onFork: (tid: number, anchor: string) => void;
@@ -77,6 +78,7 @@ function SessionViewInner({
   onInterrupt,
   onStop,
   onCloseStdin,
+  onRename,
   onResume,
   onPromote,
   onFork,
@@ -368,6 +370,14 @@ function SessionViewInner({
         onCloseStdin={() => {
           onCloseStdin(task.uuid);
         }}
+        taskTitle={task.title}
+        onRename={
+          onRename
+            ? (title: string) => {
+                onRename(task.uuid, title);
+              }
+            : undefined
+        }
         taskType={task.taskType}
         onToggleSidebar={onToggleSidebar}
         hasGlobalAttention={hasGlobalAttention}
