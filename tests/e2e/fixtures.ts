@@ -152,6 +152,49 @@ export function responseTimeout(_agentType: AgentType): number {
   return 540_000;
 }
 
+const MOCK_CONTROL_PORT: Record<AgentType, number> = {
+  claude: 9000,
+  codex: 9000,
+  copilot: 9001,
+};
+
+/** A held mock tool-call response (see the hold/release side channel in
+ *  tests/mock-api): the mock parks the next response carrying `tool` until
+ *  `release()`, so the UI state between the call and its response can be
+ *  observed for as long as the test needs, independent of timing. Releasing
+ *  before the call arrives lets it stream through unparked. */
+export interface MockHold {
+  id: string;
+  held(): Promise<boolean>;
+  release(): Promise<void>;
+}
+
+export async function holdMockTool(
+  agentType: AgentType,
+  tool: string,
+): Promise<MockHold> {
+  const base = `http://127.0.0.1:${MOCK_CONTROL_PORT[agentType]}`;
+  const armed = await fetch(`${base}/mock/hold`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tool }),
+  });
+  if (!armed.ok) throw new Error(`mock hold refused: HTTP ${armed.status}`);
+  const { id } = (await armed.json()) as { id: string };
+  return {
+    id,
+    async held() {
+      const res = await fetch(`${base}/mock/hold/${id}`);
+      if (!res.ok) throw new Error(`mock hold lookup failed: HTTP ${res.status}`);
+      return ((await res.json()) as { held: boolean }).held;
+    },
+    async release() {
+      const res = await fetch(`${base}/mock/release/${id}`, { method: "POST" });
+      if (!res.ok) throw new Error(`mock release failed: HTTP ${res.status}`);
+    },
+  };
+}
+
 export async function visibleHistory(page: Page) {
   return page.locator(".message-wrapper").evaluateAll((wrappers) =>
     wrappers

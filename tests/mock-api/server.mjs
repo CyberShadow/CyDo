@@ -82,6 +82,102 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
+// ---------------------------------------------------------------------------
+// Hold/release side channel
+// ---------------------------------------------------------------------------
+// A spec can hold a tool call's response until it releases it, so a UI state
+// that exists only between the call and its response (e.g. the answerer being
+// focused while an Ask is delivered) stays observable for exactly as long as
+// the spec needs, with no reliance on timing or machine load.
+//   POST /mock/hold {"tool": name} -> {"id"}: park the next response carrying
+//                                     a tool call of that name
+//   GET  /mock/hold/<id>           -> {"held", "released"}
+//   POST /mock/release/<id>        -> deliver the parked response; releasing
+//                                     before the call arrives lets it stream
+//                                     through unparked
+const holds = new Map();
+let holdCounter = 0;
+
+function armHold(tool) {
+  const id = String(++holdCounter);
+  holds.set(id, { tool, respond: null, held: false, released: false });
+  return id;
+}
+
+function releaseHold(id) {
+  const hold = holds.get(id);
+  if (!hold) return null;
+  const wasHeld = hold.held;
+  hold.released = true;
+  const respond = hold.respond;
+  hold.respond = null;
+  if (respond) respond();
+  return { wasHeld };
+}
+
+// Deliver a tool-call response: park it under an armed hold naming one of
+// its tools, else honor the intent's delay, else respond now. A parked
+// response is dropped if its client disconnects before release.
+function deliverToolCall(res, intent, toolNames, respond) {
+  for (const hold of holds.values()) {
+    if (hold.released || hold.held || !toolNames.includes(hold.tool)) continue;
+    hold.held = true;
+    hold.respond = respond;
+    res.on("close", () => {
+      if (hold.respond === respond) hold.respond = null;
+    });
+    return;
+  }
+  if (intent?.delay) {
+    const timer = setTimeout(respond, intent.delay);
+    res.on("close", () => clearTimeout(timer));
+  } else {
+    respond();
+  }
+}
+
+function sendJsonResponse(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+// Returns true when the request was a hold/release control request.
+function handleHoldControl(req, res, url) {
+  if (url.pathname === "/mock/hold" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      let tool;
+      try {
+        tool = JSON.parse(body).tool;
+      } catch {
+        tool = undefined;
+      }
+      if (typeof tool !== "string" || tool.length === 0) {
+        sendJsonResponse(res, 400, { error: "tool name required" });
+        return;
+      }
+      sendJsonResponse(res, 200, { id: armHold(tool) });
+    });
+    return true;
+  }
+  const holdMatch = url.pathname.match(/^\/mock\/hold\/([^/]+)$/);
+  if (holdMatch && req.method === "GET") {
+    const hold = holds.get(holdMatch[1]);
+    if (!hold) sendJsonResponse(res, 404, { error: "unknown hold" });
+    else sendJsonResponse(res, 200, { held: hold.held, released: hold.released });
+    return true;
+  }
+  const releaseMatch = url.pathname.match(/^\/mock\/release\/([^/]+)$/);
+  if (releaseMatch && req.method === "POST") {
+    const result = releaseHold(releaseMatch[1]);
+    if (!result) sendJsonResponse(res, 404, { error: "unknown hold" });
+    else sendJsonResponse(res, 200, { released: true, wasHeld: result.wasHeld });
+    return true;
+  }
+  return false;
+}
+
 function streamToolUseResponse(
   res,
   toolName,
@@ -938,7 +1034,9 @@ function handleResponses(req, res) {
       // Codex doesn't support MCP + shell calls in parallel, and the
       // deferral mechanism is exercised even with a single Answer call.
       const first = intent.tool_calls[0];
-      oaiStreamFunctionCallResponse(res, first.name, first.input);
+      deliverToolCall(res, intent, [first.name], () =>
+        oaiStreamFunctionCallResponse(res, first.name, first.input),
+      );
     } else if (intent.type === "autonomous_compaction_switchmode") {
       oaiStreamFunctionCallResponse(
         res,
@@ -952,7 +1050,9 @@ function handleResponses(req, res) {
       oaiStreamWebSearchCallResponse(res, intent.query, [intent.query]);
     } else {
       // tool_call — names are already correct for the OpenAI/Codex protocol
-      oaiStreamFunctionCallResponse(res, intent.name, intent.input);
+      deliverToolCall(res, intent, [intent.name], () =>
+        oaiStreamFunctionCallResponse(res, intent.name, intent.input),
+      );
     }
   });
 }
@@ -1347,7 +1447,9 @@ function handleMessages(req, res) {
     } else if (intent.type === "multi_tool_call") {
       const toolNames = intent.tool_calls.map((tc) => tc.name);
       const inputs = intent.tool_calls.map((tc) => tc.input);
-      streamMultiToolUseResponse(res, toolNames, inputs, model);
+      deliverToolCall(res, intent, toolNames, () =>
+        streamMultiToolUseResponse(res, toolNames, inputs, model),
+      );
     } else if (intent.type === "eager_ask") {
       streamEagerAskThenSlowToolResponse(
         res,
@@ -1375,19 +1477,14 @@ function handleMessages(req, res) {
         model,
       );
     } else if (intent.type === "shell" || intent.type === "background_shell") {
-      const respond = () =>
+      deliverToolCall(res, intent, ["Bash"], () =>
         streamToolUseResponse(
           res,
           "Bash",
           { command: intent.command, description: "Running command" },
           model,
-        );
-      if (intent.delay) {
-        const timer = setTimeout(respond, intent.delay);
-        res.on("close", () => clearTimeout(timer));
-      } else {
-        respond();
-      }
+        ),
+      );
     } else {
       // tool_call — map generic names to Anthropic tool names
       let toolName = intent.name;
@@ -1399,7 +1496,9 @@ function handleMessages(req, res) {
         toolName = "Read";
         input = { file_path: intent.input.path };
       }
-      streamToolUseResponse(res, toolName, input, model);
+      deliverToolCall(res, intent, [toolName], () =>
+        streamToolUseResponse(res, toolName, input, model),
+      );
     }
   });
 }
@@ -1409,6 +1508,8 @@ const server = createServer((req, res) => {
   console.log(`[mock-api] ${req.method} ${url.pathname}`);
 
   // Health check
+  if (handleHoldControl(req, res, url)) return;
+
   if (url.pathname === "/api/hello" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("ok");

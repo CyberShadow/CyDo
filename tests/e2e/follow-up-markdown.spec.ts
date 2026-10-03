@@ -1,4 +1,10 @@
-import { test, expect, enterSession, sendMessage } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  holdMockTool,
+} from "./fixtures";
 
 // Follow-up bodies must be rendered as Markdown (agent-authored content).
 // This test drives the same parent→completed-child Ask flow as ask-answer.spec.ts
@@ -7,6 +13,7 @@ import { test, expect, enterSession, sendMessage } from "./fixtures";
 
 test("Follow-up from parent renders body as Markdown (live and after reload)", async ({
   page,
+  agentType,
 }) => {
   await enterSession(page);
 
@@ -34,6 +41,11 @@ test("Follow-up from parent renders body as Markdown (live and after reload)", a
     page.locator('.sidebar-item[data-tid="1"].active'),
   ).toBeVisible();
 
+  // Hold the child's answer: the router's focus on the completed child lasts
+  // only until the answer returns, so the held answer keeps that state in
+  // place until the test has observed it, independent of timing or load.
+  const answer = await holdMockTool(agentType, "mcp__cydo__Answer");
+
   // Parent asks the completed child (tid=2) with a Markdown-formatted message.
   await sendMessage(page, "call ask 2 **important question**");
 
@@ -43,6 +55,7 @@ test("Follow-up from parent renders body as Markdown (live and after reload)", a
   await expect(
     page.locator('.sidebar-item[data-tid="2"].active'),
   ).toBeVisible();
+  await answer.release();
 
   // Wait for the child to answer.
   await expect(

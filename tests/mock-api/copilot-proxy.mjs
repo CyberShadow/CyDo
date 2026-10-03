@@ -25,6 +25,84 @@ function nextChatId() {
 
 let callIdCounter = 0;
 
+// Hold/release side channel, mirroring server.mjs: a spec parks the next
+// response carrying a named tool call (canonical mcp__cydo__ spelling) until it
+// releases it, so the UI state between the call and its response stays
+// observable regardless of timing. Plain HTTP on this port:
+//   POST /mock/hold {"tool"} -> {"id"}, GET /mock/hold/<id>, POST /mock/release/<id>
+const holds = new Map();
+let holdCounter = 0;
+
+function armHold(tool) {
+  const id = String(++holdCounter);
+  holds.set(id, { tool, respond: null, held: false, released: false });
+  return id;
+}
+
+function releaseHold(id) {
+  const hold = holds.get(id);
+  if (!hold) return null;
+  const wasHeld = hold.held;
+  hold.released = true;
+  const respond = hold.respond;
+  hold.respond = null;
+  if (respond) respond();
+  return { wasHeld };
+}
+
+// Send a tool-call response now, or park it under an armed hold naming one
+// of its (canonical) tools until release; dropped if the client goes away.
+function deliverToolCall(socket, toolNames, respond) {
+  for (const hold of holds.values()) {
+    if (hold.released || hold.held || !toolNames.includes(hold.tool)) continue;
+    hold.held = true;
+    hold.respond = respond;
+    socket.on("close", () => {
+      if (hold.respond === respond) hold.respond = null;
+    });
+    return;
+  }
+  respond();
+}
+
+function handleHoldControl(req, res) {
+  const url = new URL(req.url, "http://127.0.0.1");
+  const reply = (status, body) => {
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (url.pathname === "/mock/hold" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      let tool;
+      try {
+        tool = JSON.parse(body).tool;
+      } catch {
+        tool = undefined;
+      }
+      if (typeof tool !== "string" || tool.length === 0) reply(400, { error: "tool name required" });
+      else reply(200, { id: armHold(tool) });
+    });
+    return true;
+  }
+  const holdMatch = url.pathname.match(/^\/mock\/hold\/([^/]+)$/);
+  if (holdMatch && req.method === "GET") {
+    const hold = holds.get(holdMatch[1]);
+    if (!hold) reply(404, { error: "unknown hold" });
+    else reply(200, { held: hold.held, released: hold.released });
+    return true;
+  }
+  const releaseMatch = url.pathname.match(/^\/mock\/release\/([^/]+)$/);
+  if (releaseMatch && req.method === "POST") {
+    const result = releaseHold(releaseMatch[1]);
+    if (!result) reply(404, { error: "unknown hold" });
+    else reply(200, { released: true, wasHeld: result.wasHeld });
+    return true;
+  }
+  return false;
+}
+
 function sendJson(socket, statusCode, statusText, body) {
   const bodyStr = JSON.stringify(body);
   const response =
@@ -247,12 +325,12 @@ function handleChatCompletions(socket, body) {
       toolName = "cydo-" + toolName.slice("mcp__cydo__".length);
     }
     const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
-    sendSse(socket, [
+    deliverToolCall(socket, [first.name], () => sendSse(socket, [
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: callId, type: "function", function: { name: toolName, arguments: "" } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(first.input) } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
-    ]);
+    ]));
   } else {
     // tool_call — translate mcp__cydo__Foo → cydo-Foo for copilot's MCP tool registry
     let toolName = intent.name;
@@ -260,13 +338,13 @@ function handleChatCompletions(socket, body) {
       toolName = "cydo-" + toolName.slice("mcp__cydo__".length);
     }
     const callId = `call_mock_${String(++callIdCounter).padStart(3, "0")}`;
-    sendSse(socket, [
+    deliverToolCall(socket, [intent.name], () => sendSse(socket, [
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [{ index: 0, id: callId, type: "function", function: { name: toolName, arguments: "" } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(intent.input) } }] }, finish_reason: null }] },
       { id: chatId, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
       "[DONE]",
     // Let the real client deliver Answer before its canonical idle event.
-    ], toolName === "cydo-Answer" ? 500 : 0);
+    ], toolName === "cydo-Answer" ? 500 : 0));
   }
 }
 
@@ -415,6 +493,7 @@ server.on("connect", (req, clientSocket, head) => {
 });
 
 server.on("request", (req, res) => {
+  if (handleHoldControl(req, res)) return;
   // Plain HTTP requests — not expected for Copilot, but handle gracefully
   res.writeHead(400, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Use CONNECT for HTTPS" }));
