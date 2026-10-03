@@ -2,7 +2,7 @@ module cydo.web.transport;
 
 import std.conv : ConvException, to;
 import std.file : exists, isFile, remove;
-import std.logger : infof, warningf;
+import std.logger : fatalf, infof, warningf;
 import std.path : buildPath;
 
 import ae.net.asockets : DisconnectType, onNextTick, socketManager;
@@ -78,6 +78,10 @@ class TransportAdapter
 	private string webDistDir_;
 	private string authUser_;
 	private string authPass_;
+	// session cookie token, regenerated whenever auth credentials are set; old
+	// iOS Safari never sends the Authorization header on WebSocket upgrades, so
+	// /ws authenticates via this cookie instead
+	private string authCookieToken_;
 	private WebSocketCallbacks websocketCallbacks_;
 	private RawSourceLookupResult delegate(int tid, size_t seq) rawSourceLookup_;
 	private McpCallbacks mcpCallbacks_;
@@ -99,6 +103,16 @@ class TransportAdapter
 	{
 		authUser_ = user;
 		authPass_ = pass;
+		if (authEnabled)
+		{
+			import std.file : read;
+			import std.format : format;
+
+			auto entropy = cast(ubyte[]) read("/dev/urandom", 32);
+			if (entropy.length != 32)
+				fatalf("Short read from /dev/urandom (%d bytes)", entropy.length);
+			authCookieToken_ = format("%(%02x%)", entropy);
+		}
 	}
 
 	void startHttpServer(string sslCert, string sslKey)
@@ -208,12 +222,26 @@ class TransportAdapter
 			"object-src 'none'; " ~
 			"base-uri 'self'; " ~
 			"frame-ancestors 'none'";
+		// hand a session cookie to clients that authenticated via basic auth; it
+		// rides along on WebSocket upgrades where old Safari omits the
+		// Authorization header
+		if (authCookieToken_.length > 0 && !hasValidAuthCookie(request))
+			response.headers["Set-Cookie"] =
+				"cydo_auth=" ~ authCookieToken_ ~ "; Path=/; HttpOnly; SameSite=Strict";
 		conn.sendResponse(response);
+	}
+
+	private bool hasValidAuthCookie(HttpRequest request)
+	{
+		return authCookieToken_.length > 0
+			&& request.getCookies().get("cydo_auth", null) == authCookieToken_;
 	}
 
 	private bool checkAuth(HttpRequest request, HttpServerConnection conn)
 	{
 		if (!authEnabled)
+			return true;
+		if (hasValidAuthCookie(request))
 			return true;
 		auto response = new HttpResponseEx();
 		if (!response.authorize(request, (reqUser, reqPass) => reqUser == authUser_ && reqPass == authPass_))
