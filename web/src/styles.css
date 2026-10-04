@@ -4141,6 +4141,21 @@ pre.extra-field-value {
   object-fit: cover;
 }
 
+/* a format the browser cannot decode still needs a visible, removable chip */
+.image-preview-label {
+  height: 80px;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .image-preview-remove {
   position: absolute;
   top: -6px;
@@ -4166,6 +4181,14 @@ pre.extra-field-value {
 
 .image-previews:hover .image-preview-remove {
   opacity: 1;
+}
+
+/* a refused file's name and reason; click to dismiss */
+.attach-error {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
 }
 
 .input-box-dragging {
