@@ -47,10 +47,22 @@ async function activeHistory(page: Page) {
       "[style*='display: contents'] .message.user-message:not(.pending):not(.meta-message), [style*='display: contents'] .assistant-message",
     )
     .evaluateAll((messages) =>
-      messages.map((message) => ({
-        role: message.classList.contains("user-message") ? "user" : "assistant",
-        text: (message.textContent ?? "").trimEnd(),
-      })),
+      messages.map((message) => {
+        // the conversation itself: context the agent's harness added around
+        // a prompt reaches the page through the transcript tail, so whether
+        // a live snapshot holds it yet is a race the comparison should ignore
+        const conversation = message.cloneNode(true) as Element;
+        for (const context of conversation.querySelectorAll(
+          ".context-attachments",
+        ))
+          context.remove();
+        return {
+          role: message.classList.contains("user-message")
+            ? "user"
+            : "assistant",
+          text: (conversation.textContent ?? "").trimEnd(),
+        };
+      }),
     );
 }
 

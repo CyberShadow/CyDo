@@ -22,9 +22,22 @@ export interface CydoMeta {
   severity?: "info" | "error";
 }
 
+/** One record of context the agent's harness added around a turn (hook
+ *  output, reminders, CLAUDE.md loads, date changes, ...), as stored in its
+ *  transcript; category is the record's attachment type */
+export interface ContextAttachment {
+  uuid: string;
+  category: string;
+  text: string;
+  /** the record's other fields, when it has a main text besides them */
+  extras?: Record<string, unknown>;
+}
+
 export interface DisplayMessage {
   id: string;
-  type:
+  type: /** context that arrived mid-turn (with a tool result rather than a
+     *  prompt); shown as a synthetic block in timeline order */
+    | "context"
     | "user"
     | "diagnostic"
     | "assistant"
@@ -72,6 +85,9 @@ export interface DisplayMessage {
   isSteering?: boolean;
   isCompactSummary?: boolean;
   parentToolUseId?: string | null;
+  /** context attachments: those that came with this prompt on a user
+   *  message, or the run of mid-turn ones on a "context" message */
+  contextAttachments?: ContextAttachment[];
   usage?: { input_tokens: number; output_tokens: number };
   // Result message fields
   resultData?: {
@@ -282,6 +298,10 @@ export interface TaskState {
   status: TaskStatus;
   messages: DisplayMessage[];
   replacementEvents: Map<number, import("./protocol").AgnosticEvent>;
+  /** context records for a prompt this timeline does not hold yet, by the
+   *  prompt's uuid: live, the transcript tail can deliver a prompt's context
+   *  before the agent's echo of the prompt itself */
+  pendingPromptContext: Map<string, ContextAttachment[]>;
   sessionInfo: SessionInfo | null;
   sessionStatus?: string | null;
   isProcessing: boolean;
@@ -405,6 +425,7 @@ export function makeTaskState(
     status,
     messages: [],
     replacementEvents: new Map(),
+    pendingPromptContext: new Map(),
     sessionInfo: null,
     sessionStatus: null,
     isProcessing,

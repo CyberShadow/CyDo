@@ -69,6 +69,7 @@ function resetTaskTimeline(
     ...task,
     messages: [],
     replacementEvents: new Map(),
+    pendingPromptContext: new Map(),
     sessionInfo: null,
     sessionStatus: null,
     totalCost: 0,

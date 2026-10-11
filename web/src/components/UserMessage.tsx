@@ -1,6 +1,7 @@
 import type { DisplayMessage } from "../types";
 import { Markdown } from "./Markdown";
 import { useDevMode } from "../devMode";
+import { ContextAttachments } from "./ContextAttachments";
 
 interface Props {
   message: DisplayMessage;
@@ -92,6 +93,7 @@ export function UserMessage({ message }: Props) {
         ) : (
           <div class="user-text">{text}</div>
         ))}
+      <ContextAttachments attachments={message.contextAttachments} />
       {devMode &&
         message.extraFields &&
         Object.keys(message.extraFields).length > 0 && (

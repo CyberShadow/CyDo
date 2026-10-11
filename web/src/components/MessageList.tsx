@@ -12,6 +12,7 @@ import { outbox, type OutboxEntry } from "../outbox";
 import { hasAnsi, renderAnsi } from "../ansi";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
+import { ContextAttachments, ContextMessage } from "./ContextAttachments";
 import { CopyButton, CodePre } from "./CopyButton";
 import { useDevMode } from "../devMode";
 import { Markdown } from "./Markdown";
@@ -242,39 +243,53 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
   );
 
   const hasVars = meta.vars && Object.keys(meta.vars).length > 0;
+  // the context the agent received with this prompt; its clicks stay inside,
+  // since the expanded view collapses on click
+  const context = message.contextAttachments?.length ? (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+      }}
+    >
+      <ContextAttachments attachments={message.contextAttachments} />
+    </div>
+  ) : null;
 
   if (!hasVars) {
     // Nudge-style: collapsed divider or expanded full text
     if (!showFull) {
       return (
-        <div
-          class={`result-divider system-user-message${meta.severity === "error" ? " severity-error" : ""}${message.pending ? " pending" : ""}`}
-          onClick={() => {
-            setShowFull(true);
-          }}
-        >
-          <hr />
-          <svg
-            class="result-divider-icon system-user-icon cydo-tool-logo"
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke-width="2"
-            stroke-linecap="round"
+        <>
+          <div
+            class={`result-divider system-user-message${meta.severity === "error" ? " severity-error" : ""}${message.pending ? " pending" : ""}`}
+            onClick={() => {
+              setShowFull(true);
+            }}
           >
-            <path
-              style={{ stroke: "var(--success)" }}
-              d="M5.5 12L10.5 4L13 8l-2.5 4"
-            />
-            <path
-              style={{ stroke: "var(--processing)" }}
-              d="M5.5 4L3 8l2.5 4"
-            />
-          </svg>
-          <span class="system-user-label">{meta.label}</span>
-          <hr />
-        </div>
+            <hr />
+            <svg
+              class="result-divider-icon system-user-icon cydo-tool-logo"
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <path
+                style={{ stroke: "var(--success)" }}
+                d="M5.5 12L10.5 4L13 8l-2.5 4"
+              />
+              <path
+                style={{ stroke: "var(--processing)" }}
+                d="M5.5 4L3 8l2.5 4"
+              />
+            </svg>
+            <span class="system-user-label">{meta.label}</span>
+            <hr />
+          </div>
+          {context}
+        </>
       );
     }
     return (
@@ -287,6 +302,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
         <div class="system-user-header">{meta.label}</div>
         {images}
         <pre class="system-user-pre">{text}</pre>
+        {context}
       </div>
     );
   }
@@ -353,6 +369,7 @@ function SystemUserMessage({ message }: { message: DisplayMessage }) {
         <summary>Full message</summary>
         <CodePre copyText={text}>{text}</CodePre>
       </details>
+      {context}
     </div>
   );
 }
@@ -589,6 +606,9 @@ const MessageView = memo(
         ) : (
           <UserMessage message={msg} />
         );
+        break;
+      case "context":
+        inner = <ContextMessage message={msg} />;
         break;
       case "diagnostic": {
         const body = msg.content

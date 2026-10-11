@@ -2357,10 +2357,102 @@ body,
   border: 1px solid rgba(160, 140, 176, 0.3);
 }
 
+/* context the agent's harness added around a turn (hook output, reminders,
+   CLAUDE.md loads, ...): one collapsed line per record, in one shaded panel
+   per message like a thinking block; opened bodies sit in it unshaded so
+   nothing stacks dark on dark */
+.context-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--overlay-dark);
+  font-size: 12px;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.context-attachment-summary {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.context-attachment-category {
+  flex: none;
+  font-family: var(--font-mono, monospace);
+  opacity: 0.8;
+}
+
+.context-attachment-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.context-attachment-body {
+  margin-top: 2px;
+  padding-left: 8px;
+}
+
+.context-attachment-bracket {
+  font-family: var(--font-mono);
+}
+
+/* the folded contents of a JSON body, as a small pill that reads as
+   clickable; the whole row toggles, the pill only says so */
+.context-attachment-ellipsis {
+  display: inline-block;
+  margin: 0 4px;
+  padding: 0 5px;
+  line-height: 1.2;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  background: var(--overlay-dark);
+}
+
+.context-attachment-summary:hover .context-attachment-ellipsis {
+  border-color: var(--text-dim);
+}
+
+.context-attachment-close {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.context-attachment-text,
+.context-attachment-extras {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.context-attachment-extras {
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
 .user-message.meta-message,
 .user-message.steering-message,
 .assistant-message.synthetic-message,
 .user-message.synthetic-message {
+  opacity: 0.7;
+}
+
+/* mid-turn context: the synthetic user-side look, without the user-message
+   class, since it is not a message anyone sent */
+.context-message {
+  background: var(--user-bg);
+  border-left: 3px solid var(--user-border);
   opacity: 0.7;
 }
 

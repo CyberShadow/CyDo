@@ -1,6 +1,10 @@
 import { useState } from "preact/hooks";
 import type { SessionInfo } from "../types";
-import type { AgentUsageLimitWindow, AgentUsageMessage } from "../protocol";
+import type {
+  AgentUsageLimitWindow,
+  AgentUsageMessage,
+  UsageUiConfig,
+} from "../protocol";
 import type { Theme } from "../useTheme";
 import sunIcon from "../icons/sun.svg?raw";
 import moonIcon from "../icons/moon.svg?raw";
@@ -31,6 +35,7 @@ interface Props {
   onResume?: () => void;
   exportMode?: boolean;
   claudeUsage?: AgentUsageMessage;
+  usageDisplay?: UsageUiConfig;
 }
 
 export function normalizeSessionStatus(status?: string | null): string | null {
@@ -104,9 +109,19 @@ export function usageFillColor(
   return "rgb(173, 186, 73)";
 }
 
+export function percentUsageFillColor(utilizationPercent: number): string {
+  // green (0%) -> yellow (50%) -> red (100%): red ramps up over the first
+  // half, green ramps down over the second half
+  const pct = clamp01(utilizationPercent / 100) * 100;
+  const r = Math.round(255 * Math.min(1, pct / 50));
+  const g = Math.round(255 * Math.min(1, (100 - pct) / 50));
+  return `rgb(${r}, ${g}, 0)`;
+}
+
 function usageTitle(
   label: string,
   window: AgentUsageLimitWindow | undefined,
+  remaining?: boolean,
 ): string {
   const status = window?.status ? `, status: ${window.status}` : "";
   const resetTs = window?.resetsAt;
@@ -116,6 +131,8 @@ function usageTitle(
       : "";
   const pct = usagePercent(window?.utilization);
   if (pct === null) return `${label}: unknown${status}${reset}`;
+  if (remaining)
+    return `${label}: ${(100 - pct).toFixed(1)}% remaining${status}${reset}`;
   return `${label}: ${pct.toFixed(1)}%${status}${reset}`;
 }
 
@@ -144,6 +161,7 @@ export function SystemBanner({
   onResume,
   exportMode,
   claudeUsage,
+  usageDisplay,
 }: Props) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const liveStatus = normalizeSessionStatus(sessionStatus);
@@ -235,28 +253,35 @@ export function SystemBanner({
           <div class="banner-usage" title="Claude account usage">
             {usageRows.map((row) => {
               const pct = usagePercent(row.window?.utilization);
+              // the color keys on the used share whichever way the bar fills
               const color =
                 pct === null
                   ? "var(--border)"
-                  : usageFillColor(
-                      pct,
-                      row.window?.resetsAt,
-                      row.windowSeconds,
-                      nowSeconds,
-                    );
-              const valueText = pct === null ? "--" : `${pct.toFixed(0)}%`;
+                  : usageDisplay?.coloring === "percent"
+                    ? percentUsageFillColor(pct)
+                    : usageFillColor(
+                        pct,
+                        row.window?.resetsAt,
+                        row.windowSeconds,
+                        nowSeconds,
+                      );
+              const remaining = usageDisplay?.remaining ?? false;
+              const shownPct =
+                pct === null ? null : remaining ? 100 - pct : pct;
+              const valueText =
+                shownPct === null ? "--" : `${shownPct.toFixed(0)}%`;
               return (
                 <div
                   key={row.label}
                   class="banner-usage-row"
-                  title={usageTitle(row.label, row.window)}
+                  title={usageTitle(row.label, row.window, remaining)}
                 >
                   <span class="banner-usage-label">{row.label}</span>
                   <span class="banner-usage-bar">
                     <span
                       class="banner-usage-fill"
                       style={{
-                        width: pct === null ? "0%" : `${pct}%`,
+                        width: shownPct === null ? "0%" : `${shownPct}%`,
                         backgroundColor: color,
                       }}
                     />

@@ -1618,3 +1618,109 @@ describe("cydo/task_spawned reducer", () => {
     expect(s.pendingCydoTaskItemIds).toEqual([]);
   });
 });
+
+describe("context attachments", () => {
+  const prompt = (uuid: string, text: string) =>
+    ({
+      type: "item/started",
+      item_id: `u-${uuid}`,
+      item_type: "user_message",
+      text,
+      uuid,
+    }) as const;
+  const context = (
+    uuid: string,
+    category: string,
+    anchor: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    type: "item/started" as const,
+    item_id: `cc-attachment-${uuid}`,
+    item_type: "context_attachment",
+    name: category,
+    text: `${category} body`,
+    uuid,
+    anchor_uuid: anchor,
+    ...extra,
+  });
+  const run = (events: unknown[]): TaskState =>
+    events.reduce<TaskState>(
+      (s, ev, i) => reduceMessage(s, ev as never, i),
+      makeTaskState(1),
+    );
+
+  it("puts context that came with a prompt on that prompt, in order", () => {
+    const s = run([
+      prompt("p1", "hello"),
+      context("a1", "hook_success", "p1"),
+      context("a2", "date_change", "p1"),
+    ]);
+    const user = s.messages.find((m) => m.uuid === "p1")!;
+    expect(user.contextAttachments!.map((a) => a.category)).toEqual([
+      "hook_success",
+      "date_change",
+    ]);
+    expect(s.messages.some((m) => m.type === "context")).toBe(false);
+  });
+
+  it("puts mid-turn context in one synthetic block, merging a run", () => {
+    const s = run([
+      prompt("p1", "hello"),
+      context("a1", "total_tokens_reminder", "tool-result-1", {
+        is_synthetic: true,
+      }),
+      context("a2", "edited_text_file", "tool-result-1", {
+        is_synthetic: true,
+      }),
+    ]);
+    const blocks = s.messages.filter((m) => m.type === "context");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.isSynthetic).toBe(true);
+    expect(blocks[0]!.contextAttachments!.map((a) => a.uuid)).toEqual([
+      "a1",
+      "a2",
+    ]);
+    expect(
+      s.messages.find((m) => m.uuid === "p1")!.contextAttachments,
+    ).toBeUndefined();
+  });
+
+  it("ignores a record it already holds, as the tail and a replay both send it", () => {
+    const s = run([
+      prompt("p1", "hello"),
+      context("a1", "hook_success", "p1"),
+      context("a1", "hook_success", "p1"),
+    ]);
+    expect(
+      s.messages.find((m) => m.uuid === "p1")!.contextAttachments,
+    ).toHaveLength(1);
+  });
+
+  it("keeps a sub-agent's context with that sub-agent", () => {
+    const s = run([
+      prompt("p1", "hello"),
+      context("a1", "total_tokens_reminder", "t1", {
+        parent_tool_use_id: "toolu_1",
+        is_synthetic: true,
+      }),
+    ]);
+    const block = s.messages.find((m) => m.type === "context")!;
+    expect(block.parentToolUseId).toBe("toolu_1");
+  });
+
+  it("holds a prompt's context that arrives before the prompt", () => {
+    const early = run([context("a1", "hook_success", "p1")]);
+    expect(early.messages).toHaveLength(0);
+    const s = reduceMessage(early, prompt("p1", "hello") as never, 9);
+    expect(
+      s.messages
+        .find((m) => m.uuid === "p1")!
+        .contextAttachments!.map((a) => a.uuid),
+    ).toEqual(["a1"]);
+    expect(s.pendingPromptContext.size).toBe(0);
+  });
+
+  it("rejects a record without a category", () => {
+    expect(() => run([context("a1", "", "p1")])).toThrow();
+  });
+});

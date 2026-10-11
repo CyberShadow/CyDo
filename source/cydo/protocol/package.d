@@ -267,6 +267,9 @@ struct ItemStartedEvent
 	@JSONOptional bool is_sidechain;
 	@JSONOptional string correlation_id;
 	@JSONOptional JSONFragment extras;
+	// context_attachment: the transcript record the context came with (the
+	// user prompt or tool result its attachment chain starts from)
+	@JSONOptional string anchor_uuid;
 }
 
 /// item/delta — incremental content for the active item.

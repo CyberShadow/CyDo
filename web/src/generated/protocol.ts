@@ -179,6 +179,7 @@ export interface ItemStartedEvent {
   is_sidechain?: boolean;
   correlation_id?: string;
   extras?: Record<string, unknown>;
+  anchor_uuid?: string;
 }
 
 export interface ItemDeltaEvent {

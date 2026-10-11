@@ -76,6 +76,7 @@ function AppContent() {
     serverError,
     dismissServerError,
     devMode,
+    ui,
     navigateHome,
     navigateToProject,
     getProjectHref,
@@ -541,6 +542,7 @@ function AppContent() {
                     onEditRawEvent={editRawEvent}
                     defaultAgent={effectiveDefaultAgent}
                     agentUsage={agentUsage}
+                    ui={ui}
                     getTaskHref={getTaskHref}
                   />
                 </div>

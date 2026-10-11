@@ -16,6 +16,7 @@ import type {
   FileEditStatus,
   Block,
   CydoMeta,
+  ContextAttachment,
 } from "./types";
 import type { HistoryBoundary } from "./types";
 import { toolIs } from "./toolIdentity";
@@ -780,6 +781,129 @@ export function reduceResultMessage(
   return msg.is_error ? cancelPendingFileEdits(nextState) : nextState;
 }
 
+/** Context the harness added around a turn. One whose chain starts at a
+ *  prompt goes on that user message (anchor_uuid is the prompt's uuid); if the
+ *  prompt is not here yet, which happens live when the transcript tail beats
+ *  the agent's echo of the prompt, it waits in pendingPromptContext until the
+ *  prompt arrives. One that arrived mid-turn (is_synthetic: its chain starts
+ *  at a tool result, or somewhere never seen) goes in a synthetic "context"
+ *  block at its place in the timeline, merged with the block right before
+ *  it. The live tail and a history replay can both deliver the same record,
+ *  so a uuid already held is ignored. */
+function reduceContextAttachment(
+  s: SessionState,
+  event: ItemStartedEvent,
+): SessionState {
+  const uuid = event.uuid;
+  const category = event.name;
+  if (!uuid || !category)
+    throw new Error("context_attachment event without a uuid or category");
+  if (
+    s.messages.some((m) =>
+      m.contextAttachments?.some((a) => a.uuid === uuid),
+    ) ||
+    [...s.pendingPromptContext.values()].some((list) =>
+      list.some((a) => a.uuid === uuid),
+    )
+  )
+    return s;
+  const attachment: ContextAttachment = {
+    uuid,
+    category,
+    text: event.text ?? "",
+    extras:
+      event.extras && typeof event.extras === "object"
+        ? event.extras
+        : undefined,
+  };
+  const parentToolUseId = event.parent_tool_use_id ?? undefined;
+
+  const anchor = event.anchor_uuid;
+  if (!event.is_synthetic) {
+    if (!anchor)
+      throw new Error("prompt context_attachment event without an anchor");
+    const index = s.messages.findIndex(
+      (m) =>
+        m.type === "user" &&
+        m.uuid === anchor &&
+        (m.parentToolUseId ?? undefined) === parentToolUseId,
+    );
+    if (index < 0) {
+      const pendingPromptContext = new Map(s.pendingPromptContext);
+      pendingPromptContext.set(anchor, [
+        ...(pendingPromptContext.get(anchor) ?? []),
+        attachment,
+      ]);
+      return { ...s, pendingPromptContext };
+    }
+    const target = s.messages[index]!;
+    const messages = [...s.messages];
+    messages[index] = {
+      ...target,
+      contextAttachments: [...(target.contextAttachments ?? []), attachment],
+    };
+    return { ...s, messages };
+  }
+
+  // mid-turn: extend the context block just before where this one goes
+  const streamingIndex = s.messages.findIndex(
+    (m) =>
+      m.type === "assistant" &&
+      m.streaming === true &&
+      (m.parentToolUseId ?? undefined) === parentToolUseId,
+  );
+  const insertAt = streamingIndex >= 0 ? streamingIndex : s.messages.length;
+  const previous = insertAt > 0 ? s.messages[insertAt - 1] : undefined;
+  if (
+    previous?.type === "context" &&
+    (previous.parentToolUseId ?? undefined) === parentToolUseId
+  ) {
+    const messages = [...s.messages];
+    messages[insertAt - 1] = {
+      ...previous,
+      contextAttachments: [...previous.contextAttachments!, attachment],
+    };
+    return { ...s, messages };
+  }
+  const id = String(++s.msgIdCounter);
+  const block: DisplayMessage = {
+    id,
+    type: "context",
+    content: [],
+    isSynthetic: true,
+    parentToolUseId,
+    contextAttachments: [attachment],
+  };
+  const messages = [...s.messages];
+  messages.splice(insertAt, 0, block);
+  return { ...s, messages };
+}
+
+/** hand prompts the context that arrived for them before they did. A prompt
+ *  gets its transcript uuid either from the agent's echo or when its
+ *  confirmation upgrades the page's own placeholder, so this runs after any
+ *  event while something is waiting */
+function resolvePendingPromptContext(s: SessionState): SessionState {
+  let messages: DisplayMessage[] | undefined;
+  let pendingPromptContext: Map<string, ContextAttachment[]> | undefined;
+  for (const [uuid, pending] of s.pendingPromptContext) {
+    const list = messages ?? s.messages;
+    const index = list.findIndex((m) => m.type === "user" && m.uuid === uuid);
+    if (index < 0) continue;
+    messages ??= [...s.messages];
+    pendingPromptContext ??= new Map(s.pendingPromptContext);
+    const target = messages[index]!;
+    messages[index] = {
+      ...target,
+      contextAttachments: [...(target.contextAttachments ?? []), ...pending],
+    };
+    pendingPromptContext.delete(uuid);
+  }
+  return messages && pendingPromptContext
+    ? { ...s, messages, pendingPromptContext }
+    : s;
+}
+
 /** Insert a message before any in-progress streaming assistant message.
  *  User messages should always precede the assistant's response, but the
  *  protocol may deliver the user echo after streaming has already started. */
@@ -1183,6 +1307,9 @@ export function reduceItemStarted(
 ): SessionState {
   if (event.item_type === "user_message") {
     return reduceItemStartedUserMessage(s, event, seq, ts);
+  }
+  if (event.item_type === "context_attachment") {
+    return reduceContextAttachment(s, event);
   }
 
   // Top-level assistant output proves the request containing the previously
@@ -1633,6 +1760,18 @@ function reduceTaskDiagnostic(
 // ---------------------------------------------------------------------------
 
 export function reduceMessage(
+  s: SessionState,
+  msg: AgnosticEvent,
+  seq?: number,
+  ts?: number,
+): SessionState {
+  const next = reduceMessageEvent(s, msg, seq, ts);
+  return next.pendingPromptContext.size > 0
+    ? resolvePendingPromptContext(next)
+    : next;
+}
+
+function reduceMessageEvent(
   s: SessionState,
   msg: AgnosticEvent,
   seq?: number,

@@ -15,6 +15,7 @@ import ae.utils.json : JSONExtras, JSONFragment, JSONName, JSONOptional, JSONPar
 import ae.utils.promise : Promise, reject, resolve;
 import ae.utils.time.types : AbsTime;
 
+import cydo.agent.context_chains : ContextChains;
 import cydo.agent.contract : Agent, DiscoveredSession, InterruptedToolCallRepair,
 	PersistedHistoryBoundary, PersistedHistoryBoundaryKind, OneShotHandle,
 	RewindResult, SessionConfig, SessionMeta;
@@ -627,10 +628,17 @@ class ClaudeCodeAgent : Agent
 
 	TranslatedEvent[] translateHistoryLine(string line, int lineNum)
 	{
-		return translateClaudeHistoryEvent(line);
+		return translateClaudeHistoryEvent(line, historyContextChains_);
 	}
 
-	void resetHistoryReplay() {} // no state to reset for Claude
+	// the context chains of the transcript being replayed (see
+	// translateContextAttachment)
+	private ContextChains historyContextChains_;
+
+	void resetHistoryReplay()
+	{
+		historyContextChains_ = ContextChains.init;
+	}
 
 	TranslatedEvent[] translateLiveEvent(string rawLine)
 	{
@@ -2581,7 +2589,8 @@ private JSONFragment buildClaudeContentBlocks(const(ContentBlock)[] blocks)
 
 /// Route a raw Claude JSONL history line to the appropriate translator.
 /// Returns zero or more agnostic event pairs.
-private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
+private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine,
+	ref ContextChains contextChains)
 {
 	import cydo.protocol : parseIso8601Timestamp;
 
@@ -2602,6 +2611,7 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 	try { ts = parseIso8601Timestamp(jsonParse!TimestampProbe(rawLine).timestamp); }
 	catch (Exception) {}
 
+	observeContextRoot(rawLine, contextChains);
 	TranslatedEvent[] result;
 	switch (probe.type)
 	{
@@ -2610,6 +2620,9 @@ private TranslatedEvent[] translateClaudeHistoryEvent(string rawLine)
 			break;
 		case "user":
 			result = normalizeUserHistory(rawLine);
+			break;
+		case "attachment":
+			result = translateContextAttachment(rawLine, contextChains);
 			break;
 		case "stream_event":
 			return []; // not stored in JSONL history
@@ -2631,7 +2644,8 @@ unittest
 		string type;
 	}
 
-	auto translated = translateClaudeHistoryEvent("null");
+	ContextChains chains;
+	auto translated = translateClaudeHistoryEvent("null", chains);
 	assert(translated.length == 1);
 	assert(translated[0].translated != "null");
 	assert(translated[0].translated.length > 0);
@@ -2639,6 +2653,147 @@ unittest
 
 	auto ev = jsonParse!EventTypeProbe(translated[0].translated);
 	assert(ev.type == "agent/unrecognized");
+}
+
+/// Note a transcript line's part in context chains: a prompt record (a user
+/// record that is not a tool result) can start one. Cheap string checks,
+/// since this runs on every line of every transcript replayed or tailed.
+public void observeContextRoot(string rawLine, ref ContextChains chains)
+{
+	import std.algorithm : canFind;
+	import std.string : indexOf;
+
+	if (!rawLine.canFind(`"type":"user"`) || rawLine.canFind(`"type":"tool_result"`)
+		|| rawLine.canFind(`"type":"attachment"`))
+		return;
+	enum prefix = `"uuid":"`;
+	auto idx = rawLine.indexOf(prefix);
+	if (idx < 0)
+		return;
+	auto start = idx + prefix.length;
+	auto end = rawLine.indexOf('"', start);
+	if (end > start)
+		chains.promptRecords[rawLine[start .. end]] = true;
+}
+
+/// Claude Code's attachment records: the context it adds around a turn (hook
+/// output, reminders, CLAUDE.md loads, date changes, file-change notes, ...).
+/// Each becomes a context_attachment item named after its category, carrying
+/// its text and the record it came with. Attachments chain through parentUuid
+/// (the first hangs off the record it accompanies, each later one off the one
+/// before it), so `chains.rootOf` maps every attachment seen to its chain's
+/// first non-attachment record; a chain whose start was never seen anchors on
+/// its parent. queued_command records are queued messages delivered
+/// mid-turn, not context, so they are left out.
+public TranslatedEvent[] translateContextAttachment(string rawLine, ref ContextChains chains)
+{
+	import std.json : JSONType, JSONValue, parseJSON;
+	import cydo.protocol : ItemStartedEvent;
+
+	JSONValue record;
+	try
+		record = parseJSON(rawLine);
+	catch (Exception e)
+	{ tracef("translateContextAttachment: parse error: %s", e.msg); return []; }
+	if (record.type != JSONType.object)
+		return [];
+	auto recordType = "type" in record.object;
+	if (recordType is null || recordType.type != JSONType.string
+		|| recordType.str != "attachment")
+		return [];
+	auto attachment = "attachment" in record.object;
+	auto uuidField = "uuid" in record.object;
+	if (attachment is null || attachment.type != JSONType.object
+		|| uuidField is null || uuidField.type != JSONType.string)
+		return [];
+	auto categoryField = "type" in attachment.object;
+	if (categoryField is null || categoryField.type != JSONType.string)
+		return [];
+	auto category = categoryField.str;
+	if (category == "queued_command")
+		return [];
+
+	auto uuid = uuidField.str;
+	string anchor;
+	if (auto parent = "parentUuid" in record.object)
+		if (parent.type == JSONType.string)
+			anchor = parent.str in chains.rootOf ? chains.rootOf[parent.str] : parent.str;
+	chains.rootOf[uuid] = anchor;
+
+	// the body is the attachment's main text when it has one; every other
+	// field rides along in extras, so nothing it carried is lost
+	string body;
+	string bodyKey;
+	foreach (key; ["content", "text", "stdout", "prompt"])
+		if (auto field = key in attachment.object)
+			if (field.type == JSONType.string && field.str.length > 0)
+			{
+				body = field.str;
+				bodyKey = key;
+				break;
+			}
+	JSONValue rest = JSONValue(string[string].init);
+	foreach (key, value; attachment.object)
+		if (key != "type" && key != bodyKey)
+			rest[key] = value;
+	if (bodyKey is null)
+		body = rest.object.length > 0 ? rest.toPrettyString() : "";
+
+	ItemStartedEvent ev;
+	ev.item_id = "cc-attachment-" ~ uuid;
+	ev.item_type = "context_attachment";
+	ev.name = category;
+	ev.text = body;
+	ev.uuid = uuid;
+	ev.anchor_uuid = anchor;
+	// context whose chain does not start at a prompt arrived mid-turn; so
+	// does one whose start was never seen, so it is shown rather than held
+	// for a prompt that may not come
+	if (anchor !in chains.promptRecords)
+		ev.is_synthetic = true;
+	if (bodyKey !is null && rest.object.length > 0)
+		ev.extras = JSONFragment(rest.toString());
+	if (auto sidechain = "isSidechain" in record.object)
+		if (sidechain.type == JSONType.true_)
+			ev.is_sidechain = true;
+	if (auto parentTool = "parent_tool_use_id" in record.object)
+		if (parentTool.type == JSONType.string)
+			ev.parent_tool_use_id = parentTool.str;
+	return [TranslatedEvent(toJson(ev), rawLine)];
+}
+
+unittest
+{
+	import std.algorithm : canFind;
+
+	ContextChains roots;
+	observeContextRoot(`{"type":"user","message":{"role":"user","content":"hi"},"uuid":"p1"}`, roots);
+	observeContextRoot(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]},"uuid":"t1"}`, roots);
+	// a hook's output hangs off the prompt; the reminder after it chains to
+	// the hook record, and still anchors on the prompt
+	auto hook = translateContextAttachment(`{"type":"attachment","uuid":"a1","parentUuid":"p1",`
+		~ `"attachment":{"type":"hook_success","hookName":"UserPromptSubmit",`
+		~ `"content":"2026-10-07 22:28 PDT Wed","command":"date"}}`, roots);
+	assert(hook.length == 1);
+	assert(hook[0].translated.canFind(`"item_type":"context_attachment"`));
+	assert(hook[0].translated.canFind(`"name":"hook_success"`));
+	assert(hook[0].translated.canFind(`"text":"2026-10-07 22:28 PDT Wed"`));
+	assert(hook[0].translated.canFind(`"anchor_uuid":"p1"`));
+	assert(hook[0].translated.canFind(`"command":"date"`), hook[0].translated);
+	assert(!hook[0].translated.canFind(`"is_synthetic"`), hook[0].translated);
+	auto chained = translateContextAttachment(`{"type":"attachment","uuid":"a2","parentUuid":"a1",`
+		~ `"attachment":{"type":"total_tokens_reminder","text":"<total_tokens>1</total_tokens>"}}`, roots);
+	assert(chained.length == 1 && chained[0].translated.canFind(`"anchor_uuid":"p1"`));
+	// a category with no main text shows its fields
+	auto bare = translateContextAttachment(`{"type":"attachment","uuid":"a3","parentUuid":"t1",`
+		~ `"attachment":{"type":"model","model":"opus"}}`, roots);
+	assert(bare.length == 1 && bare[0].translated.canFind(`opus`));
+	// it hangs off a tool result, so it arrived mid-turn
+	assert(bare[0].translated.canFind(`"is_synthetic":true`), bare[0].translated);
+	// queued_command is not context, and a malformed record is skipped
+	assert(translateContextAttachment(`{"type":"attachment","uuid":"a4","parentUuid":"p1",`
+		~ `"attachment":{"type":"queued_command","prompt":"x"}}`, roots).length == 0);
+	assert(translateContextAttachment(`{"type":"attachment","uuid":"a5"}`, roots).length == 0);
 }
 
 /// Translate a Claude history assistant message to item/started+completed per block + turn/stop.

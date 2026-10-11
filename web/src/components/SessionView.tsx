@@ -15,7 +15,7 @@ import type {
   AgentInfo,
   DraftView,
 } from "../useSessionManager";
-import type { AgentUsageMessage, Notice } from "../protocol";
+import type { AgentUsageMessage, Notice, UiConfig } from "../protocol";
 import type { OrdinaryDraftStore } from "../ordinaryDraftStore";
 import { NoticeBar } from "./NoticeBar";
 import { SystemBanner, normalizeSessionStatus } from "./SystemBanner";
@@ -30,6 +30,9 @@ import { FileViewer } from "./FileViewer";
 import { requestNotificationPermissionFromGesture } from "../useNotifications";
 import { LogoBanner } from "./LogoBanner";
 import { isMarkdownPath } from "../lib/fileFormats";
+import { HiddenContextCategoriesContext } from "./ContextAttachments";
+
+const noHiddenCategories: readonly string[] = [];
 
 interface Props {
   task: TaskState;
@@ -66,6 +69,7 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   agentUsage?: Record<string, AgentUsageMessage>;
+  ui?: UiConfig;
 }
 
 function SessionViewInner({
@@ -99,6 +103,7 @@ function SessionViewInner({
   exportMode,
   getTaskHref,
   agentUsage,
+  ui,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -380,6 +385,7 @@ function SessionViewInner({
         }}
         exportMode={exportMode}
         claudeUsage={claudeUsage}
+        usageDisplay={ui?.usage}
       />
       {fileViewerState && (
         <FileViewer
@@ -420,27 +426,31 @@ function SessionViewInner({
           </div>
         </div>
       ) : (
-        <MessageList
-          taskTid={tid}
-          messages={task.messages}
-          replacementEvents={task.replacementEvents}
-          historyOperations={task.historyOperations}
-          blocks={task.blocks}
-          isProcessing={task.isProcessing}
-          bandStatus={deriveBandStatus(
-            normalizeSessionStatus(task.sessionStatus),
-            task.isProcessing,
-            task.stdinClosed,
-            task.alive,
-          )}
-          onFork={onFork}
-          onUndo={onUndo}
-          onEditMessage={!task.alive ? onEditMessage : undefined}
-          onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
-          onViewFile={openFileViewer}
-          spawnedTidsByItemId={task.spawnedTidsByItemId}
-          getTaskHref={getTaskHref}
-        />
+        <HiddenContextCategoriesContext.Provider
+          value={ui?.context?.hidden_categories ?? noHiddenCategories}
+        >
+          <MessageList
+            taskTid={tid}
+            messages={task.messages}
+            replacementEvents={task.replacementEvents}
+            historyOperations={task.historyOperations}
+            blocks={task.blocks}
+            isProcessing={task.isProcessing}
+            bandStatus={deriveBandStatus(
+              normalizeSessionStatus(task.sessionStatus),
+              task.isProcessing,
+              task.stdinClosed,
+              task.alive,
+            )}
+            onFork={onFork}
+            onUndo={onUndo}
+            onEditMessage={!task.alive ? onEditMessage : undefined}
+            onEditRawEvent={!task.alive ? onEditRawEvent : undefined}
+            onViewFile={openFileViewer}
+            spawnedTidsByItemId={task.spawnedTidsByItemId}
+            getTaskHref={getTaskHref}
+          />
+        </HiddenContextCategoriesContext.Provider>
       )}
       {undoPreview && undoPreview.messagesRemoved >= 0 && (
         <UndoConfirmDialog

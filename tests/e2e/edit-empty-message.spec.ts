@@ -97,9 +97,20 @@ test(
       )
       .toBe("loaded");
 
-    await expect(emptyUserMessage.locator(".message.user-message")).toHaveText(
-      "",
-    );
+    // the message's own text; the context the harness added around the
+    // prompt still shows inside it, and is not part of what was edited
+    await expect
+      .poll(() =>
+        emptyUserMessage
+          .locator(".message.user-message")
+          .evaluate((message) => {
+            const own = message.cloneNode(true) as Element;
+            for (const context of own.querySelectorAll(".context-attachments"))
+              context.remove();
+            return own.textContent;
+          }),
+      )
+      .toBe("");
     await emptyUserMessage.hover();
     await emptyUserMessage.locator('[title="Edit message"]').click();
     await expect(emptyUserMessage.locator(".edit-textarea")).toHaveValue("");

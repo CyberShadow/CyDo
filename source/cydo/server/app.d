@@ -1139,6 +1139,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -2668,6 +2669,29 @@ class App
 		clientHub.sendToSubscribed(tid, Data(toJson(ackEnv).representation));
 	}
 
+	private bool isClaudeTask(int tid)
+	{
+		auto ta = tryAgentForTask(tid);
+		return ta !is null && ta.driver == AgentDriver.claude;
+	}
+
+	/// a context attachment line from a Claude transcript, appended and
+	/// broadcast like a live event; anything that is not one is ignored
+	private void emitTailContextAttachment(int tid, string line)
+	{
+		import std.datetime : Clock;
+		import ae.utils.time.types : AbsTime;
+		import cydo.agent.drivers.claude : translateContextAttachment;
+
+		auto td = tid in tasks;
+		assert(td !is null, "context attachment for a missing task");
+		foreach (ev; translateContextAttachment(line, td.tailContextChains))
+		{
+			ev.ts = AbsTime(Clock.currStdTime);
+			historyPipeline.appendAndBroadcastTaskEvent(tid, ev);
+		}
+	}
+
 	/// Consume a complete JSONL line delivered by the live tail. Claude
 	/// ≥2.1.2xx records queue operations only in the session file, so this is
 	/// where the live queue lifecycle of user messages is observed: an enqueue
@@ -2678,11 +2702,13 @@ class App
 	/// message was withdrawn without ever being consumed.
 	private void onTailedJsonlLine(int tid, string line, int lineNum)
 	{
-		import std.algorithm : startsWith;
+		import std.algorithm : canFind, startsWith;
+		import cydo.agent.drivers.claude : observeContextRoot;
 
 		auto td = tid in tasks;
 		if (td is null)
 			return;
+		observeContextRoot(line, td.tailContextChains);
 
 		if (isQueueOperation(line))
 		{
@@ -2738,6 +2764,20 @@ class App
 			if (absorbed.found)
 				jsonlTracker.noteAbsorbedLocalUser(tid,
 					attachment.attachment.source_uuid, td.history.generation);
+			return;
+		}
+		// the context the agent receives around a turn (hook output,
+		// reminders, CLAUDE.md loads, ...) is written only to the transcript,
+		// never to stdout, so the tail is what shows it live. matched on the
+		// raw line rather than the probe above, whose inner struct rejects the
+		// extra fields most categories carry; the translator parses the record
+		// fully and skips anything that is not a context attachment.
+		// queued_command lines go on as before
+		if (line.canFind(`"type":"attachment"`)
+			&& !line.canFind(`"type":"queued_command"`)
+			&& isClaudeTask(tid))
+		{
+			emitTailContextAttachment(tid, line);
 			return;
 		}
 
@@ -3444,6 +3484,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();
