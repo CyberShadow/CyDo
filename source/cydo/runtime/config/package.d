@@ -104,6 +104,26 @@ struct WorkspaceConfig
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
+/// How the banner's usage bars pick their color. `pace` compares the used
+/// share with how much of the window has passed; `percent` ramps from green
+/// through yellow to red on the used share alone.
+enum UsageColoring { pace, percent }
+
+struct UsageUiConfig
+{
+	@Optional UsageColoring coloring = UsageColoring.pace;
+	/// show what is left instead of what is used: each bar starts full and
+	/// drains as usage accrues, and the number shows the remaining share
+	@Optional bool remaining;
+}
+
+/// Preferences for the web UI. The whole section reaches every page in
+/// server_status, on connect and again on each config reload.
+struct UiConfig
+{
+	@Optional UsageUiConfig usage;
+}
+
 struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
@@ -119,6 +139,7 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	@Optional UiConfig ui;
 
 	/// Called by configy during parsing (configy/read.d:650), so a semantic
 	/// error surfaces on the same path as a YAML syntax error.
@@ -406,5 +427,22 @@ version (unittest)
 		auto yaml = workspacesYAML ~ "agents:\n  custom:\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		parseConfigString!CydoConfig(yaml, "/dev/null");
+	}
+
+	// 14. The ui section is optional, its usage keys parse, and an unknown
+	// coloring is an error.
+	unittest
+	{
+		auto defaults = parseConfigString!CydoConfig(workspacesYAML, "/dev/null");
+		assert(defaults.ui.usage.coloring == UsageColoring.pace);
+		assert(!defaults.ui.usage.remaining);
+
+		auto yaml = workspacesYAML ~ "ui:\n  usage:\n    coloring: percent\n    remaining: true\n";
+		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		assert(config.ui.usage.coloring == UsageColoring.percent);
+		assert(config.ui.usage.remaining);
+
+		assertThrown(parseConfigString!CydoConfig(
+			workspacesYAML ~ "ui:\n  usage:\n    coloring: rainbow\n", "/dev/null"));
 	}
 }

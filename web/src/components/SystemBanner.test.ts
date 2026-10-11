@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { h } from "preact";
 import renderToString from "preact-render-to-string";
-import type { AgentUsageMessage } from "../protocol";
+import type { AgentUsageMessage, UsageUiConfig } from "../protocol";
 import {
   computeUsagePaceRatio,
   isCompactingStatus,
   normalizeSessionStatus,
+  percentUsageFillColor,
   SystemBanner,
   usagePercent,
   usageFillColor,
@@ -16,11 +17,13 @@ function renderSystemBanner({
   connected = true,
   tasksLoading = false,
   exportMode = false,
+  usageDisplay,
 }: {
   claudeUsage?: AgentUsageMessage;
   connected?: boolean;
   tasksLoading?: boolean;
   exportMode?: boolean;
+  usageDisplay?: UsageUiConfig;
 } = {}): string {
   return renderToString(
     h(SystemBanner, {
@@ -38,6 +41,7 @@ function renderSystemBanner({
       onCloseStdin: () => {},
       claudeUsage,
       exportMode,
+      usageDisplay,
     }),
   );
 }
@@ -193,6 +197,38 @@ describe("SystemBanner Claude usage", () => {
 
     expect(html).toContain("banner-usage");
     expect(html).toContain("60%");
+    expect(html).not.toContain("30%");
+  });
+
+  it("colors on the percentage ramp when configured", () => {
+    expect(percentUsageFillColor(0)).toBe("rgb(0, 255, 0)");
+    expect(percentUsageFillColor(25)).toBe("rgb(128, 255, 0)");
+    expect(percentUsageFillColor(50)).toBe("rgb(255, 255, 0)");
+    expect(percentUsageFillColor(75)).toBe("rgb(255, 128, 0)");
+    expect(percentUsageFillColor(100)).toBe("rgb(255, 0, 0)");
+
+    const futureTime = Math.floor(Date.now() / 1000) + 10000;
+    const html = renderSystemBanner({
+      claudeUsage: usageMessage({
+        five_hour: { utilization: 0.25, resetsAt: futureTime },
+      }),
+      usageDisplay: { coloring: "percent" },
+    });
+    expect(html).toContain("background-color:rgb(128, 255, 0)");
+  });
+
+  it("shows the remaining share when configured", () => {
+    const futureTime = Math.floor(Date.now() / 1000) + 10000;
+    const html = renderSystemBanner({
+      claudeUsage: usageMessage({
+        five_hour: { utilization: 0.3, resetsAt: futureTime },
+      }),
+      usageDisplay: { remaining: true },
+    });
+
+    expect(html).toContain("70%");
+    expect(html).toContain("width:70%");
+    expect(html).toContain("70.0% remaining");
     expect(html).not.toContain("30%");
   });
 });

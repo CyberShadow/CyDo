@@ -1139,6 +1139,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		).representation));
 		ws.send(Data(buildNoticesList(activeNotices).representation));
 		if (discoveryService.scanInProgress)
@@ -3444,6 +3445,7 @@ class App
 			authUser.length > 0 || authPass.length > 0,
 			config.dev_mode,
 			webDistDir,
+			config.ui,
 		));
 		infof("Config reloaded successfully");
 		discoveryService.endScan();

@@ -16,6 +16,7 @@ import ae.utils.statequeue : StateQueue;
 
 import cydo.agent.session : AgentSubmissionReceipt;
 import cydo.protocol : ContentBlock, ItemStartedEvent;
+import cydo.runtime.config : UiConfig;
 import cydo.runtime.launch.types : ProcessLaunch;
 import cydo.domain.storage.persistence : LoadedHistory, noSourceLine;
 
@@ -1303,6 +1304,7 @@ struct ServerStatusMessage
 	bool auth_enabled;
 	bool dev_mode;
 	string build_id;
+	UiConfig ui;
 }
 
 struct ScanStatusMessage

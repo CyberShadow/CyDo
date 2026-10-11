@@ -260,6 +260,7 @@ export function useExportedTaskManager(): TaskManager {
     serverError: null,
     dismissServerError: noop,
     devMode: false,
+    ui: {},
     exportLoadError,
     navigateHome: noop,
     navigateToProject: noop,
