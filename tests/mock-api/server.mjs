@@ -1415,6 +1415,53 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Claude usage endpoint (what Claude Code's /usage reads); cydo polls it to
+  // keep the usage banner current. It answers only the token the usage poll
+  // spec configures, so a poll that lost its credentials fails visibly.
+  if (url.pathname === "/api/oauth/usage" && req.method === "GET") {
+    if (req.headers.authorization !== "Bearer cydo-test-oauth-token") {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    const fiveReset = new Date(Date.now() + 3600 * 1000).toISOString();
+    const weekReset = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        five_hour: { utilization: 33, resets_at: fiveReset },
+        seven_day: { utilization: 66, resets_at: weekReset },
+        limits: [
+          {
+            kind: "session",
+            group: "session",
+            percent: 33,
+            resets_at: fiveReset,
+            scope: null,
+            is_active: false,
+          },
+          {
+            kind: "weekly_all",
+            group: "weekly",
+            percent: 66,
+            resets_at: weekReset,
+            scope: null,
+            is_active: false,
+          },
+          {
+            kind: "weekly_scoped",
+            group: "weekly",
+            percent: 1,
+            resets_at: weekReset,
+            scope: { model: { display_name: "Fable" } },
+            is_active: false,
+          },
+        ],
+      }),
+    );
+    return;
+  }
+
   // Messages API (handles /v1/messages and /v1/messages?beta=true)
   if (url.pathname === "/v1/messages" && req.method === "POST") {
     handleMessages(req, res);

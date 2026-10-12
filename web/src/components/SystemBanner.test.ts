@@ -101,7 +101,15 @@ describe("SystemBanner status helpers", () => {
   it("treats missing utilization as unknown", () => {
     expect(usagePercent(undefined)).toBeNull();
     expect(usagePercent(Number.NaN)).toBeNull();
-    expect(usagePercent(0.42)).toBe(42);
+  });
+
+  it("keeps small percentages intact and clamps out-of-range ones", () => {
+    // a freshly-reset weekly window reports 1, meaning 1%, not 100%
+    expect(usagePercent(1)).toBe(1);
+    expect(usagePercent(0.42)).toBe(0.42);
+    expect(usagePercent(0)).toBe(0);
+    expect(usagePercent(140)).toBe(100);
+    expect(usagePercent(-5)).toBe(0);
   });
 });
 
@@ -160,7 +168,7 @@ describe("SystemBanner Claude usage", () => {
     const futureTime = Math.floor(Date.now() / 1000) + 10000;
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.42, resetsAt: futureTime },
+        five_hour: { utilization: 42, resetsAt: futureTime },
         seven_day: {},
       }),
     });
@@ -173,8 +181,8 @@ describe("SystemBanner Claude usage", () => {
     const pastTime = Math.floor(Date.now() / 1000) - 100;
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.5, resetsAt: pastTime },
-        seven_day: { utilization: 0.8, resetsAt: pastTime },
+        five_hour: { utilization: 50, resetsAt: pastTime },
+        seven_day: { utilization: 80, resetsAt: pastTime },
       }),
     });
 
@@ -186,13 +194,27 @@ describe("SystemBanner Claude usage", () => {
     const futureTime = Math.floor(Date.now() / 1000) + 10000;
     const html = renderSystemBanner({
       claudeUsage: usageMessage({
-        five_hour: { utilization: 0.3, resetsAt: pastTime },
-        seven_day: { utilization: 0.6, resetsAt: futureTime },
+        five_hour: { utilization: 30, resetsAt: pastTime },
+        seven_day: { utilization: 60, resetsAt: futureTime },
       }),
     });
 
     expect(html).toContain("banner-usage");
     expect(html).toContain("60%");
     expect(html).not.toContain("30%");
+  });
+
+  it("renders the model-scoped row a usage poll reports", () => {
+    const futureTime = Math.floor(Date.now() / 1000) + 10000;
+    const html = renderSystemBanner({
+      claudeUsage: usageMessage({
+        five_hour: { utilization: 8, resetsAt: futureTime },
+        model: { utilization: 1, resetsAt: futureTime, label: "Fable" },
+      }),
+    });
+
+    expect(html).toContain("Fable");
+    expect(html).toContain("1%");
+    expect(html).not.toContain("100%");
   });
 });

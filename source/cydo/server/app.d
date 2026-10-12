@@ -203,6 +203,11 @@ class App
 	// Active notices keyed by notice ID
 	private Notice[string] activeNotices;
 	private AgentUsageTracker agentUsageTracker = new AgentUsageTracker();
+	// usage poll schedule (see UsagePollingPeriod): one account, so one
+	// schedule shared by every claude agent that enables polling
+	private long lastUsagePollEpoch;
+	private int turnsSinceUsagePoll;
+	private bool usagePollInFlight;
 	private ArchiveManager archiveManager;
 	private TaskPathResolver taskPathResolver;
 	private WorktreeAllocator worktreeAllocator;
@@ -1043,6 +1048,15 @@ class App
 			else
 				infof("CyDo server listening on %s://%s:%d", proto, addrStr, port);
 		}
+
+		// the usage tracker lives in memory, so after a restart the banner
+		// would stay empty until a turn's own rate limit event; poll once now
+		foreach (name, ref ac; config.agents)
+			if (ac.usage_polling_period.enabled && isClaudeAgent(name, ac))
+			{
+				pollClaudeUsage();
+				break;
+			}
 	}
 
 	/// Graceful shutdown: stop all agent sessions and close servers.
@@ -2818,11 +2832,143 @@ class App
 		persistence.setLastActive(tid, tasks[tid].lastActive);
 	}
 
+	private static bool isClaudeAgent(string name, const ref AgentConfig ac)
+	{
+		import cydo.runtime.config : effectiveDriver;
+		auto driver = effectiveDriver(name, ac);
+		return !driver.isNull && driver.get == AgentDriver.claude;
+	}
+
+	/// Poll usage once the polling period of the agent whose turn just ended
+	/// has elapsed: after its configured number of turns, or once its
+	/// timespan has passed since the last poll, whichever comes first.
+	private void maybePollUsage(string agentName)
+	{
+		import std.datetime.systime : Clock;
+		import cydo.runtime.config : parseTimespan;
+
+		auto ac = agentName in config.agents;
+		if (ac is null || !isClaudeAgent(agentName, *ac))
+			return;
+		auto period = ac.usage_polling_period;
+		if (!period.enabled)
+			return;
+
+		auto now = Clock.currTime.toUnixTime;
+		turnsSinceUsagePoll++;
+		bool due = lastUsagePollEpoch == 0;
+		if (period.turns.set && period.turns.value > 0
+			&& turnsSinceUsagePoll >= period.turns.value)
+			due = true;
+		// validated when the config loaded
+		if (period.timespan.length > 0
+			&& now - lastUsagePollEpoch >= parseTimespan(period.timespan).total!"seconds")
+			due = true;
+		if (due)
+			pollClaudeUsage();
+	}
+
+	/// The Claude OAuth access token, resolved the way the claude CLI does:
+	/// an explicit CLAUDE_CODE_OAUTH_TOKEN wins, otherwise the stored oauth
+	/// credentials. Empty when not logged in.
+	private static string claudeOAuthToken()
+	{
+		import std.file : exists, readText;
+		import std.path : expandTilde;
+		import std.process : environment;
+		import ae.utils.json : jsonParse, JSONOptional, JSONExtras;
+
+		string token = environment.get("CLAUDE_CODE_OAUTH_TOKEN", "");
+		if (token.length > 0)
+			return token;
+		auto credPath = expandTilde("~/.claude/.credentials.json");
+		if (!exists(credPath))
+			return null;
+		static struct OauthCreds { @JSONOptional string accessToken; JSONExtras extras; }
+		static struct CredsFile { @JSONOptional OauthCreds claudeAiOauth; JSONExtras extras; }
+		try
+			return jsonParse!CredsFile(readText(credPath)).claudeAiOauth.accessToken;
+		catch (Exception e)
+		{
+			warningf("usage poll: could not read claude credentials: %s", e.msg);
+			return null;
+		}
+	}
+
+	/// Base URL of the Anthropic API, honoring ANTHROPIC_BASE_URL the way the
+	/// claude CLI does (a proxy in some setups, the mock API in tests).
+	private static string anthropicBaseUrl()
+	{
+		import std.process : environment;
+		import std.string : stripRight;
+		return environment.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+			.stripRight("/");
+	}
+
+	/// GET /api/oauth/usage, the endpoint Claude Code's /usage reads, and
+	/// apply the result to the usage banner. Through curl: cydo's in-process
+	/// ae HTTPS client had its TLS handshake to api.anthropic.com rejected
+	/// (alert 40) from inside the server. The token goes to curl on stdin as
+	/// a config line, so it never appears on a command line.
+	private void pollClaudeUsage()
+	{
+		import std.datetime.systime : Clock;
+		import cydo.agent.terminal : TerminalProcess;
+
+		if (usagePollInFlight)
+			return;
+		auto token = claudeOAuthToken();
+		if (token.length == 0)
+			return;
+		turnsSinceUsagePoll = 0;
+		lastUsagePollEpoch = Clock.currTime.toUnixTime;
+		usagePollInFlight = true;
+
+		auto url = anthropicBaseUrl() ~ "/api/oauth/usage";
+		tracef("usage poll: %s", url);
+		auto config = `header = "Authorization: Bearer ` ~ token ~ "\"\n"
+			~ `header = "anthropic-beta: oauth-2025-04-20"` ~ "\n";
+		auto proc = new TerminalProcess(["curl", "-sS", "--fail", "--max-time", "15", "-K", "-", url],
+			null, null, 1 << 20, config);
+		proc.onExit = () {
+			usagePollInFlight = false;
+			if (proc.exitCode != 0)
+				warningf("usage poll failed: curl exit %d: %s", proc.exitCode, proc.output);
+			else
+				applyUsagePoll(proc.output);
+		};
+	}
+
+	private void applyUsagePoll(string body)
+	{
+		import cydo.domain.usage.poller : isoToEpoch, parseUsageResponse, scopedModelRow;
+
+		auto resp = parseUsageResponse(body);
+		if (resp.limits.length == 0)
+		{
+			warningf("usage poll: no usage in the response (%d bytes)", body.length);
+			return;
+		}
+		auto scoped = scopedModelRow(resp);
+		string payload;
+		if (agentUsageTracker.updateFromUsagePoll(
+			resp.five_hour.utilization, cast(double) isoToEpoch(resp.five_hour.resets_at),
+			resp.seven_day.utilization, cast(double) isoToEpoch(resp.seven_day.resets_at),
+			scoped.found ? scoped.displayName : "",
+			scoped.found ? scoped.percent : double.nan,
+			scoped.found ? cast(double) scoped.resetsAt : 0,
+			payload))
+			clientHub.broadcast(payload);
+	}
+
 	private void onTaskTurnCompletedAlive(int tid)
 	{
 		if (tid !in tasks)
 			return;
 		auto td = &tasks[tid];
+		// at a turn's end the user is reading the reply, and the poll shows
+		// what the turn just spent
+		maybePollUsage(td.agentName);
 		td.needsAttention = true;
 		persistence.setNeedsAttention(tid, true);
 		td.notificationBody = td.resultText.length > 0

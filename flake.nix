@@ -284,7 +284,8 @@ EOF
               ln -s ${defs} $out/share/cydo/defs
 
               makeWrapper $out/share/cydo/cydo $out/bin/cydo \
-                --suffix PATH : ${pkgs.bubblewrap}/bin
+                --suffix PATH : ${pkgs.bubblewrap}/bin \
+                --suffix PATH : ${pkgs.curl}/bin
               runHook postInstall
             '';
 

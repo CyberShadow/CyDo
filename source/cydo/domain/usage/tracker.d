@@ -12,6 +12,7 @@ private struct AgentUsageLimitWindowMessage
 	@JSONOptional double utilization;
 	@JSONOptional double resetsAt;
 	@JSONOptional string status;
+	@JSONOptional string label;
 }
 
 private struct AgentUsageMessage
@@ -30,6 +31,8 @@ private struct AgentUsageLimitWindowState
 	double resetsAt;
 	bool hasStatus;
 	string status;
+	bool hasLabel;
+	string label;
 }
 
 private struct AgentUsageState
@@ -114,6 +117,64 @@ class AgentUsageTracker
 		payload = toJson(buildAgentUsageMessage(state));
 		return true;
 	}
+
+	/// Update the claude windows from a usage poll (GET /api/oauth/usage):
+	/// five_hour, seven_day, and the model-scoped weekly row as "model" with
+	/// its label (e.g. "Fable") when there is one. Utilizations are 0-100;
+	/// resets are unix epoch seconds (0 = unknown). Returns true (with
+	/// payload) if anything changed.
+	bool updateFromUsagePoll(double fiveUtil, double fiveReset,
+		double sevenUtil, double sevenReset,
+		string modelLabel, double modelUtil, double modelReset, out string payload)
+	{
+		import std.datetime.systime : Clock;
+
+		auto state = agentUsageByAgent.get("claude", AgentUsageState("claude", 0, null));
+		bool changed = false;
+		changed |= setPolledWindow(state, "five_hour", fiveUtil, fiveReset);
+		changed |= setPolledWindow(state, "seven_day", sevenUtil, sevenReset);
+		if (modelLabel.length > 0)
+			changed |= setPolledWindow(state, "model", modelUtil, modelReset, modelLabel);
+		if (!changed)
+			return false;
+
+		state.agent = "claude";
+		state.updatedAt = cast(long) Clock.currTime.toUnixTime;
+		agentUsageByAgent["claude"] = state;
+		payload = toJson(buildAgentUsageMessage(state));
+		return true;
+	}
+
+	private static bool setPolledWindow(ref AgentUsageState state, string key,
+		double util, double reset, string label = null)
+	{
+		auto window = state.limits.get(key, AgentUsageLimitWindowState.init);
+		auto normUtil = clampUtilizationPercent(util);
+		bool changed = false;
+		if (!isNaN(normUtil)
+			&& (!window.hasUtilization || fabs(window.utilization - normUtil) > 0.0001))
+		{
+			window.hasUtilization = true;
+			window.utilization = normUtil;
+			changed = true;
+		}
+		if (reset > 0
+			&& (!window.hasResetsAt || fabs(window.resetsAt - reset) > 0.0001))
+		{
+			window.hasResetsAt = true;
+			window.resetsAt = reset;
+			changed = true;
+		}
+		if (label.length > 0 && (!window.hasLabel || window.label != label))
+		{
+			window.hasLabel = true;
+			window.label = label;
+			changed = true;
+		}
+		if (changed)
+			state.limits[key] = window;
+		return changed;
+	}
 }
 
 private bool isSessionRateLimitEvent(string translated)
@@ -132,9 +193,20 @@ private double normalizeUtilizationPercent(double raw)
 	double pct = raw;
 	if (pct >= 0 && pct <= 1)
 		pct *= 100;
-	if (pct < 0) pct = 0;
-	if (pct > 100) pct = 100;
-	return pct;
+	return clampUtilizationPercent(pct);
+}
+
+/// Clamp an already-percent value to 0-100. The poll endpoint
+/// (/api/oauth/usage) always reports percentages, so the fraction rescaling
+/// above must not be applied to it: a genuine 1% would be read as 100%, which
+/// is what a freshly-reset weekly window reports.
+private double clampUtilizationPercent(double raw)
+{
+	if (isNaN(raw) || !isFinite(raw))
+		return double.nan;
+	if (raw < 0) return 0;
+	if (raw > 100) return 100;
+	return raw;
 }
 
 private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state)
@@ -144,7 +216,8 @@ private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state
 	msg.updated_at = state.updatedAt;
 	foreach (limitType, ref window; state.limits)
 	{
-		if (!window.hasUtilization && !window.hasResetsAt && !window.hasStatus)
+		if (!window.hasUtilization && !window.hasResetsAt && !window.hasStatus
+			&& !window.hasLabel)
 			continue;
 		AgentUsageLimitWindowMessage outWindow;
 		if (window.hasUtilization)
@@ -153,6 +226,8 @@ private AgentUsageMessage buildAgentUsageMessage(ref const AgentUsageState state
 			outWindow.resetsAt = window.resetsAt;
 		if (window.hasStatus)
 			outWindow.status = window.status;
+		if (window.hasLabel)
+			outWindow.label = window.label;
 		msg.limits[limitType] = outWindow;
 	}
 	return msg;
@@ -220,4 +295,28 @@ unittest
 		payload);
 	assert(!changed);
 	assert(tracker.agentUsageByAgent.length == 0);
+}
+
+unittest
+{
+	// polled percentages are percentages, never fractions: a freshly-reset
+	// weekly window reports 1, which the pushed-event heuristic would have
+	// turned into 100 (reported as "0% remaining" in the banner)
+	auto tracker = new AgentUsageTracker();
+	string payload;
+	auto changed = tracker.updateFromUsagePoll(8.0, 0, 1.0, 0, "Fable", 1.0, 0, payload);
+	assert(changed);
+	auto msg = buildAgentUsageMessage(tracker.agentUsageByAgent["claude"]);
+	assert(msg.limits["five_hour"].utilization == 8.0);
+	assert(msg.limits["seven_day"].utilization == 1.0);
+	assert(msg.limits["model"].utilization == 1.0);
+	assert(msg.limits["model"].label == "Fable");
+
+	// 0 stays 0, and out-of-range values still clamp
+	changed = tracker.updateFromUsagePoll(0.0, 0, 140.0, 0, "Fable", -5.0, 0, payload);
+	assert(changed);
+	msg = buildAgentUsageMessage(tracker.agentUsageByAgent["claude"]);
+	assert(msg.limits["five_hour"].utilization == 0.0);
+	assert(msg.limits["seven_day"].utilization == 100.0);
+	assert(msg.limits["model"].utilization == 0.0);
 }

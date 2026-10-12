@@ -401,6 +401,7 @@ export interface AgentUsageLimitWindow {
   utilization?: number;
   resetsAt?: number;
   status?: string;
+  label?: string;
 }
 export interface AgentUsageMessage {
   type: "agent_usage";

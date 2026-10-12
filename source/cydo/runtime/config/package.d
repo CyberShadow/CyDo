@@ -78,12 +78,63 @@ struct ModelSpec
 	}
 }
 
+/// How often to poll the Claude account's usage for the banner: after every
+/// `turns` turns of this agent, or once `timespan` (`<number><d|h|m|s>`, e.g.
+/// "20m") has passed since the last poll at a turn's end, whichever comes
+/// first. Unset means no polling.
+struct UsagePollingPeriod
+{
+	@Optional SetInfo!int turns;
+	@Optional string timespan;
+
+	@property bool enabled() const
+	{
+		return (turns.set && turns.value > 0) || timespan.length > 0;
+	}
+}
+
 struct AgentConfig
 {
 	@Optional SetInfo!AgentDriver driver;
 	@Optional SandboxConfig sandbox;
 	@Optional ModelSpec[string] model_aliases;
 	@Optional string display_name;
+	/// claude driver only: keep the usage banner current by polling the
+	/// account's usage (see UsagePollingPeriod)
+	@Optional UsagePollingPeriod usage_polling_period;
+}
+
+/// Parse a `timespan` string of the form `<number><unit>` where unit is one of
+/// d (days), h (hours), m (minutes), s (seconds), e.g. "1d", "6h", "30m",
+/// "90s". Throws on a malformed value.
+import core.time : Duration;
+Duration parseTimespan(string s)
+{
+	import core.time : days, hours, minutes, seconds;
+	import std.conv : to;
+	import std.exception : enforce;
+	import std.string : strip;
+
+	auto t = s.strip;
+	enforce(t.length >= 2, "usage_polling_period.timespan: empty or too short: '" ~ s ~ "'");
+	auto unit = t[$ - 1];
+	auto numStr = t[0 .. $ - 1];
+	long n;
+	try
+		n = numStr.to!long;
+	catch (Exception)
+		throw new Exception("usage_polling_period.timespan: '" ~ s ~ "' is not <number><unit>");
+	enforce(n >= 0, "usage_polling_period.timespan: negative duration '" ~ s ~ "'");
+	switch (unit)
+	{
+		case 'd': return n.days;
+		case 'h': return n.hours;
+		case 'm': return n.minutes;
+		case 's': return n.seconds;
+		default:
+			throw new Exception("usage_polling_period.timespan: unknown unit '"
+				~ unit ~ "' in '" ~ s ~ "' (use d/h/m/s)");
+	}
 }
 
 struct ProjectDiscoveryConfig
@@ -129,7 +180,23 @@ struct CydoConfig
 		{
 			auto driver = effectiveDriver(name, ac);
 			// An unresolvable driver is resolveConfig's error to report.
-			if (driver.isNull || driverSupportsEffort(driver.get))
+			if (driver.isNull)
+				continue;
+			if (ac.usage_polling_period.enabled)
+			{
+				if (driver.get != AgentDriver.claude)
+					throw new Exception(format(
+						"agents['%s'].usage_polling_period: only the claude driver reports usage",
+						name));
+				if (ac.usage_polling_period.timespan.length > 0)
+				{
+					try
+						parseTimespan(ac.usage_polling_period.timespan);
+					catch (Exception e)
+						throw new Exception(format("agents['%s'].%s", name, e.msg));
+				}
+			}
+			if (driverSupportsEffort(driver.get))
 				continue;
 			foreach (modelClass, ref spec; ac.model_aliases)
 				if (spec.effort.length > 0)
@@ -406,5 +473,38 @@ version (unittest)
 		auto yaml = workspacesYAML ~ "agents:\n  custom:\n"
 			~ "    model_aliases:\n      large:\n        effort: high\n";
 		parseConfigString!CydoConfig(yaml, "/dev/null");
+	}
+
+	// 14. timespans parse in d/h/m/s, and malformed ones throw.
+	unittest
+	{
+		import core.time : days, hours, minutes, seconds;
+
+		assert(parseTimespan("1d") == 1.days);
+		assert(parseTimespan("6h") == 6.hours);
+		assert(parseTimespan("20m") == 20.minutes);
+		assert(parseTimespan("90s") == 90.seconds);
+		assertThrown(parseTimespan(""));
+		assertThrown(parseTimespan("m"));
+		assertThrown(parseTimespan("3w"));
+		assertThrown(parseTimespan("abc"));
+		assertThrown(parseTimespan("-3h"));
+	}
+
+	// 15. usage_polling_period parses on a claude agent, is off when absent,
+	// and is rejected on another driver or with a malformed timespan.
+	unittest
+	{
+		auto yaml = workspacesYAML ~ "agents:\n  claude:\n    usage_polling_period:\n"
+			~ "      turns: 1\n      timespan: 20m\n  codex:\n    driver: codex\n";
+		auto config = parseConfigString!CydoConfig(yaml, "/dev/null");
+		auto claude = config.agents["claude"].usage_polling_period;
+		assert(claude.enabled && claude.turns.value == 1 && claude.timespan == "20m");
+		assert(!config.agents["codex"].usage_polling_period.enabled);
+
+		assertThrown(parseConfigString!CydoConfig(workspacesYAML
+			~ "agents:\n  codex:\n    usage_polling_period:\n      turns: 1\n", "/dev/null"));
+		assertThrown(parseConfigString!CydoConfig(workspacesYAML
+			~ "agents:\n  claude:\n    usage_polling_period:\n      timespan: soon\n", "/dev/null"));
 	}
 }

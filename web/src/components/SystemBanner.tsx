@@ -51,10 +51,12 @@ function clamp01(value: number): number {
   return value;
 }
 
+// values arrive already normalized to 0-100 by the backend usage tracker, so
+// this only clamps; rescaling anything <= 1 here would read a genuine 1% (what
+// a freshly-reset weekly window reports) as 100%
 export function usagePercent(utilization?: number): number | null {
   if (!Number.isFinite(utilization)) return null;
   let pct = utilization as number;
-  if (pct >= 0 && pct <= 1) pct *= 100;
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
   return pct;
@@ -168,13 +170,25 @@ export function SystemBanner({
   const week = isWindowExpired(claudeUsage?.limits.seven_day, nowSeconds)
     ? undefined
     : claudeUsage?.limits.seven_day;
+  const model = isWindowExpired(claudeUsage?.limits.model, nowSeconds)
+    ? undefined
+    : claudeUsage?.limits.model;
   const usageRows = [
     { label: "5h", window: fiveHour, windowSeconds: 5 * 60 * 60 },
     { label: "Week", window: week, windowSeconds: 7 * 24 * 60 * 60 },
   ];
+  // the model-scoped weekly row a usage poll reports (e.g. "Fable"),
+  // labeled from the poll's scope
+  if (model?.label)
+    usageRows.push({
+      label: model.label,
+      window: model,
+      windowSeconds: 7 * 24 * 60 * 60,
+    });
   const showClaudeUsage =
     Number.isFinite(fiveHour?.utilization) ||
-    Number.isFinite(week?.utilization);
+    Number.isFinite(week?.utilization) ||
+    Number.isFinite(model?.utilization);
   const connectionStatus = exportMode
     ? {
         className: connected ? "connected" : "disconnected",

@@ -25,14 +25,29 @@ class TerminalProcess
 
 	void delegate() onExit;
 
-	this(string[] args, string[string] env, string workDir, size_t outputByteLimit)
+	/// `stdinData`, when given, is the process's whole stdin; it has to fit
+	/// in the pipe buffer, since it is written without waiting
+	this(string[] args, string[string] env, string workDir, size_t outputByteLimit,
+		string stdinData = null)
 	{
+		import std.exception : enforce;
+
 		outputByteLimit_ = outputByteLimit;
 		auto outPipe = pipe();
+		File stdinFile = File("/dev/null");
+		File stdinWriter;
+		if (stdinData !is null)
+		{
+			// POSIX guarantees a pipe holds at least PIPE_BUF (4096) bytes
+			enforce(stdinData.length <= 4096, "TerminalProcess stdinData exceeds PIPE_BUF");
+			auto inPipe = pipe();
+			stdinFile = inPipe.readEnd;
+			stdinWriter = inPipe.writeEnd;
+		}
 
 		pid = spawnProcess(
 			args,
-			File("/dev/null"),
+			stdinFile,
 			outPipe.writeEnd,
 			outPipe.writeEnd,
 			env,
@@ -41,6 +56,12 @@ class TerminalProcess
 		);
 
 		outPipe.writeEnd.close();
+		if (stdinData !is null)
+		{
+			stdinFile.close();
+			stdinWriter.rawWrite(stdinData);
+			stdinWriter.close();
+		}
 
 		auto outFd = dup(outPipe.readEnd.fileno);
 		outPipe.readEnd.close();
