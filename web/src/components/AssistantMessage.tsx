@@ -1,4 +1,5 @@
 import { Fragment, h } from "preact";
+import { NestedHistoryLoadMore } from "./NestedHistoryLoadMore";
 import { memo } from "preact/compat";
 import { useState } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
@@ -302,6 +303,7 @@ export const AssistantMessage = memo(
                       )}
                     {nested && nested.length > 0 && block.completed && (
                       <div class="sub-agent-messages">
+                        <NestedHistoryLoadMore parentToolUseId={block.itemId} />
                         {nested.map((child) => {
                           if (child.type === "assistant") {
                             return (

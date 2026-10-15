@@ -1108,12 +1108,47 @@ struct TaskHistoryStartMessage
 	string type = "task_history_start";
 	int tid;
 	int total;
+	int window_start; // first replayed seq; > 0 means older history exists unsent
+	int window_limit; // window applied, in messages; 0 = the whole history
+}
+
+/// Frames a replay of the messages *older* than what the client already holds,
+/// so it can prepend them instead of rebuilding its list.
+/// A sub-agent's transcript (the events under one Agent call) held back by a
+/// windowed replay: the client has its events from before_seq on, and older
+/// ones load on request.
+struct NestedHistoryWindow
+{
+	string parent_tool_use_id;
+	int before_seq;
+}
+
+struct TaskHistoryPrependStartMessage
+{
+	string type = "task_history_prepend_start";
+	int tid;
+	int window_start; // first seq in this batch; 0 means the task's beginning
+	int before_seq;   // where the batch stops, i.e. the client's current start
+	// set when the batch is the older part of one sub-agent's transcript
+	@JSONOptional string parent_tool_use_id;
+}
+
+struct TaskHistoryPrependEndMessage
+{
+	string type = "task_history_prepend_end";
+	int tid;
+	int window_start;
+	@JSONOptional string parent_tool_use_id;
+	// sub-agent transcripts in this batch that still have older events
+	NestedHistoryWindow[] nested_windows;
 }
 
 struct TaskHistoryEndMessage
 {
 	string type = "task_history_end";
 	int tid;
+	// sub-agent transcripts the replay held back the older part of
+	NestedHistoryWindow[] nested_windows;
 }
 
 /// Check if a raw line is a queue-operation event (fast string search).
@@ -1164,6 +1199,14 @@ struct WsMessage
 	@JSONOptional Nullable!uint expected_num_turns;
 	string correlation_id;
 	string tool_use_id;
+	// request_history: 0 lets the server pick from its config for device_class,
+	// >0 is an explicit window, -1 asks for the whole history. the client is not
+	// asked to know the configured window, because it learns that from
+	// server_status, which arrives after the tasks list that triggers the first
+	// history request
+	@JSONOptional int limit;
+	@JSONOptional string device_class; // "mobile" or "desktop"
+	@JSONOptional int before_seq; // request_history_before: older than this
 }
 
 struct TaskCreatedMessage
@@ -1303,6 +1346,8 @@ struct ServerStatusMessage
 	bool auth_enabled;
 	bool dev_mode;
 	string build_id;
+	int history_window_desktop; // initial replay window in messages, 0 = full
+	int history_window_mobile;
 }
 
 struct ScanStatusMessage

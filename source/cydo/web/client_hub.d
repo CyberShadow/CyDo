@@ -41,6 +41,14 @@ class ClientHub
 		clientSubscriptions.require(ws)[tid] = true;
 	}
 
+	/// stop sending a task's events to one client, when its page leaves the
+	/// task; it subscribes again with its next request for that history
+	void unsubscribe(WebSocketAdapter ws, int tid)
+	{
+		if (auto subs = ws in clientSubscriptions)
+			(*subs).remove(tid);
+	}
+
 	void unsubscribeAll(int tid)
 	{
 		foreach (ws; clients)

@@ -416,6 +416,13 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
     expect(childTid).not.toBeNull();
   }).toPass();
 
+  // the page receives events only for the task it shows, so a second page
+  // shows the child, live, while the first stays on the parent
+  const childPage = await page.context().newPage();
+  const observedChildEvents = observeTaskEvents(childPage);
+  await childPage.goto(page.url());
+  await openTask(childPage, childTid!);
+
   const doneCountBeforeFollowUpAsk = await currentMessageList(page)
     .getByText("Done.", { exact: true })
     .count();
@@ -440,7 +447,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
   expect(parentAskItemId).not.toBe("");
 
   const childFollowUp = await waitForTaskEvent(
-    observedTaskEvents,
+    observedChildEvents,
     ({ tid, event }) =>
       tid === childTid &&
       event.type === "item/started" &&
@@ -454,7 +461,6 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
         "[SYSTEM: Follow-up question from parent task (qid=",
       ) &&
       eventText(event).includes("any follow-up?"),
-    { sinceIndex: parentAskStarted.index + 1 },
   );
   const childFollowUpText = eventText(childFollowUp.event);
   const qid = childFollowUpText.match(/qid=(\d+)/)?.[1];
@@ -463,8 +469,8 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
     expect(childFollowUp.event.correlation_id).toBe(`follow-up:${qid}`);
   }
 
-  const childAnswerStarted = await waitForTaskEvent(
-    observedTaskEvents,
+  await waitForTaskEvent(
+    observedChildEvents,
     ({ tid, event }) =>
       tid === childTid &&
       event.type === "item/started" &&
@@ -480,7 +486,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       tid === 1 &&
       event.type === "item/result" &&
       event.item_id === parentAskItemId,
-    { sinceIndex: childAnswerStarted.index + 1 },
+    { sinceIndex: parentAskStarted.index + 1 },
   );
   expect(parseTaskResultItems(parentAskResult.event)).toEqual(
     expect.arrayContaining([
@@ -524,6 +530,7 @@ test("Ask/Answer: follow-up to completed sub-task", async ({
       .toBeGreaterThan(doneCountBeforeFollowUpAsk);
   }
 
+  await childPage.close();
   await openTask(page, childTid!);
   await expect(
     page.locator(

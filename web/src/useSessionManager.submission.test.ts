@@ -136,6 +136,7 @@ vi.mock("./connection", () => {
     readonly sendMessage = vi.fn();
     readonly requestTaskTypes = vi.fn();
     readonly requestHistory = vi.fn(() => true);
+    readonly unsubscribeTask = vi.fn(() => true);
 
     constructor() {
       testState.connection = this;
@@ -587,7 +588,7 @@ describe("submission acknowledgement routing", () => {
     expect(partial.tasksLoaded).toBe(true);
     expect(partial.getByTid(1)).toBeDefined();
     expect(partial.getByTid(2)).toMatchObject({ childCount: 0, parentTid: 1 });
-    expect(connection.requestHistory).toHaveBeenCalledWith(2);
+    expect(connection.requestHistory).toHaveBeenCalledWith(2, 0, "desktop");
   });
 
   it("accepts one-packet empty completion and clears a partial snapshot on reconnect", async () => {
@@ -832,7 +833,11 @@ describe("submission acknowledgement routing", () => {
       true,
     );
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(61);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      61,
+      0,
+      "desktop",
+    );
   });
 
   it("does not route a submission acknowledgement after attachment changes", async () => {
@@ -848,7 +853,11 @@ describe("submission acknowledgement routing", () => {
 
     expect(testState.navigate).not.toHaveBeenCalled();
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(62);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      62,
+      0,
+      "desktop",
+    );
   });
 
   it("does not route a held submission acknowledgement across a pre-effect route switch", async () => {
@@ -2420,7 +2429,11 @@ describe("submission acknowledgement routing", () => {
     });
 
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(71);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      71,
+      0,
+      "desktop",
+    );
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],
@@ -2455,7 +2468,11 @@ describe("submission acknowledgement routing", () => {
     });
 
     expect(testState.connection!.requestHistory).toHaveBeenCalledTimes(1);
-    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(71);
+    expect(testState.connection!.requestHistory).toHaveBeenCalledWith(
+      71,
+      0,
+      "desktop",
+    );
     expect(testState.connection!.sendMessage).toHaveBeenCalledWith(
       71,
       [{ type: "text", text: "draft to delete" }],

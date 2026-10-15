@@ -82,11 +82,14 @@ function streamTextResponse(res, text, model = "claude-sonnet-4-20250514") {
   res.end();
 }
 
+// `leadText`, when given, goes in a text block ahead of the tool call, in the
+// same message
 function streamToolUseResponse(
   res,
   toolName,
   input,
   model = "claude-sonnet-4-20250514",
+  leadText = undefined,
 ) {
   const msgId = nextMsgId();
   const toolId = nextToolId();
@@ -103,9 +106,26 @@ function streamToolUseResponse(
       usage: { input_tokens: 10, output_tokens: 1 },
     },
   });
+  const index = leadText === undefined ? 0 : 1;
+  if (leadText !== undefined) {
+    sseEvent(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    });
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: leadText },
+    });
+    sseEvent(res, "content_block_stop", {
+      type: "content_block_stop",
+      index: 0,
+    });
+  }
   sseEvent(res, "content_block_start", {
     type: "content_block_start",
-    index: 0,
+    index,
     content_block: {
       type: "tool_use",
       id: toolId,
@@ -116,12 +136,12 @@ function streamToolUseResponse(
   });
   sseEvent(res, "content_block_delta", {
     type: "content_block_delta",
-    index: 0,
+    index,
     delta: { type: "input_json_delta", partial_json: JSON.stringify(input) },
   });
   sseEvent(res, "content_block_stop", {
     type: "content_block_stop",
-    index: 0,
+    index,
   });
   sseEvent(res, "message_delta", {
     type: "message_delta",
@@ -130,6 +150,18 @@ function streamToolUseResponse(
   });
   sseEvent(res, "message_stop", { type: "message_stop" });
   res.end();
+}
+
+// one step of "chatty steps N": a text message and a command in one reply,
+// so a conversation of N steps holds N + 1 text messages
+function streamChattyStep(res, step, model) {
+  streamToolUseResponse(
+    res,
+    "Bash",
+    { command: `echo chatty ${step}`, description: "chatty step" },
+    model,
+    `chatty step ${step}`,
+  );
 }
 
 function createTitleSwitchOverlapFixture() {
@@ -1135,6 +1167,18 @@ function handleMessages(req, res) {
     // before defaulting to "Done."
     if (isToolResult) {
       const origText = findOriginalUserText(messages);
+      const chatty = origText?.trim().match(/^chatty steps (\d+)$/i);
+      if (chatty) {
+        const done = messages.filter(
+          (m) =>
+            m.role === "user" &&
+            Array.isArray(m.content) &&
+            m.content.some((b) => b.type === "tool_result"),
+        ).length;
+        if (done < Number(chatty[1])) streamChattyStep(res, done + 1, model);
+        else streamTextResponse(res, "chatty done", model);
+        return;
+      }
       if (
         origText &&
         /sequential required commit children/i.test(origText) &&
@@ -1337,6 +1381,8 @@ function handleMessages(req, res) {
       });
     } else if (intent.type === "text") {
       streamTextResponse(res, intent.text, model);
+    } else if (intent.type === "chatty_step") {
+      streamChattyStep(res, 1, model);
     } else if (intent.type === "parallel_shell") {
       const toolNames = intent.commands.map(() => "Bash");
       const inputs = intent.commands.map((cmd) => ({

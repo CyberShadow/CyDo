@@ -66,6 +66,15 @@ interface Props {
   exportMode?: boolean;
   getTaskHref?: (id: string) => string;
   agentUsage?: Record<string, AgentUsageMessage>;
+  /** configured history window in messages for this device class */
+  historyWindowStep?: number;
+  /** load `step` more messages of older history for a task; 0 = all */
+  onLoadMoreHistory?: (tid: number, step: number) => void;
+  onLoadMoreNestedHistory?: (
+    tid: number,
+    parentToolUseId: string,
+    step: number,
+  ) => void;
 }
 
 function SessionViewInner({
@@ -99,6 +108,9 @@ function SessionViewInner({
   exportMode,
   getTaskHref,
   agentUsage,
+  historyWindowStep,
+  onLoadMoreHistory,
+  onLoadMoreNestedHistory,
 }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const insertTextRef = useRef<((text: string) => void) | null>(null);
@@ -421,6 +433,24 @@ function SessionViewInner({
         </div>
       ) : (
         <MessageList
+          historyWindowed={task.historyWindowed}
+          historyWindowStart={task.historyWindowStart}
+          historyWindowStep={historyWindowStep}
+          onLoadMoreHistory={
+            onLoadMoreHistory
+              ? (step) => {
+                  onLoadMoreHistory(tid, step);
+                }
+              : undefined
+          }
+          nestedHistoryWindows={task.nestedHistoryWindows}
+          onLoadMoreNestedHistory={
+            onLoadMoreNestedHistory
+              ? (parentToolUseId, step) => {
+                  onLoadMoreNestedHistory(tid, parentToolUseId, step);
+                }
+              : undefined
+          }
           taskTid={tid}
           messages={task.messages}
           replacementEvents={task.replacementEvents}

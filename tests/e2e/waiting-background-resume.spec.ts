@@ -85,6 +85,18 @@ test(
         )
         .toBe(true);
 
+      // the Task call moved the page to the child, and a page receives only
+      // the task it shows; back on the parent, its live output reaches the
+      // page again
+      await page.locator('.sidebar-item[data-tid="1"]').click();
+      await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
+      await expect(
+        page
+          .locator('[style*="display: contents"] .message-list')
+          .getByText("call waiting background resume fixture")
+          .first(),
+      ).toBeVisible();
+
       writeFileSync(fifoPath, "release\n");
 
       await expect

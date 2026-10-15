@@ -468,6 +468,11 @@ export function matchPattern(userText) {
       },
     };
 
+  // "chatty steps N" → N replies of a text message plus a command, then
+  // "chatty done": a conversation with N + 1 text messages
+  match = userText.trim().match(/^chatty steps (\d+)$/i);
+  if (match) return { type: "chatty_step", total: Number(match[1]) };
+
   // "check context contains <base64>" — check if decoded string appears in request
   match = userText.match(/check context contains ([A-Za-z0-9+/]+=*)/i);
   if (match) return { type: "check_context", needle: match[1] };

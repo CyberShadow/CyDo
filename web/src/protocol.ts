@@ -245,10 +245,34 @@ export interface TaskHistoryStartMessage {
   type: "task_history_start";
   tid: number;
   total: number;
+  window_start?: number;
+  window_limit?: number;
+}
+export interface TaskHistoryPrependStartMessage {
+  type: "task_history_prepend_start";
+  tid: number;
+  window_start: number;
+  before_seq: number;
+  /** set when the batch is the older part of one sub-agent's transcript */
+  parent_tool_use_id?: string;
+}
+/** a sub-agent transcript (the events under one Agent call) whose events
+ *  before before_seq a windowed replay held back */
+export interface NestedHistoryWindow {
+  parent_tool_use_id: string;
+  before_seq: number;
+}
+export interface TaskHistoryPrependEndMessage {
+  type: "task_history_prepend_end";
+  tid: number;
+  window_start: number;
+  parent_tool_use_id?: string;
+  nested_windows?: NestedHistoryWindow[];
 }
 export interface TaskHistoryEndMessage {
   type: "task_history_end";
   tid: number;
+  nested_windows?: NestedHistoryWindow[];
 }
 export interface WorkspacesListMessage {
   type: "workspaces_list";
@@ -381,6 +405,8 @@ export interface ServerStatusMessage {
   auth_enabled: boolean;
   dev_mode?: boolean;
   build_id?: string;
+  history_window_desktop?: number;
+  history_window_mobile?: number;
 }
 export interface TaskDeletedMessage {
   type: "task_deleted";
@@ -420,6 +446,8 @@ export type ControlMessage =
   | FocusHintMessage
   | TitleUpdateMessage
   | TaskHistoryStartMessage
+  | TaskHistoryPrependStartMessage
+  | TaskHistoryPrependEndMessage
   | TaskHistoryEndMessage
   | WorkspacesListMessage
   | TaskTypesListMessage

@@ -25,6 +25,9 @@ test(
   { tag: "@codex-only" },
   async ({ page }) => {
     const events: Event[] = [];
+    // a history replay of the parent (on returning to it below) repeats its
+    // past events; only live ones say what happened in which order
+    let replaying = false;
     page.on("websocket", (ws) => {
       ws.on("framereceived", (frame) => {
         const data = JSON.parse(frame.payload.toString()) as {
@@ -33,6 +36,10 @@ test(
           tid?: number;
           event?: { type?: string; delta_type?: string; item_type?: string };
         };
+        if (data.tid === 1 && data.type === "task_history_start")
+          replaying = true;
+        if (data.tid === 1 && data.type === "task_history_end")
+          replaying = false;
         if (
           data.type === "task_updated" &&
           data.task?.tid === 1 &&
@@ -44,7 +51,7 @@ test(
             status: data.task.status,
             isProcessing: data.task.isProcessing,
           });
-        } else if (data.tid === 1 && data.event?.type) {
+        } else if (data.tid === 1 && data.event?.type && !replaying) {
           events.push({
             kind: "output",
             type: data.event.type,
@@ -72,6 +79,18 @@ test(
             ),
       )
       .toBe(true);
+
+    // the Task call moved the page to the child, and a page receives only
+    // the task it shows; back on the parent, its live output reaches the
+    // page again
+    await page.locator('.sidebar-item[data-tid="1"]').click();
+    await expect(page.locator('.sidebar-item[data-tid="1"].active')).toBeVisible();
+    await expect(
+      page
+        .locator('[style*="display: contents"] .message-list')
+        .getByText("call task research run command sleep 20")
+        .first(),
+    ).toBeVisible();
 
     await expect
       .poll(

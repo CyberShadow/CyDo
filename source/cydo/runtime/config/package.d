@@ -104,6 +104,12 @@ struct WorkspaceConfig
 	@Optional ProjectDiscoveryConfig project_discovery;
 }
 
+struct HistoryWindowConfig
+{
+	@Optional int desktop;
+	@Optional int mobile;
+}
+
 struct CydoConfig
 {
 	@Key("name") WorkspaceConfig[] workspaces;
@@ -119,6 +125,12 @@ struct CydoConfig
 	@Optional bool dev_mode;
 	@Optional string log_level = "info";
 	@Optional string system_keyword = "SYSTEM";
+	/// How much of a task's history to replay when it is opened, in messages
+	/// (user and assistant bubbles), per device class. Each Agent call's
+	/// sub-agent transcript is windowed the same way on its own, counting its
+	/// tool calls as messages too. Absent or zero replays everything, which
+	/// is the default.
+	@Optional HistoryWindowConfig history_window;
 
 	/// Called by configy during parsing (configy/read.d:650), so a semantic
 	/// error surfaces on the same path as a YAML syntax error.
