@@ -123,6 +123,7 @@ export interface TaskStartedEvent {
   description?: string;
   task_type?: string;
   extras?: Record<string, unknown>;
+  parent_tool_use_id?: string;
 }
 
 export interface TaskNotificationEvent {
@@ -132,6 +133,8 @@ export interface TaskNotificationEvent {
   output_file?: string;
   summary?: string;
   extras?: Record<string, unknown>;
+  tool_use_id?: string;
+  parent_tool_use_id?: string;
 }
 
 export interface ControlResponseEvent {

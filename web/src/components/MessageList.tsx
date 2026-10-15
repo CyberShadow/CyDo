@@ -1,4 +1,5 @@
 import { memo } from "preact/compat";
+import { TaskLifecycleView } from "./TaskLifecycleView";
 import {
   useEffect,
   useLayoutEffect,
@@ -441,41 +442,6 @@ function SystemInitView({ message }: { message: DisplayMessage }) {
       {Array.isArray(raw.plugins) && raw.plugins.length > 0 && (
         <InitDetailList label="Plugins" items={raw.plugins} />
       )}
-    </div>
-  );
-}
-
-function TaskLifecycleView({ message }: { message: DisplayMessage }) {
-  const raw = message.rawSource as Record<string, unknown>;
-  const isStarted = raw.subtype === "task_started";
-  const taskType = raw.task_type;
-  const taskId = raw.task_id;
-
-  let label: string;
-  let description: string;
-  if (isStarted) {
-    label = "Task started";
-    description =
-      (raw.description as string | undefined) ||
-      (taskId as string | undefined) ||
-      "";
-  } else {
-    label = `Task ${typeof raw.status === "string" ? raw.status : "updated"}`;
-    description =
-      (raw.summary as string | undefined) ||
-      (taskId as string | undefined) ||
-      "";
-  }
-
-  return (
-    <div
-      class={`message task-lifecycle-message${
-        isStarted ? " task-started" : " task-notification"
-      }`}
-    >
-      <span class="task-lifecycle-label">{label}</span>
-      {taskType && <span class="task-lifecycle-type">{taskType}</span>}
-      {description && <span class="task-lifecycle-desc">{description}</span>}
     </div>
   );
 }

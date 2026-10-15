@@ -14,7 +14,14 @@
  * Root cause 2 (frontend): MessageView memo comparator did not check the
  *   `children` prop — fixed in web/src/components/MessageList.tsx.
  */
-import { test, expect, enterSession, sendMessage, responseTimeout } from "./fixtures";
+import {
+  test,
+  expect,
+  enterSession,
+  sendMessage,
+  responseTimeout,
+  assistantText,
+} from "./fixtures";
 
 test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude-only" }, async ({
   page,
@@ -51,4 +58,23 @@ test("sub-agent messages with parent_tool_use_id render nested", { tag: "@claude
       '[style*="display: contents"] .sub-agent-messages .assistant-message',
     ),
   ).toBeVisible();
+
+  // the sub-agent's start shows inside its Agent block; its completion is a
+  // report to the main agent, so it shows in the task's own stream
+  await expect(assistantText(page, "Done.")).toBeVisible({ timeout });
+  await expect(
+    page.locator(
+      '[style*="display: contents"] .sub-agent-messages .task-lifecycle-message.task-started',
+    ),
+  ).toHaveCount(1);
+  await expect(
+    page.locator(
+      '[style*="display: contents"] .task-lifecycle-message.task-notification:not(.sub-agent-messages .task-lifecycle-message)',
+    ),
+  ).toHaveCount(1);
+  await expect(
+    page.locator(
+      '[style*="display: contents"] .sub-agent-messages .task-lifecycle-message.task-notification',
+    ),
+  ).toHaveCount(0);
 });

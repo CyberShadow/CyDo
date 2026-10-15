@@ -171,6 +171,9 @@ struct TaskStartedEvent
 	@JSONOptional string description;
 	@JSONOptional string task_type;
 	@JSONOptional JSONFragment extras;
+	// the tool call that launched the task (the Agent call of a sub-agent,
+	// the Bash call of a background command): its start shows there
+	@JSONOptional string parent_tool_use_id;
 }
 
 /// task/notification
@@ -182,6 +185,10 @@ struct TaskNotificationEvent
 	@JSONOptional string output_file;
 	@JSONOptional string summary;
 	@JSONOptional JSONFragment extras;
+	@JSONOptional string tool_use_id;
+	// the sub-agent the report goes to, when a sub-agent launched the task;
+	// empty for the main agent
+	@JSONOptional string parent_tool_use_id;
 }
 
 /// Payload of a control/response event.

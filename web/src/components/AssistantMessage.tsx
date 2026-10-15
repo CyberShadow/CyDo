@@ -1,4 +1,5 @@
 import { Fragment, h } from "preact";
+import { TaskLifecycleView } from "./TaskLifecycleView";
 import { memo } from "preact/compat";
 import { useState } from "preact/hooks";
 import type { DisplayMessage, Block } from "../types";
@@ -128,6 +129,23 @@ function NestedMessageWrapper({
       {showSource ? <SourceView msg={msg} tid={tid} /> : children}
     </div>
   );
+}
+
+/** what a tool call carries below its input: a sub-agent's transcript gets
+ *  the indented sub-agent container, while a call with only task rows (a
+ *  background command, a resumed agent) shows them flush in its block */
+function NestedChildren({
+  nested,
+  renderChild,
+}: {
+  nested: DisplayMessage[];
+  renderChild: (child: DisplayMessage) => h.JSX.Element | null;
+}) {
+  const hasTranscript = nested.some(
+    (child) => child.type === "assistant" || child.type === "user",
+  );
+  if (!hasTranscript) return <>{nested.map(renderChild)}</>;
+  return <div class="sub-agent-messages">{nested.map(renderChild)}</div>;
 }
 
 interface Props {
@@ -301,8 +319,9 @@ export const AssistantMessage = memo(
                         </StickyScrollPre>
                       )}
                     {nested && nested.length > 0 && block.completed && (
-                      <div class="sub-agent-messages">
-                        {nested.map((child) => {
+                      <NestedChildren
+                        nested={nested}
+                        renderChild={(child) => {
                           if (child.type === "assistant") {
                             return (
                               <NestedMessageWrapper
@@ -337,9 +356,21 @@ export const AssistantMessage = memo(
                               </NestedMessageWrapper>
                             );
                           }
+                          // a task the sub-agent launched, or this call's own
+                          // background task
+                          if (
+                            child.type === "system" &&
+                            child.subtype === "task_lifecycle"
+                          )
+                            return (
+                              <TaskLifecycleView
+                                key={child.id}
+                                message={child}
+                              />
+                            );
                           return null;
-                        })}
-                      </div>
+                        }}
+                      />
                     )}
                   </ToolCall>
                   {blockExtraEl}

@@ -1421,6 +1421,29 @@ class ClaudeCodeSession : AgentSession
 	// Stateful translation: track active content blocks per index.
 	private string[] activeItemIds_;   // index → item_id for current turn
 	private string[] activeItemTypes_; // index → "text", "thinking", "tool_use"
+	// tool use id -> the Agent call whose sub-agent made it; the main agent's
+	// own tool calls are absent. A background task's completion report goes
+	// to whoever launched it, so it shows in that agent's stream
+	private string[string] subagentToolParent_;
+
+	/// a task/notification is a report to the agent that launched the task:
+	/// in that sub-agent's stream when a sub-agent made the call, otherwise
+	/// in the main agent's own
+	private TranslatedEvent placeTaskReport(TranslatedEvent t)
+	{
+		import std.algorithm : canFind;
+		import cydo.protocol : TaskNotificationEvent;
+
+		if (!t.translated.canFind(`"type":"task/notification"`))
+			return t;
+		auto ev = jsonParse!TaskNotificationEvent(t.translated);
+		if (auto parent = ev.tool_use_id in subagentToolParent_)
+		{
+			ev.parent_tool_use_id = *parent;
+			t.translated = toJson(ev);
+		}
+		return t;
+	}
 	private JSONFragment[string] blockExtras_; // item_id → extras from assistant event
 	private AbsTime lineReceiptTs_;    // receipt time captured at start of each live line
 	private string executablePath_;
@@ -1745,7 +1768,7 @@ class ClaudeCodeSession : AgentSession
 				// Stateless translation for system, result, summary, control, etc.
 				auto t = translateClaudeEvent(rawLine, agentName_);
 				if (t.translated !is null)
-					emitEvent(t);
+					emitEvent(placeTaskReport(t));
 				return;
 		}
 	}
@@ -1985,6 +2008,9 @@ class ClaudeCodeSession : AgentSession
 			import cydo.protocol : ItemStartedEvent, ItemCompletedEvent,
 				TurnStopEvent, decomposeToolName;
 
+			foreach (ref b; raw.message.content)
+				if (b.type == "tool_use" && b.id.length > 0)
+					subagentToolParent_[b.id] = raw.parent_tool_use_id;
 			foreach (idx, ref b; raw.message.content)
 			{
 				auto itemId = b.type == "tool_use" && b.id.length > 0
@@ -3485,6 +3511,7 @@ private string normalizeTaskStarted(string rawLine)
 	ev.tool_use_id  = raw.tool_use_id;
 	ev.description  = raw.description;
 	ev.task_type    = raw.task_type;
+	ev.parent_tool_use_id = raw.tool_use_id;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }
@@ -3499,6 +3526,7 @@ private string normalizeTaskNotification(string rawLine)
 		string status;
 		@JSONOptional string output_file;
 		@JSONOptional string summary;
+		@JSONOptional string tool_use_id;
 		// TODO: Claude Code JSONL metadata fields — not forwarded to the agnostic protocol
 		@JSONOptional string type;
 		@JSONOptional string subtype;
@@ -3531,6 +3559,7 @@ private string normalizeTaskNotification(string rawLine)
 	ev.status      = raw.status;
 	ev.output_file = raw.output_file;
 	ev.summary     = raw.summary;
+	ev.tool_use_id = raw.tool_use_id;
 	ev.extras = extrasToFragment(collectAllExtras(raw));
 	return toJson(ev);
 }

@@ -433,6 +433,9 @@ export function reduceTaskLifecycle(
         content: [{ type: "text" as const, text }],
         rawSource: msg,
         seq,
+        // a task's start shows inside the tool call that launched it; its
+        // report shows with the agent it goes to
+        parentToolUseId: msg.parent_tool_use_id ?? undefined,
       },
     ],
   };
